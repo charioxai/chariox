@@ -1282,6 +1282,20 @@ test('MP-08/MP-10 the keepalive is a popup window outside the native tab strip',
   assert.ok(!opened.tabs.some(tab => tab.target_id === fixture.popups[0]));
 }));
 
+// r54 (first video 8-13 s after native_admitted): any host browser op that takes over a second is named in the timing log.
+test('MP-08/MP-10 opt-in timing names a slow host browser op and only a slow one', () => using(async ({ host }, root) => {
+  const before = process.env.CHARIOX_BROWSER_DISPLAY_TIMING; process.env.CHARIOX_BROWSER_DISPLAY_TIMING = '1';
+  try {
+    const request = host.request.bind(host);
+    host.request = async params => params.op === 'display_credit' ? new Promise(resolve => setTimeout(resolve, 1100, {})) : request(params);
+    await host.handle({ id: 1, method: 'host.browser', params: { op: 'display_credit' } });
+    await host.handle({ id: 2, method: 'host.browser', params: { op: 'screenshot', format: 'png' } }).catch(() => {});
+    host.timing.flush();
+    const stages = (await readFile(path.join(root, 'display-timing.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line).stage);
+    assert.deepEqual(stages.filter(stage => stage.startsWith('host_op_slow')), ['host_op_slow display_credit']);
+  } finally { if (before === undefined) delete process.env.CHARIOX_BROWSER_DISPLAY_TIMING; else process.env.CHARIOX_BROWSER_DISPLAY_TIMING = before; }
+}));
+
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops with fixed labels (New tab / typed URL attribution).
 test('MP-08/MP-10 opt-in timing labels Tab lifecycle ops', () => using(async ({ host }, root) => {
   const before = process.env.CHARIOX_BROWSER_DISPLAY_TIMING; process.env.CHARIOX_BROWSER_DISPLAY_TIMING = '1';

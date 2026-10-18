@@ -64,6 +64,7 @@ const TAB_LIMIT = 128;
 // Read-only host operations: they never dispatch input into a page.
 const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'subscribe', 'poll', 'unsubscribe', 'note_selection', 'note_reanchor', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target']);
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
+const SLOW_OP_MS = 1000;
 const TIMED_OPS = new Set(['start', 'state', 'open', 'close', 'navigate', 'mirror_subscribe', 'display_subscribe']);
 const inputKinds = { click: 1, text: 2, key: 3, scroll: 4 };
 function restorationUrl(url) {
@@ -956,6 +957,7 @@ export class KernelBrowserHost {
         if (Array.isArray(groups)) void this.syncTabGroups(groups).catch(() => {});
         this.timing(request.params.op === 'input' ? 'host_input' : 'host_capture_or_control', at);
         if (TIMED_OPS.has(request.params.op)) this.timing(`host_op ${request.params.op}${typeof request.params.tab_id === 'string' && request.params.op === 'state' ? ' tab' : ''}`, at);
+        else if (timestamp() - at > SLOW_OP_MS && /^[a-z_]{1,32}$/.test(request.params.op)) this.timing(`host_op_slow ${request.params.op}`, at);
         // Structured controller observations scrub before compaction; metadata
         // and other host replies receive the same protection at this boundary.
         if (!["screenshot", "poll", "mirror_next", "display_subscribe", "display_input_target"].includes(request.params?.op)) {
