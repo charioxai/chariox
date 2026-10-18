@@ -155,3 +155,14 @@ test('MP-08/MP-11 browser navigation remains actionable beside a Vault-filled fi
  await native.action('agent:a',{tree_revision:seen.tree_revision,target_id:button.target_id,action:'click'},policy);
  assert.equal(applied,1);
 });
+
+// MP-08 / MP-11: Chromium marks structural panels actionable too.
+test('MP-08 / MP-11 named browser navigation survives unnamed structural actions',async()=>{
+ const nodes=Array.from({length:80},(_,i)=>({...tree.nodes[0],path:[0,i],role:'panel',name:'',states:['showing','enabled'],actions:['doDefault','showContextMenu']}));
+ nodes.unshift({...tree.nodes[0],path:[0],role:'frame',name:'Public page',states:['showing'],actions:[]});
+ for(const [i,name] of ['Back','Reload','Address and search bar'].entries())nodes.push({...tree.nodes[0],path:[0,100+i],role:i===2?'entry':'button',name,states:['showing','enabled'],actions:['press']});
+ const native=new NativeAccessibility({binding:()=>binding,execute:async()=>({...tree,active_window:{pid:200,started:'1',path:[0]},nodes})});
+ const seen=await native.snapshot('agent:a',{});
+ for(const name of ['Back','Reload','Address and search bar'])assert(seen.nodes.some(n=>n.name===name),name);
+ assert.equal(seen.complete,false);
+});
