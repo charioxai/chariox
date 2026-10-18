@@ -7,7 +7,9 @@ use crate::durable_state::agent_lifecycle::{
 use zeroize::Zeroize;
 
 mod cache;
+mod protected_class;
 pub(super) use cache::AssessmentResults;
+pub(in crate::runtime::state) use protected_class::{ProtectedFact, ProtectedFacts};
 
 /// MP-11: App queue/promotion and runtime actors share this exact private cell.
 /// No App pointer or runtime actor is captured, so this cannot create an ownership cycle.
@@ -17,6 +19,7 @@ pub(crate) struct PrivateAssessmentDispatch {
     config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
     durable_state_store: crate::durable_state::DurableKernelStateStore,
     room_secret_observations: super::room_secret_observation::RoomSecretObservations,
+    pub(super) protected_facts: ProtectedFacts,
 }
 impl PrivateAssessmentDispatch {
     pub(super) fn new(
@@ -29,6 +32,7 @@ impl PrivateAssessmentDispatch {
             config_projection,
             durable_state_store,
             room_secret_observations,
+            protected_facts: Default::default(),
         }
     }
     pub(crate) fn for_app_dispatch(
@@ -252,8 +256,13 @@ impl KernelRuntimeOwnedState {
             } else {
                 Vec::new()
             };
-            if !fence_private_assessment(&mut value, &live) {
+            let facts = &self.private_assessment_dispatch.protected_facts;
+            let fact = facts.peek(room, agent);
+            if !fence_private_assessment(&mut value, &live, fact) {
                 return String::new();
+            }
+            if protected_class::is_terminal(&value) {
+                facts.clear(room, agent);
             }
         }
         self.room_secret_observations
@@ -266,10 +275,16 @@ impl KernelRuntimeOwnedState {
 
 // The structured disposition is control input. Protected provider prose cannot
 // enter the ledger/audit/public result, including through a malformed receipt.
-fn fence_private_assessment(value: &mut Assessment, live: &[String]) -> bool {
+// The only public prose is a fixed kernel-authored reason class.
+fn fence_private_assessment(
+    value: &mut Assessment,
+    live: &[String],
+    fact: Option<ProtectedFact>,
+) -> bool {
+    let public = protected_class::public_text(value, fact);
     let fence = |text: &mut String| {
         text.zeroize();
-        *text = "[protected completion details withheld]".into();
+        *text = public.into();
     };
     match value {
         Assessment::Achieved {
@@ -328,7 +343,7 @@ mod tests {
             r#"{"status":"waiting","reason":"PRIVATE_DERIVED","registration_ids":["known-live"],"deadline_ms":123}"#,
         ] {
             let mut value: Assessment = serde_json::from_str(raw).unwrap();
-            assert!(fence_private_assessment(&mut value, &["known-live".into()]));
+            assert!(fence_private_assessment(&mut value, &["known-live".into()], None));
             assert!(!serde_json::to_string(&value).unwrap().contains("PRIVATE_"));
         }
         for raw in [
@@ -339,13 +354,34 @@ mod tests {
             let mut value: Assessment = serde_json::from_str(raw).unwrap();
             assert!(!fence_private_assessment(
                 &mut value,
-                &["known-live".into()]
+                &["known-live".into()],
+                None
             ));
         }
         assert!(serde_json::from_str::<Assessment>(
             r#"{"status":"blocked","reason":"safe","extra":"PRIVATE_DERIVED"}"#
         )
         .is_err());
+    }
+    #[test]
+    fn mp11_reason_class_is_fixed_and_fails_closed() {
+        use ProtectedFact::*;
+        let class = |raw: &str, fact| {
+            let mut value: Assessment = serde_json::from_str(raw).unwrap();
+            assert!(fence_private_assessment(&mut value, &["live".into()], fact));
+            serde_json::to_string(&value).unwrap()
+        };
+        let waiting = r#"{"status":"waiting","reason":"PRIVATE","registration_ids":["live"],"deadline_ms":1}"#;
+        let cont = r#"{"status":"continue","reason":"PRIVATE"}"#;
+        let achieved = r#"{"status":"achieved","final_answer":"PRIVATE","evidence":["PRIVATE"]}"#;
+        assert!(class(waiting, None).contains("[protected task: waiting]"));
+        assert!(class(waiting, Some(ApprovalDenied)).contains("approval denied"));
+        assert!(class(cont, Some(FieldNotFound)).contains("protected field not found"));
+        assert!(class(achieved, Some(Submitted)).contains("[protected task: completed]"));
+        for fact in [ApprovalDenied, ApprovalTimedOut, FieldNotFound] {
+            let out = class(achieved, Some(fact));
+            assert!(out.contains("[protected completion details withheld]"), "{out}");
+        }
     }
     #[test]
     fn mp11_private_assessment_is_single_use_binding_exact_and_never_truncates() {

@@ -1,10 +1,17 @@
 use crate::error::DaemonError;
 
-use super::KernelRuntimeState;
+use super::{agent_assessment_result::ProtectedFact, KernelRuntimeState};
 
 const COMPUTER_SECRET_APPROVAL_TIMEOUT_SEC: u64 = 30;
 
 impl KernelRuntimeState {
+    pub(super) fn record_protected_fact(&self, room: &str, agent: &str, fact: ProtectedFact) {
+        self.owned
+            .private_assessment_dispatch
+            .protected_facts
+            .record(room, agent, fact);
+    }
+
     pub(crate) fn computer_screen_capture_guard(
         &self,
     ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, DaemonError> {
@@ -41,16 +48,17 @@ impl KernelRuntimeState {
                 RoomBrowserControllerCommand::ComputerSecretTarget,
             )
             .await?;
-        let RoomBrowserControllerResult::ComputerSecretTarget { target } = result else {
-            return Err(computer_secret_approval_error(
-                "worker returned an invalid focused desktop target",
-            ));
+        let target = match result {
+            RoomBrowserControllerResult::ComputerSecretTarget { target } if target.valid() => {
+                target
+            }
+            _ => {
+                self.record_protected_fact(session_id, agent_id, ProtectedFact::FieldNotFound);
+                return Err(computer_secret_approval_error(
+                    "worker returned an invalid focused desktop target",
+                ));
+            }
         };
-        if !target.valid() {
-            return Err(computer_secret_approval_error(
-                "worker returned an invalid focused desktop target",
-            ));
-        }
         Ok(target)
     }
 
@@ -99,11 +107,15 @@ impl KernelRuntimeState {
         let state = self.clone();
         let timeout_session_id = session_id.to_string();
         let timeout_interaction_id = interaction_id.clone();
+        // The default-on-timeout choice resolves as an ordinary "deny" answer.
+        let timed_out = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let timeout_flag = timed_out.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(
                 COMPUTER_SECRET_APPROVAL_TIMEOUT_SEC,
             ))
             .await;
+            timeout_flag.store(true, std::sync::atomic::Ordering::SeqCst);
             let _ = state
                 .timeout_runtime_interaction(&timeout_session_id, &timeout_interaction_id)
                 .await;
@@ -116,6 +128,14 @@ impl KernelRuntimeState {
         if resolution.choice_id.as_deref() == Some("allow") {
             return Ok(());
         }
+        let fact = if resolution.status == "timed_out"
+            || timed_out.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            ProtectedFact::ApprovalTimedOut
+        } else {
+            ProtectedFact::ApprovalDenied
+        };
+        self.record_protected_fact(session_id, agent_id, fact);
         Err(computer_secret_approval_error(
             "computer credential input was denied or timed out",
         ))

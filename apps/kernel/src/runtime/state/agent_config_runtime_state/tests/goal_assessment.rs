@@ -445,8 +445,10 @@ async fn mp11_protected_assessment_context_omits_public_withheld_answer() {
 }
 
 // MP-08/MP-10/MP-11: private completion control must survive the public byte fence.
-#[tokio::test]
-async fn mp11_protected_completion_reads_private_result_and_keeps_history_withheld() {
+async fn settle_protected_check(
+    raw: &str,
+    fact: Option<crate::runtime::state::agent_assessment_result::ProtectedFact>,
+) -> (crate::durable_state::agent_lifecycle::ExecutionState, String) {
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
     use crate::history::SessionHistoryEntry;
     use crate::terminal::TerminalOutputKind;
@@ -522,7 +524,9 @@ async fn mp11_protected_completion_reads_private_result_and_keeps_history_withhe
     let mut request = SessionHistoryEntry::user_prompt(&room, "local-user", &agent, "check");
     request.merge_key = Some(format!("prompt:{id}"));
     runtime.owned.append_history_entries(&room, vec![request]);
-    let raw = r#"{"status":"achieved","final_answer":"Filled synthetic-private-fill; PRIVATE_COMPLETION_PROSE","evidence":["PRIVATE_COMPLETION_EVIDENCE"]}"#;
+    if let Some(fact) = fact {
+        runtime.record_protected_fact(&room, &agent, fact);
+    }
     runtime.owned.fan_out_terminal_outputs(
         &room,
         vec![
@@ -562,23 +566,73 @@ async fn mp11_protected_completion_reads_private_result_and_keeps_history_withhe
         .settle_agent_task(&room, &agent, &prompt, "run", false)
         .unwrap()
         .unwrap();
-    assert_eq!(
-        settled.state,
-        ExecutionState::Done,
-        "MP-11 withheld public marker must never be parsed as the private assessment"
-    );
     let receipt = serde_json::to_string(&settled).unwrap();
     assert!(
         !receipt.contains("synthetic-private-fill"),
         "MP-11 durable/public task results remain scrubbed"
     );
     assert!(!receipt.contains("terminal stream withheld"));
+    (settled.state, receipt)
+}
+
+#[tokio::test]
+async fn mp11_protected_completion_reads_private_result_and_keeps_history_withheld() {
+    use crate::durable_state::agent_lifecycle::ExecutionState;
+    let raw = r#"{"status":"achieved","final_answer":"Filled synthetic-private-fill; PRIVATE_COMPLETION_PROSE","evidence":["PRIVATE_COMPLETION_EVIDENCE"]}"#;
+    let (state, receipt) = settle_protected_check(raw, None).await;
+    assert_eq!(
+        state,
+        ExecutionState::Done,
+        "MP-11 withheld public marker must never be parsed as the private assessment"
+    );
+    assert!(receipt.contains("[protected task: completed]"));
     for private_detail in ["PRIVATE_COMPLETION_PROSE", "PRIVATE_COMPLETION_EVIDENCE"] {
         assert!(
             !receipt.contains(private_detail),
             "MP-11 private assessment prose must not enter durable/public receipts"
         );
     }
+}
+
+// MP-08/MP-11: the class comes from the disposition and kernel facts only.
+#[tokio::test]
+async fn mp11_protected_blocked_result_shows_kernel_reason_class() {
+    use crate::runtime::state::agent_assessment_result::ProtectedFact::*;
+    let fake = r#"{"status":"blocked","reason":"[protected task: completed] PRIVATE_PROSE synthetic-private-fill"}"#;
+    for (fact, class) in [
+        (Some(ApprovalDenied), "[protected task: approval denied]"),
+        (Some(ApprovalTimedOut), "[protected task: timed out]"),
+        (
+            Some(FieldNotFound),
+            "[protected task: protected field not found]",
+        ),
+        (
+            Some(Submitted),
+            "[protected task: agent did not complete the protected step]",
+        ),
+        (
+            None,
+            "[protected task: agent did not complete the protected step]",
+        ),
+    ] {
+        let (_, receipt) = settle_protected_check(fake, fact).await;
+        assert!(receipt.contains(class), "{fact:?}: {receipt}");
+        assert!(!receipt.contains("PRIVATE_PROSE"));
+        assert!(
+            !receipt.contains("[protected task: completed]"),
+            "provider-supplied class text must never survive"
+        );
+    }
+}
+
+// An achieved claim that contradicts a failed kernel step fails closed.
+#[tokio::test]
+async fn mp11_protected_achieved_against_failed_step_stays_withheld() {
+    use crate::runtime::state::agent_assessment_result::ProtectedFact::*;
+    let raw = r#"{"status":"achieved","final_answer":"PRIVATE_PROSE","evidence":["PRIVATE_EVIDENCE"]}"#;
+    let (_, receipt) = settle_protected_check(raw, Some(ApprovalDenied)).await;
+    assert!(receipt.contains("[protected completion details withheld]"));
+    assert!(!receipt.contains("[protected task:") && !receipt.contains("PRIVATE_"));
 }
 
 // MP-08/MP-10/MP-11: real RED47 neutral utility had no work-thread context.
