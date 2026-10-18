@@ -15,8 +15,8 @@ export function viewerPageInputActive(host,command,scope){
  return command._display_input===true&&!command._agent_input&&!command.focused_agent&&
   [...host.displays.values()].some(s=>s.tab_id===command.tab_id&&s.observed_by===scope&&s.expires>Date.now());
 }
-export function nativeKeyDocumentTarget(host,command,scope,nativeDisplay){
- if(command.op!=='input'||command.input?.kind!=='key'||!viewerPageInputActive(host,command,scope))return false;
+export function nativeInputDocumentTarget(host,command,scope,nativeDisplay){
+ if(command.op!=='input'||!['key','scroll'].includes(command.input?.kind)||!viewerPageInputActive(host,command,scope))return false;
  const source=nativeDisplay?.regionSource??host.compositors.get(command.tab_id)?.source;
  return source?.native===true&&source.attested===true&&source.valid?.()===true;
 }
