@@ -301,10 +301,22 @@ export async function measureBrowserProtection(browser,policy) {
       const targets=supplied.map(t=>tracked.find(own=>own.node_ref===t.node_ref&&own.document_id===t.document_id)??t);
       for(const target of tracked)if(!targets.includes(target))targets.push(target);
       const measured=await measurePageProtection(connection,sessionId,info.targetId,{...policy,targets});
-      if(measured)pages.push({target_id:info.targetId,window_id:windowId,window:[bounds.left,bounds.top,bounds.width,bounds.height],chrome:false,...measured});
+      // The native Tab size is Chromium's own and places the viewport on X11 without an accessibility tree.
+      const native=measured&&await browser.nativeViewport?.(info.targetId);
+      if(measured)pages.push({target_id:info.targetId,window_id:windowId,window:[bounds.left,bounds.top,bounds.width,bounds.height],native:native?[native.width,native.height]:null,chrome:false,...measured});
     } finally {await connection.send('Target.detachFromTarget',{sessionId}).catch(()=>{});}
   }
   pruneBrowserFillTargets(browser,connection);return {pages};
+}
+
+// MP-08/MP-11: the active Tab as CDP and the component extension see it. The desktop helper proves it against
+// the live X11 window before a click may count as a page hit rather than browser UI.
+export async function activeBrowserPage(browser) {
+  const native=await browser.nativeViewport?.();
+  if(!native)return null;
+  const connection=await browser.ensureConnection();
+  const [{targetInfo},{bounds}]=await Promise.all([connection.send('Target.getTargetInfo',{targetId:native.target_id}),connection.send('Browser.getWindowForTarget',{targetId:native.target_id})]);
+  return {url:targetInfo.url,window:[bounds.left,bounds.top,bounds.width,bounds.height],native:[native.width,native.height]};
 }
 
 export const protectionDigest = measurement => createHash('sha256').update(JSON.stringify(measurement)).digest('hex');

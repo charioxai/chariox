@@ -87,7 +87,7 @@ test('MP-10 host display renders at the geometry density for negotiated DPR1/2 p
  const {displayGeometry}=await import('./kernel-browser-geometry.mjs');
  const chromium=new HostChromium('/private');
  assert.equal(chromium.scale,chromium.desktop?1:displayGeometry.dpr);
- assert(launchArguments('/private',false,true,false,2).includes('--force-device-scale-factor=2'));
+ assert(launchArguments('/private',false,true,2).includes('--force-device-scale-factor=2'));
 });
 
 // MP-08/MP-10/MP-11 review #1001 P2: an ambient desktop cannot replace a failed private renderer.

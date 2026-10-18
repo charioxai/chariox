@@ -7,7 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { processIdentity, signalOwned, settleOwned } from './linux-owned-process.mjs';
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 import { EXTENSIONS_REFUSED } from './kernel-browser-policy.mjs';
-import { fenceBrowserCapture } from './browser-protection-regions.mjs';
+import { activeBrowserPage, fenceBrowserCapture } from './browser-protection-regions.mjs';
 import { redactObservation } from './browser-controller-snapshot.mjs';
 const helper = fileURLToPath(new URL('./native-computer.py', import.meta.url));
 // MP-08/MP-10: human input the warm channel carries (no admission; see native-computer.py).
@@ -131,6 +131,9 @@ export class NativeComputer {
       if(command._agent_input) {
         const processes=await binding.ownedProcesses?.()??[],browsers=await binding.browserProcesses?.()??[];
         admission={agent_input:true,processes:processes.map(item=>({...item,browser:Boolean(item.browser)||browsers.some(browser=>browser.pid===item.pid&&browser.started===item.started)}))};
+        // The page-vs-browser-UI hit test places the active Tab from CDP and X11, not an accessibility tree.
+        const browser=input.kind==='click'?binding.browser?.():null;
+        if(browser)admission.browser_page=await activeBrowserPage(browser).catch(()=>null);
       }
       if(input.kind==='keycode') {
         if(input.state==='down') {this.held.add(input.keycode);this.heldOwner=observer;}

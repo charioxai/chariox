@@ -212,6 +212,7 @@ export class KernelBrowserHost {
       // MP-08/MP-11: agent Tabs are grouped under the agent's name in the native strip.
       // Attribution UI only: a browser without the component extension still works.
       this.tabGroups = new ChromeTabGroups(connection);
+      this.browser.nativeViewport = target => this.tabGroups?.viewport(target) ?? null;
       try { await this.tabGroups.load(await writeTabGroupsExtension(this.root)); } catch { this.tabGroups?.close?.();this.tabGroups = null; this.timing('tab_groups_unavailable', timestamp()); }
       const { targetInfos = [] } = await connection.send("Target.getTargets");
       // Headed Chromium exits when its last page closes. Keep one internal blank

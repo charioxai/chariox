@@ -95,6 +95,19 @@ def frame_rect(root, window):
     raise ValueError('window frame unavailable')
 
 
+def frame_insets(connection, window):
+    """MP-11: the client's GTK frame extents (left, right, top, bottom); zeros when it has none."""
+    try:
+        from Xlib import X
+    except ModuleNotFoundError:
+        from selkies.Xlib import X
+    value=window.get_full_property(connection.intern_atom('_GTK_FRAME_EXTENTS'),X.AnyPropertyType)
+    if value is None:return [0,0,0,0]
+    values=[int(part) for part in value.value]
+    if len(values)!=4 or any(part<0 or part>64 for part in values):raise ValueError('client frame insets invalid')
+    return values
+
+
 def visible_rect(rect, screen):
     # MP-11 review R3: GTK owns an offscreen selection window. Only actual
     # desktop pixels need coverage; partially visible popups remain masked.
@@ -133,8 +146,6 @@ def capture_snapshot(processes, browser_processes=None, browser_protection=None,
     pages = [page for page in (browser_protection or {}).get('pages', []) if page.get('regions')]
     if pages:
         owned = {item['pid'] for item in browser_processes or () if alive(item)}
-        desktop = pyatspi.Registry.getDesktop(0)
-        apps = {app.get_process_id(): app for app in (desktop.getChildAtIndex(i) for i in range(min(desktop.childCount, 64))) if app}
         try:
             from Xlib import X, display
         except ModuleNotFoundError:
@@ -149,12 +160,12 @@ def capture_snapshot(processes, browser_processes=None, browser_protection=None,
                 if window.get_attributes().map_state != X.IsViewable: continue
                 pid = window.get_full_property(connection.intern_atom('_NET_WM_PID'), X.AnyPropertyType)
                 pid = int(pid.value[0]) if pid is not None and len(pid.value) else None
-                if pid not in owned or pid not in apps: continue
+                if pid not in owned: continue
                 geometry = window.get_geometry(); origin = root.translate_coords(window, 0, 0)
                 client = [origin.x, origin.y, geometry.width, geometry.height]
                 matching = [page for page in unmatched if _protection._screen_scale(page.get('window'), client)]
                 if not matching: continue
-                placed = _protection.window_masks({'pages': matching}, client, frame_rect(root, window), _protection.document_rects(apps[pid], pyatspi))
+                placed = _protection.window_masks({'pages': matching}, client, frame_insets(connection, window))
                 if placed is None: raise ValueError('fill desktop placement unavailable')
                 masks.extend(part for part in (visible_rect(box, screen) for box in placed) if part)
                 unmatched = [page for page in unmatched if page not in matching]
@@ -168,7 +179,7 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
     browsers={item['pid'] for item in browser_processes or () if alive(item)}
     # Only the kernel's own Chromium tree was measured through CDP.
     measured=set(browsers) if browser_protection is not None else set()
-    documents={};withheld=0
+    withheld=0
     # MP-08 / MP-11: slice placement does not own Chromium's launch object.
     # Kernel host placement supplies the full tracked browser process tree.
     # OS executable metadata and document-web roles conservatively protect
@@ -242,9 +253,6 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
                 nodes.append({'pid':pid,'started':allowed[pid],'path':[],
                               'role':'application','name':'[protected]','states':[],
                               'bounds':None,'actions':[],'protected':True})
-                if pid in measured:
-                    try:documents[pid]=_protection.document_rects(app,pyatspi)
-                    except Exception:pass  # Unproven document geometry: whole window.
                 continue
             pending.append((app,pid,allowed[pid],[],0))
         if desktop.childCount>64:complete=traversed=False
@@ -291,14 +299,18 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
                         (node['role'] in ('frame','window','dialog') or
                          (node['role']=='file chooser' and len(node['path'])==1)) and
                         node['name']==name and 'showing' in node['states'] and native_frame_scale(node['bounds'],rect,client_rect) is not None]
-                windows.append((int(window_id),pid,rect,frames,client_rect))
-            for window_id,pid,rect,frames,client in windows:
+                insets=None
+                if pid in measured:
+                    try:insets=frame_insets(connection,window)
+                    except ValueError:pass  # Unproven placement: the window stays withheld whole.
+                windows.append((int(window_id),pid,rect,frames,client_rect,insets))
+            for window_id,pid,rect,frames,client,insets in windows:
                 # MP-11 #904 review 3: the frame proof needs the owned trees fully
                 # traversed, not unrelated windows' capture coverage (masks still
                 # require 'complete' in every pixel consumer).
                 frame=frames[0] if traversed and len(frames)==1 else None
                 # A single accessible frame cannot authorize two X windows.
-                covered=frame is not None and sum(any(node is frame for node in candidates) for _,_,_,candidates,_ in windows)==1
+                covered=frame is not None and sum(any(node is frame for node in candidates) for _,_,_,candidates,_,_ in windows)==1
                 if covered:
                     scale=native_frame_scale(frame['bounds'],rect,client)
                     for node in nodes:
@@ -312,7 +324,7 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
                     visible=visible_rect(rect,screen)
                     # MP-08/MP-11: a proven kernel-browser window masks only its
                     # protected regions; any unbound window stays withheld whole.
-                    precise=_protection.window_masks(browser_protection,client,rect,documents[pid]) if pid in documents else None
+                    precise=_protection.window_masks(browser_protection,client,insets) if insets is not None else None
                     withheld+=pid in measured and precise is None
                     if visible:
                         uncovered.append(visible)

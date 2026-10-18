@@ -50,7 +50,7 @@ def capture(mask, uncovered=()):
     finally: connection.close()
 
 
-def input_action(action, processes=None, connection=None):
+def input_action(action, processes=None, connection=None, browser_page=None):
     kind = action['kind']
     guard=None
     key_guard=load('native-input-destination').key_destinations if processes is not None else None
@@ -70,7 +70,7 @@ def input_action(action, processes=None, connection=None):
             # action. Query the recipient after pointer motion, before the press.
             if kind=='click':
                 connection.sync()
-                load('native-input-destination').input_destination(connection,processes,accessibility,(action['x'],action['y']))
+                load('native-input-destination').input_destination(connection,processes,accessibility,(action['x'],action['y']),browser_page)
             else:
                 destination=load('native-x11').open_display(display)
                 try:load('native-input-destination').input_destination(destination,processes,accessibility)
@@ -134,7 +134,7 @@ def main(request, connection=None):
         return accessibility.snapshot(request['processes'],request.get('browser_processes')) if op=='accessibility' else accessibility.act(request)
     if op == 'input':
         started=time.time_ns()/1000000
-        input_action(request['input'],request.get('processes',[]) if request.get('agent_input') else None,connection)
+        input_action(request['input'],request.get('processes',[]) if request.get('agent_input') else None,connection,request.get('browser_page'))
         result={'applied':True}
         if os.environ.get('CHARIOX_BROWSER_DISPLAY_TIMING')=='1':
             result['_timing']={'started_ms':started,'ended_ms':time.time_ns()/1000000}

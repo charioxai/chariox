@@ -32,7 +32,7 @@ export async function executable(environment = process.env, platform = process.p
 
 // MP-08/MP-10: a private owned window renders at the viewer's device scale
 // natively (emulated view scaling renders text differently from CDP).
-export function launchArguments(profile, headless, display = false, nativeAccessibility = false, scale = 1) {
+export function launchArguments(profile, headless, display = false, scale = 1) {
   return [
     `--user-data-dir=${profile}`, "--remote-debugging-pipe",
     "--no-first-run", "--no-default-browser-check",
@@ -46,10 +46,8 @@ export function launchArguments(profile, headless, display = false, nativeAccess
     ...(display ? ["--disable-lcd-text", `--force-device-scale-factor=${scale}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
       // MP-08/MP-11 (BROWSER-UX-14): sign-in is policy-blocked; no dead-end "Sign in to Chrome?" chip in the band.
       "--disable-features=ExplicitBrowserSigninUIOnDesktop,SigninPromoOnAvatarPill"] : []),
-    // MP-08/MP-11: masking needs only each page's `document web` extents and URI. Basic mode exposes
-    // them exactly like complete mode (and form-controls/no flag expose none on large pages) at a
-    // fraction of the page-load stall.
-    ...(nativeAccessibility && !headless ? ["--force-renderer-accessibility=basic"] : []), "about:blank",
+    // MP-08/MP-11: no renderer accessibility tree. Masking and the page hit test place the page from CDP and X11.
+    "about:blank",
   ];
 }
 
@@ -129,7 +127,7 @@ export class HostChromium {
       environment = chromiumTemporaryEnvironment(environment, this.temporaryDirectory.fd);
     }
     const args = launchArguments(profile,
-      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1", Boolean(this.desktop?.binding()), this.desktop?.binding() ? 1 : this.scale);
+      environment.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", environment.CHARIOX_KERNEL_BROWSER_DISPLAY === "1" || environment.CHARIOX_KERNEL_BROWSER_MIRROR === "1", this.desktop?.binding() ? 1 : this.scale);
     this.policy = process.platform === "linux" && linux.policyNamespaceAvailable() ? "managed" : "unavailable";
     const launch = this.policy === "managed" ? linux.policyLaunch(await writePolicyLayer(this.root, this.environment), temporary, binary, args) : { command: binary, args };
     const command = this.desktop?.binding() ? desktopCommand(launch.command, launch.args) : { binary: launch.command, args: launch.args };
