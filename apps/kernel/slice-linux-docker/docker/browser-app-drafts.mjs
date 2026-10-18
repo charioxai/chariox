@@ -7,8 +7,9 @@ export function installAppDrafts() {
     && (field.id || field.name)
     && /^(?:INPUT|TEXTAREA|SELECT)$/.test(field.tagName)
     && (field.tagName !== 'INPUT' || /^(?:text|search|url|email|tel|number|date|datetime-local|time)$/.test(field.type))
-    && !/off|password|one-time-code|cc-/.test(field.getAttribute('autocomplete') ?? '')
-    && !/off/.test(field.form.getAttribute?.('autocomplete') ?? '')
+    && !field.closest?.('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')
+    && !/off|password|one-time-code|cc-/i.test(field.getAttribute('autocomplete') ?? '')
+    && !/off/i.test(field.form.getAttribute?.('autocomplete') ?? '')
     && !/password|passwd|passcode|token|secret|credential|authorization|(?:api|access|private|signing|auth)[_ -]?key|\botp\b|\bcvv\b|\bcvc\b/i.test(field.id + ' ' + field.name);
   const identity = field => JSON.stringify([field.form.id || field.form.name || '', field.tagName, field.id || field.name]);
   const fields = () => [...document.querySelectorAll('input,textarea,select')].filter(eligible).slice(0, 128);
