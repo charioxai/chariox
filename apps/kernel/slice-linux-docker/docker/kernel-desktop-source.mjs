@@ -10,7 +10,6 @@ import { NativePipe, NativeRaster } from './kernel-browser-native-pipe.mjs';
 import { NativeWorkerControl, nativeWorkerResource } from './kernel-browser-native-worker.mjs';
 import { SharedRasterPool } from './kernel-browser-shared-raster.mjs';
 import { safeChildPid } from './kernel-browser-display.mjs';
-import { presentRoot } from './kernel-browser-root-present.mjs';
 import { displayMaskRegions, maskNativeRaster } from './kernel-browser-pixels.mjs';
 import { ProtectionGate, awaitPresented, hasBrowserFill, measureBrowserProtection } from './browser-protection-regions.mjs';
 const helper = name => fileURLToPath(new URL(name, import.meta.url));
@@ -59,7 +58,7 @@ export class DesktopSource {
     return {processes:identities(tree.processes),browser_processes:identities(tree.browser_processes),browser_protection:this.gate.protection,serial:this.gate.protectionSerial,mask:this.policy.unknown,values:[...this.policy.values]};
   }
   async start() {
-    try { await presentRoot(this.binding); await this.binding.browser?.()?.connection?.presentationFence?.recoverFailed?.(); if(this.native)await this.startNative();else await this.startHelper(); }
+    try { await this.binding.browser?.()?.connection?.presentationFence?.recoverFailed?.(); if(this.native)await this.startNative();else await this.startHelper(); }
     catch(error) { await this.close(); throw error; }
     // The first native frame waits for the oracle's start and two snapshots.
     for(let n=0;n<500&&!this.latest&&!this.closed;n++)await delay(10);

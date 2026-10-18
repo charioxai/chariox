@@ -124,24 +124,6 @@ static int redirect_window(struct Capture *c,int mode) {
     if(redirect_error)return 0;
     c->redirected=1;c->redirect_mode=mode;return 1;
 }
-/* O1 (Miguel 2026-10-18): a Browser window capture on the owned desktop is redirected Manual, so the
- * server does not blit every swap onto the root, until a root consumer attaches. The worker's
- * policy default presents the root (the previous behavior); the kernel sets it per capture. */
-static int root_presented=1;
-void cx_capture_set_root_presented(int presented){root_presented=presented!=0;}
-/* A root consumer is about to read the desktop root: make the window composite onto it. A second
- * (Automatic) redirect keeps the window's pixmap alive while the Manual one is dropped, so the
- * named pixmap stays valid and the server paints the window's current contents at once. */
-int cx_capture_present_root(struct Capture *c) {
-    if(!c)return 0;
-    if(c->desktop||!c->redirected||c->retired||c->redirect_mode!=CompositeRedirectManual)return 1;
-    if(!redirect_window(c,CompositeRedirectAutomatic))return 0;
-    XSync(c->display,False);redirect_display=c->display;redirect_error=0;
-    redirect_previous=XSetErrorHandler(redirect_failed);
-    XCompositeUnredirectWindow(c->display,c->window,CompositeRedirectManual);XSync(c->display,False);
-    XSetErrorHandler(redirect_previous);redirect_display=NULL;
-    return redirect_error?0:1;
-}
 /* MP-08/MP-10: fixed-label refusal stage plus owned-window geometry on the
  * worker's private stderr channel. Sizes only; no titles, pixels or IDs. */
 static void open_refused(const char *stage) {fprintf(stderr,"MD-DISPLAY: native stage %s\n",stage);}
@@ -199,7 +181,7 @@ static struct Capture *capture_open(unsigned long owner,Window selected,int widt
     }
     c->xoffset=window_height?left:(int)c->insets[0];c->offset=window_height?top:c->window_height-(int)c->insets[3]-height;
     if(!bound_surface(c)){open_refused("window_retired");goto fail;}
-    automatic=automatic||(root_presented&&getenv("CHARIOX_OWNED_VIRTUAL_DISPLAY")&&!strcmp(getenv("CHARIOX_OWNED_VIRTUAL_DISPLAY"),"1"));
+    automatic=automatic||(getenv("CHARIOX_OWNED_VIRTUAL_DISPLAY")&&!strcmp(getenv("CHARIOX_OWNED_VIRTUAL_DISPLAY"),"1"));
     /* MP-08/MP-10: the shared Computer desktop presents the root, so its
      * browser client must remain automatically composited while captured. */
     if(!(automatic?redirect_window(c,CompositeRedirectAutomatic):

@@ -70,8 +70,5 @@ export function startNativeReadback(capture,config){
     if(capture.valid()){raw.format='bgr0';if(capture.pending)capture.rejected('serial_skipped');capture.pending?.release?.();capture.pending=raw;void capture.publish()}else raw.release?.()
    });
    child.stdout.on('data',b=>{try{pipe.push(b)}catch{capture.fence()}});
-   // O1: a window capture joins the desktop's root latch in the same tick that its configuration is written.
-   const root=capture.nativeWorker?capture.display.binding?.()?.root:null;
-   if(root&&!root.requested){const follow=async()=>{if((await capture.nativeWorker.request('root',{}))?.presented!==true)throw Error('MP-11: root presentation refused');};root.followers.add(follow);child.once('exit',()=>root.followers.delete(follow));}
-   child.stdin.write(JSON.stringify({...config,pid:capture.pid,pool:capture.poolRoot,...(root?.requested?{root_presented:true}:{}),...(capture.nativeWorker?{retires:true,...(capture.nativeWorker.token?{frames:capture.nativeWorker.token}:{})}:{})})+'\n');
+   child.stdin.write(JSON.stringify({...config,pid:capture.pid,pool:capture.poolRoot,...(capture.nativeWorker?{retires:true,...(capture.nativeWorker.token?{frames:capture.nativeWorker.token}:{})}:{})})+'\n');
 }

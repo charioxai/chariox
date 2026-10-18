@@ -9,7 +9,6 @@ import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 import { EXTENSIONS_REFUSED } from './kernel-browser-policy.mjs';
 import { fenceBrowserCapture } from './browser-protection-regions.mjs';
 import { redactObservation } from './browser-controller-snapshot.mjs';
-import { presentRoot } from './kernel-browser-root-present.mjs';
 const helper = fileURLToPath(new URL('./native-computer.py', import.meta.url));
 // MP-08/MP-10: human input the warm channel carries (no admission; see native-computer.py).
 const WARM_INPUTS = new Set(['keycode','click','move','scroll','key','drag','text']);
@@ -118,8 +117,6 @@ export class NativeComputer {
     if(command.surface_id!==binding.surface_id || command.generation!==binding.generation) throw new Error('MP-11: stale native desktop');
     if(policy?.unknown) throw new Error('MP-11: native observation protection unavailable');
     if(signal?.aborted) throw new Error('MP-11: native input cancelled');
-    // O1: Computer Use reads and drives the desktop root, so browser windows must composite onto it first.
-    await presentRoot(binding);
     if(command.op==='input') {
       const input=nativeInput(command.input,binding);
       const observer=command.observed_by??'adapter';
