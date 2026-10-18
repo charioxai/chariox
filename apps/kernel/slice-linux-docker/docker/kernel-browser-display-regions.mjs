@@ -9,6 +9,7 @@ import {createRegionDisplay} from './kernel-browser-region-display.mjs';
 import {inputHostTab} from './kernel-browser-input.mjs';
 import {lateInputAck,markDispatched} from './kernel-browser-input-queue.mjs';
 import {popupActionId} from './kernel-browser-popup-evidence.mjs';
+import {slowMark} from './kernel-browser-timing.mjs';
 
 const refuse=()=>{throw new UserDomainRefusal('stale_reference');};
 // The kernel Chrome's own UI (band, popups): window leases, not page regions.
@@ -123,7 +124,7 @@ export async function regionInputTarget(host,command,scope,signal) {
 }
 export async function regionInput(host,command,scope,signal) {
  const stream=inputStream(host,command,scope);assertNotCancelled(signal);
- if(!await streamAdmitted(stream))refuse();
+ if(!await slowMark(host.timing,'input_wait region_admit',streamAdmitted(stream)))refuse();
  if(stream.regionTarget.kind==='visible_page')return (await import('./kernel-browser-page-display.mjs')).inputVisiblePage(host,stream,command,scope,signal);
  if(chromeUi(stream.regionTarget)) {
   if(typeof host.arbiter?.input!=='function')refuse();

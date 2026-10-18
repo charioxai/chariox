@@ -51,11 +51,11 @@ async function nativeOnce(dispatch) {
   catch (error) { if (error?.code === "native_input_uncertain") return true; throw error; }
 }
 
-export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputGuard, documentCurrent } = {}) {
+export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputGuard, documentCurrent, slow = (_name, operation) => operation } = {}) {
     assertNotCancelled(signal);
     // MP-08/MP-11 protocol498: CDP bits Alt=1, Control=2, Meta=4, Shift=8.
     if (input.kind === 'key' && input.modifiers !== undefined && (!Number.isInteger(input.modifiers) || input.modifiers < 0 || input.modifiers > 15)) throw new Error('MP-11: invalid key modifiers');
-    const { connection, sessionId } = await browser.resolvePageTarget(tab.target_id);
+    const { connection, sessionId } = await slow('page_target', browser.resolvePageTarget(tab.target_id));
     let observedFrameInput = false;
     const cachedDocument = () => {
       if (!documentCurrent()) throw new BrowserActionError("stale_document_reference", "browser document retired before native input");
@@ -72,7 +72,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       if (documentCurrent && !fresh) cachedDocument();
       else if (proven === tab.document_id) { /* current by ordered events */ }
       else if (proven) throw new BrowserActionError("stale_document_reference", "browser document retired before input");
-      else await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
+      else await slow('document_fence', assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id));
       assertNotCancelled(signal);
     };
     // MP-11: all text-producing paths share the Vault-only target fence.
@@ -108,7 +108,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       if (verdict !== false) throw new UserDomainRefusal("sensitive_requires_focus");
     };
     // The guards are awaited right before a physical dispatch: a retirement (parked retry) that arrives inside one must stop it.
-    const guarded = guard => guard && (async () => { assertNotCancelled(signal); await guard(); assertNotCancelled(signal); });
+    const guarded = guard => guard && (async () => { assertNotCancelled(signal); await slow('input_guard', guard()); assertNotCancelled(signal); });
     let mirrorGuard=guarded(inputGuard);
     const admitInput = async (method, params) => {
       // CDP fallbacks retain their fresh document barriers.
