@@ -83,6 +83,9 @@ export class KernelBrowserHost {
   constructor(root, { chromium = new HostChromium(root), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, focusWorldSource: mirror2ObserverExpression() }) } = {}) {
     this.root = root;
     this.timing = displayTiming(root);
+    // r55: a Node event loop that stalls delays every request behind it without any step to name: mark the stall itself.
+    let tick = timestamp();
+    setInterval(() => { const now = timestamp(), late = now - tick - 100; tick = now; if (late > 400) this.timing('node_loop_stall', now - late); }, 100).unref();
     this.busyInputs = new BusyInputQueue(this.requestNow.bind(this), command => this.parkedState(command.observed_by ?? "adapter"), { lane: command => this.inputLane(command), sameDocument: command => command.generation === this.generation && typeof command.document_id === 'string' && this.tabs.get(command.tab_id)?.document_id === command.document_id, event: (name, cause) => this.timing(cause ? hostErrorLabel(cause).replace('host_error', `busy_${name} by`) : `busy_${name}`, timestamp()) });
     this.retiredEpochs = new Map();
     this.chromium = chromium;
