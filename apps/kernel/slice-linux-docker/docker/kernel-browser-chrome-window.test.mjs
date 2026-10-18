@@ -982,3 +982,17 @@ test("MP-08/MP-10 a stalled follow-up read never holds a band input's reply", as
   assert.deepEqual(await arbiter.follow(reply._follow).finally(() => clearInterval(alive)), {});
   assert(performance.now() - started < 1000, "answered at the follow bound");
 });
+
+// r54 (audit lever 3): a person's band key is admitted from the native observer's record of the active Tab while no window
+// event retired it; a browser process that is slow to answer a fresh query holds nothing.
+test("MP-11 band input admission uses the cached active Tab and asks the browser only when none is recorded", async () => {
+  const tab = { tab_id: "tab", target_id: "target", document_id: "doc" };
+  let fresh = 0, cached = "target";
+  const host = { generation: 3, tabs: new Map([["tab", tab]]), tabGroups: { cachedActive: () => cached, active: async () => { fresh++; return "target"; } } };
+  const arbiter = new InputArbiter(host, {});
+  assert.equal((await arbiter.activeTab()).tab_id, "tab");
+  assert.equal(fresh, 0, "no native query while the record stands");
+  cached = null;
+  assert.equal((await arbiter.activeTab()).tab_id, "tab");
+  assert.equal(fresh, 1, "a retired record is read again");
+});

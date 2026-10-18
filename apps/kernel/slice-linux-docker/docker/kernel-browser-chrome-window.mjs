@@ -450,7 +450,8 @@ export class InputArbiter {
   pageFocused() { this.chromeFocus = null; }
   /** The kernel-observed active Tab of the tabbed window, or null (fail closed). */
   async activeTab() {
-    const target = await this.host.tabGroups?.active().catch(() => null);
+    // The native observer's own record stands while no window event retired it: a busy browser process need not answer a key.
+    const target = this.host.tabGroups?.cachedActive?.() ?? await this.host.tabGroups?.active().catch(() => null);
     return target ? [...this.host.tabs.values()].find(tab => tab.target_id === target) ?? null : null;
   }
   async isActiveTab(tab, binding) {
