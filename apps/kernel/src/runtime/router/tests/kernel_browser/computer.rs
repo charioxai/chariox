@@ -51,10 +51,12 @@ async fn check() {
     focus(&router, session.id(), first.id()).await;
     assert!(names().contains(&"chariox.load_kernel_computer".into()));
     assert!(!names().contains(&"chariox.kernel_computer".into()));
-    router
+    let loaded = router
         .dispatch_authenticated_runtime_tool_call(token, "chariox.load_kernel_computer", json!({}))
         .await
         .unwrap();
+    assert_eq!(loaded.payload["effective"], "now", "MP-08/MP-11: Computer loaders must report the same catalog activation contract as Browser loaders");
+    assert_eq!(loaded.payload["requires_provider_restart"], false);
     assert!(names().contains(&"chariox.kernel_computer".into()));
     let target = json!({"surface_id":"s","generation":"g"});
     for command in [

@@ -144,14 +144,19 @@ impl KernelRuntimeState {
                     "MP-08: Computer loader accepts no arguments".into(),
                 ));
             }
+            let previous_catalog = self.runtime_catalog_signature_for_agent(&agent);
+            let already_loaded =
+                host.is_loaded_for(&user, agent.id(), KernelBrowserCapability::Computer);
             if leased_grant.is_none() {
                 host.load_for(&user, agent.id(), KernelBrowserCapability::Computer)
                     .map_err(host_error)?;
             }
-            return Ok(RuntimeToolResult {
-                ok: true,
-                payload: serde_json::json!({"loaded":TOOL}),
-            });
+            return Ok(self.runtime_catalog_loader_result(
+                &agent,
+                &previous_catalog,
+                already_loaded,
+                serde_json::json!({"loaded":TOOL}),
+            ));
         }
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
