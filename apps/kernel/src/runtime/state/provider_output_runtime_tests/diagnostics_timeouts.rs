@@ -1302,6 +1302,120 @@ async fn structured_output_resume_retries_without_losing_the_finished_batch() {
     );
 }
 
+// MP-08 / MP-10 / MP-11: a polled batch that cannot be applied is already
+// consumed and nothing re-arms the poll, so the turn would stay running with no
+// output forever. The pump ends it failed instead.
+#[tokio::test]
+async fn lost_structured_output_batch_fails_its_turn() {
+    let worktree = crate::test_support::TestWorktree::new("diagnostics-output-unappliable");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-output-unappliable",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "codex",
+        "codex",
+        "default",
+        "gpt-5.5",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-output-unappliable",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "test-codex".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-codex-runtime".to_string()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "never answered\n",
+        crate::session::PromptStatus::Queued,
+    );
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should start");
+    let prompt_id = app
+        .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+        .expect("prompt state should load")
+        .expect("prompt should be active")
+        .id()
+        .to_string();
+    app.mark_active_prompt_delivery(
+        session.id(),
+        agent.id(),
+        &prompt_id,
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(run.id().to_string()),
+        Some("codex-thread-unappliable".to_string()),
+    )
+    .expect("prompt delivery should persist");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let current_session = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should remain available");
+    runtime
+        .owned
+        .prompt_state_owner
+        .mark_active_prompt_running(&current_session, agent.id())
+        .expect("acknowledged prompt should be running");
+    let (active_prompt, queued_prompts) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&current_session, agent.id());
+    runtime
+        .owned
+        .mirror_prompt_owner_agent_state(session.id(), agent.id(), active_prompt, queued_prompts)
+        .expect("running prompt state should persist");
+    runtime
+        .fail_prompt_of_lost_structured_batch(
+            session.id(),
+            run.id(),
+            Some(&prompt_id),
+            &DaemonError::AgentNotFound {
+                agent_id: "gone".to_string(),
+            },
+        )
+        .await;
+
+    let settled = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should remain available");
+    assert!(
+        settled.active_prompt_for_agent(agent.id()).is_none(),
+        "the turn must not stay running after its output batch was lost"
+    );
+}
+
 #[tokio::test]
 async fn first_output_silence_preserves_prompt_without_provider_error() {
     let worktree = crate::test_support::TestWorktree::new("diagnostics-first-output-silence");

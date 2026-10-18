@@ -353,16 +353,38 @@ impl KernelRuntimeState {
                     );
                     continue;
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    self.fail_prompt_of_lost_structured_batch(
+                        &run_session_id,
+                        &finished_run_id,
+                        polled_prompt_id.as_deref(),
+                        &error,
+                    )
+                    .await;
+                    return Err(error);
+                }
             };
-            let applied = self
+            let applied = match self
                 .apply_prepared_owned_structured_output_batch(
                     &run_session_id,
                     &finished_run_id,
                     recipients,
                     poll_result,
                 )
-                .await?;
+                .await
+            {
+                Ok(applied) => applied,
+                Err(error) => {
+                    self.fail_prompt_of_lost_structured_batch(
+                        &run_session_id,
+                        &finished_run_id,
+                        polled_prompt_id.as_deref(),
+                        &error,
+                    )
+                    .await;
+                    return Err(error);
+                }
+            };
             if is_requested_run {
                 records.extend(applied);
             } else {
