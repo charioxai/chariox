@@ -23,7 +23,8 @@ function page(store) {
   const listeners = new Map(), form = { id: 'todo', getAttribute: () => null };
   const title = { tagName: 'INPUT', type: 'text', id: 'title', name: 'title', value: '', defaultValue: '', form, getAttribute: () => null };
   const secret = { ...title, id: 'password', type: 'password', value: 'private-password' };
-  const context = { document: { readyState: 'complete', querySelectorAll: () => [title, secret], addEventListener: (name, fn) => listeners.set(name, fn) },
+  const apiKey = { ...title, id: 'api_key', name: 'api_key', value: 'private-api-key' };
+  const context = { document: { readyState: 'complete', querySelectorAll: () => [title, secret, apiKey], addEventListener: (name, fn) => listeners.set(name, fn) },
     location: { pathname: '/' }, indexedDB: store.indexedDB, localStorage: { getItem: () => null, removeItem() {} },
     MutationObserver: class { observe() {} }, queueMicrotask };
   vm.runInNewContext(`(${installAppDrafts.toString()})()`, context);
@@ -47,6 +48,7 @@ test('App draft publication waits for strict commit and reset persists an empty 
   const recovered = page(store); await recovered.context.__charioxAppDraftFlushed();
   assert.equal(recovered.title.value, 'new unsent title');
   assert(!JSON.stringify([...store.values]).includes('private-password'));
+  assert(!JSON.stringify([...store.values]).includes('private-api-key'));
   first.reset(); await turn(); store.commits.shift()(); await first.context.__charioxAppDraftFlushed();
   const cleared = page(store); await cleared.context.__charioxAppDraftFlushed();
   assert.equal(cleared.title.value, '');

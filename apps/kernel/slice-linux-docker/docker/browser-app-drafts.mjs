@@ -9,7 +9,7 @@ export function installAppDrafts() {
     && (field.tagName !== 'INPUT' || /^(?:text|search|url|email|tel|number|date|datetime-local|time)$/.test(field.type))
     && !/off|password|one-time-code|cc-/.test(field.getAttribute('autocomplete') ?? '')
     && !/off/.test(field.form.getAttribute?.('autocomplete') ?? '')
-    && !/password|passwd|token|secret|credential|authorization/i.test(field.id + ' ' + field.name);
+    && !/password|passwd|passcode|token|secret|credential|authorization|(?:api|access|private|signing|auth)[_ -]?key|\botp\b|\bcvv\b|\bcvc\b/i.test(field.id + ' ' + field.name);
   const identity = field => JSON.stringify([field.form.id || field.form.name || '', field.tagName, field.id || field.name]);
   const fields = () => [...document.querySelectorAll('input,textarea,select')].filter(eligible).slice(0, 128);
   let saved = {}, loaded = false;
@@ -51,12 +51,7 @@ export function installAppDrafts() {
     const request = db.transaction('drafts', 'readonly').objectStore('drafts').get(key);
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(new Error('App draft read failed'));
-  })).then(async value => {
-    if (value === undefined) {
-      let legacy;
-      try { legacy = localStorage.getItem(key); value = legacy && legacy.length <= 65536 ? JSON.parse(legacy) : {}; } catch { value = {}; }
-      if (legacy) { await commit(value); localStorage.removeItem(key); }
-    }
+  })).then(value => {
     saved = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
     loaded = true; restore();
   });
