@@ -187,3 +187,43 @@ test('MP-08/MP-10/MP-11 Computer coalesces transient retries until capture resto
   f.advance(200);finish();await held;f.advance(2);await delay(10);assert.equal(wakes,1);assert.equal(f.published.length,0);
  }finally{await f.source.close()}
 });
+// MP-08/MP-11: serial 0 means no adopted measurement. While a Vault fill is tracked in a live kernel
+// browser (a password field revealed as text, a plain field being filled) frames must wait for the
+// measurement that covers the new geometry; they are never published unmasked.
+function fillFixture({browser=true,targets=[{kind:'browser',value_hash:'h'}],tracked=0}={}){
+  const policy={values:['synthetic-vault-value'],targets,unknown:false};
+  const source=new DesktopSource({...binding,browser:()=>browser?{fillTargets:new Map(Array.from({length:tracked},(_,n)=>[n,{}]))}:null},policy,{native:{executable:'/worker',root:'/packets'}});
+  const published=[];let released=0;source.subscribe(sample=>published.push(sample));
+  const frame=serial=>({raw:{serial,captured_ms:Date.now(),release(){released++}},serial,width:1280,height:800,motion:true});
+  return {source,published,frame,released:()=>released};
+}
+test('MP-08/MP-11 an unadopted frame is withheld while a Vault fill is tracked in a live kernel browser',()=>{
+  const f=fillFixture();
+  f.source.offer(f.frame(1),0);
+  assert.equal(f.published.length,0);assert.equal(f.released(),1);
+});
+test('MP-08/MP-11 a fill still pending in the browser controller withholds unadopted frames too',()=>{
+  const f=fillFixture({targets:[],tracked:1});
+  f.source.offer(f.frame(1),0);
+  assert.equal(f.published.length,0);
+});
+test('MP-08/MP-11 an unadopted desktop publishes at once without a tracked fill or without a kernel browser',()=>{
+  for(const options of [{targets:[]},{targets:[{kind:'native',target:{}}]},{browser:false}]){
+    const f=fillFixture(options);f.source.offer(f.frame(1),0);assert.equal(f.published.length,1);
+  }
+});
+test('MP-08/MP-11 a reveal that changes the adopted measurement publishes nothing until the new one is adopted',async()=>{
+  const {ProtectionGate}=await import('./browser-protection-regions.mjs');
+  const f=fillFixture();let measurement={pages:[{target_id:'t',regions:[]}]};
+  f.source.gate=new ProtectionGate(async()=>measurement);
+  await f.source.gate.step();await f.source.gate.step();
+  assert.equal(f.source.gate.protectionSerial,1,'adopted while the filled password field paints dots');
+  f.source.offer(f.frame(1),1);f.source.pending.splice(0);
+  measurement={pages:[{target_id:'t',regions:[[40,80,740,120]]}]};
+  const {changed}=await f.source.gate.step();
+  assert.equal(changed,true);assert.equal(f.source.gate.protectionSerial,0,'the reveal drops the adopted measurement');
+  f.source.offer(f.frame(2),f.source.gate.protectionSerial);
+  assert.equal(f.published.length,0,'the revealed secret is never in a published frame');
+  await f.source.gate.step();
+  assert.equal(f.source.gate.protectionSerial,2,'the new region is adopted after two equal measurements');
+});

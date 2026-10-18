@@ -11,7 +11,7 @@ import { NativeWorkerControl, nativeWorkerResource } from './kernel-browser-nati
 import { SharedRasterPool } from './kernel-browser-shared-raster.mjs';
 import { safeChildPid } from './kernel-browser-display.mjs';
 import { displayMaskRegions, maskNativeRaster } from './kernel-browser-pixels.mjs';
-import { ProtectionGate, awaitPresented, measureBrowserProtection } from './browser-protection-regions.mjs';
+import { ProtectionGate, awaitPresented, hasBrowserFill, measureBrowserProtection } from './browser-protection-regions.mjs';
 const helper = name => fileURLToPath(new URL(name, import.meta.url));
 const python = () => process.env.CHARIOX_BROWSER_DISPLAY_PYTHON || '/usr/bin/python3';
 // MP-08/MP-10: the kernel's own native worker (XShm capture + x264), shared
@@ -185,8 +185,10 @@ export class DesktopSource {
     if(presentation&&!presentation.stable(start,end)){
       this.timing('desktop_capture_transient_dropped',start);sample.raw.release?.();resumeAfterCapturePresentation(this,presentation,()=>this.wake());return;
     }
-    // Serial 0 (no adopted measurement): the helper masks every kernel-browser window whole, publish at once.
-    if(serial===0)this.publish(sample);
+    // Serial 0 has no adopted measurement. A tracked fill in a live kernel browser (a password
+    // field just revealed as text) leaves its pixels unplaced: wait for the adopted measurement.
+    const browser=this.binding.browser?.();
+    if(serial===0){if(browser&&hasBrowserFill(browser,this.policy))sample.raw.release?.();else this.publish(sample);}
     else if(serial===this.gate.protectionSerial){this.pending.push({sample,serial,captured});this.settle();}
     else sample.raw.release?.();
   }
