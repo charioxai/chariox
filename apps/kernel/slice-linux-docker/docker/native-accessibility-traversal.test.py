@@ -95,6 +95,20 @@ class TraversalTest(unittest.TestCase):
             if module is None: sys.modules.pop(name, None)
             else: sys.modules[name] = module
 
+    def test_mp11_public_selection_evidence_never_queries_protected_or_long_text(self):
+        for protected,length,readable in [(False,12,True),(False,4097,False),(True,12,False)]:
+            with self.subTest(protected=protected,length=length):
+                node=Node('Entry','password text' if protected else 'text',secret=protected)
+                node.getState=lambda:types.SimpleNamespace(contains=lambda flag:True)
+                reads=[]
+                node.queryText=lambda:types.SimpleNamespace(characterCount=length,getText=lambda *args:(reads.append(args) or 'public value'))
+                self.desktop=Node('Desktop','desktop',[Node('Office','application',[Node('Writer','frame',[node])])])
+                tree=self.driver.snapshot([{'pid':200,'started':'1'}])
+                entry=next(n for n in tree['nodes'] if n['role']==node.role)
+                self.assertEqual('text' in entry,readable)
+                self.assertEqual(bool(reads),readable)
+                if protected:self.assertEqual(entry['name'],'[protected]')
+
     def test_mp11_capture_ignores_echoes_unknown_windows_and_password_dots(self):
         self.desktop = Node('Desktop', 'desktop', [Node('Writer', 'application', [
             Label('v-secret'), Node('Password', 'password text', secret=True)])])

@@ -212,6 +212,15 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
         name='[protected]' if secret else (node.name or '')[:4096]
         for value in values:name=name.replace(value,'[redacted]')
         nodes.append({'pid':pid,'started':started,'path':path,'role':role,'name':name,'states':states,'bounds':bounds,'actions':actions,'protected':secret})
+        # MP-08/MP-10/MP-11: private helper evidence for public selection input.
+        # Never query a protected field. This value is not projected to MCP.
+        if not secret and 'editable' in states and 'showing' in states:
+            try:
+                text=node.queryText()
+                if 0 <= text.characterCount <= 4096:
+                    nodes[-1]['text']=text.getText(0,text.characterCount)
+            except Exception:pass
+
         if not secret:
             managed_table = (node.getRole() == pyatspi.ROLE_TABLE and
                              state.contains(pyatspi.STATE_MANAGES_DESCENDANTS) and

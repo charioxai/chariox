@@ -157,3 +157,10 @@ test('MP-08/MP-11 public native login controls stay usable after a Vault fill',a
  assert(!JSON.stringify(seen).includes(policy.values[0]));
  assert.equal((await native.action('agent:a',{target_id:button.target_id,tree_revision:seen.tree_revision,action:'click'},policy)).applied,true);
 });
+
+test('MP-11 private selection evidence is never projected to Computer observers',async()=>{
+ const native=new NativeAccessibility({binding:()=>binding,execute:async()=>({...tree,nodes:[{...tree.nodes[0],text:'private-helper-evidence'}]})});
+ const result=await native.snapshot('agent:a',{});
+ assert(!JSON.stringify(result).includes('private-helper-evidence'));
+ assert(!Object.hasOwn(result.nodes[0],'text'));
+});
