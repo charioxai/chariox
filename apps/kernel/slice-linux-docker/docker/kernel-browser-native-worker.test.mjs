@@ -138,3 +138,16 @@ test('MP-11 the guard-decode skip request exists only for a capture proven free 
   assert.equal(maskNativeRaster(make({pixels:Buffer.alloc(64)}),[{x:0,y:0,width:1,height:1}])[displayUnprotected],undefined);
  }finally{await encoder.close()}
 });
+test('MP-11 an asynchronous retire-pipe error fences the worker and leaves Node running',async()=>{
+ const {Writable}=await import('node:stream');
+ const killed=[];
+ // The peer closed its end: the write is accepted, the EPIPE arrives later as the stream's error event.
+ const retires=new Writable({write(_chunk,_encoding,done){setImmediate(()=>done(Object.assign(Error('EPIPE'),{code:'EPIPE'})))}});
+ const bridge=new NativeWorkerControl({stdin:{destroyed:false,write(_bytes,done){done?.()}},stdio:[null,null,null,retires],kill:signal=>killed.push(signal)},()=>{});
+ assert.ok(bridge.arm({encoder:'e'}),'a record is armed');
+ bridge.retireState('e');
+ await new Promise(resolve=>setTimeout(resolve,20));
+ assert.equal(bridge.closed,true,'the capture is closed');
+ assert.deepEqual(killed,['SIGKILL'],'the worker is killed');
+ assert.equal(bridge.arm({encoder:'e'}),null,'a closed worker arms nothing');
+});

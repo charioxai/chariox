@@ -31,7 +31,9 @@ export class NativeWorkerControl {
  retiredAt=-Infinity;
  constructor(child,timing){this.child=child;this.timing=timing;this.pending=new Map();this.sequence=0;this.notifications=[];this.flushScheduled=null;this.autos=new Map();this.generation=0;this.auto=null;
   // L3 stage 2b: fd 3 is the synchronous retire pipe; the token names this worker's frame channel.
-  live.add(this);this.retires=child.stdio?.[3]??null;this.token=this.retires&&process.env.CHARIOX_BROWSER_DISPLAY_FRAMES?randomBytes(16).toString('hex'):null;this.lease=null;}
+  live.add(this);this.retires=child.stdio?.[3]??null;
+  // A peer that closed its end reports EPIPE as an event, after the write: fence the capture, never let Node throw.
+  this.retires?.on?.('error',()=>this.fence());this.token=this.retires&&process.env.CHARIOX_BROWSER_DISPLAY_FRAMES?randomBytes(16).toString('hex'):null;this.lease=null;}
  request(operation,values){
   if(this.pending.size>=16||this.closed)throw notSent();
   const id=++this.sequence;
@@ -80,8 +82,10 @@ export class NativeWorkerControl {
   const generation=this.auto.generation;this.auto=null;this.lease=null;
   const pipe=this.retires;
   try{if(!pipe||pipe.destroyed)throw Error();pipe.write(`${generation}\n`);if(pipe.writableLength)throw Error();}
-  catch{this.close();this.child.kill('SIGKILL');}
+  catch{this.fence();}
  }
+ // A retirement that cannot be delivered leaves nothing to trust: close and kill the worker.
+ fence(){this.close();if(this.fenced)return;this.fenced=true;this.child.kill('SIGKILL');}
  // L3: grant the worker the frames after the one Node is publishing now;
  // the kernel binds the same lease from this frame's reply.
  grant(lease){
