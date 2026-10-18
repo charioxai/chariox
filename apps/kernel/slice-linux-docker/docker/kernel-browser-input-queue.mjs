@@ -2,7 +2,7 @@
 // renderer-bound fences (document, focus, sensitive-field reads). A fence that timed out before anything was
 // dispatched reached no page, so the input waits here in order and is admitted through the same fences once the
 // renderer answers. Input that may have been dispatched is never parked, so nothing is typed twice.
-const LIMIT = 32, TTL_MS = 60_000, STALE_MS = 10_000;
+const LIMIT = 32, TTL_MS = 60_000, STALE_MS = 3_000;
 
 export const markDispatched = error => { if (error && typeof error === 'object') error.afterDispatch = true; return error; };
 // Any CDP read the fences make; an Input.* call that timed out may have reached the page.

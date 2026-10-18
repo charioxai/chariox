@@ -236,7 +236,7 @@ test('MP-08/MP-11 a navigation preview rereads a layout that timed out: late kee
   const connection={send:async()=>{if(!busy)return layout(1265);calls++;if(calls===1)return new Promise((_,reject)=>setTimeout(()=>reject(timeout()),600));if(later===null||later==='late'&&calls<4)throw timeout();return layout(later==='late'?1280:later)}};
   let proof={connection,sessionId:'s',frame:{loaderId:'old'}};const tab={tab_id:'t',target_id:'target',document_id:'old'};
   const window={...binding(),window_generation:2,browser_generation:1,pid:42,isPageCurrent:async()=>true};
-  const host={generation:1,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),mirrorTarget:async()=>tab,tabGroups:{nativeStateGuard:()=>()=>true},
+  const host={generation:1,layoutRetryMs:10,protection:{unknown:false},tabs:new Map([['t',tab]]),displays:new Map(),mirrorTarget:async()=>tab,tabGroups:{nativeStateGuard:()=>()=>true},
    chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window})},
    browser:{currentPageFrame:()=>proof,viewportByTarget:new Map([['target','emulated']]),resolvePageTarget:async()=>assert.fail()},timing:()=>{},armDisplayExpiry:()=>{}};
   class Capture {constructor(options){this.options=options;this.region=visiblePageGeometry(options.window,options.viewport)}async start(){return this}async close(){}}
