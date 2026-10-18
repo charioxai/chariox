@@ -169,6 +169,10 @@ export function dedupeMirrorSheets(packet, sent) {
 // The subscription's own observer instance in a (shared) isolated world.
 const observerRef = stream => `globalThis.__charioxMirror2.get(${JSON.stringify(String(stream.id))})`;
 
+// Chrome serializes a var() shorthand that a later declaration partly overrides (border:var(--w) solid;
+// border-color:red) as empty longhands (`border-top-width: ;`), which a viewer parser drops. A rule whose
+// text came out that way is kept as its source text.
+const SERIALIZER = String.raw`const lossy=/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;const rules=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\n';return out};const chunks=text=>{const out=[];let depth=0,start=0,quote='';for(let i=0;i<text.length;i++){const c=text[i];if(quote){if(c==='\\')i++;else if(c===quote)quote=''}else if(c==='"'||c==="'")quote=c;else if(c==='/'&&text[i+1]==='*'){i=text.indexOf('*/',i+2);if(i<0)break;i++}else if(c==='{')depth++;else if((c==='}'&&!--depth)||(c===';'&&!depth)){out.push(text.slice(start,i+1));start=i+1}}return out};const serialize=text=>{const out=rules(text);if(!lossy.test(out))return out;let result='';for(const chunk of chunks(text)){const one=rules(chunk);if(!lossy.test(one)){result+=one;continue}const open=chunk.indexOf('{');result+=/^\s*@/.test(chunk)?chunk.slice(0,open+1)+serialize(chunk.slice(open+1,chunk.lastIndexOf('}')))+'}\n':chunk+'\n'}return result};const parse=serialize;`;
 export class Mirror2 {
   constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); }
   // MP-08/MP-10/MP-11: older v2 viewers never receive an unknown operation.
@@ -810,7 +814,7 @@ export class Mirror2 {
       return true;
     };
     if (!await read(url, '', '', 0)) return null;
-    return this.evaluate(world, `(sheets=>{const parse=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\\n';return out};let out='';for(const s of sheets){let body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);out+=${world.ref}.sanitize(body,s.url)}return ${usedBy === null ? 'out' : `out.length<${FIRST_PAINT_SHEET}?out:[out,${world.ref}.usedCss(${JSON.stringify(usedBy)},out)]`}})(${JSON.stringify(sheets)})`);
+    return this.evaluate(world, `(sheets=>{${SERIALIZER}let out='';for(const s of sheets){let body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);out+=${world.ref}.sanitize(body,s.url)}return ${usedBy === null ? 'out' : `out.length<${FIRST_PAINT_SHEET}?out:[out,${world.ref}.usedCss(${JSON.stringify(usedBy)},out)]`}})(${JSON.stringify(sheets)})`);
   }
   // Opaque regions as lossless stills, refreshed at most once a second until phase 3
   // binds them to video rows: a canvas or video as its own pixels; plugins, closed

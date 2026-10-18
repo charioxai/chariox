@@ -230,7 +230,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const used = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, resource), usedBy(root));
       return used.length < text.length ? used : text;
     };
-    const css = (sheet, base) => sheetText(sheet, base, 0, (text, at) => sanitizeMirrorCss(text, at, resource));
+    // Chrome serializes a var() shorthand that a later declaration partly overrides as empty longhands; such
+    // a linked sheet is read as source text through the kernel instead of through the CSSOM.
+    const LOSSY = /[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;
+    const css = (sheet, base) => { const text = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, resource)); if (sheet.href && LOSSY.test(text)) throw new Error('lossy CSSOM serialization'); return text; };
     const inlineStyle = (element, base) => sanitizeMirrorCss(element.style.cssText, base, resource);
     const box = node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
     // Layout size (untransformed: the mirrored DOM applies the same transforms); SVG/text boxes use the rendered box.
