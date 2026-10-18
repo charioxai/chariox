@@ -388,7 +388,10 @@ export class KernelBrowserHost {
     if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1" || this.chromium?.policy !== "managed" || !tabbed?.isCurrent()) return null;
     const active = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget);
     // Protocol 530: the window's own popups (menus, omnibox dropdown, extension popups, bubbles).
-    return { window_generation: tabbed.window_generation, active_tab_id: active?.tab_id ?? null, auxiliary: this.chromeWindows.auxiliaryState() };
+    // MP-08/MP-10: restoring Apps temporarily focus their own windows. The
+    // existing nullable selection stays unknown until restore settles; physical
+    // input still checks the actual native target through activeTarget.
+    return { window_generation: tabbed.window_generation, active_tab_id: this.pendingActive ? null : active?.tab_id ?? null, auxiliary: this.chromeWindows.auxiliaryState() };
   }
   async reconcile() {
     const observation = ++this.observations;

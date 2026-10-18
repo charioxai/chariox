@@ -1852,3 +1852,22 @@ test('pending human selection preserves every verified App restore barrier', () 
  assert.deepEqual(new Set(saved.app_origins),new Set(['https://app.todo.invalid','https://app.documents.invalid','https://app.pending.invalid']));
  assert.equal(saved.active_app_origin,'https://app.todo.invalid');
 }));
+
+// MP-08/MP-10/MP-11: App rebinding can focus a transient window before restore settles.
+test('native selection stays unknown while the saved App selection is pending', () => using(async ({host}) => {
+ const previous=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try {
+  const todo=await host.request({op:'open',url:'https://app.todo.invalid/'});
+  const docs=await host.request({op:'open',url:'https://app.documents.invalid/'});
+  host.chromium.policy='managed';
+  host.chromeWindows={bound:{tabbed:{isCurrent:()=>true,window_generation:1}},auxiliaryState:()=>[]};
+  host.activeTarget=host.tabs.get(docs.tab_id).target_id;
+  host.pendingActive={tab_id:todo.tab_id,app_origin:'https://app.todo.invalid',apps:['https://app.todo.invalid','https://app.documents.invalid'],until:Date.now()+30000};
+  assert.equal(host.chromeWindow().active_tab_id,null,'a rebinding window is not a settled native selection');
+  assert.equal(host.activeTarget,host.tabs.get(docs.tab_id).target_id,'physical input retains the actual native target');
+  host.activeTarget=host.tabs.get(todo.tab_id).target_id;host.pendingActive=null;
+  assert.equal(host.chromeWindow().active_tab_id,todo.tab_id);
+  host.activeTarget=host.tabs.get(docs.tab_id).target_id;
+  assert.equal(host.chromeWindow().active_tab_id,docs.tab_id,'later native changes remain visible');
+ } finally {host.chromeWindows={retire(){}};if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous}
+}));
