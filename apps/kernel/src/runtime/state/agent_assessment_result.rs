@@ -70,6 +70,8 @@ impl PrivateAssessmentDispatch {
             self.take_private_assessment_evidence(room, agent, prompt, run)
         } else {
             if !steering && self.config_projection.snapshot().room_agent_tools {
+                // A new work turn must not inherit a previous turn's paste outcome.
+                self.protected_facts.clear(room, agent);
                 self.work_results.begin_work(room, agent, prompt, run);
             }
             None

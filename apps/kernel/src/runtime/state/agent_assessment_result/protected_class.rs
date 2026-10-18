@@ -8,7 +8,6 @@ use std::{
 };
 
 const WITHHELD: &str = "[protected completion details withheld]";
-const MAX_KEYS: usize = 128;
 
 /// Last protected-input outcome the kernel itself observed for an agent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,17 +26,13 @@ pub(in crate::runtime::state) struct ProtectedFacts(
 impl ProtectedFacts {
     pub(in crate::runtime::state) fn record(&self, room: &str, agent: &str, fact: ProtectedFact) {
         let mut facts = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let key = (room.to_string(), agent.to_string());
-        if facts.len() >= MAX_KEYS && !facts.contains_key(&key) {
-            return;
-        }
-        facts.insert(key, fact);
+        facts.insert((room.to_string(), agent.to_string()), fact);
     }
     pub(super) fn peek(&self, room: &str, agent: &str) -> Option<ProtectedFact> {
         let facts = self.0.lock().unwrap_or_else(|e| e.into_inner());
         facts.get(&(room.to_string(), agent.to_string())).copied()
     }
-    pub(super) fn clear(&self, room: &str, agent: &str) {
+    pub(in crate::runtime::state) fn clear(&self, room: &str, agent: &str) {
         let mut facts = self.0.lock().unwrap_or_else(|e| e.into_inner());
         facts.remove(&(room.to_string(), agent.to_string()));
     }
