@@ -1351,15 +1351,18 @@ export class CdpConnection {
     if (sessionId) {
       payload.sessionId = sessionId;
     }
+    // A timeout fires from a timer, with no caller on its stack: keep the caller's frames to name who waited.
+    const caller = {};
+    Error.captureStackTrace(caller);
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
-        reject(
-          new BrowserControllerError(
-            "browser_cdp_timeout",
-            `browser CDP method ${method} timed out after ${timeoutMs}ms`,
-          ),
+        const error = new BrowserControllerError(
+          "browser_cdp_timeout",
+          `browser CDP method ${method} timed out after ${timeoutMs}ms`,
         );
+        error.stack += caller.stack.replace(/^[^\n]*/, "");
+        reject(error);
       }, timeoutMs);
       this.pending.set(id, { method, sessionId, resolve, reject, timeout });
       try {
