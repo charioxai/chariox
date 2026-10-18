@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { displayTiming, timestamp, timedHostRequests } from './kernel-browser-timing.mjs';
+import { displayTiming, slowMark, timestamp, timedHostRequests } from './kernel-browser-timing.mjs';
 import { hostErrorLabel, hostFailureMessage } from './kernel-browser-error-label.mjs';
 import { BrowserCdpClient, isTrustedStaleReferenceError } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
@@ -803,12 +803,13 @@ export class KernelBrowserHost {
         // MP-08/MP-10/MP-11: a preview handover flush must follow actual CDP input ACKs, not an asynchronous XTest receipt.
         const handoverOrdered=[...this.mirror.streams.values()].some(s=>s.tab_id===tab.tab_id&&s.scope===scope&&s.navigationPreview);
         const candidate=handoverOrdered?null:(nativeDisplay?visiblePageInputSource(this,nativeDisplay,tab,scope):this.compositors.get(tab.tab_id)?.source);
-        const owned=candidate?.attested&&viewerActive()&&await this.nativeFront(tab)?candidate:null;
+        const owned=candidate?.attested&&viewerActive()&&await slowMark(this.timing,'input_wait native_front',this.nativeFront(tab))?candidate:null;
         const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy):null;
         const nativeClick=viewerActive()&&owned?.attested&&typeof owned.click==='function'?(x,y)=>{if(!viewerActive())return false;this.arbiter.pageFocused();return owned.click(x,y);}:null;
         const nativeKey=viewerActive()&&owned?.attested&&typeof owned.key==='function'?(keysym,shift)=>viewerActive()&&owned.key(keysym,shift):null;
-        const documentCurrent=nativeKey&&command.input?.kind==='key'?await this.displayDocuments.guard(this.browser,tab):undefined;
-        const deferred=await this.sampleLane(tab).run("input", () => this.popupEvidence.capture(this.browser, tab, command._action_id, beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, inputGuard, documentCurrent, onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) })));
+        const documentCurrent=nativeKey&&command.input?.kind==='key'?await slowMark(this.timing,'input_wait document_guard',this.displayDocuments.guard(this.browser,tab)):undefined;
+        const laneAt=timestamp();
+        const deferred=await this.sampleLane(tab).run("input", () => (timestamp()-laneAt>250&&this.timing('input_wait sample_lane',laneAt),this.popupEvidence.capture(this.browser, tab, command._action_id, beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, inputGuard, documentCurrent, onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&owned?.attested&&typeof owned.valid==='function'&&owned.valid(), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }))));
         // MP-08/MP-10: wheel input is asynchronous, as in a native browser. The
         // fenced, ledgered dispatch is ordered by CDP; the renderer's
         // frame-aligned ack would otherwise serialize kernel input admission.

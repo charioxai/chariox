@@ -8,7 +8,7 @@ import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
 import {keysyms, notches, sensitiveFocusExpression} from './kernel-browser-input.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 import {markDispatched} from './kernel-browser-input-queue.mjs';
-import {timestamp} from './kernel-browser-timing.mjs';
+import {slowMark} from './kernel-browser-timing.mjs';
 
 // MP-08/MP-11 (coordinator 12:22Z): Chrome 155 draws the omnibox dropdown INSIDE its main window over
 // the page (no X window). Its WebUI reports the popup widget (screen DIP) and its list's size. On the
@@ -51,11 +51,7 @@ export function rowMode(bgr0) {
 // The owned display's numeric window inventory comes from the native producer
 // (vidlat nativeWindowInventory, wired with the 519 region step); without it no binding.
 const FOCUS_READ_MS = 250, timedOut = Symbol('timed out');
-/** Names a step of a person's band key that took over a quarter second (fixed labels only), so a parked key says why. */
-async function slowStep(host, step, operation) {
-  const at = timestamp();
-  try { return await operation; } finally { if (timestamp() - at > 250) host.timing?.(`band_key_wait ${step}`, at); }
-}
+const slowStep = (host, step, operation) => slowMark(host.timing, `band_key_wait ${step}`, operation);
 /** `operation`'s result, or `timedOut` after `ms` (the operation is left to settle on its own). */
 async function within(ms, operation) {
   let timer;

@@ -2,6 +2,11 @@
 import { appendFileSync } from 'node:fs';
 import path from 'node:path';
 export const timestamp = () => performance.timeOrigin + performance.now();
+/** `operation`'s result; a stage that took over a quarter second is named in the timing log (fixed labels only). */
+export async function slowMark(timing, stage, operation) {
+  const at = timestamp();
+  try { return await operation; } finally { if (timestamp() - at > 250) timing?.(stage, at); }
+}
 export function displayTiming(root) {
   // MP-08/MP-10: bounded control diagnostics, one append per frame interval.
   // Per-stage open/write/close otherwise dominates the Node control CPU sample.

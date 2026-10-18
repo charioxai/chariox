@@ -14,6 +14,7 @@ test('MP-11 attacker-controlled exception fields cannot become timing labels',()
 test('MP-08/MP-10/MP-11 CDP timeouts identify the public method without its arguments',()=>{
  assert.equal(hostErrorLabel({code:'browser_cdp_timeout',message:'browser CDP method Page.captureScreenshot timed out after 5000ms'}),'host_error Error browser_cdp_timeout Page.captureScreenshot');
  assert.equal(hostErrorLabel({code:'browser_cdp_timeout',message:'browser CDP method protectedcanary timed out after 5000ms'}),'host_error Error browser_cdp_timeout');
+ for(const method of ['Emulation.setFocusEmulationEnabled','Target.getTargetInfo','Page.bringToFront'])assert.equal(hostErrorLabel({code:'browser_cdp_timeout',message:`browser CDP method ${method} timed out after 5000ms`}),`host_error Error browser_cdp_timeout ${method}`);
 });
 
 test('MP-08/MP-10/MP-11: observer diagnostics admit fixed input refusal classes only',()=>{
