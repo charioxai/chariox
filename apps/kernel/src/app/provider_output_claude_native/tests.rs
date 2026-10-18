@@ -1396,6 +1396,125 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
     let _ = fs::remove_dir_all(root);
 }
 
+// MP-08 / MP-10 / MP-11: a leased worker runs a profile that is registered
+// only on its home kernel. Its status-line usage cannot be recorded there, and
+// that must never keep the same pass from consuming the hook events.
+#[test]
+fn claude_native_usage_for_an_unregistered_profile_does_not_stop_hook_events() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-usage-unregistered");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-usage-unregistered",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("session should attach");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-usage-unregistered-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    let usage_file = root.join("usage.json");
+    fs::write(&context_file, "").expect("context file should be created");
+    fs::write(
+        &usage_file,
+        r#"{"rate_limits":{"five_hour":{"used_percentage":17}}}"#,
+    )
+    .expect("usage file should be created");
+    let context_file = context_file.display().to_string();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude-headless",
+        "home-only-profile",
+        "claude-sonnet",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = RuntimeProviderRun::new(
+        "provider-run-usage-unregistered",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-usage-unregistered".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([
+                (
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    context_file.clone(),
+                ),
+                (
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
+                    events_file.display().to_string(),
+                ),
+                (
+                    "CHARIOX_CLAUDE_USAGE_FILE".to_string(),
+                    usage_file.display().to_string(),
+                ),
+            ]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    let active_prompt = match app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "Create the marker file.",
+            Vec::new(),
+        )
+        .expect("active prompt should start")
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        other => panic!("unexpected prompt outcome: {other:?}"),
+    };
+    write_claude_native_marker(&context_file, &format!("injected:{}", active_prompt.id()));
+    write_claude_headless_submit_retry(
+        &context_file,
+        active_prompt.id(),
+        0,
+        unix_epoch_ms(),
+        "Create the marker file.",
+    );
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "Create the marker file.",
+        })
+        .to_string(),
+    )
+    .expect("UserPromptSubmit event should be written");
+
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .expect("a usage update for an unregistered profile must not abort hook processing");
+
+    assert_eq!(
+        claude_native_marker(&context_file).as_deref(),
+        Some(format!("accepted:{}", active_prompt.id()).as_str())
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
 #[test]
 fn claude_headless_steering_dispatch_waits_for_provider_acknowledgement() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())

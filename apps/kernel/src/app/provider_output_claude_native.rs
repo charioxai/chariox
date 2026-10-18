@@ -384,7 +384,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             outcome.terminal_failure = Some(failure);
             return Ok(outcome);
         }
-        self.process_claude_account_usage(provider_run)?;
+        // Usage is telemetry: a leased worker does not register the home's
+        // profile, and that must never stop the hook events below.
+        let _ = self.process_claude_account_usage(provider_run);
 
         let events_path = std::path::Path::new(events_file);
         let raw = fs::read_to_string(events_path).unwrap_or_default();

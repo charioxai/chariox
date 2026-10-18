@@ -544,12 +544,14 @@ impl KernelRuntimeState {
                     &owned.config_projection.snapshot(),
                     provider_run.owner_user_id(),
                 );
-            owned.provider_account_profiles.update_usage(
+            // Usage is telemetry: a leased worker does not register the home's
+            // profile, and the polled batch is already consumed.
+            let _ = owned.provider_account_profiles.update_usage(
                 &account_owner_user_id,
                 provider_run.provider(),
                 provider_run.account_profile(),
                 usage,
-            )?;
+            );
         }
         let projected_provider_run = owned
             .provider_store
