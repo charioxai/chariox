@@ -694,7 +694,6 @@ impl DaemonApp {
             self.worker_worktree_id_for_kernel_ref(kernel_ref, request.worktree_id.clone());
         let worktree_placement = request.worktree_placement.clone();
         request.kernel_ref = None;
-        request.worktree_id = None;
         request.worktree_placement = None;
         let session_store = self.session_state_store();
         let agent = {

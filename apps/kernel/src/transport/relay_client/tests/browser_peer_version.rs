@@ -169,7 +169,8 @@ async fn check() {
                     .unwrap()
                     .0;
                 let result = app.spawn_worker_agent(
-                    CreateAgentRequest::new(room.id(), "managed-dev-stub"),
+                    CreateAgentRequest::new(room.id(), "managed-dev-stub")
+                        .with_worktree(workspace.display().to_string()),
                     "artifact-version-worker",
                     &|| Ok(()),
                 );
@@ -178,6 +179,8 @@ async fn check() {
                     app.destroy_remote_execution_binding(binding, &|| Ok(()))
                         .unwrap();
                     if advertised == current {
+                        // A rebind after a worker restart spawns in this same directory.
+                        assert_eq!(agent.worktree_id(), Some(workspace.to_str().unwrap()));
                         assert_eq!(binding.relay_peer_protocol_version, Some(current));
                         app.ensure_remote_agent_binding_protocol(binding).unwrap();
                     }
