@@ -27,7 +27,8 @@ pub(crate) struct DirectFrames {
 }
 
 pub(crate) struct Link {
-    writer: Mutex<UnixStream>,
+    /// Dropped when the worker disconnects; the link itself stays as the spent-token record.
+    writer: Mutex<Option<UnixStream>>,
     state: Mutex<LinkState>,
     wake: tokio::sync::Notify,
 }
@@ -123,7 +124,7 @@ impl DirectFrames {
             return;
         };
         let link = Arc::new(Link {
-            writer: Mutex::new(writer),
+            writer: Mutex::new(Some(writer)),
             state: Mutex::new(LinkState::default()),
             wake: tokio::sync::Notify::new(),
         });
@@ -150,6 +151,7 @@ impl DirectFrames {
                     break;
                 }
             }
+            *link.writer.lock().unwrap_or_else(|e| e.into_inner()) = None;
             let mut state = link.lock();
             state.closed = true;
             state.lease = None;
@@ -335,7 +337,9 @@ impl Link {
     }
     fn send(&self, message: Value) {
         if let Ok(mut writer) = self.writer.lock() {
-            let _ = writer.write_all(format!("{message}\n").as_bytes());
+            if let Some(writer) = writer.as_mut() {
+                let _ = writer.write_all(format!("{message}\n").as_bytes());
+            }
         }
     }
 }
@@ -538,5 +542,29 @@ mod tests {
         frame(&mut worker, 2, 5, true);
         assert!(matches!(settle(&frames, TOKEN).await, Next::Ended));
         assert!(!frames.bind(TOKEN, "s", 5, 2));
+    }
+
+    #[test]
+    fn mp11_direct_frames_release_the_writer_when_the_worker_disconnects() {
+        let fds = || std::fs::read_dir("/proc/self/fd").unwrap().count();
+        let (frames, _packets) = channel();
+        frames.bind_controller(std::os::unix::process::parent_id());
+        let before = fds();
+        for n in 0..24u32 {
+            let token = format!("{n:032x}");
+            let worker = connect(&frames, &token);
+            assert!(wait_link(&frames, &token));
+            drop(worker);
+            let closed = (0..400).any(|_| {
+                std::thread::sleep(Duration::from_millis(5));
+                frames.link(&token).is_some_and(|l| l.lock().closed)
+            });
+            assert!(closed, "the worker's EOF closes its link");
+        }
+        // The spent-token record stays, so a reused token is still refused.
+        let again = connect(&frames, &format!("{:032x}", 0));
+        std::thread::sleep(Duration::from_millis(50));
+        drop(again);
+        assert!(fds() <= before + 2, "worker disconnects leaked {} descriptors", fds() - before);
     }
 }
