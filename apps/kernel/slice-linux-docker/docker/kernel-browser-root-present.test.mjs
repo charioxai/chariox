@@ -54,8 +54,3 @@ test('O1 a desktop stream is a root consumer: it presents the root before its wo
   await source.start().catch(() => {});
   assert.deepEqual(calls, ['follow']);
 });
-
-test('O1 a drill that reads the root with its own X client starts the desktop presenting', async () => {
-  assert.equal(newRoot().requested, false);
-  const b = { root: newRoot(true) }; await presentRoot(b); assert.equal(b.root.requested, true);
-});

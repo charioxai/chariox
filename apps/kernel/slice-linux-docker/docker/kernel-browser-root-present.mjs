@@ -2,9 +2,7 @@
 // redirected Manual, so the X server does not blit every Chrome swap onto the root, while nothing
 // reads the root. The first root consumer (Computer Use, a desktop stream) latches the desktop to
 // presenting and waits until every live window capture has switched; later captures start presenting.
-// `requested` starts true only for drills that read the desktop root with their own X client
-// (CHARIOX_DESKTOP_ROOT_PRESENTED=1): the root then presents from the start, as before O1.
-export const newRoot = (requested = false) => ({ requested, ready: null, followers: new Set() });
+export const newRoot = () => ({ requested: false, ready: null, followers: new Set() });
 export function presentRoot(binding) {
   const root = binding?.root;
   if (!root) return Promise.resolve();
