@@ -122,17 +122,26 @@ async fn forward_native_interaction_to_home(
     let mut backoff = Duration::from_secs(1);
     let mut attempt = 1_u32;
     loop {
+        let Some(forwarded) = interaction_with_remaining_budget(&interaction, deadline) else {
+            return Ok(timed_out_resolution());
+        };
         let (config, target_daemon_id, context) = &target;
-        let error = match forward_native_interaction_once(
+        let forward = forward_native_interaction_once(
             state,
             config,
             target_daemon_id,
             context.clone(),
-            interaction.clone(),
-            deadline,
-        )
-        .await
-        {
+            forwarded,
+        );
+        // Connection setup and writes count against the same decision budget.
+        let outcome = match deadline {
+            Some(deadline) => match tokio::time::timeout_at(deadline, forward).await {
+                Ok(outcome) => outcome,
+                Err(_) => return Ok(timed_out_resolution()),
+            },
+            None => forward.await,
+        };
+        let error = match outcome {
             Ok(resolution) => return Ok(resolution),
             Err(error) if !remote_native_interaction_forward_is_retryable(&error) => {
                 return Err(error)
@@ -193,13 +202,9 @@ async fn forward_native_interaction_once(
     target_daemon_id: &str,
     context: RemoteNativeInteractionContext,
     interaction: RuntimeInteraction,
-    deadline: Option<tokio::time::Instant>,
 ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
-    let response_timeout = remote_native_interaction_response_timeout(
-        &interaction,
-        config.relay_request_timeout_ms,
-        deadline,
-    );
+    let response_timeout =
+        remote_native_interaction_response_timeout(&interaction, config.relay_request_timeout_ms);
     let response = state
         .send_worker_home_runtime_request(
             config,
@@ -278,17 +283,29 @@ impl Drop for AbandonedInteractionGuard {
 fn remote_native_interaction_response_timeout(
     interaction: &RuntimeInteraction,
     relay_request_timeout_ms: u64,
-    deadline: Option<tokio::time::Instant>,
 ) -> Duration {
-    let full = interaction
+    interaction
         .timeout_sec()
         .map(Duration::from_secs)
         .map(|timeout| timeout.saturating_add(REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER))
-        .unwrap_or_else(|| Duration::from_millis(relay_request_timeout_ms));
-    match deadline {
-        Some(deadline) => full.min(deadline.saturating_duration_since(tokio::time::Instant::now())),
-        None => full,
-    }
+        .unwrap_or_else(|| Duration::from_millis(relay_request_timeout_ms))
+}
+
+/// The interaction as the home must see it now: its decision budget is what
+/// is left of the original one, so a late first delivery or a retry never
+/// restarts the home card's deadline. `None` once the budget is spent.
+fn interaction_with_remaining_budget(
+    interaction: &RuntimeInteraction,
+    deadline: Option<tokio::time::Instant>,
+) -> Option<RuntimeInteraction> {
+    let Some(deadline) = deadline else {
+        return Some(interaction.clone());
+    };
+    let left = deadline
+        .saturating_duration_since(tokio::time::Instant::now())
+        .saturating_sub(REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER);
+    let seconds = left.as_secs() + u64::from(left.subsec_nanos() > 0);
+    (seconds > 0).then(|| interaction.clone().with_timeout_sec(seconds))
 }
 
 pub(crate) fn install_provider_native_interaction_bridge(
@@ -567,35 +584,33 @@ mod tests {
     #[test]
     fn remote_response_timeout_outlives_the_user_interaction_deadline() {
         assert_eq!(
-            remote_native_interaction_response_timeout(&interaction(Some(300)), 60_000, None),
+            remote_native_interaction_response_timeout(&interaction(Some(300)), 60_000),
             Duration::from_secs(315)
         );
         assert_eq!(
-            remote_native_interaction_response_timeout(&interaction(Some(5)), 60_000, None),
+            remote_native_interaction_response_timeout(&interaction(Some(5)), 60_000),
             Duration::from_secs(20)
         );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn retry_response_timeout_stops_at_the_decision_deadline() {
+    async fn forwarded_interaction_carries_only_the_remaining_decision_budget() {
+        let original = interaction(Some(300));
         let deadline = tokio::time::Instant::now() + Duration::from_secs(315);
-        tokio::time::advance(Duration::from_secs(300)).await;
-        assert_eq!(
-            remote_native_interaction_response_timeout(
-                &interaction(Some(300)),
-                60_000,
-                Some(deadline)
-            ),
-            Duration::from_secs(15)
-        );
         tokio::time::advance(Duration::from_secs(60)).await;
+        let forwarded = interaction_with_remaining_budget(&original, Some(deadline)).unwrap();
+        assert_eq!(forwarded.timeout_sec(), Some(240));
+        assert_eq!(forwarded.id(), original.id());
+        tokio::time::advance(Duration::from_millis(239_500)).await;
+        let forwarded = interaction_with_remaining_budget(&original, Some(deadline)).unwrap();
+        assert_eq!(forwarded.timeout_sec(), Some(1));
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(interaction_with_remaining_budget(&original, Some(deadline)).is_none());
         assert_eq!(
-            remote_native_interaction_response_timeout(
-                &interaction(Some(300)),
-                60_000,
-                Some(deadline)
-            ),
-            Duration::ZERO
+            interaction_with_remaining_budget(&interaction(None), None)
+                .unwrap()
+                .timeout_sec(),
+            None
         );
     }
 
@@ -626,7 +641,7 @@ mod tests {
     #[test]
     fn remote_response_timeout_uses_relay_default_without_interaction_deadline() {
         assert_eq!(
-            remote_native_interaction_response_timeout(&interaction(None), 42_000, None),
+            remote_native_interaction_response_timeout(&interaction(None), 42_000),
             Duration::from_secs(42)
         );
     }
