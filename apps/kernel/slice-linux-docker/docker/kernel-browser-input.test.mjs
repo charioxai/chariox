@@ -135,6 +135,20 @@ test('MP-08/MP-10 asynchronous scroll returns after an ordered, fenced dispatch 
   release();await result.ack;
   assert.equal(await inputHostTab(browser,tab,{kind:'scroll',x:10,y:10,delta_x:0,delta_y:120}),undefined,'synchronous callers still await the ack');
 });
+// r55: the page session's ordered navigation events prove the document, so a person's native wheel is not held 5 s by a
+// busy renderer's Page.getFrameTree. Without a proof (a navigation in flight) the renderer is still asked.
+test('MP-08/MP-10/MP-11 a native wheel is fenced by the ordered navigation events when they prove the document',async()=>{
+  const {browser,sent}=fixture();const {connection}=await browser.resolvePageTarget();const wheels=[];
+  browser.currentPageFrame=()=>({connection,sessionId:'s',frame:{id:'f',loaderId:'doc'}});
+  await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:-240},{nativeWheel:(...a)=>{wheels.push(a);return true}});
+  assert.deepEqual(wheels,[[10,20,0,-2]]);assert.equal(sent.some(x=>x.method==='Page.getFrameTree'),false,'no renderer round trip');
+  browser.currentPageFrame=()=>({connection,sessionId:'s',frame:{id:'f',loaderId:'moved'}});
+  await assert.rejects(inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:-240},{nativeWheel:()=>true}),error=>error.code==='stale_document_reference');
+  assert.equal(sent.some(x=>x.method==='Page.getFrameTree'),false,'a moved document is refused from the events too');
+  browser.currentPageFrame=()=>undefined;wheels.length=0;
+  await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y:-240},{nativeWheel:(...a)=>{wheels.push(a);return true}});
+  assert.equal(sent.some(x=>x.method==='Page.getFrameTree'),true,'no proof: the renderer is asked');
+});
 // MP-08/MP-10: wheel notches use the owned display after the same fences;
 // unavailable native input keeps precise CDP deltas or fails closed.
 test('MP-08/MP-10 notch wheel input routes to the owned display after the document fence',async()=>{

@@ -60,9 +60,18 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
     const cachedDocument = () => {
       if (!documentCurrent()) throw new BrowserActionError("stale_document_reference", "browser document retired before native input");
     };
+    // The page session's ordered navigation events name its document: a busy renderer is not asked (a person's first
+    // wheel waited 5 s for it, r55). A navigation in flight leaves no proof, then the renderer is asked as before.
+    const eventDocument = () => {
+      const current = browser.currentPageFrame?.(tab.target_id);
+      return current && current.connection === connection && current.sessionId === sessionId ? current.frame.loaderId : null;
+    };
     const check = async (fresh = false) => {
       assertNotCancelled(signal);
+      const proven = fresh || documentCurrent ? null : eventDocument();
       if (documentCurrent && !fresh) cachedDocument();
+      else if (proven === tab.document_id) { /* current by ordered events */ }
+      else if (proven) throw new BrowserActionError("stale_document_reference", "browser document retired before input");
       else await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
       assertNotCancelled(signal);
     };
