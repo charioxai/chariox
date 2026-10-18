@@ -54,7 +54,14 @@ test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agen
    await new Promise((resolve,reject)=>{socket.addEventListener('open',resolve,{once:true});socket.addEventListener('error',reject,{once:true})});cdp=new CdpConnection(socket);
    // Developer loading is fixture setup only; the effect is a real XTEST click.
    const {id}=await cdp.send('Extensions.loadUnpacked',{path:extension});assert(id);
-   const binding={...base,environment};adapter=new NativeComputer({placement:'host',binding:()=>binding});
+   // The page hit test places the active Tab from CDP and X11; this fixture has no kernel host, so its Tab size is the page's own.
+   const browser={ensureConnection:async()=>cdp,nativeViewport:async()=>{
+    const target=(await cdp.send('Target.getTargets')).targetInfos.find(item=>item.type==='page'&&item.url.startsWith('https://en.wikipedia.org/'));
+    const {sessionId}=await cdp.send('Target.attachToTarget',{targetId:target.targetId,flatten:true});
+    try{const {result}=await cdp.send('Runtime.evaluate',{expression:'[innerWidth,innerHeight]',returnByValue:true},sessionId);return {target_id:target.targetId,width:result.value[0],height:result.value[1]}}
+    finally{await cdp.send('Target.detachFromTarget',{sessionId})}
+   }};
+   const binding={...base,environment,browser:()=>browser};adapter=new NativeComputer({placement:'host',binding:()=>binding});
    const controls=async label=>{
     const helper=spawn('/usr/bin/python3',['-c',findControl,label],{env:environment,stdio:['ignore','pipe','inherit']});let output='';helper.stdout.on('data',chunk=>output+=chunk);
     assert.equal(await new Promise(resolve=>helper.once('exit',resolve)),0);return JSON.parse(output);

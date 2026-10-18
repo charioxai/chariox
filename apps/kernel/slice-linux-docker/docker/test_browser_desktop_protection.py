@@ -58,6 +58,13 @@ class WindowMasks(unittest.TestCase):
         emulated = page(window=[0, 0, 1280, 800], native=[1280, 657], viewport=[1280, 657], dpr=2, zoom=1)
         self.assertIsNone(protection.window_masks({'pages': [emulated]}, [0, 0, 1280, 800], [0, 0, 0, 0]))
 
+    def test_the_emulated_viewport_may_exceed_the_native_tab_but_never_undercut_it(self):
+        emulated = page(viewport=[1280, 800], regions=[[100, 50, 84, 32]])
+        self.assertEqual(protection.window_masks({'pages': [emulated]}, CLIENT, INSETS), [[140, 219, 92, 40]])
+        edge = page(viewport=[1280, 800], regions=[[880, 540, 100, 100]])   # runs past the Tab view: clipped to it
+        self.assertEqual(protection.window_masks({'pages': [edge]}, CLIENT, INSETS), [[920, 709, 16, 17]])
+        self.assertIsNone(protection.window_masks({'pages': [page(viewport=[800, 500])]}, CLIENT, INSETS))
+
     def test_vault_policy_leaves_browser_chrome_and_status_visible(self):
         self.assertEqual(protection.window_masks({'pages': [page(chrome=True, regions=[])]}, CLIENT, INSETS), [])
 

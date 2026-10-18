@@ -63,7 +63,10 @@ def window_masks(protection, client, insets):
 
     client: X11 client rectangle; insets: its GTK frame insets. A page whose
     density is emulated (devicePixelRatio not the screen scale times its page
-    zoom) has no provable fill mapping.
+    zoom) has no provable fill mapping. The kernel emulates its fixed CSS
+    viewport, which anchors at the Tab's top-left and may exceed the Tab view
+    (the masks are clipped to it); an emulated viewport smaller than the Tab
+    has no proven anchoring and is refused.
     """
     if not isinstance(protection, dict) or not isinstance(protection.get('pages'), list):
         return None
@@ -77,7 +80,7 @@ def window_masks(protection, client, insets):
     scale = _screen_scale(page['window'], client)
     x, y, width, height = rect
     viewport, dpr, zoom = page.get('viewport'), page.get('dpr'), page.get('zoom')
-    if not (isinstance(viewport, list) and len(viewport) == 2 and abs(viewport[0]-width) <= 2 and abs(viewport[1]-height) <= 2 and
+    if not (isinstance(viewport, list) and len(viewport) == 2 and viewport[0] >= width-2 and viewport[1] >= height-2 and
             isinstance(dpr, (int, float)) and isinstance(zoom, (int, float)) and abs(dpr-scale*zoom) <= .01*scale):
         return None
     regions = page.get('regions')
