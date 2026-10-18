@@ -16,7 +16,7 @@ function page(fontRequirements) {
  mirror.evaluate=async(_world,expression)=>expression.endsWith('customHosts()')?false:expression.endsWith('snapshot()')?{...state,nodes,root:'n1',resources:[{key:'r1',url:'https://public.example/font.woff2',kind:'font'}],ops:[{op:'fonts',id:'n1',required:['a'.repeat(64)]}]}:state;
  mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_stream,source)=>source};
  mirror.sheetOps=async()=>[];mirror.tiles=async()=>[];mirror.encode=async(_stream,packet)=>packet;
- return {mirror,stream,host,command:{subscription_id:'s',generation:1,after_sequence:0}};
+ return {mirror,stream,host,state,command:{subscription_id:'s',generation:1,after_sequence:0}};
 }
 
 test('MP-08/MP-10/MP-11 opted-in first DOM does not wait for font bytes; the next quiet credit carries them',async()=>{
@@ -32,6 +32,17 @@ test('MP-08/MP-10/MP-11 opted-in first DOM does not wait for font bytes; the nex
   const next=await mirror.packet(stream,{...command,after_sequence:1},'scope',undefined,Date.now());
   assert.equal(next.sequence,2);assert.deepEqual(next.resources,[font]);assert.deepEqual(calls,[null]);
  }finally{gate.resolve();await pending.catch(()=>{});}
+});
+
+test('MP-08/MP-10/MP-11 a continuing DOM stream does not starve the opted-in viewer of font bytes',async()=>{
+ const {mirror,stream,state,command}=page(true),calls=[],font={key:'r1',resource_id:'b'.repeat(64),mime_type:'font/woff2',data_base64:'AAAA'};
+ mirror.materialize=async(_world,_stream,kind)=>{calls.push(kind);return [font]};
+ const first=await mirror.packet(stream,command,'scope');
+ assert.equal(first.reset,true);assert.equal(first.resources,undefined);
+ // The rest of a huge document keeps every later credit non-empty: its fonts still travel with the DOM chunks.
+ state.ops=[{op:'text',id:'n4',text:'more'}];state.changed=['n4'];
+ const next=await mirror.packet(stream,{...command,after_sequence:1},'scope',undefined,Date.now());
+ assert.equal(next.sequence,2);assert.deepEqual(next.ops.map(op=>op.op),['text']);assert.deepEqual(next.resources,[font]);assert.deepEqual(calls,['font']);
 });
 
 test('MP-08/MP-10/MP-11 a legacy viewer still receives first-packet fonts',async()=>{
