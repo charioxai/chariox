@@ -10,7 +10,8 @@ export function typedBrowserTargets(snapshot,entry,targetId,documentId) {
   for(let index=0;index<nodes.nodeName.length;index++) {
    if(!['input','textarea'].includes(strings[nodes.nodeName[index]].toLowerCase()))continue;
    const attributes=nodes.attributes[index]??[],attrs=new Map();
-   for(let i=0;i<attributes.length;i+=2)attrs.set(strings[attributes[i]].toLowerCase(),strings[attributes[i+1]].toLowerCase());
+   // CDP represents empty attribute strings (including required/autofocus) as -1.
+   for(let i=0;i<attributes.length;i+=2)attrs.set(strings[attributes[i]].toLowerCase(),(attributes[i+1]===-1?'':strings[attributes[i+1]]).toLowerCase());
    if(!typedSensitiveField(attrs.get('type'),attrs.get('autocomplete')))continue;
    targets.push({target_id:targetId,document_id:documentId,node_ref:entry.prefix+'backend:'+nodes.backendNodeId[index],frame_id:strings[document.frameId],model_typed:true});
   }

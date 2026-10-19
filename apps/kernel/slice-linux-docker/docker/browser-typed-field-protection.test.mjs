@@ -14,6 +14,11 @@ test('MP-11 password autocomplete survives a Show password type change',()=>{
  const snapshot={strings,documents:[{frameId:6,nodes:{nodeName:[0,0],attributes:[[1,2,3,4],[1,2,3,5]],backendNodeId:[11,12]}}]};
  assert.deepEqual(typedBrowserTargets(snapshot,{prefix:''},'target','doc').map(target=>target.node_ref),['backend:11','backend:12']);
 });
+test('MP-11 CDP empty attribute sentinels preserve sensitive field discovery',()=>{
+ const strings=['input','required','autofocus','type','password','autocomplete','cc-number','frame'];
+ const snapshot={strings,documents:[{frameId:7,nodes:{nodeName:[0,0,0],attributes:[[1,-1,2,-1,3,4],[3,-1,5,6],[5,-1]],backendNodeId:[11,12,13]}}]};
+ assert.deepEqual(typedBrowserTargets(snapshot,{prefix:''},'target','doc').map(target=>target.node_ref),['backend:11','backend:12']);
+});
 const executable=process.env.CHARIOX_PROTECTION_TEST_CHROME;
 for(const dpr of [1,2])test(`MP-11 typed sensitive fields mask model captures only at DPR ${dpr}`,{skip:!executable,timeout:30000},async()=>{
  const root=await mkdtemp(path.join(os.tmpdir(),'typed-fields-'));let chrome;
@@ -21,7 +26,7 @@ for(const dpr of [1,2])test(`MP-11 typed sensitive fields mask model captures on
   chrome=await launchChromium({executable,dpr,root});const {connection,browser}=chrome;
   const {targetInfos}=await connection.send('Target.getTargets'),target=targetInfos.find(t=>t.type==='page');
   const {sessionId}=await connection.send('Target.attachToTarget',{targetId:target.targetId,flatten:true});
-  const html='<style>input{display:block;background:magenta;width:240px;height:32px;margin:12px;color:black}</style><input aria-label="Card" autocomplete="cc-number"><input aria-label="OTP" autocomplete="one-time-code"><input aria-label="Password" type="password"><input autocomplete="cc-exp"><input id="ordinary"><textarea aria-label="Textarea OTP" autocomplete="one-time-code"></textarea><div id="shadow"></div><iframe srcdoc="&lt;input autocomplete=cc-csc style=background:magenta;width:160px;height:32px&gt;"></iframe>';
+  const html='<style>input{display:block;background:magenta;width:240px;height:32px;margin:12px;color:black}</style><input aria-label="Card" autocomplete="cc-number" required><input aria-label="OTP" autocomplete="one-time-code"><input aria-label="Password" type="password" required autofocus><input autocomplete="cc-exp"><input id="ordinary"><textarea aria-label="Textarea OTP" autocomplete="one-time-code"></textarea><div id="shadow"></div><iframe srcdoc="&lt;input autocomplete=cc-csc style=background:magenta;width:160px;height:32px&gt;"></iframe>';
   await connection.send('Page.navigate',{url:'data:text/html,'+encodeURIComponent(html)},sessionId);
   for(let n=0;n<100;n++){const {result}=await connection.send('Runtime.evaluate',{expression:'document.readyState==="complete"',returnByValue:true},sessionId);if(result.value)break;await new Promise(r=>setTimeout(r,20));}
   // Private setup only; the actual product input path is exercised in live drills.
