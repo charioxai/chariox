@@ -269,9 +269,12 @@ export class ChromeWindows {
     const rows = await this.inventory(display, pid, live), bound = this.bound;
     if (!live() || !bound?.tabbed.isCurrent()) return;
     this.rowsReadAt = performance.now();
-    // Retire only: a popup whose own X window is gone leaves the list; nothing is published or rebound here.
+    // Retire only: a popup whose own X window is gone leaves the list and the cached inventory (a later refresh must not
+    // bring it back); nothing is published or rebound here.
     const open = new Set(rows.filter(r => r.visible).map(r => r.id)), kept = bound.auxiliary.filter(a => a.in_window || open.has(a.xid));
     if (kept.length === bound.auxiliary.length) return;
+    const gone = new Set(bound.auxiliary.filter(a => !kept.includes(a)).map(a => a.xid));
+    this.rows = this.rows?.filter(r => !gone.has(r.id));
     this.bound = Object.freeze({tabbed: bound.tabbed, auxiliary: kept});
     this.auxiliaryCount = kept.length; this.host.timing?.(`aux_count ${kept.length}`, performance.timeOrigin + performance.now());
   }

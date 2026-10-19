@@ -473,6 +473,8 @@ test("MP-08/MP-11 a state read retires a closed popup when no band can read the 
       assert.equal(windows.auxiliaryState().length, 1, "no band reads: the closed menu is still listed");
       await windows.refreshStale();
       assert.deepEqual(windows.auxiliaryState(), [], "the owner's inventory retires it");
+      await windows.omniboxShown();
+      assert.deepEqual(windows.auxiliaryState(), [], "the cached inventory no longer lists it, so the next refresh cannot bring it back");
     } finally { stopDead(); }
   } finally { await real.close(); }
 });
