@@ -28,10 +28,11 @@ class OrdinaryInput(unittest.TestCase):
                     with patch.object(native, 'load', side_effect=modules.__getitem__), \
                          patch.object(native.keyboard, 'type_text', side_effect=dispatch), \
                          patch.object(native.keyboard, 'hold_input', side_effect=dispatch):
-                        native.input_action(action, processes)
+                        values=('private-test-canary',)
+                        native.input_action(action, processes, values=values)
                     accessibility.input_guard.assert_not_called()
                     recipient.input_destination.assert_called_once_with(connection, processes, accessibility)
-                    clipboard.input_admission.assert_called_once_with(processes, accessibility)
+                    clipboard.input_admission.assert_called_once_with(processes, accessibility, None, values)
                     connection.close.assert_called_once()
 
 
