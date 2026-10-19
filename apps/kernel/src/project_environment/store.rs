@@ -70,11 +70,6 @@ impl ProjectEnvironmentEvidence {
         workspaces: &BTreeMap<String, PathBuf>,
         paths: &BTreeMap<String, Vec<String>>,
     ) -> Result<Self, DaemonError> {
-        if paths.len() > 32 {
-            return Err(environment_error(
-                "environment evidence exceeds workspace bounds",
-            ));
-        }
         let mut evidence = Self::default();
         let mut total = 0_u64;
         for (workspace, selected) in paths {

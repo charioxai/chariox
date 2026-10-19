@@ -168,6 +168,23 @@ impl<'a> ExportVault<'a> {
         mut items: Vec<VaultItem>,
     ) -> Result<(), DaemonError> {
         validate_relative_path(object_path)?;
+        // Sealed artifacts are base64 inside JSON, so admit their encoded size against the volume.
+        let needed = if items.is_empty() {
+            bytes.len() as u64
+        } else {
+            (bytes.len() as u64).saturating_mul(3) / 2 + 4096
+        };
+        let room = crate::managed_context::limits::disk_budget(staging);
+        if needed > room {
+            return Err(context_error(
+                crate::managed_context::limits::disk_shortage(
+                    "repository artifact staging",
+                    staging,
+                    needed,
+                    room,
+                ),
+            ));
+        }
         let destination = staging.join(object_path);
         if let Some(parent) = destination.parent() {
             create_private_directory(parent)?;
@@ -403,6 +420,47 @@ mod tests {
         )
         .unwrap();
         config
+    }
+
+    // A Git bundle or overlay object staged through the Vault must be admitted against the staging
+    // volume, sealed or not, before anything is written there.
+    #[test]
+    fn staging_refuses_artifacts_that_do_not_fit_the_volume_before_writing() {
+        use crate::managed_context::limits::{with_free_disk, DISK_RESERVE_BYTES};
+        let root = std::env::temp_dir().join(format!("vault-room-{:032x}", rand::random::<u128>()));
+        fs::create_dir_all(&root).unwrap();
+        let _cleanup = Cleanup(root.clone());
+        let source = config(&root, "source");
+        let target = config(&root, "target");
+        let vault = ExportVault::new(
+            &source,
+            "context",
+            &target.daemon_id,
+            &target.relay_public_key,
+            "project",
+        );
+        let staging = root.join("staging");
+        let bytes = vec![7_u8; 1 << 20];
+        let sealed = || {
+            vec![VaultItem {
+                path: "workspace/.env".into(),
+                kind: "workspace file".into(),
+            }]
+        };
+        let free = DISK_RESERVE_BYTES + (512 << 10);
+        for items in [Vec::new(), sealed()] {
+            let error = with_free_disk(free, || vault.stage(&staging, "bundle", &bytes, items))
+                .expect_err("1 MiB does not fit 512 KiB of room");
+            assert!(
+                error.to_string().contains("free space on that volume"),
+                "{error}"
+            );
+            assert!(!staging.join("bundle").exists());
+        }
+        with_free_disk(DISK_RESERVE_BYTES + (4 << 20), || {
+            vault.stage(&staging, "plain", &bytes, Vec::new())
+        })
+        .expect("fits");
     }
 
     // MP-08/MP-10/MP-11: many large secret-bearing blobs must be refused before

@@ -323,6 +323,24 @@ fn mp08_store_persists_the_evidence_of_a_workspace_with_tens_of_thousands_of_fil
     assert_eq!(store.load("fixture-project").unwrap(), Some(state));
 }
 
+// The workspace count is not bounded: a transfer of many repositories captures evidence for all.
+#[test]
+fn mp08_evidence_covers_more_than_thirty_two_workspaces() {
+    let fixture = Fixture::new();
+    let mut workspaces = BTreeMap::new();
+    let mut paths = BTreeMap::new();
+    for index in 0..40 {
+        let name = format!("repo-{index}");
+        let root = fixture.0.join(&name);
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("package-lock.json"), name.as_bytes()).unwrap();
+        workspaces.insert(name.clone(), root);
+        paths.insert(name, vec!["package-lock.json".to_string()]);
+    }
+    let evidence = ProjectEnvironmentEvidence::capture(&workspaces, &paths).unwrap();
+    assert_eq!(evidence.files.len(), 40);
+}
+
 #[test]
 fn mp08_evidence_refresh_is_incremental_and_kernel_copies_are_independent() {
     let source = Fixture::new();
@@ -1549,6 +1567,71 @@ fn mp08_discovery_keeps_unoffered_ignored_files_as_visible_leave_behind_decision
         let after = ProjectEnvironmentReview::build(&state, "p", "t", "code".into(), true, false);
         assert!(after.rows.iter().any(|row| row.label == "Not reviewed"));
     }
+}
+
+// With more not-reviewed files than one page lists, every file stays individually selectable:
+// by paging, by search, and after bringing them all (to leave a single one behind).
+#[test]
+fn mp08_review_keeps_individual_controls_for_every_not_reviewed_file() {
+    let count = 133;
+    let mut state = review_state();
+    state.manifest.private_files = one_directory_candidates(count)
+        .into_iter()
+        .map(|candidate| ProjectPrivateFileDecision {
+            workspace_id: candidate.workspace_id,
+            path: candidate.path,
+            bring: false,
+            reason: UNREVIEWED_PRIVATE_FILE_REASON.into(),
+            secret_looking: false,
+        })
+        .collect();
+    let last = state.manifest.private_files[count - 1].path.clone();
+    let listed = |state: &StoredProjectEnvironment, view: &UnreviewedFilesView| {
+        ProjectEnvironmentReview::build_with_view(state, "p", "t", "code".into(), true, false, view)
+            .files
+            .into_iter()
+            .map(|file| file.path)
+            .collect::<Vec<_>>()
+    };
+    let first_page = listed(&state, &UnreviewedFilesView::default());
+    assert_eq!(first_page.len(), LISTED_UNREVIEWED_FILES);
+    assert!(!first_page.contains(&last));
+    // Page two reaches the rest.
+    let second = UnreviewedFilesView {
+        offset: LISTED_UNREVIEWED_FILES,
+        query: String::new(),
+    };
+    assert!(listed(&state, &second).contains(&last));
+    // Search reaches it from the first page.
+    let found = UnreviewedFilesView {
+        offset: 0,
+        query: last.to_uppercase(),
+    };
+    assert_eq!(listed(&state, &found), vec![last.clone()]);
+    assert_eq!(found.matching(&state.manifest), 1);
+
+    // Bringing everything keeps the files listed, so one can still be left behind.
+    set_unreviewed_project_private_files(&mut state, true);
+    let after_bring = listed(&state, &second);
+    assert!(after_bring.contains(&last));
+    let id = project_environment_item_id("web", &last);
+    flip_project_environment_item(&mut state, &id, true).unwrap();
+    let decision = state
+        .manifest
+        .private_files
+        .iter()
+        .find(|file| file.path == last)
+        .unwrap();
+    assert!(!decision.bring);
+    assert_eq!(
+        state
+            .manifest
+            .private_files
+            .iter()
+            .filter(|f| f.bring)
+            .count(),
+        count - 1
+    );
 }
 
 // A workspace with more ignored files than any fixed ceiling still exports.
