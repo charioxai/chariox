@@ -28,6 +28,8 @@ COPY Cargo.toml Cargo.lock ./
 COPY adapters/rust adapters/rust
 COPY apps/aegs-dummy apps/aegs-dummy
 COPY apps/kernel apps/kernel
+# MP-08/MP-11: managed update helpers are embedded by the kernel compiler.
+COPY deploy/managed-kernel/extract-release.py deploy/managed-kernel/release-update-storage.py deploy/managed-kernel/
 COPY apps/relay apps/relay
 COPY examples/workflow-code examples/workflow-code
 COPY packages/aegs-sdk packages/aegs-sdk
