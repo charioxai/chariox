@@ -1324,7 +1324,15 @@ fn mp08_discovery_decides_a_gitignored_inventory_beyond_the_prompt_budget() {
         &input,
     )
     .unwrap();
-    assert_eq!(decided.private_files.len(), offered);
+    let reviewed = |manifest: &ProjectEnvironmentManifest| {
+        manifest
+            .private_files
+            .iter()
+            .filter(|file| file.reason != UNREVIEWED_PRIVATE_FILE_REASON)
+            .count()
+    };
+    assert_eq!(reviewed(&decided), offered);
+    assert_eq!(decided.private_files.len(), candidates.len());
     // The candidate's size echoed beside a decision is ignored, not an invalid answer.
     let mut echoed: serde_json::Value = serde_json::to_value(&answer).unwrap();
     echoed["private_files"][0]["bytes"] = 10.into();
@@ -1347,15 +1355,16 @@ fn mp08_discovery_decides_a_gitignored_inventory_beyond_the_prompt_budget() {
         &revised_input,
     )
     .unwrap();
-    assert_eq!(kept.private_files.len(), offered + 1);
-    assert_eq!(kept.private_files.last(), previous.private_files.first());
+    assert_eq!(reviewed(&kept), offered + 1);
+    assert!(kept.private_files.contains(&previous.private_files[0]));
     // A model that derails partway (an entry without `bring`) leaves the rest undecided, not failed.
     let mut partial: serde_json::Value = serde_json::to_value(&answer).unwrap();
     let items = partial["private_files"].as_array_mut().unwrap();
     items.truncate(20);
     items.push(serde_json::json!({"workspace_id": "web", "path": "generated/bucket-1/entry-1.txt", "bytes": 10}));
     let partial = parse_project_environment_discovery_output(&partial.to_string(), &input).unwrap();
-    assert_eq!(partial.private_files.len(), 20);
+    assert_eq!(reviewed(&partial), 20);
+    assert_eq!(partial.private_files.len(), candidates.len());
     // A decision for a file it was never offered, or a duplicate, is ignored.
     let mut noisy = answer.clone();
     noisy.private_files[0].path = "not-in-the-inventory".into();
@@ -1363,7 +1372,197 @@ fn mp08_discovery_decides_a_gitignored_inventory_beyond_the_prompt_budget() {
     let noisy =
         parse_project_environment_discovery_output(&serde_json::to_string(&noisy).unwrap(), &input)
             .unwrap();
-    assert_eq!(noisy.private_files.len(), offered - 1);
+    assert_eq!(reviewed(&noisy), offered - 1);
+}
+
+fn discovery_input_for(
+    candidates: Vec<ProjectPrivateFileCandidate>,
+    changed: Vec<String>,
+    references: Vec<ProjectEnvironmentEntry>,
+) -> ProjectEnvironmentDiscoveryInput {
+    let manifest = fixture_manifest(vec![]);
+    ProjectEnvironmentDiscoveryInput {
+        project_id: manifest.project_id,
+        evidence_digest: manifest.evidence_digest,
+        changed_paths: BTreeMap::from([("web".to_string(), changed)]),
+        previous_manifest: None,
+        references,
+        private_files: candidates,
+        revision: None,
+    }
+}
+
+fn one_directory_candidates(count: usize) -> Vec<ProjectPrivateFileCandidate> {
+    (0..count)
+        .map(|index| ProjectPrivateFileCandidate {
+            workspace_id: "web".into(),
+            path: format!("local-assets/chunk-{index:05}.js"),
+            bytes: 10,
+            secret_looking: false,
+        })
+        .collect()
+}
+
+// A model reply that is valid JSON but not an object is an invalid answer, never a panic.
+#[test]
+fn mp08_discovery_rejects_output_that_is_not_an_object() {
+    let input = discovery_input_for(vec![], vec![], vec![]);
+    for output in ["[]", "true", "\"x\"", "3", "null"] {
+        let error = parse_project_environment_discovery_output(output, &input)
+            .expect_err(output)
+            .to_string();
+        assert!(
+            error.contains("invalid Project environment discovery output"),
+            "{output}: {error}"
+        );
+    }
+}
+
+// The prompt is built from bounded input: tracked changed paths no reference or offered file
+// uses cannot push the export over the prompt limit.
+#[test]
+fn mp08_discovery_prompt_stays_bounded_with_many_tracked_changed_paths() {
+    let mut reference = entry("DATABASE_URL", ProjectEnvironmentLocator::Missing);
+    reference.uses[0].path = "src/db.ts".into();
+    let mut changed: Vec<String> = (0..30_000)
+        .map(|index| {
+            format!(
+                "packages/pkg-{}/src/module-{index:05}/index.ts",
+                index % 300
+            )
+        })
+        .collect();
+    changed.push("src/db.ts".into());
+    let input = discovery_input_for(vec![], changed, vec![reference]);
+    let prompt = project_environment_discovery_prompt(&input).unwrap();
+    assert!(prompt.len() < 64 * 1024, "{}", prompt.len());
+    assert!(prompt.contains("src/db.ts") && prompt.contains("DATABASE_URL"));
+    assert!(!prompt.contains("module-00042"));
+}
+
+// Nothing drops silently: files the utility is not shown stay as explicit leave-behind
+// decisions the owner can see and select in the review.
+#[test]
+fn mp08_discovery_keeps_unoffered_ignored_files_as_visible_leave_behind_decisions() {
+    for count in [33, 5_000] {
+        let candidates = one_directory_candidates(count);
+        let input = discovery_input_for(
+            candidates.clone(),
+            candidates.iter().map(|c| c.path.clone()).collect(),
+            vec![],
+        );
+        let offered = discovery::offered_private_files(&candidates);
+        assert_eq!(offered.len(), 32);
+        let mut answer = fixture_manifest(vec![]);
+        answer.private_files = offered
+            .iter()
+            .map(|candidate| ProjectPrivateFileDecision {
+                workspace_id: candidate.workspace_id.clone(),
+                path: candidate.path.clone(),
+                bring: true,
+                reason: "Needed local tooling".into(),
+                secret_looking: false,
+            })
+            .collect();
+        let manifest = parse_project_environment_discovery_output(
+            &serde_json::to_string(&answer).unwrap(),
+            &input,
+        )
+        .unwrap();
+        assert_eq!(
+            manifest.private_files.len(),
+            count,
+            "every candidate has a decision"
+        );
+        let unreviewed = manifest
+            .private_files
+            .iter()
+            .filter(|file| file.reason == UNREVIEWED_PRIVATE_FILE_REASON)
+            .collect::<Vec<_>>();
+        assert_eq!(unreviewed.len(), count - 32);
+        assert!(unreviewed.iter().all(|file| !file.bring));
+        assert_eq!(
+            manifest
+                .private_files
+                .iter()
+                .filter(|file| file.bring)
+                .count(),
+            32
+        );
+
+        // The review says how many were not offered and lists paths in its details.
+        let mut state = review_state();
+        state.manifest = manifest;
+        let review = ProjectEnvironmentReview::build(&state, "p", "t", "code".into(), true, false);
+        let row = review
+            .rows
+            .iter()
+            .find(|row| row.label == "Not reviewed")
+            .unwrap();
+        assert!(
+            row.summary.contains(&(count - 32).to_string()),
+            "{}",
+            row.summary
+        );
+        assert!(review.files.len() < 1_000, "{}", review.files.len());
+        assert!(review
+            .files
+            .iter()
+            .any(|file| file.reason == UNREVIEWED_PRIVATE_FILE_REASON));
+        let collapsed =
+            ProjectEnvironmentReview::build(&state, "p", "t", "code".into(), false, false);
+        assert!(collapsed
+            .files
+            .iter()
+            .all(|file| file.reason != UNREVIEWED_PRIVATE_FILE_REASON));
+
+        // One action copies them all (secret-looking files stay behind); another skips them again.
+        state.manifest.private_files[count - 1].secret_looking = true;
+        let moved = set_unreviewed_project_private_files(&mut state, true);
+        assert_eq!(moved, count - 32 - 1);
+        assert_eq!(
+            state
+                .manifest
+                .private_files
+                .iter()
+                .filter(|file| file.bring)
+                .count(),
+            count - 1
+        );
+        state.manifest.validate().unwrap();
+        let brought = ProjectEnvironmentReview::build(&state, "p", "t", "code".into(), true, false);
+        assert!(brought.files.len() < 1_000, "{}", brought.files.len());
+        assert_eq!(
+            unreviewed_project_private_files(&state.manifest),
+            (1, count - 32 - 1)
+        );
+        set_unreviewed_project_private_files(&mut state, false);
+        assert_eq!(
+            state
+                .manifest
+                .private_files
+                .iter()
+                .filter(|file| file.bring)
+                .count(),
+            32
+        );
+        let after = ProjectEnvironmentReview::build(&state, "p", "t", "code".into(), true, false);
+        assert!(after.rows.iter().any(|row| row.label == "Not reviewed"));
+    }
+}
+
+// A workspace with more ignored files than any fixed ceiling still exports.
+#[test]
+fn mp08_discovery_decides_every_ignored_file_of_a_very_large_inventory() {
+    let candidates = one_directory_candidates(30_000);
+    let input = discovery_input_for(vec![], vec![], vec![]);
+    let input = ProjectEnvironmentDiscoveryInput {
+        private_files: candidates,
+        ..input
+    };
+    let answer = serde_json::to_string(&fixture_manifest(vec![])).unwrap();
+    let manifest = parse_project_environment_discovery_output(&answer, &input).unwrap();
+    assert_eq!(manifest.private_files.len(), 30_000);
 }
 
 // MP-08 / MP-10 / MP-11: A declaration named password is code evidence, not a config secret.

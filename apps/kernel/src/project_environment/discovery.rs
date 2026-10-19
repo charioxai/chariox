@@ -66,39 +66,55 @@ pub(crate) fn offered_private_files(
         .collect()
 }
 
-/// The candidates the utility is not shown (and so never decides this round).
-fn unoffered_private_files<'a>(
-    candidates: &'a [ProjectPrivateFileCandidate],
-    offered: &[&ProjectPrivateFileCandidate],
-) -> Vec<&'a ProjectPrivateFileCandidate> {
-    let offered: HashSet<_> = offered
-        .iter()
-        .map(|candidate| (candidate.workspace_id.as_str(), candidate.path.as_str()))
-        .collect();
-    candidates
-        .iter()
-        .filter(|candidate| {
-            !offered.contains(&(candidate.workspace_id.as_str(), candidate.path.as_str()))
-        })
-        .collect()
-}
-
 pub fn project_environment_discovery_prompt(
     input: &ProjectEnvironmentDiscoveryInput,
 ) -> Result<String, DaemonError> {
     let offered_files = offered_private_files(&input.private_files);
-    // Inventory files the utility is not shown stay out of changed_paths too; listing every
-    // one of them again would dwarf the prompt.
-    let mut changed_paths = input.changed_paths.clone();
-    let left_out: HashSet<_> = unoffered_private_files(&input.private_files, &offered_files)
-        .into_iter()
-        .map(|candidate| (candidate.workspace_id.as_str(), candidate.path.as_str()))
+    // The utility classifies references and the offered files, so only changed paths one of them
+    // names are worth sending; every other tracked path would only dwarf the prompt.
+    let relevant: HashSet<(&str, &str)> = input
+        .references
+        .iter()
+        .chain(input.previous_manifest.iter().flat_map(|m| &m.entries))
+        .flat_map(|entry| {
+            let located = match &entry.locator {
+                ProjectEnvironmentLocator::EnvFile { path, .. }
+                | ProjectEnvironmentLocator::ConfigFile { path } => Some(path.as_str()),
+                _ => None,
+            };
+            let named = (entry.kind == ProjectEnvironmentEntryKind::ConfigFile)
+                .then_some(entry.name.as_str());
+            entry
+                .uses
+                .iter()
+                .map(|usage| usage.path.as_str())
+                .chain(located)
+                .chain(named)
+                .map(|path| (entry.workspace_id.as_str(), path))
+        })
+        .chain(
+            offered_files
+                .iter()
+                .map(|file| (file.workspace_id.as_str(), file.path.as_str())),
+        )
         .collect();
+    let mut changed_paths = input.changed_paths.clone();
     for (workspace, paths) in &mut changed_paths {
-        paths.retain(|path| !left_out.contains(&(workspace.as_str(), path.as_str())));
+        paths.retain(|path| relevant.contains(&(workspace.as_str(), path.as_str())));
     }
+    changed_paths.retain(|_, paths| !paths.is_empty());
+    // Earlier decisions for files the utility is not shown stay in kernel state, not in the prompt.
+    let previous_manifest = input.previous_manifest.clone().map(|mut manifest| {
+        manifest.private_files.retain(|decision| {
+            offered_files.iter().any(|file| {
+                file.workspace_id == decision.workspace_id && file.path == decision.path
+            })
+        });
+        manifest
+    });
     let offered = ProjectEnvironmentDiscoveryInput {
         private_files: offered_files.into_iter().cloned().collect(),
+        previous_manifest,
         changed_paths,
         ..input.clone()
     };
@@ -124,7 +140,9 @@ pub fn parse_project_environment_discovery_output(
         ));
     }
     let mut value: serde_json::Value = serde_json::from_str(output)
-        .map_err(|_| environment_error("invalid Project environment discovery output"))?;
+        .ok()
+        .filter(serde_json::Value::is_object)
+        .ok_or_else(|| environment_error("invalid Project environment discovery output"))?;
     // Decisions are best effort: a model that derails partway through a long list (an entry
     // without `bring`) or echoes the candidate's size beside a decision must not fail the export.
     // An undecided file is simply left out, like one the utility was not shown.
@@ -173,16 +191,33 @@ pub fn parse_project_environment_discovery_output(
             .expect("inventory validated");
         file.secret_looking = candidate.secret_looking;
     }
-    // A file the utility was not shown keeps its earlier decision and is otherwise
-    // left out: only an explicit decision brings a private file.
-    for candidate in unoffered_private_files(&input.private_files, &offered) {
-        if let Some(known) = input.previous_manifest.as_ref().and_then(|manifest| {
+    // A file without a decision (not offered, or skipped by the utility) keeps its earlier
+    // decision, else stays behind as an explicit unreviewed decision the owner can see in the review.
+    let decided: HashSet<_> = manifest
+        .private_files
+        .iter()
+        .map(|file| (file.workspace_id.clone(), file.path.clone()))
+        .collect();
+    for candidate in &input.private_files {
+        if decided.contains(&(candidate.workspace_id.clone(), candidate.path.clone())) {
+            continue;
+        }
+        let known = input.previous_manifest.as_ref().and_then(|manifest| {
             manifest.private_files.iter().find(|known| {
                 known.workspace_id == candidate.workspace_id && known.path == candidate.path
             })
-        }) {
-            manifest.private_files.push(known.clone());
-        }
+        });
+        manifest.private_files.push(
+            known
+                .cloned()
+                .unwrap_or_else(|| ProjectPrivateFileDecision {
+                    workspace_id: candidate.workspace_id.clone(),
+                    path: candidate.path.clone(),
+                    bring: false,
+                    reason: UNREVIEWED_PRIVATE_FILE_REASON.into(),
+                    secret_looking: candidate.secret_looking,
+                }),
+        );
     }
     let previous = input
         .previous_manifest

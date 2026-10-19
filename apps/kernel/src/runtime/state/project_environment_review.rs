@@ -95,6 +95,24 @@ impl KernelRuntimeState {
                     Some(RuntimeInteractionChoiceStyle::Secondary),
                 ),
             ];
+            let (unreviewed_left, unreviewed_brought) =
+                unreviewed_project_private_files(&state.manifest);
+            if unreviewed_left > 0 {
+                choices.push(RuntimeInteractionChoice::new(
+                    "bring-unreviewed",
+                    format!("Bring all {unreviewed_left} not-reviewed ignored files"),
+                    "bring-unreviewed",
+                    None,
+                ));
+            }
+            if unreviewed_brought > 0 {
+                choices.push(RuntimeInteractionChoice::new(
+                    "leave-unreviewed",
+                    format!("Leave the {unreviewed_brought} not-reviewed ignored files behind"),
+                    "leave-unreviewed",
+                    None,
+                ));
+            }
             if expanded {
                 for file in review
                     .files
@@ -212,6 +230,10 @@ impl KernelRuntimeState {
                     validate_project_private_files_present(&state.manifest, roots)?;
                     accept_project_environment_review(state, review);
                     return Ok(additions);
+                }
+                "bring-unreviewed" | "leave-unreviewed" => {
+                    set_unreviewed_project_private_files(state, action == "bring-unreviewed");
+                    supply = None;
                 }
                 "details" => {
                     expanded = !expanded;
