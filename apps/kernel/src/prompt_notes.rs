@@ -10,6 +10,8 @@ use crate::prompt_assembly::{assembled_prompt_component, prompt_component};
 use crate::session::PromptAttachment;
 
 pub const NOTE_ATTACHMENT_MIME: &str = "application/vnd.chariox.note+json";
+/// Typed into providers that need visible input to start a turn when a message is notes only.
+pub(crate) const NOTE_ONLY_PROMPT: &str = "Please read the attached notes.";
 const MAX_NOTES: usize = 16;
 const MAX_NOTE_BYTES: usize = 48 * 1024;
 
