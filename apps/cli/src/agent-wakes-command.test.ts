@@ -7,7 +7,7 @@ import type { RuntimeSession } from "./cli-types.js"
 function wake(id: string, agentId: string, label: string) {
   return {
     id, task_id: "t", room_id: "room", agent_id: agentId, registration_id: "r", kind: "timer", label,
-    state: "scheduled", created_at_ms: 1, verified_at_ms: 2, next_due_ms: null, interval_ms: null,
+    state: "scheduled", created_at_ms: 1, verified_at_ms: 2, next_due_ms: null as number | null, interval_ms: null,
     summary: "once", detail: null, fire_count: 0, missed_fires: 0, last_fired_at_ms: null, last_sequence: null,
     last_delivery: null, last_delivered_at_ms: null, last_acknowledged_at_ms: null, alerted_sequence: null,
   }
@@ -44,4 +44,18 @@ test("/agent wakes refuses an unknown agent without listing anything", async () 
   await handleAgentSlashCommand(unknown.deps, { kind: "agent", args: ["wakes", "nobody"] } as never)
   assert.deepEqual(unknown.notices, [])
   assert.deepEqual(unknown.footers, ["unknown agent nobody"])
+})
+
+test("/agent wakes shows when a scheduled wake fires next", async () => {
+  const due = Date.UTC(2026, 9, 21, 8, 30, 15)
+  const scheduled = harness()
+  const session = scheduled.deps.sessionState() as unknown as { agent_wakes: Array<ReturnType<typeof wake>> }
+  session.agent_wakes = [
+    { ...wake("w1", "a1", "later"), summary: "", next_due_ms: due },
+    { ...wake("w2", "a1", "done"), state: "exited", next_due_ms: due },
+  ]
+  await handleAgentSlashCommand(scheduled.deps, { kind: "agent", args: ["wakes"] } as never)
+  const [armed, ended] = scheduled.notices[0]!.split("\n")
+  assert.match(armed!, /^timer 'later' scheduled next 2026-10-21 08:30:15Z verified \|/)
+  assert.doesNotMatch(ended!, /next /)
 })

@@ -275,13 +275,14 @@ impl PromptRuntimeState {
         self.scheduler_state = SchedulerState::Idle;
     }
 
-    /// Client projections omit agent-only kernel instructions.
+    /// Client projections omit agent-only kernel instructions. A running
+    /// internal turn keeps its identity and status so clients can stop it.
     pub(in crate::session) fn hide_internal_prompts(&mut self, focused_agent_id: Option<&str>) {
         let internal =
             |prompt: &PromptQueueItem| crate::session::is_internal_prompt_echo_id(prompt.id());
         for state in self.prompt_states.values_mut() {
-            if state.active_prompt.as_ref().is_some_and(internal) {
-                state.active_prompt = None;
+            if let Some(active) = state.active_prompt.as_mut().filter(|p| internal(p)) {
+                active.clear_instruction();
             }
             state.queued_prompts.retain(|prompt| !internal(prompt));
         }

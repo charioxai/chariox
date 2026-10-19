@@ -309,6 +309,48 @@ async fn ev13_driver_occurrence_wakes_the_waiting_task_once() {
 }
 
 #[tokio::test]
+async fn failed_wake_dispatch_settles_the_admitted_prompt_and_keeps_the_receipt() {
+    let f = fixture("ev13-dispatch-failure", false).await;
+    let task = f.begin("turn-1");
+    let wake = f.arm(&task, "wake-a").unwrap();
+    f.wait_on(&task, &wake.registration_id);
+    // The provider process is gone before the wake turn can reach it.
+    f.app.lock().await.pty_mut().remove_process(&f.run).unwrap();
+
+    f.runtime
+        .wake_sink(KIND)
+        .occurred(f.occurrence("wake-a", "line-1", None))
+        .unwrap();
+    // The attempt returns the event to pending with its receipt; the admitted
+    // wake turn must not stay the active prompt of an agent no provider serves.
+    let settled = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+            let active = f
+                .runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &f.agent);
+            let events = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
+            if active.is_none()
+                && events
+                    .iter()
+                    .any(|e| e.state == "pending" && e.attempted_at_ms.is_some())
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(
+        settled.is_ok(),
+        "a failed wake dispatch left its prompt active: {:?}",
+        f.store().agent_inbox(&f.room, &f.agent, 0).unwrap()
+    );
+}
+
+#[tokio::test]
 async fn ev13_forged_source_identity_is_refused_before_the_ledger() {
     let f = fixture("ev13-forged-source", false).await;
     let task = f.begin("turn-1");

@@ -7,6 +7,10 @@ function clock(ms: number | null | undefined): string {
   return ms && Number.isFinite(ms) && ms < 8.64e15 ? new Date(ms).toISOString().slice(11, 19) + "Z" : "-"
 }
 
+function instant(ms: number): string {
+  return ms < 8.64e15 ? new Date(ms).toISOString().slice(0, 19).replace("T", " ") + "Z" : "-"
+}
+
 export function sessionAgentWakes(session: RuntimeSession | null | undefined, agentId: string | null): AgentWake[] {
   return (session?.agent_wakes ?? []).filter((wake) => agentId === null || wake.agent_id === agentId)
 }
@@ -21,6 +25,8 @@ export function formatAgentWakeLines(session: RuntimeSession | null | undefined,
       ? `fired ${clock(wake.last_fired_at_ms)} delivered ${clock(wake.last_delivered_at_ms)} acked ${clock(wake.last_acknowledged_at_ms)} (${wake.last_delivery ?? "pending"})`
       : "not fired"
     const missed = wake.missed_fires ? ` missed ${wake.missed_fires}` : ""
-    return `${wake.kind} '${wake.label}' ${wake.state} ${wake.summary} ${proof} | ${wake.fire_count}x, last ${receipt}${missed}`
+    const due = wake.next_due_ms && ARMED.has(wake.state) ? ` next ${instant(wake.next_due_ms)}` : ""
+    const summary = wake.summary ? ` ${wake.summary}` : ""
+    return `${wake.kind} '${wake.label}' ${wake.state}${due}${summary} ${proof} | ${wake.fire_count}x, last ${receipt}${missed}`
   })
 }
