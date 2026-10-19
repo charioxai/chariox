@@ -195,6 +195,18 @@ def matches(node, target):
     except Exception: raise ValueError('Vault fill field unavailable') from None
 
 
+def process_live(target):
+    # MP-11: a dead generation cannot own pixels. Check it before querying an
+    # old XID: Xlib can report a destroyed window as a missing property rather
+    # than BadWindow. Unknown live-process state still fails closed.
+    try:
+        raw = Path('/proc/' + str(target['pid']) + '/stat').read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+    fields = raw[raw.rfind(')')+2:].split()
+    return fields[0] not in ('Z', 'X') and fields[19] == str(target['started'])
+
+
 def regions():
     """Mask each still-live filled plain entry, retiring removed/replaced entries."""
     targets = read()
@@ -210,6 +222,7 @@ def regions():
     try:
         for target in targets:
             try:
+                if not process_live(target): continue
                 window = connection.create_resource_object('window', target['window'])
                 owner = window.get_full_property(connection.intern_atom('_NET_WM_PID'), X.AnyPropertyType)
                 if owner is None or len(owner.value) != 1: raise ValueError('Vault fill field unavailable')
