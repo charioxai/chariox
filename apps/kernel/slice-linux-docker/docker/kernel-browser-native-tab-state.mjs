@@ -3,6 +3,8 @@
 import {retireNativeStates} from './kernel-browser-native-worker.mjs';
 export const nativeWindowChangedBinding='__charioxNativeWindowChanged';
 export const nativeBoundsPayload='bounds';
+// Events that cannot change page geometry: they drop the cached snapshot only.
+const softPayloads=new Set([nativeBoundsPayload,'zoomsame']);
 export class NativeTabState {
  constructor(connection,onDetached,onChange){
   this.connection=connection;this.onDetached=onDetached;this.onChange=onChange;this.supported=typeof connection.subscribe==='function';this.epoch=0;this.guardEpoch=0;this.session=null;this.ready=false;this.closed=false;this.active=null;this.viewport=null;
@@ -32,7 +34,7 @@ export class NativeTabState {
   if(message?.method==='Target.detachedFromTarget'&&message.params?.sessionId===this.session){this.cause=message.method;this.detach();return;}
   if(message?.sessionId!==this.session||!this.session)return;
   if(['Runtime.executionContextsCleared','Runtime.executionContextDestroyed','Inspector.detached'].includes(message.method)){this.cause=message.method;this.detach();return;}
-  if(message.method==='Runtime.bindingCalled'&&message.params?.name===nativeWindowChangedBinding){this.cause=`${message.method} ${String(message.params.payload).replace(/[^a-zA-Z]/g,'').slice(0,20)}`;message.params.payload===nativeBoundsPayload?this.invalidateBounds():this.invalidate();}
+  if(message.method==='Runtime.bindingCalled'&&message.params?.name===nativeWindowChangedBinding){this.cause=`${message.method} ${String(message.params.payload).replace(/[^a-zA-Z]/g,'').slice(0,20)}`;softPayloads.has(message.params.payload)?this.invalidateBounds():this.invalidate();}
  }
  usable(){return !this.closed&&this.ready&&!!this.session&&this.connection.isOpen?.()!==false;}
  remember(kind,value,epoch){

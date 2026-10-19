@@ -15,7 +15,9 @@ const manifest = { manifest_version: 3, name: "Chariox tab groups", version: "1"
 const worker = `// MP-08/MP-11: driven by the kernel over CDP.
 const invalidateNativeState = payload => () => globalThis[${JSON.stringify(nativeWindowChangedBinding)}]?.(payload);
 // The payload only names the event kind (diagnostics); every kind but bounds retires the guards.
-for (const [kind, event] of [['activated', chrome.tabs.onActivated], ['removed', chrome.tabs.onRemoved], ['zoom', chrome.tabs.onZoomChange], ['windowRemoved', chrome.windows.onRemoved]]) event?.addListener?.(invalidateNativeState(kind));
+for (const [kind, event] of [['activated', chrome.tabs.onActivated], ['removed', chrome.tabs.onRemoved], ['windowRemoved', chrome.windows.onRemoved]]) event?.addListener?.(invalidateNativeState(kind));
+// Chrome also reports the zoom it applies to a newly committed page; only a changed factor can change the layout.
+chrome.tabs.onZoomChange?.addListener?.(info => invalidateNativeState(typeof info?.oldZoomFactor === 'number' && info.oldZoomFactor === info.newZoomFactor ? 'zoomsame' : 'zoom')());
 chrome.windows.onBoundsChanged?.addListener?.(invalidateNativeState(${JSON.stringify(nativeBoundsPayload)}));
 const targetTabs = async () => new Map((await chrome.debugger.getTargets()).filter(t => t.tabId !== undefined).map(t => [t.id, t.tabId]));
 // An extension API call every 20 s keeps this worker alive for the kernel.
