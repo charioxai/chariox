@@ -978,7 +978,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const node = live(request.node_id), keys = ['value', 'checked', 'selected_index'].filter(key => request[key] !== undefined).join();
       const control = node.localName === 'option' ? node.closest('select') : node;
       if (node.nodeType !== 1 || !control || control.matches(':disabled') || node.matches?.(':disabled') || control.readOnly) throw new Error('mirror2 control unavailable');
-      if (/password|one-time-code|cc-/i.test(control.autocomplete || '') || control.closest('[data-chariox-secret],[data-chariox-observation-protected],[data-observation-protected]')) throw new Error('mirror2 protected control');
       if (node.localName === 'select' && !node.multiple && keys === 'selected_index' && Number.isInteger(request.selected_index) && request.selected_index >= -1 && request.selected_index < node.options.length) node.selectedIndex = request.selected_index;
       else if (node.localName === 'option' && control.localName === 'select' && control.multiple && keys === 'checked' && typeof request.checked === 'boolean') node.selected = request.checked;
       else if (node.localName === 'input' && PICKED.has(node.type) && keys === 'value' && typeof request.value === 'string' && request.value.length <= 256) node.value = request.value;

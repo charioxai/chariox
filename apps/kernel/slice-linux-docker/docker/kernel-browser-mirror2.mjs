@@ -413,7 +413,7 @@ export class Mirror2 {
     // still keeps the previous page. A new subscription has no previous page to keep.
     // A document the native preview already covers needs no hold: the viewer keeps the preview until its own handover gate.
     if (stream.previewDocument !== tab.document_id && (stream.document_id && stream.document_id !== tab.document_id || !stream.document_id && world.holdInitialPaint)) { await this.evaluate(world, paintHoldExpression(Math.max(0, PAINT_HOLD_MS - (world.navigatedAt ? timestamp() - world.navigatedAt : 0))), true).catch(() => {}); mark('paint_hold'); assertNotCancelled(signal); }
-    if (stream.document_id !== tab.document_id) { stream.acked = 0; stream.prunedAt = 0; stream.resources.clear(); stream.attrSequence.clear(); stream.ownScrolls.clear(); stream.tilesAt = 0; stream.loadedCount = -1; stream.loadedSeen = null; }
+    if (stream.document_id !== tab.document_id) { stream.acked = 0; stream.prunedAt = 0; stream.resources.clear(); stream.attrSequence.clear(); stream.ownScrolls.clear(); stream.tilesAt = 0; stream.loadedCount = -1; }
     // Rebased ids/keys bound the frame slot; a long session re-snapshots instead.
     if (stream.frameSlot >= 900) reset = true;
     // Frame slots restart with a snapshot, so rebased child keys are re-learned.
@@ -668,17 +668,17 @@ export class Mirror2 {
   async materialize(main, stream, kind, drained) {
     const worlds = new Map([[0, main], ...[...stream.frameSlots].map(([slot, entry]) => [slot, entry.child])]);
     let counts = 0; for (const [slot, world] of worlds) counts += !slot && Number.isSafeInteger(drained) ? drained : await this.evaluate(world, `${world.ref}.loadedCount()`).catch(() => 0);
-    // A waiting resource is retried once per load count and class: a font-only credit leaves images their retry.
-    const seen = stream.loadedSeen ??= {font: -1, rest: -1}; stream.loadedCount = counts;
+    // A waiting resource is retried once per load count, counted when it is actually attempted: a font-only credit, or a
+    // packet budget a font filled, leaves images their retry.
+    stream.loadedCount = counts;
     const out = [];
     // All document fonts precede images, including a child document's fonts
     // when main-document images alone would consume the whole packet budget.
     for (const pass of kind ? [kind] : ['font', null]) {
-     const cls = pass === 'font' ? 'font' : 'rest', recheck = counts !== seen[cls]; seen[cls] = counts;
      for (const [slot, world] of worlds) {
       const remaining = this.packetBytes(stream) - out.reduce((n, r) => n + r.data_base64.length, 0);
       if (remaining <= 0) return out;
-      const due = [...stream.resources.values()].filter(entry => (entry.slot ?? 0) === slot && (pass ? entry.kind === pass : entry.kind !== 'font') && (entry.state === 'new' || entry.state === 'ok' && !entry.sent || entry.state === 'waiting' && recheck));
+      const due = [...stream.resources.values()].filter(entry => (entry.slot ?? 0) === slot && (pass ? entry.kind === pass : entry.kind !== 'font') && (entry.state === 'new' || entry.state === 'ok' && !entry.sent || entry.state === 'waiting' && entry.triedAt !== counts));
       if (due.length) out.push(...await this.materializeWorld(world, due, slot, remaining, stream));
      }
     }
@@ -717,6 +717,7 @@ export class Mirror2 {
     const out = []; let bytes = 0;
     for (const entry of due) {
       if (bytes >= budget) break;
+      entry.triedAt = stream?.loadedCount;
       if (entry.state !== 'ok') {
         let body = null;
         if (entry.url.startsWith('data:')) body = dataUrlBytes(entry.url);

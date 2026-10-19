@@ -93,7 +93,8 @@ test('MP-08/MP-10 a font-only credit does not consume the image retry that a new
  const mirror=new Mirror2({host:{}}),image={key:'r1',kind:'image',state:'waiting',tries:0},font={key:'r2',kind:'font',state:'new',tries:0};
  const stream={issued:1,movedAt:0,frameSlots:new Map(),resources:new Map([['r1',image]])},due=[];
  mirror.packetBytes=()=>64;mirror.evaluate=async()=>0;
- mirror.materializeWorld=async(_world,entries)=>{due.push(entries.map(entry=>entry.key));return []};
+ // The real materializeWorld stamps each entry it attempts with the load count (the budget-filled case has its own test).
+ mirror.materializeWorld=async(_world,entries,_slot,_budget,owner)=>{due.push(entries.map(entry=>entry.key));for(const entry of entries)entry.triedAt=owner.loadedCount;return []};
  await mirror.materialize({ref:'m'},stream,null,4);
  stream.resources.set('r2',font);
  await mirror.materialize({ref:'m'},stream,'font',5);

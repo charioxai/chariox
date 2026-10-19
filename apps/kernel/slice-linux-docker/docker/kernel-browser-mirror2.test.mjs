@@ -849,3 +849,24 @@ test('MP-08/MP-10/MP-11 a credit queued behind a stuck one spends its own deadli
  assert.equal(first.code, 'browser_cdp_timeout'); assert.equal(second.code, 'browser_cdp_timeout');
  assert.ok(performance.now() - started < 250, `the queued credit ends with the first one's deadline, not a full deadline later: ${Math.round(performance.now() - started)} ms`);
 });
+
+// r67 (review #1016 @5947a7dad P2): a waiting image keeps its retry for the load count it was last attempted at. A font
+// that fills the packet budget at the new count must not spend the image's retry without attempting it.
+test('MP-10: a waiting image is retried after a font filled the packet budget at the new load count', async () => {
+  const font = Buffer.concat([Buffer.from('wOF2'), Buffer.alloc(196_608 - 4, 1)]), png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(100, 7)]);
+  let count = 4, available = ['https://x/a.woff2'];
+  const bodies = { 'https://x/a.woff2': font, 'https://x/i.png': png };
+  const world = { connection: { send: async (method, params) => method === 'Page.getResourceTree'
+    ? { frameTree: { frame: { id: 'f' }, resources: available.map(url => ({ url })) } }
+    : { base64Encoded: true, content: bodies[params.url].toString('base64') } }, sessionId: 's', ref: 'm', frame: { id: 'f' } };
+  const mirror = new Mirror2({ host: {} });
+  mirror.evaluate = async (w, expression) => expression.includes('nearImages') ? { near: [], all: [] } : expression.includes('loadedCount') ? count : ['r1', 'r2'].filter(key => key === 'r1' ? available.includes('https://x/i.png') : false);
+  const stream = { resources: new Map(), frameSlots: new Map(), movedAt: 0, inputAt: 0, issued: 0 };
+  mirror.register(stream, { resources: [{ key: 'r1', url: 'https://x/i.png', kind: 'image' }] });
+  assert.deepEqual(await mirror.materialize(world, stream, null), [], 'the image is not loaded yet at count 4');
+  assert.equal(stream.resources.get('r1').state, 'waiting');
+  count = 5; available = ['https://x/a.woff2', 'https://x/i.png'];
+  mirror.register(stream, { resources: [{ key: 'r2', url: 'https://x/a.woff2', kind: 'font' }] });
+  assert.deepEqual((await mirror.materialize(world, stream, null)).map(r => r.key), ['r2'], 'the font fills the whole budget; the image is skipped');
+  assert.deepEqual((await mirror.materialize(world, stream, null)).map(r => r.key), ['r1'], 'the next credit at the same count still attempts the image');
+});
