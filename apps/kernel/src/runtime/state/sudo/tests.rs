@@ -1745,3 +1745,336 @@ async fn sudo_review_control_verbs_in_tasks_reach_authorization() {
         assert!(task.await.unwrap().is_err());
     }
 }
+
+// MP-08 / MP-10 / MP-11: existing user sudo approval covers private Vault paste.
+#[tokio::test]
+async fn sudo_computer_secret_uses_existing_authority_without_interaction() {
+    let f = fixture();
+    let turn = running(&f);
+    let target = crate::transport::room_browser_controller::RoomComputerSecretTarget {
+        active_window: 3,
+        focus_window: 4,
+        geometry: [0, 0, 100, 30],
+        window_geometry: [0, 0, 200, 200],
+    };
+    let approved = tokio::time::timeout(
+        Duration::from_millis(250),
+        f.state.ensure_computer_secret_input_approved_for_field(
+            &turn.session_id,
+            &turn.agent_id,
+            "fixture-handle",
+            &target,
+            None,
+        ),
+    )
+    .await
+    .expect("active sudo must not wait for another user approval")
+    .unwrap();
+    let approved = approved.expect("the existing sudo permission must be recorded");
+    assert!(f.state.sudo_turn_live(&approved));
+    f.state
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .remove(&turn.entry_id);
+    assert!(!f.state.sudo_turn_live(&approved));
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            f.state.ensure_computer_secret_input_approved_for_field(
+                &turn.session_id,
+                &turn.agent_id,
+                "fixture-handle",
+                &target,
+                None,
+            )
+        )
+        .await
+        .is_err(),
+        "revoked sudo must require owner approval again"
+    );
+}
+
+// MP-08/MP-10/MP-11: catalog changes continue the same preauthorized login.
+#[tokio::test]
+async fn sudo_survives_legacy_computer_catalog_continuation() {
+    let f = fixture();
+    let turn = running(&f);
+    f.state.remember_pending_runtime_tools_continuation(
+        &turn.session_id,
+        &turn.agent_id,
+        "finish the authorized login",
+    );
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&turn.session_id)
+        .unwrap();
+    f.state
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_only(&session, &turn.agent_id)
+        .unwrap();
+    f.state.sweep_sudo();
+    assert_eq!(
+        f.state.list_sudo_turns("local").len(),
+        1,
+        "MP-08/MP-11: a Computer catalog continuation must retain the login authority"
+    );
+    // A gap does not authorize a tool call without a running correlated turn.
+    assert!(f.state.sudo_for_auth_token("sudo-fixture-bearer").is_err());
+    let next = f
+        .state
+        .owned
+        .pending_mcp_continuations
+        .write()
+        .get(&turn.agent_id)
+        .unwrap()
+        .continuation_prompt_id
+        .clone();
+    assert!(f
+        .state
+        .owned
+        .sudo_work_defers(&session, &turn.agent_id, "unrelated-owner-work"));
+    assert!(!f
+        .state
+        .owned
+        .sudo_work_defers(&session, &turn.agent_id, &next));
+    f.state
+        .owned
+        .prompt_state_owner
+        .submit_prepared_prompt_with_queue_policy(
+            &session,
+            PromptQueueItem::new(
+                &next,
+                &f.request.attachment_id,
+                &turn.agent_id,
+                "continue login",
+                PromptStatus::Queued,
+            ),
+            false,
+            false,
+        )
+        .unwrap();
+    f.state
+        .owned
+        .prompt_state_owner
+        .finish_sudo_catalog_prompt(&session, &turn.agent_id, &next);
+    let current = f.state.sudo_for_auth_token("sudo-fixture-bearer").unwrap();
+    assert_eq!(current.entry_id, turn.entry_id);
+    assert_eq!(current.prompt_id.as_deref(), Some(next.as_str()));
+    let target = crate::transport::room_browser_controller::RoomComputerSecretTarget {
+        active_window: 3,
+        focus_window: 4,
+        geometry: [0, 0, 100, 30],
+        window_geometry: [0, 0, 200, 200],
+    };
+    assert!(tokio::time::timeout(
+        Duration::from_millis(250),
+        f.state.ensure_computer_secret_input_approved_for_field(
+            &turn.session_id,
+            &turn.agent_id,
+            "fixture-handle",
+            &target,
+            None
+        )
+    )
+    .await
+    .expect("continued login must raise zero prompts")
+    .unwrap()
+    .is_some());
+    f.state
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_only(&session, &turn.agent_id)
+        .unwrap();
+    assert!(
+        f.state.list_sudo_turns("local").is_empty(),
+        "finished login must end authority"
+    );
+}
+
+#[tokio::test]
+async fn sudo_catalog_handoff_never_survives_expiry_or_revoke() {
+    for revoke in [false, true] {
+        let f = fixture();
+        let turn = running(&f);
+        f.state.remember_pending_runtime_tools_continuation(
+            &turn.session_id,
+            &turn.agent_id,
+            "continue login",
+        );
+        if revoke {
+            f.state
+                .revoke_sudo(Some("local"), Some(&turn.entry_id), "owner_revoke")
+                .unwrap();
+        } else {
+            f.state
+                .owned
+                .sudo_turns
+                .lock()
+                .unwrap()
+                .get_mut(&turn.entry_id)
+                .unwrap()
+                .deadline = Some(std::time::Instant::now() - Duration::from_secs(1));
+        }
+        assert!(f.state.list_sudo_turns("local").is_empty());
+        assert!(f.state.sudo_for_auth_token("sudo-fixture-bearer").is_err());
+    }
+}
+
+// MP-08/MP-10/MP-11 V03: one trusted sheet carries unlock, duration and login consent.
+#[tokio::test]
+async fn computer_login_combines_unlock_and_reuses_revocable_task_grant() {
+    let f = fixture();
+    let turn = running(&f);
+    f.state.owned.sudo_turns.lock().unwrap().clear();
+    let mut config = f.state.owned.config_projection.snapshot();
+    config.user_config.credential_vault.unlock_policy =
+        crate::config::CredentialVaultUnlockPolicy::Ttl;
+    let vault = config.user_config.credential_vault.path.clone();
+    f.state.owned.config_projection.update(config);
+    crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
+    let consent = f.state.ensure_computer_login_approved(
+        &turn.session_id,
+        &turn.agent_id,
+        "login-handle",
+        "app-start-1",
+        "the selected login app",
+    );
+    tokio::pin!(consent);
+    let interaction = tokio::select! {
+        _=&mut consent=>panic!("locked login must ask once"),
+        result=tokio::time::timeout(Duration::from_secs(2),async {
+            loop {
+                if let Some(it)=f.state.owned.session_store.get_session(&turn.session_id).unwrap().active_interactions().iter().find(|i|i.id().starts_with("vault-unlock-")).cloned(){break it;}
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })=>result.unwrap()
+    };
+    assert!(interaction
+        .custom_choice()
+        .is_some_and(|c| c.input_kind() == crate::session::RuntimeInteractionInputKind::Secret));
+    assert!(
+        interaction.choice("unlock_60m").is_some(),
+        "duration belongs on the same sheet"
+    );
+    assert!(interaction.message().contains("login-handle"));
+    assert!(
+        f.state
+            .owned
+            .resolve_runtime_interaction(
+                &turn.session_id,
+                interaction.id(),
+                "unlock_60m",
+                None,
+                Some("local"),
+                false
+            )
+            .is_err(),
+        "duration cannot become a passphrase"
+    );
+    f.state
+        .owned
+        .resolve_runtime_interaction(
+            &turn.session_id,
+            interaction.id(),
+            "unlock_60m",
+            Some(PASSKEY),
+            Some("local"),
+            false,
+        )
+        .unwrap();
+    let approval = tokio::time::timeout(Duration::from_millis(500), &mut consent)
+        .await
+        .expect("no second sheet")
+        .unwrap();
+    assert_eq!(approval.authority(), "login_grant");
+    assert!(f.state.computer_secret_approval_live(&approval));
+    let reused = tokio::time::timeout(
+        Duration::from_millis(250),
+        f.state.ensure_computer_login_approved(
+            &turn.session_id,
+            &turn.agent_id,
+            "login-handle",
+            "app-start-1",
+            "same app",
+        ),
+    )
+    .await
+    .expect("same login must not ask per paste")
+    .unwrap();
+    assert!(f.state.computer_secret_approval_live(&reused));
+    for (credential, app) in [
+        ("other-handle", "app-start-1"),
+        ("login-handle", "other-app"),
+    ] {
+        assert!(tokio::time::timeout(
+            Duration::from_millis(30),
+            f.state.ensure_computer_login_approved(
+                &turn.session_id,
+                &turn.agent_id,
+                credential,
+                app,
+                "other scope"
+            )
+        )
+        .await
+        .is_err());
+    }
+    f.state.revoke_computer_login_grants();
+    assert!(!f.state.computer_secret_approval_live(&approval));
+    assert!(!f.state.computer_secret_approval_live(&reused));
+    crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
+}
+
+// MP-11: legacy Room XIDs cannot establish reusable application identity.
+#[tokio::test]
+async fn computer_login_room_window_without_process_identity_is_one_operation() {
+    let f = fixture();
+    let turn = running(&f);
+    f.state.owned.sudo_turns.lock().unwrap().clear();
+    let config = f
+        .state
+        .owned
+        .config_projection
+        .snapshot()
+        .user_config
+        .credential_vault;
+    crate::secret::unlock_chariox_encrypted_vault(
+        &config.path,
+        PASSKEY,
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    f.state.owned.computer_login_grants.insert(
+        super::super::computer_login_grant::LoginScope {
+            owner: "local".into(),
+            session: turn.session_id.clone(),
+            agent: turn.agent_id.clone(),
+            credential: "handle".into(),
+            app: "room:1:41".into(),
+        },
+        turn.prompt_id.clone().unwrap(),
+        60,
+    );
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            f.state.ensure_computer_login_approved(
+                &turn.session_id,
+                &turn.agent_id,
+                "handle",
+                "room:1:41",
+                "selected Room window"
+            )
+        )
+        .await
+        .is_err(),
+        "a reused XID must not inherit login consent without a process/start identity"
+    );
+    f.state.revoke_computer_login_grants();
+    crate::secret::lock_chariox_encrypted_vault(&config.path).unwrap();
+}

@@ -99,6 +99,76 @@ class TraversalTest(unittest.TestCase):
             if module is None: sys.modules.pop(name, None)
             else: sys.modules[name] = module
 
+    def test_mp11_action_digest_omits_selection_text_but_keeps_identity_and_protection(self):
+        base={'available':True,'nodes':[{'pid':200,'path':[0],'protected':False,'text':'first'}]}
+        edited={**base,'nodes':[{**base['nodes'][0],'text':'edited'}]}
+        self.assertEqual(self.driver.tree_digest(base),self.driver.tree_digest(edited))
+        for change in [{'protected':True},{'path':[1]},{'pid':201}]:
+            self.assertNotEqual(self.driver.tree_digest(base),self.driver.tree_digest({**edited,'nodes':[{**edited['nodes'][0],**change}]}))
+
+    def test_mp08_public_button_activate_uses_the_observed_click_action(self):
+        from unittest.mock import Mock
+        click=Mock(return_value=True)
+        node=Node('Sign in','push button')
+        node.queryAction=lambda:types.SimpleNamespace(nActions=1,getName=lambda _:'click',doAction=click)
+        self.desktop=Node('Desktop','desktop',[Node('Office','application',[Node('Login','frame',[node])])])
+        processes=[{'pid':200,'started':'1'}]
+        tree=self.driver.snapshot(processes);entry=next(n for n in tree['nodes'] if n['name']=='Sign in')
+        self.assertIn('activate',entry['actions'])
+        request={'processes':processes,'expected_tree_digest':self.driver.tree_digest(tree),'pid':200,'started':'1','path':entry['path'],'action':'activate'}
+        self.assertEqual(self.driver.act(request),{'applied':True});click.assert_called_once_with(0)
+        node.role='text'
+        tree=self.driver.snapshot(processes);entry=next(n for n in tree['nodes'] if n['name']=='Sign in')
+        self.assertNotIn('activate',entry['actions'])
+        with self.assertRaises(ValueError):self.driver.act({**request,'expected_tree_digest':self.driver.tree_digest(tree)})
+        click.assert_called_once()
+
+    def test_mp08_public_editable_focus_is_distinct_from_submit_and_stays_target_bound(self):
+        from unittest.mock import Mock
+        focus=Mock(return_value=True);activate=Mock(return_value=True)
+        node=Node('Username','text')
+        node.getState=lambda:types.SimpleNamespace(contains=lambda flag:True)
+        rect=types.SimpleNamespace(x=110,y=100,width=200,height=30)
+        node.queryComponent=lambda:types.SimpleNamespace(getExtents=lambda _:rect,grabFocus=focus)
+        node.queryAction=lambda:types.SimpleNamespace(nActions=1,getName=lambda _:'activate',doAction=activate)
+        self.desktop=Node('Desktop','desktop',[Node('Office','application',[Node('Writer','frame',[node])])])
+        processes=[{'pid':200,'started':'1'}]
+        tree=self.driver.snapshot(processes);entry=next(n for n in tree['nodes'] if n['name']=='Username')
+        self.assertEqual(entry['actions'],['focus','activate'])
+        request={'processes':processes,'expected_tree_digest':self.driver.tree_digest(tree),'pid':200,'started':'1','path':entry['path'],'action':'focus'}
+        self.assertEqual(self.driver.act(request),{'applied':True})
+        focus.assert_called_once();activate.assert_not_called()
+        node.name='Different field'
+        with self.assertRaises(ValueError):self.driver.act(request)
+        focus.assert_called_once()
+        class NoSecretReads(Node):
+            def __getattribute__(self,key):
+                if key=='name' and object.__getattribute__(self,'secret'):raise AssertionError('private field name queried')
+                return super().__getattribute__(key)
+        node.__class__=NoSecretReads
+        node.queryText=lambda:(_ for _ in ()).throw(AssertionError('private field text queried'))
+        node.secret=True;node.role='password text'
+        protected=self.driver.snapshot(processes);entry=next(n for n in protected['nodes'] if n['role']=='password text')
+        self.assertEqual(entry['actions'],['focus'])
+        self.assertEqual(self.driver.act({**request,'expected_tree_digest':self.driver.tree_digest(protected)}),{'applied':True})
+        self.assertEqual(focus.call_count,2)
+        with self.assertRaises(ValueError):self.driver.act({**request,'action':'activate','expected_tree_digest':self.driver.tree_digest(protected)})
+        activate.assert_not_called()
+
+    def test_mp11_public_selection_evidence_never_queries_protected_or_long_text(self):
+        for protected,length,readable in [(False,12,True),(False,4097,False),(True,12,False)]:
+            with self.subTest(protected=protected,length=length):
+                node=Node('Entry','password text' if protected else 'text',secret=protected)
+                node.getState=lambda:types.SimpleNamespace(contains=lambda flag:True)
+                reads=[]
+                node.queryText=lambda:types.SimpleNamespace(characterCount=length,getText=lambda *args:(reads.append(args) or 'public value'))
+                self.desktop=Node('Desktop','desktop',[Node('Office','application',[Node('Writer','frame',[node])])])
+                tree=self.driver.snapshot([{'pid':200,'started':'1'}])
+                entry=next(n for n in tree['nodes'] if n['role']==node.role)
+                self.assertEqual('text' in entry,readable)
+                self.assertEqual(bool(reads),readable)
+                if protected:self.assertEqual(entry['name'],'[protected]')
+
     def test_mp11_capture_ignores_echoes_unknown_windows_and_password_dots(self):
         self.desktop = Node('Desktop', 'desktop', [Node('Writer', 'application', [
             Label('v-secret'), Node('Password', 'password text', secret=True)])])
@@ -199,6 +269,16 @@ class TraversalTest(unittest.TestCase):
         root.get_full_property=lambda atom,kind:types.SimpleNamespace(value=[9,10] if atom=='_NET_CLIENT_LIST_STACKING' else [10])
         self.desktop=Node('Desktop','desktop',[owned])
         with self.assertRaises(self.driver.NativeInputDenied):self.driver.input_target([{'pid':200,'started':'1'}])
+
+    def test_mp11_registered_native_fill_stays_private_when_its_field_is_plain(self):
+        field=Node('private-field-value','text');field.path='/field'
+        app=Node('Login','application',[Node('Login','frame',[field,Node('Sign in','push button')])])
+        with patch.object(self.driver._fills,'read',return_value=[{'pid':200,'started':'1','path':'/field'}]), patch.object(self.driver._fills,'matches',return_value=True):
+            tree=self.snapshot([app])
+        secret=next(node for node in tree['nodes'] if node['role']=='text')
+        self.assertTrue(secret['protected']);self.assertEqual(secret['name'],'[protected]')
+        self.assertTrue(any(node['name']=='Sign in' and not node['protected'] for node in tree['nodes']))
+        self.assertTrue(any(node['role']=='frame' and node['name']=='Login' for node in tree['nodes']))
 
     def test_mp08_mp11_registered_values_do_not_scan_native_text(self):
         self.desktop = Node('Desktop', 'desktop', [Node('Writer', 'application', [Node('Writer', 'frame', [Label('v-secret'), Label('ordinary')])])])
@@ -546,5 +626,28 @@ class TraversalTest(unittest.TestCase):
         leaf.secret=False;leaf.getState=lambda:types.SimpleNamespace(contains=lambda flag:False)
         with self.assertRaises(ValueError):self.driver.input_target(processes,expected)
 
+
+# MP-11: independently launched browsers cannot use the native Vault route.
+class VaultDestinationTests(unittest.TestCase):
+    def setUp(self):
+        spec=importlib.util.spec_from_file_location('destination_driver',pathlib.Path(__file__).with_name('native-accessibility.py'))
+        self.driver=importlib.util.module_from_spec(spec)
+        # Existing traversal setup supplies the pyatspi fixture for this source test.
+        with patch.dict(sys.modules,{'pyatspi':types.SimpleNamespace()}):spec.loader.exec_module(self.driver)
+    def test_mp11_browser_flag_false_is_not_native_authority(self):
+        app=Node('App','application');field=Node('Field','entry');field.parent=app
+        for binary in ['/usr/bin/firefox','/opt/chrome/chrome','/usr/bin/chromium']:
+            with self.subTest(binary=binary),patch.object(self.driver,'alive',return_value=True),patch.object(self.driver.os,'readlink',return_value=binary),self.assertRaises(ValueError):
+                self.driver.require_native_secret_destination([{'pid':200,'started':'1','browser':False}],field)
+    def test_mp11_webview_ancestry_and_unknown_executables_are_refused(self):
+        app=Node('App','application');document=Node('Web','document web');document.parent=app
+        field=Node('Field','entry');field.parent=document
+        with patch.object(self.driver,'alive',return_value=True),patch.object(self.driver.os,'readlink',return_value='/usr/bin/python3'),self.assertRaises(ValueError):
+            self.driver.require_native_secret_destination([{'pid':200,'started':'1'}],field)
+        field.parent=app
+        with patch.object(self.driver,'alive',return_value=True),patch.object(self.driver.os,'readlink',side_effect=OSError()),self.assertRaises(ValueError):
+            self.driver.require_native_secret_destination([{'pid':200,'started':'1'}],field)
+        with patch.object(self.driver,'alive',return_value=True),patch.object(self.driver.os,'readlink',return_value='/usr/bin/python3'):
+            self.driver.require_native_secret_destination([{'pid':200,'started':'1'}],field)
 
 if __name__ == '__main__': unittest.main()

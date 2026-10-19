@@ -133,8 +133,11 @@ test('MP-11 finding 1 each agent text/composition/chord dispatch carries live fo
 });
 
 test('MP-11 finding 1 native helper uses the same typed Browser/Vault refusal for unproved focus',async()=>{
-  await assert.rejects(executeNative({op:'input',agent_input:true,processes:[],input:{kind:'text',text:'public'}},
-    {...publicDependencies,PATH:'/usr/bin:/bin',DISPLAY:':invalid',DBUS_SESSION_BUS_ADDRESS:'unix:path=/chariox-missing-owned-bus'}),error=>error.code==='user_domain_sensitive_requires_focus');
+  const runtime=await mkdtemp(path.join(os.tmpdir(),'chariox-native-refusal-'));
+  try {
+    await assert.rejects(executeNative({op:'input',agent_input:true,processes:[],input:{kind:'text',text:'public'}},
+      {...publicDependencies,CHARIOX_HOME:runtime,XDG_RUNTIME_DIR:runtime,PATH:'/usr/bin:/bin',DISPLAY:':invalid',DBUS_SESSION_BUS_ADDRESS:'unix:path=/chariox-missing-owned-bus'}),error=>error.code==='user_domain_sensitive_requires_focus');
+  } finally { await rm(runtime,{recursive:true,force:true}); }
 });
 
 test('MP-08/MP-10/MP-11 each native agent mutation carries the current browser process identity',async()=>{
@@ -185,7 +188,7 @@ test('MP-08 / MP-11 Vault values never black out the desktop and are redacted fr
   const sent=[];
   const replies={screenshot:{data_base64:'',protected:false},ocr:{text:'header synthetic-vault-value footer',targets:[{text:'synthetic-vault-value',x:1,y:1},{text:'Save',x:2,y:2}]},clipboard_read:{text:'copied synthetic-vault-value'},input:{applied:true}};
   const bound={...binding,ownedProcesses:async()=>[]};
-  const adapter=new NativeComputer({placement:'host',binding:()=>bound,execute:async request=>{sent.push(request);return structuredClone(replies[request.op]);}});
+  const adapter=new NativeComputer({placement:'host',binding:()=>bound,execute:async request=>{sent.push(request);return request.op==='input'?{applied:true}:structuredClone(replies[request.op]);}});
   const policy={values:['synthetic-vault-value'],targets:[{kind:'native',target:{focus_window:1,active_window:2}}],unknown:false};
   for(const op of ['screenshot','ocr','clipboard_read'])await adapter.request({op,surface_id:'surface',generation:'generation'},policy).then(result=>replies[op].result=result);
   assert(sent.every(request=>request.mask===(request.op==='clipboard_read')&&JSON.stringify(request.values)===JSON.stringify(policy.values)),'best-effort boxes leave desktop visible; clipboard stays withheld');
@@ -193,6 +196,40 @@ test('MP-08 / MP-11 Vault values never black out the desktop and are redacted fr
   assert.deepEqual(replies.ocr.result.targets.map(target=>target.text),['Save'],'OCR targets that echo a value are dropped');
   assert.equal(replies.clipboard_read.result.text,'copied [redacted]');
   assert.equal((await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'click',x:1,y:1}},policy)).applied,true);
+  assert.deepEqual(sent.at(-1).values,policy.values,'private clipboard checks retain known values while public input stays usable');
+});
+
+test('MP-08 / MP-11 host Vault target and insertion use the bound native helper', async () => {
+  const target={focus_window:42,active_window:41,geometry:[0,0,100,50],window_geometry:[0,0,100,50]};
+  const field={pid:123,started:'45',path:'/app/field'};
+  const sent=[];
+  const adapter=new NativeComputer({placement:'host',binding:()=>binding,execute:async request=>{sent.push(request);return request.op==='secret_target'?{target,field}:{inserted:true,field};}});
+  const at={surface_id:'surface',generation:'generation'};
+  assert.deepEqual(await adapter.secretTarget({},{}),{...at,target,field});
+  assert.deepEqual(await adapter.secretInput({...at,target,field,text:'synthetic'}, {}, {}),{inserted:true,field});
+  assert.equal(sent[1].op,'secret_input');
+  assert.deepEqual(sent[1].expected_target,target);
+  assert.deepEqual(sent[1].expected_field,field);
+  await assert.rejects(adapter.secretInput({...at,generation:'old',target,field,text:'synthetic'},{},{}),/stale/);
+  await assert.rejects(adapter.secretTarget({unknown:true},{}),/protection/);
+  assert.equal(sent.length,2);
+});
+
+test('MP-11 Vault native discovery identifies owned browser processes for refusal', async () => {
+  const processes=[{pid:10,started:'1'},{pid:11,started:'2'}];
+  const adapter=new NativeComputer({placement:'host',binding:()=>({...binding,ownedProcesses:async()=>processes,browserProcesses:async()=>[processes[1]]}),execute:async()=>({})});
+  assert.deepEqual(await adapter.secretProcesses(adapter.binding()),[{pid:10,started:'1',browser:false},{pid:11,started:'2',browser:true}]);
+});
+
+test('MP-08/MP-11 ordinary public native clicks reach the private helper after a fill',async()=>{
+ let physical;
+ const policy={unknown:false,values:['synthetic-private-value'],targets:[{kind:'native'}]};
+ const binding={surface_id:'desktop',generation:'g',width:1280,height:800,environment:{},ownedProcesses:async()=>[{pid:20,started:'10'}]};
+ const native=new NativeComputer({placement:'host',binding:()=>binding,execute:async request=>{physical=request;return {applied:true};}});
+ const result=await native.request({op:'input',surface_id:'desktop',generation:'g',_agent_input:true,input:{kind:'click',x:20,y:20}},policy);
+ assert.equal(result.applied,true);assert.equal(physical.agent_input,true);
+ assert.deepEqual(physical.values,policy.values,'the private clipboard guard must receive known values');
+ assert(!JSON.stringify(result).includes(policy.values[0]));
 });
 
 test('MP-08/MP-11 ordinary native input remains usable while another field has a Vault value',async()=>{
@@ -203,5 +240,5 @@ test('MP-08/MP-11 ordinary native input remains usable while another field has a
    assert.equal(result.applied,true);assert(!JSON.stringify(result).includes('test-vault-canary'));
  }
  assert.equal(calls.length,3);
- assert(!JSON.stringify(calls).includes('test-vault-canary'));
+ assert(calls.every(call=>JSON.stringify(call.values)===JSON.stringify(['test-vault-canary'])),'private helper retains values for clipboard checks');
 });

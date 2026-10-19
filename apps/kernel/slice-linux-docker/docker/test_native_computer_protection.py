@@ -3,6 +3,8 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+import os
+import signal
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('native_computer',Path(__file__).with_name('native-computer.py'))
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
@@ -118,9 +120,9 @@ class AgentInputClipboardTests(unittest.TestCase):
     def test_empty_clipboard_admits_clicks_while_browser_and_popups_are_masked(self):
         self.assertIn(module.X.ButtonPress,self.run_input({'kind':'click','x':5,'y':5}))
 
-    def test_mp11_empty_clipboard_does_not_authorize_popup_free_browser_toolbar_action(self):
-        # A popup-free extension runs on ButtonPress without creating a CDP page.
-        # The actual destination is Chrome even though another native app has focus.
+    def test_mp08_owned_browser_controls_accept_ordinary_public_input(self):
+        # MP-08/MP-11: public Computer input includes the owned browser toolbar.
+        # Vault values keep their separate document-bound admission.
         node=SimpleNamespace(id=99,get_full_property=lambda *_:None,query_pointer=lambda:SimpleNamespace(child=0))
         root=SimpleNamespace(query_pointer=lambda:SimpleNamespace(child=node,root_x=5,root_y=5))
         connection=SimpleNamespace(intern_atom=lambda name:name,close=lambda:None,sync=lambda:None,get_input_focus=lambda:SimpleNamespace(focus=node),
@@ -131,9 +133,8 @@ class AgentInputClipboardTests(unittest.TestCase):
         def press(*args,before_press=None,**kwargs):before_press()
         with patch.object(module,'load',side_effect=lambda name: accessibility if name=='native-accessibility' else x11 if name=='native-x11' else destination_policy if name=='native-input-destination' else clipboard),patch.object(module.display,'Display',return_value=connection),patch.object(clipboard,'display_module',return_value=module.display),patch.object(module.xtest,'fake_input') as event,patch.object(module.keyboard,'hold_input',side_effect=press),patch.object(module.keyboard,'type_text',side_effect=press):
             for action in [{'kind':'click','x':5,'y':5},{'kind':'key','key':'Return'},{'kind':'text','text':' '}]:
-                with self.subTest(action=action),self.assertRaisesRegex(ValueError,'Browser'):
-                    module.input_action(action,[{'pid':77,'started':'1','browser':True}])
-                self.assertFalse(any(call.args[1]==module.X.ButtonPress for call in event.call_args_list))
+                with self.subTest(action=action):module.input_action(action,[{'pid':77,'started':'1','browser':True}])
+            self.assertTrue(any(call.args[1]==module.X.ButtonPress for call in event.call_args_list))
 
     def test_proved_public_owner_admits_clicks_while_other_windows_are_masked(self):
         self.assertIn(module.X.ButtonPress,self.run_input({'kind':'click','x':5,'y':5},owner_pid=77))
@@ -220,7 +221,7 @@ class WarmChannelTests(unittest.TestCase):
 
     def test_mp11_warm_channel_carries_only_human_input(self):
         events=[]
-        with patch.object(module,'input_action',side_effect=lambda action,processes,connection=None:events.append((action['kind'],processes))):
+        with patch.object(module,'input_action',side_effect=lambda action,processes,connection=None,values=():events.append((action['kind'],processes))):
             held=set()
             for request in ({'op':'input','agent_input':True,'processes':[],'input':{'kind':'click','x':1,'y':1}},
                             {'op':'input','processes':[],'input':{'kind':'key','key':'ctrl+v'}},
@@ -246,5 +247,60 @@ class CaptureEvidenceTests(unittest.TestCase):
         self.assertEqual(fields.call_count,2)
         self.assertFalse(result['protected'])
 
+
+
+class HostVaultIdentityTests(unittest.TestCase):
+    # MP-08/MP-11: two GTK entries can share an X focus window. Consent for
+    # one must never authorize filling the other, including between keystrokes.
+    def exercise(self, change=False, owned=True, independent_browser=False, cancel_typing=False):
+        target={'active_window':41,'focus_window':42,'geometry':[0,0,100,50],'window_geometry':[0,0,100,50]}
+        field={'pid':123,'started':'45','path':'/app/password'}
+        node=object();calls=[];reads=[]
+        def focused(*_):
+            reads.append(True)
+            return node
+        def identity(_):
+            return {**field,'path':'/app/other'} if change and len(reads)>(2 if change=='after_select' else 1) else field
+        fills=SimpleNamespace(focused_field=focused,identity=identity)
+        connection=SimpleNamespace(close=lambda:None)
+        def typed(text,expected_target,before_press=None,key_guard=None):
+            self.assertEqual(expected_target,target)
+            self.assertIsNotNone(key_guard)
+            before_press()
+            calls.append('injected')
+            if cancel_typing:
+                pid=os.getpid()
+                if not isinstance(pid,int) or pid<=1:raise ValueError('unsafe test signal pid')
+                os.kill(pid,signal.SIGTERM)
+                calls.append('after-cancel')
+        def select(kind,key,duration,before_press=None,key_guard=None):
+            self.assertEqual((kind,key,duration),('key','CTRL+A',1))
+            self.assertIsNotNone(key_guard)
+            before_press()
+            calls.append('selected')
+            if cancel_typing:signal.signal(signal.SIGTERM,signal.SIG_IGN)
+        def destination(*_):
+            if independent_browser:raise ValueError('document-bound Browser input required')
+        modules={'native-fill-targets':fills,'native-x11':SimpleNamespace(open_display=lambda _:connection),'native-accessibility':SimpleNamespace(alive=lambda _:True,require_native_secret_destination=destination),'native-input-destination':SimpleNamespace(key_destinations=lambda *_:None)}
+        with patch.object(module,'load',side_effect=modules.get),patch.object(module.keyboard,'focused_target',return_value=target),patch.object(module.keyboard,'type_text',side_effect=typed),patch.object(module.keyboard,'hold_input',side_effect=select),patch.object(module.keyboard,'assert_secret_target'):
+            request={'op':'secret_input','processes':[{'pid':123,'started':'45','browser':not owned}], 'expected_target':target,'expected_field':field,'text':'synthetic-only'}
+            if change or not owned or independent_browser:
+                with self.assertRaises(ValueError):module.main(request)
+                self.assertEqual(calls,['selected'] if change=='after_select' else [])
+            else:
+                self.assertEqual(module.main(request),{'inserted':True,'field':field})
+                self.assertEqual(calls,['selected','injected'])
+    def test_mp11_independent_browser_flag_false_never_receives_native_vault_input(self):self.exercise(independent_browser=True)
+    def test_mp11_host_fill_restores_cancellation_after_selection_cleanup(self):
+        class Cancelled(Exception):pass
+        old=signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM,lambda *_: (_ for _ in ()).throw(Cancelled()))
+        try:
+            with self.assertRaises(Cancelled):self.exercise(cancel_typing=True)
+        finally:signal.signal(signal.SIGTERM,old)
+    def test_mp11_host_vault_rechecks_atspi_leaf_before_each_press(self):self.exercise(change=True)
+    def test_mp11_host_vault_refuses_browser_and_unowned_destination(self):self.exercise(owned=False)
+    def test_mp11_host_vault_refuses_a_field_change_after_selecting_existing_text(self):self.exercise(change='after_select')
+    def test_mp08_host_vault_returns_only_filled_field_identity(self):self.exercise()
 
 if __name__=='__main__':unittest.main()

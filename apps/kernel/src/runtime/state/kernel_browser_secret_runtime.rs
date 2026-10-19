@@ -61,7 +61,9 @@ impl KernelRuntimeState {
                 .await;
         }
         let gate = self.owned.kernel_browser_host.display_gate(user);
-        let _input = (method == "host.secret" || params["op"] == "input").then(|| gate.input());
+        let _input =
+            (method == "host.secret" || params["op"] == "input" || params["op"] == "secret_input")
+                .then(|| gate.input());
         let _capture = if let Some(subscription) = params["display_subscription_id"].as_str() {
             Some(gate.capture(subscription).await.map_err(host_error)?)
         } else {
@@ -93,6 +95,7 @@ impl KernelRuntimeState {
     ) -> Result<Value, DaemonError> {
         let model_mutation = admission.is_some_and(KernelBrowserAdmission::is_agent)
             && (method == "host.secret"
+                || (method == "host.computer" && params["op"] == "secret_input")
                 || (method == "host.browser"
                     && matches!(
                         params["op"].as_str(),
@@ -475,7 +478,7 @@ fn scrub_display_metadata(
     Ok(value)
 }
 
-fn require_vault_owner(user: &str) -> Result<(), DaemonError> {
+pub(super) fn require_vault_owner(user: &str) -> Result<(), DaemonError> {
     // The configured Vault is host-owner state. Collaborators' browser profiles
     // remain independent and cannot resolve this owner's credential handles.
     if user != crate::session::DEFAULT_LOCAL_USER_ID {

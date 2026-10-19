@@ -268,7 +268,18 @@ impl KernelRuntimeOwnedState {
         } else {
             prepared.prompt.clone()
         };
-        let prompt = if will_queue || self.config_projection.snapshot().room_agent_tools {
+        let prompt = if will_queue
+            || self.config_projection.snapshot().room_agent_tools
+            || self.prompt_state_owner.sudo_work_prompt_admitted(
+                &session,
+                &target_agent_id,
+                prompt.id(),
+            )
+            || self.computer_login_grants.reserves_prompt(
+                session.id(),
+                &target_agent_id,
+                prompt.id(),
+            ) {
             prompt
         } else {
             prompt.with_id(self.session_store.reserve_prompt_id())

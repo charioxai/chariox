@@ -50,7 +50,7 @@ def capture(mask, uncovered=()):
     finally: connection.close()
 
 
-def input_action(action, processes=None, connection=None):
+def input_action(action, processes=None, connection=None, values=()):
     kind = action['kind']
     guard=None
     key_guard=load('native-input-destination').key_destinations if processes is not None else None
@@ -61,7 +61,8 @@ def input_action(action, processes=None, connection=None):
         # (chord, menu mnemonic, focused button). Gate on clipboard owner.
         accessibility=load('native-accessibility')
         clipboard=load('native-clipboard')
-        admit_clipboard=clipboard.input_admission(processes,accessibility)
+        try:admit_clipboard=clipboard.input_admission(processes,accessibility,None,values)
+        except Exception:raise accessibility.NativeInputDenied('native input destination unavailable') from None
         def guard():
             admit_clipboard()
             # MP-11: an empty clipboard does not authorize a popup-free extension
@@ -130,9 +131,44 @@ def main(request, connection=None):
     if op in ('accessibility','accessibility_action'):
         accessibility=load('native-accessibility')
         return accessibility.snapshot(request['processes'],request.get('browser_processes'),values=request.get('values',())) if op=='accessibility' else accessibility.act(request)
+    if op in ('secret_target', 'secret_input'):
+        # MP-08/MP-11: internal Vault operations. No clipboard, argv secret,
+        # unscoped desktop, or X-window-only approval of a GTK field change.
+        fills=load('native-fill-targets')
+        connection=load('native-x11').open_display(display)
+        try:
+            target=keyboard.focused_target(connection)
+            node=fills.focused_field(target['active_window'], connection)
+            field=fills.identity(node)
+            accessibility=load('native-accessibility')
+            processes=request['processes']
+            if not any(item['pid']==field['pid'] and str(item['started'])==str(field['started'])
+                       and not item.get('browser') and accessibility.alive(item) for item in processes):
+                raise ValueError('Vault fill field is not an owned native application')
+            accessibility.require_native_secret_destination(processes,node)
+            if op=='secret_target': return {'target':target,'field':field}
+            if target!=request['expected_target'] or field!=request['expected_field']:
+                raise ValueError('Vault fill field changed')
+            def same_field():
+                keyboard.assert_secret_target(connection,target)
+                current=fills.focused_field(target['active_window'], connection)
+                if fills.identity(current)!=field: raise ValueError('Vault fill field changed')
+                accessibility.require_native_secret_destination(processes,current)
+            # A Vault fill replaces an existing value, including retries. The
+            # privileged chord has the same exact field/window fences as text;
+            # it never grants the agent ordinary input to a protected field.
+            key_guard=load('native-input-destination').key_destinations
+            handlers={number:signal.getsignal(number) for number in (signal.SIGTERM,signal.SIGINT)}
+            try:keyboard.hold_input('key','CTRL+A',1,before_press=same_field,key_guard=key_guard)
+            finally:
+                for number,handler in handlers.items():signal.signal(number,handler)
+            keyboard.type_text(request['text'], target, before_press=same_field,
+                               key_guard=key_guard)
+            return {'inserted':True,'field':field}
+        finally: connection.close()
     if op == 'input':
         started=time.time_ns()/1000000
-        input_action(request['input'],request.get('processes',[]) if request.get('agent_input') else None,connection)
+        input_action(request['input'],request.get('processes',[]) if request.get('agent_input') else None,connection,request.get('values',()))
         result={'applied':True}
         if os.environ.get('CHARIOX_BROWSER_DISPLAY_TIMING')=='1':
             result['_timing']={'started_ms':started,'ended_ms':time.time_ns()/1000000}

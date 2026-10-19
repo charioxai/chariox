@@ -80,7 +80,7 @@ def open_display(display):
     return display.Display()
 
 
-def begin(expected_window, value, connection=None):
+def focused_field(expected_window, connection=None):
     # The kernel already bound X11 focus; match the owning native application.
     try:
         if store_path() is None:
@@ -113,7 +113,13 @@ def begin(expected_window, value, connection=None):
             if count > 8192-visited: complete = False
             pending.extend(node.getChildAtIndex(i) for i in range(min(count, 8192-visited)))
         if not complete or pending or len(candidates) != 1: raise ValueError('Vault fill field unavailable')
-        node = candidates[0]
+        return candidates[0]
+    except Exception: raise ValueError('Vault fill field unavailable') from None
+
+
+def begin(expected_window, value, connection=None):
+    try:
+        node = focused_field(expected_window, connection)
         target = {**identity(node), 'window': expected_window, 'pending': True,
                   'value_hash': hashlib.sha256(value.encode()).hexdigest(), 'length': len(value), 'registration': time.monotonic_ns()}
         text = node.queryText()
@@ -189,6 +195,26 @@ def matches(node, target):
     except Exception: raise ValueError('Vault fill field unavailable') from None
 
 
+def process_live(target):
+    # MP-11: process death is not proof that its X client released the window
+    # (an inherited connection can outlive it). Resource retirement needs XRes.
+    try:
+        raw = Path('/proc/' + str(target['pid']) + '/stat').read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+    fields = raw[raw.rfind(')')+2:].split()
+    return fields[0] not in ('Z', 'X') and fields[19] == str(target['started'])
+
+
+def resource_owner_pid(connection, window):
+    if not connection.has_extension('X-Resource'): return None
+    version = connection.res_query_version()
+    if (version.server_major, version.server_minor) < (1, 2): return None
+    ids = connection.res_query_client_ids([{'client': window.id, 'mask': 2}]).ids
+    pids = [int(item.value[0]) for item in ids if item.spec.mask & 2 and len(item.value) == 1]
+    return pids[0] if len(pids) == 1 and pids[0] > 1 else None
+
+
 def regions():
     """Mask each still-live filled plain entry, retiring removed/replaced entries."""
     targets = read()
@@ -205,6 +231,13 @@ def regions():
         for target in targets:
             try:
                 window = connection.create_resource_object('window', target['window'])
+                if not process_live(target):
+                    window.get_attributes()  # BadWindow proves destruction.
+                    pid = resource_owner_pid(connection, window)
+                    if pid is not None and pid != target['pid']: continue
+                    # A live/unknown X client may still show old pixels. Keep
+                    # capture closed until destruction or proved XID reuse.
+                    raise ValueError('Vault fill field unavailable')
                 owner = window.get_full_property(connection.intern_atom('_NET_WM_PID'), X.AnyPropertyType)
                 if owner is None or len(owner.value) != 1: raise ValueError('Vault fill field unavailable')
                 if int(owner.value[0]) != target['pid']: continue  # Reused XID retires the old field.

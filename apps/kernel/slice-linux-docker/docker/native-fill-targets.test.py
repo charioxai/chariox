@@ -99,7 +99,7 @@ class FillTests(unittest.TestCase):
                 intern_atom=lambda *args: 1, close=lambda: None,
                 screen=lambda: SimpleNamespace(width_in_pixels=800,height_in_pixels=600))
             xlib=SimpleNamespace(X=SimpleNamespace(AnyPropertyType=0,IsViewable=2),display=SimpleNamespace(),error=SimpleNamespace(BadWindow=type('BadWindow',(Exception,),{})))
-            with self.subTest(password=password), patch.dict(sys.modules, pyatspi=SimpleNamespace(ROLE_PASSWORD_TEXT=1,STATE_SHOWING=2,DESKTOP_COORDS=0,Registry=SimpleNamespace(getDesktop=lambda i:desktop)),Xlib=xlib), patch.object(fill,'identity',return_value={key:target[key] for key in ('pid','started','path')}), patch.object(fill,'update'), patch.object(fill.time,'sleep'), patch.object(fill,'read',return_value=[target]), patch.object(fill,'open_display',return_value=connection):
+            with self.subTest(password=password), patch.dict(sys.modules, pyatspi=SimpleNamespace(ROLE_PASSWORD_TEXT=1,STATE_SHOWING=2,DESKTOP_COORDS=0,Registry=SimpleNamespace(getDesktop=lambda i:desktop)),Xlib=xlib), patch.object(fill,'identity',return_value={key:target[key] for key in ('pid','started','path')}), patch.object(fill,'update'), patch.object(fill.time,'sleep'), patch.object(fill,'read',return_value=[target]), patch.object(fill,'open_display',return_value=connection),patch.object(fill,'process_live',return_value=True):
                 fill.finish((node,target,(len(value),len(value),0)),inserted)
                 self.assertTrue(target['pending'], 'MP-11 deadline is not application acknowledgement')
                 value += inserted
@@ -125,6 +125,33 @@ class FillTests(unittest.TestCase):
             self.assertEqual(fill.store_path().stat().st_mode & 0o777,0o600)
 
 class FillProofTests(unittest.TestCase):
+    def test_mp11_dead_or_reused_app_retires_before_window_lookup(self):
+        target={'pid':200,'started':'one','path':'/entry','window':10,'registration':1}
+        window=SimpleNamespace(get_attributes=lambda:None)
+        connection=SimpleNamespace(create_resource_object=lambda *args:window,close=lambda:None)
+        xlib=SimpleNamespace(X=SimpleNamespace(),display=SimpleNamespace(),error=SimpleNamespace(BadWindow=type('BadWindow',(Exception,),{})))
+        for stat in [FileNotFoundError(), '200 (gone) Z ' + '0 '*18 + 'one', '200 (new) S ' + '0 '*18 + 'two']:
+            with self.subTest(stat=type(stat).__name__),patch.dict(sys.modules,pyatspi=SimpleNamespace(Registry=SimpleNamespace(getDesktop=lambda i:None)),Xlib=xlib),patch.object(fill,'open_display',return_value=connection),patch.object(fill,'read',return_value=[target]),patch.object(fill,'update') as update,patch.object(fill,'resource_owner_pid',return_value=300),patch.object(fill.Path,'read_text',**({'side_effect':stat} if isinstance(stat,Exception) else {'return_value':stat})):
+                self.assertEqual(fill.regions(),[])
+                self.assertEqual(update.call_args.args[0]([target]),[])
+
+    def test_mp11_unknown_app_liveness_keeps_capture_closed(self):
+        target={'pid':200,'started':'one','path':'/entry','window':10,'registration':1}
+        connection=SimpleNamespace(close=lambda:None)
+        xlib=SimpleNamespace(X=SimpleNamespace(),display=SimpleNamespace(),error=SimpleNamespace(BadWindow=type('BadWindow',(Exception,),{})))
+        with patch.dict(sys.modules,pyatspi=SimpleNamespace(Registry=SimpleNamespace(getDesktop=lambda i:None)),Xlib=xlib),patch.object(fill,'open_display',return_value=connection),patch.object(fill,'read',return_value=[target]),patch.object(fill,'update') as update,patch.object(fill.Path,'read_text',side_effect=PermissionError()):
+            with self.assertRaisesRegex(ValueError,'Vault fill field unavailable'):fill.regions()
+            update.assert_not_called()
+
+    def test_mp11_dead_pid_alone_cannot_unmask_a_live_window(self):
+        target={'pid':200,'started':'one','path':'/entry','window':10,'registration':1}
+        window=SimpleNamespace(get_attributes=lambda:SimpleNamespace(map_state=2))
+        connection=SimpleNamespace(create_resource_object=lambda *args:window,close=lambda:None,has_extension=lambda name:False)
+        xlib=SimpleNamespace(X=SimpleNamespace(),display=SimpleNamespace(),error=SimpleNamespace(BadWindow=type('BadWindow',(Exception,),{})))
+        with patch.dict(sys.modules,pyatspi=SimpleNamespace(Registry=SimpleNamespace(getDesktop=lambda i:None)),Xlib=xlib),patch.object(fill,'open_display',return_value=connection),patch.object(fill,'read',return_value=[target]),patch.object(fill,'update') as update,patch.object(fill.Path,'read_text',side_effect=FileNotFoundError()):
+            with self.assertRaisesRegex(ValueError,'Vault fill field unavailable'):fill.regions()
+            update.assert_not_called()
+
     def test_mp11_incomplete_rediscovery_keeps_the_registration(self):
         target={'pid':200,'started':'one','path':'/entry','window':10,'registration':1}
         missing=SimpleNamespace(childCount=0)
@@ -137,7 +164,7 @@ class FillProofTests(unittest.TestCase):
         connection=SimpleNamespace(create_resource_object=lambda *args:window,intern_atom=lambda *args:1,close=lambda:None)
         xlib=SimpleNamespace(X=SimpleNamespace(AnyPropertyType=0,IsViewable=2),display=SimpleNamespace(),error=SimpleNamespace(BadWindow=type('BadWindow',(Exception,),{})))
         for desktop in [missing,large,unavailable_child]:
-            with self.subTest(app_missing=desktop is missing),patch.dict(sys.modules,pyatspi=SimpleNamespace(Registry=SimpleNamespace(getDesktop=lambda i:desktop)),Xlib=xlib),patch.object(fill,'open_display',return_value=connection),patch.object(fill,'read',return_value=[target]),patch.object(fill,'update') as update:
+            with self.subTest(app_missing=desktop is missing),patch.dict(sys.modules,pyatspi=SimpleNamespace(Registry=SimpleNamespace(getDesktop=lambda i:desktop)),Xlib=xlib),patch.object(fill,'open_display',return_value=connection),patch.object(fill,'read',return_value=[target]),patch.object(fill,'update') as update,patch.object(fill,'process_live',return_value=True):
                 with self.assertRaisesRegex(ValueError,'Vault fill field unavailable'):fill.regions()
                 update.assert_not_called()
     def test_mp11_unknown_live_field_state_refuses_capture(self):

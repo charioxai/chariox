@@ -263,6 +263,7 @@ async fn mcp_catalog_continuation_uses_kernel_attachment_after_client_detach() {
         session_id: session.id().into(),
         agent_id: agent.id().into(),
         source_prompt_id: None,
+        continuation_prompt_id: "catalog-fixture-next".into(),
         mcp_name: "mid_session_script".into(),
         previous_prompt: "invoke the granted script".into(),
         reload_reason: ProviderReloadReason::RuntimeToolCatalog,

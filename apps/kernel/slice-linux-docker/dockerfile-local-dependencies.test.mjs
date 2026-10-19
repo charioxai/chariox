@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
-import { readFile } from "node:fs/promises"
+import { glob, readFile } from "node:fs/promises"
+import { dirname, join, relative, resolve } from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 
@@ -70,4 +71,29 @@ test("restored images upgrade to the accessible terminal and editor", async () =
   assert.match(refresh, /command -v mousepad/)
   assert.match(refresh, /install[^\n]*xfce4-terminal[^\n]*mousepad/)
   assert.match(refresh, /update-alternatives --set x-terminal-emulator \/usr\/bin\/xfce4-terminal\.wrapper/)
+})
+
+test("slice images carry and fingerprint every deploy script the kernel embeds at compile time", async () => {
+  const repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url))
+  const [dockerfile, runtimeSourceRoots] = await Promise.all([
+    readFile(dockerfilePath, "utf8"),
+    readFile(runtimeSourceRootsPath, "utf8"),
+  ])
+  const roots = runtimeSourceRoots.split("\n").filter(Boolean)
+  const copiedPackages = [...dockerfile.matchAll(/^COPY\s+(?:--\S+\s+)*(\S+)\s+\S+$/gm)].map((match) => match[1])
+  const embedded = new Set()
+  for (const sourceRoot of ["apps/kernel/src", "apps/relay/src"]) {
+    for await (const file of glob(`${sourceRoot}/**/*.rs`, { cwd: repositoryRoot })) {
+      if (file.endsWith("/tests.rs") || file.includes("/tests/")) continue // test builds do not run in the image
+      const source = await readFile(join(repositoryRoot, file), "utf8")
+      for (const match of source.matchAll(/include_(?:str|bytes)!\(\s*"([^"]+)"/g)) {
+        const target = relative(repositoryRoot, resolve(repositoryRoot, dirname(file), match[1]))
+        if (target.startsWith("deploy/") && !copiedPackages.some((copied) => target === copied || target.startsWith(`${copied}/`))) embedded.add(target)
+      }
+    }
+  }
+  for (const target of embedded) {
+    assert.ok(dockerfile.includes(target), `the slice Dockerfile does not copy ${target}, which the kernel embeds with include_str!/include_bytes!`)
+    assert.ok(roots.includes(target), `runtime-source-roots.txt does not fingerprint ${target}`)
+  }
 })

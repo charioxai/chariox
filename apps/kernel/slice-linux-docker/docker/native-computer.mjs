@@ -110,6 +110,27 @@ export class NativeComputer {
     }
     this.held.clear();this.heldOwner=null;
   }
+  // MP-08/MP-11: callable only by the kernel's private Vault RPC, never by
+  // public Computer input. The helper binds the owned AT-SPI field as well as X11.
+  async secretProcesses(binding) {
+    const [processes,browsers]=await Promise.all([binding.ownedProcesses?.()??[],binding.browserProcesses?.()??[]]);
+    return processes.map(item=>({...item,browser:Boolean(item.browser)||browsers.some(browser=>browser.pid===item.pid&&browser.started===item.started)}));
+  }
+  async secretTarget(policy,{signal}={}) {
+    const binding=this.binding();
+    if(!binding || policy?.unknown)throw new Error('MP-11: native observation protection unavailable');
+    const result=await this.execute({op:'secret_target',processes:await this.secretProcesses(binding)},binding.environment,signal);
+    if(this.binding()!==binding)throw new Error('MP-11: stale native desktop');
+    return {surface_id:binding.surface_id,generation:binding.generation,...result};
+  }
+  async secretInput(command,policy,{signal}={}) {
+    const binding=this.binding();
+    if(!binding || command.surface_id!==binding.surface_id || command.generation!==binding.generation)throw new Error('MP-11: stale native desktop');
+    if(policy?.unknown)throw new Error('MP-11: native observation protection unavailable');
+    const result=await this.execute({op:'secret_input',processes:await this.secretProcesses(binding),expected_target:command.target,expected_field:command.field,text:command.text},binding.environment,signal);
+    this.wakeCapture();
+    return result;
+  }
   async request(command,policy,{signal}={}) {
     const binding=this.binding();
     if(!binding) throw new Error('MP-08: native desktop unavailable; explicitly start');
@@ -129,7 +150,7 @@ export class NativeComputer {
       let admission={};
       if(command._agent_input) {
         const processes=await binding.ownedProcesses?.()??[],browsers=await binding.browserProcesses?.()??[];
-        admission={agent_input:true,processes:processes.map(item=>({...item,browser:Boolean(item.browser)||browsers.some(browser=>browser.pid===item.pid&&browser.started===item.started)}))};
+        admission={agent_input:true,values:policy?.values??[],processes:processes.map(item=>({...item,browser:Boolean(item.browser)||browsers.some(browser=>browser.pid===item.pid&&browser.started===item.started)}))};
       }
       if(input.kind==='keycode') {
         if(input.state==='down') {this.held.add(input.keycode);this.heldOwner=observer;}

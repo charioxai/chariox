@@ -88,7 +88,7 @@ impl KernelBrowserHost {
         // waiting on controller I/O. The shared action model reserves the same target.
         let mutation = matches!(
             params["op"].as_str(),
-            Some("input" | "target_action" | "launch_application")
+            Some("input" | "secret_input" | "target_action" | "launch_application")
         );
         if mutation && admission.is_none_or(|a| a.agent.is_none()) {
             let model = self.actor_model(user)?;
@@ -254,6 +254,9 @@ impl KernelBrowserHost {
                 return Err("MP-11: not_granted: desktop authority revoked".into());
             }
             let mut metadata = params.clone();
+            if params["op"] == "secret_input" {
+                metadata["text"] = Value::Null;
+            }
             metadata["_native"] = true.into();
             let (id, cancellation) = ledger.begin(browser_actor(admission, &params), &metadata)?;
             Some(BrowserActorAction {

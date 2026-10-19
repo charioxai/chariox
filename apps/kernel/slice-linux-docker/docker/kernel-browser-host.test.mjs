@@ -1748,7 +1748,7 @@ test('MP-11 native Computer mutations cannot operate owner-only extension surfac
   for (const url of ['https://chromewebstore.google.com/detail/x/abc', 'chrome://extensions/', 'chrome-extension://abc/popup.html']) {
     pages.set(tab.target_id, { url }); // Native navigation has not yet reconciled the host's cached URL.
     assert.equal(tab.url, 'https://example.com/');
-    for (const [op, extra] of [['input', click], ['input', { input: { kind: 'key', key: 'Enter' } }], ['target_action', {}], ['launch_application', { application_id: 'chrome' }]]) {
+    for (const [op, extra] of [['input', click], ['input', { input: { kind: 'key', key: 'Enter' } }], ['secret_input', {}], ['target_action', {}], ['launch_application', { application_id: 'chrome' }]]) {
       const before = [native, accessible, launched];
       const reply = await send(op, extra);
       assert.equal(reply.ok, false, `${url}: ${op} must refuse Add to Chrome/confirmation`);

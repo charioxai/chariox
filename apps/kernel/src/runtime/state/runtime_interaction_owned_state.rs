@@ -315,6 +315,9 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Not an owner-bound App host offer"));
         }
+        if interaction.id().starts_with("vault-unlock-") && choice_id.starts_with("unlock_") && custom_reply.is_none() {
+            return Err(interaction_error("Enter the Vault passphrase before choosing an unlock duration"));
+        }
         let resolved_reply = if take_host {
             "accept_host_action".to_owned()
         } else if let Some(choice) = interaction.choice(choice_id) {

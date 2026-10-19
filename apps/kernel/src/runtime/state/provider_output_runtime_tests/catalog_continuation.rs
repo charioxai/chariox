@@ -41,6 +41,7 @@ async fn catalog_reload_without_task_intent_projects_failure_without_replay() {
             session_id: session.id().into(),
             agent_id: agent.id().into(),
             source_prompt_id: Some("untracked-source".into()),
+            continuation_prompt_id: "catalog-fixture-next".into(),
             mcp_name: "chariox-runtime".into(),
             previous_prompt: "finish the original request".into(),
             reload_reason: ProviderReloadReason::RuntimeToolCatalog,

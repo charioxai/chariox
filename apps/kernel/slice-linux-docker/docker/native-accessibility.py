@@ -39,6 +39,27 @@ def alive(process):
 
 
 
+def require_native_secret_destination(processes, node):
+    """MP-11: ownership alone never turns a browser control into a native field."""
+    try:
+        pid=node.get_process_id()
+        process=next((p for p in processes if p['pid']==pid),None)
+        if process is None or process.get('browser') or not alive(process):raise ValueError()
+        # An installed application may launch a browser outside the kernel's
+        # Chromium tree. Unknown executable identity cannot admit a Vault fill.
+        binary=os.path.basename(os.readlink('/proc/'+str(pid)+'/exe')).lower()
+        if any(name in binary for name in ('chrome','chromium','firefox','brave','msedge','epiphany','falkon','opera','vivaldi')):raise ValueError()
+        current=node
+        for _ in range(MAX_DEPTH):
+            if current is None or current.get_process_id()!=pid:raise ValueError()
+            role=current.getRoleName()
+            if role=='document web':raise ValueError()
+            if role=='application':return
+            current=current.parent
+        raise ValueError()
+    except Exception:raise ValueError('Vault fill requires an owned native field; use document-bound Browser fill for browsers') from None
+
+
 def visible_table_children(node, bounds):
     """MP-08 / MP-10 / MP-11: cover a managed virtual table's visible pixels.
 
@@ -164,6 +185,10 @@ def capture_snapshot(processes, browser_processes=None, browser_protection=None,
     return {'available': True, 'complete': True, 'protected': False, 'masks': masks, 'nodes': []}
 
 
+def sensitive_processes():
+    # MP-08/MP-11: a copied value stays private after its original widget closes.
+    return {(int(item['pid']),str(item['started'])) for item in _fills.read()}
+
 def secret_field(node, targets):
     """MP-08/MP-11: protect field values, retaining ordinary navigation AX."""
     if node.getRole() == pyatspi.ROLE_PASSWORD_TEXT:
@@ -210,9 +235,10 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
         protected=protected or secret
         state=node.getState()
         states=[label for flag,label in [(pyatspi.STATE_SHOWING,'showing'),(pyatspi.STATE_ENABLED,'enabled'),(pyatspi.STATE_FOCUSED,'focused'),(pyatspi.STATE_EDITABLE,'editable')] if state.contains(flag)]
-        bounds=None
+        bounds=None;component=None
         try:
-            rect=node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+            component=node.queryComponent()
+            rect=component.getExtents(pyatspi.DESKTOP_COORDS)
             bounds=[rect.x,rect.y,rect.width,rect.height]
         except NotImplementedError:pass
         actions=[]
@@ -220,12 +246,30 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
             try:
                 action=node.queryAction()
                 actions=[action.getName(i) for i in range(min(action.nActions,16))]
+                # The shared Computer contract calls a public button's default
+                # action activate; GTK names that same action click. Advertise
+                # both, retaining the exact node and native action proof.
+                if role in ('button','push button') and 'click' in actions and 'activate' not in actions:
+                    actions.append('activate')
             except NotImplementedError:pass
+        # Focus reveals no field value and never submits. A protected field
+        # exposes this operation alone; only Vault may enter its contents.
+        if all(label in states for label in ('editable','showing','enabled')) and callable(getattr(component,'grabFocus',None)) and 'focus' not in actions:
+            actions.insert(0,'focus')
         name='[protected]' if secret else (node.name or '')
         for value in values:
             if value:name=name.replace(value,'[redacted]')
         name=name[:4096]
         nodes.append({'pid':pid,'started':started,'path':path,'role':role,'name':name,'states':states,'bounds':bounds,'actions':actions,'protected':secret})
+        # MP-08/MP-10/MP-11: private helper evidence for public selection input.
+        # Never query a protected field. This value is not projected to MCP.
+        if not secret and 'editable' in states and 'showing' in states:
+            try:
+                text=node.queryText()
+                if 0 <= text.characterCount <= 4096:
+                    nodes[-1]['text']=text.getText(0,text.characterCount)
+            except Exception:pass
+
         if not secret:
             managed_table = (node.getRole() == pyatspi.ROLE_TABLE and
                              state.contains(pyatspi.STATE_MANAGES_DESCENDANTS) and
@@ -359,7 +403,9 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
 
 
 def tree_digest(tree):
-    return hashlib.sha256(json.dumps(tree,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+    # Selection text is private provenance evidence, never target identity.
+    action_tree={**tree,'nodes':[{key:value for key,value in node.items() if key!='text'} for node in tree.get('nodes',[])]}
+    return hashlib.sha256(json.dumps(action_tree,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
 
 
 def input_target(processes, expected=None):
@@ -412,21 +458,30 @@ def act(request):
     tree=snapshot(request['processes'],request.get('browser_processes'),values=request.get('values',()))
     if not tree['available'] or tree_digest(tree)!=request['expected_tree_digest']:raise ValueError('stale target')
     expected=next((node for node in tree['nodes'] if node['pid']==request['pid'] and node['path']==request['path'] and node['started']==request['started']),None)
-    if not expected or expected['protected'] or request['action'] not in expected['actions']:raise ValueError('target denied')
+    if not expected or (expected['protected'] and request['action']!='focus') or request['action'] not in expected['actions']:raise ValueError('target denied')
     desktop=pyatspi.Registry.getDesktop(0)
     app=next((desktop.getChildAtIndex(i) for i in range(desktop.childCount) if desktop.getChildAtIndex(i).get_process_id()==request['pid']),None)
     if app is None or not alive({'pid':request['pid'],'started':request['started']}):raise ValueError('stale app')
     node=app
     for index in request['path']:node=node.getChildAtIndex(index)
-    if node.getRole()==pyatspi.ROLE_PASSWORD_TEXT or node.getRoleName()!=expected['role'] or node.name!=expected['name']:raise ValueError('stale control')
-    interface=node.queryAction()
-    index=next((i for i in range(min(interface.nActions,16)) if interface.getName(i)==request['action']),None)
+    if (node.getRole()==pyatspi.ROLE_PASSWORD_TEXT and request['action']!='focus') or node.getRoleName()!=expected['role'] or (not expected['protected'] and node.name!=expected['name']):raise ValueError('stale control')
     if request.get('agent_input'):
         # MP-11: doAction can invoke Paste without naming that effect.
         import importlib.util
         spec=importlib.util.spec_from_file_location('native_clipboard',Path(__file__).with_name('native-clipboard.py'))
         clipboard=importlib.util.module_from_spec(spec);spec.loader.exec_module(clipboard)
-        protection=SimpleNamespace(snapshot=snapshot,alive=alive,NativeInputDenied=NativeInputDenied)
-        clipboard.input_admission(request['processes'],protection,request.get('browser_processes'))()
-    if index is None or not interface.doAction(index):raise ValueError('action refused')
+        protection=SimpleNamespace(snapshot=snapshot,alive=alive,NativeInputDenied=NativeInputDenied,sensitive_processes=sensitive_processes)
+        clipboard.input_admission(request['processes'],protection,request.get('browser_processes'),request.get('values',()))()
+    if request['action']=='focus':
+        state=node.getState()
+        if not all(state.contains(flag) for flag in (pyatspi.STATE_EDITABLE,pyatspi.STATE_SHOWING,pyatspi.STATE_ENABLED)) or not node.queryComponent().grabFocus():
+            raise ValueError('native focus refused')
+    else:
+        interface=node.queryAction()
+        names=[interface.getName(i) for i in range(min(interface.nActions,16))]
+        action=request['action']
+        if action=='activate' and action not in names and node.getRoleName() in ('button','push button') and 'click' in names:
+            action='click'
+        index=next((i for i,name in enumerate(names) if name==action),None)
+        if index is None or not interface.doAction(index):raise ValueError('action refused')
     return {'applied':True}

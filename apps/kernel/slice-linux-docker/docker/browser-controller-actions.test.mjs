@@ -389,7 +389,7 @@ test("secret fill rejects a password field that becomes unmasked while focusing"
 });
 
 for (const transitionEvent of ["input", "change"]) {
-test(`secret fill rejects and remasks a password field unmasked by ${transitionEvent} handlers`, async () => {
+test(`secret fill preserves a field revealed by ${transitionEvent} handlers`, async () => {
   const connection = new FakeActionConnection([
     { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
     { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
@@ -431,7 +431,7 @@ test(`secret fill rejects and remasks a password field unmasked by ${transitionE
     return send(method, params, sessionId);
   };
 
-  await assert.rejects(performBrowserAction({
+  const result=await performBrowserAction({
     connection,
     sessionId: "session-a",
     targetId: "target-a",
@@ -446,12 +446,9 @@ test(`secret fill rejects and remasks a password field unmasked by ${transitionE
     },
     timeoutMs: 500,
     sleep: async () => {},
-  }), (error) => {
-    assert.equal(`${error.name}:${error.code}:${error.message}`.includes("event-handler-canary"), false);
-    return error instanceof BrowserActionError && error.code === "browser_secret_target_not_masked";
   });
-
-  assert.equal(field.type, "password", "the field must be remasked before the CDP operation returns");
+  assert(!JSON.stringify(result).includes("event-handler-canary"));
+  assert.equal(field.type, "text", "the capture path owns exact-field masking");
   assert.equal(connection.calls.some((call) => call.method === "Input.insertText"), false);
 });
 }
@@ -714,10 +711,10 @@ for (const type of ["text", "tel", "number", "search", "password", "textarea"]) 
   });
 }
 
-test("MP-08/MP-10/MP-11 code masking does not loosen the ordinary Vault password-only fill", async () => {
+test("MP-08/MP-10/MP-11 Vault fills ordinary text under exact-field protection", async () => {
   const f = protectedCodeFixture("text");
-  await assert.rejects(f.fill(false), { code: "browser_secret_target_not_masked" });
-  assert.equal(f.field.value, "");
+  await f.fill(false);
+  assert.equal(f.field.value, "am7-code-canary");
   assert.equal(f.field.type, "text");
 });
 
@@ -745,11 +742,11 @@ for (const event of ["focus", "input", "change"]) {
 }
 
 for (const event of ["focus", "input", "change"]) {
-  test(`MP-08/MP-10/MP-11 ordinary Vault fill still refuses ${event} unmasking`, async () => {
+  test(`MP-08/MP-10/MP-11 ordinary Vault fill retains ${event} field semantics`, async () => {
     const f = protectedCodeFixture("password", (kind, field) => { if (kind === event) field.type = "text"; });
-    await assert.rejects(f.fill(false), { code: "browser_secret_target_not_masked" });
-    if (event === "focus") assert.equal(f.field.value, "");
-    else assert.equal(f.field.type, "password");
+    await f.fill(false);
+    assert.equal(f.field.value,"am7-code-canary");
+    assert.equal(f.field.type,"text");
   });
 }
 
@@ -762,3 +759,15 @@ test("MP-08/MP-10/MP-11 owner code without a document URL cannot fall back to na
   }));
   assert.equal(f.connection.calls.some(call => call.method.startsWith("Input.")), false);
 });
+
+// MP-08/MP-10/MP-11 V03: the Vault path fills ordinary OTP/text unchanged.
+for (const type of ['text','tel','number','search','email','url','textarea']) {
+  test(`MP-08/MP-11 Vault fills ${type} without changing field semantics`,async()=>{
+    const f=protectedCodeFixture(type);
+    const result=await f.fill(false);
+    assert.equal(f.field.value,'am7-code-canary');
+    assert.equal(f.field.type,type==='textarea'?undefined:type);
+    assert.equal(f.field.style.getPropertyValue('-webkit-text-security'),'');
+    assert(!JSON.stringify(result).includes('am7-code-canary'));
+  });
+}
