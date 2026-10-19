@@ -227,3 +227,18 @@ test('MP-08/MP-11 a reveal that changes the adopted measurement publishes nothin
   await f.source.gate.step();
   assert.equal(f.source.gate.protectionSerial,2,'the new region is adopted after two equal measurements');
 });
+// MP-08/MP-11 (review #1047 @ced677371 P1): the first frame of a desktop opened over an existing Vault
+// fill is withheld until a measurement is adopted, so start() must run the verifier while it waits.
+test('MP-08/MP-11 opening the desktop over a tracked Vault fill adopts protection and publishes its first frame',async()=>{
+  const {ProtectionGate}=await import('./browser-protection-regions.mjs');
+  const f=fillFixture({targets:[],tracked:1});
+  f.source.startNative=async()=>{};
+  f.source.gate=new ProtectionGate(async()=>({pages:[{target_id:'t',regions:[]}]}));
+  // The worker's frames carry the serial it was last told: 0 until the gate adopts one.
+  const feed=setInterval(()=>{const at=Date.now();f.source.offer(f.frame(f.source.gate.protectionSerial),f.source.gate.protectionSerial,at)},5);
+  try{
+    await f.source.start();
+    assert.ok(f.source.latest,'the first protected frame is published');
+    assert.ok(f.source.gate.protectionSerial>0,'protection was adopted before it');
+  }finally{clearInterval(feed);await f.source.close()}
+});
