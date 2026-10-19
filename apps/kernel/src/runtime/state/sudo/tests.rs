@@ -1932,7 +1932,11 @@ async fn sudo_catalog_handoff_never_survives_expiry_or_revoke() {
 async fn computer_login_under_sudo_raises_no_prompt_for_host_or_room_targets() {
     let f = fixture();
     let turn = running(&f);
-    for app in ["host:surface:g:77:41:41", "room-native:1:41:77:41", "room:1:41"] {
+    for app in [
+        "host:surface:g:77:41:41",
+        "room-native:1:41:77:41",
+        "room:1:41",
+    ] {
         let approval = tokio::time::timeout(
             Duration::from_millis(250),
             f.state.ensure_computer_login_approved(
@@ -1956,6 +1960,63 @@ async fn computer_login_under_sudo_raises_no_prompt_for_host_or_room_targets() {
             .active_interactions()
             .is_empty());
     }
+}
+
+// MP-08/MP-10/MP-11: a leased (slice/worker) agent's turn runs on the worker; /sudo still covers its Room paste.
+#[tokio::test]
+async fn computer_login_under_sudo_covers_a_leased_agent_turn() {
+    let f = fixture();
+    let turn = running(&f);
+    f.app
+        .lock()
+        .await
+        .agents_mut()
+        .bind_remote_execution(
+            &turn.agent_id,
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker".into(),
+                worker_machine_id: "worker-machine".into(),
+                execution_lease_id: "lease".into(),
+                leased_agent_id: "leased-agent".into(),
+                active_worker_provider_run_id: Some("worker-run".into()),
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: None,
+            },
+        )
+        .unwrap();
+    f.state
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .get_mut(&turn.entry_id)
+        .unwrap()
+        .placement = Some("lease".into());
+    let approval = tokio::time::timeout(
+        Duration::from_millis(250),
+        f.state.ensure_computer_login_approved(
+            &turn.session_id,
+            &turn.agent_id,
+            "login-handle",
+            "room:1:41",
+            "the selected login app",
+        ),
+    )
+    .await
+    .expect("/sudo covers the leased agent's paste: zero prompts")
+    .unwrap();
+    assert_eq!(approval.authority(), "sudo");
+    // The window is rechecked through the turn's projected worker run.
+    assert_eq!(
+        approval
+            .sudo_turn
+            .as_ref()
+            .unwrap()
+            .provider_run_id
+            .as_deref(),
+        Some("leased:leased-agent:worker-run")
+    );
 }
 
 // MP-08/MP-10/MP-11 V03: one trusted sheet carries unlock, duration and login consent.
@@ -2122,7 +2183,13 @@ async fn computer_login_room_process_identity_reuses_grant_but_restart_does_not(
     let f = fixture();
     let turn = running(&f);
     f.state.owned.sudo_turns.lock().unwrap().clear();
-    let config = f.state.owned.config_projection.snapshot().user_config.credential_vault;
+    let config = f
+        .state
+        .owned
+        .config_projection
+        .snapshot()
+        .user_config
+        .credential_vault;
     crate::secret::unlock_chariox_encrypted_vault(
         &config.path,
         PASSKEY,
@@ -2134,7 +2201,10 @@ async fn computer_login_room_process_identity_reuses_grant_but_restart_does_not(
         focus_window: 42,
         geometry: [0, 0, 100, 30],
         window_geometry: [0, 0, 200, 200],
-        process: Some(RoomComputerNativeProcess { pid, started: started.into() }),
+        process: Some(RoomComputerNativeProcess {
+            pid,
+            started: started.into(),
+        }),
     };
     let (app, description) = target(4242, "900").login_scope(1);
     f.state.owned.computer_login_grants.insert(
@@ -2150,7 +2220,13 @@ async fn computer_login_room_process_identity_reuses_grant_but_restart_does_not(
     );
     let reused = tokio::time::timeout(
         Duration::from_millis(250),
-        f.state.ensure_computer_login_approved(&turn.session_id, &turn.agent_id, "handle", &app, &description),
+        f.state.ensure_computer_login_approved(
+            &turn.session_id,
+            &turn.agent_id,
+            "handle",
+            &app,
+            &description,
+        ),
     )
     .await
     .expect("same process identity must reuse the login grant")
@@ -2160,7 +2236,13 @@ async fn computer_login_room_process_identity_reuses_grant_but_restart_does_not(
         let (app, description) = restarted.login_scope(1);
         assert!(tokio::time::timeout(
             Duration::from_millis(50),
-            f.state.ensure_computer_login_approved(&turn.session_id, &turn.agent_id, "handle", &app, &description)
+            f.state.ensure_computer_login_approved(
+                &turn.session_id,
+                &turn.agent_id,
+                "handle",
+                &app,
+                &description
+            )
         )
         .await
         .is_err());

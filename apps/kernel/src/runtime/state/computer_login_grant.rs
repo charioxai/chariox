@@ -150,18 +150,12 @@ impl KernelRuntimeState {
         app: &str,
         description: &str,
     ) -> Result<ComputerSecretApproval, DaemonError> {
-        if let Some(run) = self
-            .owned
-            .provider_store
-            .get_run_for_agent(session_id, agent_id)
-        {
-            if let Ok(turn) = self.sudo_for_provider_run(run.id()) {
-                return Ok(ComputerSecretApproval {
-                    sudo_turn: Some(turn),
-                    grant: None,
-                    _unlock: None,
-                });
-            }
+        if let Ok(turn) = self.sudo_for_agent_turn(session_id, agent_id) {
+            return Ok(ComputerSecretApproval {
+                sudo_turn: Some(turn),
+                grant: None,
+                _unlock: None,
+            });
         }
         let session = self.owned.session_store.get_session(session_id)?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;

@@ -224,6 +224,34 @@ impl KernelRuntimeState {
             })
     }
 
+    /// Home: the sudo window of the agent's current turn. A leased agent's turn
+    /// runs on the worker and is known here only by its projected run id.
+    pub(in crate::runtime::state) fn sudo_for_agent_turn(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<KernelSudoTurn, DaemonError> {
+        let denied = || error("this provider turn has no sudo authority");
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        let run_id = match agent.remote_execution() {
+            Some(remote) => crate::provider::projected_leased_provider_run_id(
+                &remote.leased_agent_id,
+                remote
+                    .active_worker_provider_run_id
+                    .as_deref()
+                    .ok_or_else(denied)?,
+            ),
+            None => self
+                .owned
+                .provider_store
+                .get_run_for_agent(session_id, agent_id)
+                .ok_or_else(denied)?
+                .id()
+                .to_owned(),
+        };
+        self.sudo_for_run(&run_id)
+    }
+
     /// Home: the live window for a forwarded privileged call. The forwarded
     /// context already names the current lease, worker run and running home
     /// prompt; the window must be bound to exactly that prompt.
