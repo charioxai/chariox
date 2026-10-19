@@ -610,4 +610,27 @@ class TraversalTest(unittest.TestCase):
         with self.assertRaises(ValueError):self.driver.input_target(processes,expected)
 
 
+# MP-11: independently launched browsers cannot use the native Vault route.
+class VaultDestinationTests(unittest.TestCase):
+    def setUp(self):
+        spec=importlib.util.spec_from_file_location('destination_driver',pathlib.Path(__file__).with_name('native-accessibility.py'))
+        self.driver=importlib.util.module_from_spec(spec)
+        # Existing traversal setup supplies the pyatspi fixture for this source test.
+        with patch.dict(sys.modules,{'pyatspi':types.SimpleNamespace()}):spec.loader.exec_module(self.driver)
+    def test_mp11_browser_flag_false_is_not_native_authority(self):
+        app=Node('App','application');field=Node('Field','entry');field.parent=app
+        for binary in ['/usr/bin/firefox','/opt/chrome/chrome','/usr/bin/chromium']:
+            with self.subTest(binary=binary),patch.object(self.driver,'alive',return_value=True),patch.object(self.driver.os,'readlink',return_value=binary),self.assertRaises(ValueError):
+                self.driver.require_native_secret_destination([{'pid':200,'started':'1','browser':False}],field)
+    def test_mp11_webview_ancestry_and_unknown_executables_are_refused(self):
+        app=Node('App','application');document=Node('Web','document web');document.parent=app
+        field=Node('Field','entry');field.parent=document
+        with patch.object(self.driver,'alive',return_value=True),patch.object(self.driver.os,'readlink',return_value='/usr/bin/python3'),self.assertRaises(ValueError):
+            self.driver.require_native_secret_destination([{'pid':200,'started':'1'}],field)
+        field.parent=app
+        with patch.object(self.driver,'alive',return_value=True),patch.object(self.driver.os,'readlink',side_effect=OSError()),self.assertRaises(ValueError):
+            self.driver.require_native_secret_destination([{'pid':200,'started':'1'}],field)
+        with patch.object(self.driver,'alive',return_value=True),patch.object(self.driver.os,'readlink',return_value='/usr/bin/python3'):
+            self.driver.require_native_secret_destination([{'pid':200,'started':'1'}],field)
+
 if __name__ == '__main__': unittest.main()

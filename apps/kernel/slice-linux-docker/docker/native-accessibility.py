@@ -39,6 +39,27 @@ def alive(process):
 
 
 
+def require_native_secret_destination(processes, node):
+    """MP-11: ownership alone never turns a browser control into a native field."""
+    try:
+        pid=node.get_process_id()
+        process=next((p for p in processes if p['pid']==pid),None)
+        if process is None or process.get('browser') or not alive(process):raise ValueError()
+        # An installed application may launch a browser outside the kernel's
+        # Chromium tree. Unknown executable identity cannot admit a Vault fill.
+        binary=os.path.basename(os.readlink('/proc/'+str(pid)+'/exe')).lower()
+        if any(name in binary for name in ('chrome','chromium','firefox','brave','msedge','epiphany','falkon','opera','vivaldi')):raise ValueError()
+        current=node
+        for _ in range(MAX_DEPTH):
+            if current is None or current.get_process_id()!=pid:raise ValueError()
+            role=current.getRoleName()
+            if role=='document web':raise ValueError()
+            if role=='application':return
+            current=current.parent
+        raise ValueError()
+    except Exception:raise ValueError('Vault fill requires an owned native field; use document-bound Browser fill for browsers') from None
+
+
 def visible_table_children(node, bounds):
     """MP-08 / MP-10 / MP-11: cover a managed virtual table's visible pixels.
 

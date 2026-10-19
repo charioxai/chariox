@@ -145,6 +145,7 @@ def main(request, connection=None):
             if not any(item['pid']==field['pid'] and str(item['started'])==str(field['started'])
                        and not item.get('browser') and accessibility.alive(item) for item in processes):
                 raise ValueError('Vault fill field is not an owned native application')
+            accessibility.require_native_secret_destination(processes,node)
             if op=='secret_target': return {'target':target,'field':field}
             if target!=request['expected_target'] or field!=request['expected_field']:
                 raise ValueError('Vault fill field changed')
@@ -152,11 +153,15 @@ def main(request, connection=None):
                 keyboard.assert_secret_target(connection,target)
                 current=fills.focused_field(target['active_window'], connection)
                 if fills.identity(current)!=field: raise ValueError('Vault fill field changed')
+                accessibility.require_native_secret_destination(processes,current)
             # A Vault fill replaces an existing value, including retries. The
             # privileged chord has the same exact field/window fences as text;
             # it never grants the agent ordinary input to a protected field.
             key_guard=load('native-input-destination').key_destinations
-            keyboard.hold_input('key','CTRL+A',1,before_press=same_field,key_guard=key_guard)
+            handlers={number:signal.getsignal(number) for number in (signal.SIGTERM,signal.SIGINT)}
+            try:keyboard.hold_input('key','CTRL+A',1,before_press=same_field,key_guard=key_guard)
+            finally:
+                for number,handler in handlers.items():signal.signal(number,handler)
             keyboard.type_text(request['text'], target, before_press=same_field,
                                key_guard=key_guard)
             return {'inserted':True,'field':field}
