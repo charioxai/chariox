@@ -58,8 +58,9 @@ export function installAppDrafts() {
   });
   const save = () => {
     const captured = loaded ? snapshot() : null;
-    pending = pending.then(async () => { saved = captured ?? snapshot(); await commit(saved); });
-    pending.catch(() => {}); // The publication fence still observes this failure.
+    // An aborted write fails the fence for its own edit only; the next edit retries the latest state.
+    pending = pending.catch(() => {}).then(async () => { saved = captured ?? snapshot(); await commit(saved); });
+    pending.catch(() => {});
   };
   pending.catch(() => {});
   // Private renderer fence, not an App SDK method or serialized protocol.

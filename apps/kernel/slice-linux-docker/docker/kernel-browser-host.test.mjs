@@ -1816,6 +1816,27 @@ for (const actor of ['human','mirror-human','agent','denied']) test(`MP-08/MP-10
   else {await input;const saved=JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8'));assert.equal(saved.active_tab_id,actor==='human'||actor==='mirror-human'?todo.tab_id:docs.tab_id)}
 }));
 
+// MP-08/MP-10/MP-11: a saved selection that can never return must not hide the live native selection.
+test('MP-08/MP-10: an expired selection intent for an App that never binds yields to the native selection', () => using(async ({host,connection},root) => {
+ const plain=await host.request({op:'open',url:'https://example.com/plain'});
+ const target=host.tabs.get(plain.tab_id).target_id;
+ host.tabGroups={active:async()=>target};host.activeTarget=target;
+ host.pendingActive={tab_id:null,app_origin:'https://app.gone.invalid',apps:['https://app.gone.invalid'],until:Date.now()-1};
+ await host.reconcile();
+ assert.equal(host.pendingActive,null);
+ assert.equal(host.activeTarget,target);
+ assert.equal(JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8')).active_tab_id,plain.tab_id);
+}));
+
+test('MP-08/MP-10: closing the selected Tab cancels its pending selection intent', () => using(async ({host}) => {
+ const first=await host.request({op:'open',url:'https://example.com/first'});
+ const second=await host.request({op:'open',url:'https://example.com/second'});
+ host.pendingActive={tab_id:first.tab_id,app_origin:null,apps:[],until:Date.now()+30000};
+ await host.request({op:'close',tab_id:first.tab_id,generation:first.generation,document_id:host.tabs.get(first.tab_id).document_id});
+ assert.equal(host.pendingActive,null);
+ assert(host.tabs.has(second.tab_id));
+}));
+
 test('MP-08/MP-11: restoring a selection retires native capture before activating its window', () => using(async ({host,connection}) => {
  const first=await host.request({op:'open',url:'https://example.com/first'});
  await host.request({op:'open',url:'https://example.com/second'});

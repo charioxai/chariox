@@ -10,7 +10,7 @@ function storage() {
     options.push(option);
     const tx = { objectStore: () => ({
       get(key) { const request = {}; queueMicrotask(() => { request.result = values.get(key); request.onsuccess?.(); }); return request; },
-      put(value, key) { commits.push(() => { values.set(key, structuredClone(value)); tx.oncomplete(); }); },
+      put(value, key) { const commit = () => { values.set(key, structuredClone(value)); tx.oncomplete(); }; commit.abort = () => tx.onabort(); commits.push(commit); },
     }) };
     if (mode === 'readonly') queueMicrotask(() => tx.oncomplete?.());
     return tx;
@@ -74,4 +74,20 @@ test('App publication waits for document readiness and restored fields', async (
  const ready=current.context.__charioxAppDraftFlushed().then(()=>{flushed=true});
  await turn();assert.equal(flushed,false,'a loading document must not replace the retained view');
  current.loaded();await ready;assert.equal(current.title.value,'recovered draft');
+});
+
+// MP-08/MP-10/MP-11: one aborted write (for example quota) must not wedge later drafts.
+test('a draft write that aborts is retried by the next edit', async () => {
+  const store = storage(), first = page(store);
+  await first.context.__charioxAppDraftFlushed();
+  first.input('lost write');
+  const failed = first.context.__charioxAppDraftFlushed();
+  await turn(); store.commits.shift().abort();
+  await assert.rejects(failed, /commit failed/);
+  first.input('kept after storage recovers');
+  const recovering = first.context.__charioxAppDraftFlushed();
+  await turn(); store.commits.shift()();
+  assert.equal(await recovering, true);
+  const recovered = page(store); await recovered.context.__charioxAppDraftFlushed();
+  assert.equal(recovered.title.value, 'kept after storage recovers');
 });

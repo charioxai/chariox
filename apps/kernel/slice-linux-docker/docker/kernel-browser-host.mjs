@@ -453,6 +453,9 @@ export class KernelBrowserHost {
       }
       if (this.pendingActive !== intent) return this.reconcile();
       this.pendingActive = null;
+    } else if (intent && this.pendingActive === intent && !this.restoring && Date.now() >= intent.until) {
+      // The saved selection cannot return (App uninstalled, Tab closed): the live native selection wins.
+      this.pendingActive = null;
     }
     this.activeTarget = restored?.target_id ?? nativeActive;
     if (this.activeTarget !== previous) await this.retireNativeForeground(this.activeTarget);
