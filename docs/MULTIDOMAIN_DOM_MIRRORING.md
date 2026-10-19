@@ -709,7 +709,7 @@ first prefix and bounded, viewer-credited continuation. Browserux 91599e472's
 bounded head-CSS exception remains on that large-document path.
 
 Atomic observation uses the existing protocol 532 chunks-v2 transport, whose
-16 KiB frames share a 64 KiB acknowledged window and fairly interleave display
+16 KiB frames share a 256 KiB acknowledged window and fairly interleave display
 events with replies; it adds no unchunked bypass or new wire flag. The client
 still stages incomplete documents from the capped/large path and fences input
 from the held prior document. Same-document protection resets remain immediate.

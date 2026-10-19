@@ -624,10 +624,55 @@ mod tests {
             "small messages stalled on receipt/assembly slots: {ids:?}"
         );
         assert!(
-            ids.len() < 24,
+            ids.len() < (WINDOW_BYTES + SMALL_RESERVE_BYTES) / 4096 + 2,
             "byte window must stop an unacknowledged stream"
         );
         assert_eq!(ids, (1..=ids.len() as u64).collect::<Vec<_>>());
+    }
+    // S1: a large message waits one round trip per window. 480 KB (a mirror
+    // first packet) must need at most two flights, not one per 64 KiB.
+    #[tokio::test]
+    async fn s1_large_message_completes_in_two_round_trips() {
+        let (wire_tx, mut wire) = mpsc::unbounded_channel();
+        let sink = Box::pin(futures_util::sink::unfold(wire_tx, |tx, message: Message| async move {
+            let _ = tx.send(message);
+            Ok::<_, std::convert::Infallible>(tx)
+        }));
+        let (tx, rx) = mpsc::channel(4);
+        let (ack_tx, ack_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
+        let (_ct, cr) = mpsc::channel(8);
+        let reply = serde_json::json!({"kind":"client_response","request_id":"mirror","payload":"y".repeat(480_000)}).to_string();
+        tx.send(Message::Text(reply.clone().into())).await.unwrap();
+        let task = tokio::spawn(run_writer(sink, rx, true, true, ack_rx, cr, |_| true));
+        let mut receiver = crate::frame_transport::FrameReceiver::default();
+        let (mut flights, mut done) = (0, None);
+        loop {
+            // A flight is everything the writer sends before it must wait for receipts.
+            let mut flight = Vec::new();
+            while let Ok(Some(message)) =
+                tokio::time::timeout(Duration::from_millis(40), wire.recv()).await
+            {
+                flight.push(message);
+            }
+            if flight.is_empty() {
+                break;
+            }
+            flights += 1;
+            for message in flight {
+                let Message::Text(text) = message else { panic!("unexpected frame") };
+                let (complete, receipt) = receiver.receive(&text).unwrap();
+                done = done.or(complete);
+                let TransportFrame::TransportAck { transfer_id, offset } =
+                    serde_json::from_str(&receipt.unwrap()).unwrap()
+                else {
+                    panic!("receipt expected")
+                };
+                ack_tx.send((transfer_id, offset)).await.unwrap();
+            }
+        }
+        task.abort();
+        assert_eq!(done, Some(reply));
+        assert!(flights <= 2, "480 KB needed {flights} round trips");
     }
     // MP-08/MP-10: queued mirror credits answer back-to-back. A written reply
     // must not hold one of the two reply slots until its WAN receipt returns
