@@ -1,8 +1,6 @@
 //! The agent's terminal tools: thin calls into the Room terminal service,
 //! typed as the calling agent.
 
-use base64::Engine as _;
-
 use super::workspace_live_sync_permission::allow_deny_choices;
 use super::*;
 use crate::local::{RoomTerminalOperation, RoomTerminalResult};

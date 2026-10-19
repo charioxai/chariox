@@ -332,7 +332,7 @@ fn the_enrolled_owner_of_a_legacy_local_room_keeps_its_terminals() {
             user_id: "enrolled-user".to_string(),
             ..Default::default()
         });
-        let mut app = DaemonApp::bootstrap(config).expect("daemon boots");
+        let app = DaemonApp::bootstrap(config).expect("daemon boots");
         let session_id = app
             .sessions_mut()
             .create_session(worktree.session_request())
