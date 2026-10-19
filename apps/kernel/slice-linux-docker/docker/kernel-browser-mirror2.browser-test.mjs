@@ -1197,6 +1197,20 @@ test("MP-10 mirrorregion: an oversized opaque region (>60 % of the view) stays a
   assert.deepEqual(lease.rect, { x: 0, y: 0, width: 1280, height: 600 });
 }, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="600"><rect width="1280" height="600" fill="rgb(255,0,0)"/></svg>' } }));
 
+// vimeo.com: an attached foreign frame whose owner has no box (a 0x0 iframe in a closed dialog) made regionBoxes
+// throw for the whole page, so no region lease (the hero video) could ever be measured.
+test("MP-10 mirrorregion: a zero-size frame owner does not stop other regions from leasing", () => mirrored(
+  '<style>body{margin:0}</style><canvas id="c" width="200" height="100" style="display:block"></canvas><iframe src="http://localhost:PORT/child" style="width:0;height:0;border:0"></iframe><script>const i=new Image();i.onload=()=>{c.getContext("2d").drawImage(i,0,0);window.drawn=true};i.src="http://localhost:PORT/tile.svg"</script>', async ctx => {
+    const { next, evaluate, host } = ctx;
+    for (let i = 0; i < 100 && await evaluate("window.drawn === true") !== true; i++) await settle(20);
+    await next();
+    const packet = await stayDom(next, 3000, "MP-10: stays DOM");
+    const stream = host.mirror.streams.get(ctx.subscription_id);
+    assert(stream.frames.size > 0, "MP-10: the clipped foreign frame is attached");
+    const lease = await regionLease(ctx, packet.sequence);
+    assert.deepEqual(lease.rect, { x: 0, y: 0, width: 200, height: 100 });
+  }, { "/child": { type: "text/html", body: "<!doctype html><p>child</p>" }, "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="rgb(255,0,0)"/></svg>' } }));
+
 // DuckDuckGo results: many result videos faded in and out (opacity animation) next to a hidden carousel.
 test("MP-10 mirrorregion: many hidden or fading videos and a carousel with a fading tainted canvas never hand the page to video", () => mirrored(
   '<style>body{margin:0}.f{animation:fade 600ms linear infinite alternate;width:120px;height:68px;display:inline-block}@keyframes fade{from{opacity:.05}to{opacity:1}}</style><div id="row">' +
