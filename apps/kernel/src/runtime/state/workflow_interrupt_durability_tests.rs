@@ -1906,24 +1906,35 @@ async fn mp08_workflow_resume_running_run_keeps_current_prompt() {
 // the parent's workflow receipt was already acknowledged before it blocked.
 #[tokio::test]
 async fn a01_failed_workflow_settles_unstarted_delegate_on_blocked_parent() {
-    failed_workflow_delegate_settlement(false, false).await;
+    failed_workflow_delegate_settlement(false, false, false).await;
 }
 
 // MP-08 / MP-10 / MP-11: a second accepted invocation of the same parent still
 // needs the delegate when the first invocation fails before admitting a task.
 #[tokio::test]
 async fn a01_failed_workflow_keeps_delegate_shared_with_live_invocation() {
-    failed_workflow_delegate_settlement(false, true).await;
+    failed_workflow_delegate_settlement(false, true, false).await;
+}
+
+// The surviving invocation is still on an upstream node: the shared delegate
+// has no node-run record there yet, only its runtime agent mapping.
+#[tokio::test]
+async fn a01_failed_workflow_keeps_delegate_a_live_invocation_has_not_reached() {
+    failed_workflow_delegate_settlement(false, true, true).await;
 }
 
 // MP-08 / MP-10 / MP-11: successful task receipts survive a later startup
 // failure in the same invocation, including repeated lifecycle sweeps.
 #[tokio::test]
 async fn a01_failed_workflow_preserves_fully_settled_successful_task() {
-    failed_workflow_delegate_settlement(true, false).await;
+    failed_workflow_delegate_settlement(true, false, false).await;
 }
 
-async fn failed_workflow_delegate_settlement(settled_upstream: bool, shared_live_invocation: bool) {
+async fn failed_workflow_delegate_settlement(
+    settled_upstream: bool,
+    shared_live_invocation: bool,
+    downstream_unreached: bool,
+) {
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
@@ -2018,6 +2029,13 @@ async fn failed_workflow_delegate_settlement(settled_upstream: bool, shared_live
         run["status"] = serde_json::json!("Running");
         run["node_runs"][0]["id"] = serde_json::json!("second-invocation-node");
         run["active_node_run_id"] = serde_json::json!("second-invocation-node");
+        if downstream_unreached {
+            run["node_runs"][0]["agent_id"] = serde_json::json!(fixture.second_target_agent_id);
+            run["runtime_agent_ids_by_node"] = serde_json::json!({
+                "upstream-definition": fixture.second_target_agent_id,
+                "delegate-definition": fixture.target_agent_id,
+            });
+        }
         restored["workflow_runs"].as_array_mut().unwrap().push(run);
         owned
             .session_store

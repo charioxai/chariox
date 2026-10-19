@@ -174,9 +174,20 @@ fn run_terminated(run: &crate::session::WorkflowRun) -> bool {
     run_failed(run) || run.status() == crate::session::WorkflowRunStatus::Completed
 }
 
-fn unfinished_agents(run: &crate::session::WorkflowRun) -> impl Iterator<Item = String> + '_ {
+/// Agents a surviving run still has to run: started and unfinished nodes plus
+/// the nodes the invocation has not reached yet (its runtime agent mapping).
+fn unfinished_agents(run: &crate::session::WorkflowRun) -> Vec<String> {
+    let done: std::collections::HashSet<&str> = run
+        .node_runs()
+        .iter()
+        .filter(|n| n.status() == crate::session::WorkflowNodeRunStatus::Completed)
+        .map(|n| n.agent_id())
+        .collect();
     run.node_runs()
         .iter()
-        .filter(|n| n.status() != crate::session::WorkflowNodeRunStatus::Completed)
-        .map(|n| n.agent_id().to_string())
+        .map(|n| n.agent_id())
+        .chain(run.runtime_agent_ids_by_node().values().map(String::as_str))
+        .filter(|agent| !done.contains(agent))
+        .map(str::to_owned)
+        .collect()
 }
