@@ -30,10 +30,29 @@ pub struct ProjectEnvironmentDiscoveryInput {
 
 /// A tool-free official-provider utility classifies the kernel's name/locator index.
 /// It must not receive source files, env files, shell output or a workspace credential binding.
+/// Gitignored files have no count ceiling, but the utility's prompt does. It is offered
+/// the leading candidates that fit; the rest are left out unless already decided.
+const OFFERED_PRIVATE_FILE_BYTES: usize = 512 * 1024;
+
+pub(crate) fn offered_private_files(
+    candidates: &[ProjectPrivateFileCandidate],
+) -> &[ProjectPrivateFileCandidate] {
+    let mut used = 0;
+    let offered = candidates.iter().take_while(|candidate| {
+        used += candidate.workspace_id.len() + candidate.path.len() + 64;
+        used <= OFFERED_PRIVATE_FILE_BYTES
+    });
+    &candidates[..offered.count()]
+}
+
 pub fn project_environment_discovery_prompt(
     input: &ProjectEnvironmentDiscoveryInput,
 ) -> Result<String, DaemonError> {
-    let encoded = serde_json::to_string(input)
+    let offered = ProjectEnvironmentDiscoveryInput {
+        private_files: offered_private_files(&input.private_files).to_vec(),
+        ..input.clone()
+    };
+    let encoded = serde_json::to_string(&offered)
         .map_err(|_| environment_error("environment discovery input invalid"))?;
     if encoded.len() > 1024 * 1024 {
         return Err(environment_error(
@@ -63,9 +82,10 @@ pub fn parse_project_environment_discovery_output(
             "discovery Project or evidence binding mismatch",
         ));
     }
-    if manifest.private_files.len() != input.private_files.len()
+    let offered = offered_private_files(&input.private_files);
+    if manifest.private_files.len() != offered.len()
         || manifest.private_files.iter().any(|decision| {
-            !input.private_files.iter().any(|candidate| {
+            !offered.iter().any(|candidate| {
                 candidate.workspace_id == decision.workspace_id
                     && candidate.path == decision.path
                     && (!decision.bring || !candidate.secret_looking)
@@ -77,14 +97,24 @@ pub fn parse_project_environment_discovery_output(
         ));
     }
     for file in &mut manifest.private_files {
-        let candidate = input
-            .private_files
+        let candidate = offered
             .iter()
             .find(|candidate| {
                 candidate.workspace_id == file.workspace_id && candidate.path == file.path
             })
             .expect("inventory validated");
         file.secret_looking = candidate.secret_looking;
+    }
+    // A file the utility was not shown keeps its earlier decision and is otherwise
+    // left out: only an explicit decision brings a private file.
+    for candidate in &input.private_files[offered.len()..] {
+        if let Some(known) = input.previous_manifest.as_ref().and_then(|manifest| {
+            manifest.private_files.iter().find(|known| {
+                known.workspace_id == candidate.workspace_id && known.path == candidate.path
+            })
+        }) {
+            manifest.private_files.push(known.clone());
+        }
     }
     let previous = input
         .previous_manifest

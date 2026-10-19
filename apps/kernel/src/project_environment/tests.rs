@@ -1262,6 +1262,80 @@ fn mp08_mp10_configfile_reference_reaches_discovery_without_contents() {
     assert!(!prompt.contains("synthetic-private-value") && !prompt.contains("synthetic-pem-value"));
 }
 
+// MP-08 / MP-10 / MP-11: Gitignored files have no count ceiling. Only a bounded
+// prefix is offered to the utility; the kernel decides the rest.
+#[test]
+fn mp08_discovery_decides_a_gitignored_inventory_beyond_the_prompt_budget() {
+    let candidates: Vec<_> = (0..30_000)
+        .map(|index| ProjectPrivateFileCandidate {
+            workspace_id: "web".into(),
+            path: format!("generated/bucket-{}/entry-{index}.txt", index % 97),
+            bytes: 10,
+            secret_looking: index == 29_999,
+        })
+        .collect();
+    let manifest = fixture_manifest(vec![]);
+    let input = ProjectEnvironmentDiscoveryInput {
+        project_id: manifest.project_id.clone(),
+        evidence_digest: manifest.evidence_digest.clone(),
+        changed_paths: BTreeMap::new(),
+        previous_manifest: None,
+        references: vec![],
+        private_files: candidates.clone(),
+        revision: None,
+    };
+    let prompt = project_environment_discovery_prompt(&input).unwrap();
+    assert!(prompt.len() < 1024 * 1024);
+    let offered = discovery::offered_private_files(&candidates).len();
+    assert!(0 < offered && offered < candidates.len());
+    assert!(prompt.contains(&candidates[offered - 1].path));
+    assert!(!prompt.contains(&candidates[offered].path));
+    let mut answer = manifest;
+    answer.private_files = candidates[..offered]
+        .iter()
+        .map(|candidate| ProjectPrivateFileDecision {
+            workspace_id: candidate.workspace_id.clone(),
+            path: candidate.path.clone(),
+            bring: false,
+            reason: "Generated cache".into(),
+            secret_looking: false,
+        })
+        .collect();
+    let decided = parse_project_environment_discovery_output(
+        &serde_json::to_string(&answer).unwrap(),
+        &input,
+    )
+    .unwrap();
+    assert_eq!(decided.private_files.len(), offered);
+    // An earlier explicit decision for a file beyond the prompt budget survives.
+    let mut previous = fixture_manifest(vec![]);
+    previous.private_files = vec![ProjectPrivateFileDecision {
+        workspace_id: "web".into(),
+        path: candidates[29_999].path.clone(),
+        bring: true,
+        reason: "Needed local tooling".into(),
+        secret_looking: false,
+    }];
+    let revised_input = ProjectEnvironmentDiscoveryInput {
+        previous_manifest: Some(previous.clone()),
+        ..input.clone()
+    };
+    let kept = parse_project_environment_discovery_output(
+        &serde_json::to_string(&answer).unwrap(),
+        &revised_input,
+    )
+    .unwrap();
+    assert_eq!(kept.private_files.len(), offered + 1);
+    assert_eq!(kept.private_files.last(), previous.private_files.first());
+    // A model that decides more or fewer files than it was offered is still rejected.
+    answer.private_files.pop();
+    assert!(parse_project_environment_discovery_output(
+        &serde_json::to_string(&answer).unwrap(),
+        &input
+    )
+    .is_err());
+}
+
 // MP-08 / MP-10 / MP-11: A declaration named password is code evidence, not a config secret.
 #[test]
 fn mp08_mp10_reference_code_changes_invalidate_discovery() {
