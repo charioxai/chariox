@@ -73,6 +73,8 @@ export function assertAttestationPixels(raw,reference,media,protectedRegions,str
  if(!enough(anchors,total))throw Error('MP-11: native region attestation anchors unavailable');
  return {excluded_pixels:excluded,page_pixels:total,proof_pixels:anchors,protected_pixels:protectedCount,ring_pixels:ring.reduce((n,v)=>n+v,0),media_boxes:media.length};
 }
+// The page has too few non-media pixels to prove a region video against (not a mismatch, not a transient).
+export const attestationShortage=error=>/media attestation share exceeded|native region attestation anchors unavailable/.test(error?.message??'');
 const SCROLL_GUTTER_DIP=16;
 const browserStrips=(page,hostScale)=>[statusBand(page,hostScale),{x:page.width-SCROLL_GUTTER_DIP*hostScale,y:0,width:SCROLL_GUTTER_DIP*hostScale,height:page.height}];
 export function regionProtection(source,left,top){
@@ -104,7 +106,9 @@ export async function attestNativeRegion(source){
   const projected=r=>({...r,x:r.x-left,y:r.y-top});
   const protectedRegions=(shot[displayMaskRegions]??[]).map(projected);
   const raw=probe.latest?.raw;protectedRegions.push(...(raw?.[displayMaskRegions]??[]));
-  const receipt=assertAttestationPixels(raw,reference,plan.media,protectedRegions,browserStrips(page,source.hostScale).map(projected));
+  let receipt;
+  try{receipt=assertAttestationPixels(raw,reference,plan.media,protectedRegions,browserStrips(page,source.hostScale).map(projected));}
+  catch(error){if(attestationShortage(error))source.attestationRefused?.();throw error;}
   await assertCurrentDocument(source.connection,source.sessionId,source.tab.target_id,source.tab.document_id);
   const after=await source.attestationState();
   if(JSON.stringify(before)!==JSON.stringify(after)||!probe.valid()||!source.valid()||!await source.validateCurrent())

@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
 import { inflateRawSync, constants as zlib } from 'node:zlib';
-import { Mirror2, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, regionCoverage, regionUnattestable, cssImports } from './kernel-browser-mirror2.mjs';
+import { Mirror2, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports } from './kernel-browser-mirror2.mjs';
 
 const keys = () => { const seen = []; return { seen, resource: (url, base, kind) => { const href = new URL(url, base).href; if (!/^(https?|data):/.test(href)) return null; seen.push([href, kind]); return `r${seen.length}`; } }; };
 const onlyKernelUrls = css => { const all = css.match(/url\s*\(/gi)?.length ?? 0, allowed = css.match(/url\("(?:mr:r[0-9]{1,6}|#[\w-]*)"\)/g)?.length ?? 0; return all === allowed; };
@@ -690,19 +690,7 @@ test('MP-08/MP-10 r47 GitHub storm: credits based before a reset still in flight
  assert.equal((await credit(reset.sequence)).reset,true,'a viewer that applied the reset and is still far behind resets');
 });
 
-test('MP-10 mirrorregion: region coverage counts overlap once and decides when the page is the video', () => {
-  assert.equal(regionUnattestable([{ box: [0, 0, 1265, 800] }, { box: [0, 0, 1265, 800] }]), true, 'two stacked full-width videos');
-  assert.ok(regionCoverage([{ box: [0, 0, 1280, 800] }, { box: [0, 0, 1280, 800] }]) <= 1, 'overlap is not double counted');
-  assert.equal(regionUnattestable([{ box: [0, 0, 1280, 750] }]), true, 'a theater player filling 93 %');
-  assert.equal(regionUnattestable([{ box: [0, 0, 1280, 600] }]), false, 'a 75 % player and an 86 % hero stay DOM copies');
-  assert.equal(regionUnattestable([{ box: [0, 0, 1280, 690] }]), false);
-  assert.equal(regionUnattestable([{ box: [0, 84, 1272, 624], view: [1272, 708] }]), false, 'apple: an 88 % hero on the real 1272x708 page');
-  assert.equal(regionUnattestable([{ box: [0, 0, 1272, 700], view: [1272, 708] }]), true, 'a player filling the real page');
-  assert.equal(regionUnattestable([{ box: [0, 0, 640, 800] }, { box: [0, 0, 1280, 300] }]), false, 'two overlapping boxes covering about 70 %');
-  assert.equal(regionUnattestable([{ box: [-3000, -200, 3008, 692] }]), false, 'only the part inside the viewport counts');
-});
-
-test('MP-08/MP-10 mirrorregion: theater mode (opaque media over 85% of the view) is the video; 60-85% stays a DOM copy with a bounded still', async () => {
+test('MP-08/MP-10 mirrorregion: theater mode: a region video refused for want of page pixels makes the page the video; otherwise a DOM copy with a bounded still', async () => {
  const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
  const connection={isOpen:()=>true,send:async()=>({})};
  const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
@@ -725,11 +713,14 @@ test('MP-08/MP-10 mirrorregion: theater mode (opaque media over 85% of the view)
  drain={ops:[{op:'children',id:'n1',nodes:[{id:'n9',parent:'n1',kind:'tile'}]}],changed:[],resources:[],sheets:[],scroll:[0,0],opaque:true};
  const echo=await credit(first.sequence);assert.equal(echo.fallback,undefined,'the click echo is not held for a region measurement');
  stream.inputAt=Date.now()-2000;stream.tilesAt=0;
+ // The media fills the page: native attestation refuses its region video (no page pixels to prove it against).
+ assert.equal((await credit(echo.sequence)).fallback,undefined,'a media-dominated view stays a DOM copy until a region video is refused');
+ stream.unattestable=true;stream.tilesAt=0;
  const handoff=await credit(echo.sequence);
  assert.equal(handoff.fallback,'region_area','a view the media fills has no page pixels to prove a region video: the page is the video');
  assert.equal(handoff.reset,true);
  // A player that fills 75 % of the view stays a DOM copy; its still is a placeholder, sent at most three times.
- stream.fallback=null;boxes=[{id:'n9',box:[0,0,1280,600]}];
+ stream.fallback=null;stream.unattestable=false;boxes=[{id:'n9',box:[0,0,1280,600]}];
  for(let i=0;i<5;i++){stream.tilesAt=0;stream.tileHashes=new Map();const packet=await credit(0);assert.equal(packet.fallback,undefined,'75 % media stays a DOM copy');}
  // The document copy itself failing is the one page-level fallback that remains.
  connection.send=async method=>method==='Page.getFrameTree'?{frameTree:{frame:{loaderId:'D1'}}}:{};

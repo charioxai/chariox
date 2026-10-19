@@ -116,15 +116,6 @@ function dataUrlBytes(url) {
 export const regionArea = boxes => boxes.reduce((sum, { box: [x, y, w, h] }) => sum + Math.max(0, Math.min(1280, x + w) - Math.max(0, x)) * Math.max(0, Math.min(800, y + h) - Math.max(0, y)), 0);
 // Opaque regions are stills/region video over the mirrored page; only a viewport they mostly cover is the video's page.
 export const regionOverBudget = boxes => regionArea(boxes) > 0.6 * 1280 * 800;
-// Share of the viewport the boxes cover (overlap counted once, 20 px grid; the page reports its live viewport,
-// 1280x800 otherwise). Region video is proved against the page pixels around the media; a page that is nearly all
-// media has none (native attestation refuses), so it is the video.
-export function regionCoverage(boxes) {
-  const [width, height] = boxes.find(b => b.view)?.view ?? [1280, 800], columns = Math.ceil(width / 20), rows = Math.ceil(height / 20), seen = new Uint8Array(columns * rows);
-  for (const { box: [x, y, w, h] } of boxes) for (let r = Math.max(0, Math.ceil((y - 10) / 20)); r < rows && r * 20 + 10 < y + h; r++) for (let c = Math.max(0, Math.ceil((x - 10) / 20)); c < columns && c * 20 + 10 < x + w; c++) seen[r * columns + c] = 1;
-  return seen.reduce((n, v) => n + v, 0) / (columns * rows);
-}
-export const regionUnattestable = boxes => regionCoverage(boxes) > 0.88;
 
 // Compact wire records (pre-order): [idDelta, parentBack, tag | kindCode, attrs | 0, extra].
 // parentBack 0 = the context parent (null for a snapshot root, the op id for
@@ -853,6 +844,9 @@ export class Mirror2 {
   async tiles(world, tab, stream, reset, still, none = false) {
     // No opaque region in the page and no attached frame: nothing to place or capture. A DOM echo does not wait
     // for an evaluation in the page's next task (MP-08 click path, 8-12 ms behind a busy source page).
+    // Native attestation refused a region video because media leaves no page pixels to prove it against (a theater
+    // player, a full-screen map): the page is the video (labelled; the client retries later).
+    if (stream.unattestable) { const error = new Error('MP-10: opaque media fills the page'); error.mirrorReason = 'region_area'; throw error; }
     if (none && !stream.frames.size) { stream.tileKeys = ''; stream.tilesPending = false; return []; }
     // MP-08/MP-10: a DOM packet right after viewer input carries no still; its regions (and the 25% budget)
     // are measured by the next quiet packet, so an echo does not wait for an evaluation in a busy page.
@@ -860,9 +854,6 @@ export class Mirror2 {
     stream.tilesPending = false;
     let boxes = [...(await this.evaluate(world, `${world.ref}.opaqueBoxes()`)).filter(b => !b.foreign || !stream.frames.has(b.id)), ...await this.frames.opaqueBoxes(stream, world)];
     stream.tileKeys = boxes.map(b => b.id).join(',');
-    // Opaque regions covering nearly the whole viewport leave no page pixels to prove a region video against: the
-    // page is the video (labelled; the client retries later).
-    if (regionUnattestable(boxes)) { const error = new Error('MP-10: opaque regions cover the page'); error.mirrorReason = 'region_area'; throw error; }
     if (!boxes.length || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
     // Over the budget a still is only the placeholder until the region's video arrives (and what stays if it cannot
     // start): a few per page, never a refreshed stream of lossless frames.
