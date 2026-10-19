@@ -762,6 +762,9 @@ export class KernelBrowserHost {
       return { generation: this.generation, subscription_id: id, codec, bitrate: command.bitrate, device_scale_factor: scale };
     }
     if (command.op === "close") {
+      // The closed Tab can no longer be restored as the selection (MP-08/MP-10).
+      const intent = this.pendingActive, origin = appRestoreOrigin(tab.url);
+      if (intent && (intent.tab_id === tab.tab_id || (origin && intent.app_origin === origin))) this.pendingActive = null;
       this.mirror.removeTab(tab.tab_id);
       for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id && !['browser_chrome', 'browser_auxiliary'].includes(stream.regionTarget?.kind)) { await stream.close(); this.displays.delete(id); }
       await this.closeCompositors(tab.tab_id);if(this.foreground.tab===tab.tab_id)this.foreground.reset();

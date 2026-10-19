@@ -31,14 +31,16 @@ export function installAppDrafts() {
     }
     return JSON.stringify(next).length <= 65536 ? next : {};
   };
-  const opened = new Promise((resolve, reject) => {
+  // A failed open is not cached: the next edit reopens, so unavailable storage never freezes the App.
+  let database;
+  const open = () => database ??= new Promise((resolve, reject) => {
     const request = indexedDB.open('chariox-form-drafts', 1);
     request.onupgradeneeded = () => request.result.createObjectStore('drafts');
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(new Error('App draft storage unavailable'));
-  });
+  }).catch(error => { database = undefined; throw error; });
   const commit = async value => {
-    const db = await opened;
+    const db = await open();
     await new Promise((resolve, reject) => {
       // Strict completion includes flushing to disk, unlike localStorage or
       // IndexedDB's default relaxed transaction. Empty drafts are tombstones.
@@ -48,21 +50,20 @@ export function installAppDrafts() {
       tx.objectStore('drafts').put(value, key);
     });
   };
-  let pending = opened.then(db => new Promise((resolve, reject) => {
+  let pending = open().then(db => new Promise((resolve, reject) => {
     const request = db.transaction('drafts', 'readonly').objectStore('drafts').get(key);
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(new Error('App draft read failed'));
   })).then(value => {
     saved = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
     loaded = true; restore();
-  });
+  }).catch(() => {});
   const save = () => {
     const captured = loaded ? snapshot() : null;
     // An aborted write fails the fence for its own edit only; the next edit retries the latest state.
     pending = pending.catch(() => {}).then(async () => { saved = captured ?? snapshot(); await commit(saved); });
     pending.catch(() => {});
   };
-  pending.catch(() => {});
   // Private renderer fence, not an App SDK method or serialized protocol.
   const ready = document.readyState === 'loading'
     ? new Promise(resolve => document.addEventListener('DOMContentLoaded', resolve, {once:true})) : Promise.resolve();

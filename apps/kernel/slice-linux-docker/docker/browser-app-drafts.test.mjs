@@ -15,9 +15,11 @@ function storage() {
     if (mode === 'readonly') queueMicrotask(() => tx.oncomplete?.());
     return tx;
   } };
-  return { values, commits, options, indexedDB: { open() { const request = {}; queueMicrotask(() => {
+  const store = { values, commits, options, unavailable: false, indexedDB: { open() { const request = {}; queueMicrotask(() => {
+    if (store.unavailable) return request.onerror();
     request.result = db; request.onupgradeneeded?.(); request.onsuccess();
   }); return request; } } };
+  return store;
 }
 function page(store, readyState = 'complete') {
   const listeners = new Map(), form = { id: 'todo', getAttribute: () => null };
@@ -90,4 +92,18 @@ test('a draft write that aborts is retried by the next edit', async () => {
   assert.equal(await recovering, true);
   const recovered = page(store); await recovered.context.__charioxAppDraftFlushed();
   assert.equal(recovered.title.value, 'kept after storage recovers');
+});
+
+// MP-08/MP-10/MP-11: a failed first open of draft storage must not freeze publication or later drafts.
+test('draft storage that fails to open lets the App publish and recovers on the next edit', async () => {
+  const store = storage(); store.unavailable = true;
+  const first = page(store);
+  assert.equal(await first.context.__charioxAppDraftFlushed(), true);
+  store.unavailable = false;
+  first.input('kept after storage returns');
+  const flush = first.context.__charioxAppDraftFlushed();
+  await turn(); store.commits.shift()();
+  assert.equal(await flush, true);
+  const recovered = page(store); await recovered.context.__charioxAppDraftFlushed();
+  assert.equal(recovered.title.value, 'kept after storage returns');
 });

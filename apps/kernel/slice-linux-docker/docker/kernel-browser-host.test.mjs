@@ -1831,7 +1831,8 @@ test('MP-08/MP-10: an expired selection intent for an App that never binds yield
 test('MP-08/MP-10: closing the selected Tab cancels its pending selection intent', () => using(async ({host}) => {
  const first=await host.request({op:'open',url:'https://example.com/first'});
  const second=await host.request({op:'open',url:'https://example.com/second'});
- host.pendingActive={tab_id:first.tab_id,app_origin:null,apps:[],until:Date.now()+30000};
+ // An origin that has not rebound keeps the restore unsettled, so only Close can cancel the intent.
+ host.pendingActive={tab_id:first.tab_id,app_origin:null,apps:['https://app.unready.invalid'],until:Date.now()+30000};
  await host.request({op:'close',tab_id:first.tab_id,generation:first.generation,document_id:host.tabs.get(first.tab_id).document_id});
  assert.equal(host.pendingActive,null);
  assert(host.tabs.has(second.tab_id));
