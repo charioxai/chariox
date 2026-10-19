@@ -27,12 +27,7 @@ impl KernelRuntimeOwnedState {
         // A plain turn that owns nothing fails as it does without a ledger:
         // the failure notice is its whole outcome. Only a task holding an
         // obligation or a wait needs the owner to decide.
-        if task.wait.is_none()
-            && !task
-                .obligations
-                .iter()
-                .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
-        {
+        if task.is_plain_turn() {
             self.durable_state_store
                 .agent_lifecycle(Operation::Settle {
                     room: room.into(),

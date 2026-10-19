@@ -269,6 +269,21 @@ impl KernelRuntimeState {
                 tracing::warn!(task_id=%task.task_id, prompt_id=%task.prompt_id, provider_run_id=?task.provider_run_id,
                     revision=task.revision,
                     "MP-08/MP-09/MP-10/MP-11 A03: supervisor blocked a working task with no live executor");
+                if task.is_plain_turn() && task.pending_prompt_id.is_none() {
+                    // An ordinary turn whose settlement was lost has nothing
+                    // for the owner to decide; it ends as a stopped turn.
+                    self.owned
+                        .durable_state_store
+                        .agent_lifecycle(Operation::Settle {
+                            room: task.room_id.clone(),
+                            agent: task.agent_id.clone(),
+                            prompt: task.prompt_id.clone(),
+                            run: task.provider_run_id.clone().unwrap_or_default(),
+                            cancelled: true,
+                            now,
+                        })?;
+                    continue;
+                }
                 if let Outcome::Task(task) = self.owned.durable_state_store.agent_lifecycle(Operation::Block{task:task.task_id,prompt:task.prompt_id,reason:"No live provider turn or confirmed wake delivery; owner must reconcile and resume".into()})? {
                     blocked.push(task);
                 }

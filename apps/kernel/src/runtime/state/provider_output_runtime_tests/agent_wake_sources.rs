@@ -391,6 +391,37 @@ async fn ev13_cancel_done_and_pending() {
     assert_ne!(f.wake_state("wake-pending"), "cancelling");
 }
 
+// D2: an ordinary turn whose settlement was lost (for example by a restart)
+// ends as a stopped turn; it never asks the owner for a decision.
+#[tokio::test]
+async fn sweep_ends_a_stranded_plain_turn_without_asking_the_owner() {
+    let f = fixture("sweep-plain-turn", false).await;
+    let long_ago = crate::session::unix_epoch_ms() - 10 * 60 * 1000;
+    f.store()
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            prompt: "stranded".into(),
+            run: Some(f.run.clone()),
+            now: long_ago,
+        })
+        .unwrap();
+
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
+
+    let task = f
+        .store()
+        .agent_tasks(Some(&f.room), Some(&f.agent))
+        .unwrap()
+        .into_iter()
+        .find(|task| task.prompt_id == "stranded")
+        .unwrap();
+    assert_eq!(task.state, ExecutionState::Cancelled);
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert!(session.active_interactions().is_empty());
+}
+
 #[tokio::test]
 async fn ev13_lost_source_raises_a_visible_alert_and_one_event() {
     let f = fixture("ev13-lost-source", false).await;
