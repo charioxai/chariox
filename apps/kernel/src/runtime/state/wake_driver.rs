@@ -4,7 +4,9 @@
 //! terminal, a watcher) and only decides when it occurs. A driver wakes
 //! nobody directly: it reports through its `WakeSink`.
 use super::*;
-use crate::durable_state::agent_lifecycle::{AgentWake, Operation, Outcome, WakeEnd};
+use crate::durable_state::agent_lifecycle::{
+    AgentTaskExecution, AgentWake, Operation, Outcome, WakeEnd,
+};
 use std::sync::RwLock;
 
 /// Result of a stop request.
@@ -192,6 +194,33 @@ impl WakeDriver for TimerDriver {
 }
 
 impl KernelRuntimeState {
+    /// Arms a new wake for the running turn of `task`: the ledger commits it
+    /// (obligation, registration, wake), then its driver starts the source. A
+    /// driver that cannot start it leaves no armed wake behind.
+    pub(crate) fn arm_wake_source(
+        &self,
+        task: &AgentTaskExecution,
+        wake: &AgentWake,
+    ) -> Result<(), DaemonError> {
+        let store = &self.owned.durable_state_store;
+        let driver = self.owned.agent_wakes.drivers.get(&wake.kind)?;
+        store.agent_lifecycle(Operation::ArmWake {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            wake: wake.clone(),
+        })?;
+        if let Err(error) = driver.arm(wake) {
+            store.agent_lifecycle(Operation::CancelWake {
+                id: wake.id.clone(),
+                task: task.task_id.clone(),
+                prompt: Some(task.prompt_id.clone()),
+                pending: false,
+            })?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Cancels one wake. The ledger records the intent first (a driver-held
     /// source becomes `cancelling`), then the driver stops it; the wake is
     /// settled once the driver has physically stopped.
@@ -202,7 +231,7 @@ impl KernelRuntimeState {
         prompt: Option<&str>,
     ) -> Result<(), DaemonError> {
         let store = &self.owned.durable_state_store;
-        let driver_held = wake.state != "scheduled";
+        let driver_held = matches!(wake.state.as_str(), "starting" | "running" | "cancelling");
         let cancel = |pending| Operation::CancelWake {
             id: wake.id.clone(),
             task: task.into(),

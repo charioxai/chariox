@@ -146,6 +146,7 @@ fn assert_external_active_prompt_and_queued_chariox_prompt(
     );
 }
 
+mod agent_wake_sources;
 mod app_quiet_tool_guard;
 mod approval_lifetime;
 mod browser_import_execution_gate;

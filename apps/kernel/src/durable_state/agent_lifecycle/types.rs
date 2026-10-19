@@ -155,7 +155,6 @@ pub(crate) enum Operation {
         agent: String,
         prompt: String,
         run: String,
-        has_answer: bool,
         cancelled: bool,
         now: u64,
     },

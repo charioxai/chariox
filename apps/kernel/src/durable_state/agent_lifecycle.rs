@@ -121,6 +121,7 @@ impl DurableKernelStateStore {
         })
         .collect()
     }
+    #[cfg(test)]
     pub(crate) fn agent_registrations(&self, task: &str) -> Result<Vec<Registration>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.subscriptions")?;
         registrations(&db, task)

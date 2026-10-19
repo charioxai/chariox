@@ -164,7 +164,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             agent,
             prompt,
             run,
-            has_answer,
             cancelled,
             now,
         } => {
@@ -214,7 +213,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 } else {
                     false
                 };
-                if !open && has_answer && t.wait.is_none() {
+                // A turn that owns no obligation and no wait ends as on any
+                // plain turn; only a task that registered one is held to a
+                // valid end.
+                if !open && t.wait.is_none() {
                     t.state = ExecutionState::Done;
                     t.reason.clear();
                 } else if t.no_progress_wakes >= NO_PROGRESS_LIMIT {

@@ -21,7 +21,30 @@ impl KernelRuntimeOwnedState {
                     && task.state == ExecutionState::Working
                     && task.provider_run_id.as_deref().is_none_or(|id| id == run)
             });
-        if let Some(task) = task {
+        let Some(task) = task else {
+            return Ok(());
+        };
+        // A plain turn that owns nothing fails as it does without a ledger:
+        // the failure notice is its whole outcome. Only a task holding an
+        // obligation or a wait needs the owner to decide.
+        if task.wait.is_none()
+            && !task
+                .obligations
+                .iter()
+                .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
+        {
+            self.durable_state_store
+                .agent_lifecycle(Operation::Settle {
+                    room: room.into(),
+                    agent: agent.into(),
+                    prompt: prompt.into(),
+                    run: run.into(),
+                    cancelled: true,
+                    now: crate::session::unix_epoch_ms(),
+                })?;
+            return Ok(());
+        }
+        {
             let diagnostic = crate::provider::sanitize_provider_diagnostic(diagnostic);
             self.durable_state_store.agent_lifecycle(Operation::Block {
                 task: task.task_id,

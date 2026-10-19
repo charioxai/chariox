@@ -122,7 +122,6 @@ impl Fixture {
             agent: "agent".into(),
             prompt: "p".into(),
             run: "run".into(),
-            has_answer: true,
             cancelled: false,
             now: 30,
         });
@@ -292,7 +291,6 @@ fn a03_owner_resume_delivery_cannot_create_a_second_task_before_continuation() {
         agent: "agent".into(),
         prompt: continuation,
         run: "run".into(),
-        has_answer: true,
         cancelled: false,
         now: 1_005,
     });
@@ -406,7 +404,6 @@ fn a03_timer_is_an_obligation_that_needs_scheduler_proof_of_life() {
         agent: "agent".into(),
         prompt: "p".into(),
         run: "run".into(),
-        has_answer: true,
         cancelled: false,
         now: 30,
     });
@@ -588,7 +585,6 @@ fn a03_owning_turn_cancels_a_wake_and_can_then_finish() {
         agent: "agent".into(),
         prompt: "p".into(),
         run: "run".into(),
-        has_answer: true,
         cancelled: false,
         now: 30,
     });
@@ -857,7 +853,6 @@ fn a03_recurring_timer_check_ins_require_owner_after_three_without_progress() {
             agent: "agent".into(),
             prompt,
             run: "run".into(),
-            has_answer: true,
             cancelled: false,
             now: now + 5,
         });

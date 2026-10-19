@@ -83,13 +83,12 @@ impl Fixture {
             now: 2,
         });
     }
-    pub(super) fn settle(&self, prompt: &str, answer: bool) -> Outcome {
+    pub(super) fn settle(&self, prompt: &str) -> Outcome {
         self.apply(Operation::Settle {
             room: "room".into(),
             agent: "parent".into(),
             prompt: prompt.into(),
             run: "run".into(),
-            has_answer: answer,
             cancelled: false,
             now: 3,
         })
@@ -121,7 +120,7 @@ fn a02_queue_dispatch_revalidates_blocked_cancelled_and_done_tasks() {
                 });
             }
             _ => {
-                f.settle("p", true);
+                f.settle("p");
             }
         }
         let before = f.task();
@@ -153,7 +152,7 @@ fn a02_done_with_obligation_corrects_once_across_restart() {
     let f = Fixture::new();
     f.begin("p");
     f.register();
-    let Outcome::Settled { task, correction } = f.settle("p", true) else {
+    let Outcome::Settled { task, correction } = f.settle("p") else {
         panic!()
     };
     assert!(correction);
@@ -161,7 +160,7 @@ fn a02_done_with_obligation_corrects_once_across_restart() {
     assert_ne!(task.state, ExecutionState::Done);
     let id = task.pending_prompt_id.unwrap();
     f.begin(&id);
-    let Outcome::Settled { task, correction } = f.settle(&id, true) else {
+    let Outcome::Settled { task, correction } = f.settle(&id) else {
         panic!()
     };
     assert!(!correction);
@@ -188,7 +187,7 @@ fn a02_yield_commits_at_native_settlement_and_recovers_racing_result() {
         occurrence: "result".into(),
         success: true,
     });
-    let Outcome::Settled { task, correction } = f.settle("p", true) else {
+    let Outcome::Settled { task, correction } = f.settle("p") else {
         panic!()
     };
     assert!(correction || task.state == ExecutionState::Waiting);
@@ -201,7 +200,7 @@ fn a02_deadline_occurrence_and_long_notice_coalesce() {
     f.begin("p");
     f.register();
     f.yield_now();
-    f.settle("p", true);
+    f.settle("p");
     assert_eq!(f.task().state, ExecutionState::Waiting);
     f.apply(Operation::Sweep {
         now: LONG_WAIT_MS + 1,
@@ -215,14 +214,14 @@ fn a02_deadline_occurrence_and_long_notice_coalesce() {
     assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap().len(), 1);
 }
 #[test]
-fn a02_empty_or_tool_only_end_never_silently_done() {
+fn a02_plain_turn_without_obligation_or_wait_ends_done_without_correction() {
     let f = Fixture::new();
     f.begin("p");
-    let Outcome::Settled { task, correction } = f.settle("p", false) else {
+    let Outcome::Settled { task, correction } = f.settle("p") else {
         panic!()
     };
-    assert!(correction);
-    assert_ne!(task.state, ExecutionState::Done);
+    assert!(!correction, "a plain turn is never corrected");
+    assert_eq!(task.state, ExecutionState::Done);
 }
 #[test]
 fn a02_yield_refuses_missing_dead_or_uncovered_sources() {
@@ -325,9 +324,9 @@ fn a02_independent_task_never_hides_older_wait() {
     f.begin("p");
     f.register();
     f.yield_now();
-    f.settle("p", true);
+    f.settle("p");
     f.begin("new");
-    f.settle("new", true);
+    f.settle("new");
     let tasks = f.store.agent_tasks(Some("room"), Some("parent")).unwrap();
     assert_eq!(tasks.len(), 2);
     assert_eq!(tasks[0].state, ExecutionState::Waiting);
@@ -378,7 +377,7 @@ fn a02_no_progress_blocks_on_third_wake_and_durable_counter_survives_reopen() {
     f.begin("p");
     f.register();
     f.yield_now();
-    f.settle("p", true);
+    f.settle("p");
     for n in 1..=3 {
         let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
             "room",
@@ -417,7 +416,7 @@ fn a02_no_progress_blocks_on_third_wake_and_durable_counter_survives_reopen() {
             reason: "same child wait".into(),
             now: 20 + n,
         });
-        f.settle(&prompt, true);
+        f.settle(&prompt);
         if n < 3 {
             assert_eq!(f.task().state, ExecutionState::Waiting);
         } else {
@@ -642,7 +641,7 @@ fn a02_clock_rollback_wakes_after_a_persisted_sweep() {
     f.begin("p");
     f.register();
     f.yield_now();
-    f.settle("p", true);
+    f.settle("p");
     f.apply(Operation::Sweep {
         now: 20,
         busy_recipients: Vec::new(),
@@ -661,7 +660,7 @@ fn a02_superseded_native_settlement_cannot_replace_a_corrected_task() {
     let f = Fixture::new();
     f.begin("p");
     f.register();
-    let Outcome::Settled { task, .. } = f.settle("p", true) else {
+    let Outcome::Settled { task, .. } = f.settle("p") else {
         panic!()
     };
     let correction = task.pending_prompt_id.unwrap();
@@ -674,7 +673,6 @@ fn a02_superseded_native_settlement_cannot_replace_a_corrected_task() {
             agent: "parent".into(),
             prompt: "p".into(),
             run: "run".into(),
-            has_answer: true,
             cancelled: false,
             now: 4
         })
@@ -724,7 +722,7 @@ fn a02_artifact_receipt_resets_guard_once_and_survives_restart() {
     f.begin("p");
     f.register();
     f.yield_now();
-    f.settle("p", true);
+    f.settle("p");
     let Outcome::Event(event) = f.apply(Operation::Occur(occurrence(
         "room",
         "parent",
@@ -792,7 +790,7 @@ fn a02_corrupt_source_is_quarantined_without_poisoning_other_tasks() {
     f.begin("p");
     f.register();
     f.yield_now();
-    f.settle("p", true);
+    f.settle("p");
     f.begin("independent");
     f.arm("independent", "child2");
     let db = Connection::open(f.root.join("state.sqlite")).unwrap();
@@ -928,7 +926,7 @@ fn waiting_with_deadline_wake(f: &Fixture) -> InboxEvent {
     f.begin("p");
     f.register();
     f.yield_now();
-    f.settle("p", true);
+    f.settle("p");
     assert_eq!(f.task().state, ExecutionState::Waiting);
     let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
         "room",
@@ -1008,7 +1006,7 @@ fn a02_review_timed_out_delivery_blocks_only_its_own_task() {
     f.begin("p");
     f.register();
     f.yield_now();
-    f.settle("p", true);
+    f.settle("p");
     let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
         "room",
         "parent",
@@ -1518,7 +1516,7 @@ fn a02_security_f1_full_recipient_cannot_abort_deadline_sweep() {
     f.begin("p");
     f.register();
     f.yield_now();
-    f.settle("p", true);
+    f.settle("p");
     security_fill_inbox(&f, "parent", "pending");
     f.apply(Operation::Sweep {
         now: LONG_WAIT_MS + 1,
@@ -1590,7 +1588,6 @@ fn a02_late_native_settlement_delivers_the_original_deadline_once() {
         agent: "parent".into(),
         prompt: "p".into(),
         run: "run".into(),
-        has_answer: false,
         cancelled: false,
         now: 60_001,
     }) else {
