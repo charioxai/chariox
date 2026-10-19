@@ -12,6 +12,9 @@ autocomplete continues to identify a password field after Show password changes
 its type to text.
 This transient measurement shares Vault geometry, frame/shadow traversal and
 before/after capture fences; it stores no typed values or durable registrations.
+Empty protection measurements need no compositor wait. Native placement binds
+an oversized canonical document viewport to its browser-owned frame before
+clipping masks to that exact X11 window; another window cannot lend its document.
 Empty/cleared fields retire their masks. Owner Browser and Computer streams do
 not opt into typed-field measurement. Existing Vault fill masks are independent.
 Browser AX values and native sensitive-field content remain withheld while

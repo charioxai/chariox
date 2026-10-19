@@ -20,6 +20,16 @@ def page(**changes):
 
 
 class WindowMasks(unittest.TestCase):
+    def test_clipped_canonical_viewport_requires_its_own_native_frame(self):
+        client = [0, 0, 1280, 800]
+        doc = {'uri': DOC['uri'], 'rect': [4, 87, 1280, 800], 'frame': client}
+        keepalive = {'uri': 'about:blank', 'rect': [1, 55, 1280, 800], 'frame': [0, 0, 66, 120]}
+        measured = page(window=client, viewport=[1280, 800], regions=[[1250, 700, 200, 200]])
+        self.assertEqual(protection.window_masks({'pages': [measured]}, client, client, [keepalive, doc]), [[1250, 783, 30, 17]])
+        for wrong in [None, keepalive['frame']]:
+            changed = {**doc, 'frame': wrong}
+            self.assertIsNone(protection.window_masks({'pages': [measured]}, client, client, [changed]))
+
     def test_places_regions_at_the_proven_document_origin_with_padding(self):
         self.assertEqual(protection.window_masks({'pages': [page()]}, CLIENT, FRAME, [DOC]), [[140, 219, 92, 40]])
 
@@ -82,6 +92,11 @@ class Collected(Node):
 
 class DocumentRects(unittest.TestCase):
     atspi = types.SimpleNamespace(DESKTOP_COORDS=0, ROLE_DOCUMENT_WEB=95, StateSet=lambda: None)
+
+    def test_retains_the_browser_owned_frame_for_clipped_viewports(self):
+        web = Node('document web', rect=(4, 87, 1280, 800), uri=DOC['uri'])
+        app = Node('application', [Node('frame', [Node('panel', [web])], (0, 0, 1280, 800))])
+        self.assertEqual(protection.document_rects(app, self.atspi), [{'uri': DOC['uri'], 'rect': [4, 87, 1280, 800], 'frame': [0, 0, 1280, 800]}])
 
     def test_collection_returns_outermost_documents_only(self):
         frame_document = Node('document web', [], (60, 200, 100, 50), 'https://frame.test/')

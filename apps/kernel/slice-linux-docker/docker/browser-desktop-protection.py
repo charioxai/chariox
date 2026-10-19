@@ -73,8 +73,19 @@ def document_rects(app, pyatspi):
     for node in nodes:
         rect = node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
         if rect.width > 0 and rect.height > 0:
-            docs.append({'uri': node.queryDocument().getAttributeValue('URI') or '',
-                         'rect': [rect.x, rect.y, rect.width, rect.height]})
+            doc = {'uri': node.queryDocument().getAttributeValue('URI') or '',
+                   'rect': [rect.x, rect.y, rect.width, rect.height]}
+            parent = node.parent
+            for _ in range(MAX_DEPTH):
+                if parent is None or parent.getRoleName() == 'application': break
+                if parent.getRoleName() in ('frame', 'window', 'dialog'):
+                    frame = parent.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+                    if frame.width > 0 and frame.height > 0:
+                        doc['frame'] = [frame.x, frame.y, frame.width, frame.height]
+                    break
+                parent = parent.parent
+            else: raise ValueError('browser document frame ancestry unbounded')
+            docs.append(doc)
     return docs
 
 
@@ -106,6 +117,18 @@ def _screen_scale(window, client):
     return scale if exact else None
 
 
+def _in_window(doc, client, frame):
+    owner = doc.get('frame')
+    if owner is not None and owner not in (client, frame): return False
+    if _inside(doc['rect'], client): return True
+    # A canonical CDP viewport can extend beneath native browser chrome.
+    # Its browser-owned frame must match this exact X11 window before clipping;
+    # geometry overlap alone must never borrow a keepalive/other window's doc.
+    return (isinstance(owner, list) and owner in (client, frame) and
+            doc['rect'][0] >= client[0] and doc['rect'][1] >= client[1] and
+            _clip(doc['rect'], client) is not None)
+
+
 def window_masks(protection, client, frame, docs):
     """Exact fill masks for one browser X window, or None to refuse capture.
 
@@ -118,7 +141,7 @@ def window_masks(protection, client, frame, docs):
     if not isinstance(protection, dict) or not isinstance(protection.get('pages'), list):
         return None
     pages = [page for page in protection['pages'] if _screen_scale(page.get('window'), client)]
-    inside = [doc for doc in docs if _inside(doc['rect'], client)]
+    inside = [doc for doc in docs if _in_window(doc, client, frame)]
     if not pages or len(pages) != len(inside):
         return None  # Capture retries an unbound filled field without a broad mask.
     scale = _screen_scale(pages[0]['window'], client)
@@ -145,7 +168,7 @@ def window_masks(protection, client, frame, docs):
             if not isinstance(region, list) or len(region) != 4 or not all(isinstance(v, int) for v in region):
                 return None
             rx, ry, rw, rh = region
-            placed = _clip([x+rx-pad, y+ry-pad, rw+2*pad, rh+2*pad], doc['rect'])
+            placed = _clip([x+rx-pad, y+ry-pad, rw+2*pad, rh+2*pad], _clip(doc['rect'], client))
             if placed:
                 masks.append(placed)
     return masks
