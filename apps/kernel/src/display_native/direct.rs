@@ -254,6 +254,7 @@ impl Direct {
         self.drain();
         let row = &value["stripes"][0];
         let (Some(sequence), Some(packet)) = (row["sequence"].as_u64(), value.get("packet")) else {
+            self.end();
             return false;
         };
         let chained = row["key"] == true
@@ -375,6 +376,18 @@ mod tests {
         assert_eq!(line(&mut kernel), json!({"end":2}));
         assert_eq!(direct.ended, vec![2]);
         assert!(direct.leased(1.).is_none() && direct.auto.current(1.).is_none());
+        unsafe { libc::close(write) };
+    }
+
+    // A dropped encode (no packet: an oversized recovery key) is not a frame: the lease ends so
+    // Node's exact fallback gets a fresh readback instead of the viewer freezing on a held lease.
+    #[test]
+    fn a_dropped_encode_ends_the_lease_for_node() {
+        let (mut direct, write, mut kernel) = leased();
+        assert!(!direct.send(2, &json!({"dropped":true,"revision":41}), 1.));
+        assert_eq!(line(&mut kernel), json!({"end":2}));
+        assert_eq!(direct.ended, vec![2]);
+        assert!(direct.leased(1.).is_none());
         unsafe { libc::close(write) };
     }
 
