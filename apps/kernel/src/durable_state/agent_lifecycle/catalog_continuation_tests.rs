@@ -129,7 +129,7 @@ fn catalog_continuation_retired_during_reload_cannot_create_a_fresh_task() {
         now: evaluation.deadline_ms + 1,
     });
     let stopped = f.task();
-    assert_eq!(stopped.state, ExecutionState::Blocked);
+    assert_eq!(stopped.state, ExecutionState::Done);
     assert!(stopped.pending_prompt_id.is_none());
     assert!(f
         .store

@@ -387,7 +387,7 @@ async fn local_queue_activation_and_dispatch_transfer_the_activity_guard_once() 
 
 // MP-08/MP-09/MP-10/MP-11 review1016 P3: production App queue activation + dispatcher.
 // Skip provider-activation policy: the dev-stub run deliberately has no real Project launch.
-async fn assert_app_dispatch_private_collector(prebind_like_runtime: bool) {
+async fn assert_app_dispatch_binds_queued_task() {
     let fixture = queue_fixture_with_provider(false, true, Some("slow-structured")).await;
     submit_prompt(&fixture, "old work");
     submit_prompt(&fixture, "queued work");
@@ -403,26 +403,6 @@ async fn assert_app_dispatch_private_collector(prebind_like_runtime: bool) {
             )
             .unwrap()
             .unwrap();
-        if prebind_like_runtime {
-            fixture
-                .runtime
-                .owned
-                .durable_state_store
-                .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Begin {
-                    owner: app
-                        .sessions()
-                        .get_session(&fixture.session_id)
-                        .unwrap()
-                        .owner_user_id()
-                        .into(),
-                    room: fixture.session_id.clone(),
-                    agent: fixture.agent_id.clone(),
-                    prompt: next.id().into(),
-                    run: Some(run.into()),
-                    now: crate::session::unix_epoch_ms(),
-                })
-                .unwrap();
-        }
         crate::app::ProviderPromptDispatcher::new(&mut app)
             .dispatch_prompt_to_provider(
                 &fixture.session_id,
@@ -452,7 +432,6 @@ async fn assert_app_dispatch_private_collector(prebind_like_runtime: bool) {
     let second_runtime =
         CommandRouter::with_interactive_capacity(Arc::clone(&fixture.runtime.app), 1)
             .runtime_state();
-    let cache = &second_runtime.owned.private_work_results;
     let tasks = second_runtime
         .owned
         .durable_state_store
@@ -461,35 +440,8 @@ async fn assert_app_dispatch_private_collector(prebind_like_runtime: bool) {
     assert!(tasks.iter().any(|task| task.prompt_id == next.id()
         && task.provider_run_id.as_deref() == Some(run)),
         "MP-11: App queued task must bind provider before private output collection");
-    second_runtime.owned.collect_private_assessment(
-        &fixture.session_id,
-        &super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
-            provider_run_id: run.into(),
-            agent_id: Some(fixture.agent_id.clone()),
-            kind: crate::terminal::TerminalOutputKind::ProviderOutput,
-            merge_key: None,
-            bytes: b"complete result".to_vec(),
-        },
-    );
-    cache.seal_work(&fixture.session_id, &fixture.agent_id, next.id(), run);
-    assert_eq!(
-        fixture
-            .runtime
-            .owned
-            .private_work_results
-            .take(&fixture.session_id, &fixture.agent_id, next.id(), run)
-            .expect(
-                "MP-11: App dispatch must begin the same private evidence cell as runtime dispatch"
-            )
-            .as_slice(),
-        b"complete result"
-    );
-}
-#[tokio::test]
-async fn review1016_app_dispatch_arms_private_collector() {
-    assert_app_dispatch_private_collector(true).await;
 }
 #[tokio::test]
 async fn review1016_app_dispatch_binds_queued_task() {
-    assert_app_dispatch_private_collector(false).await;
+    assert_app_dispatch_binds_queued_task().await;
 }

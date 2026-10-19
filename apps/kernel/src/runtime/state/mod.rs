@@ -283,7 +283,6 @@ struct KernelRuntimeOwnedState {
     pending_agent_context_handoffs: PendingAgentContextHandoffStore,
     pending_mcp_continuations: PendingMcpContinuationStore,
     private_assessment_results: agent_assessment_result::AssessmentResults,
-    private_work_results: agent_assessment_result::AssessmentResults,
     private_assessment_dispatch: agent_assessment_result::PrivateAssessmentDispatch,
     metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
     metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
@@ -888,7 +887,6 @@ impl KernelRuntimeState {
                             PrivateAssessmentDispatch::new(
                                 config_projection.clone(),
                                 durable_state_store.clone(),
-                                room_secret_observations.clone(),
                             )
                         })
                         .clone();
@@ -1011,7 +1009,6 @@ impl KernelRuntimeState {
                 pending_agent_context_handoffs: PendingAgentContextHandoffStore::default(),
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
                 private_assessment_results: Default::default(),
-                private_work_results: private_assessment_dispatch.work_results.clone(),
                 private_assessment_dispatch,
                 metaagent_events,
                 metaagent_trace_subscriptions,

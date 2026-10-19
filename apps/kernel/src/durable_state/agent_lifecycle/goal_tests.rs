@@ -75,7 +75,15 @@ fn a12_fresh_completion_intent_keeps_its_bound_after_long_work() {
             prompt: check.prompt_id.clone(),
             now: check.deadline_ms,
         });
-        assert_eq!(f.task().state, ExecutionState::Blocked);
+        assert_eq!(
+            f.task().state,
+            if is_goal {
+                ExecutionState::Blocked
+            } else {
+                ExecutionState::Done
+            },
+            "a timed-out check blocks a Goal but never a plain request"
+        );
         assert_eq!(
             if is_goal {
                 f.task().goal.unwrap().check_count
@@ -173,7 +181,10 @@ fn a12_failed_eof_malformed_oversize_and_timeout_block_once() {
     for (result, now) in [
         ("invalid".into(), 4),
         ("x".repeat(8193), 4),
-        (assessment("continue").to_string(), 60_004),
+        (
+            assessment("continue").to_string(),
+            goals::CHECK_BOUND_MS + 4,
+        ),
     ] {
         let f = Fixture::new();
         goal(&f, 10);
@@ -358,7 +369,7 @@ fn a12_timeout_once_and_owner_resume_fences_its_late_timer_and_result() {
     f.apply(Operation::TimeoutGoal {
         task: "p".into(),
         prompt: id.clone(),
-        now: 60_004,
+        now: goals::CHECK_BOUND_MS + 4,
     });
     let blocked = f.task();
     assert_eq!(blocked.state, ExecutionState::Blocked);
@@ -366,7 +377,7 @@ fn a12_timeout_once_and_owner_resume_fences_its_late_timer_and_result() {
         f.apply(Operation::TimeoutGoal {
             task: "p".into(),
             prompt: id.clone(),
-            now: 60_005
+            now: goals::CHECK_BOUND_MS + 5
         }),
         Outcome::Saved
     ));
@@ -377,19 +388,19 @@ fn a12_timeout_once_and_owner_resume_fences_its_late_timer_and_result() {
         revision: blocked.revision,
         action: "resume".into(),
         value: None,
-        now: 60_005,
+        now: goals::CHECK_BOUND_MS + 5,
     });
     let resumed = f.task();
     f.apply(Operation::TimeoutGoal {
         task: "p".into(),
         prompt: id.clone(),
-        now: 60_006,
+        now: goals::CHECK_BOUND_MS + 6,
     });
     f.apply(Operation::EvaluateGoal {
         task: "p".into(),
         prompt: id,
         result: assessment("continue").to_string(),
-        now: 60_006,
+        now: goals::CHECK_BOUND_MS + 6,
     });
     assert_eq!(f.task(), resumed);
 }
@@ -756,7 +767,7 @@ fn a12_plain_wait_and_failure_are_not_done_candidates() {
     assert_eq!(t.completion_check.unwrap().check_count, 0);
 }
 #[test]
-fn a12_plain_timeout_receipt_is_idempotent_and_owner_resume_fences_late_check() {
+fn a12_plain_timeout_settles_done_idempotently_and_fences_a_late_check() {
     let f = Fixture::new();
     plain(&f);
     f.settle("p", true);
@@ -765,34 +776,63 @@ fn a12_plain_timeout_receipt_is_idempotent_and_owner_resume_fences_late_check() 
     f.apply(Operation::TimeoutGoal {
         task: "p".into(),
         prompt: id.clone(),
-        now: 60003,
+        now: goals::CHECK_BOUND_MS + 3,
     });
     let t = f.task();
-    assert_eq!(t.state, ExecutionState::Blocked);
+    assert_eq!(
+        t.state,
+        ExecutionState::Done,
+        "a late check must not block a plain request"
+    );
     assert!(matches!(
         f.apply(Operation::TimeoutGoal {
             task: "p".into(),
             prompt: id.clone(),
-            now: 70000
+            now: goals::CHECK_BOUND_MS + 1000
         }),
         Outcome::Saved
     ));
-    assert_eq!(f.task(), t);
-    f.apply(Operation::OwnerResponse {
-        task: "p".into(),
-        revision: t.revision,
-        resume: true,
-        now: 70001,
-    });
-    let resumed = f.task();
     f.apply(Operation::EvaluateGoal {
         task: "p".into(),
         prompt: id,
         result: serde_json::json!({"status":"achieved","final_answer":"late","evidence":["late"]})
             .to_string(),
-        now: 70002,
+        now: goals::CHECK_BOUND_MS + 1001,
     });
-    assert_eq!(f.task(), resumed);
+    assert_eq!(f.task(), t);
+}
+
+// An empty or malformed verdict is no objection to a plain request; a Goal still blocks.
+#[test]
+fn a12_unusable_verdict_settles_plain_done_and_goal_blocked() {
+    for (is_goal, raw) in [
+        (false, ""),
+        (false, "not json"),
+        (true, ""),
+        (true, "not json"),
+    ] {
+        let f = Fixture::new();
+        if is_goal {
+            goal(&f, 1);
+        } else {
+            plain(&f);
+        }
+        f.settle("p", true);
+        let id = f.task().pending_prompt_id.unwrap();
+        f.begin(&id);
+        f.apply(Operation::EvaluateGoal {
+            task: "p".into(),
+            prompt: id,
+            result: raw.into(),
+            now: 4,
+        });
+        let want = if is_goal {
+            ExecutionState::Blocked
+        } else {
+            ExecutionState::Done
+        };
+        assert_eq!(f.task().state, want, "goal={is_goal} raw={raw:?}");
+    }
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11 A12: rejection must bound the stored receipt too.

@@ -243,7 +243,6 @@ impl ProviderProcessService {
         hidden_system_context: &str,
         attachments: &[PromptAttachment],
         mode: PromptAssemblyMode,
-        private_assessment_evidence: Option<crate::prompt_assembly::AssessmentEvidence>,
         steering: bool,
     ) -> Result<(), DaemonError> {
         if let Ok(active_run) = self.get_run_mut(run.id()) {
@@ -273,12 +272,11 @@ impl ProviderProcessService {
         let envelope = if assessment_only {
             let mut envelope = crate::prompt_assembly::PromptEnvelope::new(
                 prompt,
-                "Assess only the supplied evidence, including exact kernel-private result data when supplied. Tools and external authority are unavailable.",
+                "Assess only the supplied evidence. Tools and external authority are unavailable.",
                 Vec::new(),
                 crate::prompt_assembly::PromptManifest::current(),
             );
             envelope.assessment_only = true;
-            envelope.private_assessment_evidence = private_assessment_evidence;
             envelope
         } else {
             PromptAssemblyService::from_env()?

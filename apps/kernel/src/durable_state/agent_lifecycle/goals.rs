@@ -6,7 +6,15 @@ pub(super) use adoption::adopt;
 pub(super) use controls::control;
 use serde::{Deserialize, Serialize};
 
-pub(crate) const CHECK_BOUND_MS: u64 = 60_000;
+pub(crate) const CHECK_BOUND_MS: u64 = 300_000;
+const LEGACY_CHECK_BOUND_MS: u64 = 60_000;
+
+/// Checks persisted before the bound was raised keep their original deadline.
+pub(crate) fn check_deadline_valid(started_at_ms: u64, deadline_ms: u64) -> bool {
+    [CHECK_BOUND_MS, LEGACY_CHECK_BOUND_MS]
+        .iter()
+        .any(|bound| deadline_ms == started_at_ms.saturating_add(*bound))
+}
 pub(crate) const RESULT_LIMIT: usize = 8_192;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,6 +259,8 @@ pub(super) fn evaluate(
     };
     let mut again = false;
     match assessment {
+        // An unusable check (empty, late, malformed) is no objection to a plain request.
+        None if t.goal.is_none() => no_objection(&mut t),
         None => blocked(&mut t, "Goal evaluation timed out, was malformed or stale; inspect the receipt and explicitly resume"),
         Some(Assessment::Blocked { reason }) if !reason.trim().is_empty() => blocked(&mut t, &reason),
         Some(Assessment::Achieved { final_answer, evidence }) if !final_answer.trim().is_empty() && !evidence.is_empty() && evidence.iter().all(|e| !e.trim().is_empty()) => {
@@ -298,6 +308,7 @@ pub(super) fn evaluate(
                 if let Some(g) = &mut t.goal { g.next_check_in_ms = Some(deadline); }
             }
         }
+        _ if t.goal.is_none() => no_objection(&mut t),
         _ => blocked(&mut t, "Goal evaluation omitted its required answer/evidence or owner action; explicitly resume"),
     }
     let receipt = if result.len() > RESULT_LIMIT {
@@ -318,6 +329,17 @@ pub(super) fn evaluate(
         task: t,
         correction: again,
     })
+}
+
+/// An unusable check (empty, late, malformed) is no objection to a plain request.
+fn no_objection(t: &mut AgentTaskExecution) {
+    t.state = ExecutionState::Done;
+    t.pending_prompt_id = None;
+    t.wait = None;
+    t.reason.clear();
+    let c = t.completion_check.as_mut().unwrap();
+    c.final_answer = Some("Completed; the completion check gave no usable verdict.".into());
+    c.evidence = vec!["completion check unavailable".into()];
 }
 
 fn continue_work(t: &mut AgentTaskExecution, reason: &str) -> bool {
@@ -368,7 +390,11 @@ pub(super) fn timeout(
         return Ok(Outcome::Saved);
     }
     clock(&mut t, now);
-    blocked(&mut t, "Goal completion check exceeded 60 seconds; inspect the exact delivery receipt and explicitly resume");
+    if t.goal.is_none() {
+        no_objection(&mut t);
+    } else {
+        blocked(&mut t, "Goal completion check exceeded its time bound; inspect the exact delivery receipt and explicitly resume");
+    }
     completion::evaluation_mut(&mut t).unwrap().result = Some(serde_json::json!({
         "status":"blocked","reason":"completion_check service bound exceeded","received_at_ms":now }));
     t.revision += 1;
