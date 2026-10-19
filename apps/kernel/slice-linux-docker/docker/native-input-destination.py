@@ -12,9 +12,10 @@ def browser_document_point(connection, window, point, page, accessibility):
 
     page: the kernel's CDP view of the active Tab (URL, window bounds, native
     viewport size). Its rectangle must be proven by the live X11 geometry of
-    the window under the pointer; anything else is browser UI.
+    the window under the pointer; anything else is browser UI. A visible in-window
+    list (omnibox) shares the X client and the Tab rectangle: no overlay proof, no page hit.
     """
-    if not isinstance(page,dict) or not isinstance(page.get('url'),str) or urlsplit(page['url']).scheme not in ('http','https'):return False
+    if not isinstance(page,dict) or not isinstance(page.get('url'),str) or urlsplit(page['url']).scheme not in ('http','https') or page.get('overlay') is not False:return False
     root=connection.screen().root
     geometry=window.get_geometry();origin=root.translate_coords(window,0,0)
     client=[origin.x,origin.y,geometry.width,geometry.height]

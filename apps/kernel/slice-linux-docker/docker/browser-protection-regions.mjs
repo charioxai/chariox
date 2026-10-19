@@ -309,14 +309,29 @@ export async function measureBrowserProtection(browser,policy) {
   pruneBrowserFillTargets(browser,connection);return {pages};
 }
 
+// Chrome 155 draws the omnibox list in the page's own X client, over the Tab: only its persistent browser_ui
+// WebUI says whether it is showing. Anything unreadable counts as showing (fail closed).
+async function browserUiShowing(connection) {
+  try {
+    const {targetInfos}=await connection.send('Target.getTargets');
+    const states=await Promise.all(targetInfos.filter(target=>target.type==='browser_ui').map(async target=>{
+      const {sessionId}=await connection.send('Target.attachToTarget',{targetId:target.targetId,flatten:true});
+      try {return (await connection.send('Runtime.evaluate',{expression:'document.visibilityState',returnByValue:true},sessionId)).result?.value;}
+      finally {connection.send('Target.detachFromTarget',{sessionId}).catch(()=>{});}
+    }));
+    return states.some(state=>state!=='hidden');
+  } catch {return true;}
+}
+
 // MP-08/MP-11: the active Tab as CDP and the component extension see it. The desktop helper proves it against
-// the live X11 window before a click may count as a page hit rather than browser UI.
+// the live X11 window before a click may count as a page hit rather than browser UI; `overlay` says Chrome UI
+// is drawn over the Tab, so no point of it is a page point.
 export async function activeBrowserPage(browser) {
   const native=await browser.nativeViewport?.();
   if(!native)return null;
   const connection=await browser.ensureConnection();
-  const [{targetInfo},{bounds}]=await Promise.all([connection.send('Target.getTargetInfo',{targetId:native.target_id}),connection.send('Browser.getWindowForTarget',{targetId:native.target_id})]);
-  return {url:targetInfo.url,window:[bounds.left,bounds.top,bounds.width,bounds.height],native:[native.width,native.height]};
+  const [{targetInfo},{bounds},overlay]=await Promise.all([connection.send('Target.getTargetInfo',{targetId:native.target_id}),connection.send('Browser.getWindowForTarget',{targetId:native.target_id}),browserUiShowing(connection)]);
+  return {url:targetInfo.url,window:[bounds.left,bounds.top,bounds.width,bounds.height],native:[native.width,native.height],overlay};
 }
 
 export const protectionDigest = measurement => createHash('sha256').update(JSON.stringify(measurement)).digest('hex');

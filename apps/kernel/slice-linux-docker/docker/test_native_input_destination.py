@@ -27,7 +27,7 @@ def connection():
 
 
 ACCESSIBILITY = types.SimpleNamespace(_protection=protection, frame_insets=lambda c, w: [4, 4, 0, 4])
-PAGE = {'url': 'https://example.test/a', 'window': CLIENT, 'native': [892, 553]}
+PAGE = {'url': 'https://example.test/a', 'window': CLIENT, 'native': [892, 553], 'overlay': False}
 
 
 def hit(point, page=PAGE, accessibility=ACCESSIBILITY):
@@ -53,9 +53,15 @@ class BrowserDocumentPoint(unittest.TestCase):
         wrong = types.SimpleNamespace(_protection=protection, frame_insets=lambda c, w: [0, 0, 0, 0])
         self.assertFalse(hit((500, 400), accessibility=wrong))
 
+    def test_omnibox_list_over_the_page_and_missing_proof_are_browser_ui(self):
+        self.assertTrue(hit((500, 400)))
+        self.assertFalse(hit((500, 400), {**PAGE, 'overlay': True}))       # list drawn in the same X client
+        self.assertFalse(hit((500, 400), {k: v for k, v in PAGE.items() if k != 'overlay'}))
+        self.assertFalse(hit((500, 400), {**PAGE, 'overlay': None}))
+
     def test_scale_two_hits_in_device_pixels(self):
         doubled = types.SimpleNamespace(_protection=protection, frame_insets=lambda c, w: [8, 8, 0, 8])
-        page = {'url': 'https://example.test/', 'window': [20, 15, 450, 350], 'native': [442, 276]}
+        page = {'url': 'https://example.test/', 'window': [20, 15, 450, 350], 'native': [442, 276], 'overlay': False}
         self.assertTrue(hit((48, 170), page, doubled))
         self.assertFalse(hit((48, 169), page, doubled))
 

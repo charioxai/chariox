@@ -92,7 +92,26 @@ test('MP-11 every measured page carries the extension native Tab size that place
 });
 test('MP-11 the hit-test page is the active Tab from CDP and the extension, never an accessibility tree',async()=>{
   const browser={async ensureConnection(){return placementConnection()},nativeViewport:async target=>{assert.equal(target,undefined);return {target_id:'t',width:892,height:553};}};
-  assert.deepEqual(await activeBrowserPage(browser),{url:'https://example.test/a',window:[40,30,900,700],native:[892,553]});
+  assert.deepEqual(await activeBrowserPage(browser),{url:'https://example.test/a',window:[40,30,900,700],native:[892,553],overlay:false});
   assert.equal(await activeBrowserPage({...browser,nativeViewport:async()=>null}),null);
   assert.equal(await activeBrowserPage({ensureConnection:browser.ensureConnection}),null);
+});
+
+// Chrome 155 draws the omnibox list in the page's own X client: the persistent browser_ui WebUI is the only proof.
+const uiConnection=(visibility,{fail=false}={})=>{const base=placementConnection(),sent=[];
+  return {sent,async send(method,params,session){sent.push(method);
+    if(method==='Target.getTargets'){const {targetInfos}=await base.send(method);
+      return {targetInfos:[...targetInfos,...Object.keys(visibility).map(id=>({targetId:id,type:'browser_ui',url:`chrome://omnibox-popup.top-chrome/${id}`}))]};}
+    if(method==='Target.attachToTarget'&&visibility[params.targetId]!==undefined)return {sessionId:params.targetId};
+    if(method==='Runtime.evaluate'&&visibility[session]!==undefined){if(fail)throw new Error('gone');return {result:{value:visibility[session]}};}
+    if(method==='Target.detachFromTarget')return {};
+    return base.send(method,params,session);}};};
+const uiBrowser=connection=>({async ensureConnection(){return connection},nativeViewport:async()=>({target_id:'t',width:892,height:553})});
+test('MP-11 a visible in-window browser WebUI (omnibox list) over the active Tab is reported as an overlay',async()=>{
+  assert.equal((await activeBrowserPage(uiBrowser(uiConnection({a:'hidden',b:'hidden'})))).overlay,false);
+  assert.equal((await activeBrowserPage(uiBrowser(uiConnection({a:'hidden',b:'visible'})))).overlay,true);
+  assert.equal((await activeBrowserPage(uiBrowser(uiConnection({a:'hidden',b:'prerender'})))).overlay,true);
+  assert.equal((await activeBrowserPage(uiBrowser(uiConnection({a:'hidden'},{fail:true})))).overlay,true);
+  const broken=uiConnection({});const send=broken.send;broken.send=async(method,...rest)=>{if(method==='Target.getTargets')throw new Error('x');return send(method,...rest)};
+  assert.equal((await activeBrowserPage(uiBrowser(broken))).overlay,true);
 });
