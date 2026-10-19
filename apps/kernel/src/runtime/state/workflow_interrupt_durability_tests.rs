@@ -1906,17 +1906,24 @@ async fn mp08_workflow_resume_running_run_keeps_current_prompt() {
 // the parent's workflow receipt was already acknowledged before it blocked.
 #[tokio::test]
 async fn a01_failed_workflow_settles_unstarted_delegate_on_blocked_parent() {
-    failed_workflow_delegate_settlement(false).await;
+    failed_workflow_delegate_settlement(false, false).await;
+}
+
+// MP-08 / MP-10 / MP-11: a second accepted invocation of the same parent still
+// needs the delegate when the first invocation fails before admitting a task.
+#[tokio::test]
+async fn a01_failed_workflow_keeps_delegate_shared_with_live_invocation() {
+    failed_workflow_delegate_settlement(false, true).await;
 }
 
 // MP-08 / MP-10 / MP-11: successful task receipts survive a later startup
 // failure in the same invocation, including repeated lifecycle sweeps.
 #[tokio::test]
 async fn a01_failed_workflow_preserves_fully_settled_successful_task() {
-    failed_workflow_delegate_settlement(true).await;
+    failed_workflow_delegate_settlement(true, false).await;
 }
 
-async fn failed_workflow_delegate_settlement(settled_upstream: bool) {
+async fn failed_workflow_delegate_settlement(settled_upstream: bool, shared_live_invocation: bool) {
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
@@ -2004,6 +2011,22 @@ async fn failed_workflow_delegate_settlement(settled_upstream: bool) {
     } else {
         None
     };
+    if shared_live_invocation {
+        let mut restored = serde_json::to_value(&session).unwrap();
+        let mut run = restored["workflow_runs"][0].clone();
+        run["id"] = serde_json::json!("second-invocation");
+        run["status"] = serde_json::json!("Running");
+        run["node_runs"][0]["id"] = serde_json::json!("second-invocation-node");
+        run["active_node_run_id"] = serde_json::json!("second-invocation-node");
+        restored["workflow_runs"].as_array_mut().unwrap().push(run);
+        owned
+            .session_store
+            .write()
+            .restore_session(serde_json::from_value(restored).unwrap());
+        owned
+            .persist_workflow_runtime_session(session.id(), "second_invocation_fixture")
+            .unwrap();
+    }
     for (parent, agent) in [
         ("failed-parent", &fixture.unrelated_agent_id),
         ("independent-parent", &fixture.second_target_agent_id),
@@ -2044,6 +2067,28 @@ async fn failed_workflow_delegate_settlement(settled_upstream: bool) {
                     resource: Some(resource),
                 })
                 .unwrap();
+        }
+    }
+    if shared_live_invocation {
+        for op in [
+            Operation::RegisterObligation {
+                owner: session.owner_user_id().into(),
+                room: fixture.session_id.clone(),
+                agent: fixture.unrelated_agent_id.clone(),
+                prompt: "failed-parent".into(),
+                run: None,
+                id: "failed-parent-workflow-2".into(),
+                kind: "workflow_run".into(),
+                resource: Some("second-invocation".into()),
+                now,
+            },
+            Operation::DispatchReceipt {
+                id: "failed-parent-workflow-2".into(),
+                accepted: true,
+                resource: Some("second-invocation".into()),
+            },
+        ] {
+            store.agent_lifecycle(op).unwrap();
         }
     }
     store
@@ -2121,7 +2166,14 @@ async fn failed_workflow_delegate_settlement(settled_upstream: bool) {
     }
     let parent = tasks.iter().find(|t| t.task_id == "failed-parent").unwrap();
     assert_eq!(parent.state, ExecutionState::Blocked);
-    assert_eq!(parent.obligations[0].status, "cancelled", "MP-08 / MP-10 / MP-11: failed workflow must settle the unstarted delegate without owner Cancel");
+    if shared_live_invocation {
+        assert_eq!(
+            parent.obligations[0].status, "open",
+            "a delegate still used by another accepted invocation must stay bound"
+        );
+    } else {
+        assert_eq!(parent.obligations[0].status, "cancelled", "MP-08 / MP-10 / MP-11: failed workflow must settle the unstarted delegate without owner Cancel");
+    }
     let independent = tasks
         .iter()
         .find(|t| t.task_id == "independent-parent")
@@ -2134,11 +2186,12 @@ async fn failed_workflow_delegate_settlement(settled_upstream: bool) {
         .agent_inbox(&fixture.session_id, &fixture.unrelated_agent_id, 0)
         .unwrap();
     assert!(
-        events.iter().any(
-            |e| e.payload.get("workflow_run_id").and_then(|v| v.as_str())
-                == Some(fixture.workflow_run_id.as_str())
-                && e.payload.get("recovery").is_some()
-        ),
+        shared_live_invocation
+            || events.iter().any(
+                |e| e.payload.get("workflow_run_id").and_then(|v| v.as_str())
+                    == Some(fixture.workflow_run_id.as_str())
+                    && e.payload.get("recovery").is_some()
+            ),
         "failure settlement needs a reason and recovery receipt"
     );
 }

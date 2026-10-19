@@ -68,23 +68,26 @@ pub(super) fn settle_unstarted_delegates(
     }) {
         return Ok(false);
     }
-    let raw: Option<String> = tx
-        .query_row(
-            "SELECT payload_json FROM durable_workflow_runs WHERE owner_id=?1 AND session_id=?2 AND run_id=?3",
-            params![owner_id, task.room_id, source],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(sql)?;
-    let Some(raw) = raw else { return Ok(false) };
-    let run: crate::session::WorkflowRun = decode(&raw)?;
-    if run.created_by_agent_id() != Some(task.agent_id.as_str())
-        || !matches!(
-            run.status(),
-            crate::session::WorkflowRunStatus::Failed | crate::session::WorkflowRunStatus::Stopped
-        )
-    {
+    let Some(run) = load_run(tx, owner_id, &task.room_id, source)? else {
         return Ok(false);
+    };
+    if run.created_by_agent_id() != Some(task.agent_id.as_str()) || !run_failed(&run) {
+        return Ok(false);
+    }
+    // A delegate that another accepted, still-running invocation of this task
+    // uses must stay bound to the parent for that invocation.
+    let mut kept = std::collections::HashSet::new();
+    for other in task.obligations.iter().filter(|o| {
+        o.tracks_workflow_run()
+            && o.status == "open"
+            && o.dispatch_state == "accepted"
+            && o.resource_id.as_deref() != Some(source)
+    }) {
+        let Some(id) = other.resource_id.as_deref() else { continue };
+        let Some(run) = load_run(tx, owner_id, &task.room_id, id)? else { continue };
+        if !run_terminated(&run) {
+            kept.extend(unfinished_agents(&run));
+        }
     }
     let mut changed = false;
     for obligation in &mut task.obligations {
@@ -92,6 +95,7 @@ pub(super) fn settle_unstarted_delegates(
             || obligation.status != "open"
             || obligation.dispatch_state != "accepted"
             || obligation.completion_task_id.is_some()
+            || obligation.resource_id.as_deref().is_some_and(|a| kept.contains(a))
         {
             continue;
         }
@@ -140,4 +144,39 @@ pub(super) fn settle_unstarted_delegates(
         changed = true;
     }
     Ok(changed)
+}
+
+fn load_run(
+    tx: &Transaction<'_>,
+    owner_id: &str,
+    room: &str,
+    run: &str,
+) -> Result<Option<crate::session::WorkflowRun>, DaemonError> {
+    let raw: Option<String> = tx
+        .query_row(
+            "SELECT payload_json FROM durable_workflow_runs WHERE owner_id=?1 AND session_id=?2 AND run_id=?3",
+            params![owner_id, room, run],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    raw.map(|raw| decode(&raw)).transpose()
+}
+
+fn run_failed(run: &crate::session::WorkflowRun) -> bool {
+    matches!(
+        run.status(),
+        crate::session::WorkflowRunStatus::Failed | crate::session::WorkflowRunStatus::Stopped
+    )
+}
+
+fn run_terminated(run: &crate::session::WorkflowRun) -> bool {
+    run_failed(run) || run.status() == crate::session::WorkflowRunStatus::Completed
+}
+
+fn unfinished_agents(run: &crate::session::WorkflowRun) -> impl Iterator<Item = String> + '_ {
+    run.node_runs()
+        .iter()
+        .filter(|n| n.status() != crate::session::WorkflowNodeRunStatus::Completed)
+        .map(|n| n.agent_id().to_string())
 }
