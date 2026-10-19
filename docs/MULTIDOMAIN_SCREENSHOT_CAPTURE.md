@@ -59,8 +59,8 @@ cancellation, blur and owner/kernel/prompt target changes cancel it. Selection a
 pointer capture are outside the App iframe; App messages and synthetic keyboard
 events cannot begin capture or supply its region (trusted events only).
 
-The capture goes straight into the prompt as a thumbnail chip; clicking the chip
-opens the editor. Tools (icons with tooltips and key hints): pen, highlighter, line,
+The capture goes straight into the prompt as a thumbnail chip with a "Click to edit"
+overlay (on hover or focus, always shown on touch); clicking the chip opens the editor. Tools (icons with tooltips and key hints): pen, highlighter, line,
 arrow, rectangle, ellipse, text, blur, redact, crop, eraser (removes shapes and
 strokes), select/move; a 10-colour palette and 3 stroke widths. Undo/redo
 (Cmd/Ctrl+Z, Shift+Cmd/Ctrl+Z), Revert to the original, Cancel and Done.
