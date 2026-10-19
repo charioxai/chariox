@@ -41,6 +41,25 @@ fn error() -> DaemonError {
         message: "Room display lease or binding is unavailable".into(),
     }
 }
+/// MP-11: only the Room owner's display open drives the shared browser
+/// (acquire + viewport reconcile); an invited viewer watches read-only.
+fn room_display_prelude(
+    audience: RoomDisplayAudience,
+    viewport: &crate::session::CanonicalViewport,
+    browser_bar_visible: bool,
+) -> Vec<crate::transport::room_browser_controller::RoomBrowserControllerCommand> {
+    use crate::transport::room_browser_controller::RoomBrowserControllerCommand as Command;
+    match audience {
+        RoomDisplayAudience::Owner => vec![
+            Command::Acquire,
+            Command::Reconcile {
+                viewport: viewport.clone(),
+                browser_bar_visible,
+            },
+        ],
+        RoomDisplayAudience::Viewer => Vec::new(),
+    }
+}
 impl KernelRuntimeState {
     fn room_display_audience(
         &self,
@@ -124,14 +143,8 @@ impl KernelRuntimeState {
         let viewport = room.viewport;
         // Resolve the worker's existing native surface through its ordinary Room
         // observation protocol. It remains the same desktop Room Actions drive.
-        use crate::transport::room_browser_controller::RoomBrowserControllerCommand as Command;
-        for command in [
-            Command::Acquire,
-            Command::Reconcile {
-                viewport: viewport.clone(),
-                browser_bar_visible: room.browser_bar_visible,
-            },
-        ] {
+        let audience = self.room_display_audience(caller, session)?;
+        for command in room_display_prelude(audience, &viewport, room.browser_bar_visible) {
             match self
                 .room_bound_display_peer(
                     &slice,
@@ -196,7 +209,7 @@ impl KernelRuntimeState {
                     slice_id: slice.id.clone(),
                     lease_id: id.clone(),
                     viewer_public_key: viewer.into(),
-                    audience: self.room_display_audience(caller, session)?,
+                    audience,
                     offer,
                     viewport,
                     target,
@@ -463,6 +476,18 @@ impl KernelRuntimeState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mp11_room_display_viewer_open_never_drives_the_shared_browser() {
+        let viewport = crate::session::CanonicalViewport::new(1280, 720, 1, 1280, 720).unwrap();
+        assert_eq!(
+            room_display_prelude(RoomDisplayAudience::Owner, &viewport, false).len(),
+            2
+        );
+        assert!(
+            room_display_prelude(RoomDisplayAudience::Viewer, &viewport, false).is_empty(),
+            "MP-11 a read-only viewer must not acquire or resize the owner's browser"
+        );
+    }
     #[tokio::test]
     async fn mp11_room_display_home_distinguishes_room_owner_from_invited_human() {
         let root = crate::test_support::TestWorktree::new("room-display-audiences");
