@@ -322,3 +322,18 @@ function historyEntry(agentId: string, text: string): TranscriptEntry {
     text,
   }
 }
+
+for (const targeted of [false, true]) {
+  test(`MP-08/MP-10 wakes inspection arriving during history refresh stays visible, targeted=${targeted}`, async () => {
+    const current = { a: [] as TranscriptEntry[] }
+    const inspection = { id: 3, role: "notice", text: "timer 'review' fired | 1x, last handled",
+      mergeKey: "agent-wakes:session-1:123" } as TranscriptEntry
+    const harness = createHarness({ split: false, currentEntries: current,
+      beforeHistoryResult: async () => { current.a = [inspection] },
+    })
+    if (targeted) await harness.controller.refreshAgentHistories(session("a"), ["a"])
+    else await harness.controller.refresh(session("a"))
+    assert.ok(harness.paneEntries.a?.some(entry => entry.text === inspection.text))
+    assert.ok(harness.replaced?.text.includes(inspection.text))
+  })
+}

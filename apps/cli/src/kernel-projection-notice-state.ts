@@ -7,21 +7,23 @@ export function roomActivityNoticeKey(
   return `room-environment:${encodeURIComponent(sessionId)}:${encodeURIComponent(environmentId)}:${source}:${cursor}:${index}`
 }
 
-// Room events are kernel-owned, but their TUI notices are not provider history.
-// Retain this bounded view projection when provider history replaces a pane.
-export function retainRoomActivityNotices(
+// MP-08/MP-10: Room events and explicit wake inspections project kernel state outside
+// provider history. Retain that bounded view while history replaces a pane.
+export function retainKernelProjectionNotices(
   refreshed: TranscriptEntry[], current: readonly TranscriptEntry[], sessionId: string,
 ): TranscriptEntry[] {
-  const prefix = `room-environment:${encodeURIComponent(sessionId)}:`
-  const isRoomNotice = (entry: TranscriptEntry) => entry.role === "notice"
-    && entry.mergeKey?.startsWith("room-environment:")
+  const namespaces = ["room-environment:", "agent-wakes:"]
+  const prefixes = namespaces.map(namespace => `${namespace}${encodeURIComponent(sessionId)}:`)
+  const isKernelNotice = (entry: TranscriptEntry) => entry.role === "notice"
+    && namespaces.some(namespace => entry.mergeKey?.startsWith(namespace))
   const notices = new Map<string, TranscriptEntry>()
   for (const entry of [...refreshed, ...current]) {
-    if (!isRoomNotice(entry) || !entry.mergeKey?.startsWith(prefix) || entry.text.length > 64 * 1024) continue
+    const key = entry.mergeKey
+    if (!isKernelNotice(entry) || !key || !prefixes.some(prefix => key.startsWith(prefix)) || entry.text.length > 64 * 1024) continue
     const notice = { ...entry, turnTracking: "none" as const }
     delete notice.turnId
-    notices.set(entry.mergeKey, notice)
+    notices.set(key, notice)
   }
   const retained = transcriptRetentionSlice([...notices.values()], { maxEntries: 128, maxChars: 64 * 1024 }).kept
-  return reindexTranscriptEntries([...refreshed.filter((entry) => !isRoomNotice(entry)), ...retained], 0)
+  return reindexTranscriptEntries([...refreshed.filter((entry) => !isKernelNotice(entry)), ...retained], 0)
 }

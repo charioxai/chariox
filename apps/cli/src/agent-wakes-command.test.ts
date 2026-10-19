@@ -15,17 +15,18 @@ function wake(id: string, agentId: string, label: string) {
 
 function harness() {
   const notices: string[] = []
+  const noticeKeys: Array<string | undefined> = []
   const footers: string[] = []
   const session = { id: "room", agents: [], agent_wakes: [wake("w1", "a1", "first"), wake("w2", "a2", "second")] } as unknown as RuntimeSession
   const deps = {
     isAttached: () => true,
     sessionState: () => session,
-    appendNotice: (message: string) => { notices.push(message) },
+    appendNotice: (message: string, _emphasis?: string, mergeKey?: string) => { notices.push(message); noticeKeys.push(mergeKey) },
     flashFooter: (message: string) => { footers.push(message) },
     resolveSessionAgent: (ref: string | null | undefined) =>
       ref === "a1" ? { agent: { id: "a1" } } : { error: `unknown agent ${ref}` },
   } as unknown as AgentCommandHandlerDeps
-  return { deps, notices, footers }
+  return { deps, notices, noticeKeys, footers }
 }
 
 test("/agent wakes lists every wake, or one agent's wakes", async () => {
@@ -58,4 +59,11 @@ test("/agent wakes shows when a scheduled wake fires next", async () => {
   const [armed, ended] = scheduled.notices[0]!.split("\n")
   assert.match(armed!, /^timer 'later' scheduled next 2026-10-21 08:30:15Z verified \|/)
   assert.doesNotMatch(ended!, /next /)
+})
+
+// MP-08/MP-10: an explicit kernel inspection survives provider history I/O.
+test("wakes inspection has a session-scoped kernel projection key", async () => {
+  const inspection = harness()
+  await handleAgentSlashCommand(inspection.deps, { kind: "agent", args: ["wakes"] } as never)
+  assert.match(inspection.noticeKeys[0] ?? "", /^agent-wakes:room:[0-9]+$/)
 })
