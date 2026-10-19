@@ -157,6 +157,28 @@ test('MP-08/MP-10 paced page crop draws at most one frame per compositor frame; 
   await tick();await tick();const idle=sink.commit(frame(6),{width:8,height:8});assert.deepEqual(draws,[1,2,3,5,6],'after an idle frame the next draw is immediate again');await idle;
  }finally{sink.close()}
 });
+test('MP-08/MP-10 paced page crop in sustained motion lets three frames wait; sparse updates still keep only the newest',async()=>{
+ const draws=[];
+ const ticks=[],view={requestAnimationFrame:cb=>{ticks.push(cb);return ticks.length},cancelAnimationFrame(){}};
+ const canvas={isConnected:true,width:8,height:8,ownerDocument:{hidden:false,defaultView:view},getContext:()=>({drawImage:image=>draws.push(image.n)})};
+ const frame=n=>({image:{n,close(){},clone(){return {close(){}}}},decodedAt:1});
+ const sink=new VideoSink(canvas,()=>{},{direct:true,paced:true});
+ const settle=()=>new Promise(resolve=>setTimeout(resolve,5));
+ const tick=async()=>{ticks.shift()?.();await settle();};
+ try{
+  // Sparse: four frames inside one compositor frame, the first draws, only the newest of the rest waits.
+  [1,2,3,4].map(n=>sink.commit(frame(n),{width:8,height:8}));
+  await tick();assert.deepEqual(draws,[1,4]);await tick();await tick();draws.length=0;
+  // Eight commits within 250 ms make the page a sustained motion.
+  for(let n=10;n<18;n++){sink.commit(frame(n),{width:8,height:8});await tick();}
+  draws.length=0;
+  const burst=[20,21,22,23,24].map(n=>sink.commit(frame(n),{width:8,height:8}));
+  assert.deepEqual(draws,[20]);
+  await tick();await tick();await tick();
+  assert.deepEqual(draws,[20,22,23,24],'the three newest waiting frames are all drawn, in order');
+  assert.deepEqual((await Promise.all(burst)).map(o=>o.drawn),[true,false,true,true,true]);
+ }finally{sink.close()}
+});
 test('MP-08/MP-10 paced page crop leaves nothing waiting when the document hides',async()=>{
  const draws=[],view={requestAnimationFrame:()=>1,cancelAnimationFrame(){}},document=new EventTarget();document.hidden=false;document.defaultView=view;
  const canvas={isConnected:true,width:8,height:8,ownerDocument:document,getContext:()=>({drawImage:image=>draws.push(image.n)})};

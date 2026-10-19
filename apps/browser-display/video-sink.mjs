@@ -1,6 +1,7 @@
 // MP-08/MP-10/MP-11: whole video goes to the compositor; repairs keep an
 // canvas overlay until the next complete decoded video image (key or delta).
 // No producer or protection-policy changes.
+const SUSTAINED_FRAMES=8,SUSTAINED_MS=250,SUSTAINED_WAITING=3;
 export class VideoSink {
  constructor(canvas,onTiming,{direct=false,paced=false}={}){
   this.canvas=canvas;this.onTiming=onTiming;this.direct=direct;this.paced=paced&&direct;this.frameDrawn=false;this.pending=[];this.closed=false;this.overlayActive=false;this.presentationJobs=new Map();this.presentationMarks=new Map();this.lastPresentedTimestamp=-Infinity;
@@ -110,10 +111,18 @@ export class VideoSink {
  // one frame used to overwrite each other (~15 % of the draws never reached the screen); each later
  // one now waits for the next frame. Decode-ahead hands over several at once: only the newest of them waits.
  commitPaced(view){
-  // At most one frame waits: a burst never queues the page up behind the compositor (latency stays under one frame).
-  while(this.frameDrawn&&this.pending.length>1){const job=this.pending.shift();job.resolve({drawn:false,decodedAt:job.decodedAt});this.onTiming('client_present_drop',job.decodedAt);}
+  // Sparse updates (typing) keep one waiting frame, so a burst never queues the page up behind the compositor. Sustained motion
+  // (video, a long scroll) delivers near the display rate and its jitter must not cost frames: up to three may wait.
+  const waiting=this.sustained()?SUSTAINED_WAITING:1;
+  while(this.frameDrawn&&this.pending.length>waiting){const job=this.pending.shift();job.resolve({drawn:false,decodedAt:job.decodedAt});this.onTiming('client_present_drop',job.decodedAt);}
   if(!this.frameDrawn){this.frameDrawn=true;this.armFrame(view);this.commitOldest();return;}
   this.armFrame(view);
+ }
+ // At least SUSTAINED_FRAMES commits within SUSTAINED_MS: the page is in continuous motion.
+ sustained(){
+  const now=performance.now(),recent=this.recent??=[];
+  recent.push(now);if(recent.length>SUSTAINED_FRAMES)recent.shift();
+  return recent.length===SUSTAINED_FRAMES&&now-recent[0]<SUSTAINED_MS;
  }
  armFrame(view){
   if(this.frameRaf!==undefined||!view.requestAnimationFrame)return;
