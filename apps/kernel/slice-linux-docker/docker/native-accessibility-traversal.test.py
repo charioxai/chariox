@@ -106,6 +106,23 @@ class TraversalTest(unittest.TestCase):
         for change in [{'protected':True},{'path':[1]},{'pid':201}]:
             self.assertNotEqual(self.driver.tree_digest(base),self.driver.tree_digest({**edited,'nodes':[{**edited['nodes'][0],**change}]}))
 
+    def test_mp08_public_button_activate_uses_the_observed_click_action(self):
+        from unittest.mock import Mock
+        click=Mock(return_value=True)
+        node=Node('Sign in','push button')
+        node.queryAction=lambda:types.SimpleNamespace(nActions=1,getName=lambda _:'click',doAction=click)
+        self.desktop=Node('Desktop','desktop',[Node('Office','application',[Node('Login','frame',[node])])])
+        processes=[{'pid':200,'started':'1'}]
+        tree=self.driver.snapshot(processes);entry=next(n for n in tree['nodes'] if n['name']=='Sign in')
+        self.assertIn('activate',entry['actions'])
+        request={'processes':processes,'expected_tree_digest':self.driver.tree_digest(tree),'pid':200,'started':'1','path':entry['path'],'action':'activate'}
+        self.assertEqual(self.driver.act(request),{'applied':True});click.assert_called_once_with(0)
+        node.role='text'
+        tree=self.driver.snapshot(processes);entry=next(n for n in tree['nodes'] if n['name']=='Sign in')
+        self.assertNotIn('activate',entry['actions'])
+        with self.assertRaises(ValueError):self.driver.act({**request,'expected_tree_digest':self.driver.tree_digest(tree)})
+        click.assert_called_once()
+
     def test_mp08_public_editable_focus_is_distinct_from_submit_and_stays_target_bound(self):
         from unittest.mock import Mock
         focus=Mock(return_value=True);activate=Mock(return_value=True)

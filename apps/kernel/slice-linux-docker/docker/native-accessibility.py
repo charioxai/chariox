@@ -246,6 +246,11 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
             try:
                 action=node.queryAction()
                 actions=[action.getName(i) for i in range(min(action.nActions,16))]
+                # The shared Computer contract calls a public button's default
+                # action activate; GTK names that same action click. Advertise
+                # both, retaining the exact node and native action proof.
+                if role in ('button','push button') and 'click' in actions and 'activate' not in actions:
+                    actions.append('activate')
             except NotImplementedError:pass
         # Focus reveals no field value and never submits. A protected field
         # exposes this operation alone; only Vault may enter its contents.
@@ -473,6 +478,10 @@ def act(request):
             raise ValueError('native focus refused')
     else:
         interface=node.queryAction()
-        index=next((i for i in range(min(interface.nActions,16)) if interface.getName(i)==request['action']),None)
+        names=[interface.getName(i) for i in range(min(interface.nActions,16))]
+        action=request['action']
+        if action=='activate' and action not in names and node.getRoleName() in ('button','push button') and 'click' in names:
+            action='click'
+        index=next((i for i,name in enumerate(names) if name==action),None)
         if index is None or not interface.doAction(index):raise ValueError('action refused')
     return {'applied':True}
