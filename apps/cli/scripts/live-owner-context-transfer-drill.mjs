@@ -392,7 +392,7 @@ try {
       }
       const status=(await cli(name+'-poll-'+steps.length,source,['status',initial.contextId])).ManagedContextTransferStatus.status
       return (status.phase === 'completed' || (status.phase === 'failed' && (!inject || status.receipt || !faultInjected))) && status
-    },'owner copy terminal status',largeKernel?1200000:90000)
+    },'owner copy terminal status',largeKernel?3600000:90000)
     await capture(name+'-result')
     return terminal
   }
