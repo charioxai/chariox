@@ -2236,14 +2236,10 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
             if let Some(interaction) = session
                 .active_interactions()
                 .iter()
-                .find(|interaction| interaction.title() == Some("Computer credential input"))
+                .find(|interaction| interaction.title() == Some("Allow this paste"))
             {
-                assert!(interaction
-                    .message()
-                    .contains("approving an unmasked field can expose the credential"));
-                assert!(interaction
-                    .message()
-                    .contains("native window 100, focused control 101"));
+                assert!(interaction.message().contains("paste credential"));
+                assert!(interaction.message().contains("Room native window 100"));
                 break interaction.id().to_string();
             }
             tokio::task::yield_now().await;
@@ -2254,7 +2250,7 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     fixture
         .home
         .runtime_state
-        .resolve_runtime_interaction(&room, &interaction_id, "allow", None)
+        .resolve_runtime_interaction(&room, &interaction_id, "unlock_default_ttl", None)
         .await
         .expect("approve the computer credential on home");
     let result = call

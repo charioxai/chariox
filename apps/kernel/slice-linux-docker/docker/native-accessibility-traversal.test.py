@@ -303,7 +303,7 @@ class TraversalTest(unittest.TestCase):
         tree = self.driver.snapshot(processes)
         self.assertFalse(tree['traversed'])
         self.driver.act({'processes': processes, 'pid': 200, 'started': '1', 'path': [0],
-                         'action': 'paste',
+                         'action': 'paste', 'agent_input': True,  # older kernels still send it
                          'expected_tree_digest': self.driver.tree_digest(tree)})
         pressed.assert_called_once()
 
