@@ -9,6 +9,7 @@ import {regionProtection} from './kernel-browser-region-attestation.mjs';
 import {createRegionDisplay} from './kernel-browser-region-display.mjs';
 import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
 import {assertNotCancelled} from './browser-controller-actions.mjs';
+import {NavigationHold} from './kernel-browser-navigation-hold.mjs';
 
 const retry=()=>Object.assign(Error('MP-11: fill-target capture unavailable; retry'),{code:'fill_capture_retry'});
 const filled=host=>Boolean(host.protection?.targets?.length||host.browser?.fillTargets?.size);
@@ -23,8 +24,16 @@ export class WindowPageCapture extends NativeWindowRegionCapture {
  constructor({host,...options}){
   super({...options,surface:'page'});
   this.host=host;
+  // Frames of a Tab's new, still unpainted document are held back (see NavigationHold); a popup over the page still holds too.
+  const popup=this.occluded;
+  this.navigation=new NavigationHold({active:()=>host.tabGroups?.active?.().catch(()=>null),release:()=>this.wake(true)});
+  this.occluded=async()=>this.attested&&await this.navigation.holding()||popup?.();
  }
- onCdp(message){if(message.method==='Chariox.browserDisconnected')this.fence();}
+ onCdp(message){
+  if(message.method==='Chariox.browserDisconnected')this.fence();
+  this.navigation.event(message);
+ }
+ async close(){this.navigation.close();return super.close();}
  protection(){
   const host=this.host,scale=this.scale,{pageLeft,pageTop}=this.region;let inner=null,innerTarget=null,revision=0;
   const front=async()=>{const target=await host.tabGroups?.active?.().catch(()=>null);return {target,tab:[...host.tabs.values()].find(t=>t.target_id===target)};};
