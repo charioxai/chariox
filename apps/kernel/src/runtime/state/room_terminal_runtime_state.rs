@@ -315,7 +315,7 @@ impl KernelRuntimeState {
     }
 
     /// Where the Room's agents run their commands on this machine.
-    fn room_project_directory(&self, session_id: &str) -> Result<PathBuf, DaemonError> {
+    pub(crate) fn room_project_directory(&self, session_id: &str) -> Result<PathBuf, DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
         Ok(PathBuf::from(session.worktree_id()))
     }
