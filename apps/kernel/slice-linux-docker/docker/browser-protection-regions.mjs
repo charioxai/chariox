@@ -97,7 +97,7 @@ async function fieldState(connection,entry,document,backendNodeId) {
           const style=element.ownerDocument.defaultView.getComputedStyle(element);
           unprovedPaint ||= style.filter!=='none'||style.webkitBoxReflect!=='none';
         }
-        return {exists:this.isConnected,editable,unprovedPaint,contenteditable:this.isContentEditable,changed:globalThis.__charioxFilledFields?.get(this)?.changed===true,password:this.localName==='input'&&this.type==='password',sensitive:this.localName==='input'&&(this.type==='password'||this.autocomplete.toLowerCase().split(/\\s+/).some(t=>t.startsWith('cc-')||t==='one-time-code')),
+        return {exists:this.isConnected,editable,unprovedPaint,contenteditable:this.isContentEditable,changed:globalThis.__charioxFilledFields?.get(this)?.changed===true,password:this.localName==='input'&&this.type==='password',sensitive:(this.localName==='input'||this.localName==='textarea')&&(this.type==='password'||this.autocomplete.toLowerCase().split(/\\s+/).some(t=>t.startsWith('cc-')||t==='one-time-code')),
           textShadow:this.ownerDocument.defaultView.getComputedStyle(this).textShadow,value:editable?String(this.isContentEditable?this.textContent:this.value):''}; }`},entry.sessionId);
     if(exceptionDetails||!result?.value)throw Error('MP-11: fill state unavailable');
     return result.value;

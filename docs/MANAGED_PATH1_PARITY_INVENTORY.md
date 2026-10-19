@@ -6,7 +6,8 @@ The 2026-10-18 22:59 owner decision allows ordinary human and agent typing,
 including password, payment-card and one-time-code fields. Native browser-band
 input retains document/generation ownership without reading sensitive focus.
 Model Browser screenshots and Computer screenshot/OCR observations additionally
-mask nonempty input fields with type=password or autocomplete cc-*/one-time-code.
+mask nonempty inputs with type=password and input/textarea controls with
+autocomplete cc-*/one-time-code.
 This transient measurement shares Vault geometry, frame/shadow traversal and
 before/after capture fences; it stores no typed values or durable registrations.
 Empty/cleared fields retire their masks. Owner Browser and Computer streams do

@@ -5,7 +5,7 @@ export function typedBrowserTargets(snapshot,entry,targetId,documentId) {
  for(const document of snapshot.documents??[]) {
   const nodes=document.nodes;
   for(let index=0;index<nodes.nodeName.length;index++) {
-   if(strings[nodes.nodeName[index]].toLowerCase()!=='input')continue;
+   if(!['input','textarea'].includes(strings[nodes.nodeName[index]].toLowerCase()))continue;
    const attributes=nodes.attributes[index]??[],attrs=new Map();
    for(let i=0;i<attributes.length;i+=2)attrs.set(strings[attributes[i]].toLowerCase(),strings[attributes[i+1]].toLowerCase());
    if(attrs.get('type')!=='password'&&!(attrs.get('autocomplete')??'').split(/\s+/).some(token=>token.startsWith('cc-')||token==='one-time-code'))continue;
