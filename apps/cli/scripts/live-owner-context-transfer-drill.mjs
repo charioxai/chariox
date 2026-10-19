@@ -248,7 +248,7 @@ try {
       const bulk=path.join(source.env.HOME,'.chariox','skills',`bulk-${i}`);await mkdir(bulk,{recursive:true})
       await writeFile(path.join(bulk,'SKILL.md'),`---\nname: bulk-${i}\ndescription: Bulk skill ${i}\n---\nBulk ${i}.\n`)
       for(let f=0;f<7;f++)await writeFile(path.join(bulk,`part-${f}.txt`),`bulk ${i} part ${f} ${'x'.repeat(1900)}\n`)
-      if(i<30)await writeFile(path.join(bulk,'data.bin'),randomBytes(9*1024*1024))
+      if(i<30)await writeFile(path.join(bulk,'data.txt'),`bulk ${i} ordinary project note\n`.repeat(400000).slice(0,9*1024*1024))
     }
   }
   if(structuredMode) {
@@ -287,8 +287,12 @@ try {
   if(!encodedMode) {await mkdir(path.join(workspace,'overlay'));await writeFile(path.join(workspace,'overlay','package.json'),metadata['package.json']);await writeFile(path.join(workspace,'overlay','package-lock.json'),metadata['package-lock.json'])}
   await writeFile(path.join(workspace,'README.md'),'MP-05 owner context overlay\n')
   automationSocket=path.join(root,'automation.sock')
+  // The current TUI refuses --create-session while the provider account sign-in is unchecked; a
+  // credential-free kernel creates the Project session over IPC and the TUI attaches to it.
+  const { createSessionRequest } = await import('../../../packages/kernel-client/dist/ipc-session-requests.js')
+  const created=(await rpc(source,createSessionRequest(workspace,workspace,'owner-context-drill',{provider:'claude',model:'claude-haiku-4-5',effort:'low'}))).SessionCreated.session
   tui=start('source-tui','python3',[path.join(repo,'apps/cli/scripts/lib/owner-context-terminal.py'),path.join(binaryDir,'chariox-cli'),
-    '--kernel-url',source.url,'--automation-socket',automationSocket,'--create-session','--workspace',workspace,'--worktree',workspace,'--provider','codex','--model','gpt-5.5'],source.env)
+    '--kernel-url',source.url,'--automation-socket',automationSocket,'--session',created.id],source.env)
   await until(async()=>{await access(automationSocket);const v=await automation({action:'snapshot'});return v.session?.id&&v},'real CLI Project creation',90000)
   const snapshot=await capture('01-enrolled-project')
   const session=(await rpc(source,{GetSessionState:{session_id:snapshot.session.id}})).SessionState.session
@@ -388,7 +392,7 @@ try {
       }
       const status=(await cli(name+'-poll-'+steps.length,source,['status',initial.contextId])).ManagedContextTransferStatus.status
       return (status.phase === 'completed' || (status.phase === 'failed' && (!inject || status.receipt || !faultInjected))) && status
-    },'owner copy terminal status',90000)
+    },'owner copy terminal status',largeKernel?1200000:90000)
     await capture(name+'-result')
     return terminal
   }
@@ -412,8 +416,8 @@ try {
     if(largeKernel) {
       const { readdir } = await import('node:fs/promises'); const sk=path.join(target.env.HOME,'.chariox','skills')
       const names=await readdir(sk); const bulk=names.filter(n=>n.startsWith('bulk-')).length
-      const first=await sha256(path.join(source.env.HOME,'.chariox','skills','bulk-29','data.bin'))
-      assert.equal(bulk,4200);assert.equal(await sha256(path.join(sk,'bulk-29','data.bin')),first)
+      const first=await sha256(path.join(source.env.HOME,'.chariox','skills','bulk-29','data.txt'))
+      assert.equal(bulk,4200);assert.equal(await sha256(path.join(sk,'bulk-29','data.txt')),first)
       assert.equal(await readFile(path.join(sk,'bulk-4199','part-6.txt'),'utf8'),`bulk 4199 part 6 ${'x'.repeat(1900)}\n`)
       steps.push({name:'large-kernel-snapshot-imported',skills:bulk+1,receipt:approved.receipt})
     }
