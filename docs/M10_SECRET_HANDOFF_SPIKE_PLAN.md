@@ -364,6 +364,11 @@ Scope:
 - return only submission status
 - do not echo or store the value
 - do not record the secret as normal terminal input
+- write only while a password prompt owns the PTY foreground: a process group
+  other than the provider's, reading in canonical mode with echo off. Otherwise
+  (for example the provider's own prompt editor in raw mode) write nothing and
+  return a recoverable `submitted: false` error without the value; the same
+  check runs on the worker before a leased agent resolves the secret from home
 
 Out of scope for this slice:
 
