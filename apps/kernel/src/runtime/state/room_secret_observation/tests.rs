@@ -2025,3 +2025,34 @@ fn fresh_environment_reset_and_room_delete_recover_a_corrupt_sealed_registry() {
         }
     }
 }
+
+#[test]
+fn owner_lookup_runs_outside_the_room_value_lock() {
+    // The owner lookup takes the session lock elsewhere, so it must not run while
+    // the Room value lock is held: a lookup that reads the store would deadlock.
+    let root = TestRoot::new();
+    let slot: Arc<std::sync::OnceLock<RoomSecretObservations>> = Default::default();
+    let lookup = slot.clone();
+    let store = RoomSecretObservations::new(root.path().to_path_buf(), BTreeSet::new())
+        .with_user_domain(
+            move |room| {
+                lookup.get().unwrap().protects_bytes(room);
+                Some("owner".into())
+            },
+            |_| Vec::new(),
+        );
+    store.register("room", "room-value").unwrap();
+    slot.set(store.clone()).ok().unwrap();
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut output = stream_output_for("agent", b"echo room-value");
+        store.protect_stream("room", &mut output);
+        let scrubbed = store.scrub_text_or_withhold("room", "echo room-value");
+        let _ = done.send((output.bytes, scrubbed));
+    });
+    let (streamed, scrubbed) = finished
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("owner lookup ran under the Room value lock");
+    assert_eq!(String::from_utf8_lossy(&streamed), "echo [redacted]");
+    assert_eq!(scrubbed, "echo [redacted]");
+}

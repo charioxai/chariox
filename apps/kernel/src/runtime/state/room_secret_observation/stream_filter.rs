@@ -205,10 +205,12 @@ impl RoomSecretObservations {
     /// secret prefix at the end waits for the next chunk or `flush_streams`.
     pub(in crate::runtime::state) fn protect_stream(&self, room: &str, output: &mut Output) {
         let room = self.room_key(room);
+        // The owner lookup takes the session lock, so it never runs under the value lock.
+        let external = self.external(room);
         let variants = match self.blocked(room, false) {
             Ok(false) => self.rooms.lock().ok().map(|r| {
                 let mut secrets = r[room].secret_bytes();
-                secrets.extend(self.external(room).iter().flat_map(|v| secret_variants(v)));
+                secrets.extend(external.iter().flat_map(|v| secret_variants(v)));
                 secrets
             }),
             _ => None,

@@ -663,13 +663,14 @@ impl RoomSecretObservations {
     ) -> Result<T, DaemonError> {
         let room = self.room_key(room);
         self.blocked(room, false)?;
+        // The owner lookup takes the session lock, so it never runs under the value lock.
+        let external = self.external(room);
         let rooms = self.rooms.lock().map_err(|_| protection_error())?;
         let protection = &rooms[room];
         // Recheck under the value lock: another mutation can follow admission.
         if observation && protection.unknown {
             return Err(fenced_observation_error());
         }
-        let external = self.external(room);
         if protection.value_count() == 0 && external.is_empty() {
             return Ok(input);
         }
