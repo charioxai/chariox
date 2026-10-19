@@ -1292,6 +1292,7 @@ test('MP-08/MP-10/MP-11: opaque leases remeasure actual canvas bounds, protectio
     assert.equal(await replacement.isCurrent(),false);
     const rotated=await host.mirror.v2.regions.resolve(target,stream.scope);
     assert.deepEqual(rotated.rect,{x:10,y:0,width:200,height:100},'a rotated region leases its on-screen rect');
+    for(const proof of (await rotated.attestationState()).media){assert.equal(proof.id,region_id);assert.deepEqual(proof.box,[10,0,200,100],'a composited region is excluded from the native attestation by its on-screen box')}
   }
 ));
 test('MP-11: a child opaque lease clips to the actual cross-origin frame viewport', () => mirrored(

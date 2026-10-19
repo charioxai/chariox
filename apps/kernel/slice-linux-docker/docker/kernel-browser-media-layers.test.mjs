@@ -24,9 +24,13 @@ test('MP-11 only a real current media node in its compositor tree proves exclusi
  const f=fixture(),[proof]=await mediaLayerEvidence(f.mirror,f.stream,f.boxes);
  assert.equal(proof.backend_node_id,42);assert.equal(proof.loader_id,'doc');assert.deepEqual(proof.box,[20,20,40,20]);assert.equal(f.subscribed(),false);
  assert.equal(f.calls.at(-1).method,'LayerTree.disable');
- for(const modify of [f=>f.setNode('DIV'),f=>f.setBackend(99),f=>f.setLoader('stale'),f=>f.setLayers([]),f=>f.boxes[0].distorted=true]){
+ for(const modify of [f=>f.setNode('DIV'),f=>f.setBackend(99),f=>f.setLoader('stale'),f=>f.setLayers([])]){
   const h=fixture();modify(h);assert.deepEqual(await mediaLayerEvidence(h.mirror,h.stream,h.boxes),[]);
  }
+});
+test('MP-10 mirrorregion: a composited (rotated, translucent) media element is excluded by its on-screen box',async()=>{
+ const f=fixture();f.boxes[0].distorted='transform';
+ const [proof]=await mediaLayerEvidence(f.mirror,f.stream,f.boxes);assert.equal(proof.backend_node_id,42);assert.deepEqual(proof.box,[20,20,40,20]);
 });
 test('MP-11 OOPIF exclusions need the child observation and its own session',async()=>{
  const f=fixture();f.boxes[0].id='n1000000003';

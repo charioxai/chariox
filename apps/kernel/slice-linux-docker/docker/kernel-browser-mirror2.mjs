@@ -854,7 +854,7 @@ export class Mirror2 {
     stream.tilesAt = Date.now();
     // The viewer keeps a still until replaced: unchanged pixels are not sent again.
     if (reset || !stream.tileHashes) stream.tileHashes = new Map();
-    const scale = this.host.scales.get(tab.tab_id) ?? 1, out = [], shots = []; 
+    const scale = this.host.scales.get(tab.tab_id) ?? 1, out = [], shots = [];
     const send = (id, tile) => { const digest = createHash('sha256').update(`${tile.x},${tile.y},${tile.width},${tile.height},${tile.data_base64}`).digest('hex'); if (stream.tileHashes.get(id) === digest) return; stream.tileHashes.set(id, digest); out.push({ node_id: id, ...tile }); };
     for (const b of boxes) {
       const slot = slotOf(b.id), owner = slot ? stream.frameSlots.get(slot)?.child : world;
