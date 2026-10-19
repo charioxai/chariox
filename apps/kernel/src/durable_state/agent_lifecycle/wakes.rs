@@ -62,6 +62,16 @@ impl DurableKernelStateStore {
             .map_err(sql)?;
         rows.map(|row| decode(&row.map_err(sql)?)).collect()
     }
+    pub(crate) fn agent_wake(&self, id: &str) -> Result<Option<AgentWake>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.wake")?;
+        let payload: Option<String> = db
+            .query_row("SELECT payload FROM agent_wakes WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(sql)?;
+        payload.map(|payload| decode(&payload)).transpose()
+    }
     /// The arm receipt belongs to the exact wake, including after it fires.
     pub(crate) fn agent_wake_verification(&self, id: &str) -> Result<Option<u64>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.verification")?;

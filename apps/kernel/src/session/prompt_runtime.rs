@@ -275,6 +275,22 @@ impl PromptRuntimeState {
         self.scheduler_state = SchedulerState::Idle;
     }
 
+    /// Client projections omit agent-only kernel instructions.
+    pub(in crate::session) fn hide_internal_prompts(&mut self, focused_agent_id: Option<&str>) {
+        let internal =
+            |prompt: &PromptQueueItem| crate::session::is_internal_prompt_echo_id(prompt.id());
+        for state in self.prompt_states.values_mut() {
+            if state.active_prompt.as_ref().is_some_and(internal) {
+                state.active_prompt = None;
+            }
+            state.queued_prompts.retain(|prompt| !internal(prompt));
+        }
+        self.prompt_states
+            .retain(|_, state| state.active_prompt.is_some() || !state.queued_prompts.is_empty());
+        // Scheduling stays as the kernel computed it; only the projection changes.
+        self.refresh_prompt_projection(focused_agent_id);
+    }
+
     pub(in crate::session) fn retain_agent_ids(
         &mut self,
         agent_ids: &std::collections::BTreeSet<String>,

@@ -396,7 +396,14 @@ impl TerminalStreamService {
     }
 
     fn push_output_record(&mut self, record: TerminalOutputRecord) {
-        if record.pending_recipient_attachment_ids.is_empty() {
+        // Kernel instruction echoes are agent-only. Replies to correction and
+        // inbox instructions remain visible.
+        let internal_echo = record.kind == TerminalOutputKind::PromptEcho
+            && record
+                .prompt_id
+                .as_deref()
+                .is_some_and(crate::session::is_internal_prompt_echo_id);
+        if record.pending_recipient_attachment_ids.is_empty() || internal_echo {
             return;
         }
         let record_id = self.next_output_record_id;

@@ -656,13 +656,14 @@ impl KernelRuntimeState {
 
     async fn submit_prepared_prompt_authorized(
         &self,
-        prepared: crate::app::KernelPreparedPromptSubmission,
+        mut prepared: crate::app::KernelPreparedPromptSubmission,
         allow_queue: bool,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
         let authorize = || self.authorize_prompt_command(authority);
         authorize()?;
         self.owned.require_publication_activation()?;
+        prepared.prepare_task_prompt_identity(|| self.owned.session_store.reserve_prompt_id())?;
         {
             let owned = &self.owned;
             let session = owned.session_store.get_session(&prepared.session_id)?;
@@ -683,9 +684,31 @@ impl KernelRuntimeState {
                     prepared.prompt.target_agent_id(),
                 )
                 .await?;
+            let admitted = self.owned.admit_agent_task(&prepared)?;
+            let submission =
+                Box::pin(self.submit_admitted_owned_prompt(&prepared, allow_queue, authority))
+                    .await;
+            // A rejected submission must not leave a task that later blocks on
+            // the owner for work that never started.
+            if submission.is_err() && admitted {
+                self.owned.withdraw_agent_task(prepared.prompt.id())?;
+            }
+            submission
+        }
+    }
+
+    async fn submit_admitted_owned_prompt(
+        &self,
+        prepared: &crate::app::KernelPreparedPromptSubmission,
+        allow_queue: bool,
+        authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
+    ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
+        let authorize = || self.authorize_prompt_command(authority);
+        let owned = &self.owned;
+        {
             authorize()?;
             if let Some(mut submission) =
-                owned.submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
+                owned.submit_local_prepared_prompt_with_queue_policy(prepared, allow_queue)?
             {
                 self.finish_owned_prompt_submission_workflow_start(&mut submission)
                     .await?;
@@ -693,7 +716,7 @@ impl KernelRuntimeState {
             }
             authorize()?;
             if let Some(mut submission) =
-                owned.submit_remote_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
+                owned.submit_remote_prepared_prompt_with_queue_policy(prepared, allow_queue)?
             {
                 self.finish_owned_prompt_submission_workflow_start(&mut submission)
                     .await?;
@@ -735,7 +758,7 @@ impl KernelRuntimeState {
                     )?;
                 } else if is_remote_agent {
                     if let Some(mut submission) = owned
-                        .submit_remote_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
+                        .submit_remote_prepared_prompt_with_queue_policy(prepared, allow_queue)?
                     {
                         self.finish_owned_prompt_submission_workflow_start(&mut submission)
                             .await?;
@@ -753,7 +776,7 @@ impl KernelRuntimeState {
                 };
                 authorize()?;
                 if let Some(mut submission) =
-                    owned.submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
+                    owned.submit_local_prepared_prompt_with_queue_policy(prepared, allow_queue)?
                 {
                     self.finish_owned_prompt_submission_workflow_start(&mut submission)
                         .await?;
