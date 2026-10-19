@@ -841,6 +841,7 @@ export class Mirror2 {
     await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id);
     assertNotCancelled(signal); return boxes;
   }
+  async opaqueBoxes(world, stream) { return [...(await this.evaluate(world, `${world.ref}.opaqueBoxes()`)).filter(b => !b.foreign || !stream.frames.has(b.id)), ...await this.frames.opaqueBoxes(stream, world)]; }
   async tiles(world, tab, stream, reset, still, none = false) {
     // No opaque region in the page and no attached frame: nothing to place or capture. A DOM echo does not wait
     // for an evaluation in the page's next task (MP-08 click path, 8-12 ms behind a busy source page).
@@ -848,13 +849,19 @@ export class Mirror2 {
     // player, a full-screen map): the page is the video (labelled; the client retries later).
     // A refusal lasts only while opaque media is still on the page (the player closed or left).
     if (none && !stream.frames.size) stream.unattestable = false;
+    // The refusal holds for the media measured when it was made: a player that shrank, moved or was replaced is admitted afresh.
+    if (stream.unattestable) {
+      const key = JSON.stringify((await this.opaqueBoxes(world, stream)).map(b => [b.id, b.box]));
+      if (stream.unattestable === true) stream.unattestable = key;
+      if (stream.unattestable !== key) stream.unattestable = false;
+    }
     if (stream.unattestable) { const error = new Error('MP-10: opaque media fills the page'); error.mirrorReason = 'region_area'; throw error; }
     if (none && !stream.frames.size) { stream.tileKeys = ''; stream.tilesPending = false; return []; }
     // MP-08/MP-10: a DOM packet right after viewer input carries no still; its regions (and the 25% budget)
     // are measured by the next quiet packet, so an echo does not wait for an evaluation in a busy page.
     if (!reset && !still && this.recentInput(stream)) { stream.tilesPending = true; return []; }
     stream.tilesPending = false;
-    let boxes = [...(await this.evaluate(world, `${world.ref}.opaqueBoxes()`)).filter(b => !b.foreign || !stream.frames.has(b.id)), ...await this.frames.opaqueBoxes(stream, world)];
+    let boxes = await this.opaqueBoxes(world, stream);
     stream.tileKeys = boxes.map(b => b.id).join(',');
     // Opaque regions over most of the viewport are carried by their region video leases alone (viewport-clipped): their
     // lossless stills would be megabytes ahead of the page copy's handover, and a lease the page cannot prove

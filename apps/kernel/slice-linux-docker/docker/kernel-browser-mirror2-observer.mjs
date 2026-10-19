@@ -833,7 +833,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       for(let view=node.ownerDocument.defaultView;view !== window;view=view.parent){
         const owner=view.frameElement;if(!owner)throw new Error('mirror2 frame unavailable');
         // The owner's origin maps the child by translation only: a rotated/scaled owner (or ancestor of it) would misplace the crop.
-        if(/^(transform|rotate|scale|size)/.test(distorted(owner)||''))throw new Error('mirror2 region frame transformed');
+        if(moved(owner))throw new Error('mirror2 region frame transformed');
         const r=owner.getBoundingClientRect(),style=getComputedStyle(owner),x=r.x+owner.clientLeft+(parseFloat(style.paddingLeft)||0),y=r.y+owner.clientTop+(parseFloat(style.paddingTop)||0);
         bounds=[bounds[0]+x,bounds[1]+y,bounds[2],bounds[3]];clip=[clip[0]+x,clip[1]+y,clip[2],clip[3]];
         clip=intersect(clip,[0,0,view.parent.innerWidth,view.parent.innerHeight]);
@@ -841,6 +841,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if(!(clip[2]>0&&clip[3]>0))throw new Error('mirror2 region offscreen');
       const out={id,box:bounds,clip,distorted:distorted(node),media:node.namespaceURI===HTML&&['video','canvas','object','embed'].includes(node.localName)};
       if(foreign.has(id)){
+        out.moved=moved(node);
         const style=getComputedStyle(node),left=node.clientLeft+(parseFloat(style.paddingLeft)||0),top=node.clientTop+(parseFloat(style.paddingTop)||0);
         const width=node.clientWidth-(parseFloat(style.paddingLeft)||0)-(parseFloat(style.paddingRight)||0),height=node.clientHeight-(parseFloat(style.paddingTop)||0)-(parseFloat(style.paddingBottom)||0);
         out.contentBox=[bounds[0]+left,bounds[1]+top,width,height];
@@ -878,6 +879,18 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if (at.nodeType !== 1) continue;
         const style = getComputedStyle(at), cause = style.filter !== 'none' ? 'filter' : linear(style.transform) ? 'transform' : style.rotate !== 'none' ? 'rotate' : style.scale !== 'none' ? 'scale' : Number(style.opacity) < 1 ? 'opacity' : style.mixBlendMode !== 'normal' ? 'blend' : '';
         if (cause) return cause + (at === node ? '' : '_ancestor');
+      }
+      return false;
+    };
+    // Whether the node or an ancestor (through frame owners) moves or resizes pixels, independent of the one cause distorted() names:
+    // a crop of the frame inside maps into the page by translation only.
+    const moved = node => {
+      const [, , width, height] = box(node), [layoutWidth, layoutHeight] = layoutSize(node);
+      if (Math.abs(width - layoutWidth) > 1 || Math.abs(height - layoutHeight) > 1) return true;
+      for (let at = node, depth = 0; at && depth < DEPTH; depth++, at = at.parentElement ?? at.getRootNode?.()?.host ?? at.ownerDocument?.defaultView?.frameElement) {
+        if (at.nodeType !== 1) continue;
+        const style = getComputedStyle(at);
+        if (linear(style.transform) || style.rotate !== 'none' || style.scale !== 'none') return true;
       }
       return false;
     };

@@ -1173,7 +1173,7 @@ test("MP-10: review #941@f6fb77245-4 a screenshot-crop region inside a same-orig
     for (let i = 0; i < 100 && await evaluate("window.drawn === true") !== true; i++) await new Promise(resolve => setTimeout(resolve, 20));
     const plain = await next();
     assert.equal(plain.fallback, undefined); assert.equal(plain.tiles.length, 1, "MP-10: the tainted canvas in the frame shows as a crop");
-    for (const style of ["opacity:0.5", "transform:rotate(180deg)"]) {
+    for (const style of ["opacity:0.5", "transform:rotate(180deg)", "filter:grayscale(1);transform:rotate(180deg)"]) {
       await evaluate(`f.style.cssText=${JSON.stringify(style)};true`);
       await new Promise(resolve => setTimeout(resolve, 1100));
       const packet = await stayDom(next, 3000, `MP-10: frame owner ${style} never hands the page to video`);
@@ -1214,8 +1214,8 @@ test("MP-10 mirrorregion: a zero-size frame owner does not stop other regions fr
   }, { "/child": { type: "text/html", body: "<!doctype html><p>child</p>" }, "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="rgb(255,0,0)"/></svg>' } }));
 
 // Reviewer #1056 P2-3: the crop of a region inside a frame owner maps by translation only, so a rotated owner admits none.
-const framedCanvas = async transform => { let count; await mirrored(
-  '<style>body{margin:0}</style><canvas id="c" width="200" height="100" style="display:block"></canvas><iframe src="http://localhost:PORT/child" style="width:200px;height:100px;border:0;' + transform + '"></iframe>', async ctx => {
+const framedCanvas = async (transform, wrap = "") => { let count; await mirrored(
+  '<style>body{margin:0}</style><canvas id="c" width="200" height="100" style="display:block"></canvas><div style="' + wrap + '"><iframe src="http://localhost:PORT/child" style="width:200px;height:100px;border:0;' + transform + '"></iframe></div>', async ctx => {
     const { next, host } = ctx;
     await next(); await stayDom(next, 3000, "MP-10: stays DOM");
     const stream = host.mirror.streams.get(ctx.subscription_id);
@@ -1225,6 +1225,10 @@ const framedCanvas = async transform => { let count; await mirrored(
 test("MP-10 mirrorregion: a region inside a rotated frame owner is not admitted with a wrong crop", async () => {
   assert.equal(await framedCanvas(""), 2, "control: the top canvas and the frame's canvas are regions");
   assert.equal(await framedCanvas("transform:rotate(180deg)"), 1, "only the top canvas: the rotated owner's children are not boxed");
+  // distorted() names one cause only: a filter or opacity nearer than the rotation must not hide it.
+  assert.equal(await framedCanvas("filter:grayscale(1);transform:rotate(180deg)"), 1, "a filter on a rotated owner");
+  assert.equal(await framedCanvas("", "opacity:.5;transform:rotate(90deg)"), 1, "a rotated ancestor behind a nearer opacity");
+  assert.equal(await framedCanvas("", "opacity:.5"), 2, "control: opacity alone moves no pixel");
 });
 
 // DuckDuckGo results: many result videos faded in and out (opacity animation) next to a hidden carousel.

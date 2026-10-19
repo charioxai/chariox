@@ -186,7 +186,7 @@ export class MirrorFrames {
       const geometry=await this.mirror.evaluate(parent,`${parent.ref}.regionShape(${JSON.stringify(owner)})`).catch(error=>{if(error?.message==='MP-11: mirror observation unavailable')return null;throw error;});
       if(!geometry)continue;
       // The crop maps a child's rectangle into the page by translation only: no region inside a rotated/scaled owner (opacity, filter and blending do not move pixels).
-      if(/^(transform|rotate|scale|size)/.test(geometry.distorted||''))continue;
+      if(geometry.moved)continue;
       const boxes=await this.mirror.evaluate(entry.child,`${entry.child.ref}.regionBoxes()`);
       if(await this.loaderId(entry.child) !== entry.loaderId) continue;
       const [ox,oy,w,h]=geometry.contentBox,clip=geometry.clip;

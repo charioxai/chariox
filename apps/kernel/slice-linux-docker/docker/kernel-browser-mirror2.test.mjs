@@ -719,6 +719,9 @@ test('MP-08/MP-10 mirrorregion: theater mode: a region video refused for want of
  const handoff=await credit(echo.sequence);
  assert.equal(handoff.fallback,'region_area','a view the media fills has no page pixels to prove a region video: the page is the video');
  assert.equal(handoff.reset,true);
+ // A refusal holds for the media measured when it was made: the player shrinking (still opaque media) is admitted afresh.
+ stream.fallback=null;stream.tilesAt=0;boxes=[{id:'n9',box:[0,0,300,200]}];drain={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],opaque:true};
+ assert.equal((await credit(handoff.sequence)).fallback,undefined,'a shrunk player is measured again');assert.equal(stream.unattestable,false,'the refusal is cleared with the geometry it was made for');
  // A player that fills 75 % of the view stays a DOM copy; the region video serves it, no lossless still rides ahead.
  stream.fallback=null;stream.unattestable=false;boxes=[{id:'n9',box:[0,0,1280,600]}];
  for(let i=0;i<5;i++){stream.tilesAt=0;stream.tileHashes=new Map();const packet=await credit(0);assert.equal(packet.fallback,undefined,'75 % media stays a DOM copy');}
