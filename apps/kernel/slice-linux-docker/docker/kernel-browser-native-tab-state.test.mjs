@@ -51,8 +51,18 @@ test('MP-08/MP-10/MP-11 generated extension invalidates native metadata on owner
   const context={chrome,setInterval(){},__charioxNativeWindowChanged:payload=>payloads.push(payload)};
   vm.runInNewContext(await readFile(path.join(await writeTabGroupsExtension(root),'sw.js'),'utf8'),context);
   for(const name of ['activated','removed','zoom','bounds','windowRemoved'])events[name]();
-  assert.deepEqual(payloads,['','','','',''],'owner events invalidate only; no identity or page content is pushed');
+  assert.deepEqual(payloads,['','','','bounds',''],'owner events invalidate only (a bounds event says so); no identity or page content is pushed');
  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+// r63: the window event for the resize our own native start made must not retire the lease it fenced a moment later.
+test('MP-08/MP-11 a window bounds event drops the cached snapshot but not the guards; other owner events retire both',async()=>{
+ const {nativeWindowChangedBinding,nativeBoundsPayload}=await import('./kernel-browser-native-tab-state.mjs');
+ for(const [payload,keeps] of [[nativeBoundsPayload,true],['',false],['zoom',false],[undefined,false]]){
+  const h=fixture();await h.groups.viewport();const guard=h.groups.nativeStateGuard();assert.equal(guard(),true);
+  h.event({method:'Runtime.bindingCalled',sessionId:'worker-session',params:{name:nativeWindowChangedBinding,payload}});
+  assert.equal(guard(),keeps,'payload '+payload);assert.equal(h.groups.cachedViewport(),null,'the cached snapshot never survives a window event');
+ }
 });
 
 // Protocol 556: every retirement of the native snapshot also wakes a parked state read.

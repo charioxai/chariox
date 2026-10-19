@@ -28,6 +28,12 @@ for(const change of ['resize','zoom','document','metrics','observer-detach','bro
  assert.equal(await stream.regionCurrent(),false);assert.equal(stream.regionFrameCurrent(),false);assert.equal(f.reads(),1);await stream.close();
 });
 
+test('MP-11 a window bounds event keeps the lease and re-reads no layout',async()=>{
+ const f=fixture();await subscribeVisiblePage(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});const stream=[...f.host.displays.values()][0];
+ f.state.onCdp({method:'Runtime.bindingCalled',sessionId:'native',params:{name:nativeWindowChangedBinding,payload:'bounds'}});
+ assert.equal(await stream.regionCurrent(),true);assert.equal(stream.regionFrameCurrent(),true);assert.equal(f.reads(),1);await stream.close();
+});
+
 test('MP-11 a viewport event during the first renderer measurement refuses the lease',async()=>{
  const f=fixture(),ready=Promise.withResolvers();f.host.browser.connection.send=()=>ready.promise;
  const pending=subscribeVisiblePage(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});await new Promise(setImmediate);f.state.onCdp({method:'Page.frameResized',sessionId:'page'});

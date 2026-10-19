@@ -1,4 +1,4 @@
-import {NativeTabState,nativeWindowChangedBinding} from "./kernel-browser-native-tab-state.mjs";
+import {NativeTabState,nativeWindowChangedBinding,nativeBoundsPayload} from "./kernel-browser-native-tab-state.mjs";
 // MP-08/MP-11 (Miguel 2026-10-14 19:54Z): a built-in component extension of the
 // kernel's own Chromium groups each agent's Tabs in the native tab strip under the
 // agent's name; the person's Tabs stay ungrouped. The kernel writes it, loads it
@@ -13,8 +13,9 @@ const key = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwYnjYNb6F8Ak7OPn0a85KRh
 export const TAB_GROUPS_EXTENSION_ID = "ecideajikgeiboaphimcgeahicjgcfea";
 const manifest = { manifest_version: 3, name: "Chariox tab groups", version: "1", key, permissions: ["tabs", "tabGroups", "debugger"], background: { service_worker: "sw.js" } };
 const worker = `// MP-08/MP-11: driven by the kernel over CDP.
-const invalidateNativeState = () => globalThis[${JSON.stringify(nativeWindowChangedBinding)}]?.('');
-for (const event of [chrome.tabs.onActivated, chrome.tabs.onRemoved, chrome.tabs.onZoomChange, chrome.windows.onBoundsChanged, chrome.windows.onRemoved]) event?.addListener?.(invalidateNativeState);
+const invalidateNativeState = payload => () => globalThis[${JSON.stringify(nativeWindowChangedBinding)}]?.(payload);
+for (const event of [chrome.tabs.onActivated, chrome.tabs.onRemoved, chrome.tabs.onZoomChange, chrome.windows.onRemoved]) event?.addListener?.(invalidateNativeState(''));
+chrome.windows.onBoundsChanged?.addListener?.(invalidateNativeState(${JSON.stringify(nativeBoundsPayload)}));
 const targetTabs = async () => new Map((await chrome.debugger.getTargets()).filter(t => t.tabId !== undefined).map(t => [t.id, t.tabId]));
 // An extension API call every 20 s keeps this worker alive for the kernel.
 setInterval(() => chrome.runtime.getPlatformInfo(), 20000);
