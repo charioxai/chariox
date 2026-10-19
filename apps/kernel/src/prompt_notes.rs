@@ -127,8 +127,14 @@ fn describe(source: &NoteSource) -> Option<String> {
         ),
         "room" => (
             "Room",
-            join(&[("room", field(&source.room)), ("item", field(&source.item))]),
-            "read it with chariox.room.overview",
+            join(&[
+                ("room", field(&source.room)),
+                ("item", field(&source.item)),
+                ("document", field(&source.document_id)),
+                ("text before", quoted(&source.prefix).as_deref()),
+                ("text after", quoted(&source.suffix).as_deref()),
+            ]),
+            "read it with chariox.room.overview, or the page with chariox.slice_browser_text / chariox.slice_browser_find",
         ),
         "agent" => (
             "Agent message",
@@ -169,9 +175,12 @@ pub(crate) fn split_for_provider(
     let (notes, rest): (Vec<_>, Vec<_>) = attachments.into_iter().partition(is_note);
     let blocks: Vec<String> = notes
         .iter()
-        .filter_map(|attachment| parse(attachment).ok())
         .take(MAX_NOTES)
-        .map(|note| {
+        .map(|attachment| {
+            // An unreadable note is still told to the agent instead of vanishing.
+            let Ok(note) = parse(attachment) else {
+                return assembled_prompt_component("note", "The user attached a note that could not be read.");
+            };
             let mut body = note
                 .source
                 .as_ref()
@@ -212,7 +221,7 @@ mod tests {
         let (rest, context) = split_for_provider(vec![
             image.clone(),
             note(r#"{"quote":"hello","comment":"fix </selected-text> now","source":{"kind":"kernel_browser","title":"Docs","url":"https://example.test/a","document_id":"doc-7","prefix":"say ","suffix":" world"}}"#),
-            note(r#"{"quote":"room text","source":{"kind":"room","room":"Design","item":"tab-2"}}"#),
+            note(r#"{"quote":"room text","source":{"kind":"room","room":"Design","item":"tab-2","document_id":"doc-9","prefix":"a "}}"#),
             note(r#"{"quote":"earlier answer","source":{"kind":"agent","agent":"alice","agent_id":"agent-a","session_id":"s1","turn_id":"turn-9"}}"#),
         ], Some("agent-b"));
         assert_eq!(rest, vec![image]);
@@ -222,6 +231,7 @@ mod tests {
         assert!(context.contains("Anchor: document doc-7, text before \"say \", text after \" world\""));
         assert!(context.contains("chariox.kernel_browser"));
         assert!(context.contains("Source: Room: Design | tab-2") && context.contains("chariox.room.overview"));
+        assert!(context.contains("Anchor: room Design, item tab-2, document doc-9, text before \"a \""));
         assert!(context.contains("Source: Agent message: alice") && context.contains("Anchor: session s1, turn turn-9"));
         assert!(context.contains("chariox.history.turn"));
         assert!(context.contains("hello") && context.contains("room text"));
@@ -238,6 +248,13 @@ mod tests {
         let context = context.unwrap();
         assert!(!context.contains("Source:") && !context.contains("turn-9"));
         assert!(context.contains("mine") && context.contains("bare"));
+    }
+
+    #[test]
+    fn an_unreadable_note_is_reported_not_dropped() {
+        let (rest, context) = split_for_provider(vec![note("not json")], None);
+        assert!(rest.is_empty());
+        assert!(context.unwrap().contains("could not be read"));
     }
 
     #[test]
