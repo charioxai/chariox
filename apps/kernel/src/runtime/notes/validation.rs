@@ -53,19 +53,3 @@ pub(crate) fn validate_box(rect: Option<&NoteBox>) -> Result<(), String> {
     }
     Ok(())
 }
-pub(super) fn validate_comment(comment: &str) -> Result<(), String> {
-    (!comment.trim().is_empty() && comment.len() <= 16384 && !comment.contains('\0'))
-        .then_some(())
-        .ok_or("MD-N1: comment must contain 1–16384 bytes".into())
-}
-
-// MD-N1: generations fence new selections; durable tab identity survives restarts.
-pub(crate) fn same_window(a: &NoteWindow, b: &NoteWindow) -> bool {
-    match (a, b) {
-        (
-            NoteWindow::KernelBrowser { tab_id: a, .. },
-            NoteWindow::KernelBrowser { tab_id: b, .. },
-        ) => a == b,
-        _ => a == b,
-    }
-}

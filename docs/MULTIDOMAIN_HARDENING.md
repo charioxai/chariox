@@ -11,11 +11,11 @@ A user is the kernel's authenticated `KernelCaller.user_id`; a local owner maps
 to the configured kernel owner. An authenticated collaborator is a different
 user, even when granted full membership in the same Room. Room membership does
 not confer access to the owner's user-domain browser profile, App instances or
-private notes. Multiple admitted clients of one owner share those surfaces but
+private selections. Multiple admitted clients of one owner share those surfaces but
 retain their own input actor and prompt draft.
 
 The focused local agent's runtime admission governs its user-domain MCP tools.
-Browser and notes loaders are independent. A Room provider run without explicit
+A Room provider run without explicit
 user-domain focus has neither loader. Changing focus revokes loaded tools and
 in-flight admissions; refocusing does not revive an old admission or reload tools.
 The native drill checks this across user browser, user App host, Room browser and
@@ -33,18 +33,9 @@ Local websocket actors do have connection lifetimes and disconnect cleanup.
 
 Focused Rust checks run the kernel test binary with one test thread and explicit
 isolated fixture state. Include filters `kernel_browser`, `runtime::notes`,
-`runtime::router::tests::notes`, `runtime::router::tests::user_app_views`,
+`runtime::router::tests::user_app_views`,
 `visible_region_capture`, `room_screenshot`, protocol-shape notes/App/screenshot
 suites, and `transport::relay_peer::multidomain_union_tests`.
-
-The opt-in `notes_user_and_room_native_integration_drill` additionally accepts
-`CHARIOX_MD_HARDENING_DRILL=1`. Its existing normal-Unix-user / sandboxed Chromium /
-explicit disposable `CHARIOX_HOME` requirements remain. The flag adds a full Room
-collaborator, a user-domain App host and focus/access assertions. It writes
-`MD-H-NATIVE-RECEIPT.json` next to the existing `MD-N5-RECEIPT.json`, outside source.
-Native selection/layout are test CDP stimuli; observation and reanchoring remain
-kernel isolated-world operations. Fixture frontend assets prove the host seam;
-the separate Cloud live drill exercises signed App package admission and channel.
 
 Cloud's former `multidomain-hardening-live-drill.mjs` drove the removed web
 native App host and is retired. Apps now open as kernel-browser Tabs; Cloud's

@@ -46,9 +46,6 @@ fn mdaccess_protocol_462_grant_shapes_and_hash() {
             UserDomainResource::AppView {
                 view_id: "v".into(),
             },
-            UserDomainResource::Note {
-                note_id: "n".into(),
-            },
             UserDomainResource::Capture {
                 capture_id: "c".into(),
             },
@@ -96,7 +93,7 @@ fn mdaccess_protocol_462_grant_shapes_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&expected).unwrap())
         ),
-        "17622fa8ce455d816ada97f86b72d30124b1cd8804f4d31a7b08b3b917246045"
+        "ed257e14562fd553bf4f6387367098d4d30f356258156225ce56a01a17c7a2c5"
     );
     assert!(serde_json::from_value::<KernelBrowserRequest>(
         serde_json::json!({"command":{"op":"revoke_grants","agent_id":null,"owner":"forged"}})

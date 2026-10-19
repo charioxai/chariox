@@ -10,17 +10,17 @@ The kernel owns it equally on ordinary and managed placements.
 
 MP-11: focus from an authenticated human terminal grants access. Agent-originated
 focus (including Metaagent orchestration), attach, cycle and alias-routed prompts
-may change session focus but cannot create, restore or refresh browser/Notes
+may change session focus but cannot create, restore or refresh browser
 authority. Changing human focus keeps the previous agent's grant and gives
-the new agent its own grant. Browser and notes loading remain independent.
+the new agent its own grant.
 Each grant retains stable resources the agent touched. A retained agent has the
 same operations as a focused agent on its granted resources: text entry, keys,
-Tab, clicks, activations, navigation, closure and note edits. Loading another
-capability or claiming an unrelated existing tab/note still requires focus.
+Tab, clicks, activations, navigation, and closure. Loading another
+capability or claiming an unrelated existing tab still requires focus.
 The 16:35 owner decision permits explicit start/open while retained; an explicit
 open grants only the newly created tab. Generation, document, owner and
 provider-run checks still apply. Listing metadata does not claim resources;
-retained browser/notes inventories show only granted resources.
+retained browser inventories show only granted resources.
 
 The kernel reads its existing active turns, prompt ownership/backlog, scheduled
 agent prompts, interactions and pending MCP/provider continuations. A provider
@@ -64,8 +64,7 @@ retained-input classifier, listener inspection or keyboard allow-list based on
 focus. Every physical event checks its document and grant/run cancellation.
 A focus change preserves in-flight ordinary input; explicit revoke, idle lapse
 and human takeover still cancel it at the next authority check. Vault requests
-retain their additional live-focus authority. Note commits keep an uninterrupted
-grant epoch without requiring focus again.
+retain their additional live-focus authority.
 
 Observation reads, including state, never start/recover a controller or
 Chromium, for any caller. A stopped/unavailable browser returns
@@ -129,19 +128,3 @@ observed** otherwise, and do not infer use from grant creation, idle transitions
 or focus. The live snapshot carries only the latest owner notice, so this is
 not a complete activity audit. A complete last-use projection requires a future
 coordinator-allocated protocol change and updated wire snapshots.
-
-Reproduce the separate-process client drill after building the shared client
-and the kernel with `slot-run`:
-
-```sh
-CARGO_TARGET_DIR=/w/cx-mdgrants/target CARGO_PROFILE_DEV_DEBUG=0 \
-  slot-run cargo build -p chariox-kernel --bin chariox-kernel
-node apps/cli/scripts/user-domain-access-live-drill.mjs /w/evidence/mdgrants
-```
-
-It creates an explicit disposable `CHARIOX_HOME` under the evidence state
-root, uses owner WebSocket controls and provider-bound MCP calls against the
-production kernel, holds a dev-stub turn across focus change, claims a panel
-note, verifies retained use and revocation, and cleans its owned process group
-and state. It does not claim official-provider, native-browser, hosted relay or
-fresh-machine acceptance.

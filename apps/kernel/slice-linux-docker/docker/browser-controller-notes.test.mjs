@@ -37,17 +37,6 @@ test('MD-N2 / MP-11: refuse missing world, stale document and exceptions without
     assert.ok(f.calls.filter(c=>c.method==='Runtime.evaluate').every(c=>Number.isSafeInteger(c.params.contextId)&&c.params.contextId>0));
   }
 });
-test('MD-N2 / MP-10: serialized quotes cannot inject evaluator code',async()=>{
-  const {browser,calls}=fixture();
-  const quote={exact:'"); globalThis.forbidden=true; //',prefix:'🙂',suffix:'after'};
-  await observeBrowserNote(browser,{target_id:'t',document_id:'d',quote});
-  assert.deepEqual(calls.filter(c=>c.method==='Runtime.evaluate').slice(1).map(c=>c.params.expression),[
-    `globalThis.__charioxNotes.reanchor(${JSON.stringify(quote)})`,
-    `globalThis.__charioxNotes.reanchor(${JSON.stringify(quote)},true)`,
-  ]);
-  await assert.rejects(()=>observeBrowserNote(browser,{target_id:'t',document_id:'d',quote:{exact:'x'.repeat(16385),prefix:'',suffix:''}}),/invalid quote/);
-});
-
 test('MD-N2 / MP-11: frame geometry refuses a missing isolated context without main-world fallback',async()=>{
   const evaluations=[];let worldCount=0;
   const tree={frame:{id:'top',loaderId:'d',url:'https://fixture.test/'},childFrames:[{frame:{id:'child',parentId:'top',loaderId:'child-d',url:'https://fixture.test/frame'}}]};
@@ -119,8 +108,6 @@ test('MP-08 / MP-11: protected frame owners and owner ancestors hide every neste
       const result=await f.read();
       assert.equal(result.selection,null,`${protectedOwner} oopif=${oopif}`);
       assert.ok(!f.calls.some(c=>c.method==='Runtime.evaluate'&&c.params.contextId===44),'protected frame must not be observed');
-      const anchored=await protectedFrameFixture({oopif,protectedOwner,quote:{exact:'synthetic-private-context',prefix:'',suffix:''}}).read();
-      assert.equal(anchored.anchoring.anchor_state,'missing');
     }
     for (const ownerFails of ['child','grandchild']) {
       assert.equal((await protectedFrameFixture({oopif,ownerFails}).read()).selection,null,`fail closed ${ownerFails}`);

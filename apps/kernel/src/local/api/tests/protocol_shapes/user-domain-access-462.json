@@ -54,10 +54,6 @@
                 "view_id": "v"
               },
               {
-                "kind": "note",
-                "note_id": "n"
-              },
-              {
                 "capture_id": "c",
                 "kind": "capture"
               }

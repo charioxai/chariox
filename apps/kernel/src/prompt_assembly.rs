@@ -915,7 +915,7 @@ impl PromptAssemblyService {
         {
             hidden_fragments.push(additional_hidden_context.to_string());
         }
-        let (attachments, notes_context) = crate::prompt_notes::split_for_provider(attachments);
+        let (attachments, notes_context) = crate::prompt_notes::split_for_provider(attachments, run.agent_instance_id());
         hidden_fragments.extend(notes_context);
         if additional_hidden_context.is_some_and(|context| {
             context.contains("<workflow-runtime-instructions>")

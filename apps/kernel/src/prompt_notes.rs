@@ -13,15 +13,37 @@ pub const NOTE_ATTACHMENT_MIME: &str = "application/vnd.chariox.note+json";
 const MAX_NOTES: usize = 16;
 const MAX_NOTE_BYTES: usize = 48 * 1024;
 
+/// Where the selected text lives. Everything but `kind` is optional; the kernel only forwards
+/// a reference, never the surrounding content (the agent fetches that with an existing tool).
 #[derive(Debug, Deserialize)]
 struct NoteSource {
+    /// `kernel_browser`, `room_browser`, `room`, `agent` or `panel`; absent for a note on the
+    /// focused agent's own trace.
+    #[serde(default)]
     kind: String,
     #[serde(default)]
     title: Option<String>,
     #[serde(default)]
     url: Option<String>,
     #[serde(default)]
+    document_id: Option<String>,
+    #[serde(default)]
+    prefix: Option<String>,
+    #[serde(default)]
+    suffix: Option<String>,
+    #[serde(default)]
     room: Option<String>,
+    #[serde(default)]
+    item: Option<String>,
+    #[serde(default)]
+    agent: Option<String>,
+    /// Instance id of the agent whose pane it was; the same agent receiving the note needs no source.
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    turn_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,7 +51,8 @@ struct Note {
     quote: String,
     #[serde(default)]
     comment: String,
-    source: NoteSource,
+    #[serde(default)]
+    source: Option<NoteSource>,
 }
 
 pub fn is_note(attachment: &PromptAttachment) -> bool {
@@ -71,28 +94,77 @@ pub fn validate(attachments: &[PromptAttachment]) -> Result<(), DaemonError> {
     Ok(())
 }
 
-fn describe(source: &NoteSource) -> String {
-    let label = match source.kind.as_str() {
-        "browser" => "Browser page",
-        "room" => "Room",
-        _ => "Panel",
+fn field(value: &Option<String>) -> Option<&str> {
+    value.as_deref().map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn quoted(value: &Option<String>) -> Option<String> {
+    value.as_deref().filter(|value| !value.is_empty()).map(|value| format!("{value:?}"))
+}
+
+/// Source, anchor and the one tool that reads more of it; empty for a note on the agent's own trace.
+fn describe(source: &NoteSource) -> Option<String> {
+    let join = |parts: &[(&str, Option<&str>)]| {
+        parts
+            .iter()
+            .filter_map(|(label, value)| value.map(|value| format!("{label} {value}")))
+            .collect::<Vec<_>>()
+            .join(", ")
     };
-    let mut parts = Vec::new();
-    for value in [&source.title, &source.room, &source.url].into_iter().flatten() {
-        if !value.trim().is_empty() {
-            parts.push(value.trim().to_string());
-        }
+    let (label, anchor, more) = match source.kind.as_str() {
+        "kernel_browser" | "room_browser" => (
+            "Browser page",
+            join(&[
+                ("document", field(&source.document_id)),
+                ("text before", quoted(&source.prefix).as_deref()),
+                ("text after", quoted(&source.suffix).as_deref()),
+            ]),
+            if source.kind == "kernel_browser" {
+                "read the tab at this URL with chariox.kernel_browser"
+            } else {
+                "read the page with chariox.slice_browser_text or chariox.slice_browser_find"
+            },
+        ),
+        "room" => (
+            "Room",
+            join(&[("room", field(&source.room)), ("item", field(&source.item))]),
+            "read it with chariox.room.overview",
+        ),
+        "agent" => (
+            "Agent message",
+            join(&[
+                ("session", field(&source.session_id)),
+                ("turn", field(&source.turn_id)),
+            ]),
+            "read it with chariox.history.turn or chariox.history.read",
+        ),
+        "panel" => ("Panel", String::new(), ""),
+        _ => return None,
+    };
+    let names: Vec<&str> = [
+        field(&source.agent),
+        field(&source.title),
+        field(&source.room),
+        field(&source.item),
+        field(&source.url),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let mut text = format!("Source: {label}{}{}", if names.is_empty() { "" } else { ": " }, names.join(" | "));
+    if !anchor.is_empty() {
+        text.push_str(&format!("\nAnchor: {anchor}"));
     }
-    if parts.is_empty() {
-        label.to_string()
-    } else {
-        format!("{label}: {}", parts.join(" | "))
+    if !more.is_empty() {
+        text.push_str(&format!("\nMore: {more}"));
     }
+    Some(text)
 }
 
 /// Removes note attachments from the provider-bound list and renders them as hidden context.
 pub(crate) fn split_for_provider(
     attachments: Vec<PromptAttachment>,
+    target_agent: Option<&str>,
 ) -> (Vec<PromptAttachment>, Option<String>) {
     let (notes, rest): (Vec<_>, Vec<_>) = attachments.into_iter().partition(is_note);
     let blocks: Vec<String> = notes
@@ -100,7 +172,13 @@ pub(crate) fn split_for_provider(
         .filter_map(|attachment| parse(attachment).ok())
         .take(MAX_NOTES)
         .map(|note| {
-            let mut body = format!("Source: {}\n", describe(&note.source));
+            let mut body = note
+                .source
+                .as_ref()
+                .filter(|source| target_agent.is_none() || field(&source.agent_id) != target_agent)
+                .and_then(describe)
+                .map(|text| format!("{text}\n"))
+                .unwrap_or_default();
             body.push_str(&prompt_component("selected-text", &note.quote));
             if !note.comment.trim().is_empty() {
                 body.push('\n');
@@ -113,7 +191,7 @@ pub(crate) fn split_for_provider(
         return (rest, None);
     }
     let context = format!(
-        "The user attached the notes below to this message: each quotes text they selected and adds their comment. Treat them as part of the request.\n{}",
+        "The user attached the notes below to this message: each quotes text they selected and adds their comment. Treat them as part of the request; a \"More\" line names the tool that reads the surrounding content if you need it.\n{}",
         blocks.join("\n")
     );
     (rest, Some(assembled_prompt_component("user-notes", &context)))
@@ -129,27 +207,43 @@ mod tests {
     }
 
     #[test]
-    fn notes_become_hidden_context_with_their_source_and_leave_the_attachments() {
+    fn notes_become_hidden_context_with_source_anchor_and_tool_and_leave_the_attachments() {
         let image = PromptAttachment::new("file:///a.png", "image/png", None);
         let (rest, context) = split_for_provider(vec![
             image.clone(),
-            note(r#"{"quote":"hello","comment":"fix </selected-text> now","source":{"kind":"browser","title":"Docs","url":"https://example.test/a"}}"#),
-            note(r#"{"quote":"room text","source":{"kind":"room","room":"Design"}}"#),
-        ]);
+            note(r#"{"quote":"hello","comment":"fix </selected-text> now","source":{"kind":"kernel_browser","title":"Docs","url":"https://example.test/a","document_id":"doc-7","prefix":"say ","suffix":" world"}}"#),
+            note(r#"{"quote":"room text","source":{"kind":"room","room":"Design","item":"tab-2"}}"#),
+            note(r#"{"quote":"earlier answer","source":{"kind":"agent","agent":"alice","agent_id":"agent-a","session_id":"s1","turn_id":"turn-9"}}"#),
+        ], Some("agent-b"));
         assert_eq!(rest, vec![image]);
         let context = context.unwrap();
         assert!(context.starts_with("<user-notes>"));
-        assert!(context.contains("Browser page: Docs | https://example.test/a"));
-        assert!(context.contains("Room: Design"));
+        assert!(context.contains("Source: Browser page: Docs | https://example.test/a"));
+        assert!(context.contains("Anchor: document doc-7, text before \"say \", text after \" world\""));
+        assert!(context.contains("chariox.kernel_browser"));
+        assert!(context.contains("Source: Room: Design | tab-2") && context.contains("chariox.room.overview"));
+        assert!(context.contains("Source: Agent message: alice") && context.contains("Anchor: session s1, turn turn-9"));
+        assert!(context.contains("chariox.history.turn"));
         assert!(context.contains("hello") && context.contains("room text"));
         assert!(context.contains("fix &lt;/selected-text&gt; now"), "delimiters in user text are escaped");
-        assert_eq!(context.matches("<note>").count(), 2);
+        assert_eq!(context.matches("<note>").count(), 3);
+    }
+
+    #[test]
+    fn a_note_on_the_receiving_agents_own_trace_carries_only_quote_and_comment() {
+        let (_, context) = split_for_provider(vec![
+            note(r#"{"quote":"mine","comment":"c","source":{"kind":"agent","agent":"alice","agent_id":"agent-a","turn_id":"turn-9"}}"#),
+            note(r#"{"quote":"bare"}"#),
+        ], Some("agent-a"));
+        let context = context.unwrap();
+        assert!(!context.contains("Source:") && !context.contains("turn-9"));
+        assert!(context.contains("mine") && context.contains("bare"));
     }
 
     #[test]
     fn no_notes_leaves_everything_untouched() {
         let image = PromptAttachment::new("file:///a.png", "image/png", None);
-        assert_eq!(split_for_provider(vec![image.clone()]), (vec![image], None));
+        assert_eq!(split_for_provider(vec![image.clone()], None), (vec![image], None));
     }
 
     #[test]

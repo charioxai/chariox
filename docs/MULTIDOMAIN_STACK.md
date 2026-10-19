@@ -15,7 +15,7 @@ through 416/70 retain their shape history. Current feature minimums are 427.
 | MD-2/MD-3 kernel browser | Apps-based kernel browser plus priority review fixes |
 | MD-APP user App views | md/integration 3e1df0081, App commits only |
 | MD-DISPLAY-04 transport | md/display-transport 6b288b330 |
-| MD-N2/MD-N3 notes | md/notes a7da9d748, including anchoring and quote protection fixes |
+| MD-N2/MD-N3 selections | md/notes a7da9d748 (the durable store was later removed; see MULTIDOMAIN_NOTES.md) |
 | MD-CAPTURE region screenshots | md/screenshot f1f979754 |
 
 Room NoteObservation is snapshotted under relay 74. Notes refuse unknown or
