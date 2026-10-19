@@ -3,7 +3,7 @@
 // first paint plus DOMContentLoaded). The owner's window display keeps its last good frame for that interval; it never
 // waits longer than `maxMs` (a document that never paints) and `load` always ends it.
 export class NavigationHold {
- constructor({active,release=()=>{},maxMs=1500}){Object.assign(this,{activeTarget:active,onRelease:release,maxMs});this.holds=new Map();}
+ constructor({active,release=()=>{},maxMs=4000}){Object.assign(this,{activeTarget:active,onRelease:release,maxMs});this.holds=new Map();}
  // The browser connection carries every attached page session; `frameId` is the Tab target for a main frame.
  event(message){
   if(message?.method!=='Page.lifecycleEvent')return;
