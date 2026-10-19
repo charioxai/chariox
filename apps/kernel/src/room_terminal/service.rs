@@ -36,6 +36,15 @@ const PERSIST_INTERVAL: Duration = Duration::from_secs(1);
 /// Below the provider tool limit (Codex gives a tool call 300 s).
 pub const MAX_WAIT: Duration = Duration::from_secs(240);
 
+/// Kernel-private tokens and configs the user's shell must not inherit.
+const KERNEL_SECRET_ENVIRONMENT: &[&str] = &[
+    "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN",
+    "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
+    "CHARIOX_RELAY_TOKEN",
+    "CHARIOX_CLOUD_RELAY_CONFIG_JSON",
+    "CHARIOX_CLOUD_RELAY_CONFIG_PATH",
+];
+
 pub struct OpenRoomTerminal {
     pub session_id: String,
     pub working_directory: PathBuf,
@@ -151,7 +160,10 @@ impl RoomTerminalService {
             program: program.clone(),
             args,
             env: BTreeMap::from([("TERM".to_string(), "xterm-256color".to_string())]),
-            env_remove: Vec::new(),
+            env_remove: KERNEL_SECRET_ENVIRONMENT
+                .iter()
+                .map(|name| name.to_string())
+                .collect(),
             working_directory: Some(spec.working_directory.clone()),
             cols: spec.cols,
             rows: spec.rows,

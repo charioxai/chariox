@@ -732,3 +732,33 @@ async fn a_shell_that_exits_leaves_no_background_jobs() {
     })
     .await;
 }
+
+#[test]
+fn the_shell_keeps_the_users_ssh_agent_but_not_kernel_tokens() {
+    let _environment = crate::env_lock::lock();
+    std::env::set_var("SSH_AUTH_SOCK", "users-ssh-agent");
+    std::env::set_var("CHARIOX_RELAY_TOKEN", "kernel-private-token");
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let root = TempDir::new();
+            let service = service(root.path());
+            let id = open(&service, root.path()).terminal_id;
+            type_as(
+                &service,
+                &id,
+                &TerminalActor::User,
+                "echo AGENT=$SSH_AUTH_SOCK TOKEN=${CHARIOX_RELAY_TOKEN:-none}\r",
+            )
+            .await;
+            until("the environment", || async {
+                screen_has(&service, &id, "AGENT=users-ssh-agent TOKEN=none").await
+            })
+            .await;
+            service.end_session("room-1");
+        });
+    std::env::remove_var("SSH_AUTH_SOCK");
+    std::env::remove_var("CHARIOX_RELAY_TOKEN");
+}

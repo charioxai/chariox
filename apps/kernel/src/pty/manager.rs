@@ -385,12 +385,13 @@ impl PtyManager {
     }
 
     /// Spawn a program whose tty keeps the kernel's input echo, for a person
-    /// or an agent typing into a shell. Provider PTYs never echo.
+    /// or an agent typing into a shell. Provider PTYs never echo. It is the
+    /// user's own shell, so it keeps their SSH agent and Git settings.
     pub fn spawn_interactive(&mut self, request: PtySpawnRequest) -> Result<(), DaemonError> {
         self.spawn_pty(
             request,
             &crate::provider::ProviderCredentialEnvironment::default(),
-            true,
+            false,
             None,
             true,
         )
