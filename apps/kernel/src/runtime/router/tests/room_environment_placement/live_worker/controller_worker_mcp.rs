@@ -2294,9 +2294,8 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     );
     assert_eq!(action.arguments, None);
 
-    // MP-11 (#904 R2 and review @61b0a4ac6): the approved native secret above
-    // stays registered for this Room, so agent text and clicks (which can
-    // Paste it elsewhere) are refused below; pointer moves and scrolls forward.
+    // MP-11: the approved native secret above stays registered for this Room,
+    // but the agent keeps ordinary native input (it must click Sign in).
     let input_cases = [
         (
             "slice_mouse",
@@ -2307,6 +2306,11 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
             "slice_mouse",
             json!({"action":"scroll","x":640,"y":400,"amount":5,"horizontal_steps":-3}),
             "pointer_scroll",
+        ),
+        (
+            "slice_mouse",
+            json!({"action":"click","x":220,"y":260}),
+            "pointer_click",
         ),
     ];
     let mut action_ids = Vec::new();
@@ -2334,21 +2338,9 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         );
     }
 
-    // MP-11 R1/R2: agent mutations with no protection fence are refused on
-    // the real home/worker route; approved Vault above and ordinary input remain.
+    // MP-11 R1: agent mutations with no per-event fence are refused on the
+    // real home/worker route; approved Vault above and ordinary input remain.
     for (tool, arguments) in [
-        (
-            "slice_mouse",
-            json!({"action":"click","x":220,"y":260,"button":"right"}),
-        ),
-        (
-            "slice_mouse",
-            json!({"action":"double_click","x":320,"y":360}),
-        ),
-        (
-            "slice_keyboard",
-            json!({"action":"type","text":"Grüße 世界"}),
-        ),
         (
             "slice_mouse",
             json!({"action":"drag","x":120,"y":160,"to_x":720,"to_y":560,"button":"middle"}),
@@ -2356,10 +2348,6 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         (
             "slice_clipboard_write",
             json!({"text":"Clipboard Grüße 世界"}),
-        ),
-        (
-            "slice_keyboard",
-            json!({"action":"key","key":"ctrl+shift+p","repeat":3}),
         ),
         (
             "slice_keyboard",
@@ -2372,10 +2360,6 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         (
             "slice_mouse",
             json!({"action":"click","x":120,"y":160,"button":"middle"}),
-        ),
-        (
-            "slice_keyboard",
-            json!({"action":"key","key":"CTRL+v","repeat":2}),
         ),
     ] {
         let error = fixture
@@ -2426,8 +2410,11 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         action_count_before_invalid,
         "rejected provider input must not enter the home Action ledger"
     );
-    assert_eq!(action_ids.len(), 2);
-    for (action_id, expected_kind) in action_ids.iter().zip(["pointer_move", "pointer_scroll"]) {
+    assert_eq!(action_ids.len(), 3);
+    for (action_id, expected_kind) in action_ids
+        .iter()
+        .zip(["pointer_move", "pointer_scroll", "pointer_click"])
+    {
         let action = home_environment
             .actions
             .iter()
@@ -2465,6 +2452,7 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
             "computer-secret-input-ok\n",
             "move 120 160\n",
             "pointer-scroll 640 400 -3 5\n",
+            "pointer-click 220 260 left 1\n",
         ),
         "provider Computer tools must use the shared physical input adapter",
     );

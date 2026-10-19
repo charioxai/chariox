@@ -17,22 +17,19 @@ class OrdinaryInput(unittest.TestCase):
                 with self.subTest(browser=browser, kind=action['kind']):
                     processes = [{'pid': 200, 'started': '1', 'browser': browser}]
                     accessibility = SimpleNamespace(input_guard=Mock(side_effect=AssertionError('input must not inspect field values')))
-                    clipboard = SimpleNamespace(input_admission=Mock(return_value=lambda: None))
                     recipient = SimpleNamespace(input_destination=Mock(), key_destinations=Mock())
                     connection = SimpleNamespace(close=Mock())
                     x11 = SimpleNamespace(open_display=Mock(return_value=connection))
-                    modules = {'native-accessibility': accessibility, 'native-clipboard': clipboard,
+                    modules = {'native-accessibility': accessibility,
                                'native-input-destination': recipient, 'native-x11': x11}
                     def dispatch(*args, **kwargs):
                         kwargs['before_press']()
                     with patch.object(native, 'load', side_effect=modules.__getitem__), \
                          patch.object(native.keyboard, 'type_text', side_effect=dispatch), \
                          patch.object(native.keyboard, 'hold_input', side_effect=dispatch):
-                        values=('private-test-canary',)
-                        native.input_action(action, processes, values=values)
+                        native.input_action(action, processes)
                     accessibility.input_guard.assert_not_called()
                     recipient.input_destination.assert_called_once_with(connection, processes, accessibility)
-                    clipboard.input_admission.assert_called_once_with(processes, accessibility, None, values)
                     connection.close.assert_called_once()
 
 

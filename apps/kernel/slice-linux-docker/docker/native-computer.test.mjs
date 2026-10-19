@@ -157,7 +157,7 @@ test('MP-11 R1 agent pointer holds require the same human admission as keyboard 
   assert.equal(calls,0);
 });
 
-test('MP-11 #904 review 1/3 agent clicks and keys reach the helper clipboard-owner gate, not the read policy',async()=>{
+test('MP-11 #904 review 1/3 agent clicks and keys need no clipboard-owner gate',async()=>{
   const calls=[];
   const scoped={...binding,ownedProcesses:async()=>[{pid:200,started:'1'}]};
   const adapter=new NativeComputer({placement:'host',binding:()=>scoped,execute:async request=>{calls.push(request);return request.op==='clipboard_read'?{text:'[protected]'}:{applied:true};}});
@@ -196,7 +196,7 @@ test('MP-08 / MP-11 Vault values never black out the desktop and are redacted fr
   assert.deepEqual(replies.ocr.result.targets.map(target=>target.text),['Save'],'OCR targets that echo a value are dropped');
   assert.equal(replies.clipboard_read.result.text,'copied [redacted]');
   assert.equal((await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'click',x:1,y:1}},policy)).applied,true);
-  assert.deepEqual(sent.at(-1).values,policy.values,'private clipboard checks retain known values while public input stays usable');
+  assert.equal(sent.at(-1).values,undefined,'public input stays usable and carries no Vault values');
 });
 
 test('MP-08 / MP-11 host Vault target and insertion use the bound native helper', async () => {
@@ -228,7 +228,7 @@ test('MP-08/MP-11 ordinary public native clicks reach the private helper after a
  const native=new NativeComputer({placement:'host',binding:()=>binding,execute:async request=>{physical=request;return {applied:true};}});
  const result=await native.request({op:'input',surface_id:'desktop',generation:'g',_agent_input:true,input:{kind:'click',x:20,y:20}},policy);
  assert.equal(result.applied,true);assert.equal(physical.agent_input,true);
- assert.deepEqual(physical.values,policy.values,'the private clipboard guard must receive known values');
+ assert.equal(physical.values,undefined,'the helper never receives known Vault values for input');
  assert(!JSON.stringify(result).includes(policy.values[0]));
 });
 
@@ -240,5 +240,5 @@ test('MP-08/MP-11 ordinary native input remains usable while another field has a
    assert.equal(result.applied,true);assert(!JSON.stringify(result).includes('test-vault-canary'));
  }
  assert.equal(calls.length,3);
- assert(calls.every(call=>JSON.stringify(call.values)===JSON.stringify(['test-vault-canary'])),'private helper retains values for clipboard checks');
+ assert(calls.every(call=>call.values===undefined),'input carries no Vault values');
 });

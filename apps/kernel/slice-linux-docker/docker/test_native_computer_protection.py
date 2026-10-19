@@ -88,7 +88,7 @@ class ProtectionTests(unittest.TestCase):
         self.assertEqual(result['browser_withheld'],1)
 
 class AgentInputClipboardTests(unittest.TestCase):
-    """MP-11 #904 review 1/3: every agent mutation is gated on CLIPBOARD owner provenance only."""
+    """MP-11: agent input proves its real recipient and never inspects the clipboard."""
     def run_input(self,action,owner_pid=None,owners=None,tree=None):
         tree=tree or {'available':True,'complete':False,'traversed':True,'protected':False,'uncovered':[[0,0,4,4]],
             'nodes':[{'pid':77,'protected':False},{'pid':90,'protected':True,'name':'[protected]'}]}
@@ -117,7 +117,7 @@ class AgentInputClipboardTests(unittest.TestCase):
             except accessibility.NativeInputDenied:return None
         return events
 
-    def test_empty_clipboard_admits_clicks_while_browser_and_popups_are_masked(self):
+    def test_empty_clipboard_admits_clicks(self):
         self.assertIn(module.X.ButtonPress,self.run_input({'kind':'click','x':5,'y':5}))
 
     def test_mp08_owned_browser_controls_accept_ordinary_public_input(self):
@@ -136,25 +136,16 @@ class AgentInputClipboardTests(unittest.TestCase):
                 with self.subTest(action=action):module.input_action(action,[{'pid':77,'started':'1','browser':True}])
             self.assertTrue(any(call.args[1]==module.X.ButtonPress for call in event.call_args_list))
 
-    def test_proved_public_owner_admits_clicks_while_other_windows_are_masked(self):
-        self.assertIn(module.X.ButtonPress,self.run_input({'kind':'click','x':5,'y':5},owner_pid=77))
-
-    def test_unproved_or_protected_owner_refuses_every_mutating_input_before_events(self):
-        for action in [{'kind':'click','x':5,'y':5},{'kind':'key','key':'p'},{'kind':'key','key':'Return'},
-                       {'kind':'key','key':'alt+e'},{'kind':'key','key':'shift+F10'},{'kind':'text','text':'p'}]:
-            for pid in (90,123):
-                self.assertIsNone(self.run_input(action,owner_pid=pid),(action,pid))
-
-    def test_mp11_review1_truncated_owner_walk_refuses_pointer_paste_before_events(self):
+    def test_any_clipboard_owner_leaves_agent_input_admitted(self):
+        # A person-copied password, an unproved or protected owner or a truncated walk never
+        # freezes the agent: only the real input recipient is proved.
         tree={'available':True,'complete':False,'traversed':False,'protected':False,'uncovered':[],
             'nodes':[{'pid':77,'protected':False}]}
-        for action in [{'kind':'click','x':5,'y':5},{'kind':'key','key':'ctrl+v'}]:
-            self.assertIsNone(self.run_input(action,owner_pid=77,tree=tree),action)
+        for action in [{'kind':'click','x':5,'y':5},{'kind':'key','key':'p'},{'kind':'key','key':'ctrl+v'},{'kind':'text','text':'p'}]:
+            for pid in (90,123):
+                self.assertIsNotNone(self.run_input(action,owner_pid=pid),(action,pid))
+            self.assertIsNotNone(self.run_input(action,owner_pid=77,tree=tree),action)
 
-    def test_owner_taken_after_admission_refuses_the_press(self):
-        owner=SimpleNamespace(id=55,get_full_property=lambda *args:None)
-        self.assertIsNone(self.run_input({'kind':'click','x':5,'y':5},owner_pid=123,owners=[0,owner]))
-        self.assertIsNone(self.run_input({'kind':'key','key':'p'},owner_pid=123,owners=[0,owner]))
 class WarmChannelTests(unittest.TestCase):
     def test_mp10_mp11_human_committed_text_is_unpaced_but_agent_text_stays_fenced(self):
         connection=object()
@@ -163,9 +154,8 @@ class WarmChannelTests(unittest.TestCase):
             self.assertEqual(text.call_args.kwargs.get('pace_seconds',0.04),0)
             self.assertIs(text.call_args.kwargs.get('connection'),connection)
             accessibility=SimpleNamespace(input_guard=lambda _:lambda:None)
-            clipboard_guard=SimpleNamespace(input_admission=lambda *_:lambda:None)
             destination=SimpleNamespace(key_destinations=lambda *_:None)
-            helpers={'native-accessibility':accessibility,'native-clipboard':clipboard_guard,'native-input-destination':destination}
+            helpers={'native-accessibility':accessibility,'native-input-destination':destination}
             with patch.object(module,'load',side_effect=helpers.get):
                 module.main({'op':'input','agent_input':True,'processes':[],
                              'input':{'kind':'text','text':'public'}},connection)

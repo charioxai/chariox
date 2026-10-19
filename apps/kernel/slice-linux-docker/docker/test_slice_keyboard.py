@@ -314,30 +314,22 @@ class PhysicalChordTests(unittest.TestCase):
                 with self.assertRaises(ValueError):m.main(args,io.BytesIO(data))
                 hold.assert_not_called()
 
-    def test_mp11_r2_agent_room_paste_checks_clipboard_before_native_events(self):
-        m,c=self.native()
-        for key in ['CTRL+v','Control_L+Shift+V','SHIFT+Insert','Super+v']:
-            with patch.dict(m.os.environ,{'CHARIOX_COMPUTER_AGENT_INPUT':'1'}), patch.object(m,'room_input_guard',return_value=lambda:None), patch.object(m,'room_clipboard_guard',create=True,side_effect=ValueError('unknown clipboard source')), patch.object(m,'key_repeat') as repeat:
-                with self.assertRaises(ValueError):m.main(['key-repeat','2'],io.BytesIO(key.encode()))
-                repeat.assert_not_called()
-
-    def test_mp11_agent_room_key_and_text_check_clipboard_owner_for_every_key(self):
-        m,c=self.native()
-        for args,data in [(['key-repeat','1'],b's'),(['key-repeat','1'],b'Return'),(['key-repeat','1'],b'alt+e'),([],b'p')]:
-            with patch.dict(m.os.environ,{'CHARIOX_COMPUTER_AGENT_INPUT':'1'}), patch.object(m,'room_input_guard',return_value=lambda:None), patch.object(m,'room_clipboard_guard',side_effect=ValueError('unknown clipboard source')), patch.object(m,'focused_target',return_value={}), patch.object(m,'assert_secret_target'), patch.object(m.time,'sleep'), patch.object(m.signal,'signal'), patch.object(m.xtest,'fake_input') as inject:
-                try:m.main(args,io.BytesIO(data))
-                except ValueError:pass
-            inject.assert_not_called()
-
-    def test_mp11_agent_room_double_click_admits_once_without_focus_binding(self):
+    def test_agent_room_key_press_does_not_consult_the_clipboard(self):
+        # A registered Vault target never freezes the agent: a key press goes through whatever the
+        # clipboard holds; only the Room focus guard still runs.
         m,c=self.native()
         c.screen.return_value.width_in_pixels=c.screen.return_value.height_in_pixels=100
-        admissions=[];fences=[]
-        def admit():
-            admissions.append(True);return lambda:fences.append(True)
-        with patch.dict(m.os.environ,{'CHARIOX_COMPUTER_AGENT_INPUT':'1'}), patch.object(m,'room_clipboard_guard',side_effect=admit), patch.object(m,'focused_target',side_effect=m.SecretTargetChanged()), patch.object(m.xtest,'fake_input') as inject, patch.object(m.time,'sleep'), patch.object(m.signal,'signal'):
+        for key in ['s']:
+            with patch.dict(m.os.environ,{'CHARIOX_COMPUTER_AGENT_INPUT':'1'}), patch.object(m,'room_input_guard',return_value=lambda:None), patch.object(m,'focused_target',return_value={}), patch.object(m,'assert_secret_target'), patch.object(m.time,'sleep'), patch.object(m.signal,'signal'), patch.object(m.xtest,'fake_input') as inject:
+                m.main(['key-repeat','1'],io.BytesIO(key.encode()))
+            self.assertTrue(inject.called,key)
+        self.assertFalse(hasattr(m,'room_clipboard_guard'))
+
+    def test_mp11_agent_room_double_click_needs_no_focus_binding(self):
+        m,c=self.native()
+        c.screen.return_value.width_in_pixels=c.screen.return_value.height_in_pixels=100
+        with patch.dict(m.os.environ,{'CHARIOX_COMPUTER_AGENT_INPUT':'1'}), patch.object(m,'focused_target',side_effect=m.SecretTargetChanged()), patch.object(m.xtest,'fake_input') as inject, patch.object(m.time,'sleep'), patch.object(m.signal,'signal'):
             m.main(['pointer-click','left','2','10','10'],io.BytesIO(b''))
-        self.assertEqual((len(admissions),len(fences)),(1,2))
         self.assertEqual(sum(call.args[1:]==(4,1) for call in inject.call_args_list),2)
 
     def test_mp11_approved_room_vault_input_bypasses_ordinary_native_admission(self):

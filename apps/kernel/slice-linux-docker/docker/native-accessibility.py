@@ -17,7 +17,6 @@ import re
 import pyatspi
 from collections import deque
 from pathlib import Path
-from types import SimpleNamespace
 # MP-08 / MP-10 / MP-11: private protection coverage is independent of
 # the 64-node / 3 KiB public projection. Exhaustion still masks captures.
 MAX_NODES=8192
@@ -465,13 +464,6 @@ def act(request):
     node=app
     for index in request['path']:node=node.getChildAtIndex(index)
     if (node.getRole()==pyatspi.ROLE_PASSWORD_TEXT and request['action']!='focus') or node.getRoleName()!=expected['role'] or (not expected['protected'] and node.name!=expected['name']):raise ValueError('stale control')
-    if request.get('agent_input'):
-        # MP-11: doAction can invoke Paste without naming that effect.
-        import importlib.util
-        spec=importlib.util.spec_from_file_location('native_clipboard',Path(__file__).with_name('native-clipboard.py'))
-        clipboard=importlib.util.module_from_spec(spec);spec.loader.exec_module(clipboard)
-        protection=SimpleNamespace(snapshot=snapshot,alive=alive,NativeInputDenied=NativeInputDenied,sensitive_processes=sensitive_processes)
-        clipboard.input_admission(request['processes'],protection,request.get('browser_processes'),request.get('values',()))()
     if request['action']=='focus':
         state=node.getState()
         if not all(state.contains(flag) for flag in (pyatspi.STATE_EDITABLE,pyatspi.STATE_SHOWING,pyatspi.STATE_ENABLED)) or not node.queryComponent().grabFocus():

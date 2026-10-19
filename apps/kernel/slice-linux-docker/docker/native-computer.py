@@ -50,23 +50,16 @@ def capture(mask, uncovered=()):
     finally: connection.close()
 
 
-def input_action(action, processes=None, connection=None, values=()):
+def input_action(action, processes=None, connection=None):
     kind = action['kind']
     guard=None
     key_guard=load('native-input-destination').key_destinations if processes is not None else None
     if processes is not None and (kind in ('hold','pointer_hold','drag','clipboard_write','keycode') or action.get('button')==2):
         raise ValueError('native paste/repeat requires human or Vault input')
     if processes is not None and kind in ('text','key','click'):
-        # MP-11: any agent key, text or click may reach a Paste control
-        # (chord, menu mnemonic, focused button). Gate on clipboard owner.
         accessibility=load('native-accessibility')
-        clipboard=load('native-clipboard')
-        try:admit_clipboard=clipboard.input_admission(processes,accessibility,None,values)
-        except Exception:raise accessibility.NativeInputDenied('native input destination unavailable') from None
         def guard():
-            admit_clipboard()
-            # MP-11: an empty clipboard does not authorize a popup-free extension
-            # action. Query the recipient after pointer motion, before the press.
+            # MP-11: query the recipient after pointer motion, before the press.
             if kind=='click':
                 connection.sync()
                 load('native-input-destination').input_destination(connection,processes,accessibility,(action['x'],action['y']))
@@ -79,7 +72,7 @@ def input_action(action, processes=None, connection=None, values=()):
         # by the owned channel. Unicode overlays still need the existing
         # delivery pace before recycling/restoring their two safe keycodes;
         # X sync alone does not mean Chromium has consumed each key event.
-        # Agent/Vault paths retain their pacing and fresh focus/clipboard fences.
+        # Agent/Vault paths retain their pacing and fresh focus fences.
         if connection is not None and processes is None:
             pace = 0 if action['text'].isascii() else 0.04
             keyboard.type_text(action['text'],pace_seconds=pace,connection=connection)
@@ -168,7 +161,7 @@ def main(request, connection=None):
         finally: connection.close()
     if op == 'input':
         started=time.time_ns()/1000000
-        input_action(request['input'],request.get('processes',[]) if request.get('agent_input') else None,connection,request.get('values',()))
+        input_action(request['input'],request.get('processes',[]) if request.get('agent_input') else None,connection)
         result={'applied':True}
         if os.environ.get('CHARIOX_BROWSER_DISPLAY_TIMING')=='1':
             result['_timing']={'started_ms':started,'ended_ms':time.time_ns()/1000000}

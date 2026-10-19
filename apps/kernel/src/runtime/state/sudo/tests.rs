@@ -1927,6 +1927,37 @@ async fn sudo_catalog_handoff_never_survives_expiry_or_revoke() {
     }
 }
 
+// MP-08/MP-10/MP-11: /sudo already covers a native paste; host and Room targets raise no prompt.
+#[tokio::test]
+async fn computer_login_under_sudo_raises_no_prompt_for_host_or_room_targets() {
+    let f = fixture();
+    let turn = running(&f);
+    for app in ["host:surface:g:77:41:41", "room-native:1:41:77:41", "room:1:41"] {
+        let approval = tokio::time::timeout(
+            Duration::from_millis(250),
+            f.state.ensure_computer_login_approved(
+                &turn.session_id,
+                &turn.agent_id,
+                "login-handle",
+                app,
+                "the selected login app",
+            ),
+        )
+        .await
+        .expect("/sudo covers the paste: zero prompts")
+        .unwrap();
+        assert_eq!(approval.authority(), "sudo", "{app}");
+        assert!(f
+            .state
+            .owned
+            .session_store
+            .get_session(&turn.session_id)
+            .unwrap()
+            .active_interactions()
+            .is_empty());
+    }
+}
+
 // MP-08/MP-10/MP-11 V03: one trusted sheet carries unlock, duration and login consent.
 #[tokio::test]
 async fn computer_login_combines_unlock_and_reuses_revocable_task_grant() {
