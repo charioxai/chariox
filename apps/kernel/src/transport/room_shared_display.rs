@@ -68,8 +68,8 @@ mod tests {
     #[test]
     fn mp11_room_display_audience_requires_new_protocol() {
         // MP-11: assignment is coordinator-owned; never ship the new audience under the old peer contract.
-        assert!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION > 552);
-        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION > 160);
+        assert!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION >= 558);
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 166);
     }
 
     #[test]
