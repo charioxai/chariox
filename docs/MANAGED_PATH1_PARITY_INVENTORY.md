@@ -1,5 +1,25 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 login consent and catalog handoffs (2026-10-19)
+
+A kernel-correlated catalog refresh retains the same authorized login work,
+including when durable Room task tools are disabled. Only the reserved continuation
+prompt inherits the window; unrelated prompts remain queued. The monotonic sudo
+deadline, explicit revoke, placement and current-run checks still govern each use.
+
+Computer Vault input reuses live sudo or a task grant bound to owner, session,
+agent, credential and native application generation. Without either, one trusted
+sheet combines consent, encrypted Vault unlock and duration. Vault controls can
+revoke login grants independently; locking or changing the passphrase revokes
+them too. No value is returned to the provider. Browser Vault fills may target
+ordinary editable OTP/text inputs without changing their type; existing exact-field
+registration, capture masks and output scrubbing remain authoritative.
+
+Security anchors include `computer_login_grant.rs`, prompt catalog handoffs,
+`runtime_vault_unlock_state.rs`, and native Vault destination/cancellation helpers.
+Focused regressions supplement the required real host/slice/provider and client
+drills; they do not close the full masking or ordinary/managed parity matrices.
+
 ## MP-08 / MP-10 / MP-11 ordinary input and Chromium AX (2026-10-18)
 
 Under the owner's UX-first decision, ordinary authorized Browser and Computer

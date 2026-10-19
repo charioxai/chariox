@@ -234,12 +234,39 @@ impl KernelRuntimeState {
             // that turn only widen the reload cause it carries.
             existing.reload_reason = reload_reason.merge(&existing.reload_reason);
         } else {
+            let continuation_prompt_id = if self.owned.config_projection.snapshot().room_agent_tools
+            {
+                format!(
+                    "task-catalog:{}",
+                    source_prompt_id.as_deref().unwrap_or_default()
+                )
+            } else {
+                self.owned.session_store.reserve_prompt_id()
+            };
+            if let (Some(source), Ok(session)) = (
+                source_prompt_id.as_deref(),
+                self.owned.session_store.get_session(session_id),
+            ) {
+                self.owned.prompt_state_owner.reserve_sudo_catalog_prompt(
+                    &session,
+                    agent_id,
+                    source,
+                    &continuation_prompt_id,
+                );
+                self.owned.computer_login_grants.extend_catalog(
+                    session_id,
+                    agent_id,
+                    source,
+                    &continuation_prompt_id,
+                );
+            }
             pending.insert(
                 agent_id.to_string(),
                 PendingMcpContinuation {
                     session_id: session_id.to_string(),
                     agent_id: agent_id.to_string(),
                     source_prompt_id,
+                    continuation_prompt_id,
                     mcp_name: mcp_name.to_string(),
                     previous_prompt: previous_prompt.to_string(),
                     reload_reason,
@@ -335,6 +362,34 @@ impl KernelRuntimeState {
         else {
             return Ok(());
         };
+        let result = self
+            .dispatch_pending_catalog_continuation(continuation.clone())
+            .await;
+        // Deferred retries still own the same handoff. On success/failure/cancel,
+        // a live running continuation or the original deadline is authoritative.
+        if !self
+            .owned
+            .pending_mcp_continuations
+            .write()
+            .contains_key(agent_id)
+        {
+            if let Ok(session) = self.owned.session_store.get_session(session_id) {
+                self.owned.prompt_state_owner.finish_sudo_catalog_prompt(
+                    &session,
+                    agent_id,
+                    &continuation.continuation_prompt_id,
+                );
+            }
+        }
+        result
+    }
+
+    async fn dispatch_pending_catalog_continuation(
+        &self,
+        continuation: PendingMcpContinuation,
+    ) -> Result<(), DaemonError> {
+        let session_id = continuation.session_id.as_str();
+        let agent_id = continuation.agent_id.as_str();
         let previous_provider_run_id = self
             .owned
             .provider_store
@@ -363,7 +418,7 @@ impl KernelRuntimeState {
                     .clone()
                     .merge(&continuation.reload_reason);
             } else {
-                queued.insert(agent_id.to_owned(), continuation);
+                queued.insert(agent_id.to_owned(), continuation.clone());
             }
             drop(queued);
             // Usually the existing poller still owns the original budget. A
@@ -394,10 +449,7 @@ impl KernelRuntimeState {
                 .await;
         }
         let prompt = crate::session::PromptQueueItem::new(
-            format!(
-                "pending-draft:mcp-continuation:{}:{}",
-                continuation.session_id, continuation.agent_id
-            ),
+            continuation.continuation_prompt_id.clone(),
             self.ensure_mcp_continuation_attachment(&continuation)?,
             &continuation.agent_id,
             continuation.previous_prompt,

@@ -78,6 +78,7 @@ mod app_view_poll;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_view_runtime;
 mod computer_secret_input_runtime_state;
+mod computer_login_grant;
 mod config_runtime_state;
 mod critical_approval_passkey;
 mod kernel_access;
@@ -230,6 +231,7 @@ struct KernelRuntimeOwnedState {
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
+    computer_login_grants: computer_login_grant::ComputerLoginGrants,
     room_browser_health_inflight: Arc<std::sync::Mutex<BTreeSet<String>>>,
     next_room_browser_health_at_ms: Arc<AtomicU64>,
     room_environment_health_probes: Arc<room_environment_health::RoomEnvironmentHealthProbes>,
@@ -941,6 +943,7 @@ impl KernelRuntimeState {
                 ).with_identity(&config.relay_private_key),
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
+                computer_login_grants: Default::default(),
                 room_browser_health_inflight: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
                 next_room_browser_health_at_ms: Arc::new(AtomicU64::new(0)),
                 room_environment_health_probes: Arc::new(room_environment_health::RoomEnvironmentHealthProbes::default()),

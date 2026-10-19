@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use crate::error::DaemonError;
 use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome, RuntimeSession};
 
+mod catalog_handoff;
 mod profile_transition;
 pub(crate) use profile_transition::AgentProfileTransitionClaim;
 
@@ -39,6 +40,7 @@ struct OwnedAgentPromptState {
 struct SudoWorkHold {
     entry_id: String,
     prompts: BTreeSet<String>,
+    catalog_prompt: Option<String>,
 }
 
 impl OwnedAgentPromptState {
@@ -631,6 +633,9 @@ impl PromptStateOwner {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
+        if let Some(hold) = state.sudo_work.as_mut() {
+            hold.catalog_prompt = None;
+        }
         let mut cancelled = state.take_active_prompt()?;
         cancelled.set_status(PromptStatus::Cancelled);
         Some(cancelled)
@@ -737,6 +742,7 @@ impl PromptStateOwner {
         owner.ensure_agent_state(session, agent).sudo_work = Some(SudoWorkHold {
             entry_id: entry.into(),
             prompts: BTreeSet::from([prompt.to_owned()]),
+            catalog_prompt: None,
         });
     }
 
@@ -817,6 +823,9 @@ impl PromptStateOwner {
         }
         state.sudo_entry_id = None;
         state.sudo_process_cutoff = None;
+        if let Some(hold) = state.sudo_work.as_mut() {
+            hold.catalog_prompt = None;
+        }
         active.set_status(PromptStatus::Cancelling);
         Some(active.clone())
     }
@@ -1048,6 +1057,9 @@ impl PromptStateOwner {
             || expected_prompt_id.is_some_and(|expected| active.id() != expected)
         {
             return None;
+        }
+        if let Some(hold) = state.sudo_work.as_mut() {
+            hold.catalog_prompt = None;
         }
         let mut cancelled = state.take_active_prompt()?;
         cancelled.set_status(PromptStatus::Cancelled);

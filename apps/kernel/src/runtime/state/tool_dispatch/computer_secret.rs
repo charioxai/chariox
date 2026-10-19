@@ -69,20 +69,26 @@ impl KernelRuntimeState {
             .computer_secret_input_target(session_id, agent_id)
             .await?;
         let approval = self
-            .ensure_computer_secret_input_approved(
+            .ensure_computer_login_approved(
                 session_id,
                 agent_id,
                 &args.credential_id,
-                &target,
+                &format!("room:{approved_generation}:{}", target.active_window),
+                &format!("Room native window {}", target.active_window),
             )
             .await?;
-        let _vault_unlock = self
-            .ensure_vault_unlocked_for_agent(
-                session_id,
-                agent_id,
-                "runtime_tool_paste_secret_to_computer",
+        let _vault_unlock = if approval.has_unlock() {
+            None
+        } else {
+            Some(
+                self.ensure_vault_unlocked_for_agent(
+                    session_id,
+                    agent_id,
+                    "runtime_tool_paste_secret_to_computer",
+                )
+                .await?,
             )
-            .await?;
+        };
         // Unlock may itself wait for the user. Reject a changed target before
         // resolving the credential, then check again in the physical helper.
         if self
@@ -97,13 +103,10 @@ impl KernelRuntimeState {
             });
         }
         let check_approval = || {
-            if approval
-                .as_ref()
-                .is_some_and(|turn| !self.sudo_turn_live(turn))
-            {
+            if !self.computer_secret_approval_live(&approval) {
                 return Err(DaemonError::LocalTransport {
                     operation: "computer_secret_input.approval",
-                    message: "sudo permission expired or was revoked".into(),
+                    message: "login permission expired or was revoked".into(),
                 });
             }
             Ok(())
@@ -123,7 +126,7 @@ impl KernelRuntimeState {
             .await?;
         self.authorize_current_forwarded_binding()?;
         check_approval()?;
-        let bound = if let Some(turn) = &approval {
+        let bound = if let Some(turn) = &approval.sudo_turn {
             let authority =
                 crate::local::LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest);
             self.with_external_command_authority(Some((&turn.entry_id, &authority)))
@@ -149,7 +152,7 @@ impl KernelRuntimeState {
             ok: true,
             payload: serde_json::json!({
                 "submitted": true,
-                "permission_authority": if approval.is_some() { "sudo" } else { "user_interaction" },
+                "permission_authority": approval.authority(),
                 "credential_id": args.credential_id,
                 "target": "desktop_focus",
                 "action_id": execution.action_id,

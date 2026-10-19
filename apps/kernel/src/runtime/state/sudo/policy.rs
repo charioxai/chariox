@@ -20,7 +20,7 @@ impl KernelRuntimeOwnedState {
         {
             return Some("expired");
         }
-        let prompt_id = turn.prompt_id.as_deref()?;
+        turn.prompt_id.as_deref()?;
         if turn.deadline.is_none() {
             return Some("expired");
         }
@@ -52,10 +52,16 @@ impl KernelRuntimeOwnedState {
                     | crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
             ),
             // Without durable tasks the authorized work is the first turn.
-            None => self
-                .prompt_state_owner
-                .sudo_bound_prompt(&session, &turn.agent_id)
-                .is_some_and(|(entry, prompt)| entry == turn.entry_id && prompt == prompt_id),
+            None => {
+                self.prompt_state_owner.sudo_catalog_work_open(
+                    &session,
+                    &turn.agent_id,
+                    &turn.entry_id,
+                ) || self
+                    .prompt_state_owner
+                    .sudo_bound_prompt(&session, &turn.agent_id)
+                    .is_some_and(|(entry, _)| entry == turn.entry_id)
+            }
         };
         (!work_open).then_some("work_ended")
     }

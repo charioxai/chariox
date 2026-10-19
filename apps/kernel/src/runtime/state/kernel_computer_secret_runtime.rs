@@ -93,41 +93,50 @@ impl KernelRuntimeState {
         let epoch = protection.revision(&scope)?;
         let target = self.host_computer_secret_target(&user, &admission).await?;
         let approval = self
-            .ensure_computer_secret_input_approved_for_field(
+            .ensure_computer_login_approved(
                 session,
                 agent_id,
                 credential,
-                &target.target,
-                Some(&format!(
-                    "AT-SPI process {} (start {}), field {}",
-                    target.field.pid, target.field.started, target.field.path
-                )),
+                &format!(
+                    "host:{}:{}:{}:{}:{}",
+                    target.surface_id,
+                    target.generation,
+                    target.field.pid,
+                    target.field.started,
+                    target.target.active_window
+                ),
+                &format!(
+                    "native window {}, AT-SPI process {} (start {}), field {}",
+                    target.target.active_window,
+                    target.field.pid,
+                    target.field.started,
+                    target.field.path
+                ),
             )
             .await?;
-        let authority = if approval.is_some() {
-            "sudo"
-        } else {
-            "user_interaction"
-        };
+        let authority = approval.authority();
+        let already_unlocked = approval.has_unlock();
         let state = self.clone();
-        let admission = admission.with_authority(move || {
-            approval
-                .as_ref()
-                .is_none_or(|turn| state.sudo_turn_live(turn))
-        });
+        let admission =
+            admission.with_authority(move || state.computer_secret_approval_live(&approval));
         let check = || {
             self.owned
                 .kernel_browser_host
                 .check_admission(Some(&admission))
                 .map_err(host_error)
         };
-        let _unlock = self
-            .ensure_vault_unlocked_for_agent(
-                session,
-                agent_id,
-                "runtime_tool_paste_secret_to_computer",
+        let _unlock = if already_unlocked {
+            None
+        } else {
+            Some(
+                self.ensure_vault_unlocked_for_agent(
+                    session,
+                    agent_id,
+                    "runtime_tool_paste_secret_to_computer",
+                )
+                .await?,
             )
-            .await?;
+        };
         check()?;
         let (service, _vault_guard) = self
             .scoped_secret_input_service(protection, &scope, credential)

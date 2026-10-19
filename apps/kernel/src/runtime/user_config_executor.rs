@@ -67,7 +67,7 @@ pub(crate) async fn execute_user_config_request(
             execute_get_credential_vault_status_request(config_projection, request).await
         }
         LocalDaemonRequest::LockCredentialVault(request) => {
-            execute_lock_credential_vault_request(config_projection, request).await
+            execute_lock_credential_vault_request(config_projection, runtime_state, request).await
         }
         LocalDaemonRequest::ManageCredentialVault(request) => {
             execute_manage_credential_vault_request(runtime_state, request).await
@@ -331,10 +331,12 @@ pub(crate) async fn execute_get_credential_vault_status_request(
 
 pub(crate) async fn execute_lock_credential_vault_request(
     config_projection: &DaemonConfigProjectionStore,
+    runtime_state: &KernelRuntimeState,
     _request: LockCredentialVaultRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let user_config = config_projection.snapshot().user_config;
     let path = user_config.credential_vault.path.clone();
+    runtime_state.revoke_computer_login_grants();
     crate::secret::lock_chariox_encrypted_vault(&path)?;
     crate::secret::clear_vault_secret_process_cache()?;
     let status = crate::secret::chariox_encrypted_vault_status(&path)?;

@@ -2,8 +2,6 @@ use crate::error::DaemonError;
 
 use super::KernelRuntimeState;
 
-const COMPUTER_SECRET_APPROVAL_TIMEOUT_SEC: u64 = 30;
-
 impl KernelRuntimeState {
     pub(crate) fn computer_screen_capture_guard(
         &self,
@@ -54,23 +52,7 @@ impl KernelRuntimeState {
         Ok(target)
     }
 
-    pub(super) async fn ensure_computer_secret_input_approved(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        credential_id: &str,
-        target: &crate::transport::room_browser_controller::RoomComputerSecretTarget,
-    ) -> Result<Option<crate::local::KernelSudoTurn>, DaemonError> {
-        self.ensure_computer_secret_input_approved_for_field(
-            session_id,
-            agent_id,
-            credential_id,
-            target,
-            None,
-        )
-        .await
-    }
-
+    #[cfg(test)]
     pub(super) async fn ensure_computer_secret_input_approved_for_field(
         &self,
         session_id: &str,
@@ -79,81 +61,22 @@ impl KernelRuntimeState {
         target: &crate::transport::room_browser_controller::RoomComputerSecretTarget,
         field: Option<&str>,
     ) -> Result<Option<crate::local::KernelSudoTurn>, DaemonError> {
-        // MP-08 / MP-10 / MP-11: the owner's existing sudo consent covers
-        // this exact current provider turn; it does not mint another grant.
-        if let Some(run) = self
-            .owned
-            .provider_store
-            .get_run_for_agent(session_id, agent_id)
-        {
-            if let Ok(turn) = self.sudo_for_provider_run(run.id()) {
-                return Ok(Some(turn));
-            }
-        }
-        let interaction = crate::session::RuntimeInteraction::new(
-            format!(
-                "computer-secret-input-{agent_id}-{}",
-                crate::session::unix_epoch_ms()
-            ),
-            agent_id,
-            crate::session::RuntimeInteractionKind::Permission,
-            crate::session::RuntimeInteractionLevel::Critical,
-            Some("Computer credential input".to_string()),
-            format!(
-                "Allow `{credential_id}` to be typed into native window {}, focused control {} at {:?}{}? Confirm that this focused field masks secret input; approving an unmasked field can expose the credential. Chariox aborts if the observable focus or window changes uses no clipboard, and masks the inserted region before agent screen observations.",
-                target.active_window, target.focus_window, target.geometry, field.map(|field| format!(", {field}")).unwrap_or_default()
-            ),
-            vec![
-                crate::session::RuntimeInteractionChoice::new(
-                    "allow",
-                    "Type credential",
-                    "allow",
-                    Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
-                ),
-                crate::session::RuntimeInteractionChoice::new(
-                    "deny",
-                    "Cancel",
-                    "deny",
-                    Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
-                ),
-            ],
-            None,
-            Some(COMPUTER_SECRET_APPROVAL_TIMEOUT_SEC),
-            Some("deny".to_string()),
-        );
-        let interaction_id = interaction.id().to_string();
-        let resolution_rx = self
-            .create_runtime_interaction(session_id, interaction)
-            .await?;
-        let state = self.clone();
-        let timeout_session_id = session_id.to_string();
-        let timeout_interaction_id = interaction_id.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(
-                COMPUTER_SECRET_APPROVAL_TIMEOUT_SEC,
-            ))
-            .await;
-            let _ = state
-                .timeout_runtime_interaction(&timeout_session_id, &timeout_interaction_id)
-                .await;
-        });
-        let resolution = resolution_rx.await.map_err(|error| {
-            computer_secret_approval_error(&format!(
-                "approval interaction dropped before resolution: {error}"
-            ))
-        })?;
-        if resolution.choice_id.as_deref() == Some("allow") {
-            return Ok(None);
-        }
-        Err(computer_secret_approval_error(
-            "computer credential input was denied or timed out",
-        ))
+        Ok(self
+            .ensure_computer_login_approved(
+                session_id,
+                agent_id,
+                credential_id,
+                &format!("native-window:{}", target.active_window),
+                field.unwrap_or("the selected native application"),
+            )
+            .await?
+            .sudo_turn)
     }
 }
 
 fn computer_secret_approval_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "computer_secret_input.approval",
-        message: message.to_string(),
+        message: message.into(),
     }
 }

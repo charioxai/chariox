@@ -11,6 +11,7 @@ pub(super) struct PendingMcpContinuation {
     pub(super) agent_id: String,
 
     pub(super) source_prompt_id: Option<String>,
+    pub(super) continuation_prompt_id: String,
     pub(super) mcp_name: String,
     pub(super) previous_prompt: String,
     pub(super) reload_reason: super::ProviderReloadReason,

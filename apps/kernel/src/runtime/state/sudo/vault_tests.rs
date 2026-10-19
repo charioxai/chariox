@@ -239,34 +239,16 @@ async fn owner_unlocks(f: &Fixture, session: &str, during: impl FnOnce()) {
         .resolve_terminal_runtime_interaction(
             session,
             &first,
-            "passphrase",
+            "unlock_operation",
             Some(PASSKEY),
             Some("local"),
         )
         .await
         .unwrap();
-    // The default TTL policy then asks how long to stay unlocked.
-    let lease = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            if let Some(id) = pending("vault-unlock-lease-") {
-                return id;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await;
-    if let Ok(lease) = lease {
-        f.state
-            .resolve_terminal_runtime_interaction(
-                session,
-                &lease,
-                "unlock_operation",
-                None,
-                Some("local"),
-            )
-            .await
-            .unwrap();
-    }
+    assert!(
+        pending("vault-unlock-lease-").is_none(),
+        "MP-08/MP-11: unlock and duration are one sheet"
+    );
 }
 
 #[tokio::test]

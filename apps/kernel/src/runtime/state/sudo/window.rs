@@ -84,6 +84,7 @@ impl KernelRuntimeOwnedState {
         agent: &str,
         prompt: &str,
     ) -> bool {
+        if self.prompt_state_owner.sudo_work_prompt_admitted(session, agent, prompt) { return true; }
         let window = self
             .sudo_turns
             .lock()
