@@ -42,6 +42,8 @@ export class BrowserMirror2Renderer {
   private navigation: Mirror2Navigation
   get frame(): HTMLIFrameElement { return this.navigation.frame }
   get painted(): boolean { return this.navigation.painted }
+  // Input is dropped while the interactive page is hidden, applying a packet or not yet painted.
+  get acceptsInput(): boolean { return this.interactive && !this.applying && !this.disposed && !!this.documentId && this.navigation.painted }
   readonly timings: Mirror2Timing[] = []
   onTiming: ((sample: Mirror2Timing) => void) | undefined
   private doc: Document | null = null
@@ -127,7 +129,7 @@ export class BrowserMirror2Renderer {
   }
   // ---- input: node-addressed, the kernel re-validates everything live.
   private enqueue(action: Mirror2Input): void {
-    if (!this.interactive || this.applying || this.disposed || !this.documentId || !this.navigation.painted) return
+    if (!this.acceptsInput) return
     const epoch = { sequence: this.sequence, document_id: this.documentId }
     // Ordered; a queued scroll position for the same scroller is replaced, not appended.
     const last = this.queue.at(-1)
@@ -929,7 +931,7 @@ const GAP_MS = 500
 const LOST_MS = 1000
 // Credit-gated push: `credits` long-poll requests stay outstanding; packets
 // apply strictly in sequence. A lasting gap or repeated failure asks for a fresh snapshot.
-type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'> & Partial<Pick<BrowserMirror2Renderer,'settleInput' | 'painted' | 'onEmptyPaint' | 'onTiming' | 'knownSheets' | 'setInteractive' | 'readyForHandover' | 'holdForHandover' | 'handover' | 'requireNativeFonts'>>
+type Renderer = Pick<BrowserMirror2Renderer, 'ready' | 'apply' | 'close' | 'frame'> & Partial<Pick<BrowserMirror2Renderer,'settleInput' | 'painted' | 'acceptsInput' | 'onEmptyPaint' | 'onTiming' | 'knownSheets' | 'setInteractive' | 'readyForHandover' | 'holdForHandover' | 'handover' | 'requireNativeFonts'>>
 // A failure streak that outlives this with no packet is terminal (the runtime then
 // shows protected video and retries later); shorter streaks back off.
 const FAILING_MS = 15_000
