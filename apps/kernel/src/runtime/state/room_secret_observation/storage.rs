@@ -385,6 +385,9 @@ impl RoomSecretObservations {
         // Keep an in-memory tombstone for already admitted late callbacks.
         let room = self.room_key(room);
         let _history_guard = self.invalidate_public_history(room)?;
+        if let Ok(mut pending) = self.pending_streams.lock() {
+            pending.retain(|(held_room, _, _), _| held_room != room);
+        }
         let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
         rooms.insert(
             room.into(),

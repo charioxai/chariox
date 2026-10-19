@@ -105,10 +105,12 @@ pub(super) fn drain(
     let emit = |line: &mut Vec<u8>, truncated: &mut bool| {
         // A cut line could expose only part of a protected value. Withhold
         // it entirely rather than matching or retaining an unsafe prefix.
+        // Scrub the raw text too: sanitizing first would drop the byte after a stray escape.
         let text = if *truncated {
             None
         } else {
-            protect(sanitize(line))
+            protect(String::from_utf8_lossy(line).into_owned())
+                .and_then(|text| protect(sanitize(text.as_bytes())))
         };
         line.clear();
         let was_truncated = std::mem::take(truncated);

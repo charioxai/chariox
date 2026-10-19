@@ -657,22 +657,72 @@ fn filtered_room_history_survives_restart_but_older_registries_stay_withheld() {
 }
 
 #[test]
-fn retired_and_unknown_values_keep_their_scope() {
+fn retired_values_stay_filtered_after_restart_and_unknown_values_withhold() {
     let key = crate::transport::relay_crypto::generate_private_key_base64();
     let root = TestRoot::new();
     let path = root.path().join("observations");
     let store = RoomSecretObservations::new(path.clone(), BTreeSet::new()).with_identity(&key);
     store.register("room", "first-secret").unwrap();
+    store.forget("room").unwrap();
     store.register("room", "second-secret").unwrap();
-    assert_eq!(
-        protect(&store, "room", b"first-secret / second-secret / public\n"),
-        b"[redacted] / [redacted] / public\n"
-    );
-    // After a restart the registry is restored: stream stays filtered, not withheld.
     let restarted =
         RoomSecretObservations::new(path, BTreeSet::from(["room".to_string()])).with_identity(&key);
-    let delivered = String::from_utf8(protect(&restarted, "room", b"a first-secret b")).unwrap();
-    assert!(!delivered.contains("first-secret"));
+    for store in [&store, &restarted] {
+        assert_eq!(
+            protect(store, "room", b"first-secret / second-secret / public\n"),
+            b"[redacted] / [redacted] / public\n"
+        );
+    }
+    // A value that could not be tracked leaves nothing to filter with: the chunk is withheld.
+    assert!(store.register("other", "").is_err());
+    assert_eq!(
+        protect(&store, "other", b"anything"),
+        b"[sensitive Room terminal stream withheld]"
+    );
+}
+
+#[test]
+fn escapes_cannot_hide_a_value_from_the_filter() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    store.register("room", "synthetic-only").unwrap();
+    for input in [
+        "\x1bsynthetic-only ok\n",
+        "\x1b]8;;https://x/?t=synthetic-only\x1b\\link\x1b]8;;\x1b\\ ok\n",
+        "\x1b]0;pw synthetic-only\x07 ok\n",
+        "synth\x1b[1metic-\x1b[0monly ok\n",
+    ] {
+        let delivered = String::from_utf8(protect(&store, "room", input.as_bytes())).unwrap();
+        assert!(!delivered.contains("synthetic-only"), "{delivered:?}");
+        assert!(!delivered.contains("ynthetic-only"), "{delivered:?}");
+        assert!(
+            delivered.contains("[redacted]") && delivered.ends_with(" ok\n"),
+            "{delivered:?}"
+        );
+    }
+    let process = super::super::agent_process_output::room_protector(store, "room".into());
+    assert_eq!(
+        process("a\x1bsynthetic-only".into()),
+        Some("a\x1b[redacted]".into())
+    );
+}
+
+#[test]
+fn only_assistant_text_waits_for_the_next_chunk() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    store.register("room", "synthetic-only").unwrap();
+    for kind in [
+        crate::terminal::TerminalOutputKind::ProviderTool,
+        crate::terminal::TerminalOutputKind::ProviderTerminal,
+        crate::terminal::TerminalOutputKind::ProviderReasoning,
+    ] {
+        let mut output = stream_output(b"{\"out\":\"synthetic-o");
+        output.kind = kind;
+        store.protect_stream("room", &mut output);
+        assert_eq!(output.bytes, b"{\"out\":\"synthetic-o");
+    }
+    assert!(store.flush_streams("room", "run").is_empty());
 }
 
 #[test]

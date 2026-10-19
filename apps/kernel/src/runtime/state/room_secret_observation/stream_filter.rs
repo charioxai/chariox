@@ -7,6 +7,7 @@ use zeroize::Zeroizing;
 
 use super::{secret_variants, Protection, RoomSecretObservations};
 use crate::runtime::state::prompt_transcript_owned_state::TerminalOutputBatchAppend as Output;
+use crate::terminal::TerminalOutputKind;
 
 const REDACTED: &[u8] = b"[redacted]";
 const WITHHELD: &[u8] = b"[sensitive Room terminal stream withheld]";
@@ -21,7 +22,11 @@ pub(super) type Pending = BTreeMap<(String, String, String), (Output, Zeroizing<
 
 enum Escape {
     None,
-    Complete(usize),
+    // `payload` is the text carried by a string escape (OSC, DCS, ...), which may hold a value.
+    Complete {
+        len: usize,
+        payload: std::ops::Range<usize>,
+    },
     Partial,
 }
 
@@ -32,59 +37,43 @@ fn escape(s: &[u8]) -> Escape {
     let Some(&kind) = s.get(1) else {
         return Escape::Partial;
     };
-    let open = |end: Option<usize>, limit: usize| match end {
-        Some(end) => Escape::Complete(end),
+    let finish = |end: Option<(usize, usize)>, limit: usize| match end {
+        Some((len, text_end)) => Escape::Complete {
+            len,
+            payload: 2..text_end,
+        },
         None if s.len() < limit => Escape::Partial,
-        None => Escape::Complete(2),
+        None => Escape::Complete {
+            len: 2,
+            payload: 0..0,
+        },
     };
     match kind {
-        b'[' => open(
-            s[2..]
-                .iter()
-                .position(|b| (b'@'..=b'~').contains(b))
-                .map(|n| n + 3),
-            CSI_LIMIT,
-        ),
-        b']' | b'P' | b'X' | b'^' | b'_' => open(
+        b'[' => match s[2..].iter().position(|b| (b'@'..=b'~').contains(b)) {
+            Some(n) => Escape::Complete {
+                len: n + 3,
+                payload: 0..0,
+            },
+            None => finish(None, CSI_LIMIT),
+        },
+        b']' | b'P' | b'X' | b'^' | b'_' => finish(
             (2..s.len()).find_map(|i| match s[i] {
-                0x07 => Some(i + 1),
-                0x1b if s.get(i + 1) == Some(&b'\\') => Some(i + 2),
+                0x07 => Some((i + 1, i)),
+                0x1b if s.get(i + 1) == Some(&b'\\') => Some((i + 2, i)),
                 _ => None,
             }),
             OSC_LIMIT,
         ),
-        _ => Escape::Complete(2),
+        _ => Escape::Complete {
+            len: 2,
+            payload: 0..0,
+        },
     }
 }
 
-/// Redacts every secret in `input`, returning the safe prefix and the tail that
-/// may still begin a secret (or an unfinished escape) and must be rescanned
-/// together with the next chunk.
-fn redact(input: &[u8], secrets: &[&[u8]]) -> (Vec<u8>, usize) {
-    // Match on the text a person would read: escapes and control bytes removed.
-    let mut view = Vec::with_capacity(input.len());
-    let mut origin = Vec::with_capacity(input.len());
-    let mut open_escape = None;
-    let mut i = 0;
-    while i < input.len() {
-        match escape(&input[i..]) {
-            Escape::Complete(n) => {
-                i += n;
-                continue;
-            }
-            Escape::Partial => {
-                open_escape = Some(i);
-                break;
-            }
-            Escape::None => {}
-        }
-        let b = input[i];
-        if b >= 0x20 && b != 0x7f || matches!(b, b'\t' | b'\n' | b'\r') {
-            view.push(b);
-            origin.push(i);
-        }
-        i += 1;
-    }
+/// Matches of `secrets` in `view` (leftmost-longest) as ranges of `input`, and where a
+/// possible secret prefix begins at the end of the view.
+fn scan(view: &[u8], origin: &[usize], secrets: &[&[u8]]) -> (Vec<(usize, usize)>, Option<usize>) {
     let mut matches = Vec::new();
     let mut v = 0;
     while v < view.len() {
@@ -111,14 +100,73 @@ fn redact(input: &[u8], secrets: &[&[u8]]) -> (Vec<u8>, usize) {
                 .iter()
                 .any(|s| s.len() > view.len() - t && s.starts_with(&view[t..]))
         });
-    let held_from = [tail.map(|t| origin[t]), open_escape]
-        .into_iter()
-        .flatten()
-        .min()
-        .unwrap_or(input.len());
+    (matches, tail.map(|t| origin[t]))
+}
+
+/// Redacts every secret in `input`, returning the safe prefix and where the tail begins that
+/// may still start a secret (or an unfinished escape) and must be rescanned with the next
+/// chunk. Without `hold` the whole input is returned, for streams that are not plain text.
+///
+/// Two views are matched: the raw bytes, and the text a person reads (escapes and control
+/// bytes removed, string-escape payloads kept), so neither an escape inside a value nor a
+/// stray escape before it hides the value.
+fn redact(input: &[u8], secrets: &[&[u8]], hold: bool) -> (Vec<u8>, usize) {
+    let mut view = Vec::with_capacity(input.len());
+    let mut origin = Vec::with_capacity(input.len());
+    let mut open_escape = None;
+    let mut i = 0;
+    while i < input.len() {
+        let mut step = 1;
+        match escape(&input[i..]) {
+            Escape::Complete { len, payload } => {
+                view.extend_from_slice(&input[i + payload.start..i + payload.end]);
+                origin.extend(i + payload.start..i + payload.end);
+                step = len;
+            }
+            Escape::Partial => {
+                open_escape = Some(i);
+                break;
+            }
+            Escape::None => {
+                let b = input[i];
+                if b >= 0x20 && b != 0x7f || matches!(b, b'\t' | b'\n' | b'\r') {
+                    view.push(b);
+                    origin.push(i);
+                }
+            }
+        }
+        i += step;
+    }
+    let raw_origin: Vec<usize> = (0..input.len()).collect();
+    let (mut ranges, tail) = scan(&view, &origin, secrets);
+    let (raw_ranges, raw_tail) = scan(input, &raw_origin, secrets);
+    ranges.extend(raw_ranges);
+    ranges.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in ranges {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    let mut held_from = if hold {
+        [tail, raw_tail, open_escape]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(input.len())
+    } else {
+        input.len()
+    };
+    // A match that reaches into the held tail is rescanned with the next chunk.
+    for &(start, end) in &merged {
+        if end > held_from {
+            held_from = held_from.min(start);
+        }
+    }
     let mut out = Vec::with_capacity(held_from);
     let mut at = 0;
-    for (start, end) in matches {
+    for (start, end) in merged.into_iter().filter(|&(_, end)| end <= held_from) {
         out.extend_from_slice(&input[at..start]);
         out.extend_from_slice(REDACTED);
         at = end;
@@ -171,7 +219,10 @@ impl RoomSecretObservations {
             .map_or_else(Zeroizing::default, |(_, held)| held);
         input.extend_from_slice(&output.bytes);
         let secrets: Vec<&[u8]> = variants.iter().map(|v| v.as_bytes()).collect();
-        let (safe, held_from) = redact(&input, &secrets);
+        // Only assistant text is append-only; tool snapshots, terminal frames and echoes are
+        // redacted in place, since holding a tail would corrupt them.
+        let hold = output.kind == TerminalOutputKind::ProviderOutput;
+        let (safe, held_from) = redact(&input, &secrets, hold);
         output.bytes = safe;
         if held_from < input.len() {
             let template = Output {
