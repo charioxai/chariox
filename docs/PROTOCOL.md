@@ -755,6 +755,15 @@ canonical plan digest, validates Project/Workspace/worktree ownership and obtain
 a Cloud ticket. A disconnected source refuses the request. The selected destination
 must be an enrolled ordinary kernel owned by the same account/user in the same realm.
 
+Managed-context transfers (Project/slice development context, kernel Extension snapshot and the
+package that carries them) have no fixed total file, Extension, repository or byte ceiling. The
+sender writes the archive and package to disk and the receiver admits the declared size against the
+free space of the real destination volume (and the in-memory kernel snapshot against available
+memory) before it accepts, refusing with a message that names the volume and how to recover. The
+manifest's per-component sizes and digests, and the per-artifact digests inside the archive, are the
+receipt the receiver verifies; per-file, per-package and parser bounds are unchanged. No wire shape
+changes.
+
 MP-08 / MP-11 owner destination bindings are
 `{kind:"owner_managed_machine", machineId, kernelId}`. Plans, import arms,
 persisted operations, authoritative receipts and launch targets retain this binding.
