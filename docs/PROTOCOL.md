@@ -3649,3 +3649,35 @@ Web Copy and TUI `/kernel copy-status <context-id>` project the same authoritati
 outcome. Refusals occur before packaging or publication; no bytes are copied.
 The existing C5 allocation remains local 520 / peer 128: this correction changes
 error strings and client rendering, with no new serialized fields or variants.
+
+### Room terminals — local 562 / relay peer 170
+
+A Room has kernel-owned terminals: real PTYs running the user's login shell
+(`$SHELL -l -i`, else the account's shell) in the Room's project folder, or a
+given program (argv, no shell). One request, `RoomTerminal { session_id,
+acting_agent?, operation }`, answers with `RoomTerminal { result }`.
+
+Operations: `open` (cols, rows, title?, command?), `list`, `snapshot`
+(screen text, scrollback text, redraw ANSI, cursor, output offset), `input`
+(base64 keystrokes written as one unit), `resize`, `read_output`
+(`after_offset`, `wait_ms`; `gap: true` means resync from a snapshot), `wait`
+(`finished`, `output_contains`, `waiting_for_input` conditions, capped at 240 s
+below the provider tool limit; on timeout `fired` is null and the program is
+still running) and `close`.
+
+- Only the Room's owner may send it. Invited members get
+  `OwnershipAccessDenied`; people outside the Room never pass membership.
+- `acting_agent` names a Room agent to type as (the runtime tool bridge sets
+  it). Without it the actor is the user.
+- One driver: at the prompt any Room agent can type. A foreground program
+  (foreground process group is not the shell) belongs to the actor who
+  submitted it until it exits; other agents get `accepted: false` with
+  `refusal: "busy (driven by <actor>)"` and can still read. The user can
+  always type. The state is `driver: free | busy { driven_by }` in every
+  summary.
+- A tab the user typed in, resized or opened can be closed only by the user.
+- A terminal survives client disconnects. It ends on close, when its shell or
+  command exits, or with its Room. A kernel restart ends it as
+  `ended: kernel restarted` and keeps the scrollback.
+- Peer 170 only re-binds the embedded local response union to local 562; no
+  peer request is added.
