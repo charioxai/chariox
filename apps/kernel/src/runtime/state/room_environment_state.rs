@@ -408,9 +408,14 @@ impl KernelRuntimeState {
         actor_id: &str,
         target: &crate::session::InputTarget,
     ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
-        self.owned
+        let result = self
+            .owned
             .session_store
-            .release_room_environment_input(session_id, actor_id, target)
+            .release_room_environment_input(session_id, actor_id, target);
+        if result.is_ok() {
+            self.schedule_agent_lifecycle_sweep();
+        }
+        result
     }
 
     pub(crate) fn cancel_room_environment_action_as_actor(

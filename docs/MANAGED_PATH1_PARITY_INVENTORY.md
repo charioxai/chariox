@@ -1,5 +1,32 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 ordinary input and Chromium AX (2026-10-18)
+
+Under the owner's UX-first decision, ordinary authorized Browser and Computer
+input may target Chromium, including its address bar and password/OTP fields.
+`kernel-browser-input.mjs` retains document, cancellation and mirror ownership
+fences without querying field contents. `native-computer.py` and
+`native-input-destination.py` prove live owned X11 recipients without requiring
+a public AT-SPI leaf; the native adapter no longer refuses unrelated input
+because another field has a Vault registration. Clipboard provenance, extension
+surface admission, global accelerator restrictions and human takeover remain
+separate guards.
+
+`native-accessibility.py` traverses owned Chromium navigation controls instead
+of projecting the browser as one protected node. Password roles, OTP/password
+attributes and exact live native Vault fill identities withhold field content.
+Known Vault values are scrubbed before label truncation in the private helper
+and again before public projection. Public labels/actions remain available when
+another field is protected; handles retain observer, revision, process and
+surface fences. Pixel masking and clipboard observation keep their existing
+independent capture paths. Navigation AX does not authorize browser-owned
+clipboard bytes; the private browser marker preserves that existing fence.
+
+These changed input-admission and observation anchors require current MP-11
+semantic review. Fail-first Node/Python regressions are supplementary evidence;
+they do not establish real-provider, hosted UI or ordinary/managed parity
+acceptance. Protocol shapes are unchanged (553/161 on this lane).
+
 ## MP-08 / MP-10 / MP-11 owned preloaded observation world (2026-10-16)
 
 The real WHATWG navigation timed out repeatedly creating a world that Chromium

@@ -14,7 +14,7 @@ export class NativeAccessibility {
     const processes=await binding.ownedProcesses?.();
     if(!processes)throw new Error('MP-11: accessibility app scope unavailable');
     const browser_processes=await binding.browserProcesses?.();
-    const raw=await this.execute({op:'accessibility',processes,...(browser_processes?{browser_processes}:{})},binding.environment,signal);
+    const raw=await this.execute({op:'accessibility',processes,values:policy?.values??[],...(browser_processes?{browser_processes}:{})},binding.environment,signal);
     if(signal?.aborted || this.binding()!==binding)throw new Error('MP-11: stale accessibility surface');
     const tree=redactObservation(raw,policy?.values??[]);
     return {tree,binding,processes,rawDigest:createHash('sha256').update(JSON.stringify(canonical(actionTree(raw)))).digest('hex'),digest:createHash('sha256').update(JSON.stringify([binding.surface_id,binding.generation,actionTree(tree),canonical(policy??{})])).digest('hex')};
@@ -28,10 +28,13 @@ export class NativeAccessibility {
     const handles=new Map();
     const revision=++this.nextRevision;
     // MP-08 / MP-11: official harnesses truncate large single-line tool output.
-    // Prioritize current controls; the unprojected tree still fences every action.
+    // Prioritize named controls over structural Chromium nodes, which also
+    // advertise generic actions/focus. The full tree still fences every action.
+    const toolbars=(tree.nodes??[]).filter(node=>node.browser && node.role==='tool bar');
+    const navigation=node=>Boolean(node.browser && node.name && toolbars.some(bar=>bar.pid===node.pid && bar.started===node.started && bar.path.length<node.path.length && bar.path.every((part,index)=>node.path[index]===part)));
     const priority=node=>node.states?.includes('showing')
-      ? (node.states.includes('focused') || ['frame','window','dialog'].includes(node.role)
-        ? 0 : node.actions?.length || node.states.includes('editable') ? 1 : 2) : 3;
+      ? (['frame','window','dialog'].includes(node.role)
+        ? 0 : navigation(node) ? 0.5 : node.name && (node.actions?.length || node.states.includes('editable') || node.states.includes('focused')) ? 1 : 2) : 3;
     // MP-08 / MP-11: AT-SPI browser descendants can retain focused/showing
     // states after minimization. The private X11 selector binds the actual
     // owned foreground frame; rank its subtree before applying public limits.
@@ -67,7 +70,7 @@ export class NativeAccessibility {
     const browser_processes=await binding.browserProcesses?.();
     // MP-11: the helper gates agent doAction (which may Paste) on the clipboard owner.
     const agent=Boolean(command._agent_input || observer.startsWith('agent:'));
-    const result=await this.execute({op:'accessibility_action',...(agent?{agent_input:true,values:policy?.values??[]}:{}),processes,...(browser_processes?{browser_processes}:{}),path:target.path,pid:target.pid,started:target.started,action:command.action,expected_tree_digest:rawDigest},binding.environment,signal);
+    const result=await this.execute({op:'accessibility_action',values:policy?.values??[],...(agent?{agent_input:true}:{}),processes,...(browser_processes?{browser_processes}:{}),path:target.path,pid:target.pid,started:target.started,action:command.action,expected_tree_digest:rawDigest},binding.environment,signal);
     if(signal?.aborted || this.binding()!==binding)throw new Error('MP-11: accessibility action cancelled');
     return {...result,...await this.snapshot(observer,policy,{signal})};
   }

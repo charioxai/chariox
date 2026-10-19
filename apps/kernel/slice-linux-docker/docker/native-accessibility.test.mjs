@@ -196,3 +196,35 @@ test('MP-11 private selection evidence does not expire focus handles; protection
  await assert.rejects(native.action('agent:a',{target_id:after.nodes[0].target_id,tree_revision:after.tree_revision,action:'focus'},{}),e=>e.code==='user_domain_stale_reference');
  assert.equal(actions,1);
 });
+
+test('MP-08/MP-11 browser navigation remains actionable beside a Vault-filled field without exposing its value',async()=>{
+ const policy={values:['test-vault-canary'],targets:[{kind:'browser',target_id:'filled'}]};let applied=0;
+ const native=new NativeAccessibility({binding:()=>binding,execute:async request=>{
+  if(request.op==='accessibility_action'){applied++;return {applied:true};}
+  return {...tree,nodes:[{...tree.nodes[0],name:'Accept cookies'},{...tree.nodes[0],path:[1],role:'text',name:'test-vault-canary',actions:[]},{...tree.nodes[0],path:[2],role:'password text',protected:true,name:'test-password-canary',actions:[]}]};
+ }});
+ const seen=await native.snapshot('agent:a',policy);assert(!JSON.stringify(seen).includes('canary'));
+ const button=seen.nodes.find(node=>node.name==='Accept cookies');assert(button?.actions.includes('click'));
+ await native.action('agent:a',{tree_revision:seen.tree_revision,target_id:button.target_id,action:'click'},policy);
+ assert.equal(applied,1);
+});
+
+// MP-08 / MP-11: Chromium marks structural panels actionable too.
+test('MP-08 / MP-11 named browser navigation survives unnamed structural actions',async()=>{
+ const nodes=Array.from({length:80},(_,i)=>({...tree.nodes[0],path:[0,i],role:'panel',name:'',states:['showing','enabled'],actions:['doDefault','showContextMenu']}));
+ nodes.unshift({...tree.nodes[0],path:[0],role:'frame',name:'Public page',states:['showing'],actions:[]});
+ for(const [i,name] of ['Back','Reload','Address and search bar'].entries())nodes.push({...tree.nodes[0],path:[0,100+i],role:i===2?'entry':'button',name,states:['showing','enabled'],actions:['press']});
+ const native=new NativeAccessibility({binding:()=>binding,execute:async()=>({...tree,active_window:{pid:200,started:'1',path:[0]},nodes})});
+ const seen=await native.snapshot('agent:a',{});
+ for(const name of ['Back','Reload','Address and search bar'])assert(seen.nodes.some(n=>n.name===name),name);
+ assert.equal(seen.complete,false);
+});
+// MP-08 / MP-11: tabs and window controls must not crowd out browser toolbar.
+test('MP-08 / MP-11 browser toolbar survives named tabs and window controls',async()=>{
+ const nodes=Array.from({length:60},(_,i)=>({...tree.nodes[0],browser:true,path:[0,i],name:'Tab control '+i,states:['showing','enabled'],actions:['press']}));
+ nodes.push({...tree.nodes[0],browser:true,path:[0,90],role:'tool bar',name:'',states:['showing'],actions:[]});
+ for(const [i,name] of ['Back','Reload','Address and search bar'].entries())nodes.push({...tree.nodes[0],browser:true,path:[0,90,i],role:i===2?'entry':'button',name,states:['showing','enabled'],actions:['press']});
+ const native=new NativeAccessibility({binding:()=>binding,execute:async()=>({...tree,active_window:{pid:200,started:'1',path:[0]},nodes})});
+ const seen=await native.snapshot('agent:a',{});
+ for(const name of ['Back','Reload','Address and search bar'])assert(seen.nodes.some(n=>n.name===name),name);
+});

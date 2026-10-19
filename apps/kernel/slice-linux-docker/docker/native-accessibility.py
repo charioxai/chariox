@@ -13,6 +13,7 @@ _fills=_x11_import.module_from_spec(_fill_spec);_fill_spec.loader.exec_module(_f
 import hashlib
 import json
 import os
+import re
 import pyatspi
 from collections import deque
 from pathlib import Path
@@ -167,6 +168,21 @@ def sensitive_processes():
     # MP-08/MP-11: a copied value stays private after its original widget closes.
     return {(int(item['pid']),str(item['started'])) for item in _fills.read()}
 
+def secret_field(node, targets):
+    """MP-08/MP-11: protect field values, retaining ordinary navigation AX."""
+    if node.getRole() == pyatspi.ROLE_PASSWORD_TEXT:
+        return True
+    try:
+        attributes = dict(part.split(':', 1) for part in node.getAttributes() if ':' in part)
+    except (AttributeError, NotImplementedError):
+        attributes = {}
+    if any(re.search(r'password|one-time-code|(^|[ _-])otp([ _-]|$)', attributes.get(key, ''), re.I)
+           for key in ('text-input-type', 'type', 'autocomplete', 'html-autocomplete', 'input-type')):
+        return True
+    # Native Vault fills are bound to the exact live object and value generation.
+    return any(target.get('pid') == node.get_process_id() and target.get('path') == getattr(node, 'path', None)
+               and _fills.matches(node, target) for target in targets)
+
 
 def snapshot(processes, browser_processes=None, browser_protection=None, values=()):
     allowed={item['pid']:item['started'] for item in processes if alive(item)}
@@ -186,15 +202,15 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
     # MP-11: `complete` also requires every window attributed (capture masking);
     # `traversed` only that the owned AT-SPI trees were walked without truncation.
     nodes=[];complete=traversed=True;protected=False;pending=deque();uncovered=[];masks=[]
-    try:
-        filled={(int(item['pid']),str(item['started']),str(item['path'])) for item in _fills.read()}
-        desktop=pyatspi.Registry.getDesktop(0)
+    try: fill_targets=_fills.read()
+    except Exception:return {'available':False,'complete':False,'nodes':[],'protected':True}
+    try: desktop=pyatspi.Registry.getDesktop(0)
     except Exception:return {'available':False,'complete':False,'nodes':[],'protected':True}
     def visit(node,pid,started,path,depth):
         nonlocal complete,traversed,protected
         if depth>MAX_DEPTH or len(nodes)>=MAX_NODES:complete=traversed=False;return
         role=node.getRoleName()
-        secret=node.getRole()==pyatspi.ROLE_PASSWORD_TEXT or (pid,str(started),str(getattr(node,'path',''))) in filled
+        secret=secret_field(node,fill_targets)
         protected=protected or secret
         state=node.getState()
         states=[label for flag,label in [(pyatspi.STATE_SHOWING,'showing'),(pyatspi.STATE_ENABLED,'enabled'),(pyatspi.STATE_FOCUSED,'focused'),(pyatspi.STATE_EDITABLE,'editable')] if state.contains(flag)]
@@ -214,8 +230,10 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
         # exposes this operation alone; only Vault may enter its contents.
         if all(label in states for label in ('editable','showing','enabled')) and callable(getattr(component,'grabFocus',None)) and 'focus' not in actions:
             actions.insert(0,'focus')
-        name='[protected]' if secret else (node.name or '')[:4096]
-        for value in values:name=name.replace(value,'[redacted]')
+        name='[protected]' if secret else (node.name or '')
+        for value in values:
+            if value:name=name.replace(value,'[redacted]')
+        name=name[:4096]
         nodes.append({'pid':pid,'started':started,'path':path,'role':role,'name':name,'states':states,'bounds':bounds,'actions':actions,'protected':secret})
         # MP-08/MP-10/MP-11: private helper evidence for public selection input.
         # Never query a protected field. This value is not projected to MCP.
@@ -258,15 +276,9 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
                 complete=False
                 continue
             if pid in browsers:
-                # MP-08 / MP-11: native observation already masks this entire
-                # browser. Do not inspect its private, potentially huge tree.
-                nodes.append({'pid':pid,'started':allowed[pid],'path':[],
-                              'role':'application','name':'[protected]','states':[],
-                              'bounds':None,'actions':[],'protected':True})
                 if pid in measured:
                     try:documents[pid]=_protection.document_rects(app,pyatspi)
                     except Exception:pass  # Unproven document geometry: whole window.
-                continue
             pending.append((app,pid,allowed[pid],[],0))
         if desktop.childCount>64:complete=traversed=False
         # MP-08: traverse applications fairly before deep hidden menu trees.
@@ -352,14 +364,12 @@ def snapshot(processes, browser_processes=None, browser_protection=None, values=
                     visible=visible_rect([geometry.x,geometry.y,geometry.width+2*geometry.border_width,geometry.height+2*geometry.border_width],screen)
                     if visible:uncovered.append(visible)
         finally:connection.close()
-        # MP-11: browser pixels are placed by the CDP transform above; the
-        # structured browser app stays withheld (titles, OTP/payment/private
-        # ancestors, nested frames and shadow content are never AT-SPI data).
-        # The before/after capture fence includes these masks and identities.
+        # MP-11: navigation AX never proves browser clipboard contents public.
         for node in nodes:
-            if node['pid'] in browsers:
-                node['native_protected']=node['protected']
-                node.update(name='[protected]',actions=[],protected=True)
+            if node['pid'] in browsers:node['browser']=True
+        # MP-11: pixel coverage still uses the independent CDP placement proof.
+        # AX exposes public navigation; field values are filtered above and again
+        # through the live Vault value policy before the model projection.
         return {'available':True,'complete':complete,'traversed':traversed,'nodes':nodes,'protected':protected,'active_window':active_window,'uncovered':uncovered,'masks':masks,'browser_withheld':withheld}
     except Exception:
         # Partial traversal cannot establish native password/pixel coverage.
@@ -373,12 +383,7 @@ def tree_digest(tree):
 
 
 def input_target(processes, expected=None):
-    """MP-08 / MP-11: ordinary text requires a proved, public native focus.
-
-    AT-SPI cannot prove a Browser DOM leaf's Vault/private attributes. Browser
-    web input uses the existing document-bound Browser path instead; this
-    native fallback refuses it, including nested frame/shadow descendants.
-    """
+    """MP-08/MP-11: bind owned focus; observation filtering protects values."""
     if not processes:raise NativeInputDenied('native app scope unavailable')
     if expected is not None:
         # MP-11: recheck the bound native leaf/ancestors before every press,
@@ -392,10 +397,8 @@ def input_target(processes, expected=None):
         if len(apps)!=1 or not 0<len(expected['path'])<=MAX_DEPTH:raise NativeInputDenied('native app ambiguous')
         node=apps[0]
         for index in expected['path']:
-            if node.getRole()==pyatspi.ROLE_PASSWORD_TEXT or node.getRoleName()=='document web':raise NativeInputDenied('protected native ancestor')
             node=node.getChildAtIndex(index)
             if node is None:raise NativeInputDenied('native focused leaf changed')
-        if node.getRole()==pyatspi.ROLE_PASSWORD_TEXT or node.getRoleName()=='document web':raise NativeInputDenied('protected native focus')
         state=node.getState()
         rect=node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
         if not state.contains(pyatspi.STATE_FOCUSED) or not state.contains(pyatspi.STATE_SHOWING) or [rect.x,rect.y,rect.width,rect.height]!=expected['bounds']:
@@ -415,9 +418,6 @@ def input_target(processes, expected=None):
     leaves=[node for node in focused if len(node['path'])==depth]
     if len(leaves)!=1:raise NativeInputDenied('native focus ambiguous')
     leaf=leaves[0]
-    ancestors=[node for node in tree['nodes'] if belongs(node) and leaf['path'][:len(node['path'])]==node['path']]
-    if any(node.get('native_protected',node['protected']) or node['role'] in ('document web','password text') for node in ancestors):
-        raise NativeInputDenied('protected target requires Browser or Vault input')
     identity={key:leaf[key] for key in ('pid','started','path','bounds')}
     return identity
 
@@ -429,7 +429,7 @@ def input_guard(processes):
 
 
 def act(request):
-    tree=snapshot(request['processes'],request.get('browser_processes'))
+    tree=snapshot(request['processes'],request.get('browser_processes'),values=request.get('values',()))
     if not tree['available'] or tree_digest(tree)!=request['expected_tree_digest']:raise ValueError('stale target')
     expected=next((node for node in tree['nodes'] if node['pid']==request['pid'] and node['path']==request['path'] and node['started']==request['started']),None)
     if not expected or (expected['protected'] and request['action']!='focus') or request['action'] not in expected['actions']:raise ValueError('target denied')
