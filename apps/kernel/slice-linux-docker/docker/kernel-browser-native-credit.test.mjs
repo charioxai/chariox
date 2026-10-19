@@ -99,9 +99,9 @@ test('MP-08/MP-10/MP-11 empty region credits keep cheap fences without querying 
  const host=regionCreditHost(f);
  const command={generation:1,after_sequence:1,push:{}};
  const result=await displayCredit(host,f.stream,command);assert.equal(result.frame_sent,false);assert.equal(queries,0);assert.equal(reads,0);
- f.source.valid=()=>false;await assert.rejects(displayCredit(host,f.stream,command),/region lease retired/);f.source.valid=()=>true;
- f.stream.regionLease.isAlive=()=>false;await assert.rejects(displayCredit(host,f.stream,command),/region lease retired/);f.stream.regionLease.isAlive=()=>true;
- await assert.rejects(displayCredit(host,f.stream,{...command,generation:0}),/region lease retired/);
+ f.source.valid=()=>false;await assert.rejects(displayCredit(host,f.stream,command),{code:'user_domain_stale_reference'});f.source.valid=()=>true;
+ f.stream.regionLease.isAlive=()=>false;await assert.rejects(displayCredit(host,f.stream,command),{code:'user_domain_stale_reference'});f.stream.regionLease.isAlive=()=>true;
+ await assert.rejects(displayCredit(host,f.stream,{...command,generation:0}),{code:'user_domain_stale_reference'});
  f.stream.previous=null;f.stream.regionCurrent=async()=>{queries++;return false};
  assert.equal((await displayCredit(host,f.stream,command)).frame_sent,false);assert.equal(queries,1,'a possible frame still requires fresh final delivery admission');assert.equal(reads,0);
 });
@@ -121,7 +121,7 @@ for(const change of ['generation','window','cancellation'])test(`MP-08/MP-10/MP-
  Object.assign(f.source,{native:true,changedAt:performance.now(),regionRevision:0});
  Object.assign(f.stream,{regionSource:f.source,regionLease:{isAlive:()=>true},regionWindow:{isCurrent:()=>window},regionCurrent:async()=>assert.fail('empty retired credit must not query a page')});
  f.stream.producer.waitReady=async()=>{if(change==='generation')host.generation++;else if(change==='window')window=false;else abort.abort()};
- await assert.rejects(displayCredit(host,f.stream,{generation:1,after_sequence:1},abort.signal),change==='cancellation'?{code:'browser_action_cancelled'}:/region lease retired/);
+ await assert.rejects(displayCredit(host,f.stream,{generation:1,after_sequence:1},abort.signal),change==='cancellation'?{code:'browser_action_cancelled'}:{code:'user_domain_stale_reference'});
 });
 
 test('MP-08/MP-10/MP-11 a native event retires cached delivery after asynchronous encoding without another query',async()=>{

@@ -12,6 +12,7 @@ import { NativeRefiner } from './kernel-browser-refiner.mjs';
 import { identicalToDelivered, nativeCreditEmpty, nativeRegionBaseCurrent, nativeRegionPending } from './kernel-browser-native-credit.mjs';
 import { DisplayCapture } from './kernel-browser-display-capture.mjs';
 import { DisplayDocumentPending } from './kernel-browser-display-document.mjs';
+import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 
 const frameKinds={video:1,stripes:2,tiles:3,png:4};
 export async function displayCredit(host, stream, command, signal) {
@@ -23,7 +24,8 @@ export async function displayCredit(host, stream, command, signal) {
     // Diagnostics (labels only): which fence retired this region's capture.
     const source=stream.regionSource;
     host.timing?.(`region_retired ${stream.regionTarget?.kind} ${command.generation!==host.generation?'generation':source.closed?'closed':!source.allowed(source.policy)?'policy':'lease'}`,timestamp());
-    return Error('MP-11: region lease retired');
+    // A retired region is a stale binding: the viewer's pump ends at once and the client rebinds.
+    return new UserDomainRefusal('stale_reference');
   };
   if(!regionAlive())throw retired();
   const cachedSource=stream.regionSource??host.compositors.get(stream.tab_id)?.source;

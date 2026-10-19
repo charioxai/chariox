@@ -20,6 +20,8 @@ const RTT_WINDOW: Duration = Duration::from_secs(10);
 const CONGESTION_WINDOW: Duration = Duration::from_secs(2);
 /// Consecutive host failures before the pump stops and the client resubscribes.
 const FAILURE_LIMIT: u32 = 5;
+/// Stale-document refusals that last this long mean the bound document is gone for good.
+const STALE_LIMIT: Duration = Duration::from_millis(300);
 /// Selkies VIDEO_RELAY_SYNC_FLOOR_SECONDS: at most one key request per second.
 const SYNC_FLOOR: Duration = Duration::from_secs(1);
 
@@ -245,6 +247,55 @@ pub(super) struct PumpRoute {
     pub(super) public_key: String,
 }
 
+/// What a failed capture credit means for the pump.
+#[derive(Default)]
+struct Faults {
+    failures: u32,
+    stale_since: Option<Instant>,
+}
+
+enum Next {
+    Fail,
+    Retry { delay: Duration, reset: bool },
+}
+
+impl Faults {
+    fn error(&mut self, error: &DaemonError, now: Instant) -> Next {
+        match error {
+            // A navigation between capture and commit refuses one credit as a stale document and
+            // the next credit binds the new one. Staleness that persists is a retired source: only
+            // the client can rebind it, so end the pump now instead of after the failure backoff.
+            DaemonError::UserDomainRefused {
+                reason: crate::error::UserDomainRefusalReason::StaleReference,
+            } => {
+                let since = *self.stale_since.get_or_insert(now);
+                if now.duration_since(since) >= STALE_LIMIT {
+                    Next::Fail
+                } else {
+                    Next::Retry {
+                        delay: Duration::from_millis(10),
+                        reset: false,
+                    }
+                }
+            }
+            // A gone subscription (stale generation, revoked grant) is final; other host failures
+            // retry on an independent frame.
+            DaemonError::UserDomainRefused { .. } => Next::Fail,
+            _ => {
+                self.failures += 1;
+                if self.failures >= FAILURE_LIMIT {
+                    Next::Fail
+                } else {
+                    Next::Retry {
+                        delay: Duration::from_millis(250) * self.failures,
+                        reset: true,
+                    }
+                }
+            }
+        }
+    }
+}
+
 async fn lease_alive(route: &PumpRoute) -> bool {
     route
         .tasks
@@ -269,7 +320,7 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
     crate::transport::kernel_browser_display::timing("push_gate_started", Instant::now());
     let daemon_private_key = route.router.relay_private_key();
     let mut last_sent = pump.with(|state| state.acked);
-    let (mut idle, mut failures) = (Duration::ZERO, 0u32);
+    let (mut idle, mut faults) = (Duration::ZERO, Faults::default());
     let mut direct = DirectLease(None);
     loop {
         if pump.with(|state| state.stopped) || !lease_alive(&route).await {
@@ -328,32 +379,23 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
             capture_frame(&route, &daemon_private_key, generation, last_sent, credit).await;
         let captured = match result {
             Ok(result) => {
-                failures = 0;
+                faults = Faults::default();
                 result
             }
-            // A navigation between capture and commit refuses one credit as
-            // a stale document; the next credit binds the new document.
-            Err(DaemonError::UserDomainRefused {
-                reason: crate::error::UserDomainRefusalReason::StaleReference,
-            }) => {
-                sleep(Duration::from_millis(10)).await;
-                continue;
-            }
-            Err(error) => {
-                // A gone subscription (stale generation, revoked grant) is
-                // final; other host failures retry on an independent frame.
-                failures += 1;
-                if matches!(error, DaemonError::UserDomainRefused { .. })
-                    || failures >= FAILURE_LIMIT
-                {
+            Err(error) => match faults.error(&error, Instant::now()) {
+                Next::Fail => {
                     crate::transport::kernel_browser_display::pump_failed(&error);
                     pump.with(|state| state.failed = true);
                     return;
                 }
-                pump.with(|state| state.reset = true);
-                sleep(Duration::from_millis(250) * failures).await;
-                continue;
-            }
+                Next::Retry { delay, reset } => {
+                    if reset {
+                        pump.with(|state| state.reset = true);
+                    }
+                    sleep(delay).await;
+                    continue;
+                }
+            },
         };
         let Some((sequence, encrypted_event, lease)) = captured else {
             if started.elapsed() < Duration::from_millis(5) {
@@ -494,6 +536,40 @@ mod tests {
 
     // MP-08/MP-10/MP-11: real gate state and opt-in trace. The evidence parser
     // distinguishes closure transitions from repeated closed polling.
+    #[test]
+    fn retired_source_ends_the_pump_at_once_but_one_stale_credit_does_not() {
+        use crate::error::UserDomainRefusalReason::{NotGranted, StaleReference};
+        let stale = DaemonError::UserDomainRefused { reason: StaleReference };
+        let t0 = Instant::now();
+        let mut faults = Faults::default();
+        assert!(matches!(faults.error(&stale, t0), Next::Retry { reset: false, .. }));
+        assert!(matches!(faults.error(&stale, t0 + STALE_LIMIT / 2), Next::Retry { .. }));
+        assert!(matches!(faults.error(&stale, t0 + STALE_LIMIT), Next::Fail));
+        // A delivered credit forgets the stale run.
+        assert!(matches!(
+            Faults::default().error(&stale, t0 + STALE_LIMIT),
+            Next::Retry { .. }
+        ));
+        let refused = DaemonError::UserDomainRefused { reason: NotGranted };
+        assert!(matches!(Faults::default().error(&refused, t0), Next::Fail));
+    }
+
+    #[test]
+    fn other_host_failures_retry_with_a_reset_until_the_limit() {
+        let error = DaemonError::LocalTransport {
+            operation: "kernel_browser",
+            message: "x".into(),
+        };
+        let mut faults = Faults::default();
+        for _ in 1..FAILURE_LIMIT {
+            assert!(matches!(
+                faults.error(&error, Instant::now()),
+                Next::Retry { reset: true, .. }
+            ));
+        }
+        assert!(matches!(faults.error(&error, Instant::now()), Next::Fail));
+    }
+
     #[test]
     fn mp10_gate_trace_observation() {
         let now = Instant::now();
