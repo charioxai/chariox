@@ -714,7 +714,7 @@ export class KernelBrowserHost {
       if (!stream || stream.observed_by !== scope || command.generation !== this.generation) throw new UserDomainRefusal("not_granted");
       if(stream.source_kind==='desktop')return this.desktopDisplay.request(command,scope,{signal});
       if (command.op === "unsubscribe") { await this.removeDisplay(stream); return { generation: this.generation, unsubscribed: true }; }
-      if(stream.suspended)throw new UserDomainRefusal('stale_reference');
+      if(stream.suspended)throw new UserDomainRefusal('stale_reference','display_suspended');
       stream.lastCreditAt=Date.now();
       stream.expires = Date.now() + 60_000;
       this.armDisplayExpiry(stream);

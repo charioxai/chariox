@@ -1,10 +1,12 @@
 // Host-only policy errors; page exceptions and arbitrary error codes never qualify.
 const reasons = new Set(['not_focused_agent','foreign_owner','stale_epoch','stale_reference','not_granted','sensitive_requires_focus']);
 export class UserDomainRefusal extends Error {
-  constructor(reason) {
+  constructor(reason, race) {
     if (!reasons.has(reason)) throw new TypeError('Unknown user-domain refusal reason');
     super('User-domain request refused');
     this.code = 'user_domain_'+reason;
+    // Diagnostics only: a refusal the viewer answers by rebinding (a retired region, a display it just suspended).
+    if (race !== undefined) this.race = race;
   }
 }
 // Region capture failures the person can act on. Not policy refusals: the code and text reach the viewer as written.

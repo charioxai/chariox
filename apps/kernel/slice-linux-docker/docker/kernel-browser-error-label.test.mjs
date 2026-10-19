@@ -1,6 +1,7 @@
 // MP-11: supplementary diagnostics privacy regression.
 import test from 'node:test';import assert from 'node:assert/strict';
 import {hostErrorLabel,mirrorExceptionReason,hostFailureMessage,browserLaunchFailureReason} from './kernel-browser-error-label.mjs';
+import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
 import {nativeReadbackFailure} from './kernel-browser-native-readback.mjs';
 test('MP-11 ordinary unprefixed failures retain public source location without private data',()=>{
  const error={name:'TypeError',code:'ENOENT',message:'private page value',stack:'TypeError: private page value\n at f (/private/credential-profile/kernel-browser-native-worker.mjs:17:20)'};
@@ -136,4 +137,12 @@ test('MP-08/MP-10/MP-11 host replies retain closed user-domain and display-regio
  }
  assert.match(hostFailureMessage(Error('MP-11: region lease retired')),/native_region_lease_retired/);
  for(const error of [{code:'user_domain_private_canary'},{message:'MP-11: region lease retired private-canary'}])assert(!hostFailureMessage(error).includes('private'))
+});
+
+test('MIRROR-ROBUST-STALE-REF navigation races are labelled apart from host errors; a plain stale reference stays one',()=>{
+ assert.equal(hostErrorLabel(new UserDomainRefusal('stale_reference','region_retired')),'navigation_race region_retired');
+ assert.equal(hostErrorLabel(new UserDomainRefusal('stale_reference','display_suspended')),'navigation_race display_suspended');
+ assert.equal(hostErrorLabel({name:'Error',code:'stale_document_reference'}),'navigation_race stale_document');
+ assert.match(hostErrorLabel(new UserDomainRefusal('stale_reference')),/^host_error Error user_domain_stale_reference/);
+ assert.equal(hostErrorLabel(Object.assign(new UserDomainRefusal('stale_reference'),{race:'protectedcanary'})).includes('protectedcanary'),false);
 });

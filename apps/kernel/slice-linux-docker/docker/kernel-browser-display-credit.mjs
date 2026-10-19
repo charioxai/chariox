@@ -25,7 +25,7 @@ export async function displayCredit(host, stream, command, signal) {
     const source=stream.regionSource;
     host.timing?.(`region_retired ${stream.regionTarget?.kind} ${command.generation!==host.generation?'generation':source.closed?'closed':!source.allowed(source.policy)?'policy':'lease'}`,timestamp());
     // A retired region is a stale binding: the viewer's pump ends at once and the client rebinds.
-    return new UserDomainRefusal('stale_reference');
+    return new UserDomainRefusal('stale_reference','region_retired');
   };
   if(!regionAlive())throw retired();
   const cachedSource=stream.regionSource??host.compositors.get(stream.tab_id)?.source;

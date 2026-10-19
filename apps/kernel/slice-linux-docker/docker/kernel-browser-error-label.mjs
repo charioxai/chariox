@@ -91,7 +91,12 @@ const fixedReasons=new Map([
 for(const name of ['bwrap','Xvfb','dbus-daemon','openbox','setxkbmap'])fixedReasons.set(`MP-08: owned desktop prerequisite unavailable (${name})`,'desktop_prerequisite_'+name.toLowerCase().replaceAll('-','_')+'_unavailable');
 // Worker stages come from the shipped native executable; admit exact public labels only.
 const nativeStages=new Set('native_codec_unavailable x_extensions desktop_geometry window_tree_bound window_ambiguous window_not_found window_retired composite_redirect composite_pixmap native_admission native_pool_metadata native_pool_owner native_packet_root native_root_owner native_capture_unavailable native_window_retired native_config native_config_pipe native_config_bound'.split(' '));
+// MIRROR-ROBUST-STALE-REF: navigation and teardown races the viewer answers by rebinding are not host errors;
+// a binding that is really stale shows as the viewer failing to follow, never as one of these.
+const races=new Set(['region_retired','display_suspended']);
 export function hostErrorLabel(error) {
+ if(races.has(error?.race))return 'navigation_race '+error.race;
+ if(error?.code==='stale_document_reference')return 'navigation_race stale_document';
  const name=names.has(error?.name)?error.name:'Error';
  const known=typeof error?.stack==='string'?[...error.stack.matchAll(/\/([a-z0-9-]+\.mjs):(\d{1,5}):(\d{1,5})/g)].filter(m=>files.has(m[1])):[];
  // A timeout fires from a timer inside the CDP client: the waiting caller is the first position after it.
