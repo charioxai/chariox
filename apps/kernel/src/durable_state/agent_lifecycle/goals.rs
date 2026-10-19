@@ -345,10 +345,11 @@ fn no_objection(t: &mut AgentTaskExecution) {
 fn continue_work(t: &mut AgentTaskExecution, reason: &str) -> bool {
     if t.goal.is_none() {
         if t.correction_used {
-            // Open obligations still need the owner; a repeated verdict alone does not.
+            // A running or failed resource still needs the owner. A repeated verdict or an
+            // unacknowledged receipt of a clean exit ("settling") does not.
             if t.obligations
                 .iter()
-                .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
+                .any(|o| matches!(o.status.as_str(), "open" | "failed"))
             {
                 blocked(t, "Plain request remains incomplete after one correction; owner must resume or cancel");
             } else {

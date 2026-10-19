@@ -735,6 +735,28 @@ fn a12_plain_check_has_one_correction_and_no_continuation_mode() {
         ExecutionState::Blocked,
         "an open obligation still needs the owner"
     );
+    // A cleanly exited source whose receipt nobody acknowledged is bookkeeping.
+    let f = Fixture::new();
+    plain(&f);
+    f.register();
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "source-done".into(),
+        success: true,
+        public_answer: None,
+        now: 2,
+    });
+    assert!(f.task().obligations.iter().any(|o| o.status == "settling"));
+    f.settle("p", true);
+    let t = check(&f, assessment("continue"));
+    let id = t.pending_prompt_id.unwrap();
+    f.begin(&id);
+    f.settle(&id, true);
+    assert_eq!(
+        check(&f, assessment("continue")).state,
+        ExecutionState::Done
+    );
 }
 #[test]
 fn a12_plain_achieved_needs_evidence_and_fences_checks_from_work() {
