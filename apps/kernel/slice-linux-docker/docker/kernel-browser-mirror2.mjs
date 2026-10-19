@@ -116,6 +116,15 @@ function dataUrlBytes(url) {
 export const regionArea = boxes => boxes.reduce((sum, { box: [x, y, w, h] }) => sum + Math.max(0, Math.min(1280, x + w) - Math.max(0, x)) * Math.max(0, Math.min(800, y + h) - Math.max(0, y)), 0);
 // Opaque regions are stills/region video over the mirrored page; only a viewport they mostly cover is the video's page.
 export const regionOverBudget = boxes => regionArea(boxes) > 0.6 * 1280 * 800;
+// Share of the viewport the boxes cover (overlap counted once, 20 px grid; the page reports its live viewport,
+// 1280x800 otherwise). Region video is proved against the page pixels around the media; a page that is nearly all
+// media has none (native attestation refuses), so it is the video.
+export function regionCoverage(boxes) {
+  const [width, height] = boxes.find(b => b.view)?.view ?? [1280, 800], columns = Math.ceil(width / 20), rows = Math.ceil(height / 20), seen = new Uint8Array(columns * rows);
+  for (const { box: [x, y, w, h] } of boxes) for (let r = Math.max(0, Math.ceil((y - 10) / 20)); r < rows && r * 20 + 10 < y + h; r++) for (let c = Math.max(0, Math.ceil((x - 10) / 20)); c < columns && c * 20 + 10 < x + w; c++) seen[r * columns + c] = 1;
+  return seen.reduce((n, v) => n + v, 0) / (columns * rows);
+}
+export const regionUnattestable = boxes => regionCoverage(boxes) > 0.88;
 
 // Compact wire records (pre-order): [idDelta, parentBack, tag | kindCode, attrs | 0, extra].
 // parentBack 0 = the context parent (null for a snapshot root, the op id for
@@ -545,7 +554,10 @@ export class Mirror2 {
     // Stills, like image bytes, never ride on a DOM change or follow viewer input
     // within QUIET_MS: an echo must not queue behind a lossless region.
     const still = reset || (this.emptyDom(stream, source) && !this.recentInput(stream));
-    if (!fallback) tiles = await this.tiles(world, tab, stream, reset, still, source?.opaque === false);
+    if (!fallback) try { tiles = await this.tiles(world, tab, stream, reset, still, source?.opaque === false); } catch (error) {
+      if (error.mirrorReason !== 'region_area') throw error;
+      fallback = error.mirrorReason; this.host.timing?.(`mirror2_fallback_${fallback}`, timestamp()); source = null; reset = true; resources = [];
+    }
     mark('tiles');
     // The page session's navigation events arrive in order with the replies above: a cached document equal to the
     // tab's needs no renderer round trip (which waits for the page's next task ahead of an echo). Any other
@@ -848,9 +860,13 @@ export class Mirror2 {
     stream.tilesPending = false;
     let boxes = [...(await this.evaluate(world, `${world.ref}.opaqueBoxes()`)).filter(b => !b.foreign || !stream.frames.has(b.id)), ...await this.frames.opaqueBoxes(stream, world)];
     stream.tileKeys = boxes.map(b => b.id).join(',');
-    // Opaque regions over most of the viewport are carried by their region video leases alone (viewport-clipped);
-    // lossless stills of that area are not sent, and the page stays a DOM copy.
-    if (!boxes.length || regionOverBudget(boxes) || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
+    // Opaque regions covering nearly the whole viewport leave no page pixels to prove a region video against: the
+    // page is the video (labelled; the client retries later).
+    if (regionUnattestable(boxes)) { const error = new Error('MP-10: opaque regions cover the page'); error.mirrorReason = 'region_area'; throw error; }
+    if (!boxes.length || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
+    // Over the budget a still is only the placeholder until the region's video arrives (and what stays if it cannot
+    // start): a few per page, never a refreshed stream of lossless frames.
+    if (regionOverBudget(boxes)) { if (reset) stream.bigStills = 0; if ((stream.bigStills ?? 0) >= 3) return []; stream.bigStills = (stream.bigStills ?? 0) + 1; }
     stream.tilesAt = Date.now();
     // The viewer keeps a still until replaced: unchanged pixels are not sent again.
     if (reset || !stream.tileHashes) stream.tileHashes = new Map();

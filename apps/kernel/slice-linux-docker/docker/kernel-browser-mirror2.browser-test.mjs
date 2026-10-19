@@ -1186,16 +1186,25 @@ test("MP-10: review #941@f6fb77245-4 a screenshot-crop region inside a same-orig
 
 
 // mirrorregion: Miguel 2026-10-19 "areas that cannot be mirrored are sent as video, and only when all fails the whole page".
-const bigCanvas = '<style>body{margin:0}</style><canvas id="c" width="1280" height="700" style="display:block"></canvas><p id="t">text under the canvas</p><script>const i=new Image();i.onload=()=>{c.getContext("2d").drawImage(i,0,0);window.drawn=true};i.src="http://localhost:PORT/tile.svg"</script>';
-test("MP-10 mirrorregion: an oversized opaque region (>60 % of the view) stays a DOM copy; its lease is the visible part", () => mirrored(bigCanvas, async ctx => {
+const bigCanvas = '<style>body{margin:0}</style><canvas id="c" width="1280" height="600" style="display:block"></canvas><p id="t">text under the canvas</p><script>const i=new Image();i.onload=()=>{c.getContext("2d").drawImage(i,0,0);window.drawn=true};i.src="http://localhost:PORT/tile.svg"</script>';
+test("MP-10 mirrorregion: an oversized opaque region (60-88 % of the view) stays a DOM copy; its lease is the visible part", () => mirrored(bigCanvas, async ctx => {
   const { next, evaluate } = ctx;
   for (let i = 0; i < 100 && await evaluate("window.drawn === true") !== true; i++) await settle(20);
   const first = await next();
   assert.equal(first.fallback, undefined, "MP-10: a large region does not hand the page to video"); assert.equal(first.reset, true); assert(first.nodes.length > 3);
   const packet = await stayDom(next, 3000, "MP-10: stays DOM");
   const lease = await regionLease(ctx, packet.sequence);
-  assert.deepEqual(lease.rect, { x: 0, y: 0, width: 1280, height: 700 });
-}, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="700"><rect width="1280" height="700" fill="rgb(255,0,0)"/></svg>' } }));
+  assert.deepEqual(lease.rect, { x: 0, y: 0, width: 1280, height: 600 });
+}, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="600"><rect width="1280" height="600" fill="rgb(255,0,0)"/></svg>' } }));
+
+// A page the media fills has no page pixels around it to prove a region video against: the page is the video.
+const fullCanvas = bigCanvas.replace('height="600"', 'height="780"')
+test("MP-10 mirrorregion: media filling the view (over 88 %) hands the page to labelled video", () => mirrored(fullCanvas, async ctx => {
+  const { next, evaluate } = ctx;
+  for (let i = 0; i < 100 && await evaluate("window.drawn === true") !== true; i++) await settle(20);
+  const first = await next();
+  assert.equal(first.fallback, "region_area"); assert.equal(first.reset, true); assert(!first.nodes);
+}, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="780"><rect width="1280" height="780" fill="rgb(255,0,0)"/></svg>' } }));
 
 // DuckDuckGo results: many result videos faded in and out (opacity animation) next to a hidden carousel.
 test("MP-10 mirrorregion: many hidden or fading videos and a carousel with a fading tainted canvas never hand the page to video", () => mirrored(

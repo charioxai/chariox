@@ -819,7 +819,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if (kindOf.get(id) !== 'tile' && !foreign.has(id) || !node.isConnected) continue;
         let [x, y, width, height] = box(node);
         for (let view = node.ownerDocument.defaultView; view && view !== window; view = view.parent) { const owner = view.frameElement; if (!owner) break; const b = owner.getBoundingClientRect(); x += b.x + owner.clientLeft; y += b.y + owner.clientTop; }
-        if (width > 0 && height > 0 && x < innerWidth && y < innerHeight && x + width > 0 && y + height > 0 && !invisible(node)) { const cause = distorted(node); out.push({ id, box: [x, y, width, height], ...(foreign.has(id) ? { foreign: true } : {}), ...(cause ? { distorted: cause, tag: node.localName } : {}) }); }
+        if (width > 0 && height > 0 && x < innerWidth && y < innerHeight && x + width > 0 && y + height > 0 && !invisible(node)) { const cause = distorted(node); out.push({ id, box: [x, y, width, height], view: [innerWidth, innerHeight], ...(foreign.has(id) ? { foreign: true } : {}), ...(cause ? { distorted: cause, tag: node.localName } : {}) }); }
       }
       return out;
     };
