@@ -25,22 +25,8 @@ export function nativeInputDocumentTarget(host,command,scope,nativeDisplay){
 // the same emulated metrics and window binding stands in while the renderer is busy; a later read that differs
 // fails the current check and retires the display.
 const LAYOUT_WAIT_MS=400,layouts=new WeakMap(),proofs=new WeakMap();
-// MP-08/MP-10: a Tab that has just opened swaps its about:blank document for the real one while the first
-// admission runs. That admission retired itself and left the viewer to retry after its own delay; the same fresh
-// admission (every check again) now runs here once the frame owner is seen to have moved on.
-export function subscribeVisiblePage(host,command,scope,signal,options={}){
+export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisiblePageCapture}={}){
  return reserveDisplay(host,async()=>{
-  for(let attempt=0;;attempt++){
-   const seen={};
-   try{return await admitVisiblePage(host,command,scope,signal,options,seen);}
-   catch(error){
-    const live=seen.target_id&&host.browser?.currentPageFrame?.(seen.target_id);
-    if(attempt>=2||error?.code!=='user_domain_stale_reference'||!live||(seen.frame?live===seen.frame:live.frame.loaderId===seen.document))throw error;
-   }
-  }
- });
-}
-async function admitVisiblePage(host,command,scope,signal,{Capture=VisiblePageCapture},seen){
   assertNotCancelled(signal);
   if(command.generation!==host.generation||command.target||
    !command.codecs?.includes('png')||!command.codecs.includes('avc1.420033')||command.codecs.length>8||
@@ -48,10 +34,8 @@ async function admitVisiblePage(host,command,scope,signal,{Capture=VisiblePageCa
   // MP-08/MP-10/MP-11: the mirror and its native preview use the same
   // event-bound document owner. Stored state may lag a committed navigation.
   const tab=await (host.mirrorTarget??host.displayTarget).call(host,command),policy=host.protection,generation=host.generation,document=tab.document_id;
-  seen.target_id=tab.target_id;seen.document=document;
   const window=host.chromeWindows.current().tabbed;
   const frameProof=host.browser.currentPageFrame?.(tab.target_id);
-  seen.frame=frameProof;
   const {connection,sessionId}=frameProof??await host.browser.resolvePageTarget(tab.target_id);
   const documentCurrent=()=>host.tabs.get(tab.tab_id)?.target_id===tab.target_id&&(frameProof
    ?host.browser.currentPageFrame?.(tab.target_id)===frameProof&&frameProof.frame.loaderId===document
@@ -101,6 +85,8 @@ async function admitVisiblePage(host,command,scope,signal,{Capture=VisiblePageCa
     if(typeof host.chromeWindows.inWindowOverNow!=='function')throw Error('MP-11: visible page occlusion unavailable');
     return host.chromeWindows.inWindowOverNow({left:geometry.window_region.left,top:geometry.window_region.top,width:geometry.width,height:geometry.height});
    }},window,tab,policy,generation,Capture});}catch(error){closeObserver();throw error;}
+
+ });
 }
 // MP-08/MP-10/MP-11: a private source hint can reuse only this exact live
 // crop. It grants no input authority; ordinary admission and the final guard run.
