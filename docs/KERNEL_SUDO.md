@@ -41,12 +41,24 @@ as `refused_or_cancelled` and releases the held work.
 
 MP-08 / MP-10 / MP-11 S02: the initial owner sheet authorizes routine work
 inside the task's session for the chosen window: session state, agent inventory,
-session naming and directly-created agent naming/removal. These operations
+session naming and directly-created agent naming/removal; public provider catalogs
+and its current provider run; reading and committing/pushing changes in the
+session workspace. These operations
 reuse task consent, including changed parameters, with no additional popup.
 Every use still checks the live task, run, creator rules and original deadline.
 Owner focus remains a human terminal decision: `FocusAgent` and
 `CycleAgentFocus` cannot grant resource authority to a provider, even under sudo.
-Other session targets and unclassified host operations require a fresh owner
+Watched commands, provider command/file/tool permission gates and workspace
+live-sync mutations reuse this task consent, including Required-mode runs.
+The provider sandbox and live-sync filesystem fences still apply. A worker
+checks its exact leased prompt against the home window on every watched-command
+admission and again before launch; its cached fence alone grants nothing.
+Provider permissions allow only that operation once, never a provider-wide
+session grant. Startup workspace trust can reuse an already approved launch
+for that exact workspace without treating the pending task as live tool authority.
+Global extension registration reuses consent only for source inside this
+workspace; outside source roots still ask, and App sandboxing stays in force.
+Other session/workspace targets and unclassified host operations require a fresh owner
 passkey in an operation-scope popup showing their exact parameters. That added
 approval binds a digest to the original work and window. Scope is not inferred
 from natural-language similarity or a delegate's result. Extend renews only
@@ -77,10 +89,10 @@ timer misses and alerts every terminal instead of staying silent. Failed warning
 never depends on a timer: every use compares the monotonic deadline, so neither
 a late timer nor a wall-clock change can extend a window.
 
-Sudo never answers approvals: `RespondToInteraction` is refused to
+Sudo never answers arbitrary interactions: `RespondToInteraction` is refused to
 `chariox_kernel_request` and to every kernel-agent caller, and the legacy
-`chariox.meta.resolve_runtime_interaction` tool is removed. Owners answer
-approvals in their terminal. Sudo also cannot mint access or sudo, answer
+`chariox.meta.resolve_runtime_interaction` tool is removed. Covered provider tool permission gates consume task consent before registering
+an interaction. Owners answer new scope and other approvals in their terminal. Sudo also cannot mint access or sudo, answer
 credential-entry prompts, export secret values, change the passkey or
 configure kernel access, pairing, relay or Cloud identity.
 
@@ -193,3 +205,38 @@ scenario with room agent tools enabled. The consent sheet must not promise
 provider-controlled focus. Through the authenticated `chariox_kernel_request`
 path, both `FocusAgent` and `CycleAgentFocus` must fail promptly without a scope
 popup or a focus change; all three covered session renames must still succeed.
+
+## MP-08 / MP-10 / MP-11: task operation acceptance (S02, S08–S18)
+
+Each row needs a fail-first drill against the base and the final built kernel,
+real clients and official provider harness. Source regressions supplement it.
+
+- S02: one approved task, three changed workspace-query parameters and provider
+  metadata operations; no added scope sheet. A different workspace/session asks.
+- S08: Required-mode watched command runs under the approved task without
+  changing permanent permissions; no-sudo still refuses or asks.
+- S09: Claude and native harness watched commands reuse task consent, while
+  process ownership, argv/cwd and current-prompt checks remain enforced.
+- S10: the same watched command on a leased worker asks no extra permission;
+  revoke, expiry, replacement prompt/lease and lost home proof prevent launch.
+- S11: Codex v2 and legacy command/file approval replies accept once, with no
+  second interaction, only for the same task origin. Read-only denial remains.
+- S13: OpenCode permission reuses consent; unfenced live-sync writes still deny.
+- S14: Claude print-mode permission_prompt reuses consent for the same task.
+- S15: Claude native hook and rendered permission selectors do the same.
+- S16: approved exact-workspace startup trust reuses consent; a pending,
+  unapproved sudo request or a newly selected workspace still asks.
+- S17: Required-mode live-sync mutations reuse consent; identity, path and
+  filesystem fences remain. Explicit denial and an ended task grant nothing.
+- S18: workspace-sourced extension registration reuses consent; another source
+  root or unspecified inline source still needs the ordinary registration sheet.
+
+For each of Codex gpt-6-luna low, OpenCode opencode/glm-5.3-flash and Claude
+claude-haiku-5-5, preapprove one task with /sudo, run a watched command and a
+native provider tool approval, and require zero further prompts and real
+outputs. A control without /sudo must still ask. Record the resolved model,
+turn count, screenshots/video at DPR1/DPR2, prompt count and exact source/binary
+identities. No provider-wide approval cache or automatic interaction-answer API
+is introduced. Missing actual passwords, passkeys/codes, first account linking,
+identity choice, new scope, takeover, expiry/revoke and once-only effects keep
+their normal boundaries.

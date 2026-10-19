@@ -1,4 +1,5 @@
 //! MP-08 / MP-10 / MP-11 S02: consent covers the task session once.
+//! The session workspace and public provider catalog are part of that scope.
 //! New host resources still require explicit scope authorization.
 //! Extend changes time, never this envelope.
 use super::*;
@@ -20,7 +21,7 @@ impl KernelRuntimeState {
         request: &LocalDaemonRequest,
     ) -> Result<(), DaemonError> {
         if inventory(request)
-            || self.sudo_task_session_covers(id, request)
+            || self.sudo_task_resource_covers(id, request)
             || self
                 .owned
                 .sudo_scopes
@@ -39,8 +40,70 @@ impl KernelRuntimeState {
     /// session, rather than hashing each parameter set, lets the bound task
     /// do its already-authorized work. Keep this explicit: a request carrying
     /// a session id can also change host state, identities or capabilities.
-    fn sudo_task_session_covers(&self, id: &str, request: &LocalDaemonRequest) -> bool {
-        let session = match request {
+    fn sudo_task_resource_covers(&self, id: &str, request: &LocalDaemonRequest) -> bool {
+        let Some(turn) = self
+            .owned
+            .sudo_turns
+            .lock()
+            .expect("access state poisoned")
+            .get(id)
+            .cloned()
+        else {
+            return false;
+        };
+        let Ok(session) = self.owned.session_store.get_session(&turn.session_id) else {
+            return false;
+        };
+        // These public metadata operations do not choose an identity, link an
+        // account or expose provider credentials.
+        if matches!(
+            request,
+            LocalDaemonRequest::GetProviderCatalog(_)
+                | LocalDaemonRequest::GetProviderCommandCatalogs(_)
+        ) {
+            return true;
+        }
+        if let LocalDaemonRequest::GetProviderRun(r) = request {
+            return self
+                .owned
+                .provider_store
+                .get_run_for_agent(&turn.session_id, &turn.agent_id)
+                .is_some_and(|run| {
+                    run.id() == r.provider_run_id
+                        && run.state() == crate::provider::ProviderRunState::Running
+                })
+                || self
+                    .leased_agent_for_projected_run(&r.provider_run_id)
+                    .is_some_and(|agent| {
+                        agent.id() == turn.agent_id && agent.session_id() == turn.session_id
+                    });
+        }
+        let workspace = match request {
+            LocalDaemonRequest::ListWorkspaceFiles(r) => Some((&r.workspace_id, &r.worktree_id)),
+            LocalDaemonRequest::GetWorkspaceFileContent(r) => {
+                Some((&r.workspace_id, &r.worktree_id))
+            }
+            LocalDaemonRequest::GetWorkspaceGitOverview(r) => {
+                Some((&r.workspace_id, &r.worktree_id))
+            }
+            LocalDaemonRequest::GenerateWorkspaceCommitMessage(r)
+                if r.session_id == turn.session_id && r.agent_id == turn.agent_id =>
+            {
+                Some((&r.workspace_id, &r.worktree_id))
+            }
+            LocalDaemonRequest::CommitWorkspaceChanges(r) => {
+                Some((&r.workspace_id, &r.worktree_id))
+            }
+            LocalDaemonRequest::PushWorkspaceBranch(r) => Some((&r.workspace_id, &r.worktree_id)),
+            LocalDaemonRequest::CommitAndPushWorkspaceChanges(r) => {
+                Some((&r.workspace_id, &r.worktree_id))
+            }
+            _ => None,
+        };
+        if let Some((workspace, worktree)) = workspace {
+            return workspace == session.workspace_id() && worktree == session.worktree_id();
+        }
+        let target = match request {
             LocalDaemonRequest::GetSessionState(r) => &r.session_id,
             LocalDaemonRequest::ListAgents(r) => &r.session_id,
             LocalDaemonRequest::AliasSession(r) => &r.session_id,
@@ -49,12 +112,7 @@ impl KernelRuntimeState {
             LocalDaemonRequest::AcknowledgeAgentOutputSeen(r) => &r.session_id,
             _ => return false,
         };
-        self.owned
-            .sudo_turns
-            .lock()
-            .expect("access state poisoned")
-            .get(id)
-            .is_some_and(|turn| &turn.session_id == session)
+        target == &turn.session_id
     }
 
     pub(super) fn check_sudo_creator_scope(

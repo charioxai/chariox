@@ -4388,3 +4388,17 @@ the same crop afresh for a live opted-in mirror of that observer/document/policy
 the kernel requires exact issued geometry, active owned window, density and
 pre/post-capture fences. A frame-size hint never supplies capture coordinates or
 observation authority. This composes unreleased mirror539 with union 540/148.
+
+### MP-08 / MP-10 / MP-11: reuse of sudo task consent
+
+The live owner/task/run-bound sudo window also supplies prior permission at
+provider tool approval and watched-command execution seams. These seams return
+the official one-operation response before registering another interaction.
+They do not authorize responding to arbitrary RuntimeInteractions. Leased
+watched commands revalidate the current home window through the existing
+leased kernel-request path, including before execution. Startup workspace trust
+may reuse an approved exact-workspace launch without making a queued sudo task
+live for tools. Scope expansion, missing authentication values, identity choices,
+revocation, sandboxing, tenant/owner checks and once-only effects keep their
+normal fences. This is kernel policy on existing shapes; no protocol shape or
+version changes.
