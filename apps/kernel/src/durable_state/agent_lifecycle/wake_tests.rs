@@ -492,6 +492,42 @@ fn a03_interval_timer_coalesces_missed_fires_and_stays_armed() {
         .any(|o| o.id == "t1" && o.status == "open"));
 }
 
+// A handled match settles a process that already exited cleanly; a failure stays owner-visible.
+#[test]
+fn a03_handled_match_settles_an_exited_process_obligation() {
+    for (code, status) in [(Some(0), "satisfied"), (Some(2), "failed")] {
+        let f = Fixture::new();
+        f.create("p1", "process", None, None);
+        f.wakes(Operation::ProcessStarted {
+            id: "p1".into(),
+            pid: 4242,
+            now: 15,
+        });
+        f.wait_on(&["p1"]);
+        f.wakes(Operation::ProcessMatched {
+            id: "p1".into(),
+            line: "server ready".into(),
+            now: 40,
+        });
+        f.wakes(Operation::ProcessExited {
+            id: "p1".into(),
+            exit_code: code,
+            tail: "tail".into(),
+            now: 50,
+        });
+        let matched = f.inbox().remove(0);
+        assert_eq!(matched.kind, "process_output_matched");
+        f.apply(Operation::Ack {
+            room: "room".into(),
+            agent: "agent".into(),
+            sequence: matched.sequence,
+            handled: true,
+            now: 60,
+        });
+        assert_eq!(f.task().obligations[0].status, status, "exit {code:?}");
+    }
+}
+
 #[test]
 fn a03_process_exit_and_loss_rewake_the_waiting_task() {
     for (code, kind, status) in [

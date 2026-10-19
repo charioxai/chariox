@@ -715,9 +715,26 @@ fn a12_plain_check_has_one_correction_and_no_continuation_mode() {
     f.begin(&id);
     f.settle(&id, true);
     let t = check(&f, assessment("continue"));
-    assert_eq!(t.state, ExecutionState::Blocked);
+    assert_eq!(
+        t.state,
+        ExecutionState::Done,
+        "a repeated verdict with no open obligations is no objection to a plain request"
+    );
     assert!(t.pending_prompt_id.is_none());
     assert_eq!(t.completion_check.unwrap().check_count, 2);
+    let f = Fixture::new();
+    plain(&f);
+    f.register();
+    f.settle("p", true);
+    let t = check(&f, assessment("continue"));
+    let id = t.pending_prompt_id.unwrap();
+    f.begin(&id);
+    f.settle(&id, true);
+    assert_eq!(
+        check(&f, assessment("continue")).state,
+        ExecutionState::Blocked,
+        "an open obligation still needs the owner"
+    );
 }
 #[test]
 fn a12_plain_achieved_needs_evidence_and_fences_checks_from_work() {
