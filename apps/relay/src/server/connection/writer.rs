@@ -1,7 +1,7 @@
 //! MP-08 / MP-10 / MP-11: bounded opaque multiplexing (532 / peer 140).
 use crate::frame_transport::{
     TransportFrame, CHUNK_BYTES, MAX_ASSEMBLY_BYTES, MAX_MESSAGE_BYTES, MAX_TRANSFERS,
-    SMALL_RESERVE_BYTES, WINDOW_BYTES,
+    PEER_RECEIPT_FRAMES, SMALL_RESERVE_BYTES, WINDOW_BYTES,
 };
 use futures_util::{Sink, SinkExt};
 use std::collections::VecDeque;
@@ -366,13 +366,14 @@ where
                     let bytes = message.len() + transfer.binary.as_ref().map_or(0, Message::len);
                     // While bulk is active, small traffic may hold only its reserve,
                     // so it can never keep the window above what a bulk chunk needs.
-                    let fits = if transfer.small {
-                        credit.bytes + bytes <= WINDOW_BYTES + SMALL_RESERVE_BYTES
-                            && (active.iter().all(|t| t.small)
-                                || credit.small + bytes <= SMALL_RESERVE_BYTES)
-                    } else {
-                        credit.bytes + bytes <= WINDOW_BYTES
-                    };
+                    let fits = credit.pending.len() < PEER_RECEIPT_FRAMES
+                        && if transfer.small {
+                            credit.bytes + bytes <= WINDOW_BYTES + SMALL_RESERVE_BYTES
+                                && (active.iter().all(|t| t.small)
+                                    || credit.small + bytes <= SMALL_RESERVE_BYTES)
+                        } else {
+                            credit.bytes + bytes <= WINDOW_BYTES
+                        };
                     if fits {
                         if starting {
                             next_id = transfer.id;
@@ -628,6 +629,33 @@ mod tests {
             "byte window must stop an unacknowledged stream"
         );
         assert_eq!(ids, (1..=ids.len() as u64).collect::<Vec<_>>());
+    }
+    // An older peer's receipt queue holds PEER_RECEIPT_FRAMES entries: tiny
+    // events must never put more frames than that on the wire unacknowledged,
+    // whatever the byte window is.
+    #[tokio::test]
+    async fn tiny_events_never_exceed_the_peer_receipt_queue() {
+        let (socket, mut client) = sockets().await;
+        let (tx, rx) = mpsc::channel(4096);
+        let (_ack_tx, ack_rx) = mpsc::channel(32);
+        let (_ct, cr) = mpsc::channel(8);
+        for _ in 0..4000 {
+            tx.send(Message::Text("{}".into())).await.unwrap();
+        }
+        let task = tokio::spawn(run_writer(socket, rx, true, false, ack_rx, cr, |_| true));
+        let mut frames = 0;
+        while let Ok(Some(Ok(_))) =
+            tokio::time::timeout(Duration::from_millis(300), client.next()).await
+        {
+            frames += 1;
+        }
+        task.abort();
+        let _ = task.await;
+        assert!(frames > 0, "nothing was sent");
+        assert!(
+            frames <= PEER_RECEIPT_FRAMES,
+            "{frames} unacknowledged frames exceed the peer receipt queue"
+        );
     }
     // S1: a large message waits one round trip per window. 480 KB (a mirror
     // first packet) must need at most two flights, not one per 64 KiB.

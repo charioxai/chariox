@@ -23,6 +23,10 @@ pub const SMALL_RESERVE_BYTES: usize = 2 * CHUNK_BYTES;
 /// queue of that depth can never overflow for a conforming peer.
 pub const MIN_FRAME_BYTES: usize = 64;
 pub const MAX_UNACKED_FRAMES: usize = (WINDOW_BYTES + SMALL_RESERVE_BYTES) / MIN_FRAME_BYTES;
+/// Unacknowledged frames a sender may keep toward any peer. Peers built with
+/// the 64 KiB window size their receipt queue to this many entries and drop
+/// the connection when it overflows, so the larger byte window must not raise it.
+pub const PEER_RECEIPT_FRAMES: usize = (64 * 1024 + SMALL_RESERVE_BYTES) / MIN_FRAME_BYTES;
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_TRANSFERS: usize = 4;
 pub const MAX_ASSEMBLY_BYTES: usize = 128 * 1024 * 1024;
