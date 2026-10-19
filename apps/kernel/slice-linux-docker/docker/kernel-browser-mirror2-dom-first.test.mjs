@@ -88,3 +88,19 @@ for(const retirement of ['browser','connection','session'])test(`MP-08/MP-10/MP-
  await assert.rejects(pending,error=>error.code==='stale_document_reference');
  assert.equal(stream.issued,1,'a retired owner cannot publish the deferred resource packet');
 });
+
+test('MP-08/MP-10 a font-only credit does not consume the image retry that a new load count earned',async()=>{
+ const mirror=new Mirror2({host:{}}),image={key:'r1',kind:'image',state:'waiting',tries:0},font={key:'r2',kind:'font',state:'new',tries:0};
+ const stream={issued:1,movedAt:0,frameSlots:new Map(),resources:new Map([['r1',image]])},due=[];
+ mirror.packetBytes=()=>64;mirror.evaluate=async()=>0;
+ mirror.materializeWorld=async(_world,entries)=>{due.push(entries.map(entry=>entry.key));return []};
+ await mirror.materialize({ref:'m'},stream,null,4);
+ stream.resources.set('r2',font);
+ await mirror.materialize({ref:'m'},stream,'font',5);
+ due.length=0;
+ await mirror.materialize({ref:'m'},stream,null,5);
+ assert.deepEqual(due.flat().filter(key=>key==='r1'),['r1'],'the waiting image is retried once its load count changed');
+ due.length=0;
+ await mirror.materialize({ref:'m'},stream,null,5);
+ assert.deepEqual(due.flat().filter(key=>key==='r1'),[],'and only once per count');
+});
