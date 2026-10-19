@@ -1,7 +1,8 @@
 //! MP-08/MP-10/MP-11: Room-scoped observation protection, below every client.
 //! Values use zeroizing memory and a private runtime-identity-sealed registry.
 //! Retired values are scrub-only for the Room lifetime; deletion wipes them.
-//! Vault values never inserted into the Room are scrub-only and never fence streams.
+//! Provider output is filtered (not withheld): known values are redacted before
+//! persistence or delivery. Only an unknown (untracked) value withholds a stream.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -14,6 +15,7 @@ use zeroize::Zeroizing;
 mod lifecycle;
 mod revocation;
 mod storage;
+mod stream_filter;
 
 use super::KernelRuntimeState;
 use crate::error::DaemonError;
@@ -31,6 +33,7 @@ pub(super) struct RoomSecretObservations {
     migration_failed: bool,
     rooms: Arc<Mutex<BTreeMap<String, Protection>>>,
     barriers: Arc<Mutex<BTreeMap<String, Arc<tokio::sync::RwLock<()>>>>>,
+    pending_streams: Arc<Mutex<stream_filter::Pending>>,
     vault_lifecycle: Arc<tokio::sync::RwLock<()>>,
     revocation_delivery: Arc<Mutex<BTreeMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>>,
     pub(super) epoch: u64,
@@ -102,6 +105,7 @@ impl RoomSecretObservations {
             migration_failed: false,
             rooms: Default::default(),
             barriers: Default::default(),
+            pending_streams: Default::default(),
             vault_lifecycle: Default::default(),
             revocation_delivery: Default::default(),
             epoch: crate::session::unix_epoch_ms(),
@@ -542,6 +546,8 @@ impl RoomSecretObservations {
             .unwrap_or_else(|_| "[sensitive Room observation withheld]".into())
     }
 
+    // Whether the Room holds, or lost track of, an inserted value. Gates private
+    // completion evidence only; output is filtered by `protect_stream`.
     pub(super) fn protects_bytes(&self, room: &str) -> bool {
         let room = self.room_key(room);
         if self.blocked(room, false).is_err() {
@@ -606,18 +612,10 @@ impl RoomSecretObservations {
         &self,
         mut entry: crate::history::SessionHistoryEntry,
     ) -> crate::history::SessionHistoryEntry {
-        use crate::history::SessionHistoryEntryKind;
         if self.withholds_history(&entry.session_id, entry.timestamp_ms) {
             entry.text = "[recovered sensitive Room history withheld]".into();
             entry.attachments.clear();
             return entry;
-        }
-        if matches!(
-            entry.kind,
-            SessionHistoryEntryKind::ProviderOutput | SessionHistoryEntryKind::ProviderReasoning
-        ) && self.protects_bytes(&entry.session_id)
-        {
-            entry.text = "[sensitive Room terminal stream withheld]".into();
         }
         match self.scrub(&entry.session_id, entry.clone()) {
             Ok(entry) => entry,
@@ -645,16 +643,6 @@ impl RoomSecretObservations {
             });
         }
         self.scrub(room, value)
-    }
-
-    pub(super) fn protect_unframed_bytes(&self, room: &str, bytes: &[u8]) -> Vec<u8> {
-        if self.protects_bytes(room) {
-            // Matching individual chunks cannot catch a secret split across chunks.
-            // Retain the fence for the session lifetime, without a human clearance.
-            b"[sensitive Room terminal stream withheld]".to_vec()
-        } else {
-            bytes.to_vec()
-        }
     }
 
     pub(super) fn scrub_response(
@@ -699,15 +687,6 @@ impl RoomSecretObservations {
             let room = self.room_key(&room);
             if self.withholds_history(room, event.timestamp_ms) {
                 event.content = Some("[recovered sensitive Room history withheld]".into());
-                event.content_ref = None;
-                event.metadata.clear();
-            } else if matches!(
-                event.kind,
-                crate::history::HistoryEventKind::ProviderOutput
-                    | crate::history::HistoryEventKind::ProviderReasoning
-            ) && self.protects_bytes(room)
-            {
-                event.content = Some("[sensitive Room terminal stream withheld]".into());
                 event.content_ref = None;
                 event.metadata.clear();
             } else if let Ok(scrubbed) = self.scrub(room, event.clone()) {

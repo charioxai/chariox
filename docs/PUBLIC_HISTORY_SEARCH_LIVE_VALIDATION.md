@@ -169,7 +169,7 @@ Its value was never printed; retained evidence masks earlier public occurrences
 of that TEST word. Registration now holds the existing public-history projection
 mutex through successful storage and protection, invalidates earlier sanitized
 rows/FTS, and registers Vault provenance before releasing the fence. Protected
-Rooms retain the existing stronger withholding of provider streams. The actual
+Rooms redact inserted values from provider streams before persistence. The actual
 post-creation search's user-visible query was itself redacted.
 
 ## MP-08 / MP-10 / MP-11: normal Room Environment

@@ -683,38 +683,22 @@ impl KernelRuntimeState {
                 .record_terminal_diagnostic(provider_run_id, message.to_string())?;
             owned.provider_run_projection.update(run);
         }
-        let mut history_entries = Vec::with_capacity(poll_result.chunks.len());
-        let prompt_metadata =
-            owned.active_prompt_transcript_metadata_for_agent(session_id, agent_id.as_deref());
-        let terminal_outputs = poll_result
+        let mut terminal_outputs = poll_result
             .chunks
             .into_iter()
-            .map(|chunk| {
-                let history_text = String::from_utf8_lossy(&chunk.bytes).into_owned();
-                if chunk.kind != crate::terminal::TerminalOutputKind::PromptEcho {
-                    history_entries.push(
-                        crate::history::SessionHistoryEntry::provider_output(
-                            session_id,
-                            provider_run_id,
-                            agent_id.as_deref(),
-                            chunk.kind.clone(),
-                            chunk.merge_key.clone(),
-                            history_text.clone(),
-                        )
-                        .with_prompt_origin(prompt_metadata.prompt_origin)
-                        .with_source_attachment_id(prompt_metadata.source_attachment_id.clone()),
-                    );
-                }
-                super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+            .map(
+                |chunk| super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
                     provider_run_id: provider_run_id.to_string(),
                     agent_id: agent_id.clone(),
                     kind: chunk.kind,
                     merge_key: chunk.merge_key,
                     bytes: chunk.bytes,
-                }
-            })
+                },
+            )
             .collect::<Vec<_>>();
-        let records = owned.fan_out_terminal_outputs_to_recipients(
+        owned.protect_terminal_outputs(session_id, &mut terminal_outputs);
+        let history_entries = owned.terminal_output_history_entries(session_id, &terminal_outputs);
+        let records = owned.fan_out_protected_terminal_outputs(
             session_id,
             recipient_attachment_ids.clone(),
             terminal_outputs,

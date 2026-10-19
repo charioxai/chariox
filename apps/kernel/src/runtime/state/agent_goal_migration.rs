@@ -145,12 +145,10 @@ impl KernelRuntimeState {
         {
             return Err(ledger::error("entry agent already has an unfinished goal"));
         }
-        let objective = String::from_utf8(
-            self.owned
-                .room_secret_observations
-                .protect_unframed_bytes(session.id(), objective.trim().as_bytes()),
-        )
-        .map_err(|_| ledger::error("protected objective encoding"))?;
+        let objective = self
+            .owned
+            .room_secret_observations
+            .scrub_text_or_withhold(session.id(), objective.trim());
         let Outcome::Task(_) =
             self.owned
                 .durable_state_store

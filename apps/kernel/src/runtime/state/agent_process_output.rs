@@ -9,13 +9,7 @@ pub(super) fn room_protector(
     protection: super::room_secret_observation::RoomSecretObservations,
     room: String,
 ) -> Arc<dyn Fn(String) -> Option<String> + Send + Sync> {
-    Arc::new(move |text| {
-        if protection.protects_bytes(&room) {
-            None
-        } else {
-            protection.scrub(&room, text).ok()
-        }
-    })
+    Arc::new(move |text| protection.scrub(&room, text).ok())
 }
 
 /// Strips terminal escapes/control bytes and redacts secrets before any
@@ -225,6 +219,36 @@ mod tests {
             );
             std::fs::remove_dir_all(root).unwrap();
         }
+    }
+    #[test]
+    fn public_watcher_match_fires_after_a_vault_fill_and_the_value_is_redacted() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-watcher-fill-{}-{}",
+            std::process::id(),
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let protection = super::super::room_secret_observation::RoomSecretObservations::new(
+            root.clone(),
+            Default::default(),
+        );
+        protection.register("room", "fill-canary-value").unwrap();
+        let output = Arc::new(Output::default());
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        drain(
+            &b"login fill-canary-value accepted\n\x1b[32mserver ready\x1b[0m\n"[..],
+            output.clone(),
+            Some("ready".into()),
+            sender,
+            room_protector(protection, "room".into()),
+        );
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(Signal::Matched(line)) if line == "server ready"
+        ));
+        let tail = output.text();
+        assert!(tail.contains("login [redacted] accepted") && !tail.contains("fill-canary"));
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn a03_output_is_sanitized_bounded_and_matches_once() {

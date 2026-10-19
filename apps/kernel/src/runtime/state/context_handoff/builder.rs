@@ -223,6 +223,35 @@ mod tests {
     }
 
     #[test]
+    fn handoff_after_a_vault_fill_redacts_the_value_and_keeps_public_answers() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-handoff-fill-{}-{}",
+            std::process::id(),
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let protection = super::super::super::room_secret_observation::RoomSecretObservations::new(
+            root.clone(),
+            Default::default(),
+        );
+        protection.register("session", "handoff-canary-value").unwrap();
+        let events = protection.protect_history_events(vec![
+            user_event(1, "session", "agent", "log in and tell me the title"),
+            output_event(
+                2,
+                "session",
+                "agent",
+                "run-1",
+                "Logged in with handoff-canary-value; the page title is Dashboard.",
+            ),
+        ]);
+        let handoff = build_agent_context_handoff(&events).expect("handoff should be built");
+        assert!(handoff.contains("the page title is Dashboard"), "{handoff}");
+        assert!(!handoff.contains("handoff-canary"), "{handoff}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn handoff_is_bounded_under_large_history() {
         let mut events = Vec::new();
         for index in 0..80 {

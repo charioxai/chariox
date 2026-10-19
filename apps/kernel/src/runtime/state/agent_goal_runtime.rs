@@ -126,11 +126,9 @@ impl KernelRuntimeOwnedState {
                     .get_session(&prepared.session_id)?
                     .owner_user_id()
                     .into(),
-                objective: String::from_utf8(
-                    self.room_secret_observations
-                        .protect_unframed_bytes(&prepared.session_id, goal.objective.as_bytes()),
-                )
-                .map_err(|_| ledger::error("protected objective encoding"))?,
+                objective: self
+                    .room_secret_observations
+                    .scrub_text_or_withhold(&prepared.session_id, &goal.objective),
                 minutes: goal.minutes,
                 now: crate::session::unix_epoch_ms(),
             })?;
@@ -273,12 +271,10 @@ impl KernelRuntimeState {
         let value = raw_value
             .map(|v| {
                 if action == "edit" {
-                    String::from_utf8(
-                        self.owned
-                            .room_secret_observations
-                            .protect_unframed_bytes(session.id(), v.as_bytes()),
-                    )
-                    .map_err(|_| ledger::error("protected objective encoding"))
+                    Ok(self
+                        .owned
+                        .room_secret_observations
+                        .scrub_text_or_withhold(session.id(), v))
                 } else {
                     Ok(v.to_owned())
                 }

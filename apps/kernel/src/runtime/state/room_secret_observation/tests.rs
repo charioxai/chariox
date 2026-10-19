@@ -277,7 +277,7 @@ fn a02_forwarded_task_answers_protect_recovered_room_history() {
         .unwrap();
     let excerpt = answer["excerpt"].as_str().unwrap();
     assert!(!excerpt.contains("synthetic-only"));
-    assert!(excerpt.contains("withheld"));
+    assert!(excerpt.contains("[redacted]"), "{excerpt:?}");
 }
 
 // MP-08/MP-10/MP-11: even non-Vault peer requests construct these shared
@@ -510,29 +510,125 @@ fn worker_local_transcripts_share_home_room_registry_and_recovery_fence() {
         .is_err());
 }
 
+/// Runs one chunk through the Room stream filter and returns what is delivered.
+fn protect(store: &RoomSecretObservations, room: &str, bytes: &[u8]) -> Vec<u8> {
+    let mut output = stream_output(bytes);
+    store.protect_stream(room, &mut output);
+    output.bytes
+}
+
+fn stream_output(
+    bytes: &[u8],
+) -> crate::runtime::state::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+    stream_output_for_agent(None, bytes)
+}
+
+fn stream_output_for(
+    agent: &str,
+    bytes: &[u8],
+) -> crate::runtime::state::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+    stream_output_for_agent(Some(agent.to_string()), bytes)
+}
+
+fn stream_output_for_agent(
+    agent_id: Option<String>,
+    bytes: &[u8],
+) -> crate::runtime::state::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+    crate::runtime::state::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+        provider_run_id: "run".into(),
+        agent_id,
+        kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+        merge_key: None,
+        bytes: bytes.to_vec(),
+    }
+}
+
 #[test]
-fn split_terminal_chunks_are_withheld_without_human_clearance() {
+fn public_output_survives_a_vault_fill() {
     let root = TestRoot::new();
     let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
-    assert_eq!(store.protect_unframed_bytes("room", b"normal"), b"normal");
+    assert_eq!(protect(&store, "room", b"normal"), b"normal");
     store.register("room", "synthetic-only").unwrap();
+    assert_eq!(
+        protect(&store, "room", b"logged in, all done\n"),
+        b"logged in, all done\n"
+    );
+    let entry = crate::history::SessionHistoryEntry::provider_output(
+        "room",
+        "run",
+        None,
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        None,
+        "logged in, all done",
+    );
+    assert_eq!(
+        store.protect_transcript_entry(entry).text,
+        "logged in, all done"
+    );
+    let protect = super::super::agent_process_output::room_protector(store, "room".into());
+    assert_eq!(protect("ready".into()), Some("ready".into()));
+    assert_eq!(
+        protect("pw synthetic-only ok".into()),
+        Some("pw [redacted] ok".into())
+    );
+}
 
-    for bytes in [b"synthetic".as_slice(), b"-only".as_slice()] {
-        let protected = store.protect_unframed_bytes("room", bytes);
-        assert_eq!(protected, b"[sensitive Room terminal stream withheld]");
-        let entry = crate::history::SessionHistoryEntry::provider_output(
-            "room",
-            "run",
-            None,
-            crate::terminal::TerminalOutputKind::ProviderOutput,
-            None,
-            String::from_utf8_lossy(bytes),
-        );
-        assert_eq!(
-            store.protect_transcript_entry(entry).text,
-            "[sensitive Room terminal stream withheld]"
-        );
+#[test]
+fn secret_split_across_chunks_and_escapes_is_redacted_and_the_rest_kept() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    store.register("room", "synthetic-only").unwrap();
+    let mut delivered = Vec::new();
+    for chunk in [
+        b"user typed synth".as_slice(),
+        b"etic",
+        b"-on",
+        b"ly, then \x1b[1msynth\x1b[0metic-only\x1b[0m again; synth",
+        b"a done",
+    ] {
+        delivered.extend(protect(&store, "room", chunk));
     }
+    let text = String::from_utf8(delivered).unwrap();
+    assert!(!text.contains("synthetic"), "{text:?}");
+    assert!(!text.contains("-only"), "{text:?}");
+    assert_eq!(
+        text,
+        "user typed [redacted], then \x1b[1m[redacted]\x1b[0m again; syntha done"
+    );
+}
+
+#[test]
+fn held_secret_prefix_is_flushed_when_the_message_ends() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    store.register("room", "synthetic-only").unwrap();
+    assert_eq!(protect(&store, "room", b"ends with s"), b"ends with ");
+    let held = store.flush_streams("room", "run");
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].bytes, b"s");
+    assert!(store.flush_streams("room", "run").is_empty());
+    // A longer unfinished prefix is not shown: it could be most of the value.
+    assert_eq!(protect(&store, "room", b"ends with synthetic-o"), b"ends with ");
+    assert_eq!(store.flush_streams("room", "run")[0].bytes, b"[redacted]");
+}
+
+#[test]
+fn retired_and_unknown_values_keep_their_scope() {
+    let key = crate::transport::relay_crypto::generate_private_key_base64();
+    let root = TestRoot::new();
+    let path = root.path().join("observations");
+    let store = RoomSecretObservations::new(path.clone(), BTreeSet::new()).with_identity(&key);
+    store.register("room", "first-secret").unwrap();
+    store.register("room", "second-secret").unwrap();
+    assert_eq!(
+        protect(&store, "room", b"first-secret / second-secret / public\n"),
+        b"[redacted] / [redacted] / public\n"
+    );
+    // After a restart the registry is restored: stream stays filtered, not withheld.
+    let restarted = RoomSecretObservations::new(path, BTreeSet::from(["room".to_string()]))
+        .with_identity(&key);
+    let delivered = String::from_utf8(protect(&restarted, "room", b"a first-secret b")).unwrap();
+    assert!(!delivered.contains("first-secret"));
 }
 
 #[test]
@@ -652,7 +748,7 @@ async fn legacy_room_migration_is_autonomous_and_permanently_withholds_only_prio
             "fresh result"
         );
         assert_eq!(
-            store.protect_unframed_bytes(&room.session_id, b"fresh terminal"),
+            protect(store, &room.session_id, b"fresh terminal"),
             b"fresh terminal"
         );
         let policy: serde_json::Value =
@@ -1102,7 +1198,7 @@ fn public_history_stored_values_scrub_after_restart_without_fencing_streams() {
     for store in [&store, &restarted] {
         assert!(!store.protects_bytes("room"));
         assert_eq!(
-            store.protect_unframed_bytes("room", b"later answer"),
+            protect(store, "room", b"later answer"),
             b"later answer"
         );
         assert_eq!(
