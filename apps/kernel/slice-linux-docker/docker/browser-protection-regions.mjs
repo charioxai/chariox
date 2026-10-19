@@ -251,9 +251,10 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
           }
           // Same-form confirmation fields may share the value. DOM order is
           // not replacement identity: prefer the unique original position.
+          // Show/hide controls can resize a replacement at the same position.
           const positioned=matches.filter(id=>{
             const bounds=fieldAnchor(snapshot,home,id)?.bounds;
-            return bounds&&anchor.bounds&&bounds.every((v,i)=>Math.abs(v-anchor.bounds[i])<1);
+            return bounds&&anchor.bounds&&bounds.slice(0,2).every((v,i)=>Math.abs(v-anchor.bounds[i])<1);
           });
           if(matches.length>1&&positioned.length!==1)throw Error('MP-11: fill replacement identity ambiguous');
           const replacement=matches.length===1?matches[0]:positioned[0];

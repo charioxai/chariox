@@ -684,6 +684,7 @@ for(const dpr of [1,2]) {
    await evaluate(`(()=>{const target=document.querySelector('#password');const form=document.createElement('form');target.before(form);form.append(target);const earlier=target.cloneNode();earlier.id='earlier';earlier.style.top='${ambiguous?150:30}px';earlier.value='MP11-disposable-fill-value';form.prepend(earlier);})()`);
    await fill('#password');assert.deepEqual(await collect(),[]);
    await evaluate("(()=>{const old=document.querySelector('#password');const next=old.cloneNode();next.id='replacement';next.type='text';next.value=old.value;old.replaceWith(next);})()");
+   if(!ambiguous)await evaluate("document.querySelector('#replacement').style.width='240px'");
    if(ambiguous) {
      await assert.rejects(collect,/replacement.*ambiguous/,'identical candidates cannot choose the earlier password field');
      await assert.rejects(capture.bind(null,'ambiguous'),/fill target capture unavailable/,'model capture remains withheld');
