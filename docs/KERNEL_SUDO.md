@@ -41,9 +41,11 @@ as `refused_or_cancelled` and releases the held work.
 
 MP-08 / MP-10 / MP-11 S02: the initial owner sheet authorizes routine work
 inside the task's session for the chosen window: session state, agent inventory,
-session naming, focus and directly-created agent naming/removal. These operations
+session naming and directly-created agent naming/removal. These operations
 reuse task consent, including changed parameters, with no additional popup.
 Every use still checks the live task, run, creator rules and original deadline.
+Owner focus remains a human terminal decision: `FocusAgent` and
+`CycleAgentFocus` cannot grant resource authority to a provider, even under sudo.
 Other session targets and unclassified host operations require a fresh owner
 passkey in an operation-scope popup showing their exact parameters. That added
 approval binds a digest to the original work and window. Scope is not inferred
@@ -185,3 +187,9 @@ DPR1 and DPR2 and record source/binary identities, the resolved provider model,
 all consent counts and cleanup. The baseline must show the repeated prompt.
 This session-resource drill does not establish unclassified host-operation,
 provider-native tool approval, managed-worker, or full MP-11 acceptance.
+
+MP-08 / MP-10 / MP-11 S02 room-admission regression: run the session-resource
+scenario with room agent tools enabled. The consent sheet must not promise
+provider-controlled focus. Through the authenticated `chariox_kernel_request`
+path, both `FocusAgent` and `CycleAgentFocus` must fail promptly without a scope
+popup or a focus change; all three covered session renames must still succeed.

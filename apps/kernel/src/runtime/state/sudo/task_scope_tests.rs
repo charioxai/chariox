@@ -1,10 +1,10 @@
 //! MP-08 / MP-10 / MP-11 S02: task consent covers its session, not another one.
-use super::tests::{fixture, popup, PASSKEY};
+use super::tests::{fixture_with_options, popup, PASSKEY};
 use super::*;
 
 #[tokio::test]
 async fn sudo_task_consent_covers_three_operations_but_not_another_session() {
-    let f = fixture();
+    let f = fixture_with_options(None, true);
     let state = f.state.clone();
     let request = f.request.clone();
     let starting = tokio::spawn(async move {
@@ -13,6 +13,10 @@ async fn sudo_task_consent_covers_three_operations_but_not_another_session() {
             .await
     });
     let consent = popup(&f.state).await;
+    assert!(
+        !consent.message.contains("changing focus"),
+        "owner sheet must match room admission"
+    );
     f.state
         .answer_terminal_runtime_interaction(
             &consent.session_id,
@@ -56,6 +60,36 @@ async fn sudo_task_consent_covers_three_operations_but_not_another_session() {
                 .alias(),
             Some(alias)
         );
+        assert!(f.state.passkey_prompts_for("local").is_empty());
+    }
+    // Human focus grants resource authority; a sudo provider cannot mint it.
+    for request in [
+        LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+            session_id: window.session_id.clone(),
+            agent_id: window.agent_id.clone(),
+        }),
+        LocalDaemonRequest::CycleAgentFocus(CycleAgentFocusRequest {
+            session_id: window.session_id.clone(),
+        }),
+    ] {
+        assert!(
+            f.state
+                .require_sudo_scope(&window.entry_id, &request)
+                .is_err(),
+            "focus must not be advertised as covered task scope"
+        );
+        let rejected = tokio::time::timeout(
+            Duration::from_millis(500),
+            f.router.dispatch_authenticated_runtime_tool_call(
+                "sudo-fixture-bearer",
+                "chariox_kernel_request",
+                serde_json::json!({"request": request}),
+            ),
+        )
+        .await
+        .expect("focus refusal must not ask for scope consent")
+        .unwrap_err();
+        assert!(rejected.to_string().contains("focus"), "{rejected}");
         assert!(f.state.passkey_prompts_for("local").is_empty());
     }
     let other = crate::session::RuntimeSession::new("outside-task", None, "w", "wt", "m", "k");

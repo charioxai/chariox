@@ -46,8 +46,6 @@ impl KernelRuntimeState {
             LocalDaemonRequest::AliasSession(r) => &r.session_id,
             LocalDaemonRequest::AliasAgent(r) => &r.session_id,
             LocalDaemonRequest::DestroyAgent(r) => &r.session_id,
-            LocalDaemonRequest::FocusAgent(r) => &r.session_id,
-            LocalDaemonRequest::CycleAgentFocus(r) => &r.session_id,
             LocalDaemonRequest::AcknowledgeAgentOutputSeen(r) => &r.session_id,
             _ => return false,
         };
