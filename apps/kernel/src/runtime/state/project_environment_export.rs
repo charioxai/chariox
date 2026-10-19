@@ -393,12 +393,18 @@ impl KernelRuntimeState {
             hidden_system_context: "Classify only the supplied Project environment metadata. No tools or source contents are available.".into(),
         }, "discover Project environment", ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery, crate::runtime::agent_utility_executor::AGENT_UTILITY_TIMEOUT).await?;
         let manifest = parse_project_environment_discovery_output(&output, input)?;
+        let decided = manifest
+            .private_files
+            .iter()
+            .filter(|file| file.reason != UNREVIEWED_PRIVATE_FILE_REASON)
+            .count();
         crate::logging::info_with_fields(
             "daemon.project_environment",
             "MP-08: Project environment discovery decided ignored files",
             serde_json::json!({
                 "inventory": input.private_files.len(),
-                "decided": manifest.private_files.len(),
+                "decided": decided,
+                "unreviewed": manifest.private_files.len() - decided,
             }),
         );
         Ok(manifest)
