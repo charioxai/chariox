@@ -633,6 +633,10 @@ impl KernelRuntimeState {
                 .durable_state_store
                 .check_app_binding(agent.owner_user_id(), installation_id)
                 .map_err(|_| app_binding_error("App installation is not trusted and available"))?;
+            // A binding that is still live needs no new decision and is not renewed.
+            if agent.has_extension_grant(ExtensionKind::App, installation_id) {
+                return Ok(Some(permit));
+            }
             permit.prompt_delivery = self.app_prompt_delivery(&agent);
             if let Some(run) = &permit.provider_run_id {
                 if permit
