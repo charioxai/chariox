@@ -1323,6 +1323,9 @@ pub(crate) fn extract_managed_context_package(
     }
 
     let component_root = component_root_for_package(&request.package_path)?;
+    // An interrupted extraction's leftovers are reclaimed first so they never count against the
+    // room this retry needs.
+    cleanup_component_root(&component_root)?;
     let component_room =
         super::limits::disk_budget(component_root.parent().unwrap_or(&component_root));
     if package_size > component_room {
@@ -1333,7 +1336,6 @@ pub(crate) fn extract_managed_context_package(
             component_room,
         )));
     }
-    cleanup_component_root(&component_root)?;
     create_private_directory(&component_root)?;
     let cleanup = PackageExtractionCleanup {
         root: component_root.clone(),

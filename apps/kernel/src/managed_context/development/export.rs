@@ -75,7 +75,6 @@ pub(crate) fn export_development_context_with_vault(
     let mut source_repositories = Vec::with_capacity(request.repositories.len());
     let mut repository_ids = BTreeSet::new();
     let mut target_directories = BTreeSet::new();
-    let mut uncompressed_artifact_bytes = 0_u64;
     let mut materialized_entries = 0_u64;
     let mut manifest_budget = ManifestMemoryBudget::new();
     manifest_budget.consume(request.project_id.len().saturating_add(256))?;
@@ -94,9 +93,6 @@ pub(crate) fn export_development_context_with_vault(
             source_workspace_id: selection.workspace_id.clone(),
             repository_id: exported.repository_id.clone(),
         });
-        uncompressed_artifact_bytes = uncompressed_artifact_bytes
-            .saturating_add(exported.bundle_size_bytes)
-            .saturating_add(exported.overlay_size_bytes);
         repositories.push(exported);
     }
 
@@ -142,17 +138,8 @@ pub(crate) fn export_development_context_with_vault(
         repositories,
         project_environment: environment,
     };
-    let archive_room = crate::managed_context::limits::disk_budget(&canonical_archive_parent);
-    if uncompressed_artifact_bytes > archive_room {
-        return Err(context_error(
-            crate::managed_context::limits::disk_shortage(
-                "development context archive",
-                &canonical_archive_parent,
-                uncompressed_artifact_bytes,
-                archive_room,
-            ),
-        ));
-    }
+    // The gzip writer is bounded by the room left beside the staged artifacts, so only the bytes
+    // actually written are admitted.
     write_archive(
         &temporary_archive_path,
         temporary_archive,

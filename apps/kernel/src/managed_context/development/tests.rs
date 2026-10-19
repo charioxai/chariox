@@ -2546,15 +2546,16 @@ fn development_import_refuses_only_when_the_destination_lacks_room() {
     fs::remove_dir_all(root).expect("remove test root");
 }
 
-#[test]
-fn development_import_rechecks_checkout_room_after_staging_and_cloning() {
-    use crate::managed_context::limits::{with_volume, DISK_RESERVE_BYTES};
-    const FILE_BYTES: usize = 2 << 20;
-    let root = test_root("checkout-after-staging");
+/// Exports a repository holding one incompressible file and returns the import request for it.
+fn noise_import_request(
+    name: &str,
+    file_bytes: usize,
+) -> (PathBuf, DevelopmentContextImportRequest, PathBuf) {
+    let root = test_root(name);
     let repository = root.join("repo");
     init_repository(&repository, "tracked.txt", "base\n");
     let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
-    let noise: Vec<u8> = (0..FILE_BYTES)
+    let noise: Vec<u8> = (0..file_bytes)
         .map(|_| {
             seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
             (seed >> 33) as u8
@@ -2565,7 +2566,7 @@ fn development_import_rechecks_checkout_room_after_staging_and_cloning() {
     git(&repository, &["commit", "-m", "noise"]);
     let archive = root.join("noise.tar.gz");
     let exported = export_development_context(DevelopmentContextExportRequest {
-        project_id: "checkout-after-staging".to_string(),
+        project_id: name.to_string(),
         repositories: vec![DevelopmentRepositorySelection {
             workspace_id: "repo".to_string(),
             worktree_id: None,
@@ -2575,7 +2576,7 @@ fn development_import_rechecks_checkout_room_after_staging_and_cloning() {
         archive_path: archive.clone(),
     })
     .expect("export");
-    let destination = root.join("managed/checkout-after-staging");
+    let destination = root.join(format!("managed/{name}"));
     let request = DevelopmentContextImportRequest {
         archive_path: archive,
         expected_archive_sha256: exported.archive_sha256,
@@ -2583,9 +2584,17 @@ fn development_import_rechecks_checkout_room_after_staging_and_cloning() {
         expected_source_repositories: None,
         destination_root: destination.clone(),
     };
-    // Room for the archive snapshot, extracted artifacts and clone, but not for the checkout that
-    // follows them: admission measured before staging would let the checkout fill the volume.
-    let capacity = DISK_RESERVE_BYTES + (FILE_BYTES as u64) * 7 / 2;
+    (root, request, destination)
+}
+
+#[test]
+fn development_import_rechecks_checkout_room_after_staging_and_cloning() {
+    use crate::managed_context::limits::{with_volume, DISK_RESERVE_BYTES};
+    const FILE_BYTES: usize = 2 << 20;
+    let (root, request, destination) = noise_import_request("checkout-after-staging", FILE_BYTES);
+    // Room for the extracted artifacts and the clone, but not for the checkout that follows them:
+    // admission measured before staging would let the checkout fill the volume.
+    let capacity = DISK_RESERVE_BYTES + (FILE_BYTES as u64) * 13 / 4;
     let error = with_volume(&root.join("managed"), capacity, || {
         import_development_context(request)
     })
@@ -2593,5 +2602,57 @@ fn development_import_rechecks_checkout_room_after_staging_and_cloning() {
     assert!(error.to_string().contains("free space on"), "{error}");
     assert!(!destination.exists());
     assert_no_import_temporaries(&root.join("managed"));
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn development_import_refuses_a_clone_that_does_not_fit_before_launching_git() {
+    use crate::managed_context::limits::{with_volume, DISK_RESERVE_BYTES};
+    const FILE_BYTES: usize = 2 << 20;
+    let (root, request, destination) = noise_import_request("clone-without-room", FILE_BYTES);
+    // Room for the archive snapshot and extracted artifacts, not for Git to duplicate the pack.
+    let capacity = DISK_RESERVE_BYTES + (FILE_BYTES as u64) * 11 / 4;
+    let error = with_volume(&root.join("managed"), capacity, || {
+        import_development_context(request)
+    })
+    .expect_err("the clone must be refused before Git fills the volume");
+    assert!(
+        error
+            .to_string()
+            .contains("development context repository clone"),
+        "{error}"
+    );
+    assert!(!destination.exists());
+    assert_no_import_temporaries(&root.join("managed"));
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn development_export_admits_the_compressed_archive_not_a_second_raw_copy() {
+    use crate::managed_context::limits::{tree_size, with_volume, DISK_RESERVE_BYTES};
+    const FILE_BYTES: usize = 4 << 20;
+    let root = test_root("compressible-export");
+    let repository = root.join("repo");
+    init_repository(&repository, "tracked.txt", "base\n");
+    // Dirty and highly compressible: the overlay is large raw but tiny once gzipped.
+    fs::write(repository.join("dirty.txt"), vec![b'a'; FILE_BYTES]).expect("write dirty file");
+    let archive_dir = root.join("out");
+    fs::create_dir_all(&archive_dir).expect("archive dir");
+    let export = |archive: &str| {
+        export_development_context(DevelopmentContextExportRequest {
+            project_id: "compressible-export".to_string(),
+            repositories: vec![DevelopmentRepositorySelection {
+                workspace_id: "repo".to_string(),
+                worktree_id: None,
+                worktree_path: repository.clone(),
+                role: DevelopmentRepositoryRole::Primary,
+            }],
+            archive_path: archive_dir.join(archive),
+        })
+    };
+    // Room for the staged raw artifacts and the small archive, not for another raw copy.
+    let capacity = DISK_RESERVE_BYTES + tree_size(&archive_dir) + (FILE_BYTES as u64) * 3 / 2;
+    with_volume(&archive_dir, capacity, || export("compressed.tar.gz"))
+        .expect("a compressible export fits when only the archive's bytes are needed");
     fs::remove_dir_all(root).expect("remove test root");
 }

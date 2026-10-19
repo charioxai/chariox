@@ -219,7 +219,7 @@ fn simulated_free(dir: &Path) -> Option<u64> {
 }
 
 #[cfg(test)]
-fn tree_size(path: &Path) -> u64 {
+pub(crate) fn tree_size(path: &Path) -> u64 {
     let Ok(metadata) = std::fs::symlink_metadata(path) else {
         return 0;
     };
