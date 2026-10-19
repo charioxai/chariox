@@ -203,6 +203,23 @@ impl UserAppViews {
         Some(view)
     }
 
+    /// Binds a view to another release generation: an update reloads its page onto it.
+    pub(crate) fn set_generation(&self, owner: &str, id: &str, generation: u64) -> bool {
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        let Some((binding, view)) = registry.views.get_mut(id) else {
+            return false;
+        };
+        if binding.owner != owner {
+            return false;
+        }
+        binding.generation = generation;
+        view.generation = generation.to_string();
+        *registry.cursors.entry(owner.into()).or_default() += 1;
+        drop(registry);
+        self.changed.notify_waiters();
+        true
+    }
+
     pub(crate) fn browser_target(&self, owner: &str, id: &str) -> Option<String> {
         let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
         registry.views.get(id).filter(|(b, _)| b.owner == owner)?;
@@ -419,6 +436,17 @@ impl UserAppViews {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn an_update_rebinds_a_view_to_the_new_generation_for_its_owner_only() {
+        let views = UserAppViews::default();
+        let view = views.open("alice", binding("alice"), "a").unwrap();
+        let before = views.cursor("alice");
+        assert!(!views.set_generation("bob", &view.view_id, 9));
+        assert!(views.set_generation("alice", &view.view_id, 9));
+        let (bound, listed) = views.get("alice", &view.view_id).unwrap();
+        assert_eq!((bound.generation, listed.generation.as_str()), (9, "9"));
+        assert_eq!(views.cursor("alice"), before + 1);
+    }
     #[test]
     fn shutdown_revokes_instances_and_refuses_new_open() {
         let views = UserAppViews::default();

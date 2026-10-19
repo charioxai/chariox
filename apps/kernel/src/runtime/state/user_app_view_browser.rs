@@ -305,6 +305,54 @@ impl KernelRuntimeState {
                         .await
                 });
             }
+            for view in &polled {
+                self.reload_updated_user_app_view(&owner, view).await;
+            }
+        }
+    }
+
+    /// An update that committed while a view is open reloads its page onto the
+    /// new release (MP-08/MP-10): same Tab, and the App's drafts stay in its web
+    /// storage. Until then the controller keeps serving the old generation's files.
+    async fn reload_updated_user_app_view(&self, owner: &str, view: &UserAppView) {
+        let instances = self.app_control().user_views();
+        let (Some((binding, _)), Some(browser), Some(target)) = (
+            instances.get(owner, &view.view_id),
+            view.browser.as_ref(),
+            instances.browser_target(owner, &view.view_id),
+        ) else {
+            return;
+        };
+        let running = self
+            .app_control()
+            .active_app_lease(owner, &binding.installation)
+            .map(|lease| lease.catalog().generation());
+        if !running.is_some_and(|generation| generation > binding.generation) {
+            return;
+        }
+        let Ok((current, frontend)) = self.user_app_frontend(owner, &binding.installation).await
+        else {
+            return;
+        };
+        if current.generation <= binding.generation
+            || !instances.set_generation(owner, &view.view_id, current.generation)
+        {
+            return;
+        }
+        let reloaded = KernelBrowserAppViewHost {
+            state: self,
+            owner,
+            generation: Some(browser.generation),
+        }
+        .command(BrowserAppViewRequest::Reload {
+            target_id: target,
+            entry: frontend.entry,
+            assets: frontend.assets,
+        })
+        .await;
+        if reloaded.is_err() {
+            // Not reloaded: stay on the old generation so the next poll retries.
+            instances.set_generation(owner, &view.view_id, binding.generation);
         }
     }
 

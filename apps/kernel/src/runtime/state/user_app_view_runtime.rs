@@ -393,7 +393,7 @@ impl KernelRuntimeState {
         .unwrap_or(false)
     }
 
-    async fn user_app_frontend(
+    pub(super) async fn user_app_frontend(
         &self,
         owner: &str,
         installation: &str,
