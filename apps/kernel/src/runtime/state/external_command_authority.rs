@@ -142,10 +142,15 @@ impl KernelRuntimeState {
         state
     }
 
-    /// Cancelling a revoked fill is cleanup and must stay deliverable.
-    pub(super) fn without_computer_secret_live(&self) -> Self {
+    /// Stopping an admitted action is cleanup: it must stay deliverable after
+    /// the sudo window, login grant or Room actor that started it is gone.
+    /// Only the authenticated forwarded binding is kept.
+    pub(super) fn for_cancellation(&self) -> Self {
         let mut state = self.clone();
         state.computer_secret_live = None;
+        state.external_command_authority = None;
+        state.room_request_origin = None;
+        state.room_provider_origin = None;
         state
     }
 

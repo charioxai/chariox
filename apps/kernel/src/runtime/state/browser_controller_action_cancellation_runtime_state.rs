@@ -31,7 +31,7 @@ impl KernelRuntimeState {
                         Err(_) => false,
                     };
                     if !cancel { continue; }
-                    let canceller = self.without_computer_secret_live();
+                    let canceller = self.for_cancellation();
                     let cancellation = canceller.room_browser_controller_command(session_id,
                         RoomBrowserControllerCommand::CancelAction { execution_id: execution_id.to_string() });
                     // The worker may not have registered the execution yet, or

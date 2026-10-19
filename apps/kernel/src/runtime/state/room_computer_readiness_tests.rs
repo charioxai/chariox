@@ -357,3 +357,73 @@ async fn revoked_login_consent_cancels_running_computer_input() {
     room.stop_browser_controller().await;
     result.unwrap();
 }
+
+#[tokio::test]
+async fn revoked_sudo_authority_still_cancels_running_computer_input() {
+    let tools = TestTools::new("computer-sudo-revoked-running");
+    let _screen_tool = install_screen_tool(&tools.screen_tool);
+    let mut room = TestRoom::new("computer-sudo-revoked-running");
+    room.enable_browser_controller(&tools).await;
+    let grant = room.runtime.insert_access_grant_for_test(&room.session_id);
+    let granted = crate::local::LocalDaemonRequest::GetSessionState(
+        crate::local::GetSessionStateRequest {
+            session_id: room.session_id.clone(),
+        },
+    );
+    let bound = room
+        .runtime
+        .with_external_command_authority(Some((&grant, &granted)));
+    let environment = room
+        .runtime
+        .reconcile_room_environment_actors(&room.session_id, None)
+        .unwrap();
+    let actor = crate::session::agent_environment_actor_id(
+        &room.agent_id,
+    );
+    let request = crate::session::EnvironmentActionRequest::computer_mutation(
+        &actor,
+        environment.runtime_generation,
+        crate::runtime::computer_input_action::computer_input_action_metadata(
+            &RoomComputerInputAction::PointerMove { x: 1, y: 1 },
+            environment.viewport.revision,
+        )
+        .kind,
+        environment.focused_tab_id.as_deref(),
+    );
+    let (admission, _) = room
+        .runtime
+        .submit_room_environment_action(&room.session_id, request)
+        .unwrap();
+    let crate::session::ActionAdmission::Accepted { action_id } = admission else {
+        panic!("action was not accepted");
+    };
+    let execution = room
+        .runtime
+        .owned
+        .computer_input_executions
+        .begin(&room.session_id, &action_id)
+        .unwrap();
+    let cancellation = execution.cancellation();
+    let typing = async {
+        for _ in 0..100 {
+            if cancellation.requested() {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        Err(crate::error::DaemonError::LocalTransport {
+            operation: "test",
+            message: "typing was never cancelled".into(),
+        })
+    };
+    // The authority that started the input ends while it is typing.
+    room.runtime
+        .revoke_kernel_access(None, Some(&grant), "explicit_revoke")
+        .unwrap();
+    assert!(bound.authorize_current_external_command().is_err());
+    let result = bound
+        .await_cancellable_browser_action(&room.session_id, &action_id, &action_id, typing)
+        .await;
+    room.stop_browser_controller().await;
+    result.unwrap();
+}
