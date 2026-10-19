@@ -1,0 +1,277 @@
+//! MP-08 / MP-09 / MP-10 / MP-11 A02: inbox ordering and exact receipt policy.
+use super::*;
+pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
+    match op {
+        Operation::Attempt {
+            room,
+            agent,
+            sequence,
+            prompt,
+            target,
+            run,
+            now,
+        } => {
+            let mut e = get_event(tx, &room, &agent, sequence)?;
+            if e.state != "pending" {
+                return Err(error(
+                    "delivery is already admitted; reconcile its exact receipt",
+                ));
+            }
+            let earlier:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence<>?3 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (sequence<?3 AND json_extract(payload,'$.state')='pending') ELSE 1 END",params![room,agent,sql_integer(sequence)?],|r|r.get(0)).map_err(sql)?;
+            if earlier != 0 {
+                return Err(error("earlier recipient delivery must settle first"));
+            }
+            // Owner Resume/correction already owns the next turn. Do not let
+            // an idle inbox attempt race its admission into a second task.
+            if target.is_none()
+                && tasks(tx)?.iter().any(|t| {
+                    t.room_id == room
+                        && t.agent_id == agent
+                        && t.pending_prompt_id.is_some()
+                        && (e.payload["task_id"].as_str() == Some(t.task_id.as_str())
+                            || e.payload["task_ids"].as_array().is_some_and(|ids| {
+                                ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
+                            }))
+                })
+            {
+                return Err(error("task continuation must settle before inbox delivery"));
+            }
+            e.state = "submitting".into();
+            e.prompt_id = Some(prompt.clone());
+            e.target_prompt_id = target;
+            e.provider_run_id = run;
+            // Every admitted attempt gets its full receipt window.
+            e.attempted_at_ms = Some(now);
+            save_event(tx, &e)?;
+            super::wakes::record_delivery(tx, &e)?;
+            // Wake retains the original task. Progress is not an ACK/cursor or deadline edit.
+            for mut t in tasks(tx)? {
+                if t.room_id == room
+                    && t.agent_id == agent
+                    && t.state == ExecutionState::Waiting
+                    && (e.payload.get("task_id").and_then(serde_json::Value::as_str)
+                        == Some(t.task_id.as_str())
+                        || e.payload["task_ids"].as_array().is_some_and(|ids| {
+                            ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
+                        }))
+                {
+                    // Settle blocks at the limit, so a Waiting task is always below it.
+                    t.no_progress_wakes += 1;
+                    t.pending_prompt_id = Some(prompt);
+                    t.state = ExecutionState::Working;
+                    t.revision += 1;
+                    save(tx, &t)?;
+                    break;
+                }
+            }
+            Ok(Outcome::Event(e))
+        }
+        Operation::Expire {
+            room,
+            agent,
+            sequence,
+        } => {
+            let mut e = get_event(tx, &room, &agent, sequence)?;
+            if e.state != "pending" {
+                return Err(error("cannot expire an admitted or uncertain delivery"));
+            }
+            e.state = "expired".into();
+            save_event(tx, &e)?;
+            super::wakes::record_delivery(tx, &e)?;
+            Ok(Outcome::Event(e))
+        }
+        Operation::BindSubmission {
+            room,
+            agent,
+            sequence,
+            prompt,
+            target,
+            run,
+            submit_epoch,
+            now,
+        } => {
+            let mut e = get_event(tx, &room, &agent, sequence)?;
+            if e.prompt_id.as_deref() != Some(&prompt)
+                || e.target_prompt_id != target
+                || !matches!(
+                    e.state.as_str(),
+                    "submitting"
+                        | "uncertain"
+                        | "blocked"
+                        | "accepted"
+                        | "acknowledged"
+                        | "handled"
+                )
+            {
+                return Err(error("submission does not match the admitted event prompt"));
+            }
+            if e.provider_run_id.as_deref() != Some(&run) || e.submit_epoch != Some(submit_epoch) {
+                e.provider_run_id = Some(run);
+                e.submit_epoch = Some(submit_epoch);
+                e.attempted_at_ms = Some(now);
+                // A handled outcome remains handled across provider recovery.
+                if !matches!(e.state.as_str(), "acknowledged" | "handled") {
+                    e.state = "submitting".into();
+                }
+                save_event(tx, &e)?;
+            }
+            Ok(Outcome::Event(e))
+        }
+        Operation::Receipt {
+            room,
+            agent,
+            sequence,
+            state,
+            now,
+        } => {
+            if !matches!(state.as_str(), "accepted" | "rejected" | "uncertain") {
+                return Err(error("invalid delivery receipt"));
+            }
+            let mut e = get_event(tx, &room, &agent, sequence)?;
+            if !matches!(e.state.as_str(), "submitting" | "uncertain" | "blocked") {
+                return Err(error("receipt does not match a pending delivery"));
+            }
+            // A timeout-only task is an owner projection of this delivery,
+            // not provider work. Keep a terminal row so the next runtime sweep
+            // retracts its interaction, without suppressing the pending retry.
+            if e.state == "blocked" {
+                let id = format!("delivery-{}", e.sequence);
+                if let Some(mut task) = for_turn(tx, &e.room_id, &e.agent_id, &id)? {
+                    if task.task_id == id
+                        && task.state == ExecutionState::Blocked
+                        && task.obligations.is_empty()
+                    {
+                        task.state = ExecutionState::Done;
+                        task.reason = "Delivery receipt reconciled".into();
+                        task.revision += 1;
+                        save(tx, &task)?;
+                    }
+                }
+            }
+            e.state = if state == "rejected" {
+                "pending".into()
+            } else {
+                state
+            };
+            if e.state == "pending" {
+                if let Some(prompt) = e.prompt_id.as_deref() {
+                    revert_refused_wake(tx, &e.room_id, &e.agent_id, prompt)?;
+                }
+                // Steering is a busy refusal even when its receipt arrives
+                // after the turn ends or the admitted attempt times out.
+                if e.target_prompt_id.is_none() {
+                    tx.execute(
+                        "INSERT INTO agent_inbox_refusals VALUES(?1,?2) ON CONFLICT(sequence) DO NOTHING",
+                        params![sql_integer(e.sequence)?, sql_integer(now)?],
+                    ).map_err(sql)?;
+                }
+                e.prompt_id = None;
+                e.target_prompt_id = None;
+                e.provider_run_id = None;
+                e.submit_epoch = None;
+            }
+            save_event(tx, &e)?;
+            super::wakes::record_delivery(tx, &e)?;
+            Ok(Outcome::Event(e))
+        }
+        Operation::Ack {
+            room,
+            agent,
+            sequence,
+            handled,
+            now,
+        } => {
+            let mut e = get_event(tx, &room, &agent, sequence)?;
+            if matches!(e.state.as_str(), "submitting" | "uncertain" | "blocked") {
+                return Err(error(
+                    "inbox acknowledgement cannot repair uncertain delivery",
+                ));
+            }
+            let already_handled = e.state == "handled";
+            if (e.state == "failed" || (already_handled && !handled))
+                || (e.state == "expired"
+                    && (!handled
+                        || !tasks(tx)?
+                            .iter()
+                            .any(|task| unresolved_source_outcome(task, &e))))
+            {
+                return Ok(Outcome::Event(e));
+            }
+            if !already_handled {
+                e.state = if handled { "handled" } else { "acknowledged" }.into();
+                save_event(tx, &e)?;
+                super::wakes::record_delivery(tx, &e)?;
+            }
+            // A loss handled while Blocked keeps its failed obligation until
+            // owner Resume. A repeated ACK can then reconcile that disposition
+            // without replaying delivery or buying progress from the same receipt.
+            // A recurring check-in ACK is bookkeeping, not useful progress.
+            // The existing three-no-progress-wake guard requires owner action.
+            if handled && matches!(e.kind.as_str(), "source_completed" | "source_lost") {
+                for mut t in tasks(tx)? {
+                    if t.room_id != room
+                        || t.agent_id != agent
+                        // MP-08/MP-10/MP-11: a loss ACK cannot override the owner's Blocked decision.
+                        || (t.state == ExecutionState::Blocked && e.kind == "source_lost")
+                        || matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
+                    {
+                        continue;
+                    }
+                    let mut changed = false;
+                    for o in &mut t.obligations {
+                        if o.completion_source() == Some(&e.source_id)
+                            && matches!(o.status.as_str(), "failed" | "settling")
+                        {
+                            o.status = "satisfied".into();
+                            changed = true;
+                        }
+                    }
+                    // Handling an actual resource outcome is progress; a receipt ACK alone is not.
+                    let belongs = e.payload["task_id"].as_str() == Some(t.task_id.as_str())
+                        || e.payload["task_ids"].as_array().is_some_and(|ids| {
+                            ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
+                        });
+                    if changed || (!already_handled && belongs) {
+                        let timer_outcome = tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_wakes WHERE id=?1 AND json_extract(payload,'$.kind')='timer')", [&e.source_id], |r| r.get::<_,bool>(0)).map_err(sql)?;
+                        // Closing a timer obligation is required bookkeeping,
+                        // but even rearming one-shot timers cannot buy progress.
+                        if !timer_outcome && t.state != ExecutionState::Blocked {
+                            t.no_progress_wakes = 0;
+                            t.progress_sequence += 1;
+                            t.last_progress_at_ms = now;
+                        }
+                        t.revision += 1;
+                        save(tx, &t)?;
+                    }
+                }
+            }
+            Ok(Outcome::Event(e))
+        }
+        _ => Err(error("invalid delivery operation")),
+    }
+}
+
+// A wake the provider never accepted did not run: the task keeps its wait and
+// the attempt is not a no-progress strike. The pending event retries later.
+fn revert_refused_wake(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+    prompt: &str,
+) -> Result<(), DaemonError> {
+    for mut t in tasks(tx)? {
+        if t.room_id == room
+            && t.agent_id == agent
+            && t.state == ExecutionState::Working
+            && t.wait.is_some()
+            && (t.pending_prompt_id.as_deref() == Some(prompt) || t.prompt_id == prompt)
+        {
+            t.state = ExecutionState::Waiting;
+            t.pending_prompt_id = None;
+            t.no_progress_wakes = t.no_progress_wakes.saturating_sub(1);
+            t.revision += 1;
+            save(tx, &t)?;
+        }
+    }
+    Ok(())
+}
