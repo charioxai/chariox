@@ -11,6 +11,7 @@ export class UserDomainRefusal extends Error {
 const captureMessages = {
   page_unavailable: 'The page is not ready to capture; try again in a moment',
   view_resized: 'The page view changed size; select the region again',
+  view_zoomed: 'The page is zoomed; reset the zoom and select the region again',
 };
 export class CaptureRefusal extends Error {
   constructor(reason) {

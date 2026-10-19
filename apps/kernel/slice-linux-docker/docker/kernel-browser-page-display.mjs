@@ -132,19 +132,20 @@ export async function inputVisiblePage(host,stream,command,scope,signal){
 }
 
 // MP-08/MP-11: the owner's selection is served by the ordinary protected screenshot (exact Vault values masked,
-// document-fenced), clipped to the page crop the frame-size hint names. The hint never grants a caller rectangle;
-// no live stream or mirror binds the capture, so it works right after a navigation.
+// document-fenced) of the top-left css area the viewer's frame covers, at the Tab's emulated scale. The frame size is a
+// hint, never a caller rectangle: it must fit inside the page's live viewport. No live stream or mirror binds the
+// capture, so it works right after a navigation.
 export async function captureVisiblePage(host,tab,frame){
- let geometry;
+ let viewport;
  try{
-  const window=host.chromeWindows.current().tabbed,{connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id);
-  const m=await connection.send('Page.getLayoutMetrics',{},sessionId);
-  geometry=visiblePageGeometry(window,{clientWidth:m.cssLayoutViewport?.clientWidth,clientHeight:m.cssLayoutViewport?.clientHeight,zoom:m.cssVisualViewport?.zoom??1,scale:m.cssVisualViewport?.scale});
+  const {connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id);
+  viewport=await connection.send('Page.getLayoutMetrics',{},sessionId);
  }catch(error){if(error?.code==='stale_document_reference')throw error;throw new CaptureRefusal('page_unavailable');}
- // The viewer's frame is in its own device pixels: the page's css size at the Tab's emulated scale.
- const scale=host.scales.get(tab.tab_id)??host.viewport().device_scale_factor;
- if(geometry.css_width*scale!==frame?.width||geometry.css_height*scale!==frame?.height)throw new CaptureRefusal('view_resized');
- const shot=await host.displayScreenshot(tab,{x:0,y:0,width:geometry.css_width,height:geometry.css_height,scale:1},false);
+ const layout=viewport.cssLayoutViewport,visual=viewport.cssVisualViewport;
+ if(!layout||(visual?.zoom??1)!==1||(visual?.scale??1)!==1)throw new CaptureRefusal('view_zoomed');
+ const scale=host.scales.get(tab.tab_id)??host.viewport().device_scale_factor,width=frame?.width/scale,height=frame?.height/scale;
+ if(!Number.isInteger(width)||!Number.isInteger(height)||width<1||height<1||width>layout.clientWidth||height>layout.clientHeight)throw new CaptureRefusal('view_resized');
+ const shot=await host.displayScreenshot(tab,{x:0,y:0,width,height,scale:1},false);
  if(shot.width!==frame.width||shot.height!==frame.height)throw new CaptureRefusal('view_resized');
  return {...shot,protected_regions:shot[displayMaskRegions]??[]};
 }
