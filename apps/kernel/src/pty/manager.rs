@@ -53,6 +53,30 @@ fn disable_pty_input_echo(
     Ok(())
 }
 
+/// A password prompt is a non-provider foreground process reading in canonical
+/// mode with echo off. The provider TUI's own prompt editor (raw mode, and the
+/// provider's own process group) is model input and never qualifies.
+#[cfg(unix)]
+fn foreground_is_password_prompt(master: &dyn MasterPty, provider_group: Option<i32>) -> bool {
+    let (Some(fd), Some(foreground)) = (master.as_raw_fd(), master.process_group_leader()) else {
+        return false;
+    };
+    if foreground <= 1 || Some(foreground) == provider_group {
+        return false;
+    }
+    let mut attributes = std::mem::MaybeUninit::<libc::termios>::uninit();
+    if unsafe { libc::tcgetattr(fd, attributes.as_mut_ptr()) } != 0 {
+        return false;
+    }
+    let lflag = unsafe { attributes.assume_init() }.c_lflag;
+    lflag & libc::ICANON != 0 && lflag & libc::ECHO == 0
+}
+
+#[cfg(not(unix))]
+fn foreground_is_password_prompt(_master: &dyn MasterPty, _provider_group: Option<i32>) -> bool {
+    false
+}
+
 #[cfg(not(unix))]
 fn disable_pty_input_echo(
     _master: &dyn MasterPty,
@@ -590,6 +614,37 @@ impl PtyManager {
         let mut writer = process.input_writer.clone();
         writer.provider_run_id = provider_run_id.to_string();
         Ok(writer)
+    }
+
+    /// Writes a secret only while a password prompt owns the PTY foreground.
+    /// Returns false, without writing, when the provider itself would read it.
+    pub(crate) fn write_secret_input(
+        &self,
+        provider_run_id: &str,
+        input: &[u8],
+    ) -> Result<bool, DaemonError> {
+        if !self.password_prompt_foreground(provider_run_id)? {
+            return Ok(false);
+        }
+        self.input_writer(provider_run_id)?.enqueue_input(input)?;
+        Ok(true)
+    }
+
+    pub(crate) fn password_prompt_foreground(
+        &self,
+        provider_run_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let process_key = self.resolve_process_key(provider_run_id)?;
+        let process =
+            self.processes
+                .get(&process_key)
+                .ok_or_else(|| DaemonError::PtyProcessNotFound {
+                    provider_run_id: provider_run_id.to_string(),
+                })?;
+        Ok(foreground_is_password_prompt(
+            process.master.as_ref(),
+            process.process_group,
+        ))
     }
 
     #[cfg(test)]
@@ -1686,6 +1741,93 @@ mod tests {
             probe.0.try_wait().unwrap().is_none(),
             "cleanup signalled an unrelated group after reap"
         );
+    }
+
+    #[cfg(unix)]
+    fn secret_sink_manager(id: &str, script: &str) -> PtyManager {
+        let mut manager = PtyManager::new();
+        manager
+            .spawn(PtySpawnRequest {
+                process_key: id.into(),
+                provider_run_id: id.into(),
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), script.into()],
+                env: std::collections::BTreeMap::new(),
+                env_remove: Vec::new(),
+                working_directory: None,
+                cols: 80,
+                rows: 24,
+            })
+            .unwrap();
+        manager
+    }
+
+    #[cfg(unix)]
+    fn wait_for_password_prompt(manager: &PtyManager, id: &str, want: bool) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if manager.password_prompt_foreground(id).unwrap() == want {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_is_refused_while_the_provider_editor_owns_the_pty() {
+        let id = "secret-sink-provider-editor";
+        // A raw-mode provider TUI: its own prompt editor is model input.
+        let mut manager = secret_sink_manager(id, "stty raw -echo; exec sleep 30");
+        thread::sleep(Duration::from_millis(300));
+        assert!(!manager.password_prompt_foreground(id).unwrap());
+        assert!(!manager.write_secret_input(id, b"hunter2\n").unwrap());
+        manager.remove_process(id).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_is_refused_for_a_canonical_no_echo_provider_itself() {
+        let id = "secret-sink-provider-canonical";
+        let mut manager = secret_sink_manager(id, "stty -echo icanon; exec sleep 30");
+        thread::sleep(Duration::from_millis(300));
+        assert!(!manager.write_secret_input(id, b"hunter2\n").unwrap());
+        manager.remove_process(id).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_reaches_a_foreground_password_prompt_only() {
+        let id = "secret-sink-getpass";
+        // The provider stays in its own group; a child takes the foreground
+        // and prompts like sudo/ssh do.
+        let script = r#"
+import getpass, os, signal, sys
+if os.fork() == 0:
+    os.setpgid(0, 0)
+    signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+    os.tcsetpgrp(0, os.getpgrp())
+    value = getpass.getpass("Password: ")
+    open(sys.argv[1], "w").write(value)
+    sys.exit(0)
+os.wait()
+"#;
+        let output = std::env::temp_dir().join(format!("secret-sink-{}", std::process::id()));
+        let mut manager = secret_sink_manager(
+            id,
+            &format!("exec python3 -c '{script}' {}", output.display()),
+        );
+        assert!(wait_for_password_prompt(&manager, id, true));
+        assert!(manager.write_secret_input(id, b"hunter2\n").unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline && !output.exists() {
+            thread::sleep(Duration::from_millis(20));
+        }
+        let received = std::fs::read_to_string(&output).unwrap_or_default();
+        let _ = std::fs::remove_file(&output);
+        manager.remove_process(id).unwrap();
+        assert_eq!(received, "hunter2");
     }
 
     #[test]

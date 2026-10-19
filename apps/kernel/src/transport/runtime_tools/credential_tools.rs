@@ -496,7 +496,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SEND_SECRET_TO_TERMINAL_TOOL.to_string(),
-            description: "Write a terminal credential directly to the current provider PTY stdin. The secret value is not returned, recorded as terminal input, or placed in model context.".to_string(),
+            description: "Write a terminal credential directly to the current provider PTY stdin, only while a command's password prompt is waiting; otherwise nothing is written and the call fails so you can retry once the prompt shows. The secret value is not returned, recorded as terminal input, or placed in model context.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential_id"],
