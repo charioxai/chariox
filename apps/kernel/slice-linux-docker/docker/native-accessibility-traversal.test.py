@@ -256,7 +256,7 @@ class TraversalTest(unittest.TestCase):
     def test_mp11_registered_native_fill_stays_private_when_its_field_is_plain(self):
         field=Node('private-field-value','text');field.path='/field'
         app=Node('Login','application',[Node('Login','frame',[field,Node('Sign in','push button')])])
-        with patch.object(self.driver._fills,'read',return_value=[{'pid':200,'started':'1','path':'/field'}]):
+        with patch.object(self.driver._fills,'read',return_value=[{'pid':200,'started':'1','path':'/field'}]), patch.object(self.driver._fills,'matches',return_value=True):
             tree=self.snapshot([app])
         secret=next(node for node in tree['nodes'] if node['role']=='text')
         self.assertTrue(secret['protected']);self.assertEqual(secret['name'],'[protected]')

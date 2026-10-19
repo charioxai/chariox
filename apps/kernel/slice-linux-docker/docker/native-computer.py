@@ -61,7 +61,8 @@ def input_action(action, processes=None, connection=None, values=()):
         # (chord, menu mnemonic, focused button). Gate on clipboard owner.
         accessibility=load('native-accessibility')
         clipboard=load('native-clipboard')
-        admit_clipboard=clipboard.input_admission(processes,accessibility,None,values)
+        try:admit_clipboard=clipboard.input_admission(processes,accessibility,None,values)
+        except Exception:raise accessibility.NativeInputDenied('native input destination unavailable') from None
         def guard():
             admit_clipboard()
             # MP-11: an empty clipboard does not authorize a popup-free extension

@@ -133,8 +133,11 @@ test('MP-11 finding 1 each agent text/composition/chord dispatch carries live fo
 });
 
 test('MP-11 finding 1 native helper uses the same typed Browser/Vault refusal for unproved focus',async()=>{
-  await assert.rejects(executeNative({op:'input',agent_input:true,processes:[],input:{kind:'text',text:'public'}},
-    {...publicDependencies,PATH:'/usr/bin:/bin',DISPLAY:':invalid',DBUS_SESSION_BUS_ADDRESS:'unix:path=/chariox-missing-owned-bus'}),error=>error.code==='user_domain_sensitive_requires_focus');
+  const runtime=await mkdtemp(path.join(os.tmpdir(),'chariox-native-refusal-'));
+  try {
+    await assert.rejects(executeNative({op:'input',agent_input:true,processes:[],input:{kind:'text',text:'public'}},
+      {...publicDependencies,CHARIOX_HOME:runtime,XDG_RUNTIME_DIR:runtime,PATH:'/usr/bin:/bin',DISPLAY:':invalid',DBUS_SESSION_BUS_ADDRESS:'unix:path=/chariox-missing-owned-bus'}),error=>error.code==='user_domain_sensitive_requires_focus');
+  } finally { await rm(runtime,{recursive:true,force:true}); }
 });
 
 test('MP-08/MP-10/MP-11 each native agent mutation carries the current browser process identity',async()=>{
