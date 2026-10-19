@@ -71,7 +71,14 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   const closeObserver=()=>{observerClosed=true;observer?.close();observer=null;};
   const layoutRead=async()=>JSON.stringify(await measure())===JSON.stringify(viewport);
   const publishLayout=()=>viewportGuard?viewportGuard():observer?observer.valid()||observer.confirm(layoutRead):layoutRead();
-  const publishable=async()=>alive()&&typeof window.isPageCurrent==='function'&&await (window.isPagePublishable??window.isPageCurrent)(tab.target_id)&&await publishLayout()&&alive();
+  // A refused publication fences the source (a new attach follows): the mark names the check that refused.
+  const publishable=async()=>{
+   const refused=reason=>{host.timing?.(`native_publish_refused ${reason}`,performance.timeOrigin+performance.now());return false;};
+   if(!alive())return refused('not_alive');
+   if(typeof window.isPageCurrent!=='function'||!await (window.isPagePublishable??window.isPageCurrent)(tab.target_id))return refused('page');
+   if(!await publishLayout())return refused('layout');
+   return alive()||refused('not_alive_after');
+  };
   // MP-08/MP-11: exact native attestation of this binding on this connection admits a later document of it.
   // The crop is not part of it: a new document without a scrollbar widens the crop inside the same page rect.
   const proofKey=JSON.stringify([metrics??null,window.window_generation,window.page_rect,window.scale,host.chromium.scale??1]);
