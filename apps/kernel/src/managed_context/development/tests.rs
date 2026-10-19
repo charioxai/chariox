@@ -2545,3 +2545,53 @@ fn development_import_refuses_only_when_the_destination_lacks_room() {
         .expect("the same import succeeds once there is room");
     fs::remove_dir_all(root).expect("remove test root");
 }
+
+#[test]
+fn development_import_rechecks_checkout_room_after_staging_and_cloning() {
+    use crate::managed_context::limits::{with_volume, DISK_RESERVE_BYTES};
+    const FILE_BYTES: usize = 2 << 20;
+    let root = test_root("checkout-after-staging");
+    let repository = root.join("repo");
+    init_repository(&repository, "tracked.txt", "base\n");
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    let noise: Vec<u8> = (0..FILE_BYTES)
+        .map(|_| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 33) as u8
+        })
+        .collect();
+    fs::write(repository.join("noise.bin"), noise).expect("write incompressible file");
+    git(&repository, &["add", "noise.bin"]);
+    git(&repository, &["commit", "-m", "noise"]);
+    let archive = root.join("noise.tar.gz");
+    let exported = export_development_context(DevelopmentContextExportRequest {
+        project_id: "checkout-after-staging".to_string(),
+        repositories: vec![DevelopmentRepositorySelection {
+            workspace_id: "repo".to_string(),
+            worktree_id: None,
+            worktree_path: repository,
+            role: DevelopmentRepositoryRole::Primary,
+        }],
+        archive_path: archive.clone(),
+    })
+    .expect("export");
+    let destination = root.join("managed/checkout-after-staging");
+    let request = DevelopmentContextImportRequest {
+        archive_path: archive,
+        expected_archive_sha256: exported.archive_sha256,
+        expected_project_id: exported.manifest.project_id,
+        expected_source_repositories: None,
+        destination_root: destination.clone(),
+    };
+    // Room for the archive snapshot, extracted artifacts and clone, but not for the checkout that
+    // follows them: admission measured before staging would let the checkout fill the volume.
+    let capacity = DISK_RESERVE_BYTES + (FILE_BYTES as u64) * 7 / 2;
+    let error = with_volume(&root.join("managed"), capacity, || {
+        import_development_context(request)
+    })
+    .expect_err("the checkout must be refused once staging has consumed the room");
+    assert!(error.to_string().contains("free space on"), "{error}");
+    assert!(!destination.exists());
+    assert_no_import_temporaries(&root.join("managed"));
+    fs::remove_dir_all(root).expect("remove test root");
+}

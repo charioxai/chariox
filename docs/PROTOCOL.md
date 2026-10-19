@@ -758,8 +758,11 @@ must be an enrolled ordinary kernel owned by the same account/user in the same r
 Managed-context transfers (Project/slice development context, kernel Extension snapshot and the
 package that carries them) have no fixed total file, Extension, repository or byte ceiling. The
 sender writes the archive and package to disk and the receiver admits the declared size against the
-free space of the real destination volume (and the in-memory kernel snapshot against available
-memory) before it accepts, refusing with a message that names the volume and how to recover. The
+free space of the volume that holds it (the transfer store for the received archive, the
+destination staging volume again after staging and cloning for the checkout) and the in-memory kernel
+snapshot against half of available memory (Linux `MemAvailable` capped by the memory cgroup
+headroom, macOS reclaimable pages; a machine that cannot report memory gets a fixed 512 MiB)
+before it accepts, refusing with a message that names the volume and how to recover. The
 manifest's per-component sizes and digests, and the per-artifact digests inside the archive, are the
 receipt the receiver verifies; per-file, per-package and parser bounds are unchanged. No wire shape
 changes.

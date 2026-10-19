@@ -81,6 +81,31 @@ fn internal_transfer_debug_redacts_capabilities() {
 }
 
 #[test]
+fn incoming_archive_is_admitted_on_the_transfer_store_volume_not_the_destination() {
+    use crate::managed_context::limits::{with_volume, DISK_RESERVE_BYTES};
+    let root = test_root("store-volume");
+    let destinations = root.join("destinations");
+    let store_root = root.join("store");
+    let now = current_time_ms();
+    let mut request = arm_request(b"portable context archive", now + 10_000);
+    request.archive_size_bytes = 8 << 20;
+    request.destination_parent = destinations.clone();
+    let store = ManagedContextTransferStore::open(store_root.clone()).expect("open store");
+    let roomy = DISK_RESERVE_BYTES + (64 << 20);
+    let tight = DISK_RESERVE_BYTES + (1 << 20);
+    let error = with_volume(&destinations, roomy, || {
+        with_volume(&store_root, tight, || store.arm(request.clone(), now))
+    })
+    .expect_err("a full store volume must refuse the archive although the destination has room");
+    assert!(error.to_string().contains("free space on that volume"));
+    with_volume(&destinations, DISK_RESERVE_BYTES, || {
+        with_volume(&store_root, roomy, || store.arm(request, now))
+    })
+    .expect("a full destination does not refuse bytes that fit the store");
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
 fn transfer_resumes_retries_and_consumes_once_across_restart() {
     let root = test_root("resume");
     let archive = b"portable context archive";

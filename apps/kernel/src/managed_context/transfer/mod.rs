@@ -207,7 +207,7 @@ impl ManagedContextTransferStore {
         request: ArmManagedContextTransfer,
         now_ms: u64,
     ) -> Result<ArmedManagedContextTransfer, DaemonError> {
-        validate_arm_request(&request, now_ms)?;
+        validate_arm_request(&request, &self.root, now_ms)?;
         ensure_private_directory(&request.destination_parent)?;
         let canonical_destination_parent = fs::canonicalize(&request.destination_parent)
             .map_err(|error| transfer_io_error("resolve managed context destination", error))?;

@@ -77,11 +77,6 @@ impl ProjectEnvironmentEvidence {
             let root = workspaces
                 .get(workspace)
                 .ok_or_else(|| environment_error("evidence workspace not selected"))?;
-            if selected.len() > 20_000 {
-                return Err(environment_error(
-                    "environment evidence exceeds file bounds",
-                ));
-            }
             let mut files = BTreeMap::new();
             for path in selected {
                 // The evidence inventory must never include value-bearing environment files.

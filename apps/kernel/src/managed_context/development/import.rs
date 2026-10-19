@@ -477,6 +477,10 @@ pub(super) fn import_development_context_with_budgets(
     .map(|(result, _)| result)
 }
 
+fn checkout_room(maximum_project_checkout_bytes: u64, project_root: &Path) -> u64 {
+    maximum_project_checkout_bytes.min(crate::managed_context::limits::disk_budget(project_root))
+}
+
 pub(super) fn import_development_context_with_options(
     request: DevelopmentContextImportRequest,
     maximum_project_checkout_bytes: u64,
@@ -512,9 +516,6 @@ pub(super) fn import_development_context_with_options(
     fs::create_dir_all(destination_parent).map_err(|error| {
         context_io_error("create development context destination parent", error)
     })?;
-    let maximum_project_checkout_bytes = maximum_project_checkout_bytes.min(
-        crate::managed_context::limits::disk_budget(destination_parent),
-    );
     let canonical_parent = fs::canonicalize(destination_parent).map_err(|error| {
         context_io_error("resolve development context destination parent", error)
     })?;
@@ -593,7 +594,9 @@ pub(super) fn import_development_context_with_options(
     let mut materialized_entries = 0_u64;
     for repository in &manifest.repositories {
         let repository_root = project_root.join(&repository.target_directory);
-        let remaining_bytes = maximum_project_checkout_bytes.saturating_sub(checkout_bytes);
+        // Measured now: the archive snapshot, artifacts and earlier clones already use the volume.
+        let remaining_bytes = checkout_room(maximum_project_checkout_bytes, &project_root)
+            .saturating_sub(checkout_bytes);
         let remaining_entries =
             maximum_project_materialized_entries.saturating_sub(materialized_entries);
         let estimate = prepare_repository(
@@ -613,6 +616,18 @@ pub(super) fn import_development_context_with_options(
             destination_path: materialization_root.join(&repository.target_directory),
             head_sha: repository.head_sha.clone(),
         });
+    }
+    // Every clone is on disk now; the pending checkouts must still fit what is left.
+    let room = checkout_room(maximum_project_checkout_bytes, &project_root);
+    if checkout_bytes > room {
+        return Err(context_error(
+            crate::managed_context::limits::disk_shortage(
+                "development context checkout",
+                &project_root,
+                checkout_bytes,
+                room,
+            ),
+        ));
     }
     for repository in &manifest.repositories {
         materialize_prepared_repository(

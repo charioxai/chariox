@@ -231,7 +231,8 @@ try {
   const vaultTransfer=encodedMode||duplicateJson
   secrets.push('synthetic-canary')
   const duplicateBytes=Buffer.from('{"api_key":"synthetic-canary","api_key":""}')
-  const kernelOnly=scenario==='kernel-only'
+  const largeKernel=scenario==='kernel-large'
+  const kernelOnly=scenario==='kernel-only'||largeKernel
   const projectReview=scenario==='project-only'||scenario==='project-with-kernel'
   const packagedMode=scenario.startsWith('packaged-')||kernelOnly||scenario==='project-with-kernel'
   const structuredMode=scenario==='structured-header'||scenario==='packaged-metadata'
@@ -242,7 +243,13 @@ try {
     const skill=path.join(source.env.HOME,'.chariox','skills','review');await mkdir(skill,{recursive:true})
     await writeFile(path.join(skill,'SKILL.md'),'---\nname: review\ndescription: Review code\n---\nRead the diff.\n')
     await writeFile(path.join(skill,packagedFile),packagedBytes)
-
+    // Beyond twice the former fixed snapshot totals: 2,048 extensions, 16,384 files, 128 MiB.
+    if(largeKernel)for(let i=0;i<4200;i++){
+      const bulk=path.join(source.env.HOME,'.chariox','skills',`bulk-${i}`);await mkdir(bulk,{recursive:true})
+      await writeFile(path.join(bulk,'SKILL.md'),`---\nname: bulk-${i}\ndescription: Bulk skill ${i}\n---\nBulk ${i}.\n`)
+      for(let f=0;f<7;f++)await writeFile(path.join(bulk,`part-${f}.txt`),`bulk ${i} part ${f} ${'x'.repeat(1900)}\n`)
+      if(i<30)await writeFile(path.join(bulk,'data.bin'),randomBytes(9*1024*1024))
+    }
   }
   if(structuredMode) {
     const mcps=path.join(source.env.HOME,'.chariox','mcps');await mkdir(path.join(mcps,'local'),{recursive:true})
@@ -402,6 +409,14 @@ try {
       assert.equal(await readFile(path.join(imported,'README.md'),'utf8'),'MP-05 owner context overlay\n')
     }
     if(packagedMode)assert.deepEqual(await readFile(path.join(target.env.HOME,'.chariox','skills','review',packagedFile)),packagedBytes)
+    if(largeKernel) {
+      const { readdir } = await import('node:fs/promises'); const sk=path.join(target.env.HOME,'.chariox','skills')
+      const names=await readdir(sk); const bulk=names.filter(n=>n.startsWith('bulk-')).length
+      const first=await sha256(path.join(source.env.HOME,'.chariox','skills','bulk-29','data.bin'))
+      assert.equal(bulk,4200);assert.equal(await sha256(path.join(sk,'bulk-29','data.bin')),first)
+      assert.equal(await readFile(path.join(sk,'bulk-4199','part-6.txt'),'utf8'),`bulk 4199 part 6 ${'x'.repeat(1900)}\n`)
+      steps.push({name:'large-kernel-snapshot-imported',skills:bulk+1,receipt:approved.receipt})
+    }
     await assert.rejects(access(path.join(source.outbound,approved.contextId)))
     steps.push({name:'owner-approved-exact-bytes-published',mpItems:['MP-08','MP-10','MP-11'],launch})
     if(scenario==='project-only') {

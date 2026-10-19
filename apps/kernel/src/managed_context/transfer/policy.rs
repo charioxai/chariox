@@ -72,6 +72,7 @@ pub(super) fn status(transfer_id: &str, entry: &PersistedTransfer) -> ManagedCon
 
 pub(super) fn validate_arm_request(
     request: &ArmManagedContextTransfer,
+    store_root: &Path,
     now_ms: u64,
 ) -> Result<(), DaemonError> {
     for (label, value) in [
@@ -104,12 +105,14 @@ pub(super) fn validate_arm_request(
     if request.archive_size_bytes == 0 {
         return Err(transfer_error("managed context archive size is invalid"));
     }
-    let room = crate::managed_context::limits::disk_budget(&request.destination_parent);
+    // The received archive is written under the transfer store; the destination volume is admitted
+    // separately when the archive is extracted and materialized.
+    let room = crate::managed_context::limits::disk_budget(store_root);
     if request.archive_size_bytes > room {
         return Err(transfer_error(
             crate::managed_context::limits::disk_shortage(
                 "managed context archive",
-                &request.destination_parent,
+                store_root,
                 request.archive_size_bytes,
                 room,
             ),

@@ -172,6 +172,21 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn mp08_index_walks_a_workspace_beyond_twenty_thousand_files() {
+    let fixture = Fixture::new();
+    for directory in 0..25 {
+        let directory = fixture.0.join(format!("d{directory}"));
+        std::fs::create_dir(&directory).unwrap();
+        for file in 0..1_000 {
+            std::fs::write(directory.join(format!("f{file}.txt")), b"x").unwrap();
+        }
+    }
+    std::fs::write(fixture.0.join("config.ts"), b"const a = process.env.DATABASE_URL\n").unwrap();
+    let index = index_project_environment(&fixture.workspaces(), &BTreeMap::new()).unwrap();
+    assert_eq!(index.references.len(), 1);
+}
+
+#[test]
 fn mp08_resolver_captures_only_referenced_names_and_refreshes_values() {
     let fixture = Fixture::new();
     std::fs::write(
