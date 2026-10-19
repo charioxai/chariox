@@ -236,9 +236,8 @@ impl KernelRuntimeOwnedState {
                     )
             })
             .map(|output| {
-                let prompt_metadata = metadata
-                    .entry(output.agent_id.clone())
-                    .or_insert_with(|| {
+                let prompt_metadata =
+                    metadata.entry(output.agent_id.clone()).or_insert_with(|| {
                         self.active_prompt_transcript_metadata_for_agent(
                             session_id,
                             output.agent_id.as_deref(),

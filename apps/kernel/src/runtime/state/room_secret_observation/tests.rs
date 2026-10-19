@@ -608,7 +608,10 @@ fn held_secret_prefix_is_flushed_when_the_message_ends() {
     assert_eq!(held[0].bytes, b"s");
     assert!(store.flush_streams("room", "run").is_empty());
     // A longer unfinished prefix is not shown: it could be most of the value.
-    assert_eq!(protect(&store, "room", b"ends with synthetic-o"), b"ends with ");
+    assert_eq!(
+        protect(&store, "room", b"ends with synthetic-o"),
+        b"ends with "
+    );
     assert_eq!(store.flush_streams("room", "run")[0].bytes, b"[redacted]");
 }
 
@@ -666,8 +669,8 @@ fn retired_and_unknown_values_keep_their_scope() {
         b"[redacted] / [redacted] / public\n"
     );
     // After a restart the registry is restored: stream stays filtered, not withheld.
-    let restarted = RoomSecretObservations::new(path, BTreeSet::from(["room".to_string()]))
-        .with_identity(&key);
+    let restarted =
+        RoomSecretObservations::new(path, BTreeSet::from(["room".to_string()])).with_identity(&key);
     let delivered = String::from_utf8(protect(&restarted, "room", b"a first-secret b")).unwrap();
     assert!(!delivered.contains("first-secret"));
 }
@@ -1238,10 +1241,7 @@ fn public_history_stored_values_scrub_after_restart_without_fencing_streams() {
     let restarted = RoomSecretObservations::new(path, BTreeSet::new()).with_identity(&key);
     for store in [&store, &restarted] {
         assert!(!store.protects_bytes("room"));
-        assert_eq!(
-            protect(store, "room", b"later answer"),
-            b"later answer"
-        );
+        assert_eq!(protect(store, "room", b"later answer"), b"later answer");
         assert_eq!(
             store.scrub_text_or_withhold("room", "echo synthetic-stored-value"),
             "echo [redacted]"

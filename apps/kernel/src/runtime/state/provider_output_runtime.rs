@@ -174,8 +174,8 @@ impl KernelRuntimeState {
             let agent_id = provider_run.agent_instance_id().map(str::to_string);
             let mut terminal_outputs = chunks
                 .into_iter()
-                .map(|chunk| {
-                    super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+                .map(
+                    |chunk| super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
                         provider_run_id: provider_run_id.to_string(),
                         agent_id: agent_id.clone(),
                         kind: if uses_transient_native_terminal {
@@ -185,11 +185,12 @@ impl KernelRuntimeState {
                         },
                         merge_key: None,
                         bytes: chunk.bytes,
-                    }
-                })
+                    },
+                )
                 .collect::<Vec<_>>();
             owned.protect_terminal_outputs(session_id, &mut terminal_outputs);
-            let history_entries = owned.terminal_output_history_entries(session_id, &terminal_outputs);
+            let history_entries =
+                owned.terminal_output_history_entries(session_id, &terminal_outputs);
             let records = owned.fan_out_protected_terminal_outputs(
                 session_id,
                 recipient_attachment_ids,

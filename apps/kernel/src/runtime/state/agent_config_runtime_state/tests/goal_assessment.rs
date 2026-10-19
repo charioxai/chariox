@@ -448,7 +448,10 @@ async fn mp11_protected_assessment_context_omits_public_withheld_answer() {
 async fn settle_protected_check(
     raw: &str,
     fact: Option<crate::runtime::state::agent_assessment_result::ProtectedFact>,
-) -> (crate::durable_state::agent_lifecycle::ExecutionState, String) {
+) -> (
+    crate::durable_state::agent_lifecycle::ExecutionState,
+    String,
+) {
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
     use crate::history::SessionHistoryEntry;
     use crate::terminal::TerminalOutputKind;
@@ -626,7 +629,8 @@ async fn mp11_protected_blocked_result_shows_kernel_reason_class() {
 #[tokio::test]
 async fn mp11_protected_achieved_against_failed_step_shows_kernel_fact_or_withholds() {
     use crate::runtime::state::agent_assessment_result::ProtectedFact::*;
-    let raw = r#"{"status":"achieved","final_answer":"PRIVATE_PROSE","evidence":["PRIVATE_EVIDENCE"]}"#;
+    let raw =
+        r#"{"status":"achieved","final_answer":"PRIVATE_PROSE","evidence":["PRIVATE_EVIDENCE"]}"#;
     for (fact, text) in [
         (ApprovalDenied, "[protected task: approval denied]"),
         (ApprovalTimedOut, "[protected task: timed out]"),

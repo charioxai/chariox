@@ -408,13 +408,19 @@ fn room_output_after_a_vault_fill_stays_useful_and_never_carries_the_value() {
         .iter()
         .map(|record| String::from_utf8_lossy(&record.bytes))
         .collect::<String>();
-    assert_eq!(delivered, "Logged in with [redacted]. The page title is Dashboard.");
+    assert_eq!(
+        delivered,
+        "Logged in with [redacted]. The page title is Dashboard."
+    );
     let history = owned
         .operational_history_store
         .load_session_history_entries(&room.session_id, Some(&room.agent_id))
         .unwrap();
     let history = history.iter().map(|e| e.text.as_str()).collect::<String>();
-    assert_eq!(history, "Logged in with [redacted]. The page title is Dashboard.");
+    assert_eq!(
+        history,
+        "Logged in with [redacted]. The page title is Dashboard."
+    );
 }
 
 // MP-08 / MP-10 / MP-11: the runtime credential tools stamp the caller's Room

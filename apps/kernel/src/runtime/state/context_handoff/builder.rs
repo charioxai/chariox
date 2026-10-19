@@ -234,7 +234,9 @@ mod tests {
             root.clone(),
             Default::default(),
         );
-        protection.register("session", "handoff-canary-value").unwrap();
+        protection
+            .register("session", "handoff-canary-value")
+            .unwrap();
         let events = protection.protect_history_events(vec![
             user_event(1, "session", "agent", "log in and tell me the title"),
             output_event(
