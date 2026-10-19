@@ -32,7 +32,7 @@ export class NativeTabState {
   if(message?.method==='Target.detachedFromTarget'&&message.params?.sessionId===this.session){this.cause=message.method;this.detach();return;}
   if(message?.sessionId!==this.session||!this.session)return;
   if(['Runtime.executionContextsCleared','Runtime.executionContextDestroyed','Inspector.detached'].includes(message.method)){this.cause=message.method;this.detach();return;}
-  if(message.method==='Runtime.bindingCalled'&&message.params?.name===nativeWindowChangedBinding){this.cause=message.method;message.params.payload===nativeBoundsPayload?this.invalidateBounds():this.invalidate();}
+  if(message.method==='Runtime.bindingCalled'&&message.params?.name===nativeWindowChangedBinding){this.cause=`${message.method} ${String(message.params.payload).replace(/[^a-zA-Z]/g,'').slice(0,20)}`;message.params.payload===nativeBoundsPayload?this.invalidateBounds():this.invalidate();}
  }
  usable(){return !this.closed&&this.ready&&!!this.session&&this.connection.isOpen?.()!==false;}
  remember(kind,value,epoch){

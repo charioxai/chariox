@@ -51,7 +51,7 @@ test('MP-08/MP-10/MP-11 generated extension invalidates native metadata on owner
   const context={chrome,setInterval(){},__charioxNativeWindowChanged:payload=>payloads.push(payload)};
   vm.runInNewContext(await readFile(path.join(await writeTabGroupsExtension(root),'sw.js'),'utf8'),context);
   for(const name of ['activated','removed','zoom','bounds','windowRemoved'])events[name]();
-  assert.deepEqual(payloads,['','','','bounds',''],'owner events invalidate only (a bounds event says so); no identity or page content is pushed');
+  assert.deepEqual(payloads,['activated','removed','zoom','bounds','windowRemoved'],'owner events invalidate only (a bounds event says so); no identity or page content is pushed');
  }finally{await rm(root,{recursive:true,force:true})}
 });
 
