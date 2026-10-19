@@ -467,12 +467,14 @@ test("MP-08/MP-11 a state read retires a closed popup when no band can read the 
     await windows.resolve();
     assert.deepEqual(windows.auxiliaryState().map(({ x, y }) => [x, y]), [[1000, 70]], "the menu is listed");
     rows.splice(1, 1);
+    const woken = []; host.stateSignal = { notify: () => woken.push(1) };
     const stopDead = windows.watch(async () => { throw Error("MP-11: native window inventory lease"); }, 5);
     try {
       await new Promise(resolve => setTimeout(resolve, 30));
       assert.equal(windows.auxiliaryState().length, 1, "no band reads: the closed menu is still listed");
       await windows.refreshStale();
       assert.deepEqual(windows.auxiliaryState(), [], "the owner's inventory retires it");
+      assert.equal(woken.length, 1, "a state reader parked on the popup list wakes when the stale popup is retired");
       await windows.omniboxShown();
       assert.deepEqual(windows.auxiliaryState(), [], "the cached inventory no longer lists it, so the next refresh cannot bring it back");
     } finally { stopDead(); }

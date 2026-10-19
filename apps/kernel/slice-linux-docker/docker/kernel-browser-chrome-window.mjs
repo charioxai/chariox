@@ -270,13 +270,14 @@ export class ChromeWindows {
     if (!live() || !bound?.tabbed.isCurrent()) return;
     this.rowsReadAt = performance.now();
     // Retire only: a popup whose own X window is gone leaves the list and the cached inventory (a later refresh must not
-    // bring it back); nothing is published or rebound here.
+    // bring it back); nothing is rebound here; a parked state read is woken.
     const open = new Set(rows.filter(r => r.visible).map(r => r.id)), kept = bound.auxiliary.filter(a => a.in_window || open.has(a.xid));
     if (kept.length === bound.auxiliary.length) return;
     const gone = new Set(bound.auxiliary.filter(a => !kept.includes(a)).map(a => a.xid));
     this.rows = this.rows?.filter(r => !gone.has(r.id));
     this.bound = Object.freeze({tabbed: bound.tabbed, auxiliary: kept});
     this.auxiliaryCount = kept.length; this.host.timing?.(`aux_count ${kept.length}`, performance.timeOrigin + performance.now());
+    this.notifyPopups();
   }
   /** Is Chrome's omnibox list shown right now (re-read, not the last poll)? */
   async omniboxShown() {
@@ -333,7 +334,10 @@ export class ChromeWindows {
       bounds: Object.freeze({x: r.x, y: r.y, width: r.width, height: r.height})});
     this.bound = Object.freeze({tabbed, auxiliary: this.auxiliaryOf(tabbed, rows, bind)});
     if (this.bound.auxiliary.length !== this.auxiliaryCount) { this.auxiliaryCount = this.bound.auxiliary.length; this.host.timing?.(`aux_count ${this.auxiliaryCount}`, performance.timeOrigin + performance.now()); }
-    // Protocol 556: a parked state read wakes when the popups it reports (menu, omnibox list) change.
+    this.notifyPopups();
+  }
+  /** Protocol 556: a parked state read wakes when the popups it reports (menu, omnibox list) change. */
+  notifyPopups() {
     const popups = JSON.stringify(this.auxiliaryState());
     if (popups !== this.popupsReported) { this.popupsReported = popups; this.host.stateSignal?.notify(); }
   }
