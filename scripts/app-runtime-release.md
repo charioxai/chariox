@@ -161,7 +161,9 @@ unchanged. Libraries are signed before executables. Every Mach-O file gets a
 Developer ID signature with `--options runtime` and `--timestamp`.
 Only `chariox-app-worker`, the process that runs V8, also gets
 `macos-app-worker.entitlements`, which grants `com.apple.security.cs.allow-jit`
-and nothing else, so library validation stays on.
+and nothing else, so library validation stays on. The compiled CLI/TUI `chariox`
+also gets `macos-cli.entitlements` (`allow-jit` for Bun's JavaScriptCore and
+`disable-library-validation` for the OpenTUI renderer Bun extracts at run time).
 
 The tool then checks each signature with `codesign --verify --strict`, and
 checks that each file names the identity and team, has a secure timestamp and
