@@ -15,7 +15,7 @@ pub(super) fn prepare_repository(
                 materialized_entries: repository.directories.len() as u64,
             },
             &repository.overlay,
-            remaining_project_checkout_bytes.min(MAX_CHECKOUT_BYTES_PER_REPOSITORY),
+            remaining_project_checkout_bytes,
             remaining_project_materialized_entries,
         );
     }
@@ -47,7 +47,7 @@ pub(super) fn prepare_repository(
     let estimate = charge_overlay_materialization(
         estimate,
         &repository.overlay,
-        remaining_project_checkout_bytes.min(MAX_CHECKOUT_BYTES_PER_REPOSITORY),
+        remaining_project_checkout_bytes,
         remaining_project_materialized_entries,
     )?;
     if git_text_isolated(destination, &["rev-parse", "HEAD"])? != repository.head_sha {

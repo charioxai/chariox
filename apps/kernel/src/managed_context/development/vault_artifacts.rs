@@ -52,7 +52,6 @@ pub(crate) fn review_items(
             Err(_) => return Err(context_error("Vault review ignore rules are unavailable")),
         };
         let mut pending = vec![PathBuf::new()];
-        let mut budget = 0u64;
         let started = std::time::Instant::now();
         while let Some(relative) = pending.pop() {
             for entry in fs::read_dir(root.join(&relative))
@@ -87,14 +86,6 @@ pub(crate) fn review_items(
                         MAX_OVERLAY_FILE_BYTES,
                     )?;
                     let bytes = Zeroizing::new(bytes);
-                    budget = budget
-                        .saturating_add(bytes.len() as u64)
-                        .saturating_add(path.len() as u64 + 256);
-                    if budget > MAX_PACKAGE_BYTES {
-                        return Err(context_error(
-                            "Vault review exceeds the 1 GiB scan-byte limit",
-                        ));
-                    }
                     if super::super::credential_free::validate_bytes(path, &bytes).is_err() {
                         found.insert(VaultItem {
                             path: format!("{workspace}/{path}"),
@@ -288,7 +279,7 @@ pub(super) fn restore(
         let (encoded, _) = overlay::read_regular_file_without_following_symlinks(
             artifacts,
             &binding.object_path,
-            MAX_PACKAGE_BYTES,
+            crate::managed_context::limits::memory_budget(),
         )?;
         if encoded.len() as u64 != artifact.encrypted_size_bytes
             || sha256_bytes(&encoded) != artifact.encrypted_sha256
@@ -303,7 +294,12 @@ pub(super) fn restore(
         {
             return Err(context_error("Vault artifact sender mismatch"));
         }
-        relay_crypto::validate_encrypted_payload_shape(&payload, MAX_PACKAGE_BYTES as usize * 2)?;
+        relay_crypto::validate_encrypted_payload_shape(
+            &payload,
+            usize::try_from(crate::managed_context::limits::memory_budget())
+                .unwrap_or(usize::MAX / 2)
+                .saturating_mul(2),
+        )?;
         let aad = serde_json::to_vec(binding)
             .map_err(|_| context_error("Vault binding could not be encoded"))?;
         let decrypted = relay_crypto::decrypt_payload_for_private_key_bound(
@@ -558,7 +554,7 @@ mod tests {
         assert!(
             super::super::import::import_development_context_with_options(
                 request.clone(),
-                MAX_CHECKOUT_BYTES_PER_PROJECT,
+                UNBOUNDED_BYTES,
                 u64::MAX,
                 None,
                 Some(&wrong)
@@ -568,7 +564,7 @@ mod tests {
         assert!(!request.destination_root.exists());
         let (imported, _) = super::super::import::import_development_context_with_options(
             request,
-            MAX_CHECKOUT_BYTES_PER_PROJECT,
+            UNBOUNDED_BYTES,
             u64::MAX,
             None,
             Some(&authority),

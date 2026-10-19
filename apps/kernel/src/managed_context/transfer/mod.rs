@@ -35,7 +35,6 @@ use storage::{
 const TRANSFER_STATE_SCHEMA_VERSION: u32 = 5;
 const MAX_ACTIVE_TRANSFERS: usize = 64;
 const MAX_TRANSFER_RECORDS: usize = 256;
-const MAX_ARCHIVE_BYTES: u64 = crate::managed_context::package::MAX_MANAGED_CONTEXT_PACKAGE_BYTES;
 pub(crate) const MAX_TRANSFER_CHUNK_BYTES: usize = 512 * 1024;
 const MAX_IDENTIFIER_BYTES: usize = 4096;
 const MAX_DESTINATION_BYTES: usize = 16 * 1024;

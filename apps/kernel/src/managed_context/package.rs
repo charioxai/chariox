@@ -5,7 +5,6 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::development::MAX_PACKAGE_BYTES as MAX_DEVELOPMENT_BYTES;
 use super::development::{
     import_development_context_with_environment,
     recover_development_context_publication_with_environment, DevelopmentContextImportRequest,
@@ -35,17 +34,11 @@ const PACKAGE_MAGIC: &[u8; 16] = b"CHARIOXCTXPKG1\r\n";
 const PACKAGE_TRAILER: &[u8; 16] = b"CHARIOXCTXEND1\r\n";
 const MAX_PLAN_BINDING_BYTES: usize = 72 * 1024;
 const MAX_MANIFEST_BYTES: usize = MAX_PLAN_BINDING_BYTES + 24 * 1024;
-const KERNEL_CONTEXT_WRAPPER_BYTES: u64 = 64 * 1024;
-const MAX_KERNEL_CONTEXT_BYTES: u64 =
-    super::kernel::MAX_KERNEL_CONTEXT_SNAPSHOT_BYTES as u64 + KERNEL_CONTEXT_WRAPPER_BYTES;
 pub(crate) const MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES: u64 = 24 * 1024 * 1024;
 pub(crate) const MAX_GIT_CREDENTIAL_COMPONENT_BYTES: u64 = 1024 * 1024;
-const PACKAGE_OVERHEAD_BYTES: u64 = MAX_MANIFEST_BYTES as u64 + 64;
-pub(crate) const MAX_MANAGED_CONTEXT_PACKAGE_BYTES: u64 = MAX_DEVELOPMENT_BYTES
-    + MAX_KERNEL_CONTEXT_BYTES
-    + MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES
-    + MAX_GIT_CREDENTIAL_COMPONENT_BYTES
-    + PACKAGE_OVERHEAD_BYTES;
+/// Development and kernel components have no product size ceiling: the manifest declares each size
+/// and digest, the receiver verifies both, and the volume's free space admits the copy.
+const UNBOUNDED_COMPONENT_BYTES: u64 = u64::MAX;
 
 #[derive(Clone, PartialEq)]
 pub enum ManagedContextPackageKernel {
@@ -445,10 +438,10 @@ pub fn export_managed_context_package(
                 .metadata()
                 .map_err(|error| package_io_error("inspect development archive", error))?
                 .len();
-            if size == 0 || size > MAX_DEVELOPMENT_BYTES {
+            if size == 0 {
                 return Err(package_error("development archive size is invalid"));
             }
-            let actual_sha256 = hash_reader(&mut archive, MAX_DEVELOPMENT_BYTES)?;
+            let actual_sha256 = hash_reader(&mut archive, size)?;
             if actual_sha256 != archive_sha256.to_ascii_lowercase() {
                 return Err(package_error(
                     "development archive digest does not match the requested digest",
@@ -488,7 +481,10 @@ pub fn export_managed_context_package(
                 ));
             }
             validate_snapshot_binding(&snapshot, &binding)?;
-            let bytes = serialize_bounded_json(&snapshot, MAX_KERNEL_CONTEXT_BYTES as usize)?;
+            let bytes = serialize_bounded_json(
+                &snapshot,
+                usize::try_from(super::limits::memory_budget()).unwrap_or(usize::MAX),
+            )?;
             let sha256 = sha256_bytes(&bytes);
             let snapshot_sha256 = snapshot.snapshot_sha256.clone();
             let manifest = KernelContextComponentManifest::FromKernel {
@@ -606,7 +602,7 @@ pub fn export_managed_context_package(
     ));
     let file = create_private_file(&temporary)?;
     let mut cleanup = PackageFileCleanup::new(temporary.clone());
-    let mut writer = HashingWriter::new(file, MAX_MANAGED_CONTEXT_PACKAGE_BYTES);
+    let mut writer = HashingWriter::new(file, super::limits::disk_budget(&canonical_parent));
     writer
         .write_all(PACKAGE_MAGIC)
         .map_err(package_write_error)?;
@@ -618,7 +614,7 @@ pub fn export_managed_context_package(
         .map_err(package_write_error)?;
     if let Some((archive, size)) = development.as_mut() {
         let copied_development =
-            copy_component(archive, &mut writer, *size, MAX_DEVELOPMENT_BYTES)?;
+            copy_component(archive, &mut writer, *size, UNBOUNDED_COMPONENT_BYTES)?;
         if Some(copied_development) != development_sha256 {
             return Err(package_error(
                 "development archive changed while composing the managed context package",
@@ -1322,17 +1318,27 @@ pub(crate) fn extract_managed_context_package(
         .metadata()
         .map_err(|error| package_io_error("inspect managed context package", error))?
         .len();
-    if package_size == 0 || package_size > MAX_MANAGED_CONTEXT_PACKAGE_BYTES {
+    if package_size == 0 {
         return Err(package_error("managed context package size is invalid"));
     }
 
     let component_root = component_root_for_package(&request.package_path)?;
+    let component_room =
+        super::limits::disk_budget(component_root.parent().unwrap_or(&component_root));
+    if package_size > component_room {
+        return Err(package_error(super::limits::disk_shortage(
+            "managed context package extraction",
+            &component_root,
+            package_size,
+            component_room,
+        )));
+    }
     cleanup_component_root(&component_root)?;
     create_private_directory(&component_root)?;
     let cleanup = PackageExtractionCleanup {
         root: component_root.clone(),
     };
-    let mut reader = HashingReader::new(&mut package, MAX_MANAGED_CONTEXT_PACKAGE_BYTES);
+    let mut reader = HashingReader::new(&mut package, package_size);
     let mut magic = [0_u8; 16];
     reader.read_exact(&mut magic).map_err(package_read_error)?;
     if &magic != PACKAGE_MAGIC {
@@ -1362,7 +1368,7 @@ pub(crate) fn extract_managed_context_package(
             let archive_path = component_root.join("development.tar.gz");
             let file = create_private_file(&archive_path)?;
             let actual_sha256 =
-                copy_component_to_file(&mut reader, file, *size_bytes, MAX_DEVELOPMENT_BYTES)?;
+                copy_component_to_file(&mut reader, file, *size_bytes, UNBOUNDED_COMPONENT_BYTES)?;
             if &actual_sha256 != sha256 {
                 return Err(package_error(
                     "managed context development component digest does not match",
@@ -1383,9 +1389,17 @@ pub(crate) fn extract_managed_context_package(
             snapshot_sha256,
         } => {
             let path = component_root.join("kernel-context.json");
+            let memory_room = super::limits::memory_budget();
+            if *size_bytes > memory_room {
+                return Err(package_error(super::limits::memory_shortage(
+                    "managed context kernel component",
+                    *size_bytes,
+                    memory_room,
+                )));
+            }
             let file = create_private_file(&path)?;
             let actual_sha256 =
-                copy_component_to_file(&mut reader, file, *size_bytes, MAX_KERNEL_CONTEXT_BYTES)?;
+                copy_component_to_file(&mut reader, file, *size_bytes, UNBOUNDED_COMPONENT_BYTES)?;
             if &actual_sha256 != sha256 {
                 return Err(package_error(
                     "managed context kernel component digest does not match",
@@ -1567,7 +1581,7 @@ fn validate_manifest(
             DevelopmentContextComponentManifest::FromSource { size_bytes, sha256 },
             ManagedContextDevelopmentSelection::SourceProject { .. },
         ) => {
-            if *size_bytes == 0 || *size_bytes > MAX_DEVELOPMENT_BYTES {
+            if *size_bytes == 0 {
                 return Err(package_error(
                     "managed context development component size is invalid",
                 ));
@@ -1591,7 +1605,7 @@ fn validate_manifest(
             ManagedContextKernelSelection::SourceKernel
             | ManagedContextKernelSelection::SourceKernelWithoutCredentials,
         ) => {
-            if *size_bytes == 0 || *size_bytes > MAX_KERNEL_CONTEXT_BYTES {
+            if *size_bytes == 0 {
                 return Err(package_error(
                     "managed context kernel component size is invalid",
                 ));
@@ -1772,7 +1786,7 @@ pub(crate) fn validate_development_selection(
             repositories,
         } => {
             validate_identifier(project_id, "project id")?;
-            if repositories.is_empty() || repositories.len() > 32 {
+            if repositories.is_empty() {
                 return Err(package_error(
                     "managed context repository selection is invalid",
                 ));
@@ -2238,7 +2252,9 @@ fn package_read_error(error: io::Error) -> DaemonError {
 
 fn package_write_error(error: io::Error) -> DaemonError {
     if matches!(error.kind(), io::ErrorKind::FileTooLarge) {
-        package_error("managed context package exceeds its size limit")
+        package_error(
+            "managed context package does not fit in the free space of its volume; free space there or choose a larger volume, then retry",
+        )
     } else {
         package_io_error("write managed context package", error)
     }

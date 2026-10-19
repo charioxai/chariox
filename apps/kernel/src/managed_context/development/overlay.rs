@@ -273,10 +273,15 @@ pub(super) fn store_overlay_object(
     let object_path = format!("repositories/{repository_id}/objects/{sha256}");
     if stored_objects.insert(sha256.clone()) {
         *overlay_size_bytes = overlay_size_bytes.saturating_add(size_bytes);
-        if *overlay_size_bytes > MAX_OVERLAY_BYTES_PER_REPOSITORY {
-            return Err(context_error(format!(
-                "repository dirty overlay exceeds {MAX_OVERLAY_BYTES_PER_REPOSITORY} bytes"
-            )));
+        let room = crate::managed_context::limits::memory_budget();
+        if *overlay_size_bytes > room {
+            return Err(context_error(
+                crate::managed_context::limits::memory_shortage(
+                    "repository dirty overlay",
+                    *overlay_size_bytes,
+                    room,
+                ),
+            ));
         }
         pending.insert(object_path.clone(), zeroize::Zeroizing::new(bytes));
     }

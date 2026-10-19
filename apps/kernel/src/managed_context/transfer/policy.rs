@@ -10,8 +10,8 @@ use crate::error::DaemonError;
 use super::{
     ArmManagedContextTransfer, ManagedContextTransferCaller, ManagedContextTransferPhase,
     ManagedContextTransferStatus, PersistedTransfer, PersistedTransferState,
-    COMPLETED_TRANSFER_RETENTION_MS, MAX_ARCHIVE_BYTES, MAX_DESTINATION_BYTES,
-    MAX_IDENTIFIER_BYTES, MAX_IMPORT_RECEIPT_BYTES, MAX_TRANSFER_RECORDS, MAX_TRANSFER_TTL_MS,
+    COMPLETED_TRANSFER_RETENTION_MS, MAX_DESTINATION_BYTES, MAX_IDENTIFIER_BYTES,
+    MAX_IMPORT_RECEIPT_BYTES, MAX_TRANSFER_RECORDS, MAX_TRANSFER_TTL_MS,
 };
 
 pub(super) fn authorize_entry<'a>(
@@ -101,8 +101,19 @@ pub(super) fn validate_arm_request(
     validate_sha256(&request.target_key_thumbprint, "target key thumbprint")?;
     validate_sha256(&request.source_key_thumbprint, "source key thumbprint")?;
     validate_sha256(&request.archive_sha256, "archive")?;
-    if request.archive_size_bytes == 0 || request.archive_size_bytes > MAX_ARCHIVE_BYTES {
+    if request.archive_size_bytes == 0 {
         return Err(transfer_error("managed context archive size is invalid"));
+    }
+    let room = crate::managed_context::limits::disk_budget(&request.destination_parent);
+    if request.archive_size_bytes > room {
+        return Err(transfer_error(
+            crate::managed_context::limits::disk_shortage(
+                "managed context archive",
+                &request.destination_parent,
+                request.archive_size_bytes,
+                room,
+            ),
+        ));
     }
     if request.expires_at_ms <= now_ms
         || request.expires_at_ms > now_ms.saturating_add(MAX_TRANSFER_TTL_MS)
@@ -220,7 +231,6 @@ pub(super) fn validate_persisted_state(state: &PersistedTransferState) -> Result
         }
         validate_destination(&entry.destination_root)?;
         if entry.archive_size_bytes == 0
-            || entry.archive_size_bytes > MAX_ARCHIVE_BYTES
             || entry.accepted_bytes > entry.archive_size_bytes
             || entry.expires_at_ms == 0
         {
@@ -305,7 +315,7 @@ fn validate_launch_target_development(
             validate_identifier(project_id, "launch target project")?;
             validate_identifier(primary_repository_id, "launch target primary repository")?;
             validate_destination(Path::new(destination_root))?;
-            if repositories.is_empty() || repositories.len() > 32 {
+            if repositories.is_empty() {
                 return Err(transfer_error(
                     "managed context launch target repositories are invalid",
                 ));

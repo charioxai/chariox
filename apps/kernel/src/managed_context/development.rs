@@ -15,18 +15,13 @@ const DEVELOPMENT_CONTEXT_SCHEMA_VERSION: u32 = 2;
 const DIRECTORY_CONTEXT_SCHEMA_VERSION: u32 = 3;
 const ENVIRONMENT_CONTEXT_SCHEMA_VERSION: u32 = 4;
 const VAULT_CONTEXT_SCHEMA_VERSION: u32 = 5;
-const MAX_REPOSITORIES: usize = 32;
 const MAX_OVERLAY_FILE_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_OVERLAY_BYTES_PER_REPOSITORY: u64 = 256 * 1024 * 1024;
-const MAX_BUNDLE_BYTES_PER_REPOSITORY: u64 = 512 * 1024 * 1024;
-pub(crate) const MAX_PACKAGE_BYTES: u64 = 1024 * 1024 * 1024;
-const MAX_DECOMPRESSED_ARCHIVE_BYTES: u64 =
-    MAX_PACKAGE_BYTES + MAX_MANIFEST_BYTES as u64 + 256 * 1024 * 1024;
+/// Size totals are admitted against real disk and memory (`managed_context::limits`), never a constant;
+/// per-file and parser bounds stay with their parsers.
+const UNBOUNDED_BYTES: u64 = u64::MAX;
 const MAX_ARCHIVE_PATH_BYTES: usize = 4096;
 const MAX_GIT_BUNDLE_HEADER_BYTES: usize = 1024 * 1024;
 const MAX_GIT_BUNDLE_HEADER_RECORDS: usize = 4096;
-const MAX_CHECKOUT_BYTES_PER_REPOSITORY: u64 = 2 * 1024 * 1024 * 1024;
-const MAX_CHECKOUT_BYTES_PER_PROJECT: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_CONTEXT_IDENTIFIER_BYTES: usize = 4096;
 const MAX_TARGET_DIRECTORY_BASE_BYTES: usize = 200;
 const MAX_GIT_NUL_RECORD_BYTES: usize = 64 * 1024;
@@ -275,13 +270,6 @@ pub(crate) fn extract_verified_development_archive(
 ) -> Result<DevelopmentContextManifest, DaemonError> {
     let archive = File::open(archive_path)
         .map_err(|error| context_io_error("open development context archive", error))?;
-    let size = archive
-        .metadata()
-        .map_err(|error| context_io_error("inspect development context archive", error))?
-        .len();
-    if size > MAX_PACKAGE_BYTES {
-        return Err(context_error("development context archive is too large"));
-    }
     create_private_directory(artifacts_root)?;
     extract_and_verify_archive(
         archive,

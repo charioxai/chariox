@@ -1790,7 +1790,9 @@ fn materialization_rejects_large_current_tree_before_checkout() {
         u64::MAX,
     )
     .expect_err("checkout budget must reject the current tree");
-    assert!(error.to_string().contains("checkout budget"));
+    assert!(error
+        .to_string()
+        .contains("free disk available for checkout"));
     assert!(!destination.join("compressible.bin").exists());
     fs::remove_dir_all(root).expect("remove test root");
 }
@@ -1835,7 +1837,9 @@ fn multi_repository_byte_budget_rejects_before_any_checkout() {
         u64::MAX,
     )
     .expect_err("project-wide byte budget must reject two repositories");
-    assert!(error.to_string().contains("checkout budget"));
+    assert!(error
+        .to_string()
+        .contains("free disk available for checkout"));
     assert!(!destination.exists());
     assert_no_import_temporaries(&root.join("managed"));
     fs::remove_dir_all(root).expect("remove test root");
@@ -2466,5 +2470,78 @@ fn publication_cleanup_rejects_a_replaced_symlink_ancestor() {
     ));
     assert!(outside_staging.exists());
     fs::remove_file(&bound_parent).expect("remove parent symlink");
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+fn many_repository_selections(root: &Path, count: usize) -> Vec<DevelopmentRepositorySelection> {
+    (0..count)
+        .map(|index| {
+            let path = root.join(format!("repo-{index}"));
+            init_repository(&path, "tracked.txt", "base\n");
+            DevelopmentRepositorySelection {
+                workspace_id: format!("repo-{index}"),
+                worktree_id: None,
+                worktree_path: path,
+                role: if index == 0 {
+                    DevelopmentRepositoryRole::Primary
+                } else {
+                    DevelopmentRepositoryRole::Supporting
+                },
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn development_context_round_trips_more_repositories_than_the_old_total() {
+    // Old total: 32 repositories.
+    let root = test_root("many-repositories");
+    let archive = root.join("many.tar.gz");
+    let exported = export_development_context(DevelopmentContextExportRequest {
+        project_id: "many-repositories".to_string(),
+        repositories: many_repository_selections(&root, 40),
+        archive_path: archive.clone(),
+    })
+    .expect("a larger repository set must export while the machine has room");
+    assert_eq!(exported.manifest.repositories.len(), 40);
+    let imported = import_development_context(DevelopmentContextImportRequest {
+        archive_path: archive,
+        expected_archive_sha256: exported.archive_sha256,
+        expected_project_id: exported.manifest.project_id,
+        expected_source_repositories: None,
+        destination_root: root.join("managed/many-repositories"),
+    })
+    .expect("the receiver verifies the digest and imports every repository");
+    assert_eq!(imported.repositories.len(), 40);
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn development_import_refuses_only_when_the_destination_lacks_room() {
+    let root = test_root("destination-without-room");
+    let archive = root.join("room.tar.gz");
+    let exported = export_development_context(DevelopmentContextExportRequest {
+        project_id: "destination-without-room".to_string(),
+        repositories: many_repository_selections(&root, 1),
+        archive_path: archive.clone(),
+    })
+    .expect("export");
+    let destination = root.join("managed/destination-without-room");
+    let request = |archive: PathBuf| DevelopmentContextImportRequest {
+        archive_path: archive,
+        expected_archive_sha256: exported.archive_sha256.clone(),
+        expected_project_id: exported.manifest.project_id.clone(),
+        expected_source_repositories: None,
+        destination_root: destination.clone(),
+    };
+    let error = crate::managed_context::limits::with_free_disk(0, || {
+        import_development_context(request(archive.clone()))
+    })
+    .expect_err("a full destination volume must refuse the import");
+    assert!(error.to_string().contains("free space on that volume"));
+    assert!(!destination.exists());
+    assert_no_import_temporaries(&root.join("managed"));
+    import_development_context(request(archive))
+        .expect("the same import succeeds once there is room");
     fs::remove_dir_all(root).expect("remove test root");
 }

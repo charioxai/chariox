@@ -61,7 +61,7 @@ pub(super) fn export_directory(
             materialized_entries: directories.len() as u64,
         },
         &entries,
-        MAX_CHECKOUT_BYTES_PER_REPOSITORY,
+        UNBOUNDED_BYTES,
         u64::MAX,
     )?;
     Ok((

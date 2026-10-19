@@ -25,8 +25,8 @@ use super::export::{
     package_definition_hash, reject_literal_secrets_in_json, serialized_json_measure,
     validate_identifier, validate_node_package_files, validate_portable_credential_injection,
     validate_portable_mcp, validate_portable_user_adapter, validate_python_requirements_lock,
-    validate_safe_package_file, validate_sha256, MAX_DEPENDENCIES, MAX_EXTENSIONS, MAX_FILE_BYTES,
-    MAX_PACKAGE_BYTES, MAX_PACKAGE_FILES, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_FILES,
+    validate_safe_package_file, validate_sha256, MAX_FILE_BYTES, MAX_PACKAGE_BYTES,
+    MAX_PACKAGE_FILES, UNBOUNDED_SERIALIZATION,
 };
 use super::{
     KernelContextImportReceipt, KernelContextImportRequest, KernelContextSnapshot,
@@ -51,8 +51,10 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const RUNTIME_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_RUNTIME_PROBE_BYTES: u64 = 64 * 1024;
 const MAX_RUNTIME_PROBE_ENTRIES: u64 = 32;
-const MAX_MATERIALIZED_CONTEXT_BYTES: u64 = 1024 * 1024 * 1024;
-const MAX_MATERIALIZED_CONTEXT_ENTRIES: u64 = 100_000;
+/// Bytes are admitted against the destination disk (`MaterializationBudget::admitting`), not a constant.
+const MAX_MATERIALIZED_CONTEXT_BYTES: u64 = u64::MAX;
+/// Traversal bound for ownership walks, far above any real capability tree.
+const MAX_MATERIALIZED_CONTEXT_ENTRIES: u64 = 1 << 24;
 static RUNTIME_PROBE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,13 +82,27 @@ impl Drop for ImportLock {
 struct MaterializationBudget {
     bytes: u64,
     entries: u64,
+    limit: u64,
+    dir: PathBuf,
 }
 
 impl MaterializationBudget {
+    /// Counting only; nothing is written under this budget.
     fn new() -> Self {
         Self {
             bytes: 0,
             entries: 0,
+            limit: MAX_MATERIALIZED_CONTEXT_BYTES,
+            dir: PathBuf::new(),
+        }
+    }
+
+    /// Materialization is refused only when the destination volume lacks the room.
+    fn admitting(dir: &Path) -> Self {
+        Self {
+            limit: crate::managed_context::limits::disk_budget(dir),
+            dir: dir.to_path_buf(),
+            ..Self::new()
         }
     }
 
@@ -103,11 +119,17 @@ impl MaterializationBudget {
     }
 
     fn ensure_available(&self) -> Result<(), DaemonError> {
-        if self.bytes > MAX_MATERIALIZED_CONTEXT_BYTES
-            || self.entries > MAX_MATERIALIZED_CONTEXT_ENTRIES
-        {
+        if self.bytes > self.limit {
+            return Err(import_error(crate::managed_context::limits::disk_shortage(
+                "kernel context materialization",
+                &self.dir,
+                self.bytes,
+                self.limit,
+            )));
+        }
+        if self.entries > MAX_MATERIALIZED_CONTEXT_ENTRIES {
             return Err(import_error(
-                "kernel context materialization exceeds its resource limits",
+                "kernel context materialization exceeds its entry limit",
             ));
         }
         Ok(())
@@ -186,7 +208,7 @@ pub fn import_kernel_context(
     cleanup_staging(&staging)?;
     let result = (|| {
         ensure_private_directory(&staging)?;
-        let mut budget = MaterializationBudget::new();
+        let mut budget = MaterializationBudget::admitting(parent);
         budget.directory()?;
         materialize_snapshot(
             &request.snapshot,
@@ -363,7 +385,7 @@ fn validate_snapshot(
     validate_identifier(&payload.target_kernel_id, "target kernel id")?;
     validate_sha256(&payload.target_key_thumbprint, "target key thumbprint")?;
     validate_sha256(&snapshot.snapshot_sha256, "snapshot digest")?;
-    let (_, actual_snapshot_sha256) = serialized_json_measure(payload, MAX_SNAPSHOT_BYTES)?;
+    let (_, actual_snapshot_sha256) = serialized_json_measure(payload, UNBOUNDED_SERIALIZATION)?;
     if actual_snapshot_sha256 != snapshot.snapshot_sha256 {
         return Err(import_error("kernel context payload digest does not match"));
     }
@@ -399,61 +421,13 @@ fn validate_snapshot(
     } else {
         crate::managed_context::credential_free::validate_kernel_payload(payload)?;
     }
-    validate_total_snapshot_file_count(snapshot)?;
     validate_extensions(snapshot)?;
     validate_dependencies(snapshot)?;
     validate_extension_dependencies(snapshot)
 }
 
-fn validate_total_snapshot_file_count(snapshot: &KernelContextSnapshot) -> Result<(), DaemonError> {
-    let extension_files = snapshot
-        .payload
-        .extensions
-        .iter()
-        .map(|extension| match &extension.definition {
-            KernelExtensionDefinition::Skill { package, .. } => package.files.len(),
-            KernelExtensionDefinition::Script { .. } => 1,
-            KernelExtensionDefinition::Mcp { runtime, .. } => {
-                runtime.as_ref().map_or(0, |runtime| runtime.files.len())
-            }
-            KernelExtensionDefinition::Connector { .. } => 0,
-        })
-        .sum::<usize>();
-    let dependency_files = snapshot
-        .payload
-        .dependencies
-        .iter()
-        .map(|dependency| match dependency {
-            KernelExtensionDependency::UserRules { .. } => 1,
-            KernelExtensionDependency::Environment {
-                runtime:
-                    PortableEnvironmentRuntime::Python { files, .. }
-                    | PortableEnvironmentRuntime::Node { files, .. },
-                ..
-            }
-            | KernelExtensionDependency::UserConnectorAdapter { files, .. } => files.len(),
-            KernelExtensionDependency::BundledConnectorAdapter { .. }
-            | KernelExtensionDependency::Credential { .. } => 0,
-        })
-        .sum::<usize>();
-    if 1_usize
-        .saturating_add(extension_files)
-        .saturating_add(dependency_files)
-        > MAX_SNAPSHOT_FILES
-    {
-        return Err(import_error(
-            "kernel context snapshot file count exceeds its limit",
-        ));
-    }
-    Ok(())
-}
-
 fn validate_extensions(snapshot: &KernelContextSnapshot) -> Result<(), DaemonError> {
-    if snapshot.payload.extensions.len() > MAX_EXTENSIONS {
-        return Err(import_error("kernel Extension count exceeds its limit"));
-    }
     let mut identities = BTreeSet::new();
-    let mut file_count = 1_usize;
     for extension in &snapshot.payload.extensions {
         if extension.scope != KernelExtensionScope::User
             || !identities.insert((extension.kind.clone(), extension.name.clone()))
@@ -479,7 +453,6 @@ fn validate_extensions(snapshot: &KernelContextSnapshot) -> Result<(), DaemonErr
                 validate_portable_mcp(config, runtime.as_ref())?;
                 if let Some(runtime) = runtime {
                     validate_package_files(&runtime.files)?;
-                    file_count = file_count.saturating_add(runtime.files.len());
                 }
             }
             (
@@ -492,11 +465,9 @@ fn validate_extensions(snapshot: &KernelContextSnapshot) -> Result<(), DaemonErr
                 if package.metadata.name != extension.name {
                     return Err(import_error("skill Extension name does not match"));
                 }
-                file_count = file_count.saturating_add(package.files.len());
                 validate_skill_package(package, executable_paths)?;
             }
             (ExtensionKind::Script, KernelExtensionDefinition::Script { script }) => {
-                file_count = file_count.saturating_add(1);
                 validate_script_snapshot(&extension.name, script)?;
             }
             (ExtensionKind::Connector, KernelExtensionDefinition::Connector { definition }) => {
@@ -515,22 +486,11 @@ fn validate_extensions(snapshot: &KernelContextSnapshot) -> Result<(), DaemonErr
             }
         }
     }
-    if file_count > MAX_SNAPSHOT_FILES {
-        return Err(import_error(
-            "kernel context snapshot file count exceeds its limit",
-        ));
-    }
     Ok(())
 }
 
 fn validate_dependencies(snapshot: &KernelContextSnapshot) -> Result<(), DaemonError> {
-    if snapshot.payload.dependencies.len() > MAX_DEPENDENCIES {
-        return Err(import_error(
-            "kernel Extension dependency count exceeds its limit",
-        ));
-    }
     let mut identities = BTreeSet::new();
-    let mut file_count = 1_usize;
     for dependency in &snapshot.payload.dependencies {
         let identity = dependency_identity(dependency);
         if !identities.insert(identity) {
@@ -543,7 +503,6 @@ fn validate_dependencies(snapshot: &KernelContextSnapshot) -> Result<(), DaemonE
                 if body.len() > 64 * 1024 || body.contains('\0') {
                     return Err(import_error("user rules exceed bounds"));
                 }
-                file_count += 1;
             }
             KernelExtensionDependency::Environment { name, runtime } => {
                 crate::mcp::validate_registry_name(name, "environment name")?;
@@ -574,7 +533,6 @@ fn validate_dependencies(snapshot: &KernelContextSnapshot) -> Result<(), DaemonE
                     }
                 };
                 validate_package_files(files)?;
-                file_count = file_count.saturating_add(files.len());
             }
             KernelExtensionDependency::UserConnectorAdapter {
                 name,
@@ -600,7 +558,6 @@ fn validate_dependencies(snapshot: &KernelContextSnapshot) -> Result<(), DaemonE
                 }
                 adapter.validate()?;
                 validate_portable_user_adapter(&adapter)?;
-                file_count = file_count.saturating_add(files.len());
             }
             KernelExtensionDependency::BundledConnectorAdapter {
                 name,
@@ -638,11 +595,6 @@ fn validate_dependencies(snapshot: &KernelContextSnapshot) -> Result<(), DaemonE
                 validate_portable_credential_injection(credential)?;
             }
         }
-    }
-    if file_count > MAX_SNAPSHOT_FILES {
-        return Err(import_error(
-            "kernel context snapshot file count exceeds its limit",
-        ));
     }
     Ok(())
 }
@@ -2426,6 +2378,79 @@ mod tests {
     }
 
     #[test]
+    fn imports_more_extensions_than_the_old_fixed_total_and_verifies_the_receipt() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = test_root("beyond-old-total");
+        let source_vault = root.join("source-vault.json");
+        let target_vault = root.join("target-vault.json");
+        let capability_root = root.join("target").join("managed-context").join("kernel");
+        let previous_paths = set_managed_import_paths(&capability_root, &target_vault);
+        let source_private = crate::transport::relay_crypto::generate_private_key_base64();
+        let target_private = crate::transport::relay_crypto::generate_private_key_base64();
+        let target_public =
+            crate::transport::relay_crypto::public_key_from_private_key_base64(&target_private)
+                .expect("target public key");
+        crate::secret::unlock_chariox_encrypted_vault(
+            &source_vault,
+            "correct horse battery staple",
+            VaultUnlockLease::KernelShutdown,
+        )
+        .expect("source Vault should unlock");
+        let vault = crate::secret::export_transferred_vault_snapshot(
+            &source_vault,
+            "context-1",
+            "source-kernel",
+            &source_private,
+            "target-kernel",
+            &target_public,
+        )
+        .expect("Vault snapshot should export");
+        let expected_source = TransferredVaultSourceBinding {
+            context_id: vault.context_id.clone(),
+            source_kernel_id: vault.source_kernel_id.clone(),
+            source_key_thumbprint: vault.source_key_thumbprint.clone(),
+        };
+        let mut snapshot = fixture_snapshot(vault);
+        // Old total: 2_048 extensions.
+        for index in 0..2_100 {
+            let name = format!("extra-{index:05}");
+            snapshot.payload.extensions.push(extension(
+                ExtensionKind::Mcp,
+                &name,
+                KernelExtensionDefinition::Mcp {
+                    config: Box::new(crate::mcp::CharioxMcpServerConfig::streamable_http(
+                        &name,
+                        "https://example.test/mcp",
+                    )),
+                    runtime: None,
+                },
+            ));
+        }
+        snapshot.snapshot_sha256 =
+            serialized_json_measure(&snapshot.payload, UNBOUNDED_SERIALIZATION)
+                .expect("snapshot should hash")
+                .1;
+        let expected_extensions = snapshot.payload.extensions.len();
+        let request = KernelContextImportRequest {
+            publication_root: None,
+            snapshot,
+            expected_source,
+            target_kernel_id: "target-kernel".to_string(),
+            target_private_key: target_private,
+            capability_root: capability_root.clone(),
+            vault_path: target_vault.clone(),
+        };
+        let receipt = import_kernel_context(request).expect("a larger context must import");
+        assert_eq!(receipt.extension_count, expected_extensions);
+        assert!(expected_extensions > 2_048);
+        crate::secret::lock_chariox_encrypted_vault(&source_vault).ok();
+        crate::secret::lock_chariox_encrypted_vault(&target_vault).ok();
+        restore_managed_import_paths(previous_paths);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn rejects_wrong_bindings_and_occupied_roots_before_publication() {
         crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
@@ -2902,8 +2927,8 @@ mod tests {
             dependencies: Vec::new(),
             vault: Some(vault),
         };
-        let (_, snapshot_sha256) =
-            serialized_json_measure(&payload, MAX_SNAPSHOT_BYTES).expect("snapshot should hash");
+        let (_, snapshot_sha256) = serialized_json_measure(&payload, UNBOUNDED_SERIALIZATION)
+            .expect("snapshot should hash");
         KernelContextSnapshot {
             payload,
             snapshot_sha256,

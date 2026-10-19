@@ -13,7 +13,10 @@ pub(super) fn write_archive(
     let manifest_bytes = manifest_writer.into_inner();
     let mut archive_cleanup = FileCleanup::new(destination.to_path_buf());
     let encoder = GzBuilder::new().mtime(0).write(
-        BoundedFileWriter::new(file, MAX_PACKAGE_BYTES),
+        BoundedFileWriter::new(
+            file,
+            crate::managed_context::limits::disk_budget(staging_root),
+        ),
         Compression::default(),
     );
     let mut archive = tar::Builder::new(encoder);
