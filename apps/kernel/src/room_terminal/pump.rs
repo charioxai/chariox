@@ -22,17 +22,17 @@ impl Terminal {
         let Some(run_id) = self.run_id.clone() else {
             return pumped;
         };
-        if self.drain(pty, &run_id, now) {
+        if self.drain(pty, &run_id, now, &mut pumped.fired) {
             pumped.output_changed = true;
             pumped.fired.extend(self.watches.on_output(&self.plain));
         }
         if let Ok(PtyProcessState::Exited { exit_code, signal }) = pty.poll_process_state(&run_id) {
-            if self.drain(pty, &run_id, now) {
+            if self.drain(pty, &run_id, now, &mut pumped.fired) {
                 pumped.fired.extend(self.watches.on_output(&self.plain));
             }
             let _ = pty.remove_process(&run_id);
-            if let Some(shell_pid) = self.shell_pid {
-                super::session_sweep::stop_session(shell_pid);
+            if let Some(sweep) = &self.session_sweep {
+                sweep.stop();
             }
             self.last_program_end = Some(ProgramEnd {
                 output_offset: self.log.end_offset(),
@@ -46,18 +46,21 @@ impl Terminal {
             pumped.output_changed = true;
             return pumped;
         }
-        let program_running = !self.shell_is_foreground(pty);
-        if self.program_running && !program_running {
-            self.last_program_end = Some(ProgramEnd {
-                output_offset: self.log.end_offset(),
-                exit_code: None,
-                signal: None,
-            });
+        let program_running = self.is_busy(pty);
+        // Once the shell reports its commands, sampling would only race it.
+        if !self.mark_tracking {
+            if self.program_running && !program_running {
+                self.last_program_end = Some(ProgramEnd {
+                    output_offset: self.log.end_offset(),
+                    exit_code: None,
+                    signal: None,
+                });
+            }
+            pumped
+                .fired
+                .extend(self.watches.on_foreground(program_running));
         }
         self.program_running = program_running;
-        pumped
-            .fired
-            .extend(self.watches.on_foreground(program_running));
         if program_running
             && !self.waiting_reported
             && now.duration_since(self.last_output_at) >= QUIET_BEFORE_WAITING
@@ -69,10 +72,16 @@ impl Terminal {
         pumped
     }
 
-    fn drain(&mut self, pty: &mut PtyManager, run_id: &str, now: Instant) -> bool {
+    fn drain(
+        &mut self,
+        pty: &mut PtyManager,
+        run_id: &str,
+        now: Instant,
+        fired: &mut Fired,
+    ) -> bool {
         let mut produced = false;
         for chunk in pty.drain_output(run_id).unwrap_or_default() {
-            self.apply_output(&chunk.bytes, now);
+            fired.extend(self.apply_output(&chunk.bytes, now));
             produced = true;
         }
         produced

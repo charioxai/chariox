@@ -280,7 +280,12 @@ impl KernelRuntimeState {
             .as_deref()
             .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID);
         let session = self.owned.session_store.get_session(&request.session_id)?;
-        if session.owner_user_id() != user_id {
+        // The enrolled terminal still owns the OS-local Rooms made before
+        // enrollment; it keeps its authenticated identity as the actor.
+        let owns_room = session.owner_user_id() == user_id
+            || (caller.is_terminal_caller()
+                && self.is_legacy_local_terminal_owner(&request.session_id, user_id));
+        if !owns_room {
             return Err(DaemonError::OwnershipAccessDenied {
                 user_id: user_id.to_string(),
                 owner_user_id: session.owner_user_id().to_string(),
@@ -288,16 +293,24 @@ impl KernelRuntimeState {
                 operation: OPERATION,
             });
         }
+        // The worker trusts the home kernel's lease, not the end user, so the
+        // agent whose placement is used must belong to this Room too.
+        if let Some(host_agent) = &request.host_agent {
+            self.ensure_room_agent(&request.session_id, host_agent)?;
+        }
         match &request.acting_agent {
             None => Ok(TerminalActor::User),
-            Some(agent_id) => match self.owned.agent_store.get_agent(agent_id) {
-                Ok(agent) if agent.session_id() == request.session_id => {
-                    Ok(TerminalActor::Agent(agent_id.clone()))
-                }
-                _ => Err(refused(format!(
-                    "this Room has no agent `{agent_id}` to type as"
-                ))),
-            },
+            Some(agent_id) => {
+                self.ensure_room_agent(&request.session_id, agent_id)?;
+                Ok(TerminalActor::Agent(agent_id.clone()))
+            }
+        }
+    }
+
+    fn ensure_room_agent(&self, session_id: &str, agent_id: &str) -> Result<(), DaemonError> {
+        match self.owned.agent_store.get_agent(agent_id) {
+            Ok(agent) if agent.session_id() == session_id => Ok(()),
+            _ => Err(refused(format!("this Room has no agent `{agent_id}`"))),
         }
     }
 

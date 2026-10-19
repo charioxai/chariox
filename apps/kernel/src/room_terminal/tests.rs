@@ -397,7 +397,7 @@ async fn notifications_fire_for_text_waiting_and_finish() {
     assert_eq!(waiting.kind, RoomTerminalEventKind::WaitingForInput);
     assert_eq!(waiting.armed_by, "agent-a");
 
-    // `cat` returns to the prompt: a program finished, status left to the screen.
+    // `cat` returns to the prompt: the shell reports the program's status.
     service
         .watch(
             "room-1",
@@ -416,7 +416,7 @@ async fn notifications_fire_for_text_waiting_and_finish() {
     assert_eq!(
         events.fired("w-program")[0].kind,
         RoomTerminalEventKind::Finished {
-            exit_code: None,
+            exit_code: Some(0),
             signal: None
         }
     );
@@ -761,4 +761,86 @@ fn the_shell_keeps_the_users_ssh_agent_but_not_kernel_tokens() {
         });
     std::env::remove_var("SSH_AUTH_SOCK");
     std::env::remove_var("CHARIOX_RELAY_TOKEN");
+}
+
+/// Types `line` and waits for the shell to report it finished, without any
+/// sleep in the command: the finish must not depend on sampling.
+async fn finish_of(
+    service: &RoomTerminalService,
+    id: &str,
+    line: &str,
+) -> Option<RoomTerminalEventKind> {
+    let offset = service.snapshot("room-1", id).unwrap().output_offset;
+    assert!(type_as(service, id, &agent("a"), line).await.accepted);
+    service
+        .wait(
+            "room-1",
+            id,
+            "a",
+            vec![RoomTerminalWatch::Finished],
+            Some(offset),
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap()
+        .fired
+}
+
+#[tokio::test]
+async fn typed_commands_report_finish_and_exit_code_even_when_instant() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    let pump = service.clone();
+    let pumping = tokio::spawn(async move {
+        loop {
+            pump.pump_once();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    });
+    for (line, expected) in [
+        ("echo builtin-done\r", 0),
+        ("false\r", 1),
+        ("/bin/true\r", 0),
+        ("(exit 7)\r", 7),
+    ] {
+        assert_eq!(
+            finish_of(&service, &id, line).await,
+            Some(RoomTerminalEventKind::Finished {
+                exit_code: Some(expected),
+                signal: None
+            }),
+            "{line}"
+        );
+    }
+    pumping.abort();
+    service.end_session("room-1");
+}
+
+#[tokio::test]
+async fn a_shell_started_inside_the_terminal_does_not_repeat_the_marks() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    let pump = service.clone();
+    let pumping = tokio::spawn(async move {
+        loop {
+            pump.pump_once();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    });
+    // The nested shell prints no marks of its own, so the outer command is
+    // reported finished only when the nested shell exits.
+    let fired = finish_of(&service, &id, "bash -c 'echo $PROMPT_COMMAND-[$PS0]'\r").await;
+    assert!(matches!(
+        fired,
+        Some(RoomTerminalEventKind::Finished {
+            exit_code: Some(0),
+            ..
+        })
+    ));
+    let screen = service.snapshot("room-1", &id).unwrap().screen_text;
+    assert!(screen.contains("-[]"), "{screen}");
+    pumping.abort();
+    service.end_session("room-1");
 }

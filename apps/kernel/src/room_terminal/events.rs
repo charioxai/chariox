@@ -99,6 +99,17 @@ impl WatchSet {
         })
     }
 
+    /// The shell reported a command line finished.
+    pub(super) fn on_command_finished(&mut self, exit_code: Option<u32>) -> Fired {
+        self.fire(|armed| match armed.watch {
+            RoomTerminalWatch::Finished => Some(RoomTerminalEventKind::Finished {
+                exit_code,
+                signal: None,
+            }),
+            _ => None,
+        })
+    }
+
     pub(super) fn on_quiet_program(&mut self) -> Fired {
         self.fire(|armed| match armed.watch {
             RoomTerminalWatch::WaitingForInput => Some(RoomTerminalEventKind::WaitingForInput),

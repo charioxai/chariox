@@ -43,13 +43,7 @@ impl PlainText {
                 self.carry.push(byte);
             }
         }
-        let valid = match std::str::from_utf8(&self.carry) {
-            Ok(text) => text.len(),
-            Err(error) => error.valid_up_to(),
-        };
-        let rest = self.carry.split_off(valid);
-        let decoded = std::mem::replace(&mut self.carry, rest);
-        let decoded = String::from_utf8(decoded).expect("valid prefix");
+        let decoded = self.decode_carry();
         self.total_bytes += decoded.len() as u64;
         self.text.push_str(&decoded);
         if self.text.len() > RETAINED_BYTES {
@@ -58,6 +52,37 @@ impl PlainText {
                 cut += 1;
             }
             self.text.drain(..cut);
+        }
+    }
+
+    /// Decode what is complete. An invalid sequence becomes U+FFFD so it never
+    /// blocks later output; only an incomplete sequence at the end (at most
+    /// three bytes) waits for its next bytes.
+    fn decode_carry(&mut self) -> String {
+        let mut decoded = String::new();
+        loop {
+            match std::str::from_utf8(&self.carry) {
+                Ok(text) => {
+                    decoded.push_str(text);
+                    self.carry.clear();
+                    return decoded;
+                }
+                Err(error) => {
+                    let valid = error.valid_up_to();
+                    decoded
+                        .push_str(std::str::from_utf8(&self.carry[..valid]).expect("valid prefix"));
+                    match error.error_len() {
+                        Some(invalid) => {
+                            decoded.push('\u{fffd}');
+                            self.carry.drain(..valid + invalid);
+                        }
+                        None => {
+                            self.carry.drain(..valid);
+                            return decoded;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -103,6 +128,17 @@ mod tests {
         plain.append(b"lo\x1b[0m \x1b]0;title\x07w\xc3");
         plain.append(b"\xb6rld\r\n");
         assert_eq!(plain.since(0), "hello wörld\n");
+    }
+
+    #[test]
+    fn invalid_utf8_is_replaced_and_does_not_block_later_output() {
+        let mut plain = PlainText::new();
+        plain.append(b"a\xffb");
+        plain.append(b"still matches");
+        assert_eq!(plain.since(0), "a\u{fffd}bstill matches");
+        assert!(plain.carry.is_empty());
+        plain.append(b"\xe2\x82");
+        assert_eq!(plain.carry.len(), 2);
     }
 
     #[test]

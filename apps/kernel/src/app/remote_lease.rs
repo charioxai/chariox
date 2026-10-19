@@ -775,6 +775,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     if backing_session_still_used {
                         Ok(())
                     } else {
+                        // Terminals live beside the session, not in it: end them
+                        // first so a failed session end still leaves none running.
+                        self.app
+                            .room_terminals
+                            .end_session(&agent.backing_session_id);
                         self.app
                             .sessions
                             .end_session(&agent.backing_session_id)

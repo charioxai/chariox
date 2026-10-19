@@ -15,8 +15,8 @@ use tokio::sync::{oneshot, Notify};
 
 use super::driver::Admission;
 use super::events::{CompletionEvents, WatchOwner};
-use super::session_sweep;
 use super::shell::login_shell;
+use super::shell_marks::ShellIntegration;
 use super::store::{TerminalRecord, TerminalStore};
 use super::terminal::Terminal;
 use super::types::{
@@ -65,6 +65,7 @@ struct Inner {
     state: Mutex<State>,
     store: TerminalStore,
     events: Arc<dyn CompletionEvents>,
+    shell_integration: ShellIntegration,
     output_changed: Notify,
     pump_started: AtomicBool,
 }
@@ -82,6 +83,7 @@ impl RoomTerminalService {
     /// Terminals that ran when the kernel last stopped come back as ended by
     /// the restart, scrollback kept.
     pub fn new(store_root: PathBuf, events: Arc<dyn CompletionEvents>) -> Self {
+        let shell_integration = ShellIntegration::install(&store_root.with_extension("shell"));
         let store = TerminalStore::new(store_root);
         let terminals = match store.recover() {
             Ok(records) => records
@@ -107,6 +109,7 @@ impl RoomTerminalService {
                 }),
                 store,
                 events,
+                shell_integration,
                 output_changed: Notify::new(),
                 pump_started: AtomicBool::new(false),
             }),
@@ -154,12 +157,16 @@ impl RoomTerminalService {
             .title
             .filter(|title| !title.trim().is_empty())
             .unwrap_or_else(|| next_title(&in_room));
+        let mut env = BTreeMap::from([("TERM".to_string(), "xterm-256color".to_string())]);
+        if spec.command.is_none() {
+            env.extend(self.inner.shell_integration.environment(&program));
+        }
         state.pty.spawn_interactive(PtySpawnRequest {
             process_key: run_id.clone(),
             provider_run_id: run_id.clone(),
             program: program.clone(),
             args,
-            env: BTreeMap::from([("TERM".to_string(), "xterm-256color".to_string())]),
+            env,
             env_remove: KERNEL_SECRET_ENVIRONMENT
                 .iter()
                 .map(|name| name.to_string())
@@ -397,7 +404,7 @@ impl RoomTerminalService {
             if !terminal.is_running() {
                 return Err(ended_error(terminal));
             }
-            let program_running = !terminal.shell_is_foreground(pty);
+            let program_running = terminal.is_busy(pty);
             terminal
                 .arm_watch(
                     owner.clone(),
@@ -454,7 +461,7 @@ impl RoomTerminalService {
                 wake_id: format!("wait:{next_wait}"),
                 agent_id: agent_id.to_string(),
             };
-            let program_running = !terminal.shell_is_foreground(pty);
+            let program_running = terminal.is_busy(pty);
             let now = Instant::now();
             for watch in watches {
                 if let Some(kind) =
@@ -497,14 +504,14 @@ impl RoomTerminalService {
         state
             .waiters
             .retain(|_, (waiting_on, _)| waiting_on != terminal_id);
-        if let Some((run_id, shell_pid)) = state
-            .terminals
-            .remove(terminal_id)
-            .and_then(|terminal| terminal.run_id.map(|run_id| (run_id, terminal.shell_pid)))
-        {
+        if let Some((run_id, sweep)) = state.terminals.remove(terminal_id).and_then(|terminal| {
+            terminal
+                .run_id
+                .map(|run_id| (run_id, terminal.session_sweep))
+        }) {
             let removed = state.pty.remove_process(&run_id);
-            if let Some(shell_pid) = shell_pid {
-                session_sweep::stop_session(shell_pid);
+            if let Some(sweep) = sweep {
+                sweep.stop();
             }
             if let Err(error) = removed {
                 crate::logging::error_with_fields(

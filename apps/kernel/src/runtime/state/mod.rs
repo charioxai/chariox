@@ -632,6 +632,7 @@ impl KernelRuntimeState {
             app_control,
             managed_kernel_registration,
             runtime_tool_call_activity,
+            room_terminals,
         ) = {
             let started = Instant::now();
             loop {
@@ -647,6 +648,7 @@ impl KernelRuntimeState {
                         app.app_control_service(),
                         app.managed_kernel_registration(),
                         app.runtime_tool_call_activity.clone(),
+                        app.room_terminals(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -740,10 +742,6 @@ impl KernelRuntimeState {
                 }
             };
         provider_store.set_managed_kernel_admission_gate(managed_kernel_quiescence.clone());
-        let room_terminals = crate::room_terminal::RoomTerminalService::new(
-            config.private_runtime_state_root().join("room-terminals"),
-            std::sync::Arc::new(crate::room_terminal::EventCoreNotWired),
-        );
         let room_secret_observations = room_secret_observation::RoomSecretObservations::new(
             config
                 .private_runtime_state_root()

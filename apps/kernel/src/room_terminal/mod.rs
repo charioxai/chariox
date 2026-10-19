@@ -9,6 +9,7 @@ mod screen;
 mod service;
 mod session_sweep;
 mod shell;
+mod shell_marks;
 mod store;
 mod terminal;
 mod types;

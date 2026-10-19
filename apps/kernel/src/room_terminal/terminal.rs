@@ -5,10 +5,12 @@ use std::time::Instant;
 use base64::Engine as _;
 
 use super::driver::DriverTracker;
-use super::events::{WatchOwner, WatchSet, QUIET_BEFORE_WAITING};
+use super::events::{Fired, WatchOwner, WatchSet, QUIET_BEFORE_WAITING};
 use super::output_log::OutputLog;
 use super::plain_text::PlainText;
 use super::screen::Screen;
+use super::session_sweep::SessionSweep;
+use super::shell_marks::{MarkScanner, ShellMark};
 use super::store::TerminalRecord;
 use super::types::{
     RoomTerminalDriver, RoomTerminalOutcome, RoomTerminalSnapshot, RoomTerminalStatus,
@@ -22,6 +24,7 @@ pub(super) struct Terminal {
     /// The PTY key while the shell runs.
     pub run_id: Option<String>,
     pub shell_pid: Option<i32>,
+    pub session_sweep: Option<SessionSweep>,
     pub screen: Screen,
     pub log: OutputLog,
     pub plain: PlainText,
@@ -29,6 +32,12 @@ pub(super) struct Terminal {
     pub watches: WatchSet,
     pub last_output_at: Instant,
     pub program_running: bool,
+    pub marks: MarkScanner,
+    /// The shell has reported at least one mark: command completion comes
+    /// from the shell, not from sampling the foreground process group.
+    pub mark_tracking: bool,
+    /// A command line the shell reported started and not yet finished.
+    pub command_in_flight: bool,
     pub waiting_reported: bool,
     pub unsaved_since: Option<Instant>,
     /// The last time a program returned to the prompt (or the shell exited).
@@ -75,6 +84,7 @@ impl Terminal {
             record,
             run_id,
             shell_pid,
+            session_sweep: shell_pid.map(SessionSweep::capture),
             screen,
             log: OutputLog::default(),
             plain: PlainText::new(),
@@ -82,6 +92,9 @@ impl Terminal {
             watches: WatchSet::default(),
             last_output_at: Instant::now(),
             program_running: false,
+            marks: MarkScanner::default(),
+            mark_tracking: false,
+            command_in_flight: false,
             waiting_reported: false,
             unsaved_since: None,
             last_program_end: None,
@@ -92,13 +105,45 @@ impl Terminal {
         self.run_id.is_some()
     }
 
-    pub(super) fn apply_output(&mut self, bytes: &[u8], now: Instant) {
+    pub(super) fn apply_output(&mut self, bytes: &[u8], now: Instant) -> Fired {
         self.screen.feed(bytes);
         self.log.append(bytes);
         self.plain.append(bytes);
         self.last_output_at = now;
         self.waiting_reported = false;
         self.unsaved_since.get_or_insert(now);
+        let mut fired = Fired::new();
+        for mark in self.marks.feed(bytes) {
+            fired.extend(self.on_mark(mark));
+        }
+        fired
+    }
+
+    fn on_mark(&mut self, mark: ShellMark) -> Fired {
+        self.mark_tracking = true;
+        match mark {
+            ShellMark::CommandStarted => {
+                self.command_in_flight = true;
+                Fired::new()
+            }
+            // The prompt also reports once before any command ran.
+            ShellMark::CommandFinished { .. } if !self.command_in_flight => Fired::new(),
+            ShellMark::CommandFinished { exit_code } => {
+                self.command_in_flight = false;
+                self.last_program_end = Some(ProgramEnd {
+                    output_offset: self.log.end_offset(),
+                    exit_code,
+                    signal: None,
+                });
+                self.watches.on_command_finished(exit_code)
+            }
+        }
+    }
+
+    /// A command or program holds the terminal: the shell said so, or a
+    /// program other than the shell owns the foreground.
+    pub(super) fn is_busy(&self, pty: &PtyManager) -> bool {
+        self.command_in_flight || !self.shell_is_foreground(pty)
     }
 
     /// The user used this tab: from now on only the user can close it, and

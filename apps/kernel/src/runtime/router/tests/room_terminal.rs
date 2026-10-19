@@ -31,16 +31,37 @@ async fn terminal_request(
     acting_agent: Option<&str>,
     operation: RoomTerminalOperation,
 ) -> Result<RoomTerminalResult, DaemonError> {
+    terminal_request_hosted(router, user_id, session_id, acting_agent, None, operation).await
+}
+
+async fn terminal_request_hosted(
+    router: &CommandRouter,
+    user_id: &str,
+    session_id: &str,
+    acting_agent: Option<&str>,
+    host_agent: Option<&str>,
+    operation: RoomTerminalOperation,
+) -> Result<RoomTerminalResult, DaemonError> {
     let request = LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
         session_id: session_id.to_string(),
         acting_agent: acting_agent.map(str::to_string),
-        host_agent: None,
+        host_agent: host_agent.map(str::to_string),
         operation,
     });
-    match router
-        .dispatch(remote_command_for_request(&request, Some(user_id)), request)
-        .await?
-    {
+    dispatch_terminal_request(
+        router,
+        remote_command_for_request(&request, Some(user_id)),
+        request,
+    )
+    .await
+}
+
+async fn dispatch_terminal_request(
+    router: &CommandRouter,
+    command: KernelCommand,
+    request: LocalDaemonRequest,
+) -> Result<RoomTerminalResult, DaemonError> {
+    match router.dispatch(command, request).await? {
         LocalDaemonResponse::RoomTerminal { result } => Ok(result),
         other => panic!("unexpected response: {other:?}"),
     }
@@ -264,5 +285,86 @@ fn only_the_room_owner_reaches_terminals_and_drivers_do_not_collide() {
         .await
         .expect("the user closes it");
         assert!(list(&router, &session_id).await.is_empty());
+    });
+}
+
+#[test]
+fn a_host_agent_must_belong_to_the_authorized_room() {
+    run("room-terminal-host-agent", || async {
+        let room_a = crate::test_support::TestWorktree::new("room_terminal_host_a");
+        let room_b = crate::test_support::TestWorktree::new("room_terminal_host_b");
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon boots");
+        let session_a = app
+            .sessions_mut()
+            .create_session(room_a.session_request())
+            .expect("session a")
+            .id()
+            .to_string();
+        let session_b = app
+            .sessions_mut()
+            .create_session(room_b.session_request())
+            .expect("session b")
+            .id()
+            .to_string();
+        let agent_b = spawn_test_agent(&mut app, &session_b, "agent-b", "dev-stub");
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+
+        let refused = terminal_request_hosted(
+            &router,
+            DEFAULT_LOCAL_USER_ID,
+            &session_a,
+            None,
+            Some(agent_b.id()),
+            RoomTerminalOperation::List,
+        )
+        .await
+        .expect_err("a host agent from another Room is refused");
+        assert!(refused.to_string().contains("no agent"), "{refused}");
+    });
+}
+
+#[test]
+fn the_enrolled_owner_of_a_legacy_local_room_keeps_its_terminals() {
+    run("room-terminal-enrolled-owner", || async {
+        let worktree = crate::test_support::TestWorktree::new("room_terminal_enrolled");
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "enrolled-user".to_string(),
+            ..Default::default()
+        });
+        let mut app = DaemonApp::bootstrap(config).expect("daemon boots");
+        let session_id = app
+            .sessions_mut()
+            .create_session(worktree.session_request())
+            .expect("session")
+            .id()
+            .to_string();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+
+        let request = LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
+            session_id: session_id.clone(),
+            acting_agent: None,
+            host_agent: None,
+            operation: RoomTerminalOperation::List,
+        });
+        let caller = KernelCaller {
+            caller_id: "terminal".to_string(),
+            caller_kind: KernelCallerKind::LocalClient,
+            user_id: Some("enrolled-user".to_string()),
+            connection_class: Some(crate::local::KernelConnectionClass::Terminal),
+            ..Default::default()
+        };
+        let command = KernelCommand::from_local_request_with_caller(
+            "enrolled-terminal",
+            KernelCommandSource::LocalIpc,
+            caller,
+            None,
+            None,
+            &request,
+        );
+        let result = dispatch_terminal_request(&router, command, request)
+            .await
+            .expect("the enrolled owner of its local Room uses terminals");
+        assert!(matches!(result, RoomTerminalResult::Listed { .. }));
     });
 }
