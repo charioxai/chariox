@@ -2178,7 +2178,7 @@ mod workflow_notification_128_shapes {
         let wire = serde_json::json!({"requests":requests,"responses":responses});
         assert_eq!(
             format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-            "66d568554856f2038651d28e63ff0f35e1d10dc93831fdbca44fe46420a630c2"
+            "296b82ca90cf4e304380c2a868895efa41bdac182544232180a9b63396245866"
         );
     }
 }

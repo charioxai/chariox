@@ -12,6 +12,7 @@ mod app_install;
 mod app_publisher;
 mod apps;
 mod browser_artifact;
+mod room_terminal;
 mod browser_import;
 mod cloud_relay;
 mod computer_hold;
