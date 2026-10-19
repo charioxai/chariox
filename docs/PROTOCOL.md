@@ -3676,6 +3676,12 @@ still running) and `close`.
   always type. The state is `driver: free | busy { driven_by }` in every
   summary.
 - A tab the user typed in, resized or opened can be closed only by the user.
+- Closing a terminal, or its shell exiting, ends every process left in the shell's
+  session (background jobs included). The shell keeps the kernel user's SSH agent and
+  Git settings and does not inherit the kernel's own relay and local-auth tokens.
+- An operation for an agent that is leased to a worker (leased worker or slice) runs
+  on that worker as `RelayPeerRequest::RoomTerminal`, keyed by the lease; `host_agent`
+  names the agent whose machine hosts the terminal when the actor is the user.
 - A terminal survives client disconnects. It ends on close, when its shell or
   command exits, or with its Room. A kernel restart ends it as
   `ended: kernel restarted` and keeps the scrollback.
