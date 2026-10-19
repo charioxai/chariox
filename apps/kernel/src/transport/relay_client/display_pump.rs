@@ -346,6 +346,7 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
                 if matches!(error, DaemonError::UserDomainRefused { .. })
                     || failures >= FAILURE_LIMIT
                 {
+                    crate::transport::kernel_browser_display::pump_failed(&error);
                     pump.with(|state| state.failed = true);
                     return;
                 }

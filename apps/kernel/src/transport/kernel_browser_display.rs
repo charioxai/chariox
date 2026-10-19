@@ -17,6 +17,13 @@ pub(crate) fn timing(stage: &'static str, started: std::time::Instant) {
     }
 }
 
+/// r63: why a display push pump gave up, as `MD-DISPLAY-PUMP-FAILED <error>` (timing diagnostics only).
+pub(crate) fn pump_failed(error: &crate::error::DaemonError) {
+    if std::env::var("CHARIOX_BROWSER_DISPLAY_TIMING").as_deref() == Ok("1") {
+        eprintln!("MD-DISPLAY-PUMP-FAILED {error:?}");
+    }
+}
+
 /// r55: a wait that took 250 ms or more, as `MD-DISPLAY-SLOW <json>`, apart from the per-frame timing lines so a
 /// bounded diagnostic buffer keeps it. `op` is a fixed lowercase label, never a value.
 pub(crate) fn slow(stage: &str, op: &str, started: std::time::Instant) {
