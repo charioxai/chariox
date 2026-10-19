@@ -97,6 +97,7 @@ impl KernelRuntimeState {
                     .into(),
             });
         }
+        let approval = std::sync::Arc::new(approval);
         let check_approval = || {
             if !self.computer_secret_approval_live(&approval) {
                 return Err(DaemonError::LocalTransport {
@@ -121,6 +122,9 @@ impl KernelRuntimeState {
             .await?;
         self.authorize_current_forwarded_binding()?;
         check_approval()?;
+        let live_state = self.clone();
+        let live_approval = approval.clone();
+        let live = move || live_state.computer_secret_approval_live(&live_approval);
         let bound = if let Some(turn) = &approval.sudo_turn {
             let authority =
                 crate::local::LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest);
@@ -128,7 +132,8 @@ impl KernelRuntimeState {
                 .with_sudo_binding(turn.prompt_id.clone().zip(turn.provider_run_id.clone()))
         } else {
             self.clone()
-        };
+        }
+        .with_computer_secret_live(live);
         let execution = bound
             .execute_computer_input_as_agent_for_generation(
                 session_id,

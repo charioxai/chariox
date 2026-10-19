@@ -253,3 +253,107 @@ async fn human_computer_input_reconciles_degraded_room_with_desktop_authority() 
         .all(|health| health.state == EnvironmentComponentHealthState::Ready));
     assert_eq!(after.tabs[0].title, "After input");
 }
+
+#[tokio::test]
+async fn revoked_login_consent_stops_queued_computer_input() {
+    let tools = TestTools::new("computer-revoked-queued");
+    let _screen_tool = install_screen_tool(&tools.screen_tool);
+    let mut room = TestRoom::new("computer-revoked-queued");
+    room.enable_browser_controller(&tools).await;
+    let live = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let bound = room.runtime.with_computer_secret_live({
+        let live = live.clone();
+        move || live.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    // Revoked after approval, while the action waits for recovery or its lane.
+    live.store(false, std::sync::atomic::Ordering::SeqCst);
+    let result = bound
+        .execute_computer_input_as_agent_for_generation(
+            &room.session_id,
+            &room.agent_id,
+            RoomComputerInputAction::PointerMove { x: 10, y: 10 },
+            Some(0),
+        )
+        .await;
+    room.stop_browser_controller().await;
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("login permission expired or was revoked"));
+}
+
+#[tokio::test]
+async fn revoked_login_consent_stops_input_between_chunks() {
+    let room = TestRoom::new("computer-revoked-typing");
+    let live = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let bound = room.runtime.with_computer_secret_live({
+        let live = live.clone();
+        move || live.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    // The physical-input authorizer is `authorize_current_external_command`.
+    assert!(bound.authorize_current_external_command().is_ok());
+    live.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(bound.authorize_current_external_command().is_err());
+}
+
+#[tokio::test]
+async fn revoked_login_consent_cancels_running_computer_input() {
+    let tools = TestTools::new("computer-revoked-running");
+    let _screen_tool = install_screen_tool(&tools.screen_tool);
+    let mut room = TestRoom::new("computer-revoked-running");
+    room.enable_browser_controller(&tools).await;
+    let live = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let bound = room.runtime.with_computer_secret_live({
+        let live = live.clone();
+        move || live.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let environment = room
+        .runtime
+        .reconcile_room_environment_actors(&room.session_id, None)
+        .unwrap();
+    let actor = crate::session::agent_environment_actor_id(
+        &room.agent_id,
+    );
+    let request = crate::session::EnvironmentActionRequest::computer_mutation(
+        &actor,
+        environment.runtime_generation,
+        crate::runtime::computer_input_action::computer_input_action_metadata(
+            &RoomComputerInputAction::PointerMove { x: 1, y: 1 },
+            environment.viewport.revision,
+        )
+        .kind,
+        environment.focused_tab_id.as_deref(),
+    );
+    let (admission, _) = room
+        .runtime
+        .submit_room_environment_action(&room.session_id, request)
+        .unwrap();
+    let crate::session::ActionAdmission::Accepted { action_id } = admission else {
+        panic!("action was not accepted");
+    };
+    let execution = room
+        .runtime
+        .owned
+        .computer_input_executions
+        .begin(&room.session_id, &action_id)
+        .unwrap();
+    let cancellation = execution.cancellation();
+    let typing = async {
+        for _ in 0..100 {
+            if cancellation.requested() {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        Err(crate::error::DaemonError::LocalTransport {
+            operation: "test",
+            message: "typing was never cancelled".into(),
+        })
+    };
+    live.store(false, std::sync::atomic::Ordering::SeqCst);
+    let result = bound
+        .await_cancellable_browser_action(&room.session_id, &action_id, &action_id, typing)
+        .await;
+    room.stop_browser_controller().await;
+    result.unwrap();
+}

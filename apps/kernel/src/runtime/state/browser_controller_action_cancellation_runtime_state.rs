@@ -25,13 +25,14 @@ impl KernelRuntimeState {
                 result = &mut execution => return result,
                 _ = poll.tick() => {
                     if cancellation_delivered { continue; }
-                    let cancel = self.ensure_browser_import_execution_allowed(session_id).is_err() || match self.room_environment_snapshot(session_id) {
+                    let cancel = self.ensure_browser_import_execution_allowed(session_id).is_err() || self.authorize_current_external_command().is_err() || match self.room_environment_snapshot(session_id) {
                         Ok(room) => room.actions.iter().find(|action| action.action_id == action_id)
                             .is_none_or(|action| action.cancellation_requested || action.state != EnvironmentActionState::Running || (action.mode == crate::session::EnvironmentMode::Computer && self.require_room_computer_actor(&action.actor_id).is_err())),
                         Err(_) => false,
                     };
                     if !cancel { continue; }
-                    let cancellation = self.room_browser_controller_command(session_id,
+                    let canceller = self.without_computer_secret_live();
+                    let cancellation = canceller.room_browser_controller_command(session_id,
                         RoomBrowserControllerCommand::CancelAction { execution_id: execution_id.to_string() });
                     // The worker may not have registered the execution yet, or
                     // the cancellation acknowledgement may be lost. Retry the

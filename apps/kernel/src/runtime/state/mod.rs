@@ -166,6 +166,9 @@ pub(crate) struct KernelRuntimeState {
     external_command_authority: Option<ExternalCommandAuthority>,
     room_provider_origin: Option<(String, String)>,
     room_request_origin: Option<(String, LocalDaemonRequest)>,
+    /// Live consent for one Vault-filled Computer input (login grant, sudo turn
+    /// and Vault state). Physical input rechecks it between chunks.
+    computer_secret_live: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     relay_peer_authority: Option<crate::runtime::relay_peer_authority::RelayPeerAuthority>,
     forwarded_peer_binding: Option<forwarded_peer_authority::ForwardedPeerBinding>,
     #[cfg(test)]
@@ -882,6 +885,7 @@ impl KernelRuntimeState {
             external_command_authority: None,
             room_provider_origin: None,
             room_request_origin: None,
+            computer_secret_live: None,
             relay_peer_authority: None,
             forwarded_peer_binding: None,
             #[cfg(test)]

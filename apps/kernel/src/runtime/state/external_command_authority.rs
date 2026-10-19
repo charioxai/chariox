@@ -131,8 +131,32 @@ impl KernelRuntimeState {
         state
     }
 
+    /// Bind this state to a Vault-fill consent: a revoked grant, ended sudo
+    /// turn or locked Vault stops the command before and during input.
+    pub(super) fn with_computer_secret_live(
+        &self,
+        live: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Self {
+        let mut state = self.clone();
+        state.computer_secret_live = Some(Arc::new(live));
+        state
+    }
+
+    /// Cancelling a revoked fill is cleanup and must stay deliverable.
+    pub(super) fn without_computer_secret_live(&self) -> Self {
+        let mut state = self.clone();
+        state.computer_secret_live = None;
+        state
+    }
+
     pub(crate) fn authorize_current_external_command(&self) -> Result<(), DaemonError> {
         self.authorize_current_external_response()?;
+        if self.computer_secret_live.as_ref().is_some_and(|live| !live()) {
+            return Err(crate::error::DaemonError::LocalTransport {
+                operation: "computer_secret_input.approval",
+                message: "login permission expired or was revoked".into(),
+            });
+        }
         if let Some(authority) = self
             .external_command_authority
             .as_ref()
