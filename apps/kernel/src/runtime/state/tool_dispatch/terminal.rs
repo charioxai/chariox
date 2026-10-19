@@ -47,7 +47,7 @@ impl KernelRuntimeState {
                 let args: TerminalOpenArgs = parse_arguments(tool_name, arguments)?;
                 if let Some(command) = &args.command {
                     if let Some(denied) = self
-                        .ask_before_typing(&session_id, &agent_id, &command.join(" "))
+                        .ask_before_typing(provider_run, &agent_id, &command.join(" "))
                         .await?
                     {
                         return Ok(denied);
@@ -64,7 +64,7 @@ impl KernelRuntimeState {
             TERMINAL_SEND_TOOL => {
                 let args: TerminalSendArgs = parse_arguments(tool_name, arguments)?;
                 if let Some(denied) = self
-                    .ask_before_typing(&session_id, &agent_id, &args.text)
+                    .ask_before_typing(provider_run, &agent_id, &args.text)
                     .await?
                 {
                     return Ok(denied);
@@ -151,10 +151,20 @@ impl KernelRuntimeState {
     /// refusal to return.
     async fn ask_before_typing(
         &self,
-        session_id: &str,
+        provider_run: &crate::provider::RuntimeProviderRun,
         agent_id: &str,
         typed: &str,
     ) -> Result<Option<RuntimeToolResult>, DaemonError> {
+        let session_id = provider_run.session_id();
+        if provider_run.runtime_mcp_auth_token().is_some_and(|auth| {
+            self.sudo_for_auth_token(auth).is_ok_and(|turn| {
+                turn.session_id == session_id
+                    && turn.agent_id == agent_id
+                    && turn.provider_run_id.as_deref() == Some(provider_run.id())
+            })
+        }) {
+            return Ok(None);
+        }
         let level = self
             .effective_permission_level_for_agent(session_id, agent_id)
             .await?;

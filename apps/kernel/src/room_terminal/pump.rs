@@ -24,16 +24,13 @@ impl Terminal {
         };
         if self.drain(pty, &run_id, now, &mut pumped.fired) {
             pumped.output_changed = true;
-            pumped.fired.extend(self.watches.on_output(&self.plain));
         }
         if let Ok(PtyProcessState::Exited { exit_code, signal }) = pty.poll_process_state(&run_id) {
-            if self.drain(pty, &run_id, now, &mut pumped.fired) {
-                pumped.fired.extend(self.watches.on_output(&self.plain));
-            }
-            let _ = pty.remove_process(&run_id);
+            self.drain(pty, &run_id, now, &mut pumped.fired);
             if let Some(sweep) = &self.session_sweep {
                 sweep.stop();
             }
+            let _ = pty.remove_process(&run_id);
             self.last_program_end = Some(ProgramEnd {
                 output_offset: self.log.end_offset(),
                 exit_code,
@@ -46,22 +43,27 @@ impl Terminal {
             pumped.output_changed = true;
             return pumped;
         }
-        let program_running = self.is_busy(pty);
+        let program_running = !self.shell_is_foreground(pty);
         // Once the shell reports its commands, sampling would only race it.
         if !self.mark_tracking {
             if self.program_running && !program_running {
+                self.command_in_flight = false;
                 self.last_program_end = Some(ProgramEnd {
                     output_offset: self.log.end_offset(),
                     exit_code: None,
                     signal: None,
                 });
             }
-            pumped
-                .fired
-                .extend(self.watches.on_foreground(program_running));
+            // A start mark alone is not an observed foreground program.
+            // Only a real foreground transition can complete the fallback.
+            if program_running || self.program_running {
+                pumped
+                    .fired
+                    .extend(self.watches.on_foreground(program_running));
+            }
         }
         self.program_running = program_running;
-        if program_running
+        if self.is_busy(pty)
             && !self.waiting_reported
             && now.duration_since(self.last_output_at) >= QUIET_BEFORE_WAITING
             && self.watches.is_waiting_for_input()

@@ -70,9 +70,9 @@ struct Inner {
     pump_started: AtomicBool,
 }
 
-struct State {
+pub(super) struct State {
     pty: PtyManager,
-    terminals: BTreeMap<String, Terminal>,
+    pub(super) terminals: BTreeMap<String, Terminal>,
     /// Blocking waits by wake id with their terminal; their events do not go
     /// to `events`.
     waiters: BTreeMap<String, (String, oneshot::Sender<RoomTerminalEvent>)>,
@@ -125,7 +125,11 @@ impl RoomTerminalService {
             )));
         }
         let (program, args) = match &spec.command {
-            None => (login_shell()?, vec!["-l".to_string(), "-i".to_string()]),
+            None => {
+                let shell = login_shell()?;
+                let args = self.inner.shell_integration.arguments(&shell);
+                (shell, args)
+            }
             Some(argv) => {
                 let valid = !argv.is_empty()
                     && argv.len() <= 64
@@ -258,7 +262,7 @@ impl RoomTerminalService {
                 let Some(run_id) = terminal.run_id.clone() else {
                     return Err(ended_error(terminal));
                 };
-                let shell_foreground = terminal.shell_is_foreground(pty);
+                let shell_foreground = !terminal.is_busy(pty);
                 let now = Instant::now();
                 match terminal.driver.admit(actor, shell_foreground, now) {
                     Admission::Admit => {
@@ -509,11 +513,10 @@ impl RoomTerminalService {
                 .run_id
                 .map(|run_id| (run_id, terminal.session_sweep))
         }) {
-            let removed = state.pty.remove_process(&run_id);
             if let Some(sweep) = sweep {
                 sweep.stop();
             }
-            if let Err(error) = removed {
+            if let Err(error) = state.pty.remove_process(&run_id) {
                 crate::logging::error_with_fields(
                     "room_terminal.close",
                     "terminal process could not be removed",
@@ -609,7 +612,7 @@ impl RoomTerminalService {
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, State> {
+    pub(super) fn lock(&self) -> MutexGuard<'_, State> {
         self.inner
             .state
             .lock()

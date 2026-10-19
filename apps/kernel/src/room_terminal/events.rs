@@ -40,7 +40,8 @@ pub struct WatchOwner {
 struct ArmedWatch {
     owner: WatchOwner,
     watch: RoomTerminalWatch,
-    armed_at_plain_bytes: u64,
+    processed_plain_bytes: u64,
+    text_tail: String,
     /// A program has been in the foreground since arming (for `Finished`).
     seen_busy: bool,
 }
@@ -63,21 +64,33 @@ impl WatchSet {
         self.armed.push(ArmedWatch {
             owner,
             watch,
-            armed_at_plain_bytes: plain.total_bytes(),
+            processed_plain_bytes: plain.total_bytes(),
+            text_tail: String::new(),
             seen_busy: program_running,
         });
     }
 
     pub(super) fn on_output(&mut self, plain: &PlainText) -> Fired {
-        self.fire(|armed| match &armed.watch {
-            RoomTerminalWatch::OutputContains { text }
-                if plain
-                    .since(armed.armed_at_plain_bytes)
-                    .contains(text.as_str()) =>
-            {
-                Some(RoomTerminalEventKind::OutputMatched { text: text.clone() })
+        self.fire(|armed| {
+            let RoomTerminalWatch::OutputContains { text } = &armed.watch else {
+                return None;
+            };
+            armed
+                .text_tail
+                .push_str(plain.since(armed.processed_plain_bytes));
+            armed.processed_plain_bytes = plain.total_bytes();
+            if armed.text_tail.contains(text.as_str()) {
+                return Some(RoomTerminalEventKind::OutputMatched { text: text.clone() });
             }
-            _ => None,
+            let mut cut = armed
+                .text_tail
+                .len()
+                .saturating_sub(text.len().saturating_sub(1));
+            while !armed.text_tail.is_char_boundary(cut) {
+                cut += 1;
+            }
+            armed.text_tail.drain(..cut);
+            None
         })
     }
 
@@ -146,10 +159,10 @@ impl WatchSet {
     /// A wake fires once: its other conditions are dropped with it.
     fn fire(
         &mut self,
-        mut decide: impl FnMut(&ArmedWatch) -> Option<RoomTerminalEventKind>,
+        mut decide: impl FnMut(&mut ArmedWatch) -> Option<RoomTerminalEventKind>,
     ) -> Fired {
         let mut fired = Fired::new();
-        for armed in &self.armed {
+        for armed in &mut self.armed {
             if fired
                 .iter()
                 .any(|(owner, _)| owner.wake_id == armed.owner.wake_id)

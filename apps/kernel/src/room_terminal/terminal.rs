@@ -33,8 +33,8 @@ pub(super) struct Terminal {
     pub last_output_at: Instant,
     pub program_running: bool,
     pub marks: MarkScanner,
-    /// The shell has reported at least one mark: command completion comes
-    /// from the shell, not from sampling the foreground process group.
+    /// The shell reports finish marks (including its first prompt): sampling
+    /// must not race commands that keep the shell in the foreground.
     pub mark_tracking: bool,
     /// A command line the shell reported started and not yet finished.
     pub command_in_flight: bool,
@@ -108,11 +108,17 @@ impl Terminal {
     pub(super) fn apply_output(&mut self, bytes: &[u8], now: Instant) -> Fired {
         self.screen.feed(bytes);
         self.log.append(bytes);
-        self.plain.append(bytes);
+
         self.last_output_at = now;
         self.waiting_reported = false;
         self.unsaved_since.get_or_insert(now);
         let mut fired = Fired::new();
+        // Check every bounded piece before the text window trims it. The
+        // watch keeps its own overlap if its needle is longer than the window.
+        for part in bytes.chunks(4096) {
+            self.plain.append(part);
+            fired.extend(self.watches.on_output(&self.plain));
+        }
         for mark in self.marks.feed(bytes) {
             fired.extend(self.on_mark(mark));
         }
@@ -120,15 +126,17 @@ impl Terminal {
     }
 
     fn on_mark(&mut self, mark: ShellMark) -> Fired {
-        self.mark_tracking = true;
         match mark {
             ShellMark::CommandStarted => {
                 self.command_in_flight = true;
                 Fired::new()
             }
-            // The prompt also reports once before any command ran.
-            ShellMark::CommandFinished { .. } if !self.command_in_flight => Fired::new(),
             ShellMark::CommandFinished { exit_code } => {
+                self.mark_tracking = true;
+                // The first prompt reports before any command has run.
+                if !self.command_in_flight && !self.program_running {
+                    return Fired::new();
+                }
                 self.command_in_flight = false;
                 self.last_program_end = Some(ProgramEnd {
                     output_offset: self.log.end_offset(),
@@ -177,8 +185,8 @@ impl Terminal {
     }
 
     pub(super) fn current_driver(&mut self, pty: &PtyManager) -> RoomTerminalDriver {
-        let shell_foreground = self.shell_is_foreground(pty);
-        self.driver.observe(shell_foreground)
+        let at_prompt = !self.is_busy(pty);
+        self.driver.observe(at_prompt)
     }
 
     /// Arm a watch, unless its condition already holds for what the caller

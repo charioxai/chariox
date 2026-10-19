@@ -672,51 +672,60 @@ async fn a_graceful_shutdown_keeps_output_newer_than_the_last_save() {
     first.end_session("room-1");
 }
 
-#[cfg(target_os = "linux")]
-fn process_running(args: &[&str]) -> bool {
-    let wanted = format!("{}\0", args.join("\0"));
-    std::fs::read_dir("/proc")
-        .unwrap()
-        .flatten()
-        .filter_map(|entry| std::fs::read(entry.path().join("cmdline")).ok())
-        .any(|cmdline| String::from_utf8_lossy(&cmdline) == wanted)
+fn job_running(pid_file: &Path) -> bool {
+    let Some(pid) = std::fs::read_to_string(pid_file)
+        .ok()
+        .and_then(|pid| pid.trim().parse::<i32>().ok())
+        .filter(|pid| *pid > 1)
+    else {
+        return false;
+    };
+    std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .ok()
+        .is_some_and(|output| {
+            let status = String::from_utf8_lossy(&output.stdout);
+            !status.trim().is_empty() && !status.trim().starts_with('Z')
+        })
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn closing_a_terminal_also_stops_background_jobs() {
     let root = TempDir::new();
     let service = service(root.path());
     let id = open(&service, root.path()).terminal_id;
-    type_as(
-        &service,
-        &id,
-        &TerminalActor::User,
-        "sleep 8881 & sleep 8882\r",
-    )
-    .await;
+    let background = root.path().join("background.pid");
+    let foreground = root.path().join("foreground.pid");
+    type_as(&service, &id, &TerminalActor::User, &format!(
+        "nohup sleep 8881 >/dev/null 2>&1 & echo $! > '{}'; disown; sh -c 'echo $$ > \"{}\"; exec sleep 8882'\r",
+        background.display(), foreground.display(),
+    )).await;
     until("both jobs", || async {
-        process_running(&["sleep", "8881"]) && process_running(&["sleep", "8882"])
+        job_running(&background) && job_running(&foreground)
     })
     .await;
     service.close("room-1", &id, &TerminalActor::User).unwrap();
     until("both jobs to stop", || async {
-        !process_running(&["sleep", "8881"]) && !process_running(&["sleep", "8882"])
+        !job_running(&background) && !job_running(&foreground)
     })
     .await;
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_shell_that_exits_leaves_no_background_jobs() {
     let root = TempDir::new();
     let service = service(root.path());
     let id = open(&service, root.path()).terminal_id;
+    let background = root.path().join("background.pid");
     type_as(
         &service,
         &id,
         &TerminalActor::User,
-        "sleep 8883 & disown; exit\r",
+        &format!(
+            "nohup sleep 8883 >/dev/null 2>&1 & echo $! > '{}'; disown; exit\r",
+            background.display()
+        ),
     )
     .await;
     until("the shell to end", || async {
@@ -727,8 +736,9 @@ async fn a_shell_that_exits_leaves_no_background_jobs() {
         )
     })
     .await;
+    assert!(background.is_file());
     until("the background job to stop", || async {
-        !process_running(&["sleep", "8883"])
+        !job_running(&background)
     })
     .await;
 }
@@ -843,4 +853,151 @@ async fn a_shell_started_inside_the_terminal_does_not_repeat_the_marks() {
     assert!(screen.contains("-[]"), "{screen}");
     pumping.abort();
     service.end_session("room-1");
+}
+
+#[tokio::test]
+async fn builtin_read_keeps_its_driver_until_the_command_finishes() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    for driver in [agent("a"), TerminalActor::User] {
+        assert!(
+            type_as(&service, &id, &driver, "read -r answer\r")
+                .await
+                .accepted
+        );
+        until("the shell command start", || async {
+            service.pump_once();
+            service.lock().terminals[&id].command_in_flight
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let still_waiting = service
+            .wait(
+                "room-1",
+                &id,
+                "b",
+                vec![RoomTerminalWatch::Finished],
+                None,
+                Duration::from_millis(150),
+            )
+            .await
+            .unwrap();
+        assert!(
+            still_waiting.fired.is_none(),
+            "builtin read finished before receiving input"
+        );
+        assert_eq!(still_waiting.terminal.status, RoomTerminalStatus::Running);
+        let refused = type_as(&service, &id, &agent("b"), "intruder\r").await;
+        let owned = service.list("room-1")[0].driver.clone();
+        // Clean up even on the RED path so a failed assertion leaves no PTY.
+        assert!(
+            type_as(&service, &id, &TerminalActor::User, "owner-answer\r")
+                .await
+                .accepted
+        );
+        until("read to finish", || async {
+            service.pump_once();
+            !service.lock().terminals[&id].command_in_flight
+        })
+        .await;
+        if refused.accepted {
+            service.end_session("room-1");
+        }
+        assert!(!refused.accepted, "another agent answered the builtin read");
+        assert_eq!(
+            owned,
+            RoomTerminalDriver::Busy {
+                driven_by: driver.clone()
+            }
+        );
+        assert!(
+            type_as(&service, &id, &driver, "read -r another\r")
+                .await
+                .accepted
+        );
+        until("another read to start", || async {
+            service.pump_once();
+            service.lock().terminals[&id].command_in_flight
+        })
+        .await;
+        assert!(
+            type_as(&service, &id, &driver, "driver-answer\r")
+                .await
+                .accepted
+        );
+        until("the driver's read to finish", || async {
+            service.pump_once();
+            !service.lock().terminals[&id].command_in_flight
+        })
+        .await;
+    }
+    service.end_session("room-1");
+}
+
+#[tokio::test]
+async fn an_output_marker_survives_a_large_burst_in_one_pump_batch() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    // Apply bytes directly so the test is independent of PTY reader chunking.
+    let id = open(&service, root.path()).terminal_id;
+    let mut state = service.lock();
+    let terminal = state.terminals.get_mut(&id).unwrap();
+    terminal.watches.arm(
+        owner("burst", "a"),
+        RoomTerminalWatch::OutputContains {
+            text: "ready-marker".into(),
+        },
+        &terminal.plain,
+        false,
+    );
+    let now = Instant::now();
+    let mut fired = terminal.apply_output(b"ready-", now);
+    let mut burst = b"marker".to_vec();
+    burst.extend(vec![b'x'; 32 * 1024]);
+    fired.extend(terminal.apply_output(&burst, now));
+    fired.extend(terminal.watches.on_output(&terminal.plain));
+    let long_needle = format!("{}tail", "λ".repeat(10_000));
+    terminal.watches.arm(
+        owner("long-burst", "a"),
+        RoomTerminalWatch::OutputContains {
+            text: long_needle.clone(),
+        },
+        &terminal.plain,
+        false,
+    );
+    for part in long_needle.as_bytes().chunks(1023) {
+        fired.extend(terminal.apply_output(part, now));
+    }
+    let long_matched = fired.iter().any(|(owner, kind)| {
+        owner.wake_id == "long-burst"
+            && matches!(kind, RoomTerminalEventKind::OutputMatched { text } if text == &long_needle)
+    });
+    drop(state);
+    service.end_session("room-1");
+    assert!(
+        long_matched,
+        "the matcher lost a needle larger than its text window"
+    );
+    assert!(fired.iter().any(|(owner, kind)| owner.wake_id == "burst"
+        && matches!(kind,
+        RoomTerminalEventKind::OutputMatched { text } if text == "ready-marker")));
+}
+
+#[tokio::test]
+async fn a_start_mark_alone_keeps_foreground_completion_available() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    let mut state = service.lock();
+    let terminal = state.terminals.get_mut(&id).unwrap();
+    terminal.mark_tracking = false;
+    terminal.apply_output(b"\x1b]133;C\x07", Instant::now());
+    let tracking = terminal.mark_tracking;
+    drop(state);
+    service.end_session("room-1");
+    assert!(
+        !tracking,
+        "a start-only hook disabled the foreground fallback"
+    );
 }

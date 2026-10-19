@@ -82,6 +82,7 @@ fn parse(body: &[u8]) -> Option<ShellMark> {
 /// The hooks for the shells that support them.
 pub(super) struct ShellIntegration {
     zsh_dir: Option<PathBuf>,
+    bash_startup: Option<PathBuf>,
 }
 
 /// zsh reads its startup files from `$ZDOTDIR`. This one points there only
@@ -103,13 +104,6 @@ __chariox_install() {
 precmd_functions+=(__chariox_install)
 "#;
 
-/// bash gets its hooks as `PS0` (before a command runs) and `PROMPT_COMMAND`
-/// (before the prompt). They stop being exported at the first prompt, so
-/// shells started inside the terminal do not repeat them.
-const BASH_PS0: &str = "\\e]133;C\\a";
-const BASH_PROMPT_COMMAND: &str =
-    "printf '\\033]133;D;%s\\007' \"$?\"; export -n PROMPT_COMMAND PS0";
-
 impl ShellIntegration {
     /// Write the zsh startup stub under `root`. A shell that cannot be given
     /// marks falls back to sampling the foreground process group.
@@ -128,7 +122,37 @@ impl ShellIntegration {
                 None
             }
         };
-        Self { zsh_dir }
+        let bash_path = root.join("bash-startup.sh");
+        let bash_startup = match std::fs::write(&bash_path, include_str!("bash_startup.sh")) {
+            Ok(()) => Some(bash_path),
+            Err(error) => {
+                crate::logging::error_with_fields(
+                    "room_terminal.shell_integration",
+                    "bash terminals will not report command completion: stub not written",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+                None
+            }
+        };
+        Self {
+            zsh_dir,
+            bash_startup,
+        }
+    }
+
+    pub(super) fn arguments(&self, shell: &str) -> Vec<String> {
+        let mut args = Vec::new();
+        if Path::new(shell)
+            .file_name()
+            .is_some_and(|name| name == "bash")
+            && self.bash_startup.is_some()
+        {
+            // Run the normal login files from the first prompt hook, then
+            // compose integration with what those files installed.
+            args.extend(["--noprofile".into(), "--norc".into()]);
+        }
+        args.extend(["-l".into(), "-i".into()]);
+        args
     }
 
     /// Environment that makes `shell` (a login shell path) report marks.
@@ -140,11 +164,10 @@ impl ShellIntegration {
         let mut env = BTreeMap::new();
         match name {
             "bash" => {
-                env.insert("PS0".to_string(), BASH_PS0.to_string());
-                env.insert(
-                    "PROMPT_COMMAND".to_string(),
-                    BASH_PROMPT_COMMAND.to_string(),
-                );
+                if let Some(path) = &self.bash_startup {
+                    let quoted = path.to_string_lossy().replace('\'', "'\\''");
+                    env.insert("PROMPT_COMMAND".into(), format!("source '{quoted}'"));
+                }
             }
             "zsh" => {
                 if let Some(dir) = &self.zsh_dir {
@@ -195,10 +218,91 @@ mod tests {
     }
 
     #[test]
+    fn login_profile_can_replace_both_bash_hooks_without_losing_completion() {
+        use crate::pty::{PtyManager, PtySpawnRequest};
+        use std::time::{Duration, Instant};
+        for (index, hooks) in [
+            "PROMPT_COMMAND=:",
+            "PS0='profile-start '",
+            "PROMPT_COMMAND=:\nPS0='profile-start '",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let root = std::env::temp_dir().join(format!(
+                "chariox-hook-profile-{}-{index}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(
+                root.join(".bash_profile"),
+                format!("{hooks}\nalias profile_alias='echo profile-loaded'\n"),
+            )
+            .unwrap();
+            let integration = ShellIntegration::install(&root.join("integration"));
+            let mut env = integration.environment("/bin/bash");
+            env.insert("HOME".into(), root.display().to_string());
+            env.insert("TERM".into(), "dumb".into());
+            let mut pty = PtyManager::default();
+            pty.spawn_interactive(PtySpawnRequest {
+                process_key: "hooks".into(),
+                provider_run_id: "hooks".into(),
+                program: "/bin/bash".into(),
+                args: integration.arguments("/bin/bash"),
+                env,
+                env_remove: vec![],
+                working_directory: Some(root.clone()),
+                cols: 100,
+                rows: 30,
+            })
+            .unwrap();
+            let mut scanner = MarkScanner::default();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut initial = Vec::new();
+            while Instant::now() < deadline && initial.is_empty() {
+                for chunk in pty.drain_output("hooks").unwrap() {
+                    initial.extend(scanner.feed(&chunk.bytes));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            pty.write_input("hooks", b"profile_alias; (exit 7)\r")
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut marks = Vec::new();
+            let mut output = Vec::new();
+            while Instant::now() < deadline
+                && !marks.contains(&ShellMark::CommandFinished { exit_code: Some(7) })
+            {
+                for chunk in pty.drain_output("hooks").unwrap() {
+                    marks.extend(scanner.feed(&chunk.bytes));
+                    output.extend_from_slice(&chunk.bytes);
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            pty.remove_process("hooks").unwrap();
+            std::fs::remove_dir_all(&root).unwrap();
+            assert!(
+                String::from_utf8_lossy(&output).contains("profile-loaded"),
+                "the login profile alias did not run"
+            );
+            assert!(
+                marks.contains(&ShellMark::CommandStarted),
+                "{hooks}: {marks:?}"
+            );
+            assert!(
+                marks.contains(&ShellMark::CommandFinished { exit_code: Some(7) }),
+                "{hooks}: {marks:?}"
+            );
+        }
+    }
+
+    #[test]
     fn only_bash_and_zsh_are_given_hooks() {
         let root = std::env::temp_dir().join(format!("chariox-marks-{}", std::process::id()));
         let integration = ShellIntegration::install(&root);
-        assert!(integration.environment("/bin/bash").contains_key("PS0"));
+        assert!(integration
+            .environment("/bin/bash")
+            .contains_key("PROMPT_COMMAND"));
         assert!(integration
             .environment("/usr/bin/zsh")
             .contains_key("ZDOTDIR"));
