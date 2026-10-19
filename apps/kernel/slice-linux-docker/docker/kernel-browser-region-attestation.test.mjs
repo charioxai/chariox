@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11: media is content inside a bound frame, never an identity proof.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {attestationPlan,assertAttestationPixels,attestationShortage} from './kernel-browser-region-attestation.mjs';
+import {attestationPlan,assertAttestationPixels} from './kernel-browser-region-attestation.mjs';
 
 const page={left:4,top:87,width:100,height:80};
 const region={pageLeft:20,pageTop:20,width:40,height:20,contentRect:page};
@@ -36,10 +36,10 @@ test('MP-11 shifted origin, wrong raster/window and non-media differences refuse
  raw.pixels[0]++;
  assert.throws(()=>assertAttestationPixels(raw,reference,[{x:20,y:20,width:40,height:20}],[]),/mismatch/);
 });
-test('MP-11 full-bleed media without surrounding identity pixels refuses at both densities',()=>{
+test('MP-11 full-bleed media keeps its kernel-bound region at both densities',()=>{
  for(const scale of [1,2]){
   const {raw,reference}=rasters(100,80);
-  assert.throws(()=>assertAttestationPixels(raw,reference,[{x:0,y:0,width:100,height:80}],[]),/anchors|share/);
+  const receipt=assertAttestationPixels(raw,reference,[{x:0,y:0,width:100,height:80}],[]);assert.equal(receipt.proof_pixels,0);assert.equal(receipt.excluded_pixels,8000);
   assert.throws(()=>attestationPlan(region,[{id:'n3',box:[NaN,0,1,1]}],scale),/geometry/);
  }
 });
@@ -63,9 +63,9 @@ test('MP-11 media reaching the browser status band still attests; the band prove
  raw.pixels[(10*100+5)*4]++;
  assert.throws(()=>assertAttestationPixels(raw,reference,hero,[],[band]),/mismatch/,'page pixels stay exact');
 });
-test('MP-11 review: media cannot exclude more than three quarters of the attested page',()=>{
+test('MP-11 media covering nearly the whole page stays a region, with remaining page pixels checked',()=>{
  const {raw,reference}=rasters(100,80);
- assert.throws(()=>assertAttestationPixels(raw,reference,[{x:0,y:0,width:96,height:80}],[]),/share/);
+ const media=[{x:0,y:0,width:96,height:80}];assert.equal(assertAttestationPixels(raw,reference,media,[]).proof_pixels,320);raw.pixels[(20*100+98)*4]++;assert.throws(()=>assertAttestationPixels(raw,reference,media,[]),/mismatch/);
 });
 test('MP-11 review: every visible three-pixel ring remains exact and unmasked',()=>{
  const {raw,reference}=rasters(100,80),box={x:20,y:20,width:40,height:20};
@@ -78,12 +78,8 @@ test('MP-11 review: the receipt contains only finite area counts after masks',()
  assert(Object.values(receipt).every(Number.isFinite));
 });
 
-test('MP-11 a page too full of media to attest is told apart from a pixel mismatch',()=>{
- const {raw,reference}=rasters(100,80);
- for(const hero of [[{x:0,y:0,width:96,height:80}],[{x:0,y:0,width:100,height:76}]]){
-  let caught;try{assertAttestationPixels(raw,reference,hero,[]);}catch(error){caught=error}
-  assert(caught&&attestationShortage(caught),'too little page left: '+caught?.message);
- }
- raw.pixels[0]++;let mismatch;try{assertAttestationPixels(raw,reference,[{x:20,y:20,width:40,height:20}],[]);}catch(error){mismatch=error}
- assert(/mismatch/.test(mismatch.message)&&!attestationShortage(mismatch),'a mismatch never hands the page to video');
+test('MP-08/MP-10/MP-11 overlapping large media uses the union and still checks uncovered pixels',()=>{
+ const {raw,reference}=rasters(100,80),media=[{x:0,y:0,width:96,height:70},{x:20,y:20,width:80,height:60}];
+ const receipt=assertAttestationPixels(raw,reference,media,[]);assert(receipt.proof_pixels>0);
+ raw.pixels[(75*100+2)*4]++;assert.throws(()=>assertAttestationPixels(raw,reference,media,[]),/mismatch/);
 });

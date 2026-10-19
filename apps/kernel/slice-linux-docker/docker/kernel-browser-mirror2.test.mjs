@@ -690,7 +690,7 @@ test('MP-08/MP-10 r47 GitHub storm: credits based before a reset still in flight
  assert.equal((await credit(reset.sequence)).reset,true,'a viewer that applied the reset and is still far behind resets');
 });
 
-test('MP-08/MP-10 mirrorregion: theater mode: a region video refused for want of page pixels makes the page the video; otherwise a DOM copy without lossless stills', async () => {
+test('MP-08/MP-10 mirrorregion: full-viewport media stays a DOM copy without lossless stills', async () => {
  const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
  const connection={isOpen:()=>true,send:async()=>({})};
  const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
@@ -714,26 +714,14 @@ test('MP-08/MP-10 mirrorregion: theater mode: a region video refused for want of
  drain={ops:[{op:'children',id:'n1',nodes:[{id:'n9',parent:'n1',kind:'tile'}]}],changed:[],resources:[],sheets:[],scroll:[0,0],opaque:true};
  const echo=await credit(first.sequence);assert.equal(echo.fallback,undefined,'the click echo is not held for a region measurement');
  stream.inputAt=Date.now()-2000;stream.tilesAt=0;
- // The media fills the page: native attestation refuses its region video (no page pixels to prove it against).
- assert.equal((await credit(echo.sequence)).fallback,undefined,'a media-dominated view stays a DOM copy until a region video is refused');
- stream.unattestable=true;stream.tilesAt=0;
- const handoff=await credit(echo.sequence);
- assert.equal(handoff.fallback,'region_area','a view the media fills has no page pixels to prove a region video: the page is the video');
- assert.equal(handoff.reset,true);
- // A refusal holds for the media measured when it was made: the player shrinking (still opaque media) is admitted afresh.
- stream.fallback=null;stream.tilesAt=0;boxes=[{id:'n9',box:[0,0,300,200]}];drain={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],opaque:true};
- assert.equal((await credit(handoff.sequence)).fallback,undefined,'a shrunk player is measured again');assert.equal(stream.unattestable,false,'the refusal is cleared with the geometry it was made for');
- // Anchors can also be short because a protected field covers the rest of the page: collapsing it admits the player afresh.
- stream.fallback=null;stream.tilesAt=0;boxes=[{id:'n9',box:[0,0,1280,640]}];masks=[['n4',[0,640,1280,160]]];stream.unattestable=true;
- const held=await credit(handoff.sequence);assert.equal(held.fallback,'region_area','the refusal holds while the proof inputs are unchanged');
- stream.fallback=null;stream.tilesAt=0;masks=[['n4',[0,640,1280,0]]];
- assert.equal((await credit(held.sequence)).fallback,undefined,'a collapsed protected field is measured again');assert.equal(stream.unattestable,false,'the refusal is cleared with the protection geometry');masks=[];
+ // No non-media anchor budget can turn an opaque region into a page-level fallback.
+ for(const box of [[0,0,1280,800],[0,0,1280,790]]){
+  boxes=[{id:'n9',box}];stream.tilesAt=0;
+  const packet=await credit(echo.sequence);assert.equal(packet.fallback,undefined,'full-viewport media keeps the page copy');
+ }
  // A player that fills 75 % of the view stays a DOM copy; the region video serves it, no lossless still rides ahead.
- stream.fallback=null;stream.unattestable=false;boxes=[{id:'n9',box:[0,0,1280,600]}];
+ stream.fallback=null;boxes=[{id:'n9',box:[0,0,1280,600]}];
  for(let i=0;i<5;i++){stream.tilesAt=0;stream.tileHashes=new Map();const packet=await credit(0);assert.equal(packet.fallback,undefined,'75 % media stays a DOM copy');}
- // A refusal is not kept for the stream: once the media is gone the next measurement recovers.
- stream.fallback=null;stream.unattestable=true;stream.tilesAt=0;boxes=[];drain={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],opaque:false};
- const recovered=await credit(0);assert.equal(recovered.fallback,undefined,'no media left: a DOM copy again');assert.equal(stream.unattestable,false,'the refusal is cleared with the media');
  // The document copy itself failing is the one page-level fallback that remains.
  connection.send=async method=>method==='Page.getFrameTree'?{frameTree:{frame:{loaderId:'D1'}}}:{};
  mirror.evaluate=async(_,expression)=>{if(expression==='m.snapshot()')throw new Error('snapshot failed');return{};};

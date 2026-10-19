@@ -545,10 +545,7 @@ export class Mirror2 {
     // Stills, like image bytes, never ride on a DOM change or follow viewer input
     // within QUIET_MS: an echo must not queue behind a lossless region.
     const still = reset || (this.emptyDom(stream, source) && !this.recentInput(stream));
-    if (!fallback) try { tiles = await this.tiles(world, tab, stream, reset, still, source?.opaque === false); } catch (error) {
-      if (error.mirrorReason !== 'region_area') throw error;
-      fallback = error.mirrorReason; this.host.timing?.(`mirror2_fallback_${fallback}`, timestamp()); source = null; reset = true; resources = [];
-    }
+    if (!fallback) tiles = await this.tiles(world, tab, stream, reset, still, source?.opaque === false);
     mark('tiles');
     // The page session's navigation events arrive in order with the replies above: a cached document equal to the
     // tab's needs no renderer round trip (which waits for the page's next task ahead of an echo). Any other
@@ -845,18 +842,6 @@ export class Mirror2 {
   async tiles(world, tab, stream, reset, still, none = false) {
     // No opaque region in the page and no attached frame: nothing to place or capture. A DOM echo does not wait
     // for an evaluation in the page's next task (MP-08 click path, 8-12 ms behind a busy source page).
-    // Native attestation refused a region video because media leaves no page pixels to prove it against (a theater
-    // player, a full-screen map): the page is the video (labelled; the client retries later).
-    // A refusal lasts only while opaque media is still on the page (the player closed or left).
-    if (none && !stream.frames.size) stream.unattestable = false;
-    // The refusal holds for the media and protected boxes measured when it was made: a player that shrank, moved or was
-    // replaced, or a protected field that collapsed, is admitted afresh.
-    if (stream.unattestable) {
-      const key = JSON.stringify([tab.document_id, (await this.opaqueBoxes(world, stream)).map(b => [b.id, b.box]), await this.evaluate(world, `${world.ref}.maskBoxes()`)]);
-      if (stream.unattestable === true) stream.unattestable = key;
-      if (stream.unattestable !== key) stream.unattestable = false;
-    }
-    if (stream.unattestable) { const error = new Error('MP-10: opaque media fills the page'); error.mirrorReason = 'region_area'; throw error; }
     if (none && !stream.frames.size) { stream.tileKeys = ''; stream.tilesPending = false; return []; }
     // MP-08/MP-10: a DOM packet right after viewer input carries no still; its regions (and the 25% budget)
     // are measured by the next quiet packet, so an echo does not wait for an evaluation in a busy page.
@@ -865,8 +850,7 @@ export class Mirror2 {
     let boxes = await this.opaqueBoxes(world, stream);
     stream.tileKeys = boxes.map(b => b.id).join(',');
     // Opaque regions over most of the viewport are carried by their region video leases alone (viewport-clipped): their
-    // lossless stills would be megabytes ahead of the page copy's handover, and a lease the page cannot prove
-    // hands the page to video (above).
+    // lossless stills would be megabytes ahead of the page copy's handover. Media area never retires the page copy.
     if (!boxes.length || regionOverBudget(boxes) || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
     stream.tilesAt = Date.now();
     // The viewer keeps a still until replaced: unchanged pixels are not sent again.

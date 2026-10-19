@@ -69,7 +69,6 @@ async function subscribeReservedRegion(host,command,scope,signal,{Capture=Native
    args={surface:'page',window:{id:window.xid,width:window.bounds.width,height:window.bounds.height},
     rect:{left:page.left+left,top:page.top+top,width,height},contentHeight:page.height,contentRect:page,
     attestationState:lease.attestationState,
-    attestationRefused:lease.attestationRefused,
     // The owner's fresh viewport query proves geometry and the active target
     // together; a second active() query repeats the same native admission.
     cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>lease.isAlive()&&window.isPageCurrentCached(tab.target_id):undefined,

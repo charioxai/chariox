@@ -80,11 +80,11 @@ export function projectRegionMasks(regions,left,top){
 }
 
 export class NativeWindowRegionCapture extends LinuxCapture {
- constructor({surface,window,rect,contentHeight,contentRect,isCurrent,validateCurrent,attestationState,attestationRefused,inWindow,pageOverlay,pageDocument,pageRect,occluded,...options}){
+ constructor({surface,window,rect,contentHeight,contentRect,isCurrent,validateCurrent,attestationState,inWindow,pageOverlay,pageDocument,pageRect,occluded,...options}){
   super(options);
   if(surface==='page'&&typeof occluded==='function')this.occluded=occluded;
   if(typeof isCurrent!=='function')throw Error('MP-11: admitted region lease required');
-  this.surface=surface;this.isCurrent=isCurrent;this.validateCurrent=validateCurrent;this.attestationState=attestationState;this.attestationRefused=attestationRefused;
+  this.surface=surface;this.isCurrent=isCurrent;this.validateCurrent=validateCurrent;this.attestationState=attestationState;
   this.region=windowRegionGeometry(surface,window,rect,contentHeight,this.scale,contentRect,inWindow===true);
   // A browser-modal dialog's page overlay: the page area of the tabbed window (its page document fences it).
   this.pageOverlay=inWindow===true&&pageOverlay===true;this.pageDocument=pageDocument;

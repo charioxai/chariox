@@ -108,8 +108,6 @@ export class Mirror2Regions {
         isAlive:alive,isCurrent:()=>this.locked(stream,validate),close:retire,
         // Private attestation evidence from our isolated observer, never from
         // the subscribe request or the viewer's tile/mask coordinates.
-        // Media that fills the page leaves nothing to attest against: the mirror hands the page to video.
-        attestationRefused:()=>{stream.unattestable=true;this.mirror.hurry(stream);},
         attestationState:()=>this.locked(stream,async()=>{
           if(!await validate())refuse('region_retired');
           const boxes=await this.mirror.regionBoxes(stream,tab),media=[];
