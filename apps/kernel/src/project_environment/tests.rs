@@ -1349,10 +1349,27 @@ fn mp08_discovery_decides_a_gitignored_inventory_beyond_the_prompt_budget() {
     .unwrap();
     assert_eq!(kept.private_files.len(), offered + 1);
     assert_eq!(kept.private_files.last(), previous.private_files.first());
-    // A model that decides more or fewer files than it was offered is still rejected.
-    answer.private_files.pop();
+    // A model that derails partway (an entry without `bring`) leaves the rest undecided, not failed.
+    let mut partial: serde_json::Value = serde_json::to_value(&answer).unwrap();
+    let items = partial["private_files"].as_array_mut().unwrap();
+    items.truncate(80);
+    items.push(serde_json::json!({"workspace_id": "web", "path": "generated/bucket-1/entry-1.txt", "bytes": 10}));
+    let partial = parse_project_environment_discovery_output(&partial.to_string(), &input).unwrap();
+    assert_eq!(partial.private_files.len(), 80);
+    // A decision for a file it was never offered, or a duplicate, is still rejected.
+    let mut invented = answer.clone();
+    invented.private_files[0].path = "not-in-the-inventory".into();
     assert!(parse_project_environment_discovery_output(
-        &serde_json::to_string(&answer).unwrap(),
+        &serde_json::to_string(&invented).unwrap(),
+        &input
+    )
+    .is_err());
+    let mut duplicated = answer;
+    duplicated
+        .private_files
+        .push(duplicated.private_files[0].clone());
+    assert!(parse_project_environment_discovery_output(
+        &serde_json::to_string(&duplicated).unwrap(),
         &input
     )
     .is_err());

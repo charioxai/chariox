@@ -125,18 +125,27 @@ pub fn parse_project_environment_discovery_output(
     }
     let mut value: serde_json::Value = serde_json::from_str(output)
         .map_err(|_| environment_error("invalid Project environment discovery output"))?;
-    // A model often echoes the offered candidate's size beside its decision; it carries no meaning.
-    for decision in value
+    // Decisions are best effort: a model that derails partway through a long list (an entry
+    // without `bring`) or echoes the candidate's size beside a decision must not fail the export.
+    // An undecided file is simply left out, like one the utility was not shown.
+    let decisions: Vec<ProjectPrivateFileDecision> = value
         .get_mut("private_files")
-        .and_then(serde_json::Value::as_array_mut)
+        .map(serde_json::Value::take)
+        .and_then(|decisions| match decisions {
+            serde_json::Value::Array(items) => Some(items),
+            _ => None,
+        })
+        .unwrap_or_default()
         .into_iter()
-        .flatten()
-        .filter_map(serde_json::Value::as_object_mut)
-    {
-        decision.remove("bytes");
-    }
+        .filter_map(|mut decision| {
+            decision.as_object_mut()?.remove("bytes");
+            serde_json::from_value(decision).ok()
+        })
+        .collect();
+    value["private_files"] = serde_json::Value::Array(Vec::new());
     let mut manifest: ProjectEnvironmentManifest = serde_json::from_value(value)
         .map_err(|_| environment_error("invalid Project environment discovery output"))?;
+    manifest.private_files = decisions;
     manifest.validate().map_err(environment_error)?;
     if manifest.project_id != input.project_id || manifest.evidence_digest != input.evidence_digest
     {
@@ -145,15 +154,15 @@ pub fn parse_project_environment_discovery_output(
         ));
     }
     let offered = offered_private_files(&input.private_files);
-    if manifest.private_files.len() != offered.len()
-        || manifest.private_files.iter().any(|decision| {
-            !offered.iter().any(|candidate| {
+    let mut decided = HashSet::new();
+    if manifest.private_files.iter().any(|decision| {
+        !decided.insert((decision.workspace_id.as_str(), decision.path.as_str()))
+            || !offered.iter().any(|candidate| {
                 candidate.workspace_id == decision.workspace_id
                     && candidate.path == decision.path
                     && (!decision.bring || !candidate.secret_looking)
             })
-        })
-    {
+    }) {
         return Err(environment_error(
             "discovery private file decisions do not match the inventory",
         ));
