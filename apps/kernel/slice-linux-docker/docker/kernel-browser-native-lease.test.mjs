@@ -4,6 +4,7 @@ import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';import path from 'node:path';
 import {NativeWorkerControl,retireNativeStates} from './kernel-browser-native-worker.mjs';
 import {DisplayStream,PortableEncoder,directLease} from './kernel-browser-display.mjs';
+import {displayPushCredit} from './kernel-browser-display-credit.mjs';
 import {displayMaskRegions,displayUnprotected} from './kernel-browser-pixels.mjs';
 
 const root=mkdtempSync(path.join(process.env.TMPDIR??tmpdir(),'lease-packets-'));
@@ -145,4 +146,26 @@ test('L3 only sustained motion is offered a lease; a lease end starts the count 
   defaults.adoptLease(0);defaults.leased=true;
   defaults.adoptLease(sequence);clock+=16;await frame();assert.equal(offered,2,'the end of a lease restarts the count');
  }finally{await defaults.close()}
+});
+
+test('L3 a credit that was in flight at the grant parks instead of ending the lease',async()=>{
+ const {s,retired}=stream();const granted=[];
+ try{
+  const first=await s.frame(source(offer(granted),true,true),'d',0);
+  assert.ok(first[directLease]());
+  assert.equal(s.leaseHolds(first.sequence),true,'no lease frame was sent: the credit is stale');
+  assert.equal(s.leaseHolds(first.sequence+4),false,'frames were sent under the lease: Node takes the chain back');
+  assert.deepEqual(retired,[]);
+  const host={generation:7,timing:{}},stub={leaseHolds:a=>s.leaseHolds(a),leaseEnds:(ms,sig)=>s.leaseEnds(ms,sig),resetForDelivery(){}};
+  const start=performance.now();
+  const parked=await displayPushCredit(host,stub,{after_sequence:first.sequence,push:{}},undefined,{budgetMs:60});
+  assert.equal(parked.frame_sent,false);assert.ok(performance.now()-start>=50,'parked for the budget');
+  assert.equal(s.leaseHolds(first.sequence),true,'the lease survives the stale credit');assert.deepEqual(retired,[]);
+  // A lease that ends while the credit waits releases it at once, to the normal path.
+  const wait=displayPushCredit(host,stub,{after_sequence:first.sequence,push:{}},undefined,{budgetMs:5000}).catch(e=>e.message);
+  setTimeout(()=>s.endLease(),20);
+  const t0=performance.now();const out=await wait;
+  assert.ok(performance.now()-t0<1000,'woken by the lease end, not the budget');assert.notEqual(out?.frame_sent,false,'served by the normal credit path');
+  assert.deepEqual(retired,['motion']);
+ }finally{await s.close()}
 });
