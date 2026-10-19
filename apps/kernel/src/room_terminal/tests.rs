@@ -557,3 +557,25 @@ async fn a_terminal_opened_with_a_command_belongs_to_its_opener() {
     assert!(!type_as(&service, &id, &agent("b"), "x").await.accepted);
     service.end_session("room-1");
 }
+
+#[tokio::test]
+async fn a_graceful_shutdown_keeps_output_newer_than_the_last_save() {
+    let root = TempDir::new();
+    let first = service(root.path());
+    let id = open(&first, root.path()).terminal_id;
+    type_as(&first, &id, &TerminalActor::User, "echo LAST-WORDS-$((8*8))\r").await;
+    until("output", || async { screen_has(&first, &id, "LAST-WORDS-64").await }).await;
+    first.shutdown();
+
+    let second = service(root.path());
+    let snapshot = second.snapshot("room-1", &id).unwrap();
+    assert!(snapshot.screen_text.contains("LAST-WORDS-64"));
+    assert_eq!(
+        snapshot.terminal.status,
+        RoomTerminalStatus::Ended {
+            outcome: RoomTerminalOutcome::KernelRestarted,
+            description: "ended: kernel restarted".to_string()
+        }
+    );
+    first.end_session("room-1");
+}

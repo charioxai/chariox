@@ -547,13 +547,26 @@ impl RoomTerminalService {
         }
     }
 
+    /// The kernel is stopping: keep every screen as it is now. The next start
+    /// reports these terminals as ended by the restart.
+    pub fn shutdown(&self) {
+        self.pump_once();
+        let mut state = self.lock();
+        for terminal in state.terminals.values_mut() {
+            self.persist(terminal);
+        }
+    }
+
     fn persist_if_due(&self, terminal: &mut Terminal, now: Instant) {
         let due = terminal.unsaved_since.is_some_and(|since| {
             !terminal.is_running() || now.duration_since(since) >= PERSIST_INTERVAL
         });
-        if !due {
-            return;
+        if due {
+            self.persist(terminal);
         }
+    }
+
+    fn persist(&self, terminal: &mut Terminal) {
         terminal.unsaved_since = None;
         if let Err(error) = self.inner.store.save(&terminal.to_record()) {
             crate::logging::error_with_fields(
