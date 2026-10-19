@@ -241,6 +241,30 @@ impl KernelRuntimeState {
         )
     }
 
+    /// Test helper: answer as the Room owner, which kernel-operation decisions require.
+    #[cfg(test)]
+    pub(crate) async fn resolve_runtime_interaction_as_session_owner(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        choice_id: &str,
+    ) -> Result<(), DaemonError> {
+        let owner = self
+            .owned
+            .session_store
+            .get_session(session_id)?
+            .owner_user_id()
+            .to_owned();
+        self.owned.resolve_runtime_interaction(
+            session_id,
+            interaction_id,
+            choice_id,
+            None,
+            Some(&owner),
+            false,
+        )
+    }
+
     pub(super) fn create_terminal_credential_interaction(
         &self,
         session_id: &str,

@@ -2215,6 +2215,36 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         actions_before_observations,
         "Computer observations do not enter the mutating Room Action ledger",
     );
+    // A login consent belongs to the task that is running on the home Room.
+    let attached = dispatch_json(
+        &fixture.home,
+        json!({"AttachToSession": {
+            "session_id": room, "client_id": "login-task", "capability_level": "FullTerminal"
+        }}),
+    )
+    .await
+    .expect("attach the login task origin to the home Room");
+    let attachment_id = attached["SessionAttached"]["attachment"]["id"]
+        .as_str()
+        .expect("home attachment ID")
+        .to_string();
+    {
+        let mut app = fixture.home.app.lock().await;
+        app.prompt_owner_submit_prepared_prompt(
+            &room,
+            crate::session::PromptQueueItem::new(
+                "login-task",
+                &attachment_id,
+                &home_agent_id,
+                "sign in",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+        )
+        .expect("login task on the home Room");
+        app.prompt_owner_mark_active_prompt_running(&room, &home_agent_id)
+            .expect("running login task on the home Room");
+    }
     let runtime = fixture.worker.runtime_state.clone();
     let call = tokio::spawn(async move {
         runtime
@@ -2225,7 +2255,7 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
             )
             .await
     });
-    let interaction_id = tokio::time::timeout(Duration::from_secs(3), async {
+    let waiting = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let session = fixture
                 .home
@@ -2245,12 +2275,16 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
             tokio::task::yield_now().await;
         }
     })
-    .await
-    .expect("computer credential approval appears on home");
+    .await;
+    let interaction_id = match waiting {
+        Ok(id) => id,
+        Err(_) if call.is_finished() => panic!("paste ended before approval: {:?}", call.await),
+        Err(_) => panic!("computer credential approval did not appear on home"),
+    };
     fixture
         .home
         .runtime_state
-        .resolve_runtime_interaction(&room, &interaction_id, "unlock_default_ttl", None)
+        .resolve_runtime_interaction_as_session_owner(&room, &interaction_id, "unlock_default_ttl")
         .await
         .expect("approve the computer credential on home");
     let result = call
