@@ -429,7 +429,7 @@ async function secureFillElement(connection, sessionId, objectId, action) {
           return { ok: false, reason: "target_url_changed" };
         }
         // MP-08 / MP-10 / MP-11: owner codes may use ordinary editable
-        // fields. Mask before focus/value handlers; Vault fills remain password-only.
+        // fields. Exact Vault targets are registered and masked by the kernel.
         const inputPrototype = ownerWindow.HTMLInputElement?.prototype;
         const textareaPrototype = ownerWindow.HTMLTextAreaElement?.prototype;
         const elementPrototype = ownerWindow.Element?.prototype;
@@ -443,6 +443,8 @@ async function secureFillElement(connection, sessionId, objectId, action) {
           String(getAttribute.call(this, "aria-readonly") || "false").toLowerCase() !== "true";
         const isMaskedEditableInput = () => {
           if (!editable()) return false;
+          if (!maskCodeInput) return isTextarea || (isInput &&
+            ["text", "tel", "number", "password", "search", "email", "url"].includes(String(getAttribute.call(this, "type") || "text").toLowerCase()));
           if (isInput) return String(getAttribute.call(this, "type") || "text").toLowerCase() === "password";
           if (!maskCodeInput || !isTextarea || typeof ownerWindow.getComputedStyle !== "function") return false;
           return ownerWindow.getComputedStyle(this).getPropertyValue("-webkit-text-security") === "disc";
@@ -468,7 +470,7 @@ async function secureFillElement(connection, sessionId, objectId, action) {
         }
         const restoreMaskAfterHandler = () => {
           if (isMaskedEditableInput()) return true;
-          maskCodeTarget();
+          if (maskCodeInput) maskCodeTarget();
           return false;
         };
         if (!isMaskedEditableInput()) return { ok: false, reason: "target_not_masked" };

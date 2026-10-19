@@ -868,7 +868,7 @@ export class KernelBrowserHost {
       }
       if (request.method === "host.secret") {
         // MP-08 / MP-10 / MP-11: this internal owner-only flag does not
-        // loosen ordinary Vault secret insertion into password fields.
+        // change the exact-field Vault observation protection.
         const codeInput = request.params.mask_code_input === true;
         if (codeInput && (!String(request.params.observed_by ?? "").startsWith("terminal:") ||
             request.params.action?.kind !== "fill" || typeof request.params.action?.expected_document_url !== "string")) {
