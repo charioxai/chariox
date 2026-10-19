@@ -37,8 +37,12 @@ impl KernelRuntimeState {
             return remote
                 .active_worker_provider_run_id
                 .as_deref()
-                .is_some_and(|run| {
-                    self.sudo_for_run(run).is_ok_and(|turn| {
+                .is_some_and(|worker_run| {
+                    let run = crate::provider::projected_leased_provider_run_id(
+                        &remote.leased_agent_id,
+                        worker_run,
+                    );
+                    self.sudo_for_run(&run).is_ok_and(|turn| {
                         turn.session_id == session_id && turn.agent_id == agent_id
                     })
                 });

@@ -4,6 +4,56 @@ use super::*;
 use crate::session::{NativeInteractionOrigin, RuntimeInteractionKind, RuntimeInteractionLevel};
 
 #[tokio::test]
+async fn sudo_operations_projected_worker_uses_home_task() {
+    let f = fixture();
+    let mut turn = running(&f);
+    let mut binding = crate::agent::RemoteAgentBinding {
+        worker_kernel_id: "worker-kernel".into(),
+        worker_machine_id: "worker-machine".into(),
+        execution_lease_id: "worker-lease".into(),
+        leased_agent_id: "leased-agent".into(),
+        active_worker_provider_run_id: Some("worker-run".into()),
+        relay_url: None,
+        relay_token: None,
+        relay_peer_protocol_version: Some(
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        ),
+    };
+    f.app
+        .lock()
+        .await
+        .agents_mut()
+        .bind_remote_execution(&turn.agent_id, binding.clone())
+        .unwrap();
+    turn.placement = Some(binding.execution_lease_id.clone());
+    f.state
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .insert(turn.entry_id.clone(), turn.clone());
+    assert!(
+        f.state
+            .sudo_task_authorizes_agent(&turn.session_id, &turn.agent_id)
+            .await,
+        "the home task must resolve the projected worker run"
+    );
+    binding.execution_lease_id = "replacement-lease".into();
+    f.app
+        .lock()
+        .await
+        .agents_mut()
+        .bind_remote_execution(&turn.agent_id, binding)
+        .unwrap();
+    assert!(
+        !f.state
+            .sudo_task_authorizes_agent(&turn.session_id, &turn.agent_id)
+            .await,
+        "a replacement lease must not inherit task authority"
+    );
+}
+
+#[tokio::test]
 async fn sudo_operations_native_permissions_reuse_task_consent() {
     let f = fixture();
     let turn = running(&f);
