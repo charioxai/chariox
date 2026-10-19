@@ -54,6 +54,27 @@ test('MP-08/MP-10/MP-11 no filled browser field needs no renderer geometry or pr
  await assert.rejects(measureBrowserProtection(browser,{...policy,unknown:true}),/fill policy unavailable/);
 });
 
+test('MP-08/MP-11 empty typed-field measurements do not wait for an occluded keepalive frame',async()=>{
+ const browser={ensureConnection:async()=>assert.fail('an empty protection measurement needs no compositor proof')};
+ await awaitPresented(browser,[{target_id:'keepalive',regions:[],withheld:[]}]);
+});
+
+test('MP-08/MP-11 masked and withheld pages still require presentation among empty pages',async()=>{
+ const attached=[];
+ const connection={async send(method,params){
+  if(method==='Target.attachToTarget'){attached.push(params.targetId);return {sessionId:params.targetId};}
+  if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'frame'}}};
+  if(method==='Page.createIsolatedWorld')return {executionContextId:1};
+  if(method==='Runtime.evaluate')return {result:{value:false}};
+  return {};
+ }};
+ for(const page of [{target_id:'masked',regions:[[1,2,3,4]],withheld:[]},{target_id:'withheld',regions:[],withheld:[[1,2,3,4]]}]){
+  attached.length=0;
+  await assert.rejects(awaitPresented({ensureConnection:async()=>connection},[{target_id:'keepalive',regions:[],withheld:[]},page]),/did not present/);
+  assert.deepEqual(attached,[page.target_id]);
+ }
+});
+
 // MP-11: generic password/search policies no longer inspect page fields.
 test('MP-11 no recorded fill targets means no generic password or echo scan', async () => {
   const {measurePageProtection}=await import('./browser-protection-regions.mjs');

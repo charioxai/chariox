@@ -315,6 +315,10 @@ export const protectionDigest = measurement => createHash('sha256').update(JSON.
 // two animation frames, pixels derive from that layout or later. One frame
 // suffices before re-measuring: it applies pending compositor scroll offsets.
 export async function awaitPresented(browser, pages, frames = 2) {
+  // MP-08/MP-11: discovery still measures every visible page before and after
+  // capture. An empty measurement has no protected pixels to present; an
+  // occluded keepalive window must not require an animation frame for it.
+  pages=pages.filter(page=>page.regions?.length!==0||Boolean(page.withheld?.length));
   if(!pages.length)return;
   const nested = 'requestAnimationFrame(() => resolve(true))';
   const callback = frames === 2 ? `requestAnimationFrame(() => ${nested})` : nested;
