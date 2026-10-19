@@ -5,13 +5,14 @@ import {assertNotCancelled} from './browser-controller-actions.mjs';
 import {DisplayStream,PortableEncoder} from './kernel-browser-display.mjs';
 const refuse=()=>{throw new UserDomainRefusal('stale_reference');};
 const chromeUi=t=>['browser_chrome','browser_auxiliary'].includes(t?.kind);
-export async function createRegionDisplay({host,command,scope,signal,target,lease,args,window,tab,policy,generation,placement,offset={x:0,y:0},overlayTab=null,Capture}){
+export async function createRegionDisplay({host,command,scope,signal,target,lease,args,window,tab,policy,generation,placement,offset={x:0,y:0},overlayTab=null,connection:windowConnection=null,Capture}){
  let source,stream;
  try {
   const pageTab=overlayTab??tab;
-  const cached=host.browser.currentPageFrame?.(pageTab.target_id);
-  const {connection,sessionId}=cached?.frame.loaderId===pageTab.document_id?cached:await host.browser.resolvePageTarget(pageTab.target_id);
-  const scale=window.scale,sourceKind={browser_chrome:1,region:2,browser_auxiliary:3,visible_page:4}[target.kind]??0;
+  // A window-scoped display has no page: the browser-level connection carries it and no page session is resolved.
+  const cached=windowConnection?null:host.browser.currentPageFrame?.(pageTab.target_id);
+  const {connection,sessionId}=windowConnection?{connection:windowConnection}:cached?.frame.loaderId===pageTab.document_id?cached:await host.browser.resolvePageTarget(pageTab.target_id);
+  const scale=window.scale,sourceKind={browser_chrome:1,region:2,browser_auxiliary:3,visible_page:4,browser_window:5}[target.kind]??0;
   const timedLease=check=>check&&(async(lease_phase=1)=>{
    const at=performance.timeOrigin+performance.now();
    try{return await check();}finally{host.timing.event?.('native_live_lease',{at,source_kind:sourceKind,lease_phase});}

@@ -455,7 +455,7 @@ export class DisplayStream {
     if(!['video','stripes'].includes(payload.kind))this.producer?.retireUnsent();
     // L3 stage 2b: only a push-delivered whole video frame from the worker's
     // unprotected auto packet, with references on and no repair owed.
-    if(this.leases&&offer&&payload.kind==='video'&&payload.native_packet&&source.push_delivery===true&&this.dependencies&&!this.repair&&(!this.regionTarget||['visible_page','browser_chrome'].includes(this.regionTarget.kind))){
+    if(this.leases&&offer&&payload.kind==='video'&&payload.native_packet&&source.push_delivery===true&&this.dependencies&&!this.repair&&(!this.regionTarget||['visible_page','browser_chrome','browser_window'].includes(this.regionTarget.kind))){
       const {key,sequence,native_packet,...template}=packet;
       packet[directLease]=()=>{
         if(!offer.current()||!currentBinding())return null;

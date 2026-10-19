@@ -16,7 +16,7 @@ const refuse=()=>{throw new UserDomainRefusal('stale_reference');};
 const chromeUi=target=>target?.kind==='browser_chrome'||target?.kind==='browser_auxiliary';
 function checkedTarget(target) {
  const keys=target?.kind==='region'?['kind','mirror_subscription_id','document_id','sequence','region_id']:
-  target?.kind==='browser_chrome'?['kind','window_generation']:
+  target?.kind==='browser_chrome'||target?.kind==='browser_window'?['kind','window_generation']:
   target?.kind==='browser_auxiliary'?['kind','window_generation','auxiliary_id']:[];
  if(!keys.length||Object.keys(target).some(key=>!keys.includes(key))||keys.some(key=>!(key in target)))refuse();
  return target;
@@ -34,6 +34,8 @@ async function subscribeReservedRegion(host,command,scope,signal,{Capture=Native
  if(command._agent_input||command.focused_agent||command.generation!==host.generation)refuse();
  if(!Array.isArray(command.codecs)||command.codecs.length>8||!command.codecs.includes('png')||!command.codecs.includes('avc1.420033')||
   !Number.isInteger(command.bitrate)||command.bitrate<500_000||command.bitrate>64_000_000||![1,2].includes(command.device_scale_factor)||host.displays.size>=8)refuse();
+ // Protocol 560: the owner's window display asks no Tab or renderer anything.
+ if(target.kind==='browser_window')return (await import('./kernel-browser-window-display.mjs')).subscribeBrowserWindow(host,command,scope,signal,Capture===NativeWindowRegionCapture?{}:{Capture});
  const tab=await host.displayTarget(command),policy=host.protection,generation=host.generation;
  if(tab.tab_id!==command.tab_id)refuse();
  let lease,args,placement,offset={x:0,y:0},overlayTab=null;
@@ -111,6 +113,7 @@ function inputStream(host,command,scope) {
 // The ordinary Rust actor ledger still admits every resulting input action.
 export async function regionInputTarget(host,command,scope,signal) {
  const stream=inputStream(host,command,scope);assertNotCancelled(signal);
+ if(stream.regionTarget.kind==='browser_window')refuse();
  // MP-11: this only names the stream's own tab/document. A visible page needs no renderer read for that (a parsing
  // page answers late); the input that follows runs the fresh regionCurrent, input guard and final fences.
  if(!await streamAdmitted(stream))refuse();
@@ -124,6 +127,8 @@ export async function regionInputTarget(host,command,scope,signal) {
 }
 export async function regionInput(host,command,scope,signal) {
  const stream=inputStream(host,command,scope);assertNotCancelled(signal);
+ // Protocol 560: the window display is view-only; the mirror and the band own input.
+ if(stream.regionTarget.kind==='browser_window')refuse();
  if(!await slowMark(host.timing,'input_wait region_admit',streamAdmitted(stream)))refuse();
  if(stream.regionTarget.kind==='visible_page')return (await import('./kernel-browser-page-display.mjs')).inputVisiblePage(host,stream,command,scope,signal);
  if(chromeUi(stream.regionTarget)) {
