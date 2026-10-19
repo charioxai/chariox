@@ -384,12 +384,41 @@ impl PtyManager {
         self.spawn_with_output_filter(request, credentials, scrub_ambient_credentials, None)
     }
 
+    /// Spawn a program whose tty keeps the kernel's input echo, for a person
+    /// or an agent typing into a shell. Provider PTYs never echo.
+    pub fn spawn_interactive(&mut self, request: PtySpawnRequest) -> Result<(), DaemonError> {
+        self.spawn_pty(
+            request,
+            &crate::provider::ProviderCredentialEnvironment::default(),
+            true,
+            None,
+            true,
+        )
+    }
+
     pub(crate) fn spawn_with_output_filter(
         &mut self,
         request: PtySpawnRequest,
         credentials: &crate::provider::ProviderCredentialEnvironment,
         scrub_ambient_credentials: bool,
+        output_filter: Option<PtyOutputFilter>,
+    ) -> Result<(), DaemonError> {
+        self.spawn_pty(
+            request,
+            credentials,
+            scrub_ambient_credentials,
+            output_filter,
+            false,
+        )
+    }
+
+    fn spawn_pty(
+        &mut self,
+        request: PtySpawnRequest,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+        scrub_ambient_credentials: bool,
         mut output_filter: Option<PtyOutputFilter>,
+        keep_input_echo: bool,
     ) -> Result<(), DaemonError> {
         if let Some(process_key) = self.process_aliases.get(&request.provider_run_id) {
             self.output_signal
@@ -417,7 +446,9 @@ impl PtyManager {
                 provider_run_id: request.provider_run_id.clone(),
                 message: error.to_string(),
             })?;
-        disable_pty_input_echo(pair.master.as_ref(), &request.provider_run_id)?;
+        if !keep_input_echo {
+            disable_pty_input_echo(pair.master.as_ref(), &request.provider_run_id)?;
+        }
 
         let mut command = CommandBuilder::new(request.program);
         for arg in request.args {
@@ -830,6 +861,23 @@ impl PtyManager {
                     provider_run_id: provider_run_id.to_string(),
                 })?;
         Ok(process.child.process_id())
+    }
+
+    /// The foreground process group of the PTY, or `None` once the session
+    /// has no controlling terminal left (the child exited).
+    #[cfg(unix)]
+    pub fn foreground_process_group(
+        &self,
+        provider_run_id: &str,
+    ) -> Result<Option<i32>, DaemonError> {
+        let process_key = self.resolve_process_key(provider_run_id)?;
+        let process =
+            self.processes
+                .get(&process_key)
+                .ok_or_else(|| DaemonError::PtyProcessNotFound {
+                    provider_run_id: provider_run_id.to_string(),
+                })?;
+        Ok(process.master.process_group_leader())
     }
 
     pub fn remove_process(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
