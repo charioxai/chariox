@@ -207,7 +207,7 @@ impl KernelRuntimeState {
         store.agent_lifecycle(Operation::ArmWake {
             task: task.task_id.clone(),
             prompt: task.prompt_id.clone(),
-            wake: wake.clone(),
+            wake: Box::new(wake.clone()),
         })?;
         if let Err(error) = driver.arm(wake) {
             store.agent_lifecycle(Operation::CancelWake {

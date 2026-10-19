@@ -246,7 +246,7 @@ pub(crate) enum Operation {
     ArmWake {
         task: String,
         prompt: String,
-        wake: AgentWake,
+        wake: Box<AgentWake>,
     },
     /// Timer driver: proof of life for every scheduled timer.
     VerifyWakes {

@@ -275,11 +275,8 @@ fn fire_one(
 
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     match op {
-        Operation::ArmWake {
-            task,
-            prompt,
-            mut wake,
-        } => {
+        Operation::ArmWake { task, prompt, wake } => {
+            let mut wake = *wake;
             let mut t = load(tx, &task)?;
             current(&t, &prompt)?;
             let timer = wake.kind == "timer";

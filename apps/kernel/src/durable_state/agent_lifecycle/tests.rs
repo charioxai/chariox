@@ -65,7 +65,7 @@ impl Fixture {
         self.apply(Operation::ArmWake {
             task: task.into(),
             prompt: task.into(),
-            wake: test_wake(id, task, "parent"),
+            wake: Box::new(test_wake(id, task, "parent")),
         });
         self.apply(Operation::WakeVerified {
             id: id.into(),

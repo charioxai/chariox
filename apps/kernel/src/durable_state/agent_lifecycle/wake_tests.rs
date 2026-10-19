@@ -75,7 +75,7 @@ impl Fixture {
         self.wakes(Operation::ArmWake {
             task: "p".into(),
             prompt: "p".into(),
-            wake: AgentWake {
+            wake: Box::new(AgentWake {
                 id: id.into(),
                 task_id: "p".into(),
                 room_id: "room".into(),
@@ -103,7 +103,7 @@ impl Fixture {
                 last_delivered_at_ms: None,
                 last_acknowledged_at_ms: None,
                 alerted_sequence: None,
-            },
+            }),
         })
         .remove(0)
     }
@@ -529,8 +529,8 @@ fn a03_process_exit_and_loss_rewake_the_waiting_task() {
             ("running", Some(15))
         );
         f.wait_on(&["p1"]);
-        f.wakes(matched("p1".into(), "server ready".into(), 40));
-        f.wakes(matched("p1".into(), "server ready again".into(), 41));
+        f.wakes(matched("p1".into(), "server ready", 40));
+        f.wakes(matched("p1".into(), "server ready again", 41));
         f.wakes(exited("p1".into(), code, "tail", 50));
         f.wakes(exited("p1".into(), code, "tail", 51));
         let events = f.inbox();
@@ -641,7 +641,7 @@ fn a03_wake_creation_is_bounded_and_bound_to_the_current_turn() {
             .agent_lifecycle(Operation::ArmWake {
                 task: "p".into(),
                 prompt: "p".into(),
-                wake: bad.clone()
+                wake: Box::new(bad.clone())
             })
             .is_err(),
         "past due"
@@ -652,7 +652,7 @@ fn a03_wake_creation_is_bounded_and_bound_to_the_current_turn() {
             .agent_lifecycle(Operation::ArmWake {
                 task: "p".into(),
                 prompt: "stale".into(),
-                wake: bad
+                wake: Box::new(bad)
             })
             .is_err(),
         "stale turn"
@@ -668,7 +668,7 @@ fn a03_wake_creation_is_bounded_and_bound_to_the_current_turn() {
         .agent_lifecycle(Operation::ArmWake {
             task: "p".into(),
             prompt: "p".into(),
-            wake: over
+            wake: Box::new(over)
         })
         .is_err());
 }
@@ -1113,7 +1113,7 @@ fn security_f1_one_shot_admission_bounds_unhandled_fires() {
     let result = f.store.agent_lifecycle(Operation::ArmWake {
         task: "p".into(),
         prompt: "p".into(),
-        wake,
+        wake: Box::new(wake),
     });
     assert!(
         result.is_err(),
@@ -1165,7 +1165,7 @@ fn security_f1_full_recipient_does_not_stop_peer_timers() {
     f.apply(Operation::ArmWake {
         task: "peer-turn".into(),
         prompt: "peer-turn".into(),
-        wake: peer,
+        wake: Box::new(peer),
     });
     for n in 0..1024 {
         f.apply(Operation::Occur(occurrence(
@@ -1298,7 +1298,7 @@ fn driver_wake_is_bound_to_its_kind_state_and_task() {
         f.store.agent_lifecycle(Operation::ArmWake {
             task: "p".into(),
             prompt: "p".into(),
-            wake: AgentWake {
+            wake: Box::new(AgentWake {
                 id: "w".into(),
                 task_id: "p".into(),
                 room_id: "room".into(),
@@ -1321,7 +1321,7 @@ fn driver_wake_is_bound_to_its_kind_state_and_task() {
                 last_delivered_at_ms: None,
                 last_acknowledged_at_ms: None,
                 alerted_sequence: None,
-            },
+            }),
         })
     };
     // Only the kernel timer is time-driven; a driver kind starts unconfirmed.
