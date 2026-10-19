@@ -125,3 +125,20 @@ for(const retirement of ['loader','session','connection'])test(`MP-08/MP-10/MP-1
  await assert.rejects(resolveDisplayTarget(host,{tab_id:'t',generation:1}),error=>error.code==='user_domain_stale_reference');
  assert.equal(stored.document_id,'old');assert.deepEqual(saved,[]);
 });
+
+// MP-08/MP-10/MP-11: the first native wheel/key admits the document while the renderer is still parsing; the
+// event-bound frame of this live session is the document a query would return, so admission does not wait for load.
+test('MP-10 first native admission does not wait for a busy renderer when the live frame is known',async()=>{
+ const f=fixture();f.block(new Promise(()=>{}));
+ f.browser.currentPageFrame=()=>({connection:f.connection,sessionId:'s',frame:{id:'root',loaderId:'a'}});
+ const tab=await Promise.race([f.cache.target(f.browser,f.stored),new Promise((_,r)=>setTimeout(()=>r(Error('admission waited for the renderer')),200))]);
+ assert.equal(tab.document_id,'a');assert.deepEqual(f.calls,[]);assert.equal(f.cache.current(tab),true);
+ f.event('Page.frameNavigated',{frame:{id:'root',loaderId:'b'}});assert.equal(f.cache.current(tab),false);
+ assert.equal((await f.cache.target(f.browser,f.stored)).document_id,'b');f.cache.clear();
+});
+test('MP-11 a known frame from another session is not trusted at admission',async()=>{
+ const f=fixture();let finish;f.block(new Promise(r=>finish=r));
+ f.browser.currentPageFrame=()=>({connection:f.connection,sessionId:'other',frame:{id:'root',loaderId:'a'}});
+ const pending=f.cache.target(f.browser,f.stored);await new Promise(r=>setImmediate(r));
+ assert.deepEqual(f.calls,['Page.getFrameTree']);finish();assert.equal((await pending).document_id,'a');f.cache.clear();
+});

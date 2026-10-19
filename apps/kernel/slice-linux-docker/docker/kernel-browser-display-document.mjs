@@ -47,6 +47,10 @@ export class DisplayDocuments {
     entry.revision++;entry.pending=true;void this.refresh(entry).catch(()=>{this.retire(entry,target);});
    }else if(message.method==='Inspector.detached'){this.retire(entry,target);}
   });
+  // A renderer parsing a large document answers Page.getFrameTree only after load. The event-bound frame of this live
+  // connection and session is the document that query would return; later navigation events still retire it.
+  const known=entry.browser.currentPageFrame?.(target);
+  if(known?.connection===connection&&known.sessionId===sessionId&&known.frame?.loaderId){Object.assign(entry,{frame:known.frame.id,document:known.frame.loaderId,pending:false});return;}
   await this.refresh(entry);
  }
  async refresh(entry){
