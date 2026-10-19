@@ -571,7 +571,8 @@ impl KernelRuntimeState {
                     )
                     .await;
             }
-            if canonical_tool_name == crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL {
+            if canonical_tool_name == crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL
+            {
                 return Ok(crate::transport::runtime_tools::terminal_secret_refusal());
             }
             if is_home_credential_runtime_tool(canonical_tool_name) {
