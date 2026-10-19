@@ -943,6 +943,7 @@ impl KernelRuntimeState {
         self.stop_managed_environment_for_session_lifecycle(session_id)
             .await;
         let (session, terminated_run_ids) = owned.end_session(session_id)?;
+        self.end_room_terminals(session_id);
         self.sweep_kernel_access();
         owned.clear_session_prompt_runtime_state(session_id);
         let session = owned.publish_session_after_durable_mutation(session);
@@ -996,6 +997,7 @@ impl KernelRuntimeState {
             "runtime_delete_session",
         )
         .await?;
+        self.end_room_terminals(&session_id);
         if let Some(project) = durable_project_delete.as_ref() {
             self.append_project_durable_event("project.deleted", project)?;
         }

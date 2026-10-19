@@ -5,6 +5,7 @@ use std::time::Instant;
 use base64::Engine as _;
 
 use super::driver::DriverTracker;
+use super::events::{WatchOwner, WatchSet, QUIET_BEFORE_WAITING};
 use super::output_log::OutputLog;
 use super::plain_text::PlainText;
 use super::screen::Screen;
@@ -13,7 +14,8 @@ use super::types::{
     RoomTerminalDriver, RoomTerminalOutcome, RoomTerminalSnapshot, RoomTerminalStatus,
     RoomTerminalSummary, TerminalActor,
 };
-use super::watch::WatchSet;
+use super::types::{RoomTerminalEventKind, RoomTerminalWatch};
+use crate::pty::PtyManager;
 
 pub(super) struct Terminal {
     pub record: TerminalRecord,
@@ -29,6 +31,17 @@ pub(super) struct Terminal {
     pub program_running: bool,
     pub waiting_reported: bool,
     pub unsaved_since: Option<Instant>,
+    /// The last time a program returned to the prompt (or the shell exited).
+    pub last_program_end: Option<ProgramEnd>,
+}
+
+#[derive(Clone)]
+pub(super) struct ProgramEnd {
+    /// Output offset when it ended: a watch armed after reading less than
+    /// this still sees the end.
+    pub output_offset: u64,
+    pub exit_code: Option<u32>,
+    pub signal: Option<String>,
 }
 
 impl Terminal {
@@ -38,7 +51,11 @@ impl Terminal {
         shell_pid: Option<i32>,
     ) -> Self {
         let screen = Screen::new(record.rows, record.cols);
-        Self::new(record, Some(run_id), shell_pid, screen)
+        let mut terminal = Self::new(record, Some(run_id), shell_pid, screen);
+        if terminal.runs_a_command() {
+            terminal.driver = DriverTracker::owned_by(terminal.record.opened_by.clone());
+        }
+        terminal
     }
 
     /// An ended terminal whose scrollback survived a kernel restart.
@@ -71,6 +88,7 @@ impl Terminal {
             program_running: false,
             waiting_reported: false,
             unsaved_since: None,
+            last_program_end: None,
         }
     }
 
@@ -87,10 +105,91 @@ impl Terminal {
         self.unsaved_since.get_or_insert(now);
     }
 
+    /// The user used this tab: from now on only the user can close it, and
+    /// the next save keeps that across a restart.
+    pub(super) fn mark_user_interacted(&mut self) {
+        if !self.record.user_interacted {
+            self.record.user_interacted = true;
+            self.unsaved_since.get_or_insert_with(Instant::now);
+        }
+    }
+
     pub(super) fn end(&mut self, outcome: RoomTerminalOutcome) {
         self.run_id = None;
         self.record.ended = Some(outcome);
         self.unsaved_since = Some(Instant::now());
+    }
+
+    /// Whether the shell itself, not a program it started, owns the terminal.
+    pub(super) fn shell_is_foreground(&self, pty: &PtyManager) -> bool {
+        // A terminal opened with a command has no prompt: its program is the
+        // foreground until it exits.
+        if self.runs_a_command() {
+            return false;
+        }
+        match (&self.run_id, self.shell_pid) {
+            (Some(run_id), Some(shell_pid)) => {
+                pty.foreground_process_group(run_id).ok().flatten() == Some(shell_pid)
+            }
+            _ => true,
+        }
+    }
+
+    pub(super) fn current_driver(&mut self, pty: &PtyManager) -> RoomTerminalDriver {
+        let shell_foreground = self.shell_is_foreground(pty);
+        self.driver.observe(shell_foreground)
+    }
+
+    /// Arm a watch, unless its condition already holds for what the caller
+    /// has not seen yet (`after_offset` is the last output offset they read):
+    /// then the event is returned at once and nothing is armed.
+    pub(super) fn arm_watch(
+        &mut self,
+        owner: WatchOwner,
+        watch: RoomTerminalWatch,
+        after_offset: Option<u64>,
+        now: Instant,
+        program_running: bool,
+    ) -> Option<RoomTerminalEventKind> {
+        if let Some(kind) = self.already_true(&watch, after_offset, now, program_running) {
+            return Some(kind);
+        }
+        self.watches
+            .arm(owner, watch, &self.plain, program_running);
+        None
+    }
+
+    fn already_true(
+        &self,
+        watch: &RoomTerminalWatch,
+        after_offset: Option<u64>,
+        now: Instant,
+        program_running: bool,
+    ) -> Option<RoomTerminalEventKind> {
+        match watch {
+            RoomTerminalWatch::Finished => {
+                let end = self.last_program_end.as_ref()?;
+                (end.output_offset > after_offset?).then(|| RoomTerminalEventKind::Finished {
+                    exit_code: end.exit_code,
+                    signal: end.signal.clone(),
+                })
+            }
+            RoomTerminalWatch::OutputContains { text } => {
+                let page = self.log.read(after_offset?, usize::MAX);
+                if page.gap {
+                    return None;
+                }
+                let mut plain = PlainText::new();
+                plain.append(&page.bytes);
+                plain
+                    .since(0)
+                    .contains(text.as_str())
+                    .then(|| RoomTerminalEventKind::OutputMatched { text: text.clone() })
+            }
+            RoomTerminalWatch::WaitingForInput => (program_running
+                && now.duration_since(self.last_output_at) >= QUIET_BEFORE_WAITING)
+                .then_some(RoomTerminalEventKind::WaitingForInput),
+        }
     }
 
     pub(super) fn resize(&mut self, cols: u16, rows: u16) {
@@ -118,6 +217,7 @@ impl Terminal {
             },
             driver,
             opened_by: record.opened_by.clone(),
+            user_interacted: record.user_interacted,
             created_at_ms: record.created_at_ms,
             output_offset: self.log.end_offset(),
         }
@@ -146,7 +246,8 @@ impl Terminal {
         }
     }
 
-    pub(super) fn opened_by(&self) -> &TerminalActor {
-        &self.record.opened_by
+    /// A terminal opened with a command belongs to its opener until it exits.
+    pub(super) fn runs_a_command(&self) -> bool {
+        self.record.command.is_some()
     }
 }

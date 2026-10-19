@@ -26,6 +26,14 @@ pub(super) enum Admission {
 }
 
 impl DriverTracker {
+    /// A program the terminal was opened with belongs to its opener.
+    pub(super) fn owned_by(actor: TerminalActor) -> Self {
+        Self {
+            last_submit: None,
+            program_owner: Some(actor),
+        }
+    }
+
     pub(super) fn observe(&mut self, shell_is_foreground: bool) -> RoomTerminalDriver {
         if shell_is_foreground {
             self.program_owner = None;

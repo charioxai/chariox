@@ -267,7 +267,8 @@ pub use api::{
 };
 pub use api::{
     BindRoomEnvironmentSliceRequest, CaptureRoomEnvironmentScreenshotRequest,
-    ReadRoomEnvironmentScreenshotChunkRequest, RoomBrowserArtifactRequest,
+    ReadRoomEnvironmentScreenshotChunkRequest, RoomBrowserArtifactRequest, RoomTerminalOperation,
+    RoomTerminalRequest, RoomTerminalResult,
     RoomEnvironmentScreenshotArtifact, RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,
 };
 pub use api::{

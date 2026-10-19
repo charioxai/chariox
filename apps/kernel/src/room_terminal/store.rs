@@ -19,6 +19,11 @@ pub(super) struct TerminalRecord {
     pub cols: u16,
     pub rows: u16,
     pub opened_by: TerminalActor,
+    /// The program the terminal was opened with instead of a login shell.
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
+    #[serde(default)]
+    pub user_interacted: bool,
     pub created_at_ms: u64,
     /// `None` while the terminal ran when the record was written.
     pub ended: Option<RoomTerminalOutcome>,

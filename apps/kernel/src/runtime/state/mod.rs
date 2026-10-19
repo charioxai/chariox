@@ -130,6 +130,7 @@ mod provider_reload_pending_runtime;
 mod provider_run_read_state;
 mod publication_activation;
 mod room_browser_artifact;
+mod room_terminal_runtime_state;
 mod room_browser_controller;
 mod room_browser_controller_admission;
 mod room_browser_manifest_sync;
@@ -189,6 +190,7 @@ struct KernelRuntimeOwnedState {
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
     room_secret_observations: room_secret_observation::RoomSecretObservations,
+    room_terminals: crate::room_terminal::RoomTerminalService,
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
@@ -738,6 +740,10 @@ impl KernelRuntimeState {
                 }
             };
         provider_store.set_managed_kernel_admission_gate(managed_kernel_quiescence.clone());
+        let room_terminals = crate::room_terminal::RoomTerminalService::new(
+            config.private_runtime_state_root().join("room-terminals"),
+            std::sync::Arc::new(crate::room_terminal::EventCoreNotWired),
+        );
         let room_secret_observations = room_secret_observation::RoomSecretObservations::new(
             config
                 .private_runtime_state_root()
@@ -810,6 +816,7 @@ impl KernelRuntimeState {
                     crate::runtime::browser_import_admission::BrowserImportAdmission::default(),
                 environment_execution_gates: Default::default(),
                 room_secret_observations,
+                room_terminals,
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
                 room_browser_health_inflight: Arc::new(std::sync::Mutex::new(BTreeSet::new())),

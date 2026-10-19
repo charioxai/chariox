@@ -224,6 +224,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     mod resource_telemetry;
     mod room_environment_placement;
+    #[cfg(unix)]
+    mod room_terminal;
     mod runtime_persistence;
     mod session_actor_projection;
     mod session_lifecycle_projection;
