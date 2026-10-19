@@ -2223,6 +2223,9 @@ test('MP-08/MP-10/MP-11 inputLane separates Chrome band input from page input', 
   host.displays.set('popup', { binding_id: 'b2', regionTarget: { kind: 'browser_auxiliary' } });
   host.displays.set('page', { binding_id: 'b3', regionTarget: { kind: 'visible_page' } });
   assert.deepEqual(['b1', 'b2', 'b3', 'unknown', undefined].map(binding_id => host.inputLane({ op: 'input', binding_id })), ['band', 'band', 'page', 'page', 'page']);
+  assert.equal(host.inputLane({ op: 'input', binding_id: 'b3', input: { kind: 'scroll' } }), 'wheel', 'r67: a parked wheel does not hold the keys behind it');
+  assert.equal(host.inputLane({ op: 'input', binding_id: 'b3', input: { kind: 'key' } }), 'page');
+  assert.equal(host.inputLane({ op: 'input', binding_id: 'b1', input: { kind: 'scroll' } }), 'band');
   host.displays.clear();
 }));
 

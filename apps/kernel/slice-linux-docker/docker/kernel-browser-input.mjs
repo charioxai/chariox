@@ -14,6 +14,7 @@ export const keysyms = { Tab: 0xff09, Enter: 0xff0d, Space: 0x20, Escape: 0xff1b
 // automation) or fine trackpad deltas. An admitted native display starts
 // a notch for each nonzero fine delta; other callers retain precise CDP deltas.
 
+const FOCUS_GRACE_MS = 100;
 export const notches = delta => delta % 120 === 0 ? delta / 120 : Math.round(delta / 100) || Math.sign(delta);
 // MP-11: native pointer input is at most once. An action sent to the native
 // worker without a reply may have reached the page, so it counts as dispatched
@@ -23,7 +24,7 @@ async function nativeOnce(dispatch) {
   catch (error) { if (error?.code === "native_input_uncertain") return true; throw error; }
 }
 
-export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputGuard, documentCurrent, slow = (_name, operation) => operation } = {}) {
+export async function inputHostTab(browser, tab, input, { signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputGuard, documentCurrent, chromeFocused = () => false, slow = (_name, operation) => operation } = {}) {
     assertNotCancelled(signal);
     // MP-08/MP-11 protocol498: CDP bits Alt=1, Control=2, Meta=4, Shift=8.
     if (input.kind === 'key' && input.modifiers !== undefined && (!Number.isInteger(input.modifiers) || input.modifiers < 0 || input.modifiers > 15)) throw new Error('MP-11: invalid key modifiers');
@@ -64,6 +65,15 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       const evaluate = async contextId => (await connection.send("Runtime.evaluate", { contextId, expression, returnByValue: true }, sessionId)).result?.value;
       try { return await evaluate(await textWorld()); }
       catch (error) { if (error?.code === "stale_document_reference") throw error; return await evaluate(await textWorld(true)); }
+    };
+    // A renderer busy with a snapshot answers late. Once a read proved this document holds focus, the next keys go on
+    // that proof for as long as Chrome's own UI holds no claim on the keyboard; a late read still refreshes it.
+    const pageFocus = () => {
+      const proven = (browser.chariox_page_focus ??= new Map());
+      const read = evaluateText("document.hasFocus()").then(value => { if (value === true) proven.set(tab.target_id, tab.document_id); else proven.delete(tab.target_id); return value; });
+      if (proven.get(tab.target_id) !== tab.document_id || chromeFocused()) return read;
+      read.catch(() => {});
+      return Promise.race([read, new Promise(resolve => setTimeout(resolve, FOCUS_GRACE_MS, true))]);
     };
     // The guards are awaited right before a physical dispatch: a retirement (parked retry) that arrives inside one must stop it.
     const guarded = guard => guard && (async () => { assertNotCancelled(signal); await slow('input_guard', guard()); assertNotCancelled(signal); });
@@ -129,7 +139,7 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
           if (documentCurrent) cachedDocument();
           // MP-08/MP-10/MP-11: all asynchronous owner/region admission precedes
           // the final live focus check; no later await on the fast path.
-          const focused = await evaluateText("document.hasFocus()");
+          const focused = await pageFocus();
           assertNotCancelled(signal);
           if (documentCurrent) cachedDocument(); else await check();
           if (focused === true && nativeKey(keysym, Boolean(modifiers & 8))) { onDispatch?.(); return; }

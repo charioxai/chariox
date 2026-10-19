@@ -73,3 +73,21 @@ test('MP-08/MP-10/MP-11 retireAll drops parked and running retries and the queue
  assert.equal(queue.queues.size, 0);
  assert.deepEqual(await queue.submit('terminal:a', { id: 'later' }), { ok: true });
 });
+
+// r67: a wheel that timed out against a renderer busy with a 3 s snapshot parks in its own lane; the first key after it
+// needs no renderer read (its focus is proven) and is admitted at once, not behind the wheel's retries.
+test('MP-08/MP-10 r67 the first key after a parked wheel runs at once', async () => {
+ const ran = []; let renderer = false;
+ const run = async command => { if (command.input.kind === 'scroll' && !renderer) throw busy(); ran.push(command.input.kind); return { ok: true }; };
+ const lane = command => command.input.kind === 'scroll' ? 'wheel' : 'page';
+ const queue = new BusyInputQueue(run, () => ({ parked: true }), { retryMs: 5, lane });
+ assert.deepEqual(await queue.submit('terminal:a', { input: { kind: 'scroll' } }), { parked: true });
+ const at = performance.now();
+ assert.deepEqual(await queue.submit('terminal:a', { input: { kind: 'key' } }), { ok: true });
+ assert.ok(performance.now() - at < 150, 'the key does not wait for the wheel');
+ assert.deepEqual(ran, ['key']);
+ renderer = true;
+ await new Promise(resolve => setTimeout(resolve, 60));
+ assert.deepEqual(ran, ['key', 'scroll'], 'the wheel still lands once the renderer answers');
+ queue.stop();
+});

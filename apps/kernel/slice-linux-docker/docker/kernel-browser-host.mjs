@@ -644,7 +644,9 @@ export class KernelBrowserHost {
   // The surface a person's input acts on: Chrome's own band (no page renderer behind its fences) or the page.
   inputLane(command) {
     const stream = typeof command.binding_id === 'string' ? [...this.displays.values()].find(s => s.binding_id === command.binding_id) : null;
-    return ['browser_chrome', 'browser_auxiliary'].includes(stream?.regionTarget?.kind) ? 'band' : 'page';
+    if (['browser_chrome', 'browser_auxiliary'].includes(stream?.regionTarget?.kind)) return 'band';
+    // A wheel parked behind a busy renderer is not what a key waits for: it scrolls, the key types where focus already is.
+    return command.input?.kind === 'scroll' ? 'wheel' : 'page';
   }
   // A person's input queues in order while a busy renderer cannot answer the fences; agents keep awaiting their ack.
   request(command, options) {
@@ -836,7 +838,7 @@ export class KernelBrowserHost {
         const nativeKey=viewerActive()&&owned?.attested&&typeof owned.key==='function'?(keysym,shift)=>viewerActive()&&owned.key(keysym,shift):null;
         const documentCurrent=(nativeKey&&command.input?.kind==='key'||nativeWheel&&command.input?.kind==='scroll')?await slowMark(this.timing,'input_wait document_guard',this.displayDocuments.guard(this.browser,tab)):undefined;
         const laneAt=timestamp();
-        const deferred=await this.sampleLane(tab).run("input", () => (timestamp()-laneAt>250&&this.timing('input_wait sample_lane',laneAt),this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, inputGuard, documentCurrent, slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }))));
+        const deferred=await this.sampleLane(tab).run("input", () => (timestamp()-laneAt>250&&this.timing('input_wait sample_lane',laneAt),this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, inputGuard, documentCurrent, chromeFocused: () => Boolean(this.arbiter?.chromeFocus), slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }))));
         // MP-08/MP-10: wheel input is asynchronous, as in a native browser. The
         // fenced, ledgered dispatch is ordered by CDP; the renderer's
         // frame-aligned ack would otherwise serialize kernel input admission.

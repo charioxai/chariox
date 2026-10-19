@@ -177,6 +177,30 @@ test('MP-08/MP-10 viewer click routes to the owned display after the document fe
   assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,4,'MP-11: no CDP replay of an uncertain native action');
   assert.equal(dispatched,before+2,'the uncertain action counts as dispatched once');
 });
+// r67: a busy renderer (a snapshot in flight) answers document.hasFocus() late. Once a read has proven the page holds
+// focus for this document, the next keys do not wait for it while Chrome's own UI holds no claim.
+test('MP-08/MP-10 r67 a known page focus does not wait for a busy renderer',async()=>{
+  const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+  const state={documentId:'doc'};
+  const connection={send:async(method)=>{
+    if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'f',loaderId:state.documentId}}};
+    if(method==='Page.createIsolatedWorld')return {executionContextId:7};
+    if(method==='Runtime.evaluate'){await delay(400);return {result:{value:true}};}
+    return {};}};
+  const browser={resolvePageTarget:async()=>({connection,sessionId:'s'}),inputCapture:{run:async(_c,_s,fn)=>fn()}};
+  const press=async(chromeFocused=()=>false)=>{
+    const keys=[],at=performance.now();
+    await inputHostTab(browser,{target_id:'t',document_id:state.documentId},{kind:'key',key:'a'},{nativeKey:(...a)=>{keys.push(a);return true},chromeFocused});
+    assert.equal(keys.length,1);
+    return performance.now()-at;
+  };
+  assert.ok(await press()>=380,'without a proof the key waits for the read');
+  const proven=await press();
+  assert.ok(proven<250,`a proven focus does not wait for a busy renderer (${proven|0} ms)`);
+  assert.ok(await press(()=>true)>=380,'a Chrome UI focus claim voids the proof');
+  state.documentId='doc2';
+  assert.ok(await press()>=380,'the proof is for one document');
+});
 // MP-08/MP-10: viewer keys on the owned display use XTest after the document,
 // and focus fences; anything else stays on CDP.
 test('MP-08/MP-10 viewer keys route to the owned display only for a focused page',async()=>{
