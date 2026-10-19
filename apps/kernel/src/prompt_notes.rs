@@ -10,8 +10,9 @@ use crate::prompt_assembly::{assembled_prompt_component, prompt_component};
 use crate::session::PromptAttachment;
 
 pub const NOTE_ATTACHMENT_MIME: &str = "application/vnd.chariox.note+json";
-/// Typed into providers that need visible input to start a turn when a message is notes only.
-pub(crate) const NOTE_ONLY_PROMPT: &str = "Please read the attached notes.";
+/// Prompt text of a message that carries notes but no text: every provider needs a visible
+/// request to start a turn, and the task needs an objective for its completion check.
+const NOTE_ONLY_PROMPT: &str = "Please read the attached notes.";
 const MAX_NOTES: usize = 16;
 const MAX_NOTE_BYTES: usize = 48 * 1024;
 
@@ -169,6 +170,15 @@ fn describe(source: &NoteSource) -> Option<String> {
     Some(text)
 }
 
+/// The prompt to admit: a notes-only message gets a fixed request line, anything else is unchanged.
+pub(crate) fn prompt_for_admission(prompt: String, attachments: &[PromptAttachment]) -> String {
+    if prompt.trim().is_empty() && attachments.iter().any(is_note) {
+        NOTE_ONLY_PROMPT.to_string()
+    } else {
+        prompt
+    }
+}
+
 /// Removes note attachments from the provider-bound list and renders them as hidden context.
 pub(crate) fn split_for_provider(
     attachments: Vec<PromptAttachment>,
@@ -250,6 +260,14 @@ mod tests {
         let context = context.unwrap();
         assert!(!context.contains("Source:") && !context.contains("turn-9"));
         assert!(context.contains("mine") && context.contains("bare"));
+    }
+
+    #[test]
+    fn a_notes_only_message_gets_a_fixed_request_and_other_messages_are_unchanged() {
+        let notes = [note(r#"{"quote":"q"}"#)];
+        assert_eq!(prompt_for_admission("  ".into(), &notes), NOTE_ONLY_PROMPT);
+        assert_eq!(prompt_for_admission("fix it".into(), &notes), "fix it");
+        assert_eq!(prompt_for_admission(String::new(), &[]), "");
     }
 
     #[test]

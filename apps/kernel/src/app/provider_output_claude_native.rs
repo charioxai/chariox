@@ -139,8 +139,8 @@ fn claude_native_history_source_attachment_id(
         .unwrap_or_else(|| fallback_attachment_id.to_string())
 }
 
-/// The text typed into the Claude PTY: attachment mentions plus the visible prompt. Notes stay
-/// hidden context; a notes-only message types a fixed line so Claude still starts a turn.
+/// The text typed into the Claude PTY: attachment mentions (never notes: those are hidden
+/// context) plus the visible prompt.
 fn claude_typed_prompt(prompt: &ClaudeNativePromptInjection<'_>, context_file: &str) -> String {
     let files: Vec<PromptAttachment> = prompt
         .attachments
@@ -148,17 +148,11 @@ fn claude_typed_prompt(prompt: &ClaudeNativePromptInjection<'_>, context_file: &
         .filter(|attachment| !crate::prompt_notes::is_note(attachment))
         .cloned()
         .collect();
-    let has_notes = files.len() != prompt.attachments.len();
     let native_attachment_suffix = format_claude_native_attachment_prompt_suffix(&files, context_file);
     let visible = redact_native_hidden_instructions(prompt.prompt)
         .trim()
         .to_string();
-    let typed = join_claude_context([native_attachment_suffix, visible]);
-    if typed.is_empty() && has_notes {
-        crate::prompt_notes::NOTE_ONLY_PROMPT.to_string()
-    } else {
-        typed
-    }
+    join_claude_context([native_attachment_suffix, visible])
 }
 
 fn claude_headless_prompt_input(

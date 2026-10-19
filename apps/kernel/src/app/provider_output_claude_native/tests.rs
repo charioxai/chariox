@@ -3121,20 +3121,9 @@ fn note_attachment(quote: &str, comment: &str) -> PromptAttachment {
 }
 
 #[test]
-fn a_notes_only_message_types_a_fixed_line_and_never_the_note_text() {
+fn claude_types_the_prompt_and_never_the_note_text() {
     let attachments = vec![note_attachment("secret quote", "secret comment")];
     let typed = claude_typed_prompt(
-        &ClaudeNativePromptInjection {
-            id: "p",
-            origin_prompt_id: "p",
-            prompt: "  ",
-            hidden_system_context: "",
-            attachments: &attachments,
-        },
-        "/nonexistent/context",
-    );
-    assert_eq!(typed, crate::prompt_notes::NOTE_ONLY_PROMPT);
-    let with_text = claude_typed_prompt(
         &ClaudeNativePromptInjection {
             id: "p",
             origin_prompt_id: "p",
@@ -3144,7 +3133,7 @@ fn a_notes_only_message_types_a_fixed_line_and_never_the_note_text() {
         },
         "/nonexistent/context",
     );
-    assert_eq!(with_text, "fix it");
+    assert_eq!(typed, "fix it");
 }
 
 #[test]
