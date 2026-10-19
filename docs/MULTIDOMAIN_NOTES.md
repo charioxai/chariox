@@ -12,6 +12,10 @@ text on top, a text field below. Enter (Shift+Enter = newline) or the send butto
 inside the field attaches the note to the prompt as a chip, like an image; Esc or
 a click outside cancels. Clicking the chip reopens the composer; the chip's remove
 button removes it. The transcript shows the chips; history replay keeps them.
+A double or triple click selects a word or paragraph in the page and shows the button
+like a drag does. A message with chips and no text is admitted with the fixed request
+"Please read the attached notes." so every provider starts a turn and the task has an
+objective for its completion check.
 
 ## Wire shape (protocol 566 / relay peer 174)
 
@@ -40,3 +44,5 @@ assembly every provider, remote worker and native TUI uses (Claude native TUI vi
 the `UserPromptSubmit` `additionalContext` bridge). Each `<note>` has `Source`,
 `Anchor`, `More` (the one tool above), the selected text and the comment. A note
 whose `source.agent_id` is the receiving agent carries only quote and comment.
+Claude's native bridge splits notes once (the same `split_for_provider`) and formats only
+the remaining attachments, so a note is never written twice or as a file.
