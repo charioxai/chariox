@@ -471,6 +471,15 @@ async fn public_history_agent_vault_credential_keeps_room_output_visible() {
         super::protect(store, &room.session_id, b"later visible answer"),
         b"later visible answer"
     );
+    // A stored value is still redacted if it later shows up in a provider stream.
+    assert_eq!(
+        super::protect(
+            store,
+            &room.session_id,
+            b"echo synthetic_generated_value now\n"
+        ),
+        b"echo [redacted] now\n"
+    );
     let session = room
         .runtime
         .owned
