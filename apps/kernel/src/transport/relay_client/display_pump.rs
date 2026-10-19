@@ -539,11 +539,19 @@ mod tests {
     #[test]
     fn retired_source_ends_the_pump_at_once_but_one_stale_credit_does_not() {
         use crate::error::UserDomainRefusalReason::{NotGranted, StaleReference};
-        let stale = DaemonError::UserDomainRefused { reason: StaleReference };
+        let stale = DaemonError::UserDomainRefused {
+            reason: StaleReference,
+        };
         let t0 = Instant::now();
         let mut faults = Faults::default();
-        assert!(matches!(faults.error(&stale, t0), Next::Retry { reset: false, .. }));
-        assert!(matches!(faults.error(&stale, t0 + STALE_LIMIT / 2), Next::Retry { .. }));
+        assert!(matches!(
+            faults.error(&stale, t0),
+            Next::Retry { reset: false, .. }
+        ));
+        assert!(matches!(
+            faults.error(&stale, t0 + STALE_LIMIT / 2),
+            Next::Retry { .. }
+        ));
         assert!(matches!(faults.error(&stale, t0 + STALE_LIMIT), Next::Fail));
         // A delivered credit forgets the stale run.
         assert!(matches!(
