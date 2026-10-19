@@ -181,7 +181,11 @@ fn mp08_index_walks_a_workspace_beyond_twenty_thousand_files() {
             std::fs::write(directory.join(format!("f{file}.txt")), b"x").unwrap();
         }
     }
-    std::fs::write(fixture.0.join("config.ts"), b"const a = process.env.DATABASE_URL\n").unwrap();
+    std::fs::write(
+        fixture.0.join("config.ts"),
+        b"const a = process.env.DATABASE_URL\n",
+    )
+    .unwrap();
     let index = index_project_environment(&fixture.workspaces(), &BTreeMap::new()).unwrap();
     assert_eq!(index.references.len(), 1);
 }
