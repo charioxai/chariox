@@ -53,14 +53,19 @@ fn disable_pty_input_echo(
     Ok(())
 }
 
-/// A password prompt is a non-provider foreground process reading in canonical
-/// mode with echo off. The provider TUI's own prompt editor (raw mode, and the
+/// Programs that read a password from the terminal themselves.
+const PASSWORD_PROMPT_PROGRAMS: &[&str] = &[
+    "ssh", "scp", "sftp", "sudo", "su", "doas", "passwd", "gpg", "gpg2",
+];
+
+/// A password prompt is a known prompting program holding the PTY foreground,
+/// reading in canonical mode with echo off. Terminal state alone is not
+/// evidence: managed PTYs start with echo off, so any canonical reader (cat,
+/// a shell) looks the same. The provider TUI's own prompt editor (raw mode, the
 /// provider's own process group) is model input and never qualifies.
 #[cfg(unix)]
-fn foreground_is_password_prompt(master: &dyn MasterPty, provider_group: Option<i32>) -> bool {
-    let (Some(fd), Some(foreground)) = (master.as_raw_fd(), master.process_group_leader()) else {
-        return false;
-    };
+fn foreground_is_password_prompt(fd: std::os::fd::RawFd, provider_group: Option<i32>) -> bool {
+    let foreground = unsafe { libc::tcgetpgrp(fd) };
     if foreground <= 1 || Some(foreground) == provider_group {
         return false;
     }
@@ -69,12 +74,57 @@ fn foreground_is_password_prompt(master: &dyn MasterPty, provider_group: Option<
         return false;
     }
     let lflag = unsafe { attributes.assume_init() }.c_lflag;
-    lflag & libc::ICANON != 0 && lflag & libc::ECHO == 0
+    lflag & libc::ICANON != 0
+        && lflag & libc::ECHO == 0
+        && process_program_name(foreground)
+            .is_some_and(|name| PASSWORD_PROMPT_PROGRAMS.contains(&name.as_str()))
+}
+
+#[cfg(target_os = "linux")]
+fn process_program_name(pid: i32) -> Option<String> {
+    let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    Some(exe.file_name()?.to_str()?.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn process_program_name(pid: i32) -> Option<String> {
+    let mut path = [0_u8; 4096];
+    let length = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
+    let path = std::str::from_utf8(path.get(..usize::try_from(length).ok()?)?).ok()?;
+    Some(path.rsplit('/').next()?.to_string())
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn process_program_name(_pid: i32) -> Option<String> {
+    None
+}
+
+/// Re-checks the sink on the writer thread, so a secret is never written to a
+/// foreground that changed after it was queued. Owns a duplicate of the master.
+#[cfg(unix)]
+fn password_prompt_check(
+    master: &dyn MasterPty,
+    provider_group: Option<i32>,
+) -> Box<dyn Fn() -> bool + Send> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    let duplicate = master
+        .as_raw_fd()
+        .map(|fd| unsafe { libc::dup(fd) })
+        .filter(|fd| *fd >= 0)
+        .map(|fd| unsafe { OwnedFd::from_raw_fd(fd) });
+    Box::new(move || {
+        duplicate.as_ref().is_some_and(|fd| {
+            foreground_is_password_prompt(std::os::fd::AsRawFd::as_raw_fd(fd), provider_group)
+        })
+    })
 }
 
 #[cfg(not(unix))]
-fn foreground_is_password_prompt(_master: &dyn MasterPty, _provider_group: Option<i32>) -> bool {
-    false
+fn password_prompt_check(
+    _master: &dyn MasterPty,
+    _provider_group: Option<i32>,
+) -> Box<dyn Fn() -> bool + Send> {
+    Box::new(|| false)
 }
 
 #[cfg(not(unix))]
@@ -113,7 +163,10 @@ pub(crate) struct PtyInputWriter {
 struct PtyInputRequest {
     provider_run_id: String,
     bytes: Vec<u8>,
-    completion_tx: Option<SyncSender<Result<(), String>>>,
+    /// A secret is written only while the check says a password prompt owns
+    /// the foreground; `Ok(false)` reports it was dropped.
+    secret: bool,
+    completion_tx: Option<SyncSender<Result<bool, String>>>,
 }
 
 pub struct PtyManager {
@@ -493,6 +546,13 @@ impl PtyManager {
                 provider_run_id: request.provider_run_id.clone(),
                 message: error.to_string(),
             })?;
+        // portable-pty creates a new Unix session whose leader is the child.
+        // Record it while owned, before exit can detach the controlling TTY.
+        #[cfg(unix)]
+        let process_group = child.process_id().and_then(|pid| i32::try_from(pid).ok());
+        #[cfg(not(unix))]
+        let process_group = None;
+        let password_prompt = password_prompt_check(pair.master.as_ref(), process_group);
         let (input_tx, input_rx) = mpsc::sync_channel(PTY_INPUT_QUEUE_LIMIT);
         let writer_provider_run_id = request.provider_run_id.clone();
         let writer_process_key = request.process_key.clone();
@@ -501,7 +561,13 @@ impl PtyManager {
             .name(format!("chariox-pty-writer-{}", request.provider_run_id))
             .stack_size(PTY_WRITER_STACK_BYTES)
             .spawn(move || {
-                run_pty_writer(writer, input_rx, writer_process_key, writer_output_signal)
+                run_pty_writer(
+                    writer,
+                    input_rx,
+                    writer_process_key,
+                    writer_output_signal,
+                    password_prompt,
+                )
             });
         if let Err(error) = writer_thread {
             let _ = child.kill();
@@ -569,12 +635,6 @@ impl PtyManager {
             });
         }
 
-        // portable-pty creates a new Unix session whose leader is the child.
-        // Record it while owned, before exit can detach the controlling TTY.
-        #[cfg(unix)]
-        let process_group = child.process_id().and_then(|pid| i32::try_from(pid).ok());
-        #[cfg(not(unix))]
-        let process_group = None;
         self.processes.insert(
             request.process_key.clone(),
             PtyProcess {
@@ -616,18 +676,15 @@ impl PtyManager {
         Ok(writer)
     }
 
-    /// Writes a secret only while a password prompt owns the PTY foreground.
-    /// Returns false, without writing, when the provider itself would read it.
+    /// Writes a secret only while a password prompt owns the PTY foreground,
+    /// checked by the writer when it delivers the bytes. Returns false, without
+    /// writing, when the provider itself would read it.
     pub(crate) fn write_secret_input(
         &self,
         provider_run_id: &str,
         input: &[u8],
     ) -> Result<bool, DaemonError> {
-        if !self.password_prompt_foreground(provider_run_id)? {
-            return Ok(false);
-        }
-        self.input_writer(provider_run_id)?.enqueue_input(input)?;
-        Ok(true)
+        self.input_writer(provider_run_id)?.write_secret(input)
     }
 
     pub(crate) fn password_prompt_foreground(
@@ -641,10 +698,10 @@ impl PtyManager {
                 .ok_or_else(|| DaemonError::PtyProcessNotFound {
                     provider_run_id: provider_run_id.to_string(),
                 })?;
-        Ok(foreground_is_password_prompt(
-            process.master.as_ref(),
-            process.process_group,
-        ))
+        Ok(process
+            .master
+            .as_raw_fd()
+            .is_some_and(|fd| foreground_is_password_prompt(fd, process.process_group)))
     }
 
     #[cfg(test)]
@@ -662,8 +719,24 @@ impl PtyInputWriter {
         self.send_request(PtyInputRequest {
             provider_run_id: self.provider_run_id.clone(),
             bytes: input.to_vec(),
+            secret: false,
             completion_tx: Some(completion_tx),
         })?;
+        self.confirm(completion_rx).map(|_| ())
+    }
+
+    pub(crate) fn write_secret(&self, input: &[u8]) -> Result<bool, DaemonError> {
+        let (completion_tx, completion_rx) = mpsc::sync_channel(1);
+        self.send_request(PtyInputRequest {
+            provider_run_id: self.provider_run_id.clone(),
+            bytes: input.to_vec(),
+            secret: true,
+            completion_tx: Some(completion_tx),
+        })?;
+        self.confirm(completion_rx)
+    }
+
+    fn confirm(&self, completion_rx: Receiver<Result<bool, String>>) -> Result<bool, DaemonError> {
         completion_rx
             .recv()
             .map_err(|error| DaemonError::PtyWrite {
@@ -680,6 +753,7 @@ impl PtyInputWriter {
         self.send_request(PtyInputRequest {
             provider_run_id: self.provider_run_id.clone(),
             bytes: input.to_vec(),
+            secret: false,
             completion_tx: None,
         })
     }
@@ -705,13 +779,22 @@ fn run_pty_writer(
     input_rx: Receiver<PtyInputRequest>,
     process_key: String,
     output_signal: PtyOutputSignal,
+    password_prompt: Box<dyn Fn() -> bool + Send>,
 ) {
-    while let Ok(request) = input_rx.recv() {
+    while let Ok(mut request) = input_rx.recv() {
         output_signal.prefer_alias(&process_key, &request.provider_run_id);
-        let result = writer
-            .write_all(&request.bytes)
-            .and_then(|_| writer.flush());
-        let result = result.map_err(|error| error.to_string());
+        let delivered = !request.secret || password_prompt();
+        let result = if delivered {
+            writer
+                .write_all(&request.bytes)
+                .and_then(|_| writer.flush())
+        } else {
+            Ok(())
+        };
+        if request.secret {
+            zeroize::Zeroize::zeroize(&mut request.bytes);
+        }
+        let result = result.map(|_| delivered).map_err(|error| error.to_string());
         let failed = result.is_err();
         if let Some(completion_tx) = request.completion_tx {
             let _ = completion_tx.send(result);
@@ -1796,38 +1879,131 @@ mod tests {
         manager.remove_process(id).unwrap();
     }
 
+    /// Runs `program` in its own foreground process group, stdout to `output`;
+    /// the provider process stays in the PTY's original group, like a shell job.
     #[cfg(unix)]
-    #[test]
-    fn secret_reaches_a_foreground_password_prompt_only() {
-        let id = "secret-sink-getpass";
-        // The provider stays in its own group; a child takes the foreground
-        // and prompts like sudo/ssh do.
+    fn foreground_job_manager(
+        id: &str,
+        program: &std::path::Path,
+        output: &std::path::Path,
+        args: &str,
+    ) -> PtyManager {
         let script = r#"
-import getpass, os, signal, sys
+import os, signal, sys
 if os.fork() == 0:
     os.setpgid(0, 0)
     signal.signal(signal.SIGTTOU, signal.SIG_IGN)
     os.tcsetpgrp(0, os.getpgrp())
-    value = getpass.getpass("Password: ")
-    open(sys.argv[1], "w").write(value)
-    sys.exit(0)
+    os.dup2(os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT), 1)
+    os.execv(sys.argv[1], [sys.argv[1]] + sys.argv[3:])
 os.wait()
 "#;
-        let output = std::env::temp_dir().join(format!("secret-sink-{}", std::process::id()));
-        let mut manager = secret_sink_manager(
+        secret_sink_manager(
             id,
-            &format!("exec python3 -c '{script}' {}", output.display()),
-        );
-        assert!(wait_for_password_prompt(&manager, id, true));
-        assert!(manager.write_secret_input(id, b"hunter2\n").unwrap());
+            &format!(
+                "exec python3 -c '{script}' {} {} {args}",
+                program.display(),
+                output.display()
+            ),
+        )
+    }
+
+    #[cfg(unix)]
+    fn scratch_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    fn read_when_written(output: &std::path::Path) -> String {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while std::time::Instant::now() < deadline && !output.exists() {
+        while std::time::Instant::now() < deadline
+            && std::fs::read_to_string(output)
+                .unwrap_or_default()
+                .is_empty()
+        {
             thread::sleep(Duration::from_millis(20));
         }
-        let received = std::fs::read_to_string(&output).unwrap_or_default();
-        let _ = std::fs::remove_file(&output);
+        std::fs::read_to_string(output).unwrap_or_default()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_reaches_a_known_password_prompter_only() {
+        let id = "secret-sink-prompter";
+        let dir = scratch_dir("secret-sink-prompter");
+        // A copy of the shell named like a real prompter stands in for sudo.
+        let prompter = dir.join("sudo");
+        std::fs::copy(std::fs::canonicalize("/bin/sh").unwrap(), &prompter).unwrap();
+        let output = dir.join("received");
+        let mut manager = foreground_job_manager(id, &prompter, &output, r#"-c "cat; true""#);
+        assert!(wait_for_password_prompt(&manager, id, true));
+        assert!(manager.write_secret_input(id, b"hunter2\n").unwrap());
+        let received = read_when_written(&output);
         manager.remove_process(id).unwrap();
-        assert_eq!(received, "hunter2");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(received, "hunter2\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_is_refused_for_a_reader_that_only_inherited_no_echo() {
+        let id = "secret-sink-inherited";
+        let dir = scratch_dir("secret-sink-inherited");
+        // The PTY starts with echo off, so any canonical reader, such as cat
+        // after `stty -echo`, looks like a prompt by terminal state alone.
+        let output = dir.join("received");
+        let mut manager = foreground_job_manager(id, std::path::Path::new("/bin/cat"), &output, "");
+        thread::sleep(Duration::from_millis(500));
+        assert!(!manager.password_prompt_foreground(id).unwrap());
+        assert!(!manager.write_secret_input(id, b"hunter2\n").unwrap());
+        manager.remove_process(id).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_is_dropped_when_the_sink_changes_before_the_writer_delivers_it() {
+        let (input_tx, input_rx) = mpsc::sync_channel(PTY_INPUT_QUEUE_LIMIT);
+        let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        struct Sink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        // The prompt owns the foreground when the secret is queued and has
+        // gone by the time the writer reaches it.
+        let prompt_up = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let sink_prompt = std::sync::Arc::clone(&prompt_up);
+        let writer_thread = thread::spawn({
+            let sink = Sink(std::sync::Arc::clone(&written));
+            move || {
+                run_pty_writer(
+                    Box::new(sink),
+                    input_rx,
+                    "race".to_string(),
+                    PtyOutputSignal::default(),
+                    Box::new(move || sink_prompt.load(std::sync::atomic::Ordering::SeqCst)),
+                )
+            }
+        });
+        let writer = PtyInputWriter {
+            provider_run_id: "race".to_string(),
+            input_tx,
+        };
+        assert!(writer.write_secret(b"hunter2\n").unwrap());
+        prompt_up.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(!writer.write_secret(b"hunter2\n").unwrap());
+        writer.write_input(b"ls\n").unwrap();
+        drop(writer);
+        writer_thread.join().unwrap();
+        assert_eq!(written.lock().unwrap().as_slice(), b"hunter2\nls\n");
     }
 
     #[test]
@@ -2003,6 +2179,7 @@ os.wait()
                     input_rx,
                     process_key.to_string(),
                     output_signal,
+                    Box::new(|| false),
                 )
             }
         });
@@ -2011,6 +2188,7 @@ os.wait()
             .send(PtyInputRequest {
                 provider_run_id: first_run.to_string(),
                 bytes: b"first input".to_vec(),
+                secret: false,
                 completion_tx: Some(completion_tx),
             })
             .expect("probe input should queue");
