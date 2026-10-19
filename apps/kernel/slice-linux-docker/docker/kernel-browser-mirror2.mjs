@@ -867,9 +867,9 @@ export class Mirror2 {
       const slot = slotOf(b.id), owner = slot ? stream.frameSlots.get(slot)?.child : world;
       const own = b.foreign || !owner ? null : await this.evaluate(owner, `${owner.ref}.elementPixels(${JSON.stringify(slot ? localId(b.id) : b.id)},${scale})`, true).catch(() => null);
       if (own) send(b.id, own);
-      // A distorted region's crop (its on-screen bounding box, compositing included) is placed by the viewer at the
-      // on-screen rect as a still patch until the region's video patch takes over, never inside the transformed element.
-      else shots.push(b);
+      // A distorted region's screenshot already holds its compositing: as the element's background the mirrored DOM
+      // would apply the transform/opacity again, so such a region carries no still (its video lease shows it).
+      else if (!b.distorted) shots.push(b);
     }
     if (!shots.length) return out;
     boxes = shots;

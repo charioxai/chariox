@@ -812,7 +812,7 @@ test("MP-10: a tainted canvas falls back to a screenshot crop; under a filter (d
     let crop = 0;
     const filtered = await next(1000); crop += filtered.tiles.length;
     const packet = await stayDom(next, 3500, "MP-10: a filtered region never hands the page to video");
-    assert(crop + packet.seenTiles >= 1, "MP-10: the filtered region's on-screen crop is sent as its still (the viewer places it at the screen rect)");
+    assert.equal(crop + packet.seenTiles, 0, "MP-10: a filtered region's screenshot already holds the filter, as a background it would be filtered again: no still");
     const lease = await regionLease(ctx, packet.sequence);
     assert.equal(lease.rect.width, 120); assert.equal(lease.rect.height, 60);
   }, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="rgb(255,0,0)"/></svg>' } }));
