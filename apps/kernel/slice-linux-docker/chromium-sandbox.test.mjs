@@ -88,3 +88,13 @@ test("browser profile drill runs the image-selected display server with its help
   assert.match(drill, /const displayServer = env\.CHARIOX_SLICE_DISPLAY_SERVER \|\| "Xvfb";/);
   assert.equal(drill.match(/"pgrep", \["-x", displayServer\]/g)?.length, 2);
 });
+
+// MP-08/MP-11: the Room Chromium never offers to save a Vault-filled password.
+test("slice Chromium managed policy disables the password manager and autofill", async () => {
+  const script = await readFile(new URL("./provision-linux-docker-slice.sh", import.meta.url), "utf8");
+  const policy = JSON.parse(script.match(/<<'JSON'\n(.*)\nJSON/)[1].replaceAll('\\"', '"'));
+  assert.equal(policy.PasswordManagerEnabled, false);
+  assert.equal(policy.AutofillCreditCardEnabled, false);
+  assert.equal(policy.AutofillAddressEnabled, false);
+  assert.equal(policy.BrowserSignin, 0);
+});
