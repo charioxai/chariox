@@ -1069,7 +1069,7 @@ pub(super) fn terminal_secret_result(
         payload: serde_json::json!({
             "submitted": false,
             "credential_id": credential_id,
-            "error": "no known password prompt (ssh, sudo, su, passwd, gpg) is waiting; nothing was written. Start the command that asks for the password, wait until it shows the prompt, then call send_secret_to_terminal again.",
+            "error": "no known password prompt (ssh, sudo, su, passwd, gpg, mysql, psql, docker, gh, git, npm, op, or a Python script) is waiting; nothing was written. Start the command that asks for the password, wait until it shows the prompt, then call send_secret_to_terminal again.",
         }),
     }
 }

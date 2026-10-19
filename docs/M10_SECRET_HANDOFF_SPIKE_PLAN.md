@@ -365,15 +365,20 @@ Scope:
 - do not echo or store the value
 - do not record the secret as normal terminal input
 - write only while a password prompt owns the PTY foreground: a known
-  prompting program (ssh, sudo, su, passwd, gpg, ...) in a process group other
-  than the provider's, reading in canonical mode with echo off. Terminal state
-  alone is not evidence, since managed PTYs start with echo off. The PTY writer
+  prompting program (ssh, sudo, su, passwd, gpg, mysql, psql, docker, gh, git,
+  op, npm via node, or a Python script that is itself the foreground) in a
+  process group other than the provider's, with echo off. Terminal state alone
+  is not evidence, since managed PTYs start with echo off. The PTY writer
   re-checks this when it delivers the bytes, so a foreground change after
   queueing drops the secret. Otherwise (for example the provider's own prompt
   editor in raw mode, or `cat`) write nothing and return a recoverable
   `submitted: false` error without the value; the same check runs on the worker
   before a leased agent resolves the secret from home. Prompts of other
-  programs are refused; Browser/Computer Vault fill is the login path for them
+  programs are refused; Browser/Computer Vault fill is the login path for them.
+  Accepted case (UX-first, agents are benign): a same-user agent that renames a
+  binary to a prompter name passes the check. Only a secret value reaching the
+  model is guarded, and the value is not returned to it; the structural fix is
+  the parked Chariox-owned terminal.
 
 Out of scope for this slice:
 

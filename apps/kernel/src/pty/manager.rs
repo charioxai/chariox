@@ -55,14 +55,56 @@ fn disable_pty_input_echo(
 
 /// Programs that read a password from the terminal themselves.
 const PASSWORD_PROMPT_PROGRAMS: &[&str] = &[
-    "ssh", "scp", "sftp", "sudo", "su", "doas", "passwd", "gpg", "gpg2",
+    "ssh",
+    "scp",
+    "sftp",
+    "ssh-add",
+    "sudo",
+    "su",
+    "doas",
+    "passwd",
+    "gpg",
+    "gpg2",
+    "mysql",
+    "mariadb",
+    "psql",
+    "docker",
+    "gh",
+    "git",
+    "git-remote-https",
+    "op",
 ];
 
-/// A password prompt is a known prompting program holding the PTY foreground,
-/// reading in canonical mode with echo off. Terminal state alone is not
-/// evidence: managed PTYs start with echo off, so any canonical reader (cat,
-/// a shell) looks the same. The provider TUI's own prompt editor (raw mode, the
-/// provider's own process group) is model input and never qualifies.
+/// Node-run package managers: the executable is `node`, the program is the script.
+const PASSWORD_PROMPT_SCRIPTS: &[&str] = &["npm", "npx", "pnpm", "yarn"];
+
+/// Whether a foreground program, from its executable name and arguments, reads a
+/// password itself. Interpreters count when they run a script (a Python script
+/// calling `getpass`, an npm login), never as a REPL or `-c` snippet.
+/// A same-user agent can rename a binary to pass this check; agents are benign
+/// and the value never reaches the model (documented accepted case, see
+/// docs/M10_SECRET_HANDOFF_SPIKE_PLAN.md).
+fn is_password_prompt_program(name: &str, arguments: &[String]) -> bool {
+    if PASSWORD_PROMPT_PROGRAMS.contains(&name) {
+        return true;
+    }
+    let script = arguments.iter().skip(1).find(|argument| !argument.starts_with('-'));
+    let snippet = arguments.iter().skip(1).any(|argument| argument == "-c");
+    if name.starts_with("python") {
+        return script.is_some() && !snippet;
+    }
+    name == "node"
+        && script
+            .and_then(|script| script.rsplit('/').next())
+            .is_some_and(|script| PASSWORD_PROMPT_SCRIPTS.contains(&script))
+}
+
+/// A password prompt is a known prompting program holding the PTY foreground
+/// with echo off. Terminal state alone is not evidence: managed PTYs start with
+/// echo off, so the program must also be one that prompts for a password
+/// (canonical or raw: Go and Node prompters read in raw mode). The provider
+/// TUI's own prompt editor (the provider's process group) is model input and
+/// never qualifies.
 #[cfg(unix)]
 fn foreground_is_password_prompt(fd: std::os::fd::RawFd, provider_group: Option<i32>) -> bool {
     let foreground = unsafe { libc::tcgetpgrp(fd) };
@@ -73,11 +115,9 @@ fn foreground_is_password_prompt(fd: std::os::fd::RawFd, provider_group: Option<
     if unsafe { libc::tcgetattr(fd, attributes.as_mut_ptr()) } != 0 {
         return false;
     }
-    let lflag = unsafe { attributes.assume_init() }.c_lflag;
-    lflag & libc::ICANON != 0
-        && lflag & libc::ECHO == 0
+    unsafe { attributes.assume_init() }.c_lflag & libc::ECHO == 0
         && process_program_name(foreground)
-            .is_some_and(|name| PASSWORD_PROMPT_PROGRAMS.contains(&name.as_str()))
+            .is_some_and(|name| is_password_prompt_program(&name, &process_arguments(foreground)))
 }
 
 #[cfg(target_os = "linux")]
@@ -86,12 +126,35 @@ fn process_program_name(pid: i32) -> Option<String> {
     Some(exe.file_name()?.to_str()?.to_string())
 }
 
+#[cfg(target_os = "linux")]
+fn process_arguments(pid: i32) -> Vec<String> {
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    cmdline
+        .split(|byte| *byte == 0)
+        .map(|argument| String::from_utf8_lossy(argument).into_owned())
+        .collect()
+}
+
 #[cfg(target_os = "macos")]
 fn process_program_name(pid: i32) -> Option<String> {
     let mut path = [0_u8; 4096];
     let length = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
     let path = std::str::from_utf8(path.get(..usize::try_from(length).ok()?)?).ok()?;
     Some(path.rsplit('/').next()?.to_string())
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn process_arguments(pid: i32) -> Vec<String> {
+    std::process::Command::new("ps")
+        .args(["-ww", "-o", "args=", "-p", &pid.to_string()])
+        .output()
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .split_whitespace()
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
@@ -698,10 +761,16 @@ impl PtyManager {
                 .ok_or_else(|| DaemonError::PtyProcessNotFound {
                     provider_run_id: provider_run_id.to_string(),
                 })?;
-        Ok(process
+        #[cfg(unix)]
+        return Ok(process
             .master
             .as_raw_fd()
-            .is_some_and(|fd| foreground_is_password_prompt(fd, process.process_group)))
+            .is_some_and(|fd| foreground_is_password_prompt(fd, process.process_group)));
+        #[cfg(not(unix))]
+        {
+            let _ = process;
+            Ok(false)
+        }
     }
 
     #[cfg(test)]
@@ -1180,7 +1249,7 @@ mod tests {
     };
 
     use super::{
-        mpsc, run_pty_writer, PtyInputRequest, PtyInputWriter, PtyManager, PtyOutputSignal,
+        is_password_prompt_program, mpsc, run_pty_writer, PtyInputRequest, PtyInputWriter, PtyManager, PtyOutputSignal,
         PtyProcessState, PtySpawnRequest, PTY_INPUT_QUEUE_LIMIT,
     };
 
@@ -1928,22 +1997,101 @@ os.wait()
         std::fs::read_to_string(output).unwrap_or_default()
     }
 
+    /// A Python script that is itself the foreground reads the secret with
+    /// `getpass`, which opens the controlling terminal.
     #[cfg(unix)]
     #[test]
-    fn secret_reaches_a_known_password_prompter_only() {
-        let id = "secret-sink-prompter";
-        let dir = scratch_dir("secret-sink-prompter");
-        // A copy of the shell named like a real prompter stands in for sudo.
-        let prompter = dir.join("sudo");
-        std::fs::copy(std::fs::canonicalize("/bin/sh").unwrap(), &prompter).unwrap();
+    fn secret_reaches_a_python_getpass_script() {
+        let id = "secret-sink-getpass";
+        let dir = scratch_dir("secret-sink-getpass");
+        let script = dir.join("login.py");
+        std::fs::write(
+            &script,
+            "import getpass\nprint(getpass.getpass('Password: '), flush=True)\n",
+        )
+        .unwrap();
+        let python = std::fs::canonicalize(
+            String::from_utf8(
+                std::process::Command::new("sh")
+                    .args(["-c", "command -v python3"])
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .unwrap()
+            .trim(),
+        )
+        .unwrap();
         let output = dir.join("received");
-        let mut manager = foreground_job_manager(id, &prompter, &output, r#"-c "cat; true""#);
+        let mut manager =
+            foreground_job_manager(id, &python, &output, &script.display().to_string());
         assert!(wait_for_password_prompt(&manager, id, true));
+        // getpass flushes pending input when it starts, so wait for its prompt.
+        let mut shown = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline && !shown.ends_with(b"Password: ") {
+            shown.extend(
+                manager
+                    .drain_output(id)
+                    .unwrap()
+                    .into_iter()
+                    .flat_map(|chunk| chunk.bytes),
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
         assert!(manager.write_secret_input(id, b"hunter2\n").unwrap());
         let received = read_when_written(&output);
         manager.remove_process(id).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(received, "hunter2\n");
+    }
+
+    fn arguments(command: &str) -> Vec<String> {
+        command.split_whitespace().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn common_cli_password_prompters_qualify() {
+        for command in [
+            "ssh host",
+            "sudo ls",
+            "mysql -u root -p",
+            "psql -h db app",
+            "docker login",
+            "gh auth login",
+            "git push",
+            "op signin",
+        ] {
+            let arguments = arguments(command);
+            let name = arguments[0].clone();
+            assert!(is_password_prompt_program(&name, &arguments), "{command}");
+        }
+        assert!(is_password_prompt_program(
+            "node",
+            &arguments("node /usr/bin/npm login"),
+        ));
+        assert!(is_password_prompt_program(
+            "python3.12",
+            &arguments("python3 login.py"),
+        ));
+    }
+
+    #[test]
+    fn ordinary_readers_and_interpreters_without_a_script_do_not_qualify() {
+        for command in [
+            "cat",
+            "sh -c cat",
+            "bash",
+            "python3",
+            "python3 -c print(input())",
+            "node",
+            "node server.js",
+            "vim notes.txt",
+        ] {
+            let arguments = arguments(command);
+            let name = arguments[0].clone();
+            assert!(!is_password_prompt_program(&name, &arguments), "{command}");
+        }
     }
 
     #[cfg(unix)]
