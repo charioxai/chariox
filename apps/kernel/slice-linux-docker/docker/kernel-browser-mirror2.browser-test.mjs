@@ -19,7 +19,7 @@ async function regionLease({ host, subscription_id, generation }, sequence) {
   return host.mirror.v2.regions.resolve({ mirror_subscription_id: subscription_id, generation, document_id: stream.document_id, sequence, region_id }, stream.scope);
 }
 const settle = ms => new Promise(resolve => setTimeout(resolve, ms));
-async function stayDom(next, ms, label) { const until = Date.now() + ms; let packet; while (Date.now() < until) { packet = await next(300); assert.equal(packet.fallback, undefined, label); } return packet; }
+async function stayDom(next, ms, label) { const until = Date.now() + ms; let packet, tiles = 0; while (Date.now() < until) { packet = await next(300); tiles += packet.tiles.length; assert.equal(packet.fallback, undefined, label); } return { ...packet, tiles: packet.tiles, seenTiles: tiles }; }
 
 async function mirrored(html, run, routes = {}) {
   const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "mirror2-"));
@@ -809,7 +809,10 @@ test("MP-10: a tainted canvas falls back to a screenshot crop; under a filter (d
     assert.equal(plain.fallback, undefined); assert.equal(plain.tiles.length, 1, "MP-10: the tainted canvas still shows (screenshot crop)");
     await evaluate("document.getElementById('wrap').style.filter='grayscale(1)';true");
     await settle(1100);
+    let crop = 0;
+    const filtered = await next(1000); crop += filtered.tiles.length;
     const packet = await stayDom(next, 3500, "MP-10: a filtered region never hands the page to video");
+    assert(crop + packet.seenTiles >= 1, "MP-10: the filtered region's on-screen crop is sent as its still (the viewer places it at the screen rect)");
     const lease = await regionLease(ctx, packet.sequence);
     assert.equal(lease.rect.width, 120); assert.equal(lease.rect.height, 60);
   }, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="rgb(255,0,0)"/></svg>' } }));
