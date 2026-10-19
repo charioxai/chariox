@@ -935,16 +935,16 @@ fn waiting_with_deadline_wake(f: &Fixture) -> InboxEvent {
 #[test]
 fn a02_review_rejected_wake_returns_the_task_to_its_wait() {
     // Rejected before admission, and after admission but before provider I/O.
-    for admitted in [false, true] {
+    for admission in [None, Some(None), Some(Some("run"))] {
         let f = Fixture::new();
         let e = waiting_with_deadline_wake(&f);
-        if admitted {
+        if let Some(run) = admission {
             f.apply(Operation::Begin {
                 owner: "owner".into(),
                 room: "room".into(),
                 agent: "parent".into(),
                 prompt: "wake".into(),
-                run: None,
+                run: run.map(str::to_owned),
                 now: 5,
             });
         }
@@ -956,7 +956,7 @@ fn a02_review_rejected_wake_returns_the_task_to_its_wait() {
             now: 5,
         });
         let t = f.task();
-        assert_eq!(t.state, ExecutionState::Waiting, "admitted={admitted}");
+        assert_eq!(t.state, ExecutionState::Waiting, "admission={admission:?}");
         assert!(t.wait.is_some());
         assert_eq!(t.pending_prompt_id, None);
         assert_eq!(
@@ -964,6 +964,49 @@ fn a02_review_rejected_wake_returns_the_task_to_its_wait() {
             "a refused wake is not a no-progress strike"
         );
     }
+}
+
+#[test]
+fn a02_review_wake_wait_is_consumed_at_provider_io() {
+    let f = Fixture::new();
+    let event = waiting_with_deadline_wake(&f);
+    let wait = f.task().wait.unwrap();
+    f.begin("wake");
+    assert_eq!(f.task().wait.as_ref(), Some(&wait));
+    let bind = || Operation::BindSubmission {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: event.sequence,
+        prompt: "wake".into(),
+        target: None,
+        run: "run".into(),
+        submit_epoch: 1,
+        now: 6,
+    };
+    f.apply(bind());
+    assert!(f.task().wait.is_none());
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: event.sequence,
+        state: "accepted".into(),
+        now: 7,
+    });
+    f.apply(Operation::Yield {
+        task: "p".into(),
+        prompt: "wake".into(),
+        registrations: vec!["completion-child".into()],
+        cursor: event.sequence,
+        deadline: 80_000,
+        reason: "next result".into(),
+        now: 8,
+    });
+    // Reconciliation of the same submission cannot consume a new wait.
+    let next_wait = f.task().wait;
+    f.apply(bind());
+    assert_eq!(f.task().wait, next_wait);
+    f.settle("wake");
+    assert_eq!(f.task().state, ExecutionState::Waiting);
 }
 
 #[test]

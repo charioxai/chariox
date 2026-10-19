@@ -351,6 +351,129 @@ async fn failed_wake_dispatch_settles_the_admitted_prompt_and_keeps_the_receipt(
 }
 
 #[tokio::test]
+async fn refused_wake_after_dispatch_admission_is_retried_by_the_sweep() {
+    let f = fixture("ev13-refused-wake-retry", false).await;
+    let task = f.begin("turn-1");
+    let wake = f.arm(&task, "wake-a").unwrap();
+    f.wait_on(&task, &wake.registration_id);
+    let expected_wait = f.task(&task.task_id).wait.unwrap();
+    f.store()
+        .agent_lifecycle(Operation::WakeOccurred {
+            id: wake.id.clone(),
+            occurrence: "line-1".into(),
+            kind: "output_matched".into(),
+            payload: serde_json::json!({"line": "ready"}),
+            summary: Some("matched".into()),
+            end: None,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    let event = f
+        .store()
+        .agent_inbox(&f.room, &f.agent, 0)
+        .unwrap()
+        .remove(0);
+    let prompt_id = format!("agent-event-{}-{}", f.agent, event.sequence);
+    f.store()
+        .agent_lifecycle(Operation::Attempt {
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            sequence: event.sequence,
+            prompt: prompt_id.clone(),
+            target: None,
+            run: None,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    let agent = f.runtime.owned.agent_store.get_agent(&f.agent).unwrap();
+    let attachment = f
+        .runtime
+        .ensure_agent_message_attachment(&f.room, &agent)
+        .unwrap();
+    let submission = f
+        .runtime
+        .submit_prepared_prompt_with_queue_policy(
+            crate::app::KernelPreparedPromptSubmission {
+                session_id: f.room.clone(),
+                prompt: crate::session::PromptQueueItem::new(
+                    &prompt_id,
+                    &attachment,
+                    &f.agent,
+                    "Kernel event inbox, untrusted data",
+                    crate::session::PromptStatus::Queued,
+                ),
+                force_queue: false,
+                refresh_projection: true,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    let dispatch = submission.dispatch.unwrap();
+    let permit = f.runtime.provider_runtime_lanes.acquire(&f.run).await;
+    f.runtime
+        .pump_owned_provider_output(&f.room, &f.run, Vec::new(), false)
+        .await
+        .unwrap();
+    // A real transport can disappear after liveness and before obtaining its
+    // writer. Enter the shared post-liveness dispatcher at that exact seam.
+    f.app.lock().await.pty_mut().remove_process(&f.run).unwrap();
+    let result = f
+        .runtime
+        .enqueue_prompt_dispatch_after_liveness_with_acceptance(&dispatch, &f.runtime.owned)
+        .await;
+    assert!(result.is_err(), "expected missing writer: {result:?}");
+    let admitted = f.task(&task.task_id);
+    assert_eq!(
+        admitted.prompt_id, prompt_id,
+        "dispatch must reach Begin(run: Some(...))"
+    );
+    assert_eq!(admitted.provider_run_id.as_deref(), Some(f.run.as_str()));
+    assert!(f.store().agent_inbox(&f.room, &f.agent, 0).unwrap()[0]
+        .submit_epoch
+        .is_none());
+    f.runtime
+        .record_agent_event_dispatch_result(&dispatch, &result)
+        .unwrap();
+    assert!(f
+        .runtime
+        .fail_prompt_dispatch(dispatch, result.unwrap_err())
+        .await
+        .is_err());
+    drop(permit);
+
+    let restored = f.task(&task.task_id);
+    assert_eq!(restored.state, ExecutionState::Waiting);
+    let restored_wait = restored.wait.unwrap();
+    assert_eq!(
+        restored_wait.registration_ids,
+        expected_wait.registration_ids
+    );
+    assert_eq!(restored_wait.deadline_ms, expected_wait.deadline_ms);
+    assert_eq!(restored_wait.inbox_cursor, expected_wait.inbox_cursor);
+    assert_eq!(restored_wait.started_at_ms, expected_wait.started_at_ms);
+    assert_eq!(restored.no_progress_wakes, 0);
+    assert!(restored.pending_prompt_id.is_none());
+
+    spawn_inert_pty_for_run(&mut *f.app.lock().await, &f.run);
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
+    let events = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
+    assert_eq!(events.len(), 1, "retry the original occurrence");
+    assert_eq!(events[0].state, "accepted");
+    assert!(events[0].submit_epoch.is_some());
+    let retried = f.task(&task.task_id);
+    assert_eq!(retried.state, ExecutionState::Working);
+    assert_eq!(retried.no_progress_wakes, 1);
+    assert!(retried.pending_prompt_id.is_none());
+    assert!(
+        retried.wait.is_none(),
+        "the provider-I/O fence consumes the old wait"
+    );
+    f.wait_on(&retried, &wake.registration_id);
+    assert_eq!(f.task(&task.task_id).state, ExecutionState::Waiting);
+}
+
+#[tokio::test]
 async fn ev13_forged_source_identity_is_refused_before_the_ledger() {
     let f = fixture("ev13-forged-source", false).await;
     let task = f.begin("turn-1");
