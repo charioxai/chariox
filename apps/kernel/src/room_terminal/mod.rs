@@ -7,6 +7,7 @@ mod plain_text;
 mod pump;
 mod screen;
 mod service;
+mod session_sweep;
 mod shell;
 mod store;
 mod terminal;

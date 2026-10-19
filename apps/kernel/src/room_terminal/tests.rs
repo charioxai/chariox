@@ -671,3 +671,64 @@ async fn a_graceful_shutdown_keeps_output_newer_than_the_last_save() {
     );
     first.end_session("room-1");
 }
+
+#[cfg(target_os = "linux")]
+fn process_running(args: &[&str]) -> bool {
+    let wanted = format!("{}\0", args.join("\0"));
+    std::fs::read_dir("/proc")
+        .unwrap()
+        .flatten()
+        .filter_map(|entry| std::fs::read(entry.path().join("cmdline")).ok())
+        .any(|cmdline| String::from_utf8_lossy(&cmdline) == wanted)
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn closing_a_terminal_also_stops_background_jobs() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    type_as(
+        &service,
+        &id,
+        &TerminalActor::User,
+        "sleep 8881 & sleep 8882\r",
+    )
+    .await;
+    until("both jobs", || async {
+        process_running(&["sleep", "8881"]) && process_running(&["sleep", "8882"])
+    })
+    .await;
+    service.close("room-1", &id, &TerminalActor::User).unwrap();
+    until("both jobs to stop", || async {
+        !process_running(&["sleep", "8881"]) && !process_running(&["sleep", "8882"])
+    })
+    .await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_shell_that_exits_leaves_no_background_jobs() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    type_as(
+        &service,
+        &id,
+        &TerminalActor::User,
+        "sleep 8883 & disown; exit\r",
+    )
+    .await;
+    until("the shell to end", || async {
+        service.pump_once();
+        matches!(
+            service.list("room-1")[0].status,
+            RoomTerminalStatus::Ended { .. }
+        )
+    })
+    .await;
+    until("the background job to stop", || async {
+        !process_running(&["sleep", "8883"])
+    })
+    .await;
+}

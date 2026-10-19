@@ -15,6 +15,7 @@ use tokio::sync::{oneshot, Notify};
 
 use super::driver::Admission;
 use super::events::{CompletionEvents, WatchOwner};
+use super::session_sweep;
 use super::shell::login_shell;
 use super::store::{TerminalRecord, TerminalStore};
 use super::terminal::Terminal;
@@ -484,12 +485,16 @@ impl RoomTerminalService {
         state
             .waiters
             .retain(|_, (waiting_on, _)| waiting_on != terminal_id);
-        if let Some(run_id) = state
+        if let Some((run_id, shell_pid)) = state
             .terminals
             .remove(terminal_id)
-            .and_then(|terminal| terminal.run_id)
+            .and_then(|terminal| terminal.run_id.map(|run_id| (run_id, terminal.shell_pid)))
         {
-            if let Err(error) = state.pty.remove_process(&run_id) {
+            let removed = state.pty.remove_process(&run_id);
+            if let Some(shell_pid) = shell_pid {
+                session_sweep::stop_session(shell_pid);
+            }
+            if let Err(error) = removed {
                 crate::logging::error_with_fields(
                     "room_terminal.close",
                     "terminal process could not be removed",

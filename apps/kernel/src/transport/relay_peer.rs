@@ -2240,6 +2240,9 @@ mod room_terminal_170_shapes {
         let response = RelayPeerResponse::RoomTerminal {
             result: RoomTerminalResult::Closed,
         };
-        assert_wire::<RelayPeerResponse>(serde_json::to_value(&response).unwrap(), "97df114510c195b53e132e9bc4bc8fb9cad7d9bfe806b33ad8530022e46a03c9");
+        assert_wire::<RelayPeerResponse>(
+            serde_json::to_value(&response).unwrap(),
+            "97df114510c195b53e132e9bc4bc8fb9cad7d9bfe806b33ad8530022e46a03c9",
+        );
     }
 }

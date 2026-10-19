@@ -31,6 +31,9 @@ impl Terminal {
                 pumped.fired.extend(self.watches.on_output(&self.plain));
             }
             let _ = pty.remove_process(&run_id);
+            if let Some(shell_pid) = self.shell_pid {
+                super::session_sweep::stop_session(shell_pid);
+            }
             self.last_program_end = Some(ProgramEnd {
                 output_offset: self.log.end_offset(),
                 exit_code,
