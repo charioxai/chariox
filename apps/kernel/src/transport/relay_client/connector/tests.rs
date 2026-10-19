@@ -629,3 +629,35 @@ fn mp08_mp10_mp11_browser_artifact_peer_current_hosted_confirmation_gate() {
         }
     }
 }
+
+// MP-08 / MP-10 / MP-11: a burst of inbound transfer chunks may briefly outrun the
+// writer. The reader waits for it; it never drops a socket carrying a transfer.
+#[tokio::test]
+async fn transport_receipts_wait_for_a_busy_writer_instead_of_dropping_the_socket() {
+    let (tx, mut rx) = mpsc::channel::<String>(8);
+    for index in 0..8 {
+        assert!(queue_transport_receipt(&tx, index.to_string()).await);
+    }
+    let drain = tokio::spawn(async move {
+        sleep(Duration::from_millis(50)).await;
+        let mut received = Vec::new();
+        while received.len() < 9 {
+            received.push(rx.recv().await.unwrap());
+        }
+        received
+    });
+    assert!(queue_transport_receipt(&tx, "8".into()).await);
+    assert_eq!(
+        drain.await.unwrap(),
+        (0..9).map(|index| index.to_string()).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn transport_receipts_give_up_only_when_the_writer_is_stuck() {
+    let (tx, _rx) = mpsc::channel::<String>(8);
+    for index in 0..8 {
+        assert!(queue_transport_receipt(&tx, index.to_string()).await);
+    }
+    assert!(!queue_transport_receipt(&tx, "stuck".into()).await);
+}

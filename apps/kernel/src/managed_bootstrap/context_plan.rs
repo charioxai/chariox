@@ -17,7 +17,6 @@ use crate::managed_context::package::{
 
 const MAX_CONTEXT_PLAN_BYTES: usize = 72 * 1024;
 const MAX_REFERENCE_BYTES: usize = 4 * 1024;
-const MAX_REPOSITORIES: usize = 32;
 const MAX_PROVIDER_ACCOUNTS: usize = 16;
 const MAX_GIT_CREDENTIALS: usize = 16;
 
@@ -320,10 +319,7 @@ impl ManagedKernelContextPlan {
         else {
             return Ok(());
         };
-        if !valid_identifier(project_id)
-            || repositories.is_empty()
-            || repositories.len() > MAX_REPOSITORIES
-        {
+        if !valid_identifier(project_id) || repositories.is_empty() {
             return Err("managed context development selection is invalid");
         }
         let mut primary_count = 0;

@@ -1399,3 +1399,54 @@ fn mp11_structured_mcp_target_refuses_literal_slots() {
     let _guard = crate::env_lock::lock();
     mp11_structured_mcp_case(false);
 }
+
+fn write_skill(isolation: &Path, name: &str, files: usize, file_bytes: usize) {
+    let root = isolation.join("user/skills").join(name);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: Synthetic\n---\nBody.\n"),
+    )
+    .unwrap();
+    let body = "x".repeat(file_bytes);
+    for index in 1..files {
+        fs::write(root.join(format!("ref-{index}.md")), &body).unwrap();
+    }
+}
+
+fn export_beyond_old_totals(
+    skills: usize,
+    files: usize,
+    file_bytes: usize,
+) -> KernelContextSnapshot {
+    let _guard = crate::env_lock::lock();
+    let root = test_root(format!(
+        "chariox-kernel-context-large-{:016x}",
+        rand::random::<u64>()
+    ));
+    let isolation = root.join("capabilities");
+    std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation);
+    std::env::set_var("CHARIOX_HOME", root.join("home"));
+    for index in 0..skills {
+        write_skill(&isolation, &format!("skill-{index:05}"), files, file_bytes);
+    }
+    let result = export_kernel_context(test_export_request());
+    fs::remove_dir_all(&root).unwrap();
+    result.expect("a context beyond the old fixed totals must export while the machine has room")
+}
+
+#[test]
+fn kernel_context_exports_beyond_the_old_extension_and_file_count_totals() {
+    crate::test_support::isolated_env_test!();
+    // Old totals: 2_048 extensions, 16_384 files.
+    let snapshot = export_beyond_old_totals(2_100, 8, 8);
+    assert_eq!(snapshot.payload.extensions.len(), 2_100);
+}
+
+#[test]
+fn kernel_context_exports_beyond_the_old_snapshot_byte_total() {
+    crate::test_support::isolated_env_test!();
+    // Old total: 128 MiB of serialized snapshot; this is about 2x (30 skills x 9 MiB, base64 inflated; a skill package itself stays within its own 10 MiB bound).
+    let snapshot = export_beyond_old_totals(30, 4, 3 * 1024 * 1024);
+    assert_eq!(snapshot.payload.extensions.len(), 30);
+}

@@ -13,7 +13,10 @@ pub(super) fn extract_and_verify_archive(
     artifacts_root: &Path,
 ) -> Result<DevelopmentContextManifest, DaemonError> {
     let decoder = MultiGzDecoder::new(archive_file);
-    let mut archive = StrictTarReader::new(decoder, MAX_DECOMPRESSED_ARCHIVE_BYTES);
+    let mut archive = StrictTarReader::new(
+        decoder,
+        crate::managed_context::limits::disk_budget(artifacts_root),
+    );
     let mut manifest = None;
     let mut expected_artifacts = BTreeMap::new();
     let mut seen_artifacts = BTreeSet::new();
@@ -139,7 +142,7 @@ fn validate_import_manifest(
             ));
         }
     }
-    if manifest.repositories.is_empty() || manifest.repositories.len() > MAX_REPOSITORIES {
+    if manifest.repositories.is_empty() {
         return Err(context_error(
             "development context repository count is invalid",
         ));
@@ -160,7 +163,6 @@ fn validate_import_manifest(
     let mut repository_ids = BTreeSet::new();
     let mut target_directories = BTreeSet::new();
     let mut artifacts = BTreeMap::new();
-    let mut total_artifact_bytes = 0_u64;
     for repository in &manifest.repositories {
         if repository.source_binding_sha256.len() != 64
             || !repository
@@ -271,9 +273,7 @@ fn validate_import_manifest(
                 "repositories/{}/repository.bundle",
                 repository.repository_id
             );
-            if repository.bundle_path != expected_bundle
-                || repository.bundle_size_bytes > MAX_BUNDLE_BYTES_PER_REPOSITORY
-            {
+            if repository.bundle_path != expected_bundle {
                 return Err(context_error(
                     "development context Git bundle metadata is invalid",
                 ));
@@ -285,8 +285,6 @@ fn validate_import_manifest(
                 &repository.bundle_sha256,
                 repository.bundle_size_bytes,
             )?;
-            total_artifact_bytes =
-                total_artifact_bytes.saturating_add(repository.bundle_size_bytes);
         }
         for directory in &repository.directories {
             budget.consume(directory.len() + 256)?;
@@ -346,21 +344,13 @@ fn validate_import_manifest(
         let overlay_bytes = overlay_objects
             .values()
             .fold(0_u64, |total, (_, size)| total.saturating_add(*size));
-        if overlay_bytes != repository.overlay_size_bytes
-            || overlay_bytes > MAX_OVERLAY_BYTES_PER_REPOSITORY
-        {
+        if overlay_bytes != repository.overlay_size_bytes {
             return Err(context_error(
                 "development context overlay size metadata is invalid",
             ));
         }
         for (path, (sha256, size_bytes)) in overlay_objects {
             insert_artifact(&mut artifacts, &path, &sha256, size_bytes)?;
-        }
-        total_artifact_bytes = total_artifact_bytes.saturating_add(overlay_bytes);
-        if total_artifact_bytes > MAX_PACKAGE_BYTES {
-            return Err(context_error(
-                "development context artifact total exceeds the package limit",
-            ));
         }
     }
     if !manifest.vault_artifacts.is_empty()
@@ -371,7 +361,6 @@ fn validate_import_manifest(
         ));
     }
     let mut sealed_paths = BTreeSet::new();
-    let mut encrypted_bytes = 0u64;
     for artifact in &manifest.vault_artifacts {
         let binding = &artifact.binding;
         validate_relative_path(&binding.object_path)?;
@@ -390,7 +379,6 @@ fn validate_import_manifest(
             .ok_or_else(|| context_error("Vault artifact is not declared by a repository"))?;
         if expectation.sha256 != binding.plaintext_sha256
             || expectation.size_bytes != binding.plaintext_size_bytes
-            || artifact.encrypted_size_bytes > MAX_PACKAGE_BYTES
         {
             return Err(context_error(
                 "Vault artifact does not match repository content",
@@ -403,12 +391,6 @@ fn validate_import_manifest(
                     .saturating_add(item.kind.len())
                     .saturating_add(256),
             )?;
-        }
-        encrypted_bytes = encrypted_bytes.saturating_add(artifact.encrypted_size_bytes);
-        if encrypted_bytes > MAX_PACKAGE_BYTES {
-            return Err(context_error(
-                "Vault ciphertext exceeds the 1 GiB transfer-byte limit",
-            ));
         }
         expectation.sha256 = artifact.encrypted_sha256.clone();
         expectation.size_bytes = artifact.encrypted_size_bytes;
@@ -634,7 +616,7 @@ impl<R: Read> Read for HardLimitReader<R> {
                 _ => Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "development context archive exceeds {} decompressed bytes",
+                        "development context archive needs more than the {} bytes of free disk below the import directory; free space on that volume, then retry",
                         self.maximum_bytes
                     ),
                 )),

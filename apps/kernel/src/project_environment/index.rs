@@ -257,9 +257,6 @@ fn walk(root: &Path, directory: &Path, files: &mut Vec<String>) -> Result<(), Da
                 .to_owned();
             relative_environment_path(&relative).map_err(environment_error)?;
             files.push(relative);
-            if files.len() > 20_000 {
-                return Err(environment_error("environment index file bounds exceeded"));
-            }
         }
     }
     Ok(())

@@ -36,7 +36,7 @@ use crate::managed_context::package::{
     ManagedContextPackageDevelopment, ManagedContextPackageExportRequest,
     ManagedContextPackageGitCredentials, ManagedContextPackageKernel,
     ManagedContextPackageProviderAccounts, ManagedContextProviderAccountSelection,
-    MAX_MANAGED_CONTEXT_PACKAGE_BYTES, MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES,
+    MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES,
 };
 use crate::runtime::cloud_api_client::{cloud_error_is_retryable, post_cloud_json};
 use crate::runtime::terminal_pairings::public_key_thumbprint;
@@ -55,8 +55,6 @@ const MAX_OUTBOUND_OPERATIONS: usize = 256;
 const MAX_CONCURRENT_OUTBOUND_TRANSFERS: usize = 2;
 const MAX_DURABLE_OUTBOUND_ARTIFACTS: usize = 2;
 const MAX_OUTBOUND_ARTIFACT_SCAN_ENTRIES: usize = 256;
-const MAX_DURABLE_OUTBOUND_BYTES: u64 =
-    MAX_DURABLE_OUTBOUND_ARTIFACTS as u64 * MAX_MANAGED_CONTEXT_PACKAGE_BYTES;
 const OUTBOUND_ARTIFACT_RETENTION_MS: u64 = 24 * 60 * 60 * 1_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1244,7 +1242,6 @@ fn persisted_artifact_matches_ticket(
 struct OutboundArtifactInventory {
     root_count: usize,
     artifact_count: usize,
-    package_bytes: u64,
 }
 
 fn reconcile_outbound_artifacts(
@@ -1267,7 +1264,6 @@ fn reconcile_outbound_artifacts(
     let mut inventory = OutboundArtifactInventory {
         root_count: 0,
         artifact_count: 0,
-        package_bytes: 0,
     };
     for entry in entries {
         let name = entry.file_name().into_string().map_err(|_| {
@@ -1291,9 +1287,6 @@ fn reconcile_outbound_artifacts(
         if active_context_ids.contains(&name) {
             inventory.root_count = inventory.root_count.saturating_add(1);
             inventory.artifact_count = inventory.artifact_count.saturating_add(1);
-            inventory.package_bytes = inventory
-                .package_bytes
-                .saturating_add(MAX_MANAGED_CONTEXT_PACKAGE_BYTES);
             continue;
         }
         let state_path = root.join("state.json");
@@ -1313,7 +1306,6 @@ fn reconcile_outbound_artifacts(
         if persisted.schema_version != OUTBOUND_ARTIFACT_SCHEMA_VERSION
             || persisted.created_at_ms == 0
             || persisted.package_size_bytes == 0
-            || persisted.package_size_bytes > MAX_MANAGED_CONTEXT_PACKAGE_BYTES
         {
             remove_artifact_root(&root)?;
             continue;
@@ -1347,7 +1339,7 @@ fn reconcile_outbound_artifacts(
         }
         let actual_size = bounded_regular_file_size(
             &package_path,
-            MAX_MANAGED_CONTEXT_PACKAGE_BYTES,
+            u64::MAX,
             "inspect retained managed-context package",
         )?;
         if actual_size != persisted.package_size_bytes {
@@ -1359,11 +1351,8 @@ fn reconcile_outbound_artifacts(
         validate_settled_artifact_entries(&root)?;
         inventory.root_count = inventory.root_count.saturating_add(1);
         inventory.artifact_count = inventory.artifact_count.saturating_add(1);
-        inventory.package_bytes = inventory.package_bytes.saturating_add(actual_size);
     }
-    if inventory.artifact_count > MAX_DURABLE_OUTBOUND_ARTIFACTS
-        || inventory.package_bytes > MAX_DURABLE_OUTBOUND_BYTES
-    {
+    if inventory.artifact_count > MAX_DURABLE_OUTBOUND_ARTIFACTS {
         return Err(outbound_service_error(
             "managed-context outbound artifacts exceed their durable quota",
             false,
@@ -1550,7 +1539,6 @@ fn restore_prepared_artifact(
     if !persisted_artifact_matches_ticket(&persisted, ticket, &plan)
         || persisted.created_at_ms == 0
         || persisted.package_size_bytes == 0
-        || persisted.package_size_bytes > MAX_MANAGED_CONTEXT_PACKAGE_BYTES
     {
         return Err(outbound_service_error(
             "persisted managed-context outbound state conflicts with the launch ticket",
@@ -3345,7 +3333,6 @@ mod tests {
             .expect("startup reconciliation");
         assert_eq!(inventory.root_count, 2);
         assert_eq!(inventory.artifact_count, 1);
-        assert_eq!(inventory.package_bytes, 7);
         assert!(parent.join("context-current").exists());
         assert!(parent.join("context-expired/retired").is_file());
         assert!(!parent.join("context-expired/managed-context.pkg").exists());

@@ -72,7 +72,7 @@ fn validate_materialization_estimate(
 ) -> Result<(), DaemonError> {
     if estimate.checkout_bytes > maximum_checkout_bytes {
         return Err(context_error(format!(
-            "{label} exceeds the {maximum_checkout_bytes}-byte checkout budget"
+            "{label} exceeds the {maximum_checkout_bytes} bytes of free disk available for checkout; free space on the destination volume, then retry"
         )));
     }
     Ok(())
@@ -81,7 +81,7 @@ fn validate_materialization_estimate(
 pub(super) fn inspect_export_repository(
     worktree: &Path,
 ) -> Result<RepositoryMaterializationEstimate, DaemonError> {
-    inspect_repository_features(worktree, false, MAX_CHECKOUT_BYTES_PER_REPOSITORY, u64::MAX)
+    inspect_repository_features(worktree, false, UNBOUNDED_BYTES, u64::MAX)
 }
 
 pub(super) fn inspect_import_repository(
@@ -92,7 +92,7 @@ pub(super) fn inspect_import_repository(
     inspect_repository_features(
         worktree,
         true,
-        maximum_checkout_bytes.min(MAX_CHECKOUT_BYTES_PER_REPOSITORY),
+        maximum_checkout_bytes,
         maximum_materialized_entries,
     )
 }
@@ -174,7 +174,7 @@ fn inspect_repository_features(
                 .saturating_add(allocation_bytes);
             if checkout_bytes > maximum_checkout_bytes {
                 return Err(context_error(format!(
-                    "repository `{}` current tree exceeds the {maximum_checkout_bytes}-byte checkout budget",
+                    "repository `{}` current tree exceeds the {maximum_checkout_bytes} bytes of free disk available for checkout; free space on the destination volume, then retry",
                     worktree.display()
                 )));
             }
@@ -805,11 +805,9 @@ where
             };
         }
         output_bytes = output_bytes.saturating_add(read as u64);
-        if output_bytes > MAX_PACKAGE_BYTES
-            || started.elapsed() > std::time::Duration::from_secs(120)
-        {
+        if started.elapsed() > std::time::Duration::from_secs(120) {
             break Err(context_error(
-                "Git path stream exceeds the 1 GiB byte or 120 second time limit",
+                "Git path stream exceeds the 120 second time limit",
             ));
         }
         for byte in &buffer[..read] {
