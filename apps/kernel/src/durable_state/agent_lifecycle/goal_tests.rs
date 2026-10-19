@@ -874,6 +874,85 @@ fn a12_unusable_verdict_settles_plain_done_and_goal_blocked() {
     }
 }
 
+// An unusable check (malformed, or past its bound) must not drop open work of a plain task.
+fn unusable_plain_check(f: &Fixture, timeout: bool) {
+    f.settle("p", true);
+    let id = f.task().pending_prompt_id.unwrap();
+    f.begin(&id);
+    if timeout {
+        f.apply(Operation::TimeoutGoal {
+            task: "p".into(),
+            prompt: id,
+            now: goals::CHECK_BOUND_MS + 3,
+        });
+    } else {
+        f.apply(Operation::EvaluateGoal {
+            task: "p".into(),
+            prompt: id,
+            result: "not json".into(),
+            now: 4,
+        });
+    }
+}
+fn source_outcome(f: &Fixture, success: bool, now: u64) {
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "source-outcome".into(),
+        success,
+        public_answer: None,
+        now,
+    });
+}
+#[test]
+fn a12_unusable_check_keeps_a_plain_task_waiting_on_open_work() {
+    for timeout in [false, true] {
+        let f = Fixture::new();
+        plain(&f);
+        f.register();
+        f.subscribe();
+        unusable_plain_check(&f, timeout);
+        let t = f.task();
+        assert_eq!(t.state, ExecutionState::Waiting, "timeout={timeout}");
+        assert_eq!(t.wait.as_ref().unwrap().registration_ids, vec!["reg"]);
+        assert!(t.obligations.iter().all(|o| o.status == "open"));
+        source_outcome(&f, true, goals::CHECK_BOUND_MS + 10);
+        assert!(
+            f.task().obligations.iter().all(|o| o.status == "settling"),
+            "a later outcome must still reach the task (timeout={timeout})"
+        );
+    }
+}
+#[test]
+fn a12_unusable_check_keeps_a_failed_obligation_failed() {
+    for timeout in [false, true] {
+        let f = Fixture::new();
+        plain(&f);
+        f.register();
+        f.subscribe();
+        source_outcome(&f, false, 2);
+        unusable_plain_check(&f, timeout);
+        let t = f.task();
+        assert_eq!(t.state, ExecutionState::Blocked, "timeout={timeout}");
+        assert!(t.obligations.iter().any(|o| o.status == "failed"));
+    }
+}
+#[test]
+fn a12_unusable_check_waits_for_an_unacknowledged_clean_exit_receipt() {
+    for timeout in [false, true] {
+        let f = Fixture::new();
+        plain(&f);
+        f.register();
+        f.subscribe();
+        source_outcome(&f, true, 2);
+        assert!(f.task().obligations.iter().any(|o| o.status == "settling"));
+        unusable_plain_check(&f, timeout);
+        let t = f.task();
+        assert_eq!(t.state, ExecutionState::Waiting, "timeout={timeout}");
+        assert_eq!(t.wait.unwrap().registration_ids, vec!["reg"]);
+    }
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11 A12: rejection must bound the stored receipt too.
 #[test]
 fn a12_oversized_json_receipt_never_crosses_public_result_limit() {

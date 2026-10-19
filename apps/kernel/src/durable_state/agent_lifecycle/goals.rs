@@ -260,7 +260,7 @@ pub(super) fn evaluate(
     let mut again = false;
     match assessment {
         // An unusable check (empty, late, malformed) is no objection to a plain request.
-        None if t.goal.is_none() => no_objection(&mut t),
+        None if t.goal.is_none() => unavailable_check(tx, &mut t, now)?,
         None => blocked(&mut t, "Goal evaluation timed out, was malformed or stale; inspect the receipt and explicitly resume"),
         Some(Assessment::Blocked { reason }) if !reason.trim().is_empty() => blocked(&mut t, &reason),
         Some(Assessment::Achieved { final_answer, evidence }) if !final_answer.trim().is_empty() && !evidence.is_empty() && evidence.iter().all(|e| !e.trim().is_empty()) => {
@@ -308,7 +308,7 @@ pub(super) fn evaluate(
                 if let Some(g) = &mut t.goal { g.next_check_in_ms = Some(deadline); }
             }
         }
-        _ if t.goal.is_none() => no_objection(&mut t),
+        _ if t.goal.is_none() => unavailable_check(tx, &mut t, now)?,
         _ => blocked(&mut t, "Goal evaluation omitted its required answer/evidence or owner action; explicitly resume"),
     }
     let receipt = if result.len() > RESULT_LIMIT {
@@ -331,7 +331,59 @@ pub(super) fn evaluate(
     })
 }
 
-/// An unusable check (empty, late, malformed) is no objection to a plain request.
+/// An unusable check (empty, late, malformed) is no objection to a plain request, but it never
+/// drops unresolved work (a Done task with open obligations is not a valid ledger state): the
+/// task keeps waiting on the sources of its open or unacknowledged obligations, so the outcome
+/// still reaches it, and a failed or unwatched obligation needs the owner.
+fn unavailable_check(
+    tx: &Transaction<'_>,
+    t: &mut AgentTaskExecution,
+    now: u64,
+) -> Result<(), DaemonError> {
+    let regs = registrations(tx, &t.task_id)?;
+    let mut ids = Vec::new();
+    for o in &t.obligations {
+        let watched = |live_only: bool| {
+            regs.iter()
+                .filter(|r| (r.live || !live_only) && r.obligation_id.as_deref() == Some(&o.id))
+                .map(|r| r.id.clone())
+                .collect::<Vec<_>>()
+        };
+        let found = match o.status.as_str() {
+            "open" => watched(true),
+            "settling" => watched(false),
+            "failed" => vec![],
+            _ => continue,
+        };
+        if found.is_empty() {
+            blocked(t, "A task obligation failed or has no watched source; owner must resume or cancel");
+            return Ok(());
+        }
+        ids.extend(found);
+    }
+    if ids.is_empty() {
+        no_objection(t);
+        return Ok(());
+    }
+    let prior = t.wait.take();
+    let deadline = wakes::source_deadline(tx, t, &ids)?
+        .unwrap_or(now.saturating_add(10 * 60_000))
+        .min(prior.as_ref().map_or(u64::MAX, |w| w.deadline_ms));
+    t.wait = Some(AgentWait {
+        registration_ids: ids,
+        deadline_ms: deadline.max(now.saturating_add(1)),
+        started_at_ms: prior.as_ref().map_or(now, |w| w.started_at_ms),
+        inbox_cursor: prior.as_ref().map_or(0, |w| w.inbox_cursor),
+        long_wait_notified: prior.as_ref().is_some_and(|w| w.long_wait_notified),
+        last_checked_at_ms: now,
+    });
+    t.state = ExecutionState::Waiting;
+    t.pending_prompt_id = None;
+    t.reason = "Waiting on open work".into();
+    Ok(())
+}
+
+/// An unusable check on a plain task with no unresolved work: nothing to object to.
 fn no_objection(t: &mut AgentTaskExecution) {
     t.state = ExecutionState::Done;
     t.pending_prompt_id = None;
@@ -400,7 +452,7 @@ pub(super) fn timeout(
     }
     clock(&mut t, now);
     if t.goal.is_none() {
-        no_objection(&mut t);
+        unavailable_check(tx, &mut t, now)?;
     } else {
         blocked(&mut t, "Goal completion check exceeded its time bound; inspect the exact delivery receipt and explicitly resume");
     }
