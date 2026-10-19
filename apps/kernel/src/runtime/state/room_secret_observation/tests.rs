@@ -708,19 +708,77 @@ fn escapes_cannot_hide_a_value_from_the_filter() {
 }
 
 #[test]
-fn only_assistant_text_waits_for_the_next_chunk() {
+fn a_value_split_across_append_only_chunks_is_redacted_on_every_channel() {
+    // MP-08 / MP-10: assistant text, reasoning and native terminal bytes are append-only,
+    // so a value split across their chunks must not reconstruct for the model.
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    store.register("room", "synthetic-only").unwrap();
+    for kind in [
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        crate::terminal::TerminalOutputKind::ProviderReasoning,
+        crate::terminal::TerminalOutputKind::ProviderTerminal,
+    ] {
+        let mut delivered = Vec::new();
+        for chunk in ["note synthetic-", "on", "ly done"] {
+            let mut output = stream_output(chunk.as_bytes());
+            output.kind = kind.clone();
+            store.protect_stream("room", &mut output);
+            delivered.extend(output.bytes);
+        }
+        assert_eq!(
+            String::from_utf8(delivered).unwrap(),
+            "note [redacted] done",
+            "{kind:?}"
+        );
+    }
+    assert!(store.flush_streams("room", "run").is_empty());
+}
+
+#[test]
+fn a_value_that_prefixes_another_is_not_redacted_short_while_the_longer_one_streams() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    store.register("room", "synthetic-abc").unwrap();
+    store.register("room", "synthetic-abcdef").unwrap();
+    for chunks in [
+        ["x synthetic-abcd", "ef y"],
+        ["x synthetic-abc", "def y"],
+        ["x synthetic-abc", " y"],
+    ] {
+        let mut delivered = Vec::new();
+        for chunk in chunks {
+            let mut output = stream_output(chunk.as_bytes());
+            store.protect_stream("room", &mut output);
+            delivered.extend(output.bytes);
+        }
+        let text = String::from_utf8(delivered).unwrap();
+        assert!(
+            !text.contains("def") && !text.contains("synthetic"),
+            "{chunks:?}: {text}"
+        );
+        assert!(
+            text.starts_with("x [redacted]") && text.ends_with(" y"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn snapshot_and_discrete_channels_are_redacted_in_place_without_holding() {
     let root = TestRoot::new();
     let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
     store.register("room", "synthetic-only").unwrap();
     for kind in [
         crate::terminal::TerminalOutputKind::ProviderTool,
-        crate::terminal::TerminalOutputKind::ProviderTerminal,
-        crate::terminal::TerminalOutputKind::ProviderReasoning,
+        crate::terminal::TerminalOutputKind::PromptEcho,
+        crate::terminal::TerminalOutputKind::ProviderError,
+        crate::terminal::TerminalOutputKind::ProviderStatus,
     ] {
-        let mut output = stream_output(b"{\"out\":\"synthetic-o");
+        let mut output = stream_output(b"{\"out\":\"synthetic-only\"} synthetic-o");
         output.kind = kind;
         store.protect_stream("room", &mut output);
-        assert_eq!(output.bytes, b"{\"out\":\"synthetic-o");
+        assert_eq!(output.bytes, b"{\"out\":\"[redacted]\"} synthetic-o");
     }
     assert!(store.flush_streams("room", "run").is_empty());
 }
@@ -892,6 +950,50 @@ async fn legacy_room_migration_is_autonomous_and_permanently_withholds_only_prio
         restarted.scrub_text_or_withhold(&room.session_id, "fresh synthetic-new-value"),
         "fresh [redacted]"
     );
+}
+
+#[tokio::test]
+async fn admin_credential_secret_for_a_room_is_filtered_from_its_output() {
+    // MP-08 / MP-10: SetCredentialSecret{session_id} registers the stored value, so process
+    // output that echoes it never reaches the model raw.
+    use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
+    use crate::local::{LocalDaemonRequest, SetCredentialSecretRequest};
+    use crate::runtime::command::KernelCommand;
+    let root = TestRoot::new();
+    let room = TestRoom::new("admin-set-secret");
+    let mut config = room.runtime.owned.config_projection.snapshot();
+    config.user_config.credential_vault.path = root.path().join("vault").display().to_string();
+    let vault = std::path::Path::new(&config.user_config.credential_vault.path);
+    crate::secret::create_chariox_encrypted_vault_for_test(vault, "synthetic-passphrase-only")
+        .unwrap();
+    crate::secret::unlock_chariox_encrypted_vault(
+        vault,
+        "synthetic-passphrase-only",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    room.runtime.owned.config_projection.update(config);
+    let request = LocalDaemonRequest::SetCredentialSecret(SetCredentialSecretRequest {
+        session_id: Some(room.session_id.clone()),
+        agent_id: Some(room.agent_id.clone()),
+        key: "admin-login".into(),
+        value: "synthetic-admin-value".into(),
+    });
+    let command = KernelCommand::from_local_request("admin-set", None, None, &request);
+    crate::runtime::user_config_executor::execute_user_config_request(
+        &room.runtime.owned.config_projection,
+        &room.runtime,
+        &command,
+        request,
+    )
+    .await
+    .unwrap();
+    let mut output = stream_output_for(&room.agent_id, b"echo synthetic-admin-value ok");
+    room.runtime
+        .owned
+        .room_secret_observations
+        .protect_stream(&room.session_id, &mut output);
+    assert_eq!(output.bytes, b"echo [redacted] ok");
 }
 
 #[tokio::test]

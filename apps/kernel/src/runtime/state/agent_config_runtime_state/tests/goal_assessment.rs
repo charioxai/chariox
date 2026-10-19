@@ -530,28 +530,30 @@ async fn settle_protected_check(
     if let Some(fact) = fact {
         runtime.record_protected_fact(&room, &agent, fact);
     }
-    runtime.owned.fan_out_terminal_outputs(
-        &room,
-        vec![
-            crate::runtime::state::prompt_transcript_owned_state::TerminalOutputBatchAppend {
-                provider_run_id: "run".into(),
-                agent_id: Some(agent.clone()),
-                kind: TerminalOutputKind::ProviderOutput,
-                merge_key: Some("assessment".into()),
-                bytes: raw.as_bytes().to_vec(),
-            },
-        ],
-    );
-    runtime.owned.append_history_entries(
-        &room,
-        vec![SessionHistoryEntry::provider_output(
-            &room,
-            "run",
-            Some(&agent),
-            TerminalOutputKind::ProviderOutput,
-            Some("assessment".into()),
-            raw,
-        )],
+    // The real public path: protect, project history from the protected outputs, fan out.
+    let mut outputs = vec![
+        crate::runtime::state::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+            provider_run_id: "run".into(),
+            agent_id: Some(agent.clone()),
+            kind: TerminalOutputKind::ProviderOutput,
+            merge_key: Some("assessment".into()),
+            bytes: raw.as_bytes().to_vec(),
+        },
+    ];
+    runtime.owned.protect_terminal_outputs(&room, &mut outputs);
+    let history = runtime
+        .owned
+        .terminal_output_history_entries(&room, &outputs);
+    runtime.owned.append_history_entries(&room, history);
+    let delivered = runtime
+        .owned
+        .fan_out_protected_terminal_outputs(&room, Vec::new(), outputs)
+        .iter()
+        .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
+        .collect::<String>();
+    assert!(
+        !delivered.contains("PRIVATE"),
+        "protected completion-check prose must not reach the public stream: {delivered}"
     );
     let entries = runtime
         .owned
@@ -560,7 +562,7 @@ async fn settle_protected_check(
         .unwrap();
     assert!(!entries
         .iter()
-        .any(|e| e.text.contains("synthetic-private-fill")));
+        .any(|e| e.text.contains("synthetic-private-fill") || e.text.contains("PRIVATE")));
     let (settled, _) = runtime
         .owned
         .settle_agent_task(&room, &agent, &prompt, "run", false)

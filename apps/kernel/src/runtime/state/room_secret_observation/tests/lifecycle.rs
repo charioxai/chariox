@@ -423,6 +423,66 @@ fn room_output_after_a_vault_fill_stays_useful_and_never_carries_the_value() {
     );
 }
 
+#[test]
+fn user_domain_fill_is_filtered_from_the_same_sessions_output_and_watchers() {
+    // MP-08 / MP-10 / MP-11: the local kernel-browser fill registers only in the
+    // user-domain store. The Room's stream, history, tool results and watchers
+    // consult that store for the session's owner, so the value never reaches the
+    // model while public text stays.
+    let _environment = crate::env_lock::lock();
+    let root = TestRoot::new();
+    let _home = IsolatedHome::new(root.path());
+    let room = TestRoom::new("user-domain-fill");
+    let owned = &room.runtime.owned;
+    let owner = owned
+        .session_store
+        .get_session(&room.session_id)
+        .unwrap()
+        .owner_user_id()
+        .to_string();
+    room.runtime
+        .register_kernel_browser_fixture_value(&owner, "user-domain-canary");
+    let chunk = |text: &str| super::stream_output_for(&room.agent_id, text.as_bytes());
+    let mut outputs = vec![
+        chunk("Pasted user-domain-"),
+        chunk("canary. Title is Dashboard."),
+    ];
+    owned.protect_terminal_outputs(&room.session_id, &mut outputs);
+    owned.append_history_entries(
+        &room.session_id,
+        owned.terminal_output_history_entries(&room.session_id, &outputs),
+    );
+    let records = owned.fan_out_protected_terminal_outputs(&room.session_id, Vec::new(), outputs);
+    let delivered = records
+        .iter()
+        .map(|record| String::from_utf8_lossy(&record.bytes))
+        .collect::<String>();
+    assert_eq!(delivered, "Pasted [redacted]. Title is Dashboard.");
+    let history = owned
+        .operational_history_store
+        .load_session_history_entries(&room.session_id, Some(&room.agent_id))
+        .unwrap();
+    assert_eq!(
+        history.iter().map(|e| e.text.as_str()).collect::<String>(),
+        "Pasted [redacted]. Title is Dashboard."
+    );
+    let scrubbed = owned
+        .room_secret_observations
+        .scrub_text_or_withhold(&room.session_id, "echo user-domain-canary ready");
+    assert_eq!(scrubbed, "echo [redacted] ready");
+    // Redaction alone: the Room is not switched into protected completion mode.
+    assert!(!owned
+        .room_secret_observations
+        .protects_bytes(&room.session_id));
+    // Another owner's session is not affected by this user's values.
+    assert_eq!(
+        owned
+            .room_secret_observations
+            .scrub_text_or_withhold("no-such-session", "user-domain-canary"),
+        "user-domain-canary"
+    );
+}
+
 // MP-08 / MP-10 / MP-11: the runtime credential tools stamp the caller's Room
 // into metadata before this Vault mutation.
 async fn create_room_vault_credential(room: &TestRoom, root: &TestRoot, id: &str, secret: &str) {

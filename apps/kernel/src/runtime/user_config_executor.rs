@@ -290,6 +290,9 @@ pub(crate) async fn execute_set_credential_secret_request(
             .revoke_vault_observation_values(&request.key)
             .await?;
     }
+    if let (Some(room), false) = (request.session_id.as_deref(), request.value.is_empty()) {
+        runtime_state.register_stored_room_secret(room, &request.key, &request.value)?;
+    }
     service.set_vault_secret(&request.key, &request.value)?;
     Ok(LocalDaemonResponse::CredentialSecretStored { key: request.key })
 }

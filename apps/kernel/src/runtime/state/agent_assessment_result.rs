@@ -132,31 +132,32 @@ impl KernelRuntimeOwnedState {
         self.private_assessment_dispatch
             .for_dispatch(room, agent, prompt, run, origin, steering)
     }
+    /// Caches the check's verdict privately; true when the output is a completion check.
     pub(super) fn collect_private_assessment(
         &self,
         room: &str,
         output: &super::prompt_transcript_owned_state::TerminalOutputBatchAppend,
-    ) {
+    ) -> bool {
         if output.kind != crate::terminal::TerminalOutputKind::ProviderOutput {
-            return;
+            return false;
         }
         let Some(agent) = output.agent_id.as_deref() else {
-            return;
+            return false;
         };
         let Ok(session) = self.session_store.get_session(room) else {
-            return;
+            return false;
         };
         let Some(prompt) = self
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent)
         else {
-            return;
+            return false;
         };
         let Ok(tasks) = self
             .durable_state_store
             .agent_tasks(Some(room), Some(agent))
         else {
-            return;
+            return false;
         };
         if prompt.prompt_origin() != crate::session::PromptOrigin::CompletionCheck {
             if tasks.iter().any(|t| {
@@ -172,7 +173,7 @@ impl KernelRuntimeOwnedState {
                     &output.bytes,
                 );
             }
-            return;
+            return false;
         }
         if !tasks.iter().any(|task| {
             task.state == ExecutionState::Working
@@ -180,7 +181,7 @@ impl KernelRuntimeOwnedState {
                 && task.provider_run_id.as_deref() == Some(&output.provider_run_id)
                 && goals::is_check(task, prompt.id())
         }) {
-            return;
+            return false;
         }
         self.private_assessment_results.append(
             room,
@@ -189,6 +190,7 @@ impl KernelRuntimeOwnedState {
             &output.provider_run_id,
             &output.bytes,
         );
+        true
     }
     #[cfg(test)]
     pub(super) fn take_private_assessment_evidence(
@@ -356,7 +358,11 @@ mod tests {
             r#"{"status":"waiting","reason":"PRIVATE_DERIVED","registration_ids":["known-live"],"deadline_ms":123}"#,
         ] {
             let mut value: Assessment = serde_json::from_str(raw).unwrap();
-            assert!(fence_private_assessment(&mut value, &["known-live".into()], None));
+            assert!(fence_private_assessment(
+                &mut value,
+                &["known-live".into()],
+                None
+            ));
             assert!(!serde_json::to_string(&value).unwrap().contains("PRIVATE_"));
         }
         for raw in [
@@ -398,7 +404,10 @@ mod tests {
         assert!(!denied.contains("PRIVATE") && !timed_out.contains("PRIVATE"));
         for fact in [FieldNotFound, Failed] {
             let out = class(achieved, Some(fact));
-            assert!(out.contains("[protected completion details withheld]"), "{out}");
+            assert!(
+                out.contains("[protected completion details withheld]"),
+                "{out}"
+            );
         }
     }
     #[test]

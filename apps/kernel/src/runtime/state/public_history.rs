@@ -43,6 +43,7 @@ impl room_secret_observation::RoomSecretObservations {
             return None;
         }
         let room = event.session_id.as_deref()?;
+        self.remember_owner(room, owner);
         self.require(room, false).ok()?;
         // A coalesced batch must not admit a later reference colliding with a
         // registered value. Check only these small identity strings, not N texts.

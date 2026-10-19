@@ -176,21 +176,38 @@ impl KernelRuntimeState {
                     registry, credential, secret, overwrite,
                 )?;
                 if let Some(room) = room {
-                    let source = self
-                        .owned
-                        .room_secret_observations
-                        .register_credential_source(&room, key.as_deref());
-                    // Protect the value even if persisting its provenance fails.
-                    let protection = self
-                        .owned
-                        .room_secret_observations
-                        .register_stored_with_locked_public_history(&room, secret);
-                    source?;
-                    protection?;
+                    self.register_stored_room_secret_locked(&room, key.as_deref(), secret)?;
                 }
                 Ok(result)
             })
         })
         .await
+    }
+
+    /// A value stored through the admin API for a Room becomes scrub-only in that Room
+    /// at once, before any later insertion or tool output can echo it.
+    pub(crate) fn register_stored_room_secret(
+        &self,
+        room: &str,
+        key: &str,
+        secret: &str,
+    ) -> Result<(), DaemonError> {
+        let _history = self.owned.operational_history_store.lock_public_history()?;
+        self.register_stored_room_secret_locked(room, Some(key), secret)
+    }
+
+    // The caller holds the public-history lock.
+    fn register_stored_room_secret_locked(
+        &self,
+        room: &str,
+        key: Option<&str>,
+        secret: &str,
+    ) -> Result<(), DaemonError> {
+        let observations = &self.owned.room_secret_observations;
+        let source = observations.register_credential_source(room, key);
+        // Protect the value even if persisting its provenance fails.
+        let protection = observations.register_stored_with_locked_public_history(room, secret);
+        source?;
+        protection
     }
 }

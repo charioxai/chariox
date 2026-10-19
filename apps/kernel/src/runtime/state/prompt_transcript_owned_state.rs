@@ -213,7 +213,14 @@ impl KernelRuntimeOwnedState {
         outputs: &mut [TerminalOutputBatchAppend],
     ) {
         for output in outputs {
-            self.collect_private_assessment(session_id, output);
+            // A protected completion check stays private: only the kernel-authored class
+            // reaches the receipt, so its prose never enters the public stream or history.
+            if self.collect_private_assessment(session_id, output)
+                && self.room_secret_observations.protects_bytes(session_id)
+            {
+                output.bytes.clear();
+                continue;
+            }
             self.room_secret_observations
                 .protect_stream(session_id, output);
         }

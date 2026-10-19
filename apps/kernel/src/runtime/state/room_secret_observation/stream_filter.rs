@@ -73,10 +73,24 @@ fn escape(s: &[u8]) -> Escape {
 
 /// Matches of `secrets` in `view` (leftmost-longest) as ranges of `input`, and where a
 /// possible secret prefix begins at the end of the view.
-fn scan(view: &[u8], origin: &[usize], secrets: &[&[u8]]) -> (Vec<(usize, usize)>, Option<usize>) {
+fn scan(
+    view: &[u8],
+    origin: &[usize],
+    secrets: &[&[u8]],
+    hold: bool,
+) -> (Vec<(usize, usize)>, Option<usize>) {
     let mut matches = Vec::new();
     let mut v = 0;
     while v < view.len() {
+        // A shorter value must not match while the view may still grow into a longer one.
+        let rest = &view[v..];
+        if hold
+            && secrets
+                .iter()
+                .any(|s| s.len() > rest.len() && s.starts_with(rest))
+        {
+            break;
+        }
         let longest = secrets
             .iter()
             .filter(|s| view[v..].starts_with(s))
@@ -138,8 +152,8 @@ fn redact(input: &[u8], secrets: &[&[u8]], hold: bool) -> (Vec<u8>, usize) {
         i += step;
     }
     let raw_origin: Vec<usize> = (0..input.len()).collect();
-    let (mut ranges, tail) = scan(&view, &origin, secrets);
-    let (raw_ranges, raw_tail) = scan(input, &raw_origin, secrets);
+    let (mut ranges, tail) = scan(&view, &origin, secrets, hold);
+    let (raw_ranges, raw_tail) = scan(input, &raw_origin, secrets, hold);
     ranges.extend(raw_ranges);
     ranges.sort_unstable();
     let mut merged: Vec<(usize, usize)> = Vec::new();
@@ -192,7 +206,11 @@ impl RoomSecretObservations {
     pub(in crate::runtime::state) fn protect_stream(&self, room: &str, output: &mut Output) {
         let room = self.room_key(room);
         let variants = match self.blocked(room, false) {
-            Ok(false) => self.rooms.lock().ok().map(|r| r[room].secret_bytes()),
+            Ok(false) => self.rooms.lock().ok().map(|r| {
+                let mut secrets = r[room].secret_bytes();
+                secrets.extend(self.external(room).iter().flat_map(|v| secret_variants(v)));
+                secrets
+            }),
             _ => None,
         };
         let Some(variants) = variants else {
@@ -219,9 +237,15 @@ impl RoomSecretObservations {
             .map_or_else(Zeroizing::default, |(_, held)| held);
         input.extend_from_slice(&output.bytes);
         let secrets: Vec<&[u8]> = variants.iter().map(|v| v.as_bytes()).collect();
-        // Only assistant text is append-only; tool snapshots, terminal frames and echoes are
-        // redacted in place, since holding a tail would corrupt them.
-        let hold = output.kind == TerminalOutputKind::ProviderOutput;
+        // Assistant text, reasoning and native terminal bytes are append-only, so a possible
+        // value prefix waits for the next chunk. Tool snapshots replace the earlier text and
+        // errors, status and echoes are whole messages, so they are redacted in place.
+        let hold = matches!(
+            output.kind,
+            TerminalOutputKind::ProviderOutput
+                | TerminalOutputKind::ProviderReasoning
+                | TerminalOutputKind::ProviderTerminal
+        );
         let (safe, held_from) = redact(&input, &secrets, hold);
         output.bytes = safe;
         if held_from < input.len() {

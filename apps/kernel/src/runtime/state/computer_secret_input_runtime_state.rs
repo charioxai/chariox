@@ -6,10 +6,12 @@ const COMPUTER_SECRET_APPROVAL_TIMEOUT_SEC: u64 = 30;
 
 impl KernelRuntimeState {
     pub(super) fn record_protected_fact(&self, room: &str, agent: &str, fact: ProtectedFact) {
-        self.owned
-            .private_assessment_dispatch
-            .protected_facts
-            .record(room, agent, fact);
+        let facts = &self.owned.private_assessment_dispatch.protected_facts;
+        match fact {
+            // An unclassified failure never replaces a specific kernel-observed fact.
+            ProtectedFact::Failed => facts.record_failure(room, agent),
+            _ => facts.record(room, agent, fact),
+        }
     }
 
     pub(crate) fn computer_screen_capture_guard(
@@ -48,8 +50,8 @@ impl KernelRuntimeState {
                 RoomBrowserControllerCommand::ComputerSecretTarget,
             )
             .await
-            .inspect_err(|_| {
-                self.record_protected_fact(session_id, agent_id, ProtectedFact::FieldNotFound)
+            .inspect_err(|error| {
+                self.record_protected_fact(session_id, agent_id, target_error_fact(error))
             })?;
         let target = match result {
             RoomBrowserControllerResult::ComputerSecretTarget { target } if target.valid() => {
@@ -145,9 +147,48 @@ impl KernelRuntimeState {
     }
 }
 
+/// Only the capture's own "no usable field" error proves the target is missing; a relay,
+/// controller or helper failure says nothing about the field.
+fn target_error_fact(error: &DaemonError) -> ProtectedFact {
+    match error {
+        DaemonError::LocalTransport { message, .. }
+            if message == super::tool_dispatch::FOCUSED_TARGET_UNAVAILABLE =>
+        {
+            ProtectedFact::FieldNotFound
+        }
+        _ => ProtectedFact::Failed,
+    }
+}
+
 fn computer_secret_approval_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "computer_secret_input.approval",
         message: message.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_confirmed_missing_target_is_field_not_found() {
+        let transport = |message: &str| DaemonError::LocalTransport {
+            operation: "environment.action.execute",
+            message: message.to_string(),
+        };
+        assert_eq!(
+            target_error_fact(&transport(
+                super::super::tool_dispatch::FOCUSED_TARGET_UNAVAILABLE
+            )),
+            ProtectedFact::FieldNotFound
+        );
+        for failure in [
+            transport("relay delivery timed out"),
+            transport("controller restarted"),
+            transport("capture helper failed to run"),
+        ] {
+            assert_eq!(target_error_fact(&failure), ProtectedFact::Failed);
+        }
     }
 }

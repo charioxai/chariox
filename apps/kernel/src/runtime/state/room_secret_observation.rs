@@ -34,11 +34,23 @@ pub(super) struct RoomSecretObservations {
     rooms: Arc<Mutex<BTreeMap<String, Protection>>>,
     barriers: Arc<Mutex<BTreeMap<String, Arc<tokio::sync::RwLock<()>>>>>,
     pending_streams: Arc<Mutex<stream_filter::Pending>>,
+    // Values registered outside this store that also apply to a Room (the owner's
+    // user-domain browser values), so one registry decides what is redacted.
+    user_domain: Option<UserDomain>,
     vault_lifecycle: Arc<tokio::sync::RwLock<()>>,
     revocation_delivery: Arc<Mutex<BTreeMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>>,
     pub(super) epoch: u64,
     #[cfg(test)]
     pub(super) history_retention_checks: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[derive(Clone)]
+struct UserDomain {
+    owner_of: Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
+    values: Arc<dyn Fn(&str) -> Vec<Zeroizing<String>> + Send + Sync>,
+    // The history projector runs under the history lock and may not take the session
+    // lock, so it records the owner it already knows before any lookup.
+    owners: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
 #[derive(Default)]
@@ -107,6 +119,7 @@ impl RoomSecretObservations {
             rooms: Default::default(),
             barriers: Default::default(),
             pending_streams: Default::default(),
+            user_domain: None,
             vault_lifecycle: Default::default(),
             revocation_delivery: Default::default(),
             epoch: crate::session::unix_epoch_ms(),
@@ -123,6 +136,62 @@ impl RoomSecretObservations {
     pub(super) fn with_worker_room(mut self, room: Option<String>) -> Self {
         self.worker_room = room;
         self
+    }
+
+    pub(super) fn with_user_domain(
+        mut self,
+        owner_of: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
+        values: impl Fn(&str) -> Vec<Zeroizing<String>> + Send + Sync + 'static,
+    ) -> Self {
+        self.user_domain = Some(UserDomain {
+            owner_of: Arc::new(owner_of),
+            values: Arc::new(values),
+            owners: Default::default(),
+        });
+        self
+    }
+
+    pub(super) fn remember_owner(&self, room: &str, owner: &str) {
+        if let Some(domain) = &self.user_domain {
+            if let Ok(mut owners) = domain.owners.lock() {
+                owners.insert(room.into(), owner.into());
+            }
+        }
+    }
+
+    fn external(&self, room: &str) -> Vec<Zeroizing<String>> {
+        let Some(domain) = &self.user_domain else {
+            return Vec::new();
+        };
+        let known = domain.owners.lock().ok().and_then(|o| o.get(room).cloned());
+        let owner = known.or_else(|| {
+            let owner = (domain.owner_of)(room)?;
+            self.remember_owner(room, &owner);
+            Some(owner)
+        });
+        owner.map_or_else(Vec::new, |owner| (domain.values)(&owner))
+    }
+
+    /// Every registered value of `scope`, live, retired or stored.
+    pub(super) fn all_values(&self, scope: &str) -> Vec<Zeroizing<String>> {
+        if self.blocked(scope, false).is_err() {
+            return Vec::new();
+        }
+        self.rooms.lock().map_or_else(
+            |_| Vec::new(),
+            |rooms| {
+                let protection = &rooms[scope];
+                [
+                    &protection.values,
+                    &protection.retired_values,
+                    &protection.stored_values,
+                ]
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect()
+            },
+        )
     }
 
     fn room_key<'a>(&'a self, room: &'a str) -> &'a str {
@@ -600,10 +669,12 @@ impl RoomSecretObservations {
         if observation && protection.unknown {
             return Err(fenced_observation_error());
         }
-        if protection.value_count() == 0 {
+        let external = self.external(room);
+        if protection.value_count() == 0 && external.is_empty() {
             return Ok(input);
         }
         let mut value = serde_json::to_value(input).map_err(|_| protection_error())?;
+        scrub_value(&mut value, &external);
         scrub_value(&mut value, &protection.values);
         scrub_value(&mut value, &protection.retired_values);
         scrub_value(&mut value, &protection.stored_values);
