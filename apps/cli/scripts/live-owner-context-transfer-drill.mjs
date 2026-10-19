@@ -7,7 +7,7 @@ import { createServer } from 'node:http'
 import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { mkdir, mkdtemp, writeFile, readFile, rm, rename, access, chmod } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile, readFile, rm, rename, access, chmod, cp } from 'node:fs/promises'
 import { spawnOwned, signalOwnedProcessGroup, signalOwnedProcess, ownedProcessHandles, processSnapshot } from '../../kernel/slice-linux-docker/owned-process-signals.mjs'
 import { createReadStream } from 'node:fs'
 import { LocalIpcClient } from '../../../packages/kernel-client/dist/ipc.js'
@@ -523,6 +523,7 @@ finally {
   for(const child of [...children].reverse()) {try{await stop(child);await writeFile(path.join(evidence,child.name+'-process.log'),child.output)}catch(e){failed??=sanitize(e.message)}}
   if(cloud)await new Promise(r=>cloud.close(r))
   // Only the exact mkdtemp root owned by this run contains disposable runtime keys.
+  if(root&&evidence)for(const name of ['source','target'])await cp(path.join(root,name,'logs'),path.join(evidence,`${name}-kernel-logs`),{recursive:true}).catch(()=>{})
   if(root){assert(path.dirname(root)==='/root/.chariox/dev/browser-resume-20260930'&&path.basename(root).startsWith('byomctx-r5-live-'));await rm(root,{recursive:true,force:true});cleanup=true}
   if(workRoot){assert(path.dirname(workRoot)==='/root/work'&&path.basename(workRoot).startsWith('agent-byomctx-r5-live-'));await rm(workRoot,{recursive:true,force:true})}
   await sample()
