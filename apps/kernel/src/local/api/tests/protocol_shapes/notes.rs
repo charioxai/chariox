@@ -154,3 +154,26 @@ fn notes_protocol_443_response_snapshots() {
         serde_json::from_str(include_str!("notes-events-443.json")).unwrap();
     assert_eq!(serde_json::json!(values), expected);
 }
+
+// Notes in prompts (allocated 566/174): a note is an inline `PromptAttachment` with the note
+// mime. The kernel turns it into hidden context and keeps the attachment for history chips.
+#[test]
+fn prompt_notes_566_snapshot() {
+    use sha2::{Digest, Sha256};
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 566);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 174);
+    let bytes = include_bytes!("prompt-notes-566.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "89322f57cd921979f12b3d61e5a88c3289d927dc8f5ad044cbc626900985b037"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let request: crate::local::LocalDaemonRequest =
+        serde_json::from_value(snapshot["request"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(&request).unwrap(), snapshot["request"]);
+    let crate::local::LocalDaemonRequest::SubmitPrompt(submit) = request else {
+        panic!("expected SubmitPrompt")
+    };
+    assert_eq!(submit.attachments[0].mime(), crate::prompt_notes::NOTE_ATTACHMENT_MIME);
+    crate::prompt_notes::validate(&submit.attachments).unwrap();
+}

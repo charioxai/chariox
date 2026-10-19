@@ -104,3 +104,31 @@ The fixture owns and removes its state; it does not establish native or hosted a
 MD-stack integration: the unreleased feature allocation is folded into local
 protocol 427 (relay peer 74). This union and its shape/hash guards supersede the
 per-feature versions described during development above.
+
+## Notes in prompts (566 / relay peer 174)
+
+The web client no longer has a Notes toolbar, list or "Ask" path. Selecting text
+in the kernel Browser view or a Room shows a **Leave a note** button just above
+the selection (kernel `capture_selection` receipt for browser pages, trusted DOM
+range for host panels). The button opens a composer next to the selection: the
+quoted text on top, a text field below. Enter (Shift+Enter = newline) or the
+send button inside the field attaches the note to the prompt composer as a chip,
+like an image; Esc or a click outside cancels. Clicking the chip reopens the
+composer to edit it; the chip's remove button removes it.
+
+A note is an inline `PromptAttachment` with mime `application/vnd.chariox.note+json`
+and `contents_base64` of `{"quote","comment","source":{"kind":"browser"|"room"|"panel","title","url","room"}}`.
+No serialized request shape changes; the semantic bump is 566/174, snapshotted by
+`protocol_shapes/prompt-notes-566.json`. On `SubmitPrompt` the kernel validates
+notes (at most 16, 48 KiB each, a non-empty quote), keeps them inline (never
+materialized to a provider file) and `PromptAssemblyService::assemble_provider_turn`
+removes them from the provider attachments and appends a `<user-notes>` block to
+the hidden system context with each note's source (Browser: page title + URL;
+Room: room name), selected text and comment. That is the same assembly every
+provider run uses, so Codex, OpenCode and Claude, remote workers and native TUIs
+(Claude through the `UserPromptSubmit` `additionalContext` bridge) receive the
+notes without a parallel path. The prompt text is sent unchanged. History keeps the
+attachment, so replay shows chips, never the raw block.
+
+The durable notes store and `chariox.load_notes` (MD-N1…N4 above) are unchanged
+and have no web UI.

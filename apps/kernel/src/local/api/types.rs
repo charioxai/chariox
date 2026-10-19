@@ -335,4 +335,4 @@ pub use workspace::*;
 /// parked behind a busy renderer); the viewer holds its preview handover until it is admitted.
 /// MP-08/MP-10/MP-11: allocated 556 adds `KernelBrowser` `state_wait`: a parked state read
 /// replacing the viewer's 250 ms poll.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 556;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 566;
