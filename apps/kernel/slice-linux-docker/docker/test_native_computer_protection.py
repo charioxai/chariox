@@ -118,9 +118,9 @@ class AgentInputClipboardTests(unittest.TestCase):
     def test_empty_clipboard_admits_clicks_while_browser_and_popups_are_masked(self):
         self.assertIn(module.X.ButtonPress,self.run_input({'kind':'click','x':5,'y':5}))
 
-    def test_mp11_empty_clipboard_does_not_authorize_popup_free_browser_toolbar_action(self):
-        # A popup-free extension runs on ButtonPress without creating a CDP page.
-        # The actual destination is Chrome even though another native app has focus.
+    def test_mp11_empty_clipboard_does_not_authorize_an_unproved_browser_control(self):
+        # An owned browser PID and empty clipboard cannot prove its native leaf.
+        # Missing accessibility evidence must refuse before any physical press.
         node=SimpleNamespace(id=99,get_full_property=lambda *_:None,query_pointer=lambda:SimpleNamespace(child=0))
         root=SimpleNamespace(query_pointer=lambda:SimpleNamespace(child=node,root_x=5,root_y=5))
         connection=SimpleNamespace(intern_atom=lambda name:name,close=lambda:None,sync=lambda:None,get_input_focus=lambda:SimpleNamespace(focus=node),
@@ -131,7 +131,7 @@ class AgentInputClipboardTests(unittest.TestCase):
         def press(*args,before_press=None,**kwargs):before_press()
         with patch.object(module,'load',side_effect=lambda name: accessibility if name=='native-accessibility' else x11 if name=='native-x11' else destination_policy if name=='native-input-destination' else clipboard),patch.object(module.display,'Display',return_value=connection),patch.object(clipboard,'display_module',return_value=module.display),patch.object(module.xtest,'fake_input') as event,patch.object(module.keyboard,'hold_input',side_effect=press),patch.object(module.keyboard,'type_text',side_effect=press):
             for action in [{'kind':'click','x':5,'y':5},{'kind':'key','key':'Return'},{'kind':'text','text':' '}]:
-                with self.subTest(action=action),self.assertRaisesRegex(ValueError,'Browser'):
+                with self.subTest(action=action),self.assertRaises(accessibility.NativeInputDenied):
                     module.input_action(action,[{'pid':77,'started':'1','browser':True}])
                 self.assertFalse(any(call.args[1]==module.X.ButtonPress for call in event.call_args_list))
 
