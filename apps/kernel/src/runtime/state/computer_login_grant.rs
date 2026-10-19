@@ -57,6 +57,7 @@ impl ComputerLoginGrants {
             g.scope.session == session
                 && g.scope.agent == agent
                 && g.prompts.contains(source)
+                && !g.scope.app.starts_with("room:")
                 && Instant::now() < g.deadline
         }) {
             grant.prompts.insert(next.to_owned());
@@ -88,6 +89,12 @@ impl ComputerSecretApproval {
     pub fn authority(&self) -> &'static str {
         if self.sudo_turn.is_some() {
             "sudo"
+        } else if self
+            .grant
+            .as_ref()
+            .is_some_and(|g| g.scope.app.starts_with("room:"))
+        {
+            "user_interaction"
         } else {
             "login_grant"
         }
@@ -174,7 +181,15 @@ impl KernelRuntimeState {
             credential: credential.into(),
             app: app.into(),
         };
-        if let Some(grant) = self.owned.computer_login_grants.find(&scope, prompt.id()) {
+        // Room's legacy target has XIDs, not a process/start identity. Never
+        // widen one operation's consent across an app restart/XID reuse.
+        let reusable_native_app = !app.starts_with("room:");
+        if let Some(grant) = self
+            .owned
+            .computer_login_grants
+            .find(&scope, prompt.id())
+            .filter(|_| reusable_native_app)
+        {
             let approval = ComputerSecretApproval {
                 sudo_turn: None,
                 grant: Some(grant),
@@ -184,7 +199,11 @@ impl KernelRuntimeState {
                 return Ok(approval);
             }
         }
-        let purpose = format!("Allow agent `{agent_id}` to use credential `{credential}` for this login task in {description}. Further pastes for this task and app need no new consent. Revoke in Vault or lock it at any time.");
+        let purpose = if reusable_native_app {
+            format!("Allow agent `{agent_id}` to use credential `{credential}` for this login task in {description}. Further pastes for this task and app need no new consent. Revoke in Vault or lock it at any time.")
+        } else {
+            format!("Allow agent `{agent_id}` to paste credential `{credential}` into {description}. This consent covers this paste. The chosen unlock duration controls the Vault lease.")
+        };
         let (unlock, unlocked_choice) = self
             .ensure_vault_unlocked_for_agent_with_purpose(
                 session_id,
@@ -200,7 +219,11 @@ impl KernelRuntimeState {
             let choices = vec![
                 crate::session::RuntimeInteractionChoice::new(
                     "unlock_default_ttl",
-                    "Allow this login for 15 minutes",
+                    if reusable_native_app {
+                        "Allow this login for 15 minutes"
+                    } else {
+                        "Allow this paste"
+                    },
                     "allow",
                     Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
                 ),
@@ -217,6 +240,14 @@ impl KernelRuntimeState {
                     Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
                 ),
             ];
+            let choices = if reusable_native_app {
+                choices
+            } else {
+                choices
+                    .into_iter()
+                    .filter(|c| c.id() != "unlock_60m")
+                    .collect()
+            };
             let interaction = crate::session::RuntimeInteraction::new(
                 format!(
                     "computer-login-{agent_id}-{}",
@@ -225,7 +256,14 @@ impl KernelRuntimeState {
                 agent_id,
                 crate::session::RuntimeInteractionKind::Choice,
                 crate::session::RuntimeInteractionLevel::Critical,
-                Some("Allow this login".into()),
+                Some(
+                    if reusable_native_app {
+                        "Allow this login"
+                    } else {
+                        "Allow this paste"
+                    }
+                    .into(),
+                ),
                 purpose,
                 choices,
                 None,

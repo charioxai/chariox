@@ -7,11 +7,13 @@ including when durable Room task tools are disabled. Only the reserved continuat
 prompt inherits the window; unrelated prompts remain queued. The monotonic sudo
 deadline, explicit revoke, placement and current-run checks still govern each use.
 
-Computer Vault input reuses live sudo or a task grant bound to owner, session,
+Host Computer Vault input reuses live sudo or a task grant bound to owner, session,
 agent, credential and native application generation. Without either, one trusted
 sheet combines consent, encrypted Vault unlock and duration. Vault controls can
 revoke login grants independently; locking or changing the passphrase revokes
-them too. No value is returned to the provider. Browser Vault fills may target
+them too. Room Computer targets currently lack process/start identity, so
+without live sudo their consent remains per operation until the coordinator
+allocates the contract extension. No value is returned to the provider. Browser Vault fills may target
 ordinary editable OTP/text inputs without changing their type; existing exact-field
 registration, capture masks and output scrubbing remain authoritative.
 

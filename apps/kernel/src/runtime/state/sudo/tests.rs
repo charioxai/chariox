@@ -2029,3 +2029,52 @@ async fn computer_login_combines_unlock_and_reuses_revocable_task_grant() {
     assert!(!f.state.computer_secret_approval_live(&reused));
     crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
 }
+
+// MP-11: legacy Room XIDs cannot establish reusable application identity.
+#[tokio::test]
+async fn computer_login_room_window_without_process_identity_is_one_operation() {
+    let f = fixture();
+    let turn = running(&f);
+    f.state.owned.sudo_turns.lock().unwrap().clear();
+    let config = f
+        .state
+        .owned
+        .config_projection
+        .snapshot()
+        .user_config
+        .credential_vault;
+    crate::secret::unlock_chariox_encrypted_vault(
+        &config.path,
+        PASSKEY,
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    f.state.owned.computer_login_grants.insert(
+        super::super::computer_login_grant::LoginScope {
+            owner: "local".into(),
+            session: turn.session_id.clone(),
+            agent: turn.agent_id.clone(),
+            credential: "handle".into(),
+            app: "room:1:41".into(),
+        },
+        turn.prompt_id.clone().unwrap(),
+        60,
+    );
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            f.state.ensure_computer_login_approved(
+                &turn.session_id,
+                &turn.agent_id,
+                "handle",
+                "room:1:41",
+                "selected Room window"
+            )
+        )
+        .await
+        .is_err(),
+        "a reused XID must not inherit login consent without a process/start identity"
+    );
+    f.state.revoke_computer_login_grants();
+    crate::secret::lock_chariox_encrypted_vault(&config.path).unwrap();
+}
