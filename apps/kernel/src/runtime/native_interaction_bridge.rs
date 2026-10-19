@@ -464,17 +464,20 @@ mod tests {
     async fn native_permission_queue_waits_for_the_existing_subject_decision() {
         let (router, session, agent, root) = permission_queue_fixture().await;
         let state = router.runtime_state();
+        let first_id = format!("native-queue-{session}-first");
+        let second_id = format!("native-queue-{session}-second");
         let first = state
-            .create_runtime_interaction(&session, queued_permission("first", &agent, 10))
+            .create_runtime_interaction(&session, queued_permission(&first_id, &agent, 10))
             .await
             .unwrap();
         let pending_state = state.clone();
         let pending_session = session.clone();
+        let pending_second_id = second_id.clone();
         let second = tokio::spawn(async move {
             request_runtime_interaction_with_timeout(
                 &pending_state,
                 &pending_session,
-                queued_permission("second", &agent, 5),
+                queued_permission(&pending_second_id, &agent, 5),
                 "native_permission_queue_test",
                 None,
             )
@@ -486,14 +489,14 @@ mod tests {
             "MP-10/MP-11 parallel permission must wait for the current decision"
         );
         state
-            .resolve_runtime_interaction(&session, "first", "allow", None)
+            .resolve_runtime_interaction(&session, &first_id, "allow", None)
             .await
             .unwrap();
         assert_eq!(first.await.unwrap().choice_id.as_deref(), Some("allow"));
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         loop {
             if state
-                .resolve_runtime_interaction(&session, "second", "deny", None)
+                .resolve_runtime_interaction(&session, &second_id, "deny", None)
                 .await
                 .is_ok()
             {
@@ -511,15 +514,17 @@ mod tests {
     async fn native_permission_queue_counts_waiting_time_against_its_deadline() {
         let (router, session, agent, root) = permission_queue_fixture().await;
         let state = router.runtime_state();
+        let first_id = format!("native-queue-{session}-first");
+        let second_id = format!("native-queue-{session}-second");
         let _first = state
-            .create_runtime_interaction(&session, queued_permission("first", &agent, 10))
+            .create_runtime_interaction(&session, queued_permission(&first_id, &agent, 10))
             .await
             .unwrap();
         let started = tokio::time::Instant::now();
         let resolution = request_runtime_interaction_with_timeout(
             &state,
             &session,
-            queued_permission("second", &agent, 1),
+            queued_permission(&second_id, &agent, 1),
             "native_permission_queue_test",
             None,
         )
@@ -528,7 +533,7 @@ mod tests {
         assert_eq!(resolution.status, "timed_out");
         assert!(started.elapsed() < Duration::from_millis(1500));
         state
-            .resolve_runtime_interaction(&session, "first", "deny", None)
+            .resolve_runtime_interaction(&session, &first_id, "deny", None)
             .await
             .unwrap();
         std::fs::remove_dir_all(root).unwrap();
