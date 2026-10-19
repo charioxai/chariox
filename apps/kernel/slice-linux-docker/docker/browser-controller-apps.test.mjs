@@ -823,3 +823,12 @@ test('App draft capture fence waits for its owned renderer and propagates failur
   connection.send=async()=>({exceptionDetails:{text:'commit failed'}});
   await assert.rejects(tabs.flushDrafts(app.targetId),/App draft commit unavailable/);
 });
+
+// MP-08/MP-10/MP-11: focusing the same verified App must preserve its editor document.
+test('opening an unchanged App focuses its existing document without navigating', async () => {
+ const {tabs,connection,result}=await opened();connection.sent.length=0;
+ const again=await tabs.open({origin_label:'todo-1',installation_id:'inst-1',assets:[asset('app.js','1','text/javascript'),asset('index.html','<p>hi</p>')]});
+ assert.deepEqual(again,result);assert(connection.sent.some(x=>x.method==='Target.activateTarget'));
+ assert(!connection.sent.some(x=>['Page.navigate','Page.reload'].includes(x.method)),'an unchanged focus must not invalidate current input references');
+ assert.equal([...tabs.apps.values()][0].ready,true);
+});

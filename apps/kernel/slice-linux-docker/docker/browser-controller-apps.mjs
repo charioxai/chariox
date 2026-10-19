@@ -186,15 +186,20 @@ export class AppTabs {
     const shown = [...this.apps.entries()].find(([, open]) => open.installation === app.installation && open.origin === origin && open.instanceId === instanceId);
     if (shown) {
       const [sessionId, open] = shown;
-      Object.assign(open, { entry, assets: app.assets, page: app.page, ready: false });
+      const changed = open.entry !== entry || open.assets.size !== app.assets.size
+        || [...app.assets].some(([name, value]) => open.assets.get(name)?.contentType !== value.contentType || open.assets.get(name)?.body !== value.body);
+      Object.assign(open, { entry, assets: app.assets, page: app.page });
+      if (changed) open.ready = false;
       const metrics = this.browser.appMetrics?.(open.page);
       if (metrics) await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId).catch(() => {});
       await connection.send("Target.activateTarget", { targetId: open.targetId });
       await this.fullscreen(connection, open.targetId).catch(() => false);
-      // Navigate (not reload): it returns once the document commits, so the
-      // Room projects the Tab's URL rather than the empty one of a reload.
-      await connection.send("Page.navigate", { url: `${origin}/` }, sessionId);
-      open.ready = true;
+      // MP-08/MP-10: an unchanged Open only focuses the existing editor.
+      // Verified asset changes still navigate and retire the old document.
+      if (changed) {
+        await connection.send("Page.navigate", { url: `${origin}/` }, sessionId);
+        open.ready = true;
+      }
       return { target_id: open.targetId, origin };
     }
     // Each App view gets its own fullscreen window, so page and desktop
