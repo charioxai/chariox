@@ -3682,6 +3682,10 @@ still running) and `close`.
 - An operation for an agent that is leased to a worker (leased worker or slice) runs
   on that worker as `RelayPeerRequest::RoomTerminal`, keyed by the lease; `host_agent`
   names the agent whose machine hosts the terminal when the actor is the user.
+  Every summary of a worker's terminal carries `host_agent`, to send back on later
+  requests about it. A `list` without `host_agent` or `acting_agent` is Room-wide:
+  this kernel's terminals plus those of every worker the Room's agents are leased
+  to; a worker that cannot be reached fails the list instead of hiding its tabs.
 - A terminal survives client disconnects. It ends on close, when its shell or
   command exits, or with its Room. A kernel restart ends it as
   `ended: kernel restarted` and keeps the scrollback.
