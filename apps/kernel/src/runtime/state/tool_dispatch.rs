@@ -211,8 +211,12 @@ impl KernelRuntimeState {
             specs.extend(self.slice_tool_specs_for_provider_runs(&provider_runs));
             return specs;
         }
-        if matches!(provider_runs.as_slice(), [_]) {
-            specs.extend(crate::transport::runtime_tools::agent_event_tool_specs());
+        if let [run] = provider_runs.as_slice() {
+            // Workflow nodes settle through their native turn envelope; task
+            // continuations do not yet retain that workflow identity.
+            if !run.workflow_tools_enabled() {
+                specs.extend(crate::transport::runtime_tools::agent_event_tool_specs());
+            }
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::extension_runtime_tool_specs());

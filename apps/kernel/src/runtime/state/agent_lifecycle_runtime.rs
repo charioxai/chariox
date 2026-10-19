@@ -40,6 +40,14 @@ impl KernelRuntimeOwnedState {
         agent: &str,
         prompt: &str,
     ) -> Result<Option<String>, DaemonError> {
+        let session = self.session_store.get_session(room)?;
+        if self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent)
+            .is_some_and(|active| active.id() == prompt && active.workflow_run_id().is_some())
+        {
+            return Ok(None);
+        }
         let Some(task) = self
             .durable_state_store
             .agent_tasks(Some(room), Some(agent))?

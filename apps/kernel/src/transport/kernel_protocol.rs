@@ -631,8 +631,8 @@ fn agent_task_updated_events(
         .collect()
 }
 
-/// Task events carry only changed tasks and no wakes. A wake change or a task
-/// that left the projection has no event, so the full snapshot must follow.
+/// Task events carry only changed tasks. Wakes, removed tasks and concurrent
+/// session/provider/activity changes still need the full snapshot.
 pub(crate) fn agent_ledger_needs_snapshot(
     snapshot: &SessionSnapshotProjection,
     previous_snapshot: Option<&SessionSnapshotProjection>,
@@ -640,7 +640,7 @@ pub(crate) fn agent_ledger_needs_snapshot(
     let Some(previous_snapshot) = previous_snapshot else {
         return false;
     };
-    previous_snapshot.session.agent_wakes() != snapshot.session.agent_wakes()
+    if previous_snapshot.session.agent_wakes() != snapshot.session.agent_wakes()
         || previous_snapshot.session.agent_tasks().iter().any(|old| {
             !snapshot
                 .session
@@ -648,6 +648,20 @@ pub(crate) fn agent_ledger_needs_snapshot(
                 .iter()
                 .any(|task| task.task_id == old.task_id)
         })
+    {
+        return true;
+    }
+    if previous_snapshot.session.agent_tasks() == snapshot.session.agent_tasks() {
+        return false;
+    }
+    // The other delta selectors can reject a combined change because tasks
+    // differ. Suppress the snapshot only when the task events cover everything.
+    let mut previous_session = previous_snapshot.session.clone();
+    previous_session.set_agent_tasks(snapshot.session.agent_tasks().to_vec());
+    previous_session != snapshot.session
+        || previous_snapshot.provider_run != snapshot.provider_run
+        || previous_snapshot.agent_activity != snapshot.agent_activity
+        || previous_snapshot.room_workflows != snapshot.room_workflows
 }
 
 pub(crate) fn workflow_run_updated_events(

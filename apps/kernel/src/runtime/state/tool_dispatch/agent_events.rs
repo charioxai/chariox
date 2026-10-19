@@ -9,6 +9,9 @@ impl KernelRuntimeState {
         name: &str,
         args: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        if run.workflow_tools_enabled() {
+            return Err(ledger::error("event tools are unavailable in workflow turns; finish through the workflow turn envelope"));
+        }
         let actor = run
             .agent_instance_id()
             .ok_or_else(|| ledger::error("provider has no agent"))?;
@@ -37,6 +40,9 @@ impl KernelRuntimeState {
             .prompt_state_owner
             .active_prompt_for_agent(&session, actor)
             .ok_or_else(|| ledger::error("no running turn"))?;
+        if prompt.workflow_run_id().is_some() {
+            return Err(ledger::error("event tools are unavailable in workflow turns; finish through the workflow turn envelope"));
+        }
         if prompt.status() != crate::session::PromptStatus::Running
             || args["origin_prompt_id"].as_str() != Some(prompt.id())
         {

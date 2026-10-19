@@ -939,3 +939,57 @@ fn a_wake_change_or_a_vanished_task_keeps_the_full_snapshot() {
     ));
     assert!(!agent_ledger_needs_snapshot(&previous, None));
 }
+
+// MP-08/MP-10/MP-11: a task delta covers no concurrent prompt or provider state.
+#[test]
+fn task_deltas_keep_concurrent_session_changes_in_the_snapshot() {
+    let mut previous = session_snapshot_with_agent();
+    previous
+        .session
+        .set_agent_tasks(vec![ledger_task("task-a", "working", 1)]);
+    let mut task_only = previous.clone();
+    task_only
+        .session
+        .set_agent_tasks(vec![ledger_task("task-a", "done", 2)]);
+
+    let mut prompt_change = task_only.clone();
+    let mut session_value = serde_json::to_value(&prompt_change.session).unwrap();
+    let next_prompt = PromptQueueItem::new(
+        "next-prompt",
+        "attachment-a",
+        "agent-a",
+        "next",
+        PromptStatus::Running,
+    );
+    session_value["prompt_states"] = serde_json::json!({"agent-a": {
+        "active_prompt": next_prompt, "queued_prompts": [],
+    }});
+    session_value["active_prompt"] = serde_json::to_value(next_prompt).unwrap();
+    session_value["scheduler_state"] = serde_json::json!("Running");
+    prompt_change.session = serde_json::from_value(session_value).unwrap();
+
+    let mut provider_change = task_only.clone();
+    provider_change.provider_run = Some(RuntimeProviderRun::from_control_capability_inference(
+        "provider-run-next",
+        "session-a".into(),
+        Some("agent-a".into()),
+        "codex".into(),
+    ));
+    let mut metadata_change = task_only.clone();
+    metadata_change.session.set_alias(Some("renamed".into()));
+
+    for current in [provider_change, prompt_change, metadata_change] {
+        assert!(
+            current.session != previous.session || current.provider_run != previous.provider_run,
+            "each fixture must contain a concurrent change"
+        );
+        assert!(session_projection_changed_events(&current, Some(&previous))
+            .iter()
+            .any(|event| matches!(event, KernelEvent::AgentTaskUpdated { .. })));
+        assert!(
+            agent_ledger_needs_snapshot(&current, Some(&previous)),
+            "a task event must not suppress concurrent session changes"
+        );
+    }
+    assert!(!agent_ledger_needs_snapshot(&task_only, Some(&previous)));
+}

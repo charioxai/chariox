@@ -20,6 +20,18 @@ A plain turn only gets a task row and the task id in its hidden context. It is
 never held to a wait, never corrected, and a plain failure is cancelled exactly
 as it is without the ledger.
 
+Workflow turns use their workflow turn envelope for completion. The event tools
+are withheld from workflow provider discovery, and direct calls are refused
+before any task or wake mutation. Workflow turns receive no task-wait instruction.
+Task waits remain unavailable there until wake and correction continuations retain
+the original workflow run and node identity (MP-08/MP-10/MP-11).
+
+The workflow boundary drill starts a real workflow through the TUI, confirms
+that its provider sees no event tools, and completes the workflow's normal
+output envelope. Forced calls to all seven event tools must fail without
+changing tasks, wakes or workflow nodes; ordinary timer/yield/wake completion
+must still work (MP-08/MP-10/MP-11).
+
 ## Task states
 
 `working` → `waiting` (a yield with live registrations and a deadline) →
