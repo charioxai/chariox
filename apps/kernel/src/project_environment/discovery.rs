@@ -3,7 +3,7 @@ use super::resolver::environment_error;
 use super::*;
 use crate::error::DaemonError;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -66,14 +66,40 @@ pub(crate) fn offered_private_files(
         .collect()
 }
 
+/// The candidates the utility is not shown (and so never decides this round).
+fn unoffered_private_files<'a>(
+    candidates: &'a [ProjectPrivateFileCandidate],
+    offered: &[&ProjectPrivateFileCandidate],
+) -> Vec<&'a ProjectPrivateFileCandidate> {
+    let offered: HashSet<_> = offered
+        .iter()
+        .map(|candidate| (candidate.workspace_id.as_str(), candidate.path.as_str()))
+        .collect();
+    candidates
+        .iter()
+        .filter(|candidate| {
+            !offered.contains(&(candidate.workspace_id.as_str(), candidate.path.as_str()))
+        })
+        .collect()
+}
+
 pub fn project_environment_discovery_prompt(
     input: &ProjectEnvironmentDiscoveryInput,
 ) -> Result<String, DaemonError> {
+    let offered_files = offered_private_files(&input.private_files);
+    // Inventory files the utility is not shown stay out of changed_paths too; listing every
+    // one of them again would dwarf the prompt.
+    let mut changed_paths = input.changed_paths.clone();
+    let left_out: HashSet<_> = unoffered_private_files(&input.private_files, &offered_files)
+        .into_iter()
+        .map(|candidate| (candidate.workspace_id.as_str(), candidate.path.as_str()))
+        .collect();
+    for (workspace, paths) in &mut changed_paths {
+        paths.retain(|path| !left_out.contains(&(workspace.as_str(), path.as_str())));
+    }
     let offered = ProjectEnvironmentDiscoveryInput {
-        private_files: offered_private_files(&input.private_files)
-            .into_iter()
-            .cloned()
-            .collect(),
+        private_files: offered_files.into_iter().cloned().collect(),
+        changed_paths,
         ..input.clone()
     };
     let encoded = serde_json::to_string(&offered)
@@ -143,11 +169,7 @@ pub fn parse_project_environment_discovery_output(
     }
     // A file the utility was not shown keeps its earlier decision and is otherwise
     // left out: only an explicit decision brings a private file.
-    for candidate in input.private_files.iter().filter(|candidate| {
-        !offered.iter().any(|offered| {
-            offered.workspace_id == candidate.workspace_id && offered.path == candidate.path
-        })
-    }) {
+    for candidate in unoffered_private_files(&input.private_files, &offered) {
         if let Some(known) = input.previous_manifest.as_ref().and_then(|manifest| {
             manifest.private_files.iter().find(|known| {
                 known.workspace_id == candidate.workspace_id && known.path == candidate.path

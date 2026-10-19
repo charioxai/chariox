@@ -424,6 +424,17 @@ try {
     assert.notEqual(approved.contextId,cancelled.contextId);assert.equal(approved.phase,'completed');assert(approved.receipt)
     const launch=(await cli('04-owner-target-launch',target,['launch-target',approved.contextId,approved.planDigest])).ManagedContextLaunchTarget.target
     assert.equal(launch.development.kind,kernelOnly?'empty':'from_source');assert.equal(approved.receipt.kernelContext.kind,packagedMode?'from_kernel':'empty')
+    if(ignoredInventory) {
+      // The real provider decided exactly the bounded offered set; the remaining ignored files were left out.
+      const { readdir } = await import('node:fs/promises')
+      const find=async dir=>{for(const entry of await readdir(dir,{withFileTypes:true}).catch(()=>[])){
+        const full=path.join(dir,entry.name);if(entry.isDirectory()){if(entry.name==='project-environments')return full;const hit=await find(full);if(hit)return hit}}}
+      const store=await find(source.env.CHARIOX_HOME);assert(store,'source Project environment store')
+      const stored=JSON.parse(await readFile(path.join(store,(await readdir(store)).find(n=>n.endsWith('.json'))),'utf8'))
+      const decided=stored.manifest.private_files.length
+      assert(decided>0&&decided<ignoredFiles,`MP-08 offered a bounded set of ${ignoredFiles} ignored files, got ${decided}`)
+      steps.push({name:'ignored-inventory-bounded-prefix-decided-by-real-codex',mpItems:['MP-08','MP-10','MP-11'],ignoredFiles,decided,model:'gpt-6-luna low'})
+    }
     if(projectReview) {
       const imported=launch.development.repositories[0].workspacePath
       assert.equal(await readFile(path.join(imported,'bootstrap.sh'),'utf8'),ordinary)

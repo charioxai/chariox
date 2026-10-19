@@ -1285,14 +1285,18 @@ fn mp08_discovery_decides_a_gitignored_inventory_beyond_the_prompt_budget() {
     let input = ProjectEnvironmentDiscoveryInput {
         project_id: manifest.project_id.clone(),
         evidence_digest: manifest.evidence_digest.clone(),
-        changed_paths: BTreeMap::new(),
+        // The first export reports every inventory file as changed.
+        changed_paths: BTreeMap::from([(
+            "web".to_string(),
+            candidates.iter().map(|c| c.path.clone()).collect(),
+        )]),
         previous_manifest: None,
         references: vec![],
         private_files: candidates.clone(),
         revision: None,
     };
     let prompt = project_environment_discovery_prompt(&input).unwrap();
-    assert!(prompt.len() < 1024 * 1024);
+    assert!(prompt.len() < 64 * 1024, "{}", prompt.len());
     let offered = discovery::offered_private_files(&candidates);
     assert_eq!(offered.len(), 128, "a real turn decides ~0.3 s per file");
     assert_eq!(offered[0].path, "zz-config/local.json");
