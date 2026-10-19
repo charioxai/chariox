@@ -216,7 +216,7 @@ impl KernelRuntimeOwnedState {
             // A protected completion check stays private: only the kernel-authored class
             // reaches the receipt, so its prose never enters the public stream or history.
             if self.collect_private_assessment(session_id, output)
-                && self.room_secret_observations.protects_bytes(session_id)
+                && self.protects_completion_check(session_id, output.agent_id.as_deref())
             {
                 output.bytes.clear();
                 continue;

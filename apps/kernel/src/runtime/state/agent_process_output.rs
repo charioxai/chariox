@@ -4,12 +4,42 @@ use std::sync::Arc;
 // Leave room for JSON escaping and source attribution in the 8 KiB event.
 const TAIL_BYTES: usize = 2_048;
 const LINE_BYTES: usize = 1_024;
+// Lines held while they may begin a multi-line value; a longer hold is withheld.
+const HOLD_BYTES: usize = 8_192;
+
+/// Redacts registered values from process output, line by line and across lines.
+#[derive(Clone)]
+pub(super) struct Protector {
+    scrub: Arc<dyn Fn(String) -> Option<String> + Send + Sync>,
+    // Whether the text ends with the beginning of a value that continues on the next line.
+    holds: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+}
+
+impl Protector {
+    pub(super) fn scrub(&self, text: String) -> Option<String> {
+        (self.scrub)(text)
+    }
+    fn holds(&self, text: &str) -> bool {
+        (self.holds)(text)
+    }
+    #[cfg(test)]
+    fn passthrough() -> Self {
+        Self {
+            scrub: Arc::new(Some),
+            holds: Arc::new(|_| false),
+        }
+    }
+}
 
 pub(super) fn room_protector(
     protection: super::room_secret_observation::RoomSecretObservations,
     room: String,
-) -> Arc<dyn Fn(String) -> Option<String> + Send + Sync> {
-    Arc::new(move |text| protection.scrub(&room, text).ok())
+) -> Protector {
+    let holder = (protection.clone(), room.clone());
+    Protector {
+        scrub: Arc::new(move |text| protection.scrub(&room, text).ok()),
+        holds: Arc::new(move |text| holder.0.multiline_prefix(&holder.1, text)),
+    }
 }
 
 /// Strips terminal escapes/control bytes and redacts secrets before any
@@ -97,23 +127,22 @@ pub(super) fn drain(
     output: Arc<Output>,
     pattern: Option<String>,
     sender: tokio::sync::mpsc::UnboundedSender<Signal>,
-    protect: Arc<dyn Fn(String) -> Option<String> + Send + Sync>,
+    protect: Protector,
 ) {
     let mut buffer = [0u8; 4096];
     let mut line = Vec::new();
     let mut truncated = false;
-    let emit = |line: &mut Vec<u8>, truncated: &mut bool| {
-        // A cut line could expose only part of a protected value. Withhold
-        // it entirely rather than matching or retaining an unsafe prefix.
+    // Raw lines that may begin a value continuing on the next line.
+    let mut held: Vec<String> = Vec::new();
+    // `raw` is None for a withheld line. A cut line could expose only part of a
+    // protected value, so it is withheld entirely rather than matched or retained.
+    let publish = |raw: Option<String>, was_truncated: bool| {
         // Scrub the raw text too: sanitizing first would drop the byte after a stray escape.
-        let text = if *truncated {
-            None
-        } else {
-            protect(String::from_utf8_lossy(line).into_owned())
-                .and_then(|text| protect(sanitize(text.as_bytes())))
-        };
-        line.clear();
-        let was_truncated = std::mem::take(truncated);
+        let text = raw.and_then(|raw| {
+            protect
+                .scrub(raw)
+                .and_then(|text| protect.scrub(sanitize(text.as_bytes())))
+        });
         let Some(text) = text else {
             output.push(
                 if was_truncated {
@@ -135,6 +164,36 @@ pub(super) fn drain(
             }
         }
         output.push(text);
+    };
+    let mut emit = |line: &mut Vec<u8>, truncated: &mut bool| {
+        let was_truncated = std::mem::take(truncated);
+        let raw = String::from_utf8_lossy(line).into_owned();
+        line.clear();
+        if was_truncated {
+            for held in held.drain(..) {
+                publish(Some(held), false);
+            }
+            return publish(None, true);
+        }
+        held.push(raw);
+        let joined = held.join("\n") + "\n";
+        // A value spanning lines is redacted over the joined text, never line by line.
+        if let Some(redacted) = protect.scrub(joined.clone()).filter(|text| *text != joined) {
+            held.clear();
+            return redacted
+                .lines()
+                .for_each(|l| publish(Some(l.into()), false));
+        }
+        if protect.holds(&joined) {
+            if joined.len() > HOLD_BYTES {
+                held.clear();
+                publish(None, false);
+            }
+            return;
+        }
+        for held in held.drain(..) {
+            publish(Some(held), false);
+        }
     };
     while !output.stopped.load(std::sync::atomic::Ordering::Acquire) {
         let n = match stream.read(&mut buffer) {
@@ -159,6 +218,10 @@ pub(super) fn drain(
     if !line.is_empty() {
         emit(&mut line, &mut truncated);
     }
+    // The stream ended inside a possible value: its first lines stay withheld.
+    if !held.is_empty() {
+        publish(None, false);
+    }
 }
 
 #[cfg(test)]
@@ -175,7 +238,7 @@ mod tests {
             output.clone(),
             None,
             sender,
-            Arc::new(Some),
+            Protector::passthrough(),
         );
         let answer = serde_json::json!({"wake_id":"wake-source","kind":"process","label":"界".repeat(200),"exit_code":0,"process_lost":false,"output_tail":output.text()});
         assert!(
@@ -252,6 +315,65 @@ mod tests {
         assert!(tail.contains("login [redacted] accepted") && !tail.contains("fill-canary"));
         std::fs::remove_dir_all(root).unwrap();
     }
+    // A value on several lines must not be rebuilt from lines that each look harmless.
+    #[test]
+    fn a03_multiline_value_is_redacted_across_lines_and_public_lines_stay() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-watcher-multiline-{}-{}",
+            std::process::id(),
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let protection = super::super::room_secret_observation::RoomSecretObservations::new(
+            root.clone(),
+            Default::default(),
+        );
+        protection
+            .register("room", "watcher-alpha\nwatcher-beta")
+            .unwrap();
+        let run = |input: &str, pattern: &str| {
+            let output = Arc::new(Output::default());
+            let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+            drain(
+                input.as_bytes(),
+                output.clone(),
+                Some(pattern.into()),
+                sender,
+                room_protector(protection.clone(), "room".into()),
+            );
+            let mut matches = vec![];
+            while let Ok(Signal::Matched(line)) = receiver.try_recv() {
+                matches.push(line);
+            }
+            (output.text(), matches)
+        };
+        let (tail, matches) = run(
+            "start\nwatcher-alpha\nwatcher-beta\nserver ready\n",
+            "ready",
+        );
+        assert!(
+            tail.contains("start") && tail.contains("server ready"),
+            "{tail}"
+        );
+        assert!(
+            !tail.contains("watcher-alpha") && !tail.contains("watcher-beta"),
+            "{tail}"
+        );
+        assert_eq!(matches, vec!["server ready".to_string()]);
+        // A fragment is never matched or retained when the value may still complete.
+        let (tail, matches) = run("watcher-alpha\n", "watcher-alpha");
+        assert!(
+            !tail.contains("watcher-alpha") && matches.is_empty(),
+            "{tail}"
+        );
+        // Once the next line differs, the held line is ordinary public output.
+        let (tail, _) = run("watcher-alpha\nserver ready\n", "ready");
+        assert!(
+            tail.contains("watcher-alpha") && tail.contains("server ready"),
+            "{tail}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn a03_output_is_sanitized_bounded_and_matches_once() {
         assert_eq!(sanitize(b"\x1b[31mred\x1b[0m ok\x07"), "red ok");
@@ -264,7 +386,7 @@ mod tests {
             output.clone(),
             Some("ready".into()),
             sender,
-            Arc::new(Some),
+            Protector::passthrough(),
         );
         let mut matches = vec![];
         while let Ok(Signal::Matched(line)) = receiver.try_recv() {

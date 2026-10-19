@@ -194,6 +194,35 @@ impl RoomSecretObservations {
         )
     }
 
+    /// Whether `text` ends with the beginning of a registered multi-line value.
+    pub(super) fn multiline_prefix(&self, room: &str, text: &str) -> bool {
+        let room = self.room_key(room);
+        if self.blocked(room, false).is_err() {
+            return false;
+        }
+        let external = self.external(room);
+        let Ok(rooms) = self.rooms.lock() else {
+            return false;
+        };
+        let protection = &rooms[room];
+        let found = [
+            &external,
+            &protection.values,
+            &protection.retired_values,
+            &protection.stored_values,
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|value| value.contains('\n'))
+        .any(|value| {
+            text.char_indices().any(|(i, _)| {
+                let suffix = &text[i..];
+                suffix.len() < value.len() && value.starts_with(suffix)
+            })
+        });
+        found
+    }
+
     fn room_key<'a>(&'a self, room: &'a str) -> &'a str {
         self.worker_room.as_deref().unwrap_or(room)
     }

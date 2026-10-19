@@ -432,6 +432,17 @@ async fn settle_protected_check(
     crate::durable_state::agent_lifecycle::ExecutionState,
     String,
 ) {
+    settle_protected_check_in(raw, fact, true).await
+}
+
+async fn settle_protected_check_in(
+    raw: &str,
+    fact: Option<crate::runtime::state::agent_assessment_result::ProtectedFact>,
+    inserted_value: bool,
+) -> (
+    crate::durable_state::agent_lifecycle::ExecutionState,
+    String,
+) {
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
     use crate::history::SessionHistoryEntry;
     use crate::terminal::TerminalOutputKind;
@@ -499,11 +510,13 @@ async fn settle_protected_check(
             &agent,
             Some(prompt.clone()),
         );
-    runtime
-        .owned
-        .room_secret_observations
-        .register(&room, "synthetic-private-fill")
-        .unwrap();
+    if inserted_value {
+        runtime
+            .owned
+            .room_secret_observations
+            .register(&room, "synthetic-private-fill")
+            .unwrap();
+    }
     let mut request = SessionHistoryEntry::user_prompt(&room, "local-user", &agent, "check");
     request.merge_key = Some(format!("prompt:{id}"));
     runtime.owned.append_history_entries(&room, vec![request]);
@@ -555,6 +568,25 @@ async fn settle_protected_check(
     );
     assert!(!receipt.contains("terminal stream withheld"));
     (settled.state, receipt)
+}
+
+// A first paste can be denied or time out before any value exists; the kernel fact still wins.
+#[tokio::test]
+async fn mp11_first_attempt_denial_shows_kernel_class_before_any_value_is_inserted() {
+    use crate::runtime::state::agent_assessment_result::ProtectedFact::*;
+    let achieved =
+        r#"{"status":"achieved","final_answer":"PRIVATE_PROSE","evidence":["PRIVATE_EVIDENCE"]}"#;
+    let blocked = r#"{"status":"blocked","reason":"PRIVATE_PROSE"}"#;
+    for (fact, class) in [
+        (ApprovalDenied, "[protected task: approval denied]"),
+        (ApprovalTimedOut, "[protected task: timed out]"),
+    ] {
+        for raw in [achieved, blocked] {
+            let (_, receipt) = settle_protected_check_in(raw, Some(fact), false).await;
+            assert!(receipt.contains(class), "{fact:?}: {receipt}");
+            assert!(!receipt.contains("PRIVATE"), "{receipt}");
+        }
+    }
 }
 
 // An empty or malformed check in a protected Room never turns the task into Blocked.

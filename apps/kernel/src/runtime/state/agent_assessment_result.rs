@@ -81,6 +81,17 @@ impl KernelRuntimeOwnedState {
         self.private_assessment_dispatch
             .for_dispatch(room, agent, origin, steering)
     }
+    /// Whether the check's output must stay private: a Room holding inserted values, or a
+    /// protected step the kernel itself observed (e.g. a first paste that was denied).
+    pub(super) fn protects_completion_check(&self, room: &str, agent: Option<&str>) -> bool {
+        self.room_secret_observations.protects_bytes(room)
+            || agent.is_some_and(|agent| {
+                self.private_assessment_dispatch
+                    .protected_facts
+                    .peek(room, agent)
+                    .is_some()
+            })
+    }
     /// Caches the check's verdict privately; true when the output is a completion check.
     pub(super) fn collect_private_assessment(
         &self,
@@ -157,7 +168,12 @@ impl KernelRuntimeOwnedState {
         let Ok(mut value) = serde_json::from_str::<Assessment>(text) else {
             return String::new();
         };
-        if self.room_secret_observations.protects_bytes(room) {
+        // A kernel-observed protected step fences the verdict even before any value is inserted.
+        let fact = self
+            .private_assessment_dispatch
+            .protected_facts
+            .peek(room, agent);
+        if fact.is_some() || self.room_secret_observations.protects_bytes(room) {
             let live = if matches!(value, Assessment::Waiting { .. }) {
                 let task = self
                     .durable_state_store
@@ -186,7 +202,6 @@ impl KernelRuntimeOwnedState {
                 Vec::new()
             };
             let facts = &self.private_assessment_dispatch.protected_facts;
-            let fact = facts.peek(room, agent);
             if !fence_private_assessment(&mut value, &live, fact) {
                 return String::new();
             }

@@ -566,9 +566,9 @@ fn public_output_survives_a_vault_fill() {
         "logged in, all done"
     );
     let protect = super::super::agent_process_output::room_protector(store, "room".into());
-    assert_eq!(protect("ready".into()), Some("ready".into()));
+    assert_eq!(protect.scrub("ready".into()), Some("ready".into()));
     assert_eq!(
-        protect("pw synthetic-only ok".into()),
+        protect.scrub("pw synthetic-only ok".into()),
         Some("pw [redacted] ok".into())
     );
 }
@@ -702,7 +702,7 @@ fn escapes_cannot_hide_a_value_from_the_filter() {
     }
     let process = super::super::agent_process_output::room_protector(store, "room".into());
     assert_eq!(
-        process("a\x1bsynthetic-only".into()),
+        process.scrub("a\x1bsynthetic-only".into()),
         Some("a\x1b[redacted]".into())
     );
 }
