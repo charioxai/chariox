@@ -113,6 +113,7 @@ def public_selection(connection,processes,tree,accessibility,selection,values):
     if identity is None or identity[1] is None or not tree.get('available') or tree.get('traversed') is not True:return None
     process=next((p for p in processes if p['pid']==identity[1]),None)
     if not process or process.get('browser') or not accessibility.alive(process):return None
+    if any(node.get('pid')==identity[1] and node.get('browser') for node in tree.get('nodes',[])):return None
     fingerprint,data=selection_snapshot(values,selection.lower())
     if data is None:return None
     source=(identity[0],identity[1],process['started'])
