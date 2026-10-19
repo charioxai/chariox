@@ -62,7 +62,12 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   const viewport=await measure();
   const geometry=visiblePageGeometry(window,viewport);
   host.timing.event?.('native_visible_page_geometry',{client_width:viewport.clientWidth,client_height:viewport.clientHeight,crop_width:geometry.width,crop_height:geometry.height,scale:window.scale});
-  const alive=()=>!differs&&host.browser===browser&&host.protection===policy&&!policy.unknown&&host.generation===generation&&window.isCurrent()&&documentCurrent()&&(!viewportGuard||viewportGuard()&&browser.viewportByTarget?.get(tab.target_id)===metrics);
+  // Diagnostics only: the first condition that retired this binding, named once.
+  let named=false;
+  const why=()=>differs?'layout_differs':host.browser!==browser?'browser':host.protection!==policy||policy.unknown?'protection':host.generation!==generation?'generation':!window.isCurrent()?'window':!documentCurrent()?(host.tabs.get(tab.tab_id)?.target_id!==tab.target_id?'tab':frameProof?(host.browser.currentPageFrame?.(tab.target_id)!==frameProof?'frame_record':'loader'):'document_id'):viewportGuard&&!viewportGuard()?'guard':'metrics';
+  const name=()=>{if(!named){named=true;host.timing?.(`native_lease_dead ${why()}`,performance.timeOrigin+performance.now());}return false;};
+  const aliveNow=()=>!differs&&host.browser===browser&&host.protection===policy&&!policy.unknown&&host.generation===generation&&window.isCurrent()&&documentCurrent()&&(!viewportGuard||viewportGuard()&&browser.viewportByTarget?.get(tab.target_id)===metrics);
+  const alive=()=>aliveNow()||name();
   const current=async()=>alive()&&typeof window.isPageCurrent==='function'&&await window.isPageCurrent(tab.target_id)&&(viewportGuard?viewportGuard():JSON.stringify(await measure())===JSON.stringify(viewport))&&alive();
   if(!await current())refuse();
   // Publication reuses the layout read while a page-side observer proves it current. A native-state guard already answers
