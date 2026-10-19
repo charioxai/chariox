@@ -26,23 +26,34 @@ export class WindowPageCapture extends NativeWindowRegionCapture {
  }
  onCdp(message){if(message.method==='Chariox.browserDisconnected')this.fence();}
  protection(){
-  const host=this.host,scale=this.scale,{pageLeft,pageTop}=this.region;let inner=null,innerTarget=null;
+  const host=this.host,scale=this.scale,{pageLeft,pageTop}=this.region;let inner=null,innerTarget=null,revision=0;
+  const front=async()=>{const target=await host.tabGroups?.active?.().catch(()=>null);return {target,tab:[...host.tabs.values()].find(t=>t.target_id===target)};};
+  // With a fill target the front Tab's page session measures it (the same fence as a page region). That fence
+  // is taken here, before the readback it will judge: a fence made after the readback would refuse it forever.
+  const prepare=async()=>{
+   if(!filled(host)){inner=innerTarget=null;return;}
+   const {target,tab}=await front();
+   if(!tab)return;
+   if(innerTarget!==target){
+    const {connection,sessionId}=await host.browser.resolvePageTarget(target);
+    inner=regionProtection({connection,sessionId,policy:host.protection,browser:host.browser,tab,scale},pageLeft,pageTop);innerTarget=target;
+   }
+   if(!inner.guard)await inner.refresh();
+  };
   return {guard:null,beforeAt:-Infinity,
-   async refresh(){this.guard={};this.beforeAt=performance.timeOrigin+performance.now();},
-   retire(){this.guard=null;inner?.retire();inner=innerTarget=null;},
+   async refresh(){
+    const seen=revision;await prepare();
+    if(seen!==revision)throw Error('MP-11: native window fence retired');
+    this.guard={};this.beforeAt=performance.timeOrigin+performance.now();
+   },
+   retire(){revision++;this.guard=null;inner?.retire();inner=innerTarget=null;},
    tracker:()=>({targets:filled(host)}),
-   // Without a fill target nothing is measured. With one, the front Tab's page session measures it (the same
-   // fence as a page region) and a readback older than that fence is retried.
+   // Without a fill target nothing is measured; a readback older than a fence is retried.
    regions:async function(raw){
     if(!this.guard||raw.captured_ms<this.beforeAt)throw retry();
     if(!filled(host)){inner=innerTarget=null;return [];}
-    const target=await host.tabGroups?.active?.().catch(()=>null),tab=[...host.tabs.values()].find(t=>t.target_id===target);
-    if(!tab)throw retry();
-    if(innerTarget!==target){
-     const {connection,sessionId}=await host.browser.resolvePageTarget(target);
-     inner=regionProtection({connection,sessionId,policy:host.protection,browser:host.browser,tab,scale},pageLeft,pageTop);innerTarget=target;
-    }
-    if(!inner.guard)await inner.refresh();
+    const {target}=await front();
+    if(!inner||innerTarget!==target)throw retry();
     return inner.regions(raw);
    }};
  }

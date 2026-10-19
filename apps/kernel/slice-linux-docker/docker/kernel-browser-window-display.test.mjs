@@ -74,12 +74,19 @@ test('MP-11 without a fill target no page is asked for masks',async()=>{
  assert.equal(f.calls.length,0);
 });
 test('MP-11 a readback older than the fence is retried, and a fill target needs the front Tab\'s page',async()=>{
- const {f,regions}=protection({fills:1});await regions.refresh();
- await assert.rejects(regions.regions(frame(0)),{code:'fill_capture_retry'});
- assert.equal(regions.tracker().targets,true);
- f.tabs.clear();
- await assert.rejects(regions.regions(frame(performance.timeOrigin+performance.now()+1)),{code:'fill_capture_retry'},'no front Tab: withhold, never publish unmasked');
- assert.equal(f.calls.includes('page_session'),false);
+ const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
+ const measure=NativeRegionProtection.prototype.measure;NativeRegionProtection.prototype.measure=async()=>[];
+ try{
+  const {f,regions}=protection({fills:1});await regions.refresh();
+  await assert.rejects(regions.regions(frame(0)),{code:'fill_capture_retry'});
+  assert.equal(regions.tracker().targets,true);
+  assert.deepEqual(await regions.regions(frame(performance.timeOrigin+performance.now()+1)),[],'fenced before the readback: admitted');
+  assert.equal(f.calls.includes('page_session'),true);
+  f.switchTo('target-b');
+  await assert.rejects(regions.regions(frame(performance.timeOrigin+performance.now()+1)),{code:'fill_capture_retry'},'another front Tab: refence first');
+  f.tabs.clear();regions.retire();await regions.refresh();
+  await assert.rejects(regions.regions(frame(performance.timeOrigin+performance.now()+1)),{code:'fill_capture_retry'},'no front Tab: withhold, never publish unmasked');
+ }finally{NativeRegionProtection.prototype.measure=measure;}
 });
 test('MP-11 the real capture class derives the page crop from the window epoch alone',()=>{
  const f=fixture(),capture=new WindowPageCapture({host:f.host,window:{id:42,width:2560,height:1774},rect:{left:0,top:174,width:2560,height:1600},contentRect:{left:0,top:174,width:2560,height:1600},contentHeight:1600,
@@ -97,4 +104,21 @@ test('MP-11 an odd page rect still builds the real capture (the kernel window ne
   isCurrent:()=>true,validateCurrent:async()=>true,occluded:async()=>false,tab:{tab_id:'t',document_id:'d'},scale:2,connection:{isOpen:()=>true,subscribe:()=>()=>{}},
   display:{},pid:42,policy:f.host.protection,browser:f.host.browser,allowed:()=>true,timing:()=>{}});
  assert.equal(capture.region.css_width,1279);assert.equal(capture.region.css_height,799);assert.equal(capture.surface,'page');
+});
+
+// Review #1048 @c14600365 P1: a fill target (even on another Tab) must never keep the display from opening.
+test('MP-11 a registered fill target does not stop the window display: the fence precedes the readback through the real retry path',async()=>{
+ const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
+ const measure=NativeRegionProtection.prototype.measure;let measures=0;NativeRegionProtection.prototype.measure=async()=>{measures++;return [[4,4,8,8]];};
+ try{
+  const f=fixture({fills:1}),window={xid:42,bounds:{width:2560,height:1774},page_rect:{left:0,top:174,width:2560,height:1600}};
+  const capture=new WindowPageCapture({host:f.host,...windowCaptureArgs(window),isCurrent:()=>true,validateCurrent:async()=>true,occluded:async()=>false,
+   tab:{tab_id:'t',document_id:'d'},scale:2,connection:{isOpen:()=>true,subscribe:()=>()=>{}},display:{},pid:42,policy:f.host.protection,browser:f.host.browser,allowed:()=>true,timing:()=>{}});
+  capture.valid=()=>!capture.closed;capture.attested=true;capture.regions=capture.protection();
+  const raw=async serial=>{await new Promise(r=>setTimeout(r,3));return {width:4,height:4,length:64,pixels:Buffer.alloc(64,255),serial,format:'bgr0',captured_ms:performance.timeOrigin+performance.now()};};
+  let published=null;
+  for(let serial=1;serial<=3&&!published;serial++){capture.pending=await raw(serial);await capture.publish();published=capture.sample();}
+  assert.ok(published,'a later readback is admitted with the fill target masked');
+  assert.ok(measures>=2,'the fence was measured before the readback and again after it');
+ }finally{NativeRegionProtection.prototype.measure=measure;}
 });
