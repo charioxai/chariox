@@ -323,3 +323,34 @@ test('MP-11 visible-page subscribe closes the layout observer when the display i
  for(let n=0;n<20;n++)await new Promise(resolve=>setImmediate(resolve));
  assert.equal(listeners,0);assert.ok(sent.includes('Runtime.removeBinding'));assert.equal(host.displays.size,0);
 });
+
+// MP-08/MP-10 (BROWSER-UX-05): a new Tab swaps about:blank for its real document while the first admission runs;
+// the admission retries in the kernel instead of leaving the viewer to retry after its own delay.
+const swapHost=(swaps)=>{
+ let index=0;const frames=[0,1,2,3].map(n=>({sessionId:'s',frame:{loaderId:`d${n}`}}));
+ const connection={send:async()=>{if(index<swaps)index++;return {cssLayoutViewport:{clientWidth:1265,clientHeight:800},cssVisualViewport:{zoom:1,scale:1}};}};
+ for(const f of frames)f.connection=connection;
+ const window={...binding(),window_generation:2,browser_generation:1,pid:42,isPageCurrent:async()=>true};
+ const host={generation:1,protection:{unknown:false},tabs:new Map(),displays:new Map(),reads:0,
+  mirrorTarget:async()=>{host.reads++;return {tab_id:'t',target_id:'target',document_id:frames[index].frame.loaderId};},
+  chromium:{display:{},scale:1,browserPid:42},chromeWindows:{current:()=>({tabbed:window})},
+  browser:{currentPageFrame:()=>frames[index],resolvePageTarget:async()=>{throw Error('unused')}},timing:()=>{},armDisplayExpiry:()=>{}};
+ host.tabs.set('t',{tab_id:'t',target_id:'target'});
+ Object.defineProperty(host.tabs.get('t'),'document_id',{get:()=>frames[index].frame.loaderId});
+ return host;
+};
+class SwapCapture {constructor(options){this.options=options;this.region=visiblePageGeometry(options.window,options.viewport)}async start(){return this}async close(){}}
+const swapCommand={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8000000,device_scale_factor:1};
+test('MP-08/MP-10 an admission that races the new document admits the new document in the kernel',async()=>{
+ const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const host=swapHost(1),result=await subscribeVisiblePage(host,swapCommand,'terminal:a',undefined,{Capture:SwapCapture});
+ assert.equal(result.document_id,'d1');assert.equal(host.reads,2);await host.displays.get(result.subscription_id).close();
+});
+test('MP-08/MP-10 the kernel retry is bounded and only follows a moved document',async()=>{
+ const {subscribeVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const restless=swapHost(9);await assert.rejects(subscribeVisiblePage(restless,swapCommand,'terminal:a',undefined,{Capture:SwapCapture}),{code:'user_domain_stale_reference'});
+ assert.equal(restless.reads,3);assert.equal(restless.displays.size,0);
+ const still=swapHost(0);still.chromeWindows.current().tabbed.isPageCurrent=async()=>false;
+ await assert.rejects(subscribeVisiblePage(still,swapCommand,'terminal:a',undefined,{Capture:SwapCapture}),{code:'user_domain_stale_reference'});
+ assert.equal(still.reads,1,'a refusal with the same document is not retried');
+});
