@@ -9,6 +9,10 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+/// Parser bound for the stored manifest plus its per-file evidence inventory, which grows with the
+/// workspace (about 100 bytes per file); sized for several hundred thousand files.
+const MAX_STORED_ENVIRONMENT_BYTES: u64 = 64 * 1024 * 1024;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectEnvironmentEvidence {
@@ -192,10 +196,10 @@ impl ProjectEnvironmentStore {
             ));
         }
         let mut bytes = Vec::new();
-        file.take(2 * 1024 * 1024 + 1)
+        file.take(MAX_STORED_ENVIRONMENT_BYTES + 1)
             .read_to_end(&mut bytes)
             .map_err(|_| environment_error("manifest read failed"))?;
-        if bytes.len() > 2 * 1024 * 1024 {
+        if bytes.len() as u64 > MAX_STORED_ENVIRONMENT_BYTES {
             return Err(environment_error("manifest exceeds bounds"));
         }
         let state: StoredProjectEnvironment = serde_json::from_slice(&bytes)
@@ -228,7 +232,7 @@ impl ProjectEnvironmentStore {
         }
         let bytes = serde_json::to_vec(state)
             .map_err(|_| environment_error("environment manifest encoding failed"))?;
-        if bytes.len() > 2 * 1024 * 1024 {
+        if bytes.len() as u64 > MAX_STORED_ENVIRONMENT_BYTES {
             return Err(environment_error("manifest exceeds bounds"));
         }
         let temporary = self.root.join(format!(".tmp-{}", rand::random::<u64>()));

@@ -291,6 +291,39 @@ fn mp08_resolver_rejects_symlink_fifo_and_ambiguous_assignments() {
 }
 
 #[test]
+fn mp08_store_persists_the_evidence_of_a_workspace_with_tens_of_thousands_of_files() {
+    let fixture = Fixture::new();
+    let mut paths = Vec::new();
+    for directory in 0..45 {
+        let relative = format!("d{directory}");
+        std::fs::create_dir(fixture.0.join(&relative)).unwrap();
+        for file in 0..1_000 {
+            let relative = format!("{relative}/file-{file}.txt");
+            std::fs::write(fixture.0.join(&relative), relative.as_bytes()).unwrap();
+            paths.push(relative);
+        }
+    }
+    let evidence = ProjectEnvironmentEvidence::capture(
+        &fixture.workspaces(),
+        &BTreeMap::from([("web".to_string(), paths)]),
+    )
+    .unwrap();
+    let mut manifest = fixture_manifest(vec![]);
+    manifest.evidence_digest = evidence.digest();
+    let state = StoredProjectEnvironment {
+        source: None,
+        manifest,
+        evidence,
+        reported_missing: Default::default(),
+        reviewed_manifest: None,
+        last_review: None,
+    };
+    let store = ProjectEnvironmentStore::new(&fixture.0.join("private"));
+    store.save(&state).unwrap();
+    assert_eq!(store.load("fixture-project").unwrap(), Some(state));
+}
+
+#[test]
 fn mp08_evidence_refresh_is_incremental_and_kernel_copies_are_independent() {
     let source = Fixture::new();
     let target = Fixture::new();
