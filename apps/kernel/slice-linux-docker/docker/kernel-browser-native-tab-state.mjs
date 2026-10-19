@@ -22,12 +22,13 @@ export class NativeTabState {
   this.ready=true;
  }
  onCdp(message){
-  if(message?.method==='Page.frameResized'){this.invalidateGeometry();return;}
-  if(message?.method==='Chariox.browserDisconnected'){this.detach();return;}
-  if(message?.method==='Target.detachedFromTarget'&&message.params?.sessionId===this.session){this.detach();return;}
+  // Diagnostics: the CDP method that last retired this state.
+  if(message?.method==='Page.frameResized'){this.cause=message.method;this.invalidateGeometry();return;}
+  if(message?.method==='Chariox.browserDisconnected'){this.cause=message.method;this.detach();return;}
+  if(message?.method==='Target.detachedFromTarget'&&message.params?.sessionId===this.session){this.cause=message.method;this.detach();return;}
   if(message?.sessionId!==this.session||!this.session)return;
-  if(['Runtime.executionContextsCleared','Runtime.executionContextDestroyed','Inspector.detached'].includes(message.method)){this.detach();return;}
-  if(message.method==='Runtime.bindingCalled'&&message.params?.name===nativeWindowChangedBinding)this.invalidate();
+  if(['Runtime.executionContextsCleared','Runtime.executionContextDestroyed','Inspector.detached'].includes(message.method)){this.cause=message.method;this.detach();return;}
+  if(message.method==='Runtime.bindingCalled'&&message.params?.name===nativeWindowChangedBinding){this.cause=message.method;this.invalidate();}
  }
  usable(){return !this.closed&&this.ready&&!!this.session&&this.connection.isOpen?.()!==false;}
  remember(kind,value,epoch){
