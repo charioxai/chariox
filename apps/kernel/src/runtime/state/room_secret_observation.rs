@@ -54,6 +54,7 @@ struct Protection {
     recovered_artifacts: bool,
     history_before_ms: u64,
     history_boundary_bytes: Option<usize>,
+    filtered_streams: bool,
 }
 
 impl Protection {
@@ -174,6 +175,7 @@ impl RoomSecretObservations {
             unknown,
             recovered_artifacts: unknown,
             history_before_ms: if unknown { self.epoch } else { 0 },
+            filtered_streams: !unknown,
             ..Default::default()
         })
     }

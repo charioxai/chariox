@@ -613,6 +613,47 @@ fn held_secret_prefix_is_flushed_when_the_message_ends() {
 }
 
 #[test]
+fn filtered_room_history_survives_restart_but_older_registries_stay_withheld() {
+    let key = crate::transport::relay_crypto::generate_private_key_base64();
+    let entry = || {
+        crate::history::SessionHistoryEntry::provider_output(
+            "room",
+            "run",
+            None,
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            None,
+            "public answer",
+        )
+    };
+    for filtered in [true, false] {
+        let root = TestRoot::new();
+        let path = root.path().join("observations");
+        let store = RoomSecretObservations::new(path.clone(), BTreeSet::new()).with_identity(&key);
+        store.register("room", "synthetic-only").unwrap();
+        if !filtered {
+            // A registry written before provider streams were filtered.
+            let mut rooms = store.rooms.lock().unwrap();
+            let protection = rooms.get_mut("room").unwrap();
+            protection.filtered_streams = false;
+            store.persist_registry("room", protection).unwrap();
+        }
+        let entry = entry();
+        let mut restarted = RoomSecretObservations::new(path, BTreeSet::from(["room".to_string()]))
+            .with_identity(&key);
+        restarted.epoch = entry.timestamp_ms + 60_000;
+        let text = restarted.protect_transcript_entry(entry).text;
+        assert_eq!(
+            text,
+            if filtered {
+                "public answer"
+            } else {
+                "[recovered sensitive Room history withheld]"
+            }
+        );
+    }
+}
+
+#[test]
 fn retired_and_unknown_values_keep_their_scope() {
     let key = crate::transport::relay_crypto::generate_private_key_base64();
     let root = TestRoot::new();
