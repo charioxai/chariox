@@ -665,44 +665,6 @@ for(const dpr of [1,2]) {
    await evaluate("document.querySelector('#area').remove();document.querySelector('#editor').remove()");assert.deepEqual(await collect(),[]);
    await connection.send('Page.navigate',{url:'about:blank'},sessionId);assert.deepEqual(await collect(),[],'navigation retires targets');assert.equal(browser.fillTargets.size,0,'MP-11 retired targets leave the tracking registry');
  }));
- test(`MP-08/MP-11 DPR${dpr}: a field swapped for a same-value element keeps the mask for model pixels; decoys and edits do not`,()=>setup(dpr,async({fill,collect,capture,evaluate})=>{
-   const swap=(text,type='text')=>evaluate(`(()=>{const old=document.querySelector('#password,#swap');const next=document.createElement('input');next.id='swap';next.type=${JSON.stringify(type)};next.style.cssText=old.style.cssText;next.value=${JSON.stringify(text)};old.replaceWith(next);})()`);
-   await fill('#password');assert.deepEqual(await collect(),[],'password dots stay visible');
-   await swap(value);
-   assert.equal((await collect()).length,1,'the mask follows the filled field into its replacement');
-   const frame=await capture('swapped');const pixel=(x,y)=>[...frame.pixels.subarray(((y*dpr)*frame.width+x*dpr)*4,((y*dpr)*frame.width+x*dpr)*4+3)];
-   assert.deepEqual(pixel(100,170),[0,0,0],'the replacement field is covered in the model capture');assert.deepEqual(pixel(400,400),[255,255,255]);
-   await swap(value,'password');assert.deepEqual(await collect(),[],'hidden again: dots only');
-   await swap(value);assert.equal((await collect()).length,1,'later swaps are followed too');
-   await evaluate("(()=>{const decoy=document.createElement('input');decoy.style.cssText='position:absolute;left:700px;top:600px;width:200px;height:30px';decoy.value='MP11-disposable-fill-value';document.body.append(decoy);})()");
-   assert.equal((await collect()).length,1,'a same-value element elsewhere is echo, not the target');
-   await swap('something the user typed');assert.deepEqual(await collect(),[],'a replacement with another value is not the target');
-   await evaluate("document.querySelector('#swap').value='MP11-disposable-fill-value'");assert.deepEqual(await collect(),[],'a retired target never resurrects');
- }));
- for(const ambiguous of [false,true])
- test(`MP-08/MP-11 DPR${dpr}: same-form same-value replacement ${ambiguous?'ambiguity withholds model pixels':'uses position before DOM order'}`,()=>setup(dpr,async({fill,collect,capture,evaluate})=>{
-   await evaluate(`(()=>{const target=document.querySelector('#password');const form=document.createElement('form');target.before(form);form.append(target);const earlier=target.cloneNode();earlier.id='earlier';earlier.style.top='${ambiguous?150:30}px';earlier.value='MP11-disposable-fill-value';form.prepend(earlier);})()`);
-   await fill('#password');assert.deepEqual(await collect(),[]);
-   await evaluate("(()=>{const old=document.querySelector('#password');const next=old.cloneNode();next.id='replacement';next.type='text';next.value=old.value;old.replaceWith(next);})()");
-   if(!ambiguous)await evaluate("document.querySelector('#replacement').style.width='240px'");
-   if(ambiguous) {
-     await assert.rejects(collect,/replacement.*ambiguous/,'identical candidates cannot choose the earlier password field');
-     await assert.rejects(capture.bind(null,'ambiguous'),/fill target capture unavailable/,'model capture remains withheld');
-     await evaluate("document.querySelector('#earlier').remove()");
-   }
-   assert.equal((await collect()).length,1,'replacement at the old field position remains masked');
-   const frame=await capture('same-form-'+ambiguous);
-   const offset=((170*dpr)*frame.width+100*dpr)*4;
-   assert.deepEqual([...frame.pixels.subarray(offset,offset+3)],[0,0,0]);
-   assert.equal((await collect()).length,1,'later measurements must not follow the preceding password');
- }));
- test(`MP-08/MP-11 DPR${dpr}: a swap landing between the snapshot and the field read does not retire the target`,()=>setup(dpr,async({browser,connection,fill,collect,evaluate})=>{
-   await fill('#password');assert.deepEqual(await collect(),[]);
-   const send=connection.send.bind(connection);let armed=true;
-   connection.send=async(method,...args)=>{const result=await send(method,...args);if(armed&&method==='DOMSnapshot.captureSnapshot'){armed=false;await evaluate("(()=>{const old=document.querySelector('#password');const next=document.createElement('input');next.type='text';next.style.cssText=old.style.cssText;next.value=old.value;old.replaceWith(next);})()");}return result;};
-   await collect().catch(()=>{});
-   assert.equal((await collect()).length,1,'the next measurement follows the swapped field');
- }));
  test(`MP-08/MP-11 DPR${dpr}: capture cannot retire the fill before insertion completes`,()=>setup(dpr,async({browser,connection,fill,collect})=>{
    const send=connection.send.bind(connection);let intercepted=false;
    connection.send=async(method,params,session)=>{

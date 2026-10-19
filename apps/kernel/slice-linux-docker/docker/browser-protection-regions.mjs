@@ -9,30 +9,6 @@ const retired = new WeakMap();
 // still hold a field read from before completion across a CDP release await.
 const filling = new WeakMap();
 const fillBindings = new WeakMap();
-// MP-08/MP-11 (coordinator default, Miguel may veto): a site that swaps the filled input for a new element holding the same
-// value (show/hide toggles) keeps the target. The successor is the input/textarea in the target's own document that holds the
-// same value (kernel-side hash) and shares the old field's form or its position. Model-visible pixels only; no echo scanning.
-const anchors = new WeakMap();
-const followed = new WeakMap();
-const names = (snapshot,doc,index) => snapshot.strings[doc.nodes.nodeName[index]]?.toUpperCase();
-function fieldAnchor(snapshot,doc,backendNodeId) {
-  const index=doc.nodes.backendNodeId.indexOf(backendNodeId);
-  if(index<0)return null;
-  let form=null;
-  for(let up=doc.nodes.parentIndex[index],steps=0;up>=0&&steps<doc.nodes.parentIndex.length;up=doc.nodes.parentIndex[up],steps++)if(names(snapshot,doc,up)==='FORM'){form=doc.nodes.backendNodeId[up];break;}
-  const layout=doc.layout?.nodeIndex?.indexOf(index);
-  return {form,bounds:layout>=0?doc.layout.bounds?.[layout]??null:null};
-}
-const overlaps = (a,b) => Boolean(a&&b)&&a[0]<b[0]+b[2]&&b[0]<a[0]+a[2]&&a[1]<b[1]+b[3]&&b[1]<a[1]+a[3];
-function successors(snapshot,doc,anchor,except) {
-  const ids=[];
-  doc.nodes.backendNodeId.forEach((id,index)=>{
-    if(id===except||!['INPUT','TEXTAREA'].includes(names(snapshot,doc,index)))return;
-    const candidate=fieldAnchor(snapshot,doc,id);
-    if(candidate&&(anchor.form!==null&&candidate.form===anchor.form||overlaps(candidate.bounds,anchor.bounds)))ids.push(id);
-  });
-  return ids;
-}
 const fillKey = target => JSON.stringify([target.target_id,target.document_id,target.node_ref]);
 export function pruneBrowserFillTargets(browser,connection) {
   const dead=retired.get(connection);
@@ -81,7 +57,6 @@ export async function recordBrowserFill(connection, options, value, revision) {
   retired.get(connection)?.delete(fillKey(target));
   if(!filling.has(connection))filling.set(connection,new Map());
   fillBindings.set(target,{connection,sessionId,backendNodeId});
-  anchors.set(target,fieldAnchor(snapshot,document,backendNodeId));
   filling.get(connection).set(fillKey(target),{target,pending:true});return target;
 }
 export async function finishBrowserFill(connection,target) {
@@ -238,30 +213,9 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
       if(!candidates.length)continue;
       const snapshot=await connection.send('DOMSnapshot.captureSnapshot',{computedStyles:[]},entry.sessionId);
       for(const target of candidates) {
-        const key=fillKey(target);
-        let backendNodeId=followed.get(target)??targetNode(target,entry);
-        let raw=snapshot.documents?.find(doc=>doc.nodes?.backendNodeId?.includes(backendNodeId));
-        if(!raw) {
-          // The field left the document: look for its same-value successor before the target retires.
-          const anchor=anchors.get(target),home=anchor&&snapshot.documents?.find(doc=>snapshot.strings[doc.frameId]===target.frame_id);
-          const matches=[];
-          for(const id of home?successors(snapshot,home,anchor,backendNodeId):[]) {
-            const state=await fieldState(connection,entry,{frameId:target.frame_id},id);
-            if(state.exists&&state.editable&&state.value&&digest(state.value)===target.value_hash)matches.push(id);
-          }
-          // Same-form confirmation fields may share the value. DOM order is
-          // not replacement identity: prefer the unique original position.
-          // Show/hide controls can resize a replacement at the same position.
-          const positioned=matches.filter(id=>{
-            const bounds=fieldAnchor(snapshot,home,id)?.bounds;
-            return bounds&&anchor.bounds&&bounds.slice(0,2).every((v,i)=>Math.abs(v-anchor.bounds[i])<1);
-          });
-          if(matches.length>1&&positioned.length!==1)throw Error('MP-11: fill replacement identity ambiguous');
-          const replacement=matches.length===1?matches[0]:positioned[0];
-          if(replacement!==undefined){followed.set(target,backendNodeId=replacement);raw=home;}
-          if(!raw)continue;
-        }
-        anchors.set(target,fieldAnchor(snapshot,raw,backendNodeId)??anchors.get(target));
+        const key=fillKey(target),backendNodeId=targetNode(target,entry);
+        const raw=snapshot.documents?.find(doc=>doc.nodes?.backendNodeId?.includes(backendNodeId));
+        if(!raw)continue;
         const frameId=snapshot.strings[raw.frameId],frame=visit(entry.tree,frameId);
         if(!frame || target.frame_id&&target.frame_id!==frameId || target.frame_document_id&&target.frame_document_id!==frame.loaderId)continue;
         seen.add(key);
@@ -269,9 +223,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         // Actionability may wait while an editor is temporarily disabled. Its
         // pending fill still owns protection; refuse pixels until it is measurable.
         if(inFlight&&(!state.exists||!state.editable))throw Error('MP-11: pending fill target unavailable');
-        // A field detached after this snapshot (a swap in flight) is not retired on a stale view: measure again from a fresh one.
-        if(!inFlight&&!state.exists)throw Error('MP-11: fill changed during protection measurement');
-        if(!inFlight&&(state.changed||!state.editable||!state.value || digest(state.value)!==target.value_hash)) {dead.add(key);continue;}
+        if(!inFlight&&(!state.exists||state.changed||!state.editable||!state.value || digest(state.value)!==target.value_hash)) {dead.add(key);continue;}
         if(state.password)continue; // Rechecked even for a previously plain field.
         // MP-08/MP-11: DOMSnapshot includes retained non-rendered fields. Only
         // confirmed absence of layout for the entire field subtree permits

@@ -68,36 +68,3 @@ test('MP-11 no recorded fill targets means no generic password or echo scan', as
   assert.deepEqual((await measurePageProtection(connection,'s','t',{targets:[],values:['registered']})).regions,[]);
   assert(calls.every(m=>!m.startsWith('DOM.')));
 });
-
-// MP-11: a show/hide replacement may resize while retaining its position.
-test('MP-11 resized replacement at the unique original position stays measurable', async()=>{
- const {recordBrowserFill,finishBrowserFill,measurePageProtection}=await import('./browser-protection-regions.mjs');
- const value='synthetic-resize-value';let phase='before';
- const tree={frame:{id:'f',loaderId:'l',url:'https://example.test/'}};
- const connection={async send(method,params={}) {
-  if(method==='Page.getFrameTree')return {frameTree:tree};
-  if(method==='Page.createIsolatedWorld')return {executionContextId:1};
-  if(method==='Page.getLayoutMetrics')return {cssVisualViewport:{zoom:1}};
-  if(method==='Target.getTargets')return {targetInfos:[]};
-  if(method==='Runtime.evaluate')return {result:{value:{visible:true,dpr:1,width:1280,height:800}}};
-  if(method==='DOMSnapshot.captureSnapshot')return {strings:['f','FORM','INPUT'],documents:[{
-   frameId:0,nodes:{backendNodeId:phase==='swapped'?[1,3,4]:[1,2,3],nodeName:[1,2,2],parentIndex:[-1,0,0]},
-   layout:{nodeIndex:[1,2],bounds:phase==='swapped'?[[80,30,220,40],[80,150,240,40]]:[[80,150,220,40],[80,30,220,40]]}
-  }]};
-  if(method==='DOM.resolveNode')return {object:{objectId:String(params.backendNodeId)}};
-  if(method==='Runtime.releaseObject')return {};
-  if(method==='Runtime.callFunctionOn') {
-   if(!params.functionDeclaration.includes('return {exists:'))return {};
-   const id=Number(params.objectId);
-   return {result:{value:{exists:!(id===2&&phase==='swapped'),editable:true,unprovedPaint:false,contenteditable:false,changed:false,password:id!==4,textShadow:'none',value:phase==='before'&&id===2?'':value}}};
-  }
-  if(method==='DOM.getBoxModel'){
-   assert.equal(params.backendNodeId,4,'the preceding password field is not the replacement');
-   return {model:{border:[80,150,320,150,320,190,80,190]}};
-  }
-  assert.fail('unexpected CDP call '+method);
- }};
- const target=await recordBrowserFill(connection,{sessionId:'s',targetId:'t',documentId:'l',nodeRef:'backend:2',browserGeneration:1},value,1);
- phase='filled';await finishBrowserFill(connection,target);phase='swapped';
- assert.deepEqual((await measurePageProtection(connection,'s','t',{targets:[target]})).regions,[[80,150,240,40]]);
-});
