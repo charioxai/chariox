@@ -3653,8 +3653,8 @@ error strings and client rendering, with no new serialized fields or variants.
 ### Room terminals — local 562 / relay peer 170
 
 A Room has kernel-owned terminals: real PTYs running the user's login shell
-(`$SHELL -l -i`, else the account's shell) in the Room's project folder, or a
-given program (argv, no shell). One request, `RoomTerminal { session_id,
+(`$SHELL -l -i`, else the account's shell; bash instead of a bare `sh` account shell,
+as in a slice) in the Room's project folder, or a given program (argv, no shell). One request, `RoomTerminal { session_id,
 acting_agent?, operation }`, answers with `RoomTerminal { result }`.
 
 Operations: `open` (cols, rows, title?, command?), `list`, `snapshot`
@@ -3665,7 +3665,9 @@ Operations: `open` (cols, rows, title?, command?), `list`, `snapshot`
 below the provider tool limit; on timeout `fired` is null and the program is
 still running) and `close`.
 
-- Only the Room's owner may send it. Invited members get
+- Only the Room's owner may send it. A Room made before Cloud enrollment (owner
+  `local`) stays usable by the enrolled terminal. `host_agent` and `acting_agent`
+  must belong to the request's Room. Invited members get
   `OwnershipAccessDenied`; people outside the Room never pass membership.
 - `acting_agent` names a Room agent to type as (the runtime tool bridge sets
   it). Without it the actor is the user.
@@ -3686,6 +3688,19 @@ still running) and `close`.
   requests about it. A `list` without `host_agent` or `acting_agent` is Room-wide:
   this kernel's terminals plus those of every worker the Room's agents are leased
   to; a worker that cannot be reached fails the list instead of hiding its tabs.
+- `wait` and `finished` use the shell's own report. For bash and zsh the kernel hands
+  the shell prompt hooks through its environment (no rc file is edited): OSC 133 `C`
+  before a command line runs and `D;<status>` after it, so a builtin or an instant
+  command is reported finished with its exit code. Nested shells do not repeat the
+  marks. A shell that cannot report (any other shell, a profile that replaces the
+  hooks) falls back to sampling the foreground process group, which reports no exit code.
+- An agent uses the terminals through the runtime tools `chariox.terminal_open`,
+  `_list`, `_send` (returns the `after_offset` to pass to `_wait`), `_read`, `_wait`
+  and `_close`, typed as the calling agent. Typing follows the agent's own permission
+  level in the Room: `yolo` asks nothing; `required` asks per `open` with a command and
+  per `_send` through the Room's `RuntimeInteraction`. Terminal output is untrusted data.
+- Tearing down a leased agent's backing Room (destroying the lease, expiry) ends its
+  terminals.
 - A terminal survives client disconnects. It ends on close, when its shell or
   command exits, or with its Room. A kernel restart ends it as
   `ended: kernel restarted` and keeps the scrollback.
