@@ -679,6 +679,22 @@ for(const dpr of [1,2]) {
    await swap('something the user typed');assert.deepEqual(await collect(),[],'a replacement with another value is not the target');
    await evaluate("document.querySelector('#swap').value='MP11-disposable-fill-value'");assert.deepEqual(await collect(),[],'a retired target never resurrects');
  }));
+ for(const ambiguous of [false,true])
+ test(`MP-08/MP-11 DPR${dpr}: same-form same-value replacement ${ambiguous?'ambiguity withholds model pixels':'uses position before DOM order'}`,()=>setup(dpr,async({fill,collect,capture,evaluate})=>{
+   await evaluate(`(()=>{const target=document.querySelector('#password');const form=document.createElement('form');target.before(form);form.append(target);const earlier=target.cloneNode();earlier.id='earlier';earlier.style.top='${ambiguous?150:30}px';earlier.value='MP11-disposable-fill-value';form.prepend(earlier);})()`);
+   await fill('#password');assert.deepEqual(await collect(),[]);
+   await evaluate("(()=>{const old=document.querySelector('#password');const next=old.cloneNode();next.id='replacement';next.type='text';next.value=old.value;old.replaceWith(next);})()");
+   if(ambiguous) {
+     await assert.rejects(collect,/replacement.*ambiguous/,'identical candidates cannot choose the earlier password field');
+     await assert.rejects(capture.bind(null,'ambiguous'),/fill target capture unavailable/,'model capture remains withheld');
+     await evaluate("document.querySelector('#earlier').remove()");
+   }
+   assert.equal((await collect()).length,1,'replacement at the old field position remains masked');
+   const frame=await capture('same-form-'+ambiguous);
+   const offset=((170*dpr)*frame.width+100*dpr)*4;
+   assert.deepEqual([...frame.pixels.subarray(offset,offset+3)],[0,0,0]);
+   assert.equal((await collect()).length,1,'later measurements must not follow the preceding password');
+ }));
  test(`MP-08/MP-11 DPR${dpr}: a swap landing between the snapshot and the field read does not retire the target`,()=>setup(dpr,async({browser,connection,fill,collect,evaluate})=>{
    await fill('#password');assert.deepEqual(await collect(),[]);
    const send=connection.send.bind(connection);let armed=true;

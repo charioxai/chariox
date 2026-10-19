@@ -244,10 +244,20 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         if(!raw) {
           // The field left the document: look for its same-value successor before the target retires.
           const anchor=anchors.get(target),home=anchor&&snapshot.documents?.find(doc=>snapshot.strings[doc.frameId]===target.frame_id);
+          const matches=[];
           for(const id of home?successors(snapshot,home,anchor,backendNodeId):[]) {
             const state=await fieldState(connection,entry,{frameId:target.frame_id},id);
-            if(state.exists&&state.editable&&state.value&&digest(state.value)===target.value_hash){followed.set(target,backendNodeId=id);raw=home;break;}
+            if(state.exists&&state.editable&&state.value&&digest(state.value)===target.value_hash)matches.push(id);
           }
+          // Same-form confirmation fields may share the value. DOM order is
+          // not replacement identity: prefer the unique original position.
+          const positioned=matches.filter(id=>{
+            const bounds=fieldAnchor(snapshot,home,id)?.bounds;
+            return bounds&&anchor.bounds&&bounds.every((v,i)=>Math.abs(v-anchor.bounds[i])<1);
+          });
+          if(matches.length>1&&positioned.length!==1)throw Error('MP-11: fill replacement identity ambiguous');
+          const replacement=matches.length===1?matches[0]:positioned[0];
+          if(replacement!==undefined){followed.set(target,backendNodeId=replacement);raw=home;}
           if(!raw)continue;
         }
         anchors.set(target,fieldAnchor(snapshot,raw,backendNodeId)??anchors.get(target));
