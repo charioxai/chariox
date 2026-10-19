@@ -7,7 +7,8 @@ use crate::slice::{
     SliceDisplayEndpointKind,
 };
 use crate::transport::room_shared_display::{
-    RoomDisplayCommand, RoomDisplayResult, RoomDisplayTarget, SealedRoomDisplayFrame,
+    RoomDisplayAudience, RoomDisplayCommand, RoomDisplayResult, RoomDisplayTarget,
+    SealedRoomDisplayFrame,
 };
 #[derive(Clone, Default)]
 pub(super) struct RoomDisplayLeases {
@@ -41,6 +42,25 @@ fn error() -> DaemonError {
     }
 }
 impl KernelRuntimeState {
+    fn room_display_audience(
+        &self,
+        caller: &KernelCaller,
+        session_id: &str,
+    ) -> Result<RoomDisplayAudience, DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        let user = caller.user_id.as_deref().or_else(|| {
+            matches!(
+                caller.caller_kind,
+                crate::runtime::command::KernelCallerKind::LocalClient
+            )
+            .then_some(crate::session::DEFAULT_LOCAL_USER_ID)
+        });
+        Ok(if user == Some(session.owner_user_id()) {
+            RoomDisplayAudience::Owner
+        } else {
+            RoomDisplayAudience::Viewer
+        })
+    }
     pub(crate) fn is_room_display(&self, id: &str) -> bool {
         self.owned
             .room_display_leases
@@ -176,6 +196,7 @@ impl KernelRuntimeState {
                     slice_id: slice.id.clone(),
                     lease_id: id.clone(),
                     viewer_public_key: viewer.into(),
+                    audience: self.room_display_audience(caller, session)?,
                     offer,
                     viewport,
                     target,
@@ -443,6 +464,54 @@ impl KernelRuntimeState {
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn mp11_room_display_home_distinguishes_room_owner_from_invited_human() {
+        let root = crate::test_support::TestWorktree::new("room-display-audiences");
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::ProcessMemory;
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(root.session_request().with_owner_user_id("owner"))
+            .unwrap();
+        let session = session.id().to_string();
+        let state = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            4,
+        )
+        .runtime_state();
+        state
+            .create_session_invite(
+                &session,
+                "invite".into(),
+                "owner".into(),
+                None,
+                None,
+                crate::session::CollaborationLevel::Full,
+            )
+            .unwrap();
+        state
+            .join_session_invite(&session, "invite", "invited".into(), 1)
+            .unwrap();
+        for (user, expected) in [
+            ("owner", RoomDisplayAudience::Owner),
+            ("invited", RoomDisplayAudience::Viewer),
+        ] {
+            let caller = KernelCaller {
+                caller_kind: crate::runtime::command::KernelCallerKind::RemoteClient,
+                user_id: Some(user.into()),
+                client_id: Some(format!("{user}-client")),
+                ..KernelCaller::default()
+            };
+            assert_eq!(
+                state.room_display_audience(&caller, &session).unwrap(),
+                expected,
+                "MP-11 attachment ownership must not imply Room ownership"
+            );
+        }
+        state.shutdown_cleanup().await.unwrap();
+    }
+    #[tokio::test]
     async fn mp11_room_display_worker_rejects_each_foreign_binding_before_controller_start() {
         let root = crate::test_support::TestWorktree::new("room-shared-display-admission");
         let home = crate::config::DaemonConfig::for_tests();
@@ -498,6 +567,7 @@ mod tests {
                     slice,
                     "room-display-00000000000000000000000000000001",
                     home.relay_public_key.clone(),
+                    RoomDisplayAudience::Viewer,
                     RoomDisplayOffer {
                         codecs: vec!["avc1.420033".into()],
                         bitrate: 8000000,

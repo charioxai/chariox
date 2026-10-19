@@ -1130,8 +1130,11 @@ trees and registered private state fail closed. Protection changes retire
 capture and encoder state before acknowledgement. This does not assert that the
 live protection matrix has passed.
 
-Audience: the kernel names the Room owner's own lease `audience: owner`. That
-lease reads the desktop as it is (the person may reveal a password to
+Audience: the home kernel compares the authenticated caller with the Room's
+owner (owning an attachment is not Room ownership), and carries that decision
+in the authenticated worker request. Only the Room owner's own lease gets
+`audience: owner`; invited members retain the masked default. That owner lease
+reads the desktop as it is (the person may reveal a password to
 themselves), needs no protection proof, and keeps painting while protection is
 uncertain. Every other viewer reads the masked source, and so does everything
 the model receives: agent captures are separate protected observations, and the

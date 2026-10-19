@@ -1,5 +1,12 @@
 //! MP-08/MP-10/MP-11: home-bound Room placement of the shared display protocol.
 use serde::{Deserialize, Serialize};
+// MP-11: home derives this from authenticated Room ownership, never the viewer offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RoomDisplayAudience {
+    Owner,
+    Viewer,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum RoomDisplayCommand {
@@ -51,4 +58,61 @@ pub(crate) enum RoomDisplayTarget {
     Region {
         binding_id: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::transport::relay_peer::RelayPeerRequest;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn mp11_room_display_audience_requires_new_protocol() {
+        // MP-11: assignment is coordinator-owned; never ship the new audience under the old peer contract.
+        assert!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION > 552);
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION > 160);
+    }
+
+    #[test]
+    fn mp11_room_display_audience_contract_is_versioned_and_cannot_default_to_owner() {
+        assert_eq!(
+            crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+            crate::test_support::expected_local_protocol_version()
+        );
+        assert_eq!(
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            crate::test_support::expected_relay_peer_protocol_version()
+        );
+        let request = serde_json::json!({
+            "kind":"open_room_shared_display", "session_id":"room-1", "slice_id":"slice-1",
+            "lease_id":"room-display-00000000000000000000000000000001", "viewer_public_key":"viewer-key",
+            "audience":"viewer", "offer":{"codecs":["avc1.420033"],"bitrate":8000000,"device_scale_factor":1},
+            "viewport":{"css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800,"revision":1,"last_actor_id":null},
+            "target":{"kind":"desktop","surface_id":"slice:slice-1","generation":"native-one"}
+        });
+        for audience in ["owner", "viewer"] {
+            let mut value = request.clone();
+            value["audience"] = audience.into();
+            let decoded: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+        }
+        let mut missing = request.clone();
+        missing.as_object_mut().unwrap().remove("audience");
+        assert!(serde_json::from_value::<RelayPeerRequest>(missing).is_err());
+        let mut unknown = request.clone();
+        unknown["audience"] = "model".into();
+        assert!(serde_json::from_value::<RelayPeerRequest>(unknown).is_err());
+        let mut offer = request["offer"].clone();
+        offer["audience"] = "owner".into();
+        assert!(
+            serde_json::from_value::<crate::slice::RoomDisplayOffer>(offer).is_err(),
+            "MP-11 clients cannot choose the home-owned audience"
+        );
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&request).unwrap())
+            ),
+            "d76fa5a0f3e3e24b07c740eef38003e67a90079e9fd90e41813a32a60ba9cfba"
+        );
+    }
 }
