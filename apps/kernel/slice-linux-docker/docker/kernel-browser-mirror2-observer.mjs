@@ -812,13 +812,19 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (continuation && (yielded || !urgent && !ops.length)) { yielded = false; ops.push(...continuationOps(chunk())); } else if (continuation) yielded = true;
       return { ops: fontOps(ops), changed: rebound, ...take(), ...header(), closed_candidates: closedTodo.size > 0, pressed: Math.max(0, Math.ceil(pressedAt + 50 - performance.now())), loaded: loadedCount() };
     };
+    const topBox = node => {
+      let [x, y, width, height] = box(node);
+      for (let view = node.ownerDocument.defaultView; view && view !== window; view = view.parent) { const owner = view.frameElement; if (!owner) break; const b = owner.getBoundingClientRect(); x += b.x + owner.clientLeft; y += b.y + owner.clientTop; }
+      return [x, y, width, height];
+    };
+    // Protected boxes now: the pixels that native attestation cannot use as anchors.
+    const maskBoxes = () => { const out = []; for (const [id, node] of nodes) if (kindOf.get(id) === 'mask' && node.isConnected) out.push([id, topBox(node)]); return out; };
     // Opaque regions visible now, in top-level viewport CSS pixels.
     const opaqueBoxes = () => {
       const out = [];
       for (const [id, node] of nodes) {
         if (kindOf.get(id) !== 'tile' && !foreign.has(id) || !node.isConnected) continue;
-        let [x, y, width, height] = box(node);
-        for (let view = node.ownerDocument.defaultView; view && view !== window; view = view.parent) { const owner = view.frameElement; if (!owner) break; const b = owner.getBoundingClientRect(); x += b.x + owner.clientLeft; y += b.y + owner.clientTop; }
+        const [x, y, width, height] = topBox(node);
         if (width > 0 && height > 0 && x < innerWidth && y < innerHeight && x + width > 0 && y + height > 0 && !invisible(node)) { const cause = distorted(node); out.push({ id, box: [x, y, width, height], view: [innerWidth, innerHeight], ...(foreign.has(id) ? { foreign: true } : {}), ...(cause ? { distorted: cause, tag: node.localName } : {}) }); }
       }
       return out;
@@ -1173,6 +1179,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, maskBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
   }
 }

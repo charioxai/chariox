@@ -697,11 +697,12 @@ test('MP-08/MP-10 mirrorregion: theater mode: a region video refused for want of
  const stream={id:'s',chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
  const host={protection:policy,generation:1,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
  const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});
- let boxes=[],drain={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],opaque:false};
+ let boxes=[],masks=[],drain={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],opaque:false};
  const page={snapshot_complete:true,font_failures:[],scroll:[0,0],focused:null,selection:null,fragment:null};
  mirror.evaluate=async(_,expression)=>{
   if(expression==='m.snapshot()')return{...page,root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'main'}],sheets:[],resources:[],opaque:false};
   if(expression==='m.opaqueBoxes()')return boxes;
+  if(expression==='m.maskBoxes()')return masks;
   if(expression==='m.drain()'){const d={...page,...drain};drain={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],opaque:true};return d;}
   return {...page,ops:[],changed:[],resources:[],sheets:[]};
  };
@@ -722,6 +723,11 @@ test('MP-08/MP-10 mirrorregion: theater mode: a region video refused for want of
  // A refusal holds for the media measured when it was made: the player shrinking (still opaque media) is admitted afresh.
  stream.fallback=null;stream.tilesAt=0;boxes=[{id:'n9',box:[0,0,300,200]}];drain={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],opaque:true};
  assert.equal((await credit(handoff.sequence)).fallback,undefined,'a shrunk player is measured again');assert.equal(stream.unattestable,false,'the refusal is cleared with the geometry it was made for');
+ // Anchors can also be short because a protected field covers the rest of the page: collapsing it admits the player afresh.
+ stream.fallback=null;stream.tilesAt=0;boxes=[{id:'n9',box:[0,0,1280,640]}];masks=[['n4',[0,640,1280,160]]];stream.unattestable=true;
+ const held=await credit(handoff.sequence);assert.equal(held.fallback,'region_area','the refusal holds while the proof inputs are unchanged');
+ stream.fallback=null;stream.tilesAt=0;masks=[['n4',[0,640,1280,0]]];
+ assert.equal((await credit(held.sequence)).fallback,undefined,'a collapsed protected field is measured again');assert.equal(stream.unattestable,false,'the refusal is cleared with the protection geometry');masks=[];
  // A player that fills 75 % of the view stays a DOM copy; the region video serves it, no lossless still rides ahead.
  stream.fallback=null;stream.unattestable=false;boxes=[{id:'n9',box:[0,0,1280,600]}];
  for(let i=0;i<5;i++){stream.tilesAt=0;stream.tileHashes=new Map();const packet=await credit(0);assert.equal(packet.fallback,undefined,'75 % media stays a DOM copy');}

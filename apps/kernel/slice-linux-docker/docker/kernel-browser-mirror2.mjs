@@ -849,9 +849,10 @@ export class Mirror2 {
     // player, a full-screen map): the page is the video (labelled; the client retries later).
     // A refusal lasts only while opaque media is still on the page (the player closed or left).
     if (none && !stream.frames.size) stream.unattestable = false;
-    // The refusal holds for the media measured when it was made: a player that shrank, moved or was replaced is admitted afresh.
+    // The refusal holds for the media and protected boxes measured when it was made: a player that shrank, moved or was
+    // replaced, or a protected field that collapsed, is admitted afresh.
     if (stream.unattestable) {
-      const key = JSON.stringify((await this.opaqueBoxes(world, stream)).map(b => [b.id, b.box]));
+      const key = JSON.stringify([tab.document_id, (await this.opaqueBoxes(world, stream)).map(b => [b.id, b.box]), await this.evaluate(world, `${world.ref}.maskBoxes()`)]);
       if (stream.unattestable === true) stream.unattestable = key;
       if (stream.unattestable !== key) stream.unattestable = false;
     }
