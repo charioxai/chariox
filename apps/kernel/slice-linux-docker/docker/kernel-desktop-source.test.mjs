@@ -202,6 +202,19 @@ test('MP-08/MP-11 an unadopted frame is withheld while a Vault fill is tracked i
   f.source.offer(f.frame(1),0);
   assert.equal(f.published.length,0);assert.equal(f.released(),1);
 });
+test('MP-08/MP-11 the native oracle covers a tracked fill itself: its serial-0 frames are published, never waited for',()=>{
+  const f=fillFixture();f.source.worker={};
+  f.source.offer(f.frame(1),0);
+  assert.equal(f.published.length,1,'the frame arrives with the oracle masks, so a masked viewer resumes at once');
+});
+test('MP-08/MP-11 the oracle is told when a Vault fill is tracked',()=>{
+  for(const [options,expected] of [[{},true],[{targets:[],tracked:1},true],[{targets:[]},false],[{browser:false},false]]){
+    const f=fillFixture(options),written=[];f.source.oracle={stdin:{write:line=>written.push(JSON.parse(line))}};
+    f.source.answers=(async function*(){yield JSON.stringify({digest:'d',masks:[],state:[1,1,0,0]})})();
+    f.source.measure({processes:[],browser_processes:[],browser_protection:null,values:[]});
+    assert.equal(written[0].fill,expected);
+  }
+});
 test('MP-08/MP-11 a fill still pending in the browser controller withholds unadopted frames too',()=>{
   const f=fillFixture({targets:[],tracked:1});
   f.source.offer(f.frame(1),0);

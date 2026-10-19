@@ -62,6 +62,7 @@ export class DesktopSource {
     });
   }
   valid() { return !this.closed && this.binding.isCurrent?.() !== false; }
+  fillTracked() { const browser=this.binding.browser?.();return Boolean(browser&&hasBrowserFill(browser,this.policy)); }
   subscribe(fn) { this.listeners.add(fn);return()=>this.listeners.delete(fn); }
   sample() { return this.closed?null:this.latest; }
   ownerFeed() { return this.worker?this.owner:this; }
@@ -160,7 +161,7 @@ export class DesktopSource {
   }
   async measure(scope) {
     const start=Date.now();
-    this.oracle.stdin.write(JSON.stringify({processes:scope.processes,browser_processes:scope.browser_processes,browser_protection:scope.browser_protection,values:scope.values??[]})+'\n');
+    this.oracle.stdin.write(JSON.stringify({processes:scope.processes,browser_processes:scope.browser_processes,browser_protection:scope.browser_protection,values:scope.values??[],fill:this.fillTracked()})+'\n');
     let timer;
     const next=await Promise.race([this.answers.next(),new Promise(resolve=>{timer=setTimeout(resolve,5000,{done:true});})]).finally(()=>clearTimeout(timer));
     if(next.done)throw Error('MP-11: desktop protection unavailable');
@@ -233,10 +234,9 @@ export class DesktopSource {
   offer(sample,serial,captured) {
     if(this.closed){sample.raw.release?.();return;}
     if(this.transient(captured??sample.raw.captured_ms,sample.raw.capture_ms)){sample.raw.release?.();return;}
-    // Serial 0 has no adopted measurement. A tracked fill in a live kernel browser (a password
-    // field just revealed as text) leaves its pixels unplaced: wait for the adopted measurement.
-    const browser=this.binding.browser?.();
-    if(serial===0){if(browser&&hasBrowserFill(browser,this.policy))sample.raw.release?.();else this.publish(sample);}
+    // Serial 0 has no adopted measurement. With the native oracle a tracked fill is covered whole by the oracle itself
+    // (the frame arrives masked, no wait); the helper path has no such cover and waits for the adopted measurement.
+    if(serial===0){if(!this.worker&&this.fillTracked())sample.raw.release?.();else this.publish(sample);}
     else if(serial===this.gate.protectionSerial){this.pending.push({sample,serial,captured});this.settle();}
     else sample.raw.release?.();
   }
