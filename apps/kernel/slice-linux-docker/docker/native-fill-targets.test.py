@@ -127,10 +127,11 @@ class FillTests(unittest.TestCase):
 class FillProofTests(unittest.TestCase):
     def test_mp11_dead_or_reused_app_retires_before_window_lookup(self):
         target={'pid':200,'started':'one','path':'/entry','window':10,'registration':1}
-        connection=SimpleNamespace(create_resource_object=lambda *args: self.fail('dead app window was queried'), close=lambda:None)
+        window=SimpleNamespace(get_attributes=lambda:None)
+        connection=SimpleNamespace(create_resource_object=lambda *args:window,close=lambda:None)
         xlib=SimpleNamespace(X=SimpleNamespace(),display=SimpleNamespace(),error=SimpleNamespace(BadWindow=type('BadWindow',(Exception,),{})))
         for stat in [FileNotFoundError(), '200 (gone) Z ' + '0 '*18 + 'one', '200 (new) S ' + '0 '*18 + 'two']:
-            with self.subTest(stat=type(stat).__name__),patch.dict(sys.modules,pyatspi=SimpleNamespace(Registry=SimpleNamespace(getDesktop=lambda i:None)),Xlib=xlib),patch.object(fill,'open_display',return_value=connection),patch.object(fill,'read',return_value=[target]),patch.object(fill,'update') as update,patch.object(fill.Path,'read_text',**({'side_effect':stat} if isinstance(stat,Exception) else {'return_value':stat})):
+            with self.subTest(stat=type(stat).__name__),patch.dict(sys.modules,pyatspi=SimpleNamespace(Registry=SimpleNamespace(getDesktop=lambda i:None)),Xlib=xlib),patch.object(fill,'open_display',return_value=connection),patch.object(fill,'read',return_value=[target]),patch.object(fill,'update') as update,patch.object(fill,'resource_owner_pid',return_value=300),patch.object(fill.Path,'read_text',**({'side_effect':stat} if isinstance(stat,Exception) else {'return_value':stat})):
                 self.assertEqual(fill.regions(),[])
                 self.assertEqual(update.call_args.args[0]([target]),[])
 
@@ -139,6 +140,15 @@ class FillProofTests(unittest.TestCase):
         connection=SimpleNamespace(close=lambda:None)
         xlib=SimpleNamespace(X=SimpleNamespace(),display=SimpleNamespace(),error=SimpleNamespace(BadWindow=type('BadWindow',(Exception,),{})))
         with patch.dict(sys.modules,pyatspi=SimpleNamespace(Registry=SimpleNamespace(getDesktop=lambda i:None)),Xlib=xlib),patch.object(fill,'open_display',return_value=connection),patch.object(fill,'read',return_value=[target]),patch.object(fill,'update') as update,patch.object(fill.Path,'read_text',side_effect=PermissionError()):
+            with self.assertRaisesRegex(ValueError,'Vault fill field unavailable'):fill.regions()
+            update.assert_not_called()
+
+    def test_mp11_dead_pid_alone_cannot_unmask_a_live_window(self):
+        target={'pid':200,'started':'one','path':'/entry','window':10,'registration':1}
+        window=SimpleNamespace(get_attributes=lambda:SimpleNamespace(map_state=2))
+        connection=SimpleNamespace(create_resource_object=lambda *args:window,close=lambda:None,has_extension=lambda name:False)
+        xlib=SimpleNamespace(X=SimpleNamespace(),display=SimpleNamespace(),error=SimpleNamespace(BadWindow=type('BadWindow',(Exception,),{})))
+        with patch.dict(sys.modules,pyatspi=SimpleNamespace(Registry=SimpleNamespace(getDesktop=lambda i:None)),Xlib=xlib),patch.object(fill,'open_display',return_value=connection),patch.object(fill,'read',return_value=[target]),patch.object(fill,'update') as update,patch.object(fill.Path,'read_text',side_effect=FileNotFoundError()):
             with self.assertRaisesRegex(ValueError,'Vault fill field unavailable'):fill.regions()
             update.assert_not_called()
 
