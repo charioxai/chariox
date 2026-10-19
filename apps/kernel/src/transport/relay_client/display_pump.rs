@@ -25,6 +25,8 @@ const SYNC_FLOOR: Duration = Duration::from_secs(1);
 
 #[derive(Default)]
 struct PumpState {
+    /// Tail of the display id, labelling this pump's timing marks.
+    display: String,
     generation: u64,
     started: bool,
     stopped: bool,
@@ -48,6 +50,9 @@ enum Gate {
 }
 
 impl PumpState {
+    fn mark(&self, stage: &'static str, started: Instant) {
+        crate::transport::kernel_browser_display::timing_for(stage, Some(&self.display), started);
+    }
     fn rtt_floor(&self) -> Duration {
         self.rtt
             .iter()
@@ -86,9 +91,7 @@ impl PumpState {
     }
     fn admit(&mut self, now: Instant) -> Gate {
         // MP-08/MP-10/MP-11: private fixed-label timings, no peer or payload.
-        crate::transport::kernel_browser_display::timing(
-            "push_rtt_floor",
-            now.checked_sub(self.rtt_floor()).unwrap_or(now),
+        self.mark("push_rtt_floor", now.checked_sub(self.rtt_floor()).unwrap_or(now),
         );
         if let Some(&(_, oldest)) = self.sent.front() {
             let age = now.saturating_duration_since(oldest);
@@ -96,7 +99,7 @@ impl PumpState {
                 // A stalled gate is sent nothing; reopen on an independent
                 // frame after the reprobe interval (Selkies semantics).
                 if self.gated_at.is_none() {
-                    crate::transport::kernel_browser_display::timing("push_gate_closed", oldest);
+                    self.mark("push_gate_closed", oldest);
                 }
                 let gated = *self.gated_at.get_or_insert(now);
                 if now.saturating_duration_since(gated) < REPROBE {
@@ -105,9 +108,9 @@ impl PumpState {
                 self.sent.clear();
                 self.reset = true;
             } else if age > self.rtt_floor() + self.gate_allowance() {
-                crate::transport::kernel_browser_display::timing("push_oldest_unacked", oldest);
+                self.mark("push_oldest_unacked", oldest);
                 if self.gated_at.is_none() {
-                    crate::transport::kernel_browser_display::timing("push_gate_closed", oldest);
+                    self.mark("push_gate_closed", oldest);
                     self.gated_at = Some(now);
                     self.closes.push_back(now);
                 }
@@ -115,7 +118,7 @@ impl PumpState {
             }
         }
         if let Some(closed_at) = self.gated_at {
-            crate::transport::kernel_browser_display::timing("push_gate_reopened", closed_at);
+            self.mark("push_gate_reopened", closed_at);
         }
         self.gated_at = None;
         while self
@@ -149,7 +152,7 @@ impl PumpState {
             }
             self.sent.pop_front();
             if sent == sequence {
-                crate::transport::kernel_browser_display::timing("push_frame_ack", at);
+                self.mark("push_frame_ack", at);
                 let age = now.saturating_duration_since(at);
                 let sample = match held_ms {
                     Some(held) => age.checked_sub(Duration::from_millis(u64::from(held))),
@@ -164,9 +167,7 @@ impl PumpState {
                             self.rtt.clear();
                         }
                         self.timed_ack = true;
-                        crate::transport::kernel_browser_display::timing(
-                            "push_ack_rtt",
-                            Instant::now().checked_sub(sample).unwrap_or(now),
+                        self.mark("push_ack_rtt", Instant::now().checked_sub(sample).unwrap_or(now),
                         );
                     }
                     self.rtt.push_back((now, sample));
@@ -191,9 +192,10 @@ pub(super) struct DisplayPump {
 impl DisplayPump {
     /// A new pump (also a re-subscription after a dropped relay socket, whose
     /// in-flight frames were lost) starts with an independent frame.
-    pub(super) fn new(generation: u64) -> Arc<Self> {
+    pub(super) fn new(generation: u64, display_id: &str) -> Arc<Self> {
         Arc::new(Self {
             state: std::sync::Mutex::new(PumpState {
+                display: display_id.chars().rev().take(8).collect::<Vec<_>>().into_iter().rev().collect(),
                 generation,
                 reset: true,
                 ..Default::default()
@@ -508,6 +510,28 @@ mod tests {
         assert_eq!(state.admit(now), Gate::Closed);
     }
 
+    // The band and the page are separate displays, each with its own pump: a page
+    // gate closed by stale unacked frames never holds a band (keyboard echo) frame.
+    #[test]
+    fn mp10_band_pump_admits_while_the_page_pump_gate_is_closed() {
+        let now = Instant::now();
+        let (mut page, mut band) = (PumpState::default(), PumpState::default());
+        for state in [&mut page, &mut band] {
+            state.acknowledge(0, false, now, None);
+        }
+        for sequence in 1..=3 {
+            page.sent
+                .push_back((sequence, now - Duration::from_millis(300)));
+        }
+        assert_eq!(page.admit(now), Gate::Closed);
+        assert!(matches!(band.admit(now), Gate::Open(_)));
+        band.sent_frame(1, now);
+        assert!(matches!(
+            band.admit(now + Duration::from_millis(1)),
+            Gate::Open(_)
+        ));
+    }
+
     #[test]
     fn mp10_ack_gate_closes_on_lag_and_lifts_after_ack() {
         let start = Instant::now();
@@ -601,7 +625,7 @@ mod tests {
 
     #[test]
     fn mp10_new_pump_first_frame_is_independent() {
-        let pump = DisplayPump::new(7);
+        let pump = DisplayPump::new(7, "display");
         assert_eq!(pump.acknowledge(7, 13, false, None), Some("running"));
         let now = Instant::now();
         let Gate::Open(credit) = pump.with(|state| state.admit(now)) else {
@@ -616,7 +640,7 @@ mod tests {
 
     #[test]
     fn mp10_foreign_generation_ack_is_refused() {
-        let pump = DisplayPump::new(7);
+        let pump = DisplayPump::new(7, "display");
         assert_eq!(pump.acknowledge(8, 1, false, None), None);
         assert_eq!(pump.acknowledge(7, 1, false, None), Some("running"));
     }
