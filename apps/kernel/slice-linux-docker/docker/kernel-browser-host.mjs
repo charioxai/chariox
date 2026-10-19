@@ -502,11 +502,11 @@ export class KernelBrowserHost {
   }
   // MP-08/MP-11: all display routes consume already-masked PNGs. Use the full
   // viewport so protected DOM bounds cannot shift with a page/crop origin.
-  async displayScreenshot(tab,clip=null,optimizeForSpeed=true){
-    return captureProtectedDisplay(this,tab,clip,optimizeForSpeed);
+  async displayScreenshot(tab,clip=null,optimizeForSpeed=true,modelCapture=false){
+    return captureProtectedDisplay(this,tab,clip,optimizeForSpeed,modelCapture);
   }
-  screenshot(tab, clip = null, protectedCapture = false, format = "png", optimizeForSpeed = true) {
-    return capturePageScreenshot(this, tab, clip, protectedCapture, format, optimizeForSpeed);
+  screenshot(tab, clip = null, protectedCapture = false, format = "png", optimizeForSpeed = true, modelCapture = false) {
+    return capturePageScreenshot(this, tab, clip, protectedCapture, format, optimizeForSpeed,modelCapture);
   }
   async subscribe(tab, boundFrames = false, owner = null) {
     await this.closeCompositors(tab.tab_id);
@@ -835,7 +835,8 @@ export class KernelBrowserHost {
     if (command.op === "screenshot") {
       const hint=command._capture_viewport,scale=this.scales.get(tab.tab_id)??this.viewport().device_scale_factor;
       const crop=hint&&(hint.width!==geometry.width*scale||hint.height!==geometry.height*scale);
-      const frame = command._capture_protection===true?(crop?await captureVisiblePage(this,tab,hint,scope):await this.screenshot(tab,null,true)):await this.displayScreenshot(tab);
+      const modelCapture=command._agent_input===true||command.focused_agent===true||/(?:^|:)agent:/.test(scope);
+      const frame = command._capture_protection===true?(crop?await captureVisiblePage(this,tab,hint,scope):await this.screenshot(tab,null,true,'png',true,modelCapture)):await this.displayScreenshot(tab,null,true,modelCapture);
       // MD-3: explicit binding is an internal display/MCP seam. Legacy 417
       // still emits its existing frame shape until the coordinator adapter lands.
       if (!command.focused_agent && !command.bound_frames) delete frame.document_id;

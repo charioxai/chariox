@@ -6,7 +6,7 @@ import {captureProtectedPage} from './kernel-browser-pixels.mjs';
 import {assertCurrentDocument,BrowserActionError} from './browser-controller-actions.mjs';
 import {timestamp} from './kernel-browser-timing.mjs';
 const retired=()=>new BrowserActionError('stale_document_reference','browser capture owner retired');
-export async function capturePageScreenshot(host,tab,clip=null,protectedCapture=false,format='png',optimizeForSpeed=true) {
+export async function capturePageScreenshot(host,tab,clip=null,protectedCapture=false,format='png',optimizeForSpeed=true,modelCapture=false) {
     const started = timestamp();
     const scale = host.scales.get(tab.tab_id) ?? host.viewport().device_scale_factor;
     const browser = host.browser, owner = captureDocumentOwner(browser, tab);
@@ -16,8 +16,8 @@ export async function capturePageScreenshot(host,tab,clip=null,protectedCapture=
       if (owner) owner.assertCurrent(); else await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
     };
     await current();
-    const regionMasks = protectedCapture ? host.protection.targets.length || host.browser.fillTargets?.size
-      ? await captureProtectionFence(connection,sessionId,tab.target_id,{...host.protection,targets:[...host.protection.targets,...(host.browser.fillTargets?.values()??[])]},{ record: reason => host.timing('region_frame_masked ' + reason, timestamp()) })
+    const regionMasks = protectedCapture ? host.protection.targets.length || host.browser.fillTargets?.size || modelCapture
+      ? await captureProtectionFence(connection,sessionId,tab.target_id,{...host.protection,targets:[...host.protection.targets,...(host.browser.fillTargets?.values()??[])]},{ modelCapture,record: reason => host.timing('region_frame_masked ' + reason, timestamp()) })
       : {async afterCapture(){return [];}} : null;
     const data = await captureProtectedPage(host.browser, tab, host.protection.values,
       host.protection.targets.filter(target => target.kind === "browser"), async () => {
@@ -32,7 +32,7 @@ export async function capturePageScreenshot(host,tab,clip=null,protectedCapture=
         const {data}=await (!protectedCapture&&!clip&&!policy.unknown&&!policy.values.length&&!policy.targets.length ? sample() : host.sampleLane(tab).run("capture",sample));
         host.timing(clip?.scale < 1 ? 'cdp_preview' : clip ? 'cdp_crop' : 'cdp_capture', at);
         return data;
-      }, scale, clip);
+      }, scale, clip,()=>{},null,modelCapture);
     await current();
     const width = Math.round((clip?.width ?? geometry.width) * scale * (clip?.scale ?? 1));
     const height = Math.round((clip?.height ?? geometry.height) * scale * (clip?.scale ?? 1));

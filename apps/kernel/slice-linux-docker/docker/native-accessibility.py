@@ -172,7 +172,7 @@ def secret_field(node, targets):
         attributes = dict(part.split(':', 1) for part in node.getAttributes() if ':' in part)
     except (AttributeError, NotImplementedError):
         attributes = {}
-    if any(re.search(r'password|one-time-code|(^|[ _-])otp([ _-]|$)', attributes.get(key, ''), re.I)
+    if any(re.search(r'password|one-time-code|(^|\s)cc-|(^|[ _-])otp([ _-]|$)', attributes.get(key, ''), re.I)
            for key in ('text-input-type', 'type', 'autocomplete', 'html-autocomplete', 'input-type')):
         return True
     # Native Vault fills are bound to the exact live object and value generation.

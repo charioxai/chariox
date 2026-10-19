@@ -122,7 +122,7 @@ export async function captureVisiblePage(host,tab,frame,scope){
   stream.regionLease.isAlive()&&stream.regionSource.valid()&&stream.regionWindow.isCurrent();
  const current=async()=>alive()&&await stream.regionCurrent()&&alive();
  if(!await current())refuse();
- const shot=await host.displayScreenshot(tab,{x:0,y:0,width:stream.css_width,height:stream.css_height,scale:1},false);
+ const shot=await host.displayScreenshot(tab,{x:0,y:0,width:stream.css_width,height:stream.css_height,scale:1},false,scope.startsWith('agent:'));
  if(!await current()||shot.width!==frame.width||shot.height!==frame.height)refuse();
  return {...shot,protected_regions:shot[displayMaskRegions]??[]};
 }
@@ -143,7 +143,7 @@ async function captureMirroredPage(host,tab,frame,scope){
  if(geometry.width!==frame?.width||geometry.height!==frame?.height)refuse();
  const current=async()=>alive()&&await window.isPageCurrent(tab.target_id)&&JSON.stringify(await measure())===JSON.stringify(viewport)&&alive();
  if(!await current())refuse();
- const shot=await host.displayScreenshot(tab,{x:0,y:0,width:geometry.css_width,height:geometry.css_height,scale:1},false);
+ const shot=await host.displayScreenshot(tab,{x:0,y:0,width:geometry.css_width,height:geometry.css_height,scale:1},false,scope.startsWith('agent:'));
  if(!await current()||shot.width!==frame.width||shot.height!==frame.height)refuse();
  return {...shot,protected_regions:shot[displayMaskRegions]??[]};
 }

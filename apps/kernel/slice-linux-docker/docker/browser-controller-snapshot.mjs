@@ -1,3 +1,4 @@
+import {typedBrowserTargets} from './browser-typed-field-protection.mjs';
 const DEFAULT_MAX_NODES = 5_000;
 const DEFAULT_MAX_STRING_LENGTH = 2_048;
 const DEFAULT_MAX_ATTRIBUTES = 32;
@@ -54,6 +55,9 @@ export async function captureBrowserSnapshot({
       "browser frame tree changed during snapshot capture",
     );
   }
+  // MP-11: use complete private DOM identities before either public budget.
+  const sensitive=new Set(typedBrowserTargets(dom,{prefix:''},targetId,documentId).map(target=>target.node_ref));
+  for(const node of accessibility.nodes)if(sensitive.has(node.node_ref)&&node.value)node.value='[redacted]';
   const compactedDom = compactDomSnapshot(dom, options);
   return {
     browser_generation: browserGeneration,

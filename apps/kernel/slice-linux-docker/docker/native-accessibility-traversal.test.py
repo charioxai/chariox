@@ -466,18 +466,20 @@ class TraversalTest(unittest.TestCase):
         self.foreground(pid=200,name='Chromium')
         otp=Node('test-otp-value','text',[Node('test-otp-value','text')])
         otp.getAttributes=lambda:['tag:input','text-input-type:text','autocomplete:one-time-code']
+        card=Node('test-card-value','text',[Node('test-card-value','text')])
+        card.getAttributes=lambda:['tag:input','text-input-type:text','autocomplete:section-checkout cc-number']
         password=Node('test-password-value','password text',secret=True)
         vault=Node('test-vault-value','text')
         browser=Node('Chromium','application',[Node('Chromium','frame',[
             Node('Accept cookies','push button'),Node('Address and search bar','text'),
-            otp,password,vault,Node('Public article','document web')])])
+            otp,card,password,vault,Node('Public article','document web')])])
         self.desktop=Node('Desktop','desktop',[browser]);processes=[{'pid':200,'started':'1'}]
         with patch.object(self.driver._fills,'read',return_value=[]):
             tree=self.driver.snapshot(processes,browser_processes=processes,values=['test-vault-value'])
         names=[node['name'] for node in tree['nodes']]
         self.assertIn('Accept cookies',names);self.assertIn('Address and search bar',names)
         self.assertIn('Public article',names)
-        self.assertNotIn('test-otp-value',str(tree));self.assertNotIn('test-password-value',str(tree))
+        self.assertNotIn('test-card-value',str(tree));self.assertNotIn('test-otp-value',str(tree));self.assertNotIn('test-password-value',str(tree))
         self.assertNotIn('test-vault-value',str(tree))
         self.assertTrue(tree['protected']);self.assertIsNotNone(tree['active_window'])
 

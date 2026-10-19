@@ -1,6 +1,7 @@
 import { BrowserSnapshotError } from './browser-controller-snapshot.mjs';
 // MP-08/MP-10/MP-11: Miguel's Vault fill-target model (2026-10-09).
 // Only the exact filled plain field contributes pixels. No echo/media/frame scans.
+import {typedBrowserTargets} from './browser-typed-field-protection.mjs';
 import { createHash } from 'node:crypto';
 import { withBrowserFrames, assertBrowserFramesUnchanged } from './browser-controller-frames.mjs';
 const FRAME_TIMEOUT_MS = 500;
@@ -96,7 +97,7 @@ async function fieldState(connection,entry,document,backendNodeId) {
           const style=element.ownerDocument.defaultView.getComputedStyle(element);
           unprovedPaint ||= style.filter!=='none'||style.webkitBoxReflect!=='none';
         }
-        return {exists:this.isConnected,editable,unprovedPaint,contenteditable:this.isContentEditable,changed:globalThis.__charioxFilledFields?.get(this)?.changed===true,password:this.localName==='input'&&this.type==='password',
+        return {exists:this.isConnected,editable,unprovedPaint,contenteditable:this.isContentEditable,changed:globalThis.__charioxFilledFields?.get(this)?.changed===true,password:this.localName==='input'&&this.type==='password',sensitive:this.localName==='input'&&(this.type==='password'||this.autocomplete.toLowerCase().split(/\\s+/).some(t=>t.startsWith('cc-')||t==='one-time-code')),
           textShadow:this.ownerDocument.defaultView.getComputedStyle(this).textShadow,value:editable?String(this.isContentEditable?this.textContent:this.value):''}; }`},entry.sessionId);
     if(exceptionDetails||!result?.value)throw Error('MP-11: fill state unavailable');
     return result.value;
@@ -161,7 +162,7 @@ async function fieldTextGeometry(connection,entry,frameId,backendNodeId) {
   }finally{await connection.send('Runtime.releaseObject',{objectId:object.objectId},entry.sessionId).catch(()=>{});}
 }
 
-export async function measurePageProtection(connection,sessionId,targetId,policy,{includeHidden=false,onPlainField}={}) {
+export async function measurePageProtection(connection,sessionId,targetId,policy,{includeHidden=false,onPlainField,modelCapture=false}={}) {
   const top=await frameTree(connection,sessionId);
   const {executionContextId}=await connection.send('Page.createIsolatedWorld',{frameId:top.frame.id,worldName:'chariox-fill-viewport'},sessionId);
   const {result}=await connection.send('Runtime.evaluate',{contextId:executionContextId,returnByValue:true,
@@ -179,7 +180,7 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
   const lifecycles=new Map(targets.map(target=>[fillKey(target),filling.get(connection)?.get(fillKey(target))]));
   // MP-11: preserve the pending state observed before awaiting the snapshot.
   const pendingAtSnapshot=new Map([...lifecycles].map(([key,lifecycle])=>[key,lifecycle?.pending]));
-  if(!targets.length)return page;
+  if(!targets.length&&!modelCapture)return page;
   await withBrowserFrames(connection,sessionId,targetId,top.frame.loaderId,async frames=>{
     const seen=new Set(),transforms=new Map([[frames[0],point=>point]]);
     const toViewport=async entry=>{
@@ -210,8 +211,9 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
     };
     for(const entry of frames) {
       const candidates=targets.filter(t=>t.document_id===top.frame.loaderId&&targetNode(t,entry));
-      if(!candidates.length)continue;
+      if(!candidates.length&&!modelCapture)continue;
       const snapshot=await connection.send('DOMSnapshot.captureSnapshot',{computedStyles:[]},entry.sessionId);
+      if(modelCapture)candidates.push(...typedBrowserTargets(snapshot,entry,targetId,top.frame.loaderId));
       for(const target of candidates) {
         const key=fillKey(target),backendNodeId=targetNode(target,entry);
         const raw=snapshot.documents?.find(doc=>doc.nodes?.backendNodeId?.includes(backendNodeId));
@@ -219,12 +221,14 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         const frameId=snapshot.strings[raw.frameId],frame=visit(entry.tree,frameId);
         if(!frame || target.frame_id&&target.frame_id!==frameId || target.frame_document_id&&target.frame_document_id!==frame.loaderId)continue;
         seen.add(key);
-        const {state,inFlight}=await stableFieldState(connection,entry,{frameId},backendNodeId,target,lifecycles.get(key));
+        const typed=target.model_typed===true;
+        const {state,inFlight}=typed?{state:await fieldState(connection,entry,{frameId},backendNodeId),inFlight:false}:await stableFieldState(connection,entry,{frameId},backendNodeId,target,lifecycles.get(key));
         // Actionability may wait while an editor is temporarily disabled. Its
         // pending fill still owns protection; refuse pixels until it is measurable.
         if(inFlight&&(!state.exists||!state.editable))throw Error('MP-11: pending fill target unavailable');
-        if(!inFlight&&(!state.exists||state.changed||!state.editable||!state.value || digest(state.value)!==target.value_hash)) {dead.add(key);continue;}
-        if(state.password)continue; // Rechecked even for a previously plain field.
+        if(typed&&(!state.exists||!state.sensitive||!state.value))continue;
+        if(!typed&&!inFlight&&(!state.exists||state.changed||!state.editable||!state.value || digest(state.value)!==target.value_hash)) {dead.add(key);continue;}
+        if(state.password&&!typed)continue; // Rechecked even for a previously plain field.
         // MP-08/MP-11: DOMSnapshot includes retained non-rendered fields. Only
         // confirmed absence of layout for the entire field subtree permits
         // skipping box lookup; keep identity tracking so reveal remasks it.
@@ -281,12 +285,12 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
   return page;
 }
 
-export async function measureBrowserProtection(browser,policy) {
+export async function measureBrowserProtection(browser,policy,options={}) {
   if(policy?.unknown||!Array.isArray(policy?.targets))throw Error('MP-11: fill policy unavailable');
   // MP-08/MP-10/MP-11: registration alone contributes no browser pixels.
   // Pending fills enter the private map before input and keep the full fence.
   const filled=policy.targets.some(target=>target.kind==='browser'&&typeof target.value_hash==='string');
-  if(!filled&&!(browser?.fillTargets?.size))return {pages:[]};
+  if(!filled&&!(browser?.fillTargets?.size)&&!options.modelCapture)return {pages:[]};
   const connection=await browser.ensureConnection(),{targetInfos=[]}=await connection.send('Target.getTargets');
   const pages=[];
   for(const info of targetInfos.filter(t=>t.type==='page')) {
@@ -298,7 +302,7 @@ export async function measureBrowserProtection(browser,policy) {
       const tracked=[...(browser.fillTargets?.values()??[])].filter(t=>t.target_id===info.targetId);
       const targets=supplied.map(t=>tracked.find(own=>own.node_ref===t.node_ref&&own.document_id===t.document_id)??t);
       for(const target of tracked)if(!targets.includes(target))targets.push(target);
-      const measured=await measurePageProtection(connection,sessionId,info.targetId,{...policy,targets});
+      const measured=await measurePageProtection(connection,sessionId,info.targetId,{...policy,targets},options);
       if(measured)pages.push({target_id:info.targetId,window_id:windowId,window:[bounds.left,bounds.top,bounds.width,bounds.height],chrome:false,...measured});
     } finally {await connection.send('Target.detachFromTarget',{sessionId}).catch(()=>{});}
   }
@@ -326,9 +330,9 @@ export async function awaitPresented(browser, pages, frames = 2) {
 
 // A measurement whose layout has reached the screen, or null (fail closed).
 // Measuring again after a presented frame also observes compositor scrolls.
-export async function measurePresented(browser, policy) {
+export async function measurePresented(browser, policy, options={}) {
   try {
-    const measurement = await measureBrowserProtection(browser, policy);
+    const measurement = await measureBrowserProtection(browser, policy,options);
     await awaitPresented(browser, measurement.pages);
     return measurement;
   } catch { return null; }
@@ -337,16 +341,16 @@ export async function measurePresented(browser, policy) {
 // Measure, let the measured layout reach the screen, capture, re-measure. A
 // changed page, window, frame tree or region set retries with a fresh
 // measurement; after `attempts` it refuses the capture rather than inventing a visual mask.
-export async function fenceBrowserCapture(browser, policy, capture, attempts = 3) {
+export async function fenceBrowserCapture(browser, policy, capture, attempts = 3, options={}) {
   for (let attempt = 0; attempt < attempts; attempt++) {
-    const before = await measurePresented(browser, policy);
+    const before = await measurePresented(browser, policy,options);
     if (!before) break;
     const captured = Date.now();
     const result = await capture(before);
     const ended = Date.now() + 1;
     // One frame first: the re-measurement then sees compositor scrolls too.
     let after = null;
-    try { await awaitPresented(browser, before.pages, 1); after = await measureBrowserProtection(browser, policy); } catch {}
+    try { await awaitPresented(browser, before.pages, 1); after = await measureBrowserProtection(browser, policy,options); } catch {}
     if (after && protectionDigest(after) === protectionDigest(before) &&
         (!browser.connection?.presentationFence || browser.connection.presentationFence.stable(captured, ended))) return result;
   }

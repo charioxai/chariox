@@ -18,10 +18,10 @@ export function regionProtectionChanged(message,sessionId,scope) {
 }
 export const protectionDeclared = message => ['DOM.documentUpdated','DOM.childNodeInserted','DOM.attributeModified','DOM.attributeRemoved'].includes(message.method);
 
-export async function captureProtectionFence(connection,sessionId,targetId,policy,{measure=measurePageProtection,record=()=>{}}={}) {
+export async function captureProtectionFence(connection,sessionId,targetId,policy,{measure=measurePageProtection,record=()=>{},modelCapture=false}={}) {
   const sample=async()=>{
     if(policy.unknown)throw retry();
-    try {return await measure(connection,sessionId,targetId,policy,{includeHidden:true});}
+    try {return await measure(connection,sessionId,targetId,policy,{includeHidden:true,modelCapture});}
     catch {record('fill_unbound');throw retry();}
   };
   const before=await sample(),beforeAt=performance.timeOrigin+performance.now();
@@ -69,10 +69,10 @@ export class NativeRegionProtection {
   }
 }
 
-export async function captureProtectedDisplay(host,tab,clip=null,optimizeForSpeed=true){
+export async function captureProtectedDisplay(host,tab,clip=null,optimizeForSpeed=true,modelCapture=false){
   const scale=host.scales.get(tab.tab_id)??host.viewport().device_scale_factor;let frame;
   {
-    const {protected_regions,...captured}=await host.screenshot(tab,null,true,'png',optimizeForSpeed);
+    const {protected_regions,...captured}=await host.screenshot(tab,null,true,'png',optimizeForSpeed,modelCapture);
     frame={...captured,[displayMaskRegions]:protected_regions,data_base64:protected_regions.length?maskPng(captured.data_base64,protected_regions.map(r=>[r.x,r.y,r.width,r.height]),scale):captured.data_base64};
   }
   const cropped=cropProtectedPng(frame.data_base64,clip,scale);

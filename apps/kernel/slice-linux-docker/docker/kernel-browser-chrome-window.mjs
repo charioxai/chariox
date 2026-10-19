@@ -5,7 +5,7 @@
 import {nativePageRect} from './kernel-browser-page-geometry.mjs';
 import {ownsDisplay} from './kernel-browser-owned-display.mjs';
 import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
-import {keysyms, notches, sensitiveFocusExpression} from './kernel-browser-input.mjs';
+import {keysyms, notches} from './kernel-browser-input.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 import {markDispatched} from './kernel-browser-input-queue.mjs';
 
@@ -545,9 +545,9 @@ export class InputArbiter {
         }
         this.chromeFocus = null;
       }
-      const {result} = await evaluate(sensitiveFocusExpression(false));
+      // MP-08/MP-11: ordinary human and agent typing is authorized input.
+      // Typed sensitive fields are protected at the model capture boundary.
       await currentProof();
-      if (result?.value !== false) throw new UserDomainRefusal('sensitive_requires_focus');
     };
     // At most once: a native action without a reply may have run; never replayed.
     // vidlat C10: `onDispatch` marks the native action after every fence, right before it runs.

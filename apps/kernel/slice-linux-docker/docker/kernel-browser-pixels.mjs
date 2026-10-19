@@ -209,10 +209,10 @@ export function cropProtectedPng(data,clip,scale=1){
   }
   return {width,height,data_base64:encodePng(width,height,pixels)};
 }
-export async function captureProtectedPage(browser, tab, values, targets, capture, scale = 1, clip = null, onMaskedRegions = () => {}, viewport = null) {
-  if (!targets.length && !browser.fillTargets?.size) return capture();
+export async function captureProtectedPage(browser, tab, values, targets, capture, scale = 1, clip = null, onMaskedRegions = () => {}, viewport = null, modelCapture = false) {
+  if (!targets.length && !browser.fillTargets?.size && !modelCapture) return capture();
   try {
-    const locate = () => locateBrowserRegions(targets.filter(target => target.target_id === tab.target_id), browser, values, { contentTarget: tab.target_id, contentScale: scale });
+    const locate = () => locateBrowserRegions(targets.filter(target => target.target_id === tab.target_id), browser, values, { contentTarget: tab.target_id, contentScale: scale,modelCapture });
     const before = await locate(), data = await capture(), after = await locate();
     // Moving/navigating content cannot be bound to this exact frame.
     if (JSON.stringify(before) !== JSON.stringify(after)) throw Error("MP-11: fill target moved during capture");

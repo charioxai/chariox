@@ -327,6 +327,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/browser-observation-regions.mjs"),
     ),
     (
+        "browser-typed-field-protection.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-typed-field-protection.mjs"),
+    ),
+    (
         "browser-protection-regions.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-protection-regions.mjs"),
     ),

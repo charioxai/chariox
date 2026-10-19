@@ -1,5 +1,24 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 typed sensitive model captures (2026-10-19)
+
+The 2026-10-18 22:59 owner decision allows ordinary human and agent typing,
+including password, payment-card and one-time-code fields. Native browser-band
+input retains document/generation ownership without reading sensitive focus.
+Model Browser screenshots and Computer screenshot/OCR observations additionally
+mask nonempty input fields with type=password or autocomplete cc-*/one-time-code.
+This transient measurement shares Vault geometry, frame/shadow traversal and
+before/after capture fences; it stores no typed values or durable registrations.
+Empty/cleared fields retire their masks. Owner Browser and Computer streams do
+not opt into typed-field measurement. Existing Vault fill masks are independent.
+Browser AX values and native sensitive-field content remain withheld while
+public navigation labels/actions remain usable.
+
+DPR1/2 real-Chromium fixture checks and source regressions are supplementary;
+real-provider hosted acceptance is separate. Current MP-11 semantic review is
+required for the input and observation anchors changed here. Internal helper
+options add no LocalDaemon/relay shape; protocol remains 553/161.
+
 ## MP-08 / MP-10 / MP-11 native extension recipient admission (2026-10-19)
 
 Native Computer input and Chromium AX actions classify the actual control by
