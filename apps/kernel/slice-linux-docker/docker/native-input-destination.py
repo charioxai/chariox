@@ -8,6 +8,92 @@ class NativeExtensionDenied(ValueError):
     """MP-11: global extension accelerators require owner authority."""
 
 
+# Chromium's native widget classes are browser-owned AX metadata, unlike page
+# labels. Page contents are admitted only under a document boundary; the host
+# inventory independently excludes extension documents before this helper runs.
+_NAVIGATION = {'OmniboxViewViews', 'LocationBarView', 'LocationIconView',
+               'BackButton', 'ForwardButton', 'ReloadButton', 'ToolbarButton',
+               'Tab', 'TabCloseButton', 'TabStripControlButton',
+               'TabStripFlatEdgeButton', 'FrameCaptionButton', 'PageActionView',
+               'BrowserAppMenuButton', 'OmniboxResultView', 'OmniboxPopupView', 'WebUIToolbarWebView'}
+_EXTENSION = {'ToolbarActionView', 'ExtensionsToolbarButton',
+              'ExtensionsMenuView', 'ExtensionsMenuItemView'}
+
+
+def browser_control(node, pid):
+    """MP-11: admit the actual page/navigation control, never an action icon.
+
+    Walk the whole native ancestry even when a safe-looking descendant exists.
+    Labels and worker liveness cannot prove that an extension action is safe.
+    """
+    chain = []
+    for _ in range(48):
+        if node is None or node.get_process_id() != pid:
+            raise NativeExtensionDenied('browser control unavailable')
+        if node.getRoleName() == 'application': break
+        chain.append(node)
+        node = node.parent
+    else: raise NativeExtensionDenied('browser control ancestry unavailable')
+    # CSS classes below a document boundary belong to the page. Read only
+    # browser-owned widget metadata beyond it; labels never grant authority.
+    documents = [i for i, item in enumerate(chain) if item.getRoleName() == 'document web']
+    native = chain[max(documents)+1:] if documents else chain
+    public = bool(documents)
+    for item in native:
+        attrs = dict(part.split(':', 1) for part in item.getAttributes() if ':' in part)
+        widget = attrs.get('class', '')
+        if widget in _EXTENSION or widget.startswith('Extension'):
+            raise NativeExtensionDenied('extension control requires owner input')
+        public = public or widget in _NAVIGATION
+    if not public: raise NativeExtensionDenied('browser control unavailable')
+
+
+def browser_destination(accessibility, process, point):
+    atspi = accessibility.pyatspi
+    desktop = atspi.Registry.getDesktop(0)
+    apps = [desktop.getChildAtIndex(i) for i in range(min(desktop.childCount, 64))]
+    apps = [app for app in apps if app and app.get_process_id() == process['pid']]
+    if len(apps) != 1: raise NativeExtensionDenied('browser app unavailable')
+    if point is not None:
+        frames=[]
+        for i in range(min(apps[0].childCount, 256)):
+            frame=apps[0].getChildAtIndex(i)
+            if not frame or not frame.getState().contains(atspi.STATE_SHOWING): continue
+            box=frame.queryComponent().getExtents(atspi.DESKTOP_COORDS)
+            if box.x<=point[0]<box.x+box.width and box.y<=point[1]<box.y+box.height: frames.append(frame)
+        if len(frames)!=1: raise NativeExtensionDenied('browser window unavailable')
+        node = frames[0].queryComponent().getAccessibleAtPoint(*point, atspi.DESKTOP_COORDS)
+        for _ in range(48):
+            if node is None: raise NativeExtensionDenied('browser point unavailable')
+            child = node.queryComponent().getAccessibleAtPoint(*point, atspi.DESKTOP_COORDS)
+            if child is None or child == node: break
+            node = child
+        else: raise NativeExtensionDenied('browser point depth exceeded')
+    else:
+        # No page values or full observation snapshot are read to admit keys.
+        pending = [apps[0]]; focused = []; seen = 0
+        while pending and seen < 12000:
+            candidate = pending.pop(); seen += 1
+            state = candidate.getState()
+            if state.contains(atspi.STATE_FOCUSED) and state.contains(atspi.STATE_SHOWING):
+                focused.append(candidate)
+            # A public web document admits its page descendants; inspect only
+            # native chrome for a second focused extension sink.
+            if candidate.getRoleName() == 'document web':
+                browser_control(candidate, process['pid'])
+                continue
+            if candidate.childCount > 12000: raise NativeExtensionDenied('browser focus depth exceeded')
+            for i in range(candidate.childCount):
+                child = candidate.getChildAtIndex(i)
+                if child: pending.append(child)
+        if pending or not focused: raise NativeExtensionDenied('browser focus unavailable')
+        # Chromium may mark both an iframe and its document focused. Every
+        # reported sink must be public; never select one and ignore another.
+        for candidate in focused: browser_control(candidate, process['pid'])
+        return
+    browser_control(node, process['pid'])
+
+
 def input_destination(connection, processes, accessibility, point=None):
     """MP-08/MP-10/MP-11: prove the actual X input recipient before dispatch.
 
@@ -32,6 +118,8 @@ def input_destination(connection, processes, accessibility, point=None):
         pid=owner_pid(connection,window)
         process=next((item for item in processes if item['pid']==pid),None)
         if not process or not accessibility.alive(process):raise ValueError('input destination is not owned')
+        if process.get('browser'):
+            browser_destination(accessibility, process, point)
         # MP-08/MP-11: Computer includes the owned browser's address bar and
         # page fields. The controller retains extension admission, and root
         # accelerator probes remain below; field values are observation policy.

@@ -422,6 +422,12 @@ def act(request):
     interface=node.queryAction()
     index=next((i for i in range(min(interface.nActions,16)) if interface.getName(i)==request['action']),None)
     if request.get('agent_input'):
+        # MP-11: an AX action invokes the same popup-free native extension
+        # control as a physical click. Worker inventory cannot admit it.
+        if expected.get('browser'):
+            spec=_x11_import.spec_from_file_location('native_destination',Path(__file__).with_name('native-input-destination.py'))
+            destination=_x11_import.module_from_spec(spec);spec.loader.exec_module(destination)
+            destination.browser_control(node,request['pid'])
         # MP-11: doAction can invoke Paste without naming that effect.
         import importlib.util
         spec=importlib.util.spec_from_file_location('native_clipboard',Path(__file__).with_name('native-clipboard.py'))

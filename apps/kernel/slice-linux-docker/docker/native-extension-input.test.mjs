@@ -11,6 +11,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {LinuxOwnedDesktop} from './linux-owned-desktop.mjs';
 import {CdpConnection} from './browser-controller-cdp.mjs';
 import {NativeComputer} from './native-computer.mjs';
+import {NativeAccessibility} from './native-accessibility.mjs';
 
 // Only the fixture's public control labels/geometry are returned. No page text.
 const findControl=`import pyatspi,json,sys
@@ -19,9 +20,9 @@ while pending and seen<12000:
  node,depth=pending.pop(0);seen+=1
  try:
   role=node.getRoleName();state=node.getState()
-  if state.contains(pyatspi.STATE_SHOWING) and role in ('button','push button','toggle button') and sys.argv[1] in node.name:
+  if state.contains(pyatspi.STATE_SHOWING) and ((sys.argv[1]=='__FOCUS' and state.contains(pyatspi.STATE_FOCUSED)) or (role in ('button','push button','toggle button') and sys.argv[1] in node.name)):
    r=node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
-   out.append({'name':node.name,'x':r.x+r.width//2,'y':r.y+r.height//2})
+   out.append({'name':node.name,'x':r.x+r.width//2,'y':r.y+r.height//2,'attributes':node.getAttributes()})
   if depth<18:
    for i in range(min(node.childCount,2000)):
     child=node.getChildAtIndex(i)
@@ -29,7 +30,7 @@ while pending and seen<12000:
  except Exception:pass
 print(json.dumps(out))`;
 
-test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agent clicks with an empty clipboard', {timeout:45000}, async()=>{
+test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agent clicks with an empty clipboard', {timeout:90000}, async()=>{
  const root=await mkdtemp(path.join(os.tmpdir(),'native-extension-'));
  const desktop=new LinuxOwnedDesktop(root,{environment:{PATH:process.env.PATH,HOME:root,LANG:'C.UTF-8'}});
  let cdp,adapter;
@@ -59,12 +60,16 @@ test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agen
     const helper=spawn('/usr/bin/python3',['-c',findControl,label],{env:environment,stdio:['ignore','pipe','inherit']});let output='';helper.stdout.on('data',chunk=>output+=chunk);
     assert.equal(await new Promise(resolve=>helper.once('exit',resolve)),0);return JSON.parse(output);
    };
-   const click=async(point,agent=false)=>adapter.request({op:'input',surface_id:base.surface_id,generation:base.generation,...(agent?{_agent_input:true}:{}),input:{kind:'click',x:point.x,y:point.y}},{});
-   await delay(1000);
-   const menu=(await controls('Extensions')).find(node=>node.name==='Extensions');assert(menu);await click(menu);await delay(200);
-   const pin=(await controls('Pin')).find(node=>node.name.includes('MP11'));assert(pin);await click(pin);
-   await adapter.request({op:'input',surface_id:base.surface_id,generation:base.generation,input:{kind:'key',key:'Escape'}},{});await delay(200);
-   const action=(await controls('MP11')).find(node=>node.name==='MP11 Popup Free Action');assert(action);
+   const click=async(point,agent=false)=>{if(point.name==='MP11 Popup Free Action')point=(await controls('MP11')).find(node=>node.name==='MP11 Popup Free Action');return adapter.request({op:'input',surface_id:base.surface_id,generation:base.generation,...(agent?{_agent_input:true}:{}),input:{kind:'click',x:point.x,y:point.y}},{});};
+   let action;
+   for(let i=0;i<40&&!action;i++){
+    action=(await controls('MP11')).find(node=>node.name==='MP11 Popup Free Action');
+    if(action)break;
+    const menu=(await controls('Extensions')).find(node=>node.attributes?.includes('class:ExtensionsToolbarButton'));
+    if(menu){await click(menu);await delay(200);const pin=(await controls('Pin')).find(node=>node.name.includes('MP11'));if(pin)await click(pin);await adapter.request({op:'input',surface_id:base.surface_id,generation:base.generation,input:{kind:'key',key:'Escape'}},{});}
+    await delay(200);
+   }
+   assert(action);console.log('MP-11 fixture control '+JSON.stringify(action));
    const worker=async()=> (await cdp.send('Target.getTargets')).targetInfos.find(target=>target.type==='service_worker'&&target.url===`chrome-extension://${id}/background.js`);
    const count=async()=>{
     let target;for(let i=0;i<50&&!target;i++){target=await worker();if(!target)await delay(100)}assert(target);const {sessionId}=await cdp.send('Target.attachToTarget',{targetId:target.targetId,flatten:true});
@@ -73,10 +78,12 @@ test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agen
    };
    const page=(await cdp.send('Target.getTargets')).targetInfos.find(target=>target.type==='page'&&target.url.startsWith('https://en.wikipedia.org/'));assert(page);
    const {sessionId:pageSession}=await cdp.send('Target.attachToTarget',{targetId:page.targetId,flatten:true});
+   for(let i=0;i<100;i++){const r=await cdp.send('Runtime.evaluate',{expression:"document.readyState==='complete' && location.href.startsWith('https://en.wikipedia.org/')",returnByValue:true},pageSession);if(r.result.value)break;await delay(100)}
    await cdp.send('Runtime.evaluate',{expression:"window.mp11NativeClicks=0;window.addEventListener('click',()=>window.mp11NativeClicks++)"},pageSession);
-   await click({x:500,y:500},true);
+   await click({x:500,y:500},true);await delay(100);
    assert.equal((await cdp.send('Runtime.evaluate',{expression:'window.mp11NativeClicks',returnByValue:true},pageSession)).result.value,1,'ordinary page native fallback remains admitted');
    await cdp.send('Target.detachFromTarget',{sessionId:pageSession});
+   for(const input of [{kind:'key',key:'Control+l'},{kind:'text',text:'https://developer.mozilla.org'},{kind:'key',key:'Escape'}])await adapter.request({op:'input',surface_id:base.surface_id,generation:base.generation,_agent_input:true,input},{});
    assert.equal(await count(),0);await click(action);await delay(300);assert.equal(await count(),1,'owner invokes the actual background action');
    // No App/Vault state and no clipboard owner can account for the refusal.
    const probe=spawn('/usr/bin/python3',['-c',`import importlib.util; s=importlib.util.spec_from_file_location('nc',${JSON.stringify(fileURLToPath(new URL('./native-computer.py',import.meta.url)))});m=importlib.util.module_from_spec(s);s.loader.exec_module(m);c=m.load('native-x11').open_display(m.display);assert not c.get_selection_owner(c.intern_atom('CLIPBOARD'));c.close()`],{env:environment,stdio:'ignore'});
@@ -105,6 +112,24 @@ test('MP-08/MP-10/MP-11 a pinned popup-free extension cannot receive native agen
    assert.equal(await worker(),undefined);await assert.rejects(key(true),/extensions are the person's own/);
    assert.equal(await worker(),undefined,'denied global shortcut never wakes the background worker');
    await key(false);await delay(300);assert.equal(await count(),5,'owner global shortcut still wakes the worker');
+   const frozen=await cdp.send('Target.attachToTarget',{targetId:page.targetId,flatten:true});
+   await cdp.send('Page.setWebLifecycleState',{state:'frozen'},frozen.sessionId);
+   const ax=new NativeAccessibility({binding:()=>binding});
+   const invoke=async observer=>{
+    // Native trees can change while the public site settles. A stale handle
+    // is never admission; obtain a fresh handle before checking the fence.
+    for(let attempt=0;attempt<5;attempt++){
+     const seen=await ax.snapshot(observer,{}),target=seen.nodes.find(node=>node.name==='MP11 Popup Free Action');
+     assert(target?.actions.length,'extension exposes a real AX action');
+     try{return await ax.action(observer,{target_id:target.target_id,tree_revision:seen.tree_revision,action:target.actions[0]},{});}
+     catch(error){if(error.code!=='user_domain_stale_reference'||attempt===4)throw error;await delay(200)}
+    }
+   };
+   // The same control is owner-only through AX, regardless of worker liveness.
+   await assert.rejects(invoke('agent:fixture'),/extensions are the person's own/);assert.equal(await count(),5,'awake AX action refused');
+   const axWorker=await worker();await cdp.send('Target.closeTarget',{targetId:axWorker.targetId});await delay(100);
+   await assert.rejects(invoke('agent:fixture'),/extensions are the person's own/);assert.equal(await worker(),undefined,'AX refusal never wakes the worker');
+   assert.equal(await worker(),undefined,'agent AX actions leave the sleeping worker untouched');
    console.log('MP-08/MP-10/MP-11 pinned popup-free action: awake/sleeping agent refused; owner count 0->1->2; '+version.Browser);
   } finally {await held.close()}
  } finally {cdp?.close();await adapter?.close();await desktop.stop();await rm(root,{recursive:true,force:true})}

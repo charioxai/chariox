@@ -1,5 +1,22 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 native extension recipient admission (2026-10-19)
+
+Native Computer input and Chromium AX actions classify the actual control by
+browser-owned AT-SPI widget ancestry. Page document descendants and recognized
+navigation widgets remain available; extension toolbar/menu controls and unknown
+native controls require owner input, independently of background-worker state.
+Every reported keyboard focus sink is checked; Chromium's nested document focus
+states do not require choosing an arbitrary leaf. Root accelerator and clipboard
+provenance checks remain independent. Native pointer traversal never trusts page
+labels or renderer-provided class names as browser widget metadata.
+
+The physical popup-free extension regression exercises awake and sleeping workers
+for clicks, global shortcuts and AX actions, preserves owner invocation, and checks
+ordinary page/address-bar typing. This is supplementary physical regression
+coverage, not real-provider/hosted acceptance. The changed input/AX admission
+anchors require current MP-11 semantic review. Protocol 553/161 is unchanged.
+
 ## MP-08 / MP-10 / MP-11 ordinary input and Chromium AX (2026-10-18)
 
 Under the owner's UX-first decision, ordinary authorized Browser and Computer
