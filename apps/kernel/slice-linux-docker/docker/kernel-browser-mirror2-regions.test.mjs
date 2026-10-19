@@ -42,9 +42,10 @@ test('MP-11: changed identity retires the exact display and cannot be re-used', 
   assert.equal(await lease.isCurrent(), false); assert.deepEqual(f.host.removed, ['display']);
   await assert.rejects(f.regions.resolve(f.target, 'owner'));
 });
-test('MP-11: transform, masks and ordinary elements never grant a crop', async () => {
-  const f = fixture(); f.boxes[0].distorted = true;
-  await assert.rejects(f.regions.resolve(f.target, 'owner'), /region_transform/);
+test('MP-11: a transformed region leases its on-screen rect; masks and ordinary elements never grant a crop', async () => {
+  const f = fixture(); f.boxes[0].distorted = 'transform';
+  const lease = await f.regions.resolve(f.target, 'owner');
+  assert.deepEqual(lease.rect, {x:10,y:20,width:200,height:100}); assert.deepEqual(lease.element_offset, {x:0,y:0});
   for (const kind of ['mask', 'element']) { f.regions.record(f.stream, {reset:true,nodes:[{id:'n3',parent:null,kind}]}); await assert.rejects(f.regions.resolve(f.target,'owner')); }
 });
 test('MP-11: navigation, subscription loss, policy change and removal retire', async () => {

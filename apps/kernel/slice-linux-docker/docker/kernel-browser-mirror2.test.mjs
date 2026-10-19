@@ -690,7 +690,7 @@ test('MP-08/MP-10 r47 GitHub storm: credits based before a reset still in flight
  assert.equal((await credit(reset.sequence)).reset,true,'a viewer that applied the reset and is still far behind resets');
 });
 
-test('MP-08/MP-10 decision (a): theater mode (opaque media over 60% of the view) hands the page to video on the next quiet packet', async () => {
+test('MP-08/MP-10 mirrorregion: theater mode (opaque media over 60% of the view) stays a DOM copy; the region patch serves the area', async () => {
  const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
  const connection={isOpen:()=>true,send:async()=>({})};
  const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
@@ -714,9 +714,13 @@ test('MP-08/MP-10 decision (a): theater mode (opaque media over 60% of the view)
  const echo=await credit(first.sequence);assert.equal(echo.fallback,undefined,'the click echo is not held for a region measurement');
  stream.inputAt=Date.now()-2000;stream.tilesAt=0;
  const handoff=await credit(echo.sequence);
- assert.equal(handoff.fallback,'region_area','a media-dominated view hands off to protected video');
- assert.equal(handoff.reset,true);assert.equal(handoff.document_id,'D1');
- assert(!handoff.nodes&&!handoff.root&&!handoff.tiles,'the handoff carries no partial DOM or stills');
+ assert.equal(handoff.fallback,undefined,'a media-dominated view is not handed to whole-page video');
+ assert.notEqual(handoff.reset,true);assert(!handoff.tiles,'no lossless stills of an over-budget area');
+ // The document copy itself failing is the one page-level fallback that remains.
+ connection.send=async method=>method==='Page.getFrameTree'?{frameTree:{frame:{loaderId:'D1'}}}:{};
+ mirror.evaluate=async(_,expression)=>{if(expression==='m.snapshot()')throw new Error('snapshot failed');return{};};
+ const failed=await credit(0);
+ assert.equal(failed.fallback,'observer_unavailable');assert.equal(failed.reset,true);assert(!failed.nodes&&!failed.root);
 });
 
 test('MP-08/MP-10/MP-11 a renderer that stays busy keeps the native preview waiting instead of failing the subscription',async()=>{
