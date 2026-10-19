@@ -89,24 +89,21 @@ test('MP-08/MP-10/MP-11 visible page crops browser scrollbars out of the source,
 });
 
 
-// A-L13: the owner's selection needs no live stream or mirror, so it works right after a navigation closed them.
-test('A-L13 visible-page capture is served from the live viewport at the Tab scale, without a stream or mirror',async()=>{
+// A-L13: the owner's selection needs no live stream, mirror or window read, so it works right after a navigation closed them.
+test('A-L13 visible-page capture is served at the Tab scale inside the kernel viewport, without a stream or mirror',async()=>{
  const {captureVisiblePage}=await import('./kernel-browser-page-display.mjs');
- const tab={tab_id:'t',target_id:'target',document_id:'d'};let captured=0,metrics={cssLayoutViewport:{clientWidth:1265,clientHeight:713},cssVisualViewport:{scale:1,zoom:1}},fail=null,clip;
- const scales=new Map([['t',1]]);
- const host={generation:1,protection:{unknown:false},displays:new Map(),mirror:{streams:new Map()},tabs:new Map([['t',tab]]),scales,
-  browser:{resolvePageTarget:async()=>{if(fail)throw fail;return{connection:{send:async method=>{assert.equal(method,'Page.getLayoutMetrics');return metrics;}},sessionId:'s'}}},
+ const tab={tab_id:'t',target_id:'target',document_id:'d'};let captured=0,clip;const scales=new Map([['t',1]]);
+ const host={generation:1,protection:{unknown:false},displays:new Map(),mirror:{streams:new Map()},tabs:new Map([['t',tab]]),scales,browser:{resolvePageTarget:async()=>assert.fail('no page read before the shot')},
   displayScreenshot:async(t,c)=>{captured++;clip=c;assert.equal(t,tab);const s=scales.get('t');return{width:c.width*s,height:c.height*s,[displayMaskRegions]:[{x:12,y:6,width:20,height:10}]};}};
- for(const [scale,width,height] of [[1,1264,712],[1,1265,713],[2,2528,1424],[2,2530,1426]]){
+ // The viewer's frame may be any size up to the viewport (a mirror viewport is the page area, scrollbar column included).
+ for(const [scale,width,height] of [[1,1264,712],[1,1272,708],[2,2528,1424],[2,2544,1416]]){
   scales.set('t',scale);const shot=await captureVisiblePage(host,tab,{width,height});
   assert.equal(shot.protected_regions.length,1,`DPR${scale} ${width}`);assert.deepEqual(clip,{x:0,y:0,width:width/scale,height:height/scale,scale:1});
  }
- host.protection={unknown:false};assert.equal((await captureVisiblePage(host,tab,{width:2530,height:1426})).protected_regions.length,1,'a replaced policy object does not stale the capture');
- for(const [frame,code] of [[{width:2532,height:1426},'capture_view_resized'],[{width:2530,height:1428},'capture_view_resized'],[{width:2529,height:1426},'capture_view_resized'],[undefined,'capture_view_resized']])
-  await assert.rejects(captureVisiblePage(host,tab,frame),{code,message:/select the region again/});
- const before=captured;
- metrics={...metrics,cssVisualViewport:{scale:1,zoom:1.25}};await assert.rejects(captureVisiblePage(host,tab,{width:2530,height:1426}),{code:'capture_view_zoomed'});
- metrics={...metrics,cssVisualViewport:{scale:1,zoom:1}};fail=Object.assign(Error('gone'),{code:'x'});await assert.rejects(captureVisiblePage(host,tab,{width:2530,height:1426}),{code:'capture_page_unavailable'});
- fail=Object.assign(Error('gone'),{code:'stale_document_reference'});await assert.rejects(captureVisiblePage(host,tab,{width:2530,height:1426}),{code:'stale_document_reference'});
- assert.equal(captured,before,'a refused capture never takes the shot');
+ host.protection={unknown:false};assert.equal((await captureVisiblePage(host,tab,{width:2544,height:1416})).protected_regions.length,1,'a replaced policy object does not stale the capture');
+ for(const frame of [{width:2562,height:1416},{width:2544,height:1602},{width:2543,height:1416},{width:0,height:0},undefined])
+  await assert.rejects(captureVisiblePage(host,tab,frame),{code:'capture_view_resized',message:/select the region again/});
+ assert.equal(captured,5,'a refused capture never takes the shot');
+ host.displayScreenshot=async()=>({width:1,height:1,[displayMaskRegions]:[]});
+ await assert.rejects(captureVisiblePage(host,tab,{width:2544,height:1416}),{code:'capture_view_resized'},'a shot that is not the frame size is refused');
 });
