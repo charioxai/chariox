@@ -582,14 +582,34 @@ impl RoomTerminalService {
         }
     }
 
-    /// The kernel is stopping: keep every screen as it is now. The next start
-    /// reports these terminals as ended by the restart.
+    /// Stop the terminal sessions, keeping their screens and records so the
+    /// next start reports them as ended by the restart.
     pub fn shutdown(&self) {
         self.pump_once();
         let mut state = self.lock();
-        for terminal in state.terminals.values_mut() {
+        let State {
+            pty,
+            terminals,
+            waiters,
+            ..
+        } = &mut *state;
+        for terminal in terminals.values_mut() {
+            if let Some(run_id) = &terminal.run_id {
+                if let Some(sweep) = &terminal.session_sweep {
+                    sweep.stop();
+                }
+                if let Err(error) = pty.remove_process(run_id) {
+                    crate::logging::error_with_fields(
+                        "room_terminal.shutdown",
+                        "terminal process could not be removed",
+                        serde_json::json!({ "terminal_id": terminal.record.terminal_id, "error": error.to_string() }),
+                    );
+                }
+                terminal.end(RoomTerminalOutcome::KernelRestarted);
+            }
             self.persist(terminal);
         }
+        waiters.clear();
     }
 
     fn persist_if_due(&self, terminal: &mut Terminal, now: Instant) {

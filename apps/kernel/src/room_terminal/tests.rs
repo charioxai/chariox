@@ -356,6 +356,11 @@ async fn notifications_fire_for_text_waiting_and_finish() {
     let events = Arc::new(FakeEvents::default());
     let service = service_with_events(root.path(), events.clone());
     let id = open(&service, root.path()).terminal_id;
+    until("the initial shell prompt", || async {
+        service.pump_once();
+        service.lock().terminals[&id].mark_tracking
+    })
+    .await;
 
     service
         .watch(
@@ -377,13 +382,14 @@ async fn notifications_fire_for_text_waiting_and_finish() {
             None,
         )
         .unwrap();
-    type_as(
+    let sent = type_as(
         &service,
         &id,
         &agent("agent-a"),
         "echo NEEDLE-$((3+4)); cat\r",
     )
     .await;
+    assert!(sent.accepted, "the command was refused: {sent:?}");
     until("text and waiting events", || async {
         service.pump_once();
         !events.fired("w-text").is_empty() && !events.fired("w-wait").is_empty()
@@ -672,6 +678,51 @@ async fn a_graceful_shutdown_keeps_output_newer_than_the_last_save() {
     first.end_session("room-1");
 }
 
+#[tokio::test]
+async fn a_graceful_shutdown_stops_disowned_jobs_and_preserves_the_terminal() {
+    let root = TempDir::new();
+    let first = service(root.path());
+    let id = open(&first, root.path()).terminal_id;
+    let background = root.path().join("shutdown-job.pid");
+    type_as(
+        &first,
+        &id,
+        &TerminalActor::User,
+        &format!(
+            "nohup sleep 8884 >/dev/null 2>&1 & echo $! > '{}'; disown; echo SHUTDOWN-SCREEN\r",
+            background.display()
+        ),
+    )
+    .await;
+    until("the disowned job and its output", || async {
+        job_running(&background) && screen_has(&first, &id, "SHUTDOWN-SCREEN").await
+    })
+    .await;
+    let shell_pid = first.lock().terminals[&id].shell_pid.unwrap();
+    let shell = root.path().join("shell.pid");
+    std::fs::write(&shell, shell_pid.to_string()).unwrap();
+    first.shutdown();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let stopped = !job_running(&background) && !job_running(&shell);
+    let second = service(root.path());
+    let recovered = second.snapshot("room-1", &id);
+    // Always clean up, including on the unfixed implementation.
+    first.end_session("room-1");
+    assert!(
+        stopped,
+        "shutdown left the shell or its disowned job running"
+    );
+    let snapshot = recovered.unwrap();
+    assert!(snapshot.screen_text.contains("SHUTDOWN-SCREEN"));
+    assert!(matches!(
+        snapshot.terminal.status,
+        RoomTerminalStatus::Ended {
+            outcome: RoomTerminalOutcome::KernelRestarted,
+            ..
+        }
+    ));
+}
+
 fn job_running(pid_file: &Path) -> bool {
     let Some(pid) = std::fs::read_to_string(pid_file)
         .ok()
@@ -813,6 +864,7 @@ async fn typed_commands_report_finish_and_exit_code_even_when_instant() {
         ("false\r", 1),
         ("/bin/true\r", 0),
         ("(exit 7)\r", 7),
+        ("(:)&\r", 0),
     ] {
         assert_eq!(
             finish_of(&service, &id, line).await,
@@ -823,6 +875,10 @@ async fn typed_commands_report_finish_and_exit_code_even_when_instant() {
             "{line}"
         );
     }
+    // A background subshell must not report a late start after the prompt.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    service.pump_once();
+    assert_eq!(service.list("room-1")[0].driver, RoomTerminalDriver::Free);
     pumping.abort();
     service.end_session("room-1");
 }
@@ -982,6 +1038,46 @@ async fn an_output_marker_survives_a_large_burst_in_one_pump_batch() {
     assert!(fired.iter().any(|(owner, kind)| owner.wake_id == "burst"
         && matches!(kind,
         RoomTerminalEventKind::OutputMatched { text } if text == "ready-marker")));
+}
+
+#[tokio::test]
+async fn a_late_output_wait_matches_a_marker_before_a_large_burst() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    let offset = service.snapshot("room-1", &id).unwrap().output_offset;
+    type_as(
+        &service,
+        &id,
+        &agent("a"),
+        "printf 'late-\\033[32mready\\033[0m'; printf '%32768s' x\r",
+    )
+    .await;
+    until("all output before registering the wait", || async {
+        service.pump_once();
+        service.lock().terminals[&id].log.end_offset() > offset + 32768
+    })
+    .await;
+    let waited = service
+        .wait(
+            "room-1",
+            &id,
+            "a",
+            vec![RoomTerminalWatch::OutputContains {
+                text: "late-ready".into(),
+            }],
+            Some(offset),
+            Duration::from_millis(100),
+        )
+        .await
+        .unwrap();
+    service.end_session("room-1");
+    assert_eq!(
+        waited.fired,
+        Some(RoomTerminalEventKind::OutputMatched {
+            text: "late-ready".into()
+        })
+    );
 }
 
 #[tokio::test]

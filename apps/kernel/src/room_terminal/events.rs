@@ -40,10 +40,42 @@ pub struct WatchOwner {
 struct ArmedWatch {
     owner: WatchOwner,
     watch: RoomTerminalWatch,
-    processed_plain_bytes: u64,
-    text_tail: String,
+    output: OutputMatcher,
     /// A program has been in the foreground since arming (for `Finished`).
     seen_busy: bool,
+}
+
+/// Incremental text matching, shared by live watches and retained-log replay.
+pub(super) struct OutputMatcher {
+    processed_plain_bytes: u64,
+    text_tail: String,
+}
+
+impl OutputMatcher {
+    pub(super) fn new(plain: &PlainText) -> Self {
+        Self {
+            processed_plain_bytes: plain.total_bytes(),
+            text_tail: String::new(),
+        }
+    }
+
+    pub(super) fn matches(&mut self, plain: &PlainText, text: &str) -> bool {
+        self.text_tail
+            .push_str(plain.since(self.processed_plain_bytes));
+        self.processed_plain_bytes = plain.total_bytes();
+        if self.text_tail.contains(text) {
+            return true;
+        }
+        let mut cut = self
+            .text_tail
+            .len()
+            .saturating_sub(text.len().saturating_sub(1));
+        while !self.text_tail.is_char_boundary(cut) {
+            cut += 1;
+        }
+        self.text_tail.drain(..cut);
+        false
+    }
 }
 
 pub(super) type Fired = Vec<(WatchOwner, RoomTerminalEventKind)>;
@@ -64,8 +96,7 @@ impl WatchSet {
         self.armed.push(ArmedWatch {
             owner,
             watch,
-            processed_plain_bytes: plain.total_bytes(),
-            text_tail: String::new(),
+            output: OutputMatcher::new(plain),
             seen_busy: program_running,
         });
     }
@@ -76,21 +107,9 @@ impl WatchSet {
                 return None;
             };
             armed
-                .text_tail
-                .push_str(plain.since(armed.processed_plain_bytes));
-            armed.processed_plain_bytes = plain.total_bytes();
-            if armed.text_tail.contains(text.as_str()) {
-                return Some(RoomTerminalEventKind::OutputMatched { text: text.clone() });
-            }
-            let mut cut = armed
-                .text_tail
-                .len()
-                .saturating_sub(text.len().saturating_sub(1));
-            while !armed.text_tail.is_char_boundary(cut) {
-                cut += 1;
-            }
-            armed.text_tail.drain(..cut);
-            None
+                .output
+                .matches(plain, text)
+                .then(|| RoomTerminalEventKind::OutputMatched { text: text.clone() })
         })
     }
 

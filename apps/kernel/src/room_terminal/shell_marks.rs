@@ -221,10 +221,15 @@ mod tests {
     fn login_profile_can_replace_both_bash_hooks_without_losing_completion() {
         use crate::pty::{PtyManager, PtySpawnRequest};
         use std::time::{Duration, Instant};
+        let bash = std::env::var("CHARIOX_TEST_BASH").unwrap_or_else(|_| "/bin/bash".into());
         for (index, hooks) in [
             "PROMPT_COMMAND=:",
             "PS0='profile-start '",
             "PROMPT_COMMAND=:\nPS0='profile-start '",
+            "PROMPT_COMMAND='printf hook-one; printf hook-two'",
+            "PROMPT_COMMAND=('printf hook-one' 'printf hook-two')",
+            "declare -ax PROMPT_COMMAND=('printf hook-one' 'printf hook-two')",
+            r#"hook=profile-hook; status_code=profile-status; PROMPT_COMMAND='printf "$hook/$status_code"'"#,
         ]
         .into_iter()
         .enumerate()
@@ -240,15 +245,15 @@ mod tests {
             )
             .unwrap();
             let integration = ShellIntegration::install(&root.join("integration"));
-            let mut env = integration.environment("/bin/bash");
+            let mut env = integration.environment(&bash);
             env.insert("HOME".into(), root.display().to_string());
             env.insert("TERM".into(), "dumb".into());
             let mut pty = PtyManager::default();
             pty.spawn_interactive(PtySpawnRequest {
                 process_key: "hooks".into(),
                 provider_run_id: "hooks".into(),
-                program: "/bin/bash".into(),
-                args: integration.arguments("/bin/bash"),
+                program: bash.clone(),
+                args: integration.arguments(&bash),
                 env,
                 env_remove: vec![],
                 working_directory: Some(root.clone()),
@@ -285,6 +290,14 @@ mod tests {
                 String::from_utf8_lossy(&output).contains("profile-loaded"),
                 "the login profile alias did not run"
             );
+            if hooks.contains("hook-one") {
+                let output = String::from_utf8_lossy(&output);
+                assert!(output.contains("hook-onehook-two"), "{hooks}: {output}");
+            }
+            if hooks.contains("profile-hook") {
+                let output = String::from_utf8_lossy(&output);
+                assert!(output.contains("profile-hook/profile-status"), "{output}");
+            }
             assert!(
                 marks.contains(&ShellMark::CommandStarted),
                 "{hooks}: {marks:?}"

@@ -876,6 +876,48 @@ async fn assert_remote_room_terminal(
         screen.contains("remote-42"),
         "worker terminal output: {screen}"
     );
+    let RoomTerminalResult::Output { output } = call(
+        None,
+        agent,
+        RoomTerminalOperation::ReadOutput {
+            terminal_id: id.clone(),
+            after_offset: 0,
+            wait_ms: 0,
+        },
+    )
+    .await
+    else {
+        panic!("worker output expected")
+    };
+    assert_eq!(output.terminal.host_agent.as_deref(), agent);
+    let RoomTerminalResult::Waited { waited } = call(
+        None,
+        output.terminal.host_agent.as_deref(),
+        RoomTerminalOperation::Wait {
+            terminal_id: id.clone(),
+            watches: vec![crate::room_terminal::RoomTerminalWatch::OutputContains {
+                text: "remote-42".into(),
+            }],
+            after_offset: Some(0),
+            timeout_ms: 100,
+        },
+    )
+    .await
+    else {
+        panic!("worker wait expected")
+    };
+    assert_eq!(waited.terminal.host_agent.as_deref(), agent);
+    assert!(matches!(
+        call(
+            None,
+            waited.terminal.host_agent.as_deref(),
+            RoomTerminalOperation::Snapshot {
+                terminal_id: id.clone()
+            }
+        )
+        .await,
+        RoomTerminalResult::Snapshot { .. }
+    ));
     let RoomTerminalResult::Listed { terminals } =
         call(None, None, RoomTerminalOperation::List).await
     else {

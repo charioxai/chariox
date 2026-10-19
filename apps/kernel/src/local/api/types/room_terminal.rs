@@ -90,7 +90,9 @@ impl RoomTerminalResult {
             Self::Opened { terminal } | Self::Resized { terminal } => host(terminal),
             Self::Listed { terminals } => terminals.iter_mut().for_each(host),
             Self::Snapshot { snapshot } => host(&mut snapshot.terminal),
-            Self::Input { .. } | Self::Output { .. } | Self::Waited { .. } | Self::Closed => {}
+            Self::Output { output } => host(&mut output.terminal),
+            Self::Waited { waited } => host(&mut waited.terminal),
+            Self::Input { .. } | Self::Closed => {}
         }
         self
     }

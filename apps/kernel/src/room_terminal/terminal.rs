@@ -5,7 +5,7 @@ use std::time::Instant;
 use base64::Engine as _;
 
 use super::driver::DriverTracker;
-use super::events::{Fired, WatchOwner, WatchSet, QUIET_BEFORE_WAITING};
+use super::events::{Fired, OutputMatcher, WatchOwner, WatchSet, QUIET_BEFORE_WAITING};
 use super::output_log::OutputLog;
 use super::plain_text::PlainText;
 use super::screen::Screen;
@@ -228,11 +228,14 @@ impl Terminal {
                     return None;
                 }
                 let mut plain = PlainText::new();
-                plain.append(&page.bytes);
-                plain
-                    .since(0)
-                    .contains(text.as_str())
-                    .then(|| RoomTerminalEventKind::OutputMatched { text: text.clone() })
+                let mut output = OutputMatcher::new(&plain);
+                for part in page.bytes.chunks(4096) {
+                    plain.append(part);
+                    if output.matches(&plain, text) {
+                        return Some(RoomTerminalEventKind::OutputMatched { text: text.clone() });
+                    }
+                }
+                None
             }
             RoomTerminalWatch::WaitingForInput => (program_running
                 && now.duration_since(self.last_output_at) >= QUIET_BEFORE_WAITING)
