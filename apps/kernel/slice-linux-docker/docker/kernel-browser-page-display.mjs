@@ -141,7 +141,9 @@ export async function captureVisiblePage(host,tab,frame){
   const m=await connection.send('Page.getLayoutMetrics',{},sessionId);
   geometry=visiblePageGeometry(window,{clientWidth:m.cssLayoutViewport?.clientWidth,clientHeight:m.cssLayoutViewport?.clientHeight,zoom:m.cssVisualViewport?.zoom??1,scale:m.cssVisualViewport?.scale});
  }catch(error){if(error?.code==='stale_document_reference')throw error;throw new CaptureRefusal('page_unavailable');}
- if(geometry.width!==frame?.width||geometry.height!==frame?.height)throw new CaptureRefusal('view_resized');
+ // The viewer's frame is in its own device pixels: the page's css size at the Tab's emulated scale.
+ const scale=host.scales.get(tab.tab_id)??host.viewport().device_scale_factor;
+ if(geometry.css_width*scale!==frame?.width||geometry.css_height*scale!==frame?.height)throw new CaptureRefusal('view_resized');
  const shot=await host.displayScreenshot(tab,{x:0,y:0,width:geometry.css_width,height:geometry.css_height,scale:1},false);
  if(shot.width!==frame.width||shot.height!==frame.height)throw new CaptureRefusal('view_resized');
  return {...shot,protected_regions:shot[displayMaskRegions]??[]};

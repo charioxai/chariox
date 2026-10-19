@@ -90,18 +90,22 @@ test('MP-08/MP-10/MP-11 visible page crops browser scrollbars out of the source,
 
 
 // A-L13: the owner's selection needs no live stream or mirror, so it works right after a navigation closed them.
-test('A-L13 visible-page capture is served without a live stream or mirror and keeps protection metadata',async()=>{
+test('A-L13 visible-page capture is served without a live stream or mirror, at the Tab scale, and keeps protection metadata',async()=>{
  const {captureVisiblePage}=await import('./kernel-browser-page-display.mjs');
  const tab={tab_id:'t',target_id:'target',document_id:'d'};let captured=0,live=true,metrics={clientWidth:1265,clientHeight:800};
- const window={...binding(),isCurrent:()=>live};
- const host={generation:1,protection:{unknown:false},displays:new Map(),mirror:{streams:new Map()},tabs:new Map([['t',tab]]),chromeWindows:{current:()=>({tabbed:window})},
+ const window={...binding(),isCurrent:()=>live},scales=new Map([['t',1]]);
+ const host={generation:1,protection:{unknown:false},displays:new Map(),mirror:{streams:new Map()},tabs:new Map([['t',tab]]),scales,chromeWindows:{current:()=>({tabbed:window})},
   browser:{resolvePageTarget:async()=>({connection:{send:async method=>{assert.equal(method,'Page.getLayoutMetrics');return{cssLayoutViewport:metrics,cssVisualViewport:{scale:1,zoom:1}};}},sessionId:'s'})},
-  displayScreenshot:async(t,clip)=>{captured++;assert.equal(t,tab);assert.deepEqual(clip,{x:0,y:0,width:1264,height:712,scale:1});return{width:1264,height:712,[displayMaskRegions]:[{x:12,y:6,width:20,height:10}]};}};
- const frame={width:1264,height:712};
- assert.equal((await captureVisiblePage(host,tab,frame)).protected_regions.length,1);assert.equal(captured,1);
- host.protection={unknown:false};assert.equal((await captureVisiblePage(host,tab,frame)).protected_regions.length,1,'a replaced policy object does not stale the capture');
- await assert.rejects(captureVisiblePage(host,tab,{width:1264,height:800}),{code:'capture_view_resized',message:/select the region again/});
- live=false;await assert.rejects(captureVisiblePage(host,tab,frame),{code:'capture_page_unavailable'});
- live=true;metrics={clientWidth:1265,clientHeight:700};await assert.rejects(captureVisiblePage(host,tab,frame),{code:'capture_view_resized'});
- assert.equal(captured,2,'a refused capture never takes the shot');
+  displayScreenshot:async(t,clip)=>{captured++;assert.equal(t,tab);assert.deepEqual(clip,{x:0,y:0,width:1264,height:712,scale:1});const s=scales.get('t');return{width:1264*s,height:712*s,[displayMaskRegions]:[{x:12,y:6,width:20,height:10}]};}};
+ for(const scale of [1,2]){
+  scales.set('t',scale);const frame={width:1264*scale,height:712*scale};
+  assert.equal((await captureVisiblePage(host,tab,frame)).protected_regions.length,1,`DPR${scale}`);
+ }
+ assert.equal(captured,2);
+ host.protection={unknown:false};assert.equal((await captureVisiblePage(host,tab,{width:2528,height:1424})).protected_regions.length,1,'a replaced policy object does not stale the capture');
+ await assert.rejects(captureVisiblePage(host,tab,{width:2528,height:1000}),{code:'capture_view_resized',message:/select the region again/});
+ await assert.rejects(captureVisiblePage(host,tab,{width:1264,height:712}),{code:'capture_view_resized'},'a frame at another scale than the Tab');
+ live=false;await assert.rejects(captureVisiblePage(host,tab,{width:2528,height:1424}),{code:'capture_page_unavailable'});
+ live=true;metrics={clientWidth:1265,clientHeight:700};await assert.rejects(captureVisiblePage(host,tab,{width:2528,height:1424}),{code:'capture_view_resized'});
+ assert.equal(captured,3,'a refused capture never takes the shot');
 });
