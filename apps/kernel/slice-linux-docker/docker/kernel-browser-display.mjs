@@ -216,7 +216,7 @@ export class DisplayStream {
   // (adoptLease invalidates the codec chain). It is offered only to sustained motion
   // (video, canvas, a long scroll): `leaseStreak` consecutive frames at most LEASE_GAP_MS apart.
   constructor(binding, { encoder = new PortableEncoder(), now = () => performance.now(), wait = delay, timing = () => {}, leases = true, leaseStreak = LEASE_STREAK } = {}) {
-    this.leaseStreak = leaseStreak;this.streak = 0;this.streakAt = -Infinity;this.leaseWaiters=new Set();
+    this.leaseStreak = leaseStreak;this.streak = 0;this.streakAt = -Infinity;
     this.leases = leases;
     this.pixels=new PixelWorker();Object.assign(this, binding); this.encoder = encoder; this.now = now; this.wait = wait;
     this.sequence = 0; this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null;
@@ -291,12 +291,7 @@ export class DisplayStream {
     if(!Number.isSafeInteger(afterSequence)||afterSequence<=this.sequence)return 0;
     const frames=afterSequence-this.sequence;this.sequence=afterSequence;this.invalidate();return frames;
   }
-  // A credit already in flight when the lease was granted proves the worker has
-  // sent nothing yet: Node keeps the lease and parks that credit instead of
-  // taking the codec chain back (every grant used to die at once on it).
-  leaseHolds(afterSequence){return this.leased&&this.leaseTimer!==null&&!(afterSequence>this.sequence);}
-  leaseEnds(ms,signal){return new Promise(resolve=>{const done=()=>{clearTimeout(timer);signal?.removeEventListener('abort',done);this.leaseWaiters.delete(done);resolve()};const timer=setTimeout(done,Math.max(0,ms));this.leaseWaiters.add(done);signal?.addEventListener('abort',done,{once:true})})}
-  endLease(){clearInterval(this.leaseTimer);this.leaseTimer=null;for(const wake of [...this.leaseWaiters])wake();this.encoder?.nativeRetireState?.(this.encoder.nativeSession);}
+  endLease(){clearInterval(this.leaseTimer);this.leaseTimer=null;this.encoder?.nativeRetireState?.(this.encoder.nativeSession);}
   invalidate() { if(this.leased||this.leaseTimer)this.endLease();this.motionActive=false;this.shiftHold=false;this.compositorSerial=null;this.compositorCommittedSerial=null;this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null; this.capture?.invalidate();this.refiner?.invalidate();this.producer?.invalidate(); }
   async frame(source, documentId, afterSequence, validate = async () => true, currentBinding = () => true) {
     const codec={};

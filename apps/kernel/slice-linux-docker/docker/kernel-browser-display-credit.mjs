@@ -183,11 +183,6 @@ export async function displayPushCredit(host, stream, command, signal, { budgetM
   if (command.push.reset) stream.resetForDelivery();
   const deadline = now() + budgetMs;
   for (;;) {
-    // L3: a stale credit (no lease frame sent yet) neither ends nor serves the lease.
-    if (stream.leaseHolds?.(command.after_sequence)) {
-      await stream.leaseEnds(deadline - now(), signal);
-      if (stream.leaseHolds(command.after_sequence)) return { generation: host.generation, frame_sent: false, display_frame: null };
-    }
     const reply = await displayCredit(host, stream, command, signal);
     if (reply.frame_sent) {
       stream.pushedAt = now();
