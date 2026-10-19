@@ -974,20 +974,18 @@ export class Mirror2 {
       if (!entry) return seen(ids);
       seen((await inFrame(entry, `${m}.activeTarget(${editable})`)).map(id => rebaseId(id, entry.slot))); seen(await call(`${m}.ancestry(${JSON.stringify(owner)})`));
     };
-    // The shared text preflight's verdict for focus inside a mirrored cross-origin frame.
-    const frameSensitive = async expression => { const owner = await call(`${m}.activeForeign()`); const entry = owner && stream.frames.get(owner); return entry ? inFrame(entry, expression) : true; };
     if (action.kind === 'key') {
       let checked = false;
       const guard = async () => { assertEpoch(); assertNotCancelled(signal); if (checked) return; await activeTarget(false); checked = true; };
       // Protocol 530 (review #1016 P2): undo/redo keep this mirror admission (observed frames, live
       // focus, epoch) as the editor's own Linux Chromium chords: Control=2, Shift=8.
       const history = HISTORY_CHORDS.get(action.key);
-      return { input: history ? { kind: 'key', key: 'z', modifiers: history } : { kind: 'key', key: action.key }, guard, observedFrameInput: true, frameSensitive };
+      return { input: history ? { kind: 'key', key: 'z', modifiers: history } : { kind: 'key', key: action.key }, guard };
     }
     if (action.kind === 'text') {
       const guard = async () => { assertEpoch(); assertNotCancelled(signal); await activeTarget(true); };
       const entry = frameOf(action.node_id);
-      return { guard, observedFrameInput: true, frameSensitive, perform: async send => {
+      return { guard, perform: async send => {
         if (action.node_id) { if (entry) await inFrame(entry, `${m}.focus(${JSON.stringify({ node_id: localId(action.node_id) })})`); else await call(`${m}.focus(${JSON.stringify({ node_id: action.node_id })})`); }
         assertNotCancelled(signal); assertEpoch();
         return send('Input.insertText', { text: action.text });

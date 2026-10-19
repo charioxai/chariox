@@ -313,9 +313,9 @@ export class MirrorService {
           if(focused!==id)throw new Error('MP-11: changed native mirror text focus');
           checked=true;
         };
-        if(!editable)return {input:physical,guard,observedFrameInput:true};
+        if(!editable)return {input:physical,guard};
         if(typeof physical.text!=='string'||physical.text.length>16384)throw new Error('MP-11: invalid native mirror text');
-        return {guard,observedFrameInput:true,perform:send=>send('Input.insertText',{text:physical.text})};
+        return {guard,perform:send=>send('Input.insertText',{text:physical.text})};
       }
       if(action.kind==='key')throw new Error('MP-11: mirror key requires observed focus; use coordinate input for display fallback');
       let checked=false;
@@ -354,7 +354,7 @@ export class MirrorService {
       return {input:{kind:'click',...point},guard};
     }
     if(action.kind==='scroll')return {input:{kind:'scroll',...point,delta_x:action.delta_x,delta_y:action.delta_y},guard:assertEpoch};
-    if(action.kind==='text'||action.kind==='composition')return {observedFrameInput:true,guard:async()=>{
+    if(action.kind==='text'||action.kind==='composition')return {guard:async()=>{
       assertEpoch();assertNotCancelled(signal);
       const focused=await this.evaluate(world,`globalThis.__charioxMirror.activeTarget(${JSON.stringify(expected)})`);
       assertEpoch();assertNotCancelled(signal);

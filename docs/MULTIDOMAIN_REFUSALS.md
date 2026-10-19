@@ -22,7 +22,7 @@ never establish an authorization refusal.
 | `stale_epoch` | A focus, browser or observation-protection epoch changed. |
 | `stale_reference` | A document, selection receipt or subscription reference is no longer usable. |
 | `not_granted` | This owner/actor has no usable reference or capability, including nonexistent and foreign IDs. |
-| `sensitive_requires_focus` | Generic input cannot authorize a sensitive field; the privileged focus/Vault path is required. |
+| `sensitive_requires_focus` | A Vault fill or Computer action needs focus or human approval. Browser typing and drags are never refused for the field they touch. |
 
 Host policy refusals are branded `UserDomainRefusal` instances. Arbitrary page,
 CDP and transport exceptions cannot impersonate them with a matching message or

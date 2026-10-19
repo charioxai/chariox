@@ -498,7 +498,7 @@ test('MP-08/MP-11 mirrored Ctrl+Z / Ctrl+Shift+Z resolve to modifier chords unde
   for (const [key, expected] of [['Ctrl+Z', { kind: 'key', key: 'z', modifiers: 2 }], ['Ctrl+Shift+Z', { kind: 'key', key: 'z', modifiers: 10 }], ['Tab', { kind: 'key', key: 'Tab' }], ['constructor', { kind: 'key', key: 'constructor' }]]) {
     const resolved = await mirror.resolveInput(stream, tab, { subscription_id: 's', sequence: 1, action: { kind: 'key', key } }, 'scope');
     assert.deepEqual(resolved.input, expected, key);
-    assert.equal(resolved.observedFrameInput, true); assert.equal(typeof resolved.guard, 'function'); assert.equal(typeof resolved.frameSensitive, 'function');
+    assert.equal(typeof resolved.guard, 'function');
   }
 });
 

@@ -296,15 +296,13 @@ test("MD-5: multiple subscribers share one CDP source and acknowledgment", () =>
   await host.request({ op: "unsubscribe", ...second });
   assert.equal(sent.filter(call => call.method === "Page.stopScreencast").length, 1);
 }));
-test("MD-2: text input uses isolated focus checks and rejects secret fields", () => using(async ({ host, sent }) => {
+test("MD-2: text input reaches any focused field, secret or not (A-L23)", () => using(async ({ host, sent }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
   const binding = { tab_id: opened.tab_id, generation: opened.generation };
   fixture.secretFocused = true;
-  await assert.rejects(host.request({ op: "input", ...binding, input: { kind: "text", text: "never-insert" } }), error => error.code === "user_domain_sensitive_requires_focus");
-  assert(!sent.some(call => call.method === "Input.insertText"));
-  fixture.secretFocused = false;
   await host.request({ op: "input", ...binding, input: { kind: "text", text: "fixture" } });
   assert(sent.some(call => call.method === "Input.insertText"));
+  fixture.secretFocused = false;
   await assert.rejects(host.request({ op: "input", ...binding, input: { kind: "click", x: 1280, y: 0 } }), /viewport/);
   // Protocol 530: middle/right buttons are the band's (Chrome's own UI), never a page click;
   // a page drag is only the watching person's (coordinator 15:08Z).
@@ -564,7 +562,7 @@ test("MD-3 b220: cancelled pending input never inserts text", () => using(async 
   const opened = await host.request({ op: "open", url: "about:blank" });
   const entered = Promise.withResolvers(), release = Promise.withResolvers();
   const cancel = new AbortController();
-  connection.beforeSend = async method => { if (method === "Runtime.evaluate") { entered.resolve(); await release.promise; } };
+  connection.beforeSend = async method => { if (method === "Page.getFrameTree") { entered.resolve(); await release.promise; } };
   const pending = host.request({ op: "input", tab_id: opened.tab_id, generation: opened.generation,
     document_id: opened.tabs[0].document_id, input: { kind: "text", text: "synthetic" } }, { signal: cancel.signal });
   await entered.promise;
@@ -600,7 +598,8 @@ test("MD-3 b220: input rejects replacement documents and missing observation bin
 test("MD-3 b220: navigation during text preparation rejects input before insert", () => using(async ({ host, sent, connection, pages }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
   const target = host.tabs.get(opened.tab_id).target_id;
-  connection.beforeSend = async method => { if (method === "Runtime.evaluate") pages.set(target, { url: "about:blank", document_id: "replacement" }); };
+  let reads = 0;
+  connection.beforeSend = async method => { if (method === "Page.getFrameTree" && ++reads === 2) pages.set(target, { url: "about:blank", document_id: "replacement" }); };
   await assert.rejects(host.request({ op: "input", tab_id: opened.tab_id, generation: opened.generation,
     document_id: opened.tabs[0].document_id, input: { kind: "text", text: "synthetic" } }), error => error.code === "stale_document_reference");
   assert(!sent.some(call => call.method === "Input.insertText"));
@@ -620,7 +619,7 @@ test("MD-3 b220: production stdio cancellation reaches held host input and settl
     return result.promise;
   };
   const entered = Promise.withResolvers(), release = Promise.withResolvers();
-  connection.beforeSend = async method => { if (method === "Runtime.evaluate") { entered.resolve(); await release.promise; } };
+  connection.beforeSend = async method => { if (method === "Page.getFrameTree") { entered.resolve(); await release.promise; } };
   try {
     const command = { op: "input", tab_id: opened.tab_id, generation: opened.generation,
       document_id: opened.tabs[0].document_id, input: { kind: "text", text: "synthetic" } };
@@ -1873,7 +1872,7 @@ test('MP-08/MP-10/MP-11 warm visible-page keys avoid duplicate loader queries in
   regionLease:{document_id:tab.document_id},regionWindow:{isCurrent:()=>true},regionSource:source,regionCurrent:async()=>true,css_width:1280,css_height:712};
  host.displays.set(stream.subscription_id,stream);host.nativeFront=async()=>true;
  const original=connection.send;connection.send=async(method,params,session)=>{
-  if(method==='Runtime.evaluate'&&params.expression.endsWith(" ? 'sensitive' : document.hasFocus()")){sent.push({method,params,session});return {result:{value:true}}}
+  if(method==='Runtime.evaluate'&&params.expression==='document.hasFocus()'){sent.push({method,params,session});return {result:{value:true}}}
   return original(method,params,session);
  };
  const command={op:'input',tab_id:tab.tab_id,generation:host.generation,document_id:tab.document_id,_display_input:true,input:{kind:'key',key:'a'}};
@@ -1893,7 +1892,7 @@ function keyAdmission(host,tab,connection,{cachedActive}={}){
   regionCurrent:async()=>{reads.fresh++;return true},regionInputCurrent:async input=>{if(['key','scroll'].includes(input?.kind)){reads.key++;return true}reads.fresh++;return true}};
  host.displays.set(stream.subscription_id,stream);
  host.tabGroups={active:async()=>{reads.active++;return tab.target_id},cachedActive:()=>cachedActive===undefined?tab.target_id:cachedActive};
- const original=connection.send;connection.send=async(method,params,session)=>method==='Runtime.evaluate'&&params.expression.endsWith(" ? 'sensitive' : document.hasFocus()")?{result:{value:true}}:original(method,params,session);
+ const original=connection.send;connection.send=async(method,params,session)=>method==='Runtime.evaluate'&&params.expression==='document.hasFocus()'?{result:{value:true}}:original(method,params,session);
  return {keys,reads,stream,restore:()=>{host.displays.delete(stream.subscription_id);connection.send=original;}};
 }
 const keyCommand=(host,tab,kind='key')=>({op:'input',tab_id:tab.tab_id,generation:host.generation,document_id:tab.document_id,_display_input:true,input:kind==='key'?{kind:'key',key:'a'}:kind==='scroll'?{kind:'scroll',x:10,y:20,delta_x:0,delta_y:120}:{kind:'click',x:10,y:20}});
@@ -2009,7 +2008,7 @@ test('MP-08/MP-10/MP-11 viewer input waits in order while the busy renderer cann
  const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
  host.busyInputs.retryMs=5;
  let busy=true;const before=connection.beforeSend;
- connection.beforeSend=async(method)=>{if(busy&&method==='Runtime.evaluate')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
+ connection.beforeSend=async(method)=>{if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'})};
  const text=input=>({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input});
  const first=await host.request(text({kind:'text',text:'a'}));
  const second=await host.request(text({kind:'text',text:'b'}));
@@ -2041,12 +2040,12 @@ test('MP-08/MP-10/MP-11 a parked wheel burst replays as one scroll',()=>using(as
  assert.equal(wheels.length,1);assert.equal(wheels[0].params.deltaY,600);
 }));
 
-test('MP-08/MP-10/MP-11 typing that lost a parked key is dropped whole, never delivered mangled',()=>using(async({host,connection,sent})=>{
- const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+test('MP-08/MP-10/MP-11 typing that lost a parked key is dropped whole, never delivered mangled',()=>using(async({host,connection,sent,pages})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0],target=host.tabs.get(opened.tab_id).target_id;
  host.busyInputs.retryMs=5;let busy=true,refuseFirst=true;
  connection.beforeSend=async(method,params)=>{
   if(busy&&method==='Page.getFrameTree')throw Object.assign(Error(`browser CDP method ${method} timed out after 5000ms`),{code:'browser_cdp_timeout'});
-  if(!busy&&method==='Runtime.evaluate'){fixture.secretFocused=refuseFirst;refuseFirst=false}
+  if(!busy&&refuseFirst&&method==='Page.getFrameTree'){refuseFirst=false;pages.set(target,{url:'about:blank',document_id:'replacement'})}
  };
  for(const text of ['h','t','t','p'])await host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'text',text}});
  busy=false;

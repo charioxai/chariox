@@ -5,7 +5,7 @@
 import {nativePageRect} from './kernel-browser-page-geometry.mjs';
 import {ownsDisplay} from './kernel-browser-owned-display.mjs';
 import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
-import {keysyms, notches, sensitiveFocusExpression} from './kernel-browser-input.mjs';
+import {keysyms, notches} from './kernel-browser-input.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 import {markDispatched} from './kernel-browser-input-queue.mjs';
 import {slowMark} from './kernel-browser-timing.mjs';
@@ -582,14 +582,13 @@ export class InputArbiter {
       // r54: band keys never wait on a renderer that cannot answer. The kernel's own record of the person's
       // action (bound to the Tab, browser and band window, the document proven above by ordered events) stands
       // for the proof once the page failed to answer one bounded read; Enter, Tab, Escape, a page click or a Tab switch clear it; the late read settles it.
-      let evaluate;
       if (ownsUiFocus) {
         const claim = this.chromeFocus, capture = this.host.browser.inputCapture;
         if (typeof capture?.physicalFocus !== 'function') { await slowStep(this.host, 'key_claim_proof', currentProof()); return; }
         let pageFocused = false;
         if (!claim.unread) {
           const pending = (async () => {
-            evaluate = await focusWorld();
+            const evaluate = await focusWorld();
             return capture.physicalFocus(connection, sessionId, async () => (await evaluate('document.hasFocus()')).result?.value === true);
           })();
           const read = await within(FOCUS_READ_MS, () => pending);
@@ -601,14 +600,10 @@ export class InputArbiter {
           } else pageFocused = read;
         }
         await slowStep(this.host, 'key_claim_proof', currentProof());
-        // A late read that found the page focused ended this claim while the proof ran: the field is fenced below.
+        // A late read that found the page focused ended this claim while the proof ran: the keys belong to the page.
         if (!pageFocused && this.chromeFocus === claim) return;
         if (this.chromeFocus === claim) this.chromeFocus = null;
       }
-      evaluate ??= await slowStep(this.host, 'key_world', focusWorld());
-      const {result} = await slowStep(this.host, 'key_sensitive', evaluate(sensitiveFocusExpression(false)));
-      await slowStep(this.host, 'key_proof_after', currentProof());
-      if (result?.value !== false) throw new UserDomainRefusal('sensitive_requires_focus');
     };
     // At most once: a native action without a reply may have run; never replayed.
     // vidlat C10: `onDispatch` marks the native action after every fence, right before it runs.

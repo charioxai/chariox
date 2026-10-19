@@ -57,15 +57,6 @@ test('MP-08/MP-11: matching styles fonts and overflowing text use protected full
   clearInterval(service.expiry);service.clear();
  }
 });
-test('MP-08/MP-11: only structured mirror input admits observed frame descendants',async()=>{
- for(const fallback of [false,true]) {
-  const {service}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
-  if(fallback){const evaluate=service.evaluate.bind(service);service.evaluate=async(world,expression)=>{if(expression.includes('.read('))throw Error('synthetic observer unavailable');return evaluate(world,expression);};}
-  const packet=await service.next(next(s.subscription_id),'a');
-  const resolved=await service.resolveInput({tab_id:'t',document_id:'d'},{subscription_id:s.subscription_id,sequence:packet.sequence,action:{kind:'coordinate',input:{kind:'text',text:'fixture'}}},'a');
-  assert.equal(resolved.observedFrameInput===true,!fallback);
- }
-});
 test('MP-11: guessed stream IDs never authorize another terminal, expired or recovered browser',async()=>{
  const {service,host}=fixture(),s=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'terminal:a');
  await assert.rejects(service.next(next(s.subscription_id),'terminal:b'),/foreign/);

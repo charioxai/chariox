@@ -155,7 +155,7 @@ for (const retired of ['window', 'active-tab', 'generation']) test(`MP-11 band p
   await assert.rejects(arbiter.resolveDisplayInput({ window_generation: 2 }), { code: 'user_domain_stale_reference' });
 });
 
-test("MP-11 band input: active Tab rechecked before dispatch, page focus fences keys/text, refused or retired input settles", async () => {
+test("MP-11 band input: active Tab rechecked before dispatch, refused or retired input settles", async () => {
   let focus = false, document = "db";
   const evaluated = [];
   const connection = { send: async (method, params) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: document } } }
@@ -172,12 +172,9 @@ test("MP-11 band input: active Tab rechecked before dispatch, page focus fences 
   focus = false;
   await assert.rejects(send({ kind: "key", key: "N", modifiers: 10 }), { code: "user_domain_not_granted" }, "Ctrl+Shift+N (incognito)");
   focus = true; arbiter.pageFocused(); // after Ctrl+L, a native click back into the page
-  await assert.rejects(send({ kind: "text", text: "secret" }), { code: "user_domain_sensitive_requires_focus" }, "a sensitive field focused: no band text");
-  await assert.rejects(send({ kind: "key", key: "Enter" }), { code: "user_domain_sensitive_requires_focus" });
-  await assert.rejects(send({ kind: "key", key: "v", modifiers: 2 }), { code: "user_domain_sensitive_requires_focus" }, "Ctrl+V is not a browser shortcut: it follows the text-target fence");
-  focus = "frame";
-  await assert.rejects(send({ kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "a cross-origin frame fails closed");
-  assert(evaluated.every(params => params.contextId === 77), "the fence runs in the isolated world");
+  assert.deepEqual(await send({ kind: "text", text: "secret" }), { dispatched: true }, "A-L23: a person types into any focused field");
+  assert.deepEqual(await send({ kind: "key", key: "Enter" }), { dispatched: true });
+  assert.deepEqual(await send({ kind: "key", key: "v", modifiers: 2 }), { dispatched: true });
   focus = false;
   assert.deepEqual(await send({ kind: "text", text: "wiki" }), { dispatched: true });
   assert.deepEqual(await send({ kind: "key", key: "Enter" }), { dispatched: true });
@@ -199,7 +196,7 @@ test("MP-11 band input: active Tab rechecked before dispatch, page focus fences 
   const uncertain = { ...source, click: async () => { throw Object.assign(Error("x"), { code: "native_input_uncertain" }); } };
   assert.deepEqual(await arbiter.input({ stream: { regionSource: uncertain }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input: { kind: "click", x: 1, y: 1 } } }), { dispatched: true }, "uncertain native input counts as dispatched, never replayed");
   await assert.rejects(send({ kind: "text", text: "é" }), /unsupported text/);
-  assert.deepEqual(calls.map(c => c[0] === "chord" ? c[1] : c[0]), ["click", 0x6c, 0x77, 0x69, 0x6b, 0x69, 0xff0d, "wheel", "click", "wheel", 0x74]);
+  assert.deepEqual(calls.map(c => c[0] === "chord" ? c[1] : c[0]), ["click", 0x6c, 0x73, 0x65, 0x63, 0x72, 0x65, 0x74, 0xff0d, 0x76, 0x77, 0x69, 0x6b, 0x69, 0xff0d, "wheel", "click", "wheel", 0x74]);
 });
 
 test("MP-08 browser chords and refused chords", () => {
@@ -231,21 +228,21 @@ test("MP-11 omnibox focus is told apart from the page's remembered sensitive foc
   const arbiter = new InputArbiter(host, {}), calls = [];
   const source = { surface: "browser_chrome", isCurrent: () => true, click: async () => (calls.push("click"), true), chord: async k => (calls.push(k), true) };
   const send = input => arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input } });
-  await assert.rejects(send({ kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "a password field focused in the page");
+  assert.deepEqual(await send({ kind: "text", text: "x" }), { dispatched: true }, "a password field focused in the page");
   await send({ kind: "click", x: 520, y: 63 }); // the omnibox
   assert.deepEqual(await send({ kind: "key", key: "a", modifiers: 2 }), { dispatched: true }, "Ctrl+A selects the address");
   assert.deepEqual(await send({ kind: "text", text: "wiki" }), { dispatched: true });
   assert.deepEqual(await send({ kind: "key", key: "Backspace" }), { dispatched: true });
   assert.deepEqual(await send({ kind: "key", key: "Enter" }), { dispatched: true });
-  await assert.rejects(send({ kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "Enter hands focus back to the page");
+  assert.deepEqual(await send({ kind: "text", text: "x" }), { dispatched: true }, "Enter hands focus back to the page");
   assert.deepEqual(await send({ kind: "key", key: "l", modifiers: 2 }), { dispatched: true }, "Ctrl+L");
   assert.deepEqual(await send({ kind: "text", text: "a" }), { dispatched: true }, "Ctrl+L focuses the omnibox");
   arbiter.pageFocused();
-  await assert.rejects(send({ kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "a native click into the page took focus back");
+  assert.deepEqual(await send({ kind: "text", text: "x" }), { dispatched: true }, "a native click into the page took focus back");
   await send({ kind: "click", x: 520, y: 63 }); await send({ kind: "key", key: "Tab" });
-  await assert.rejects(send({ kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "Tab moves focus on");
+  assert.deepEqual(await send({ kind: "text", text: "x" }), { dispatched: true }, "Tab moves focus on");
   await send({ kind: "click", x: 300, y: 20 }); // a Tab in the strip: the page keeps its focus
-  await assert.rejects(send({ kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "a strip click does not focus Chrome's UI");
+  assert.deepEqual(await send({ kind: "text", text: "x" }), { dispatched: true }, "a strip click does not focus Chrome's UI");
 });
 
 // Protocol 540: the person's keys in the address bar (a click on it, Ctrl+L, typing there) keep its list
@@ -329,7 +326,7 @@ test('MP-11 a held mirror does not make an unfocused page appear to own omnibox 
   await send({kind:'key',key:'l',modifiers:2});assert.equal(emulated,true);
   assert.deepEqual(await send({kind:'text',text:'wiki'}),{dispatched:true});
   assert.equal(emulated,false,'native Chrome keeps the page blurred until page input');
-  pageFocus=true;await assert.rejects(send({kind:'text',text:'x'}),{code:'user_domain_sensitive_requires_focus'},'real sensitive page focus still refuses');
+  pageFocus=true;assert.deepEqual(await send({kind:'text',text:'x'}),{dispatched:true},'A-L23: page focus on any field is the person\'s typing');
  }finally{await release()}
 });
 
@@ -650,10 +647,10 @@ test("MP-11 keys on an admitted native popup reach Chrome's UI whatever the page
   const send = (source, input) => arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input } });
   await send(band, { kind: "click", x: 300, y: 20, button: "right" }); // the Tab's context menu
   for (const key of ["ArrowDown", "Enter", "Escape"]) assert.deepEqual(await send(menu, { kind: "key", key }), { dispatched: true }, key);
-  await assert.rejects(send(band, { kind: "text", text: "x" }), { code: "user_domain_sensitive_requires_focus" }, "band text still fenced");
+  assert.deepEqual(await send(band, { kind: "text", text: "x" }), { dispatched: true }, "band text reaches the page");
   open = false;
   await assert.rejects(send(menu, { kind: "key", key: "Enter" }), { code: "user_domain_stale_reference" }, "a closed menu takes nothing");
-  assert.deepEqual(keys.map(k => k[0]), ["menu", "menu", "menu"]);
+  assert.deepEqual(keys.map(k => k[0]), ["menu", "menu", "menu", "band"]);
 });
 
 // Review #1016 @53ad3e893 P1: the omnibox dropdown is drawn in the tabbed window and closes without an X event;
@@ -755,50 +752,6 @@ for (const hang of ['focus read', 'focus world']) test(`MP-11 omnibox typing is 
  assert.ok(second-started<1200,'the first key waits a bounded time');
 });
 
-// MP-11 (#1016 @d46740fe4 P1): the kernel's record of Chrome-UI ownership that stands in for a timed-out focus read is
-// not permanent. The late read settles it, and a focus-returning action (Escape) ends it: the page's protected field
-// that gets the keys back is fenced again.
-for (const late of ['escape', 'page focused when the read lands']) test(`MP-11 a timed-out focus read does not keep exempting a protected field (${late})`, async () => {
- const tab={tab_id:'tab',target_id:'target',document_id:'before'};const sent=[];
- let pageHasFocus=false,release,reads=0;const gate=new Promise(resolve=>{release=resolve;});
- const connection={send:async(method)=>method==='Page.getFrameTree'?{frameTree:{frame:{id:'f',loaderId:tab.document_id}}}:{result:{value:true}}} // the page's field is protected;
- const host={generation:3,tabs:new Map([['tab',tab]]),tabGroups:{active:async()=>tab.target_id},browser:{
-  inputCapture:{physicalFocus:async()=>{if(!reads++){await gate;return pageHasFocus;}return pageHasFocus;}},resolvePageTarget:async()=>({connection,sessionId:'s'}),
-  ensureFocusWorld:async()=>({contextId:77}),currentPageFrame:()=>({connection,sessionId:'s',frame:{id:'f',loaderId:tab.document_id}})}};
- const arbiter=new InputArbiter(host,{}),source={surface:'browser_chrome',isCurrent:()=>true,chord:async k=>(sent.push(k),true),click:async()=>true},regionWindow={window_generation:1};
- const send=input=>arbiter.input({stream:{regionSource:source,regionWindow},command:{tab_id:'tab',document_id:'before',generation:3,input}});
- await send({kind:'key',key:'l',modifiers:2});
- await send({kind:'text',text:'a'}); // the read exceeds its bound; the record stands for it
- assert.equal(sent.at(-1),97);
- if(late==='escape')pageHasFocus=false;else pageHasFocus=true;
- release();await new Promise(resolve=>setTimeout(resolve,10)); // the renderer recovers
- if(late==='escape'){await send({kind:'key',key:'Escape'});pageHasFocus=true;}
- sent.length=0;
- await assert.rejects(send({kind:'text',text:'x'}),{code:'user_domain_sensitive_requires_focus'});
- assert.deepEqual(sent,[],'no key reaches the page field through a stale UI exemption');
-});
-
-// MP-11 (#1016 @80d272f96 P1): a key already waiting for its final proof when the late read lands on a page-focused field
-// loses its Chrome-UI exemption too: it is fenced (text and modifier chord alike), not dispatched.
-for (const next of [{kind:'text',text:'x'},{kind:'key',key:'a',modifiers:2}]) test(`MP-11 a late focus read revokes the exemption of a key awaiting its final proof (${next.kind})`, async () => {
- const tab={tab_id:'tab',target_id:'target',document_id:'before'};const sent=[];
- let release,reads=0,calls=0,armedAt=-1,reached,hold;const gate=new Promise(resolve=>{release=resolve;});const held=new Promise(resolve=>{reached=resolve;});const open=new Promise(resolve=>{hold=resolve;});
- const connection={send:async(method)=>method==='Page.getFrameTree'?{frameTree:{frame:{id:'f',loaderId:tab.document_id}}}:{result:{value:true}}};
- const host={generation:3,tabs:new Map([['tab',tab]]),tabGroups:{active:async()=>{if(armedAt>=0&&++calls===armedAt){reached();await open;}return tab.target_id;}},browser:{
-  inputCapture:{physicalFocus:async()=>{if(!reads++){await gate;return true;}return true;}},resolvePageTarget:async()=>({connection,sessionId:'s'}),
-  ensureFocusWorld:async()=>({contextId:77}),currentPageFrame:()=>({connection,sessionId:'s',frame:{id:'f',loaderId:tab.document_id}})}};
- const arbiter=new InputArbiter(host,{}),source={surface:'browser_chrome',isCurrent:()=>true,chord:async k=>(sent.push(k),true),click:async()=>true},regionWindow={window_generation:1};
- const send=input=>arbiter.input({stream:{regionSource:source,regionWindow},command:{tab_id:'tab',document_id:'before',generation:3,input}});
- await send({kind:'key',key:'l',modifiers:2});
- await send({kind:'text',text:'a'}); // the read exceeds its bound; the record stands for it
- sent.length=0;armedAt=3; // key_active, key_proof, then the final claim proof of the next key
- const pending=send(next).then(()=>null,error=>error);
- await held;release();await new Promise(resolve=>setTimeout(resolve,10)); // the late read lands while the key waits
- hold();
- assert.equal((await pending)?.code,'user_domain_sensitive_requires_focus');
- assert.deepEqual(sent,[],'no key reaches the page field through a revoked UI exemption');
-});
-
 // MP-08/MP-10/MP-11: a physical focus proof belongs to one document, including its asynchronous read.
 for (const physical of [false,true]) test(`MP-11 a document retired during physical focus verification is refused (${physical})`,async()=>{
  const tab={tab_id:'tab',target_id:'target',document_id:'before'};const sent=[];
@@ -893,7 +846,7 @@ test("MP-08/MP-11 a band key reads no page frame tree while navigation events pr
   const source = { surface: "browser_chrome", isCurrent: () => true, chord: async () => true };
   assert.deepEqual(await arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input: { kind: "text", text: "a" } } }), { dispatched: true });
   assert.equal(sent.filter(m => m === "Page.getFrameTree").length, 0);
-  assert.equal(sent.filter(m => m === "Runtime.evaluate").length, 1, "the sensitive-field fence still runs");
+  assert.equal(sent.filter(m => m === "Runtime.evaluate").length, 0, "A-L23: no page read before a band key");
 });
 
 // r13 b3 union (browserux-r13union3-mvalvidm, 1440x900@2 -> 1920x1080@1): a page region saw the page geometry
@@ -976,7 +929,7 @@ test("MP-08/MP-10 a click that opens a Tab the kernel has not adopted yet leaves
 // Review #1016 @40979b97d P1: the warm omnibox entry (540) stays current while the list is closed; it must not
 // carry keys past the page's fences. Closed list + a page field focused through the Computer surface: the
 // retained popup binding's text and chords get the sensitive-field fence; a shown list keeps the keys in Chrome.
-test("MP-11 a closed warm omnibox list does not carry keys past the page's sensitive-field fence", async () => {
+test("MP-11 a closed warm omnibox list hands its keys to the page, a shown list keeps them in Chrome", async () => {
   const evaluated = [];
   const connection = { send: async (method, params) => method === "Page.getFrameTree" ? { frameTree: { frame: { id: "f", loaderId: "da" } } }
     : method === "Runtime.evaluate" ? (evaluated.push(params.expression), { result: { value: true } }) : {} };
@@ -988,9 +941,9 @@ test("MP-11 a closed warm omnibox list does not carry keys past the page's sensi
   const chords = [];
   const source = { surface: "browser_auxiliary", overPage: true, isCurrent: () => true, chord: async (...args) => (chords.push(args), true) };
   const send = input => arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-a", document_id: "da", generation: 3, input } });
-  await assert.rejects(send({ kind: "text", text: "s" }), { code: "user_domain_sensitive_requires_focus" });
-  await assert.rejects(send({ kind: "key", key: "a", modifiers: 4 }), { code: "user_domain_sensitive_requires_focus" });
-  assert.equal(chords.length, 0, "no native key reached the page");
+  assert.equal((await send({ kind: "text", text: "s" })).dispatched, true);
+  assert.equal((await send({ kind: "key", key: "a", modifiers: 4 })).dispatched, true);
+  assert.equal(chords.length, 2, "A-L23: a closed list's keys reach the page field");
   shown = true; evaluated.length = 0;
   assert.equal((await send({ kind: "text", text: "w" })).dispatched, true);
   assert.equal(evaluated.length, 0, "a shown list owns the keys (Chrome's UI)");
