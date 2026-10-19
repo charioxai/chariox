@@ -151,9 +151,10 @@ Success:
   and terminal-secret resolution.
 - M10.7 runtime MCP tools: complete for `list_credential_handles`,
   `http_request_with_credential`, and `send_secret_to_terminal`.
-- M10.8 terminal secret handoff: complete for direct current-provider PTY stdin
-  writes. Prompt-pattern scanning is intentionally not included in this slice
-  because it can consume terminal output that the UI also needs to display.
+- M10.8 terminal secret handoff: withdrawn (2026-10-19). `send_secret_to_terminal`
+  refuses every terminal target; Vault fills work in the browser, and terminal
+  fills arrive with the Chariox-owned terminal (kernel resolves Vault references
+  when it writes to its own terminal and redacts them from model-visible output).
 - M10.9 local vault source: complete for OS-keychain-backed `vault` credential
   sources, local kernel set/delete APIs, and hidden `chariox-shell` input through
   `credential set <key>`. Inline values are rejected so secrets are not typed
@@ -354,6 +355,9 @@ Acceptance:
   errors
 
 ### M10.8 Terminal Secret Handoff
+
+Withdrawn: the tool now refuses (see the status list). The original scope is kept
+for the Chariox-owned terminal design.
 
 Integrate password prompt handoff with the kernel terminal/PTY manager.
 
