@@ -220,27 +220,19 @@ impl KernelRuntimeState {
         // bookkeeping is best-effort: the prompt failure path below always runs.
         let task_settlement = {
             let settle = || -> Result<_, DaemonError> {
-                let prepared = crate::app::KernelPreparedPromptSubmission {
-                    session_id: session_id.into(),
-                    prompt: active_prompt.clone(),
-                    force_queue: false,
-                    refresh_projection: false,
-                };
-                owned.admit_agent_task(&prepared)?;
-                let task = owned
-                    .durable_state_store
-                    .agent_tasks(Some(session_id), Some(&agent_id))?
-                    .into_iter()
-                    .find(|t| t.prompt_id == active_prompt.id())
-                    .ok_or_else(|| {
-                        crate::durable_state::agent_lifecycle::error("failed turn has no task")
-                    })?;
-                crate::durable_state::agent_lifecycle::block_failed_turn(&owned.durable_state_store,&task,format!("Provider run failed: {safe_message}. Owner must reconcile and resume or cancel"))?;
+                owned.ensure_agent_task(session_id, &agent_id, active_prompt.id(), None)?;
+                owned.block_failed_prompt_task(
+                    session_id,
+                    &agent_id,
+                    active_prompt.id(),
+                    provider_run_id,
+                    &safe_message,
+                )?;
                 Ok(owned
                     .durable_state_store
                     .agent_tasks(Some(session_id), Some(&agent_id))?
                     .into_iter()
-                    .find(|t| t.task_id == task.task_id))
+                    .find(|t| t.prompt_id == active_prompt.id()))
             };
             match settle() {
                 Ok(current) => current.map(|t| (t, false)),

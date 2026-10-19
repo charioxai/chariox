@@ -282,4 +282,7 @@ pub use workspace::*;
 /// credential-free owner-managed context admission and destination receipts.
 /// Branch-only numbers 456/464/473/502/509 were never released
 /// (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 520;
+/// Version 561 (relay peer 169) adds the durable agent task and wake ledger to the
+/// session projection (`RuntimeSession.agent_tasks` / `agent_wakes`) and the
+/// `agent_task_updated` event (MP-08/MP-09/MP-10/MP-11). Both are additive.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 561;

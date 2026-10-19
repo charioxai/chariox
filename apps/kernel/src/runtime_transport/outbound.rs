@@ -181,6 +181,7 @@ public_events! {
     SlicesChanged => "slices_changed",
     WorkflowDesignOp => "workflow_design_op",
     WorkflowRunUpdated => "workflow_run_updated",
+    AgentTaskUpdated => "agent_task_updated",
     RoomWorkflowsChanged => "room_workflows_changed",
     Heartbeat => "heartbeat",
     TransportResumed => "transport_resumed",

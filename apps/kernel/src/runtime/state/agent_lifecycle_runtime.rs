@@ -5,36 +5,32 @@ use crate::durable_state::agent_lifecycle::{
 };
 
 impl KernelRuntimeOwnedState {
-    /// Returns true when this admission created the task.
-    pub(super) fn admit_agent_task(
+    /// A turn that ends before its dispatch recorded a task still gets one, so
+    /// its outcome is never lost.
+    pub(super) fn ensure_agent_task(
         &self,
-        prepared: &crate::app::KernelPreparedPromptSubmission,
-    ) -> Result<bool, DaemonError> {
-        let prompt = prepared.prompt.id();
-        let existed = self
+        room: &str,
+        agent: &str,
+        prompt: &str,
+        run: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        if self
             .durable_state_store
-            .agent_tasks(
-                Some(&prepared.session_id),
-                Some(prepared.prompt.target_agent_id()),
-            )?
+            .agent_tasks(Some(room), Some(agent))?
             .iter()
-            .any(|t| t.prompt_id == prompt || t.pending_prompt_id.as_deref() == Some(prompt));
-        let Outcome::Task(_) = self.durable_state_store.agent_lifecycle(Operation::Begin {
-            owner: self
-                .session_store
-                .get_session(&prepared.session_id)?
-                .owner_user_id()
-                .into(),
-            room: prepared.session_id.clone(),
-            agent: prepared.prompt.target_agent_id().into(),
-            prompt: prepared.prompt.id().into(),
-            run: None,
+            .any(|t| t.prompt_id == prompt)
+        {
+            return Ok(());
+        }
+        self.durable_state_store.agent_lifecycle(Operation::Begin {
+            owner: self.session_store.get_session(room)?.owner_user_id().into(),
+            room: room.into(),
+            agent: agent.into(),
+            prompt: prompt.into(),
+            run: run.map(str::to_owned),
             now: crate::session::unix_epoch_ms(),
-        })?
-        else {
-            unreachable!()
-        };
-        Ok(!existed)
+        })?;
+        Ok(())
     }
     /// The provider-visible task identity and retained task context, shared by
     /// local and leased dispatch (A10 placement parity).
@@ -80,13 +76,6 @@ impl KernelRuntimeOwnedState {
         }
         Ok(Some(context))
     }
-    pub(super) fn withdraw_agent_task(&self, prompt: &str) -> Result<(), DaemonError> {
-        self.durable_state_store
-            .agent_lifecycle(Operation::Withdraw {
-                task: prompt.into(),
-            })?;
-        Ok(())
-    }
     pub(super) fn settle_agent_task(
         &self,
         room: &str,
@@ -98,21 +87,7 @@ impl KernelRuntimeOwnedState {
         if self.provider_run_projection.is_leased_provider_run(run) {
             return Ok(None);
         }
-        if !self
-            .durable_state_store
-            .agent_tasks(Some(room), Some(agent))?
-            .iter()
-            .any(|t| t.prompt_id == prompt.id())
-        {
-            self.durable_state_store.agent_lifecycle(Operation::Begin {
-                owner: self.session_store.get_session(room)?.owner_user_id().into(),
-                room: room.into(),
-                agent: agent.into(),
-                prompt: prompt.id().into(),
-                run: Some(run.into()),
-                now: crate::session::unix_epoch_ms(),
-            })?;
-        }
+        self.ensure_agent_task(room, agent, prompt.id(), Some(run))?;
         match self
             .durable_state_store
             .agent_lifecycle(Operation::Settle {

@@ -902,25 +902,6 @@ fn a02_every_delivery_receipt_has_client_visible_text() {
     assert!(receipt(queued.sequence, "accepted").ends_with("accepted as a new turn"));
 }
 
-#[test]
-fn a02_rejected_submission_withdraws_only_untouched_admission() {
-    let f = Fixture::new();
-    f.begin("p");
-    f.apply(Operation::Withdraw { task: "p".into() });
-    assert!(f
-        .store
-        .agent_tasks(Some("room"), Some("parent"))
-        .unwrap()
-        .is_empty());
-    f.begin("p2");
-    f.arm("p2", "child");
-    assert!(f
-        .store
-        .agent_lifecycle(Operation::Withdraw { task: "p2".into() })
-        .is_err());
-    assert_eq!(f.task().obligations.len(), 1);
-}
-
 // MP-08/MP-09/MP-10/MP-11 #914 review regressions.
 fn waiting_with_deadline_wake(f: &Fixture) -> InboxEvent {
     f.begin("p");
@@ -983,21 +964,6 @@ fn a02_review_rejected_wake_returns_the_task_to_its_wait() {
             "a refused wake is not a no-progress strike"
         );
     }
-}
-
-#[test]
-fn a02_review_failed_turn_on_blocked_task_does_not_abort_settlement() {
-    let f = Fixture::new();
-    f.begin("p");
-    f.apply(Operation::Block {
-        task: "p".into(),
-        prompt: "p".into(),
-        reason: "owner must choose".into(),
-    });
-    let before = f.task();
-    block_failed_turn(&f.store, &before, "Provider run failed".into())
-        .expect("an already blocked task keeps its owner action");
-    assert_eq!(f.task(), before);
 }
 
 #[test]

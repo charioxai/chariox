@@ -162,6 +162,10 @@ pub(crate) enum KernelEvent {
         session_id: String,
         workflow_run: WorkflowRun,
     },
+    AgentTaskUpdated {
+        session_id: String,
+        task: Box<crate::durable_state::agent_lifecycle::AgentTaskExecution>,
+    },
     Heartbeat {
         session_id: String,
     },
@@ -354,6 +358,14 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
             "event": "slices_changed",
             "generated_at_ms": generated_at_ms,
             "slice_count": slices.len(),
+        }),
+        KernelEvent::AgentTaskUpdated { session_id, task } => serde_json::json!({
+            "event_id": event_id,
+            "event": "agent_task_updated",
+            "session_id": session_id,
+            "task_id": task.task_id,
+            "revision": task.revision,
+            "state": task.state,
         }),
         KernelEvent::WorkflowRunUpdated {
             session_id,
@@ -582,6 +594,62 @@ pub(crate) fn runtime_interactions_changed_event(
     })
 }
 
+/// One delta selection for every transport: the small projection events that
+/// may replace a full session snapshot.
+pub(crate) fn session_projection_changed_events(
+    snapshot: &SessionSnapshotProjection,
+    previous_snapshot: Option<&SessionSnapshotProjection>,
+) -> Vec<KernelEvent> {
+    [
+        agent_activity_changed_event(snapshot, previous_snapshot),
+        provider_run_changed_event(snapshot, previous_snapshot),
+        session_metadata_changed_event(snapshot, previous_snapshot),
+        runtime_interactions_changed_event(snapshot, previous_snapshot),
+    ]
+    .into_iter()
+    .flatten()
+    .chain(agent_task_updated_events(snapshot, previous_snapshot))
+    .collect()
+}
+
+fn agent_task_updated_events(
+    snapshot: &SessionSnapshotProjection,
+    previous_snapshot: Option<&SessionSnapshotProjection>,
+) -> Vec<KernelEvent> {
+    let Some(previous_snapshot) = previous_snapshot else {
+        return Vec::new();
+    };
+    snapshot
+        .session
+        .agent_tasks()
+        .iter()
+        .filter(|task| !previous_snapshot.session.agent_tasks().contains(task))
+        .map(|task| KernelEvent::AgentTaskUpdated {
+            session_id: snapshot.session.id().to_string(),
+            task: Box::new(task.clone()),
+        })
+        .collect()
+}
+
+/// Task events carry only changed tasks and no wakes. A wake change or a task
+/// that left the projection has no event, so the full snapshot must follow.
+pub(crate) fn agent_ledger_needs_snapshot(
+    snapshot: &SessionSnapshotProjection,
+    previous_snapshot: Option<&SessionSnapshotProjection>,
+) -> bool {
+    let Some(previous_snapshot) = previous_snapshot else {
+        return false;
+    };
+    previous_snapshot.session.agent_wakes() != snapshot.session.agent_wakes()
+        || previous_snapshot.session.agent_tasks().iter().any(|old| {
+            !snapshot
+                .session
+                .agent_tasks()
+                .iter()
+                .any(|task| task.task_id == old.task_id)
+        })
+}
+
 pub(crate) fn workflow_run_updated_events(
     snapshot: &SessionSnapshotProjection,
     previous_snapshot: Option<&SessionSnapshotProjection>,
@@ -651,6 +719,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::SlicesChanged { .. } => "slices_changed",
         KernelEvent::WorkflowDesignOp { .. } => "workflow_design_op",
         KernelEvent::WorkflowRunUpdated { .. } => "workflow_run_updated",
+        KernelEvent::AgentTaskUpdated { .. } => "agent_task_updated",
         KernelEvent::Heartbeat { .. } => "heartbeat",
         KernelEvent::TransportResumed { .. } => "transport_resumed",
         KernelEvent::ReplayGap { .. } => "replay_gap",
@@ -682,6 +751,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::SlicesChanged { .. } => None,
         KernelEvent::WorkflowDesignOp { design_op } => Some(design_op.session_id.as_str()),
         KernelEvent::WorkflowRunUpdated { session_id, .. } => Some(session_id.as_str()),
+        KernelEvent::AgentTaskUpdated { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::Heartbeat { session_id } => Some(session_id.as_str()),
         KernelEvent::TransportResumed { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::ReplayGap { session_id, .. } => Some(session_id.as_str()),
@@ -743,6 +813,7 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         | KernelEvent::SlicesChanged { .. }
         | KernelEvent::WorkflowDesignOp { .. }
         | KernelEvent::WorkflowRunUpdated { .. }
+        | KernelEvent::AgentTaskUpdated { .. }
         | KernelEvent::Heartbeat { .. }
         | KernelEvent::TransportResumed { .. }
         | KernelEvent::ReplayGap { .. } => true,

@@ -61,6 +61,10 @@ type KernelEventDispatchControllerDeps = {
     sessionId: string,
     workflowRun: WorkflowRun,
   ) => Promise<void> | void
+  applyAgentTaskUpdated: (
+    sessionId: string,
+    task: Extract<KernelEvent, { event: "agent_task_updated" }>["task"],
+  ) => Promise<void> | void
   applyWorkflowDesignOp: (event: WorkflowDesignOpForwarded) => Promise<void> | void
   scheduleSharedPromptInputHistoryRefresh: () => void
   handleKernelSessionUnavailable: (message: string) => Promise<void> | void
@@ -190,6 +194,14 @@ export function createKernelEventDispatchController(
       case "workflow_run_updated":
         deps.recordDaemonActivity("kernel_workflow_run_updated")
         await applyWorkflowRunUpdated(event)
+        return
+      case "agent_task_updated":
+        deps.recordDaemonActivity("kernel_agent_task_updated")
+        if (!event.session_id || !isRecord(event.task) || typeof event.task.task_id !== "string" || !Number.isSafeInteger(event.task.revision)) {
+          deps.appendNotice("Kernel sent malformed task update.", "warning")
+          return
+        }
+        await deps.applyAgentTaskUpdated(event.session_id, event.task)
         return
       case "transport_resumed":
         deps.applyTransportResumed()

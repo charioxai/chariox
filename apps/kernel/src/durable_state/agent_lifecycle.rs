@@ -544,24 +544,6 @@ pub(crate) fn lacks_live_executor(
         && !queued
 }
 
-/// MP-08/MP-09/MP-10/MP-11: a failed provider turn blocks a Working task;
-/// an already blocked/terminal task keeps its disposition.
-pub(crate) fn block_failed_turn(
-    store: &DurableKernelStateStore,
-    task: &AgentTaskExecution,
-    reason: String,
-) -> Result<(), DaemonError> {
-    if task.state != ExecutionState::Working {
-        return Ok(());
-    }
-    store.agent_lifecycle(Operation::Block {
-        task: task.task_id.clone(),
-        prompt: task.prompt_id.clone(),
-        reason,
-    })?;
-    Ok(())
-}
-
 /// MP-08/MP-09/MP-10/MP-11: client-visible text for an exact delivery receipt.
 pub(crate) fn receipt_notice(event: &InboxEvent) -> String {
     let n = event.sequence;

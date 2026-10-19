@@ -243,9 +243,8 @@ impl<'a> KernelAgentService<'a> {
 
     fn prepare_prompt_admission(
         &mut self,
-        mut prepared: KernelPreparedPromptSubmission,
+        prepared: KernelPreparedPromptSubmission,
     ) -> Result<KernelPromptAdmission, DaemonError> {
-        prepared.prepare_task_prompt_identity(|| self.app.sessions().reserve_prompt_id())?;
         let session_id = prepared.session_id;
         let attachment_id = prepared.prompt.source_attachment_id().to_string();
         let target_agent_id = prepared.prompt.target_agent_id().to_string();

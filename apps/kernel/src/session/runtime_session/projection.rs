@@ -86,6 +86,13 @@ pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> R
     session
         .metaagent_tasks
         .retain(|task| visible_agent_ids.contains(task.metaagent_id()));
+    // Lifecycle reasons and wake details follow agent trace visibility.
+    session
+        .agent_tasks
+        .retain(|task| visible_agent_ids.contains(&task.agent_id));
+    session
+        .agent_wakes
+        .retain(|wake| visible_agent_ids.contains(&wake.agent_id));
     if !collaboration_level.can_view_agent_trace() {
         session.workflows = session
             .workflows
