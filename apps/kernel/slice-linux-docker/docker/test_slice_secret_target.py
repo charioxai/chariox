@@ -5,6 +5,7 @@ import pathlib
 import sys
 import types
 import unittest
+import unittest.mock
 from unittest.mock import Mock, patch
 
 
@@ -87,6 +88,33 @@ class SecretTargetTests(unittest.TestCase):
         root.get_full_property.return_value.value = [200]
         with self.assertRaises(self.module.SecretTargetChanged):
             self.module.focused_target(self.connection)
+
+    def test_native_target_binds_the_x_resource_owner_process(self):
+        root, client, focus = Mock(id=10), Mock(id=101), Mock(id=102)
+        self.connection.screen.return_value.root = root
+        self.connection.get_input_focus.return_value.focus = focus
+        root.get_full_property.return_value.value = [client.id]
+        focus.get_geometry.return_value = types.SimpleNamespace(x=5, y=6, border_width=0, width=150, height=40)
+        client.get_geometry.return_value = types.SimpleNamespace(x=1, y=20, border_width=0, width=500, height=300)
+        focus.query_tree.return_value.parent = client
+        client.query_tree.return_value.parent = root
+        self.connection.has_extension.return_value = True
+        self.connection.res_query_version.return_value = types.SimpleNamespace(server_major=1, server_minor=2)
+        owner = types.SimpleNamespace(spec=types.SimpleNamespace(mask=2), value=[4242])
+        self.connection.res_query_client_ids.return_value = types.SimpleNamespace(ids=[owner])
+        stat = "4242 (my app) S " + " ".join(str(n) for n in range(1, 40))
+        with patch("builtins.open", unittest.mock.mock_open(read_data=stat)):
+            target = self.module.focused_target(self.connection)
+        self.assertEqual(target["process"], {"pid": 4242, "started": "19"})
+        self.connection.res_query_client_ids.assert_called_once_with([{"client": client.id, "mask": 2}])
+        # A restarted app reusing the XID changes the identity and aborts the paste.
+        restarted = dict(target, process={"pid": 4242, "started": "20"})
+        with self.assertRaises(self.module.SecretTargetChanged):
+            self.type_with_targets([restarted])
+        self.keyboard.press.assert_not_called()
+        # Two owners (or none) are unproven: the field is simply absent.
+        self.connection.res_query_client_ids.return_value = types.SimpleNamespace(ids=[owner, owner])
+        self.assertNotIn("process", self.module.focused_target(self.connection))
 
     def test_focus_change_after_approval_aborts_before_typing(self):
         changed = dict(self.target, focus_window=102)

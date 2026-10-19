@@ -68,14 +68,9 @@ impl KernelRuntimeState {
         let target = self
             .computer_secret_input_target(session_id, agent_id)
             .await?;
+        let (app, description) = target.login_scope(approved_generation);
         let approval = self
-            .ensure_computer_login_approved(
-                session_id,
-                agent_id,
-                &args.credential_id,
-                &format!("room:{approved_generation}:{}", target.active_window),
-                &format!("Room native window {}", target.active_window),
-            )
+            .ensure_computer_login_approved(session_id, agent_id, &args.credential_id, &app, &description)
             .await?;
         let _vault_unlock = if approval.has_unlock() {
             None

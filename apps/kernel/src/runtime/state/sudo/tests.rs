@@ -1756,6 +1756,7 @@ async fn sudo_computer_secret_uses_existing_authority_without_interaction() {
         focus_window: 4,
         geometry: [0, 0, 100, 30],
         window_geometry: [0, 0, 200, 200],
+        process: None,
     };
     let approved = tokio::time::timeout(
         Duration::from_millis(250),
@@ -1870,6 +1871,7 @@ async fn sudo_survives_legacy_computer_catalog_continuation() {
         focus_window: 4,
         geometry: [0, 0, 100, 30],
         window_geometry: [0, 0, 200, 200],
+        process: None,
     };
     assert!(tokio::time::timeout(
         Duration::from_millis(250),
@@ -2075,6 +2077,63 @@ async fn computer_login_room_window_without_process_identity_is_one_operation() 
         .is_err(),
         "a reused XID must not inherit login consent without a process/start identity"
     );
+    f.state.revoke_computer_login_grants();
+    crate::secret::lock_chariox_encrypted_vault(&config.path).unwrap();
+}
+
+// MP-11: a Room window with a proven process/start identity may reuse login consent;
+// a restarted app that reuses the XID must not.
+#[tokio::test]
+async fn computer_login_room_process_identity_reuses_grant_but_restart_does_not() {
+    use crate::transport::room_browser_controller::{
+        RoomComputerNativeProcess, RoomComputerSecretTarget,
+    };
+    let f = fixture();
+    let turn = running(&f);
+    f.state.owned.sudo_turns.lock().unwrap().clear();
+    let config = f.state.owned.config_projection.snapshot().user_config.credential_vault;
+    crate::secret::unlock_chariox_encrypted_vault(
+        &config.path,
+        PASSKEY,
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    let target = |pid, started: &str| RoomComputerSecretTarget {
+        active_window: 41,
+        focus_window: 42,
+        geometry: [0, 0, 100, 30],
+        window_geometry: [0, 0, 200, 200],
+        process: Some(RoomComputerNativeProcess { pid, started: started.into() }),
+    };
+    let (app, description) = target(4242, "900").login_scope(1);
+    f.state.owned.computer_login_grants.insert(
+        super::super::computer_login_grant::LoginScope {
+            owner: "local".into(),
+            session: turn.session_id.clone(),
+            agent: turn.agent_id.clone(),
+            credential: "handle".into(),
+            app: app.clone(),
+        },
+        turn.prompt_id.clone().unwrap(),
+        60,
+    );
+    let reused = tokio::time::timeout(
+        Duration::from_millis(250),
+        f.state.ensure_computer_login_approved(&turn.session_id, &turn.agent_id, "handle", &app, &description),
+    )
+    .await
+    .expect("same process identity must reuse the login grant")
+    .unwrap();
+    assert_eq!(reused.authority(), "login_grant");
+    for restarted in [target(4242, "901"), target(4243, "900")] {
+        let (app, description) = restarted.login_scope(1);
+        assert!(tokio::time::timeout(
+            Duration::from_millis(50),
+            f.state.ensure_computer_login_approved(&turn.session_id, &turn.agent_id, "handle", &app, &description)
+        )
+        .await
+        .is_err());
+    }
     f.state.revoke_computer_login_grants();
     crate::secret::lock_chariox_encrypted_vault(&config.path).unwrap();
 }

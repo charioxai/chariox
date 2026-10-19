@@ -559,7 +559,7 @@ fn room_controller_protocol_shapes_are_versioned() {
                 action: RoomComputerInputAction::SecretText {
                     input: RoomComputerSecretInput::new("computer-secret-fixture".into()),
                     expected_target: crate::transport::room_browser_controller::RoomComputerSecretTarget {
-                        focus_window:101,active_window:100,geometry:[20,30,200,40],window_geometry:[0,0,800,600],
+                        focus_window:101,active_window:100,geometry:[20,30,200,40],window_geometry:[0,0,800,600],process:None,
                     },
                 },
             },
@@ -971,6 +971,7 @@ fn computer_secret_and_keyboard_input_debug_output_is_redacted() {
                 active_window: 100,
                 geometry: [20, 30, 200, 40],
                 window_geometry: [0, 0, 800, 600],
+                process: None,
             },
         },
     };
@@ -1049,6 +1050,37 @@ fn computer_secret_target_protocol_374_peer_67_is_hashed() {
         ),
         "d15bc20375584abc3a797667ea308d85b6da0e1153b135f6406c6db34ccff111"
     );
+}
+
+// MP-08/MP-11: 559/167 adds the X-Resource owner of the Room native window to the secret target.
+#[test]
+fn mp08_mp11_room_secret_target_process_identity_559_167_is_hashed() {
+    use crate::transport::room_browser_controller::{
+        RoomBrowserControllerResult, RoomComputerSecretTarget,
+    };
+    use sha2::{Digest, Sha256};
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 559 && RELAY_PEER_PROTOCOL_VERSION >= 167);
+    let wire = serde_json::json!({"kind":"computer_secret_target","target":{
+        "focus_window":101,"active_window":100,"geometry":[20,30,200,40],
+        "window_geometry":[0,0,800,600],"process":{"pid":4242,"started":"98765"}}});
+    let result: RoomBrowserControllerResult = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&result).unwrap(), wire);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+        "897d9883a9b6718d449cfa4aabd556acd304024eac224e5b0ff48a674553e334"
+    );
+    let RoomBrowserControllerResult::ComputerSecretTarget { target } = result else {
+        panic!("target expected")
+    };
+    assert!(target.valid());
+    let mut unknown = wire["target"].clone();
+    unknown["process"]["name"] = "extra".into();
+    assert!(serde_json::from_value::<RoomComputerSecretTarget>(unknown).is_err());
+    for process in [serde_json::json!({"pid":1,"started":"9"}), serde_json::json!({"pid":4,"started":"x"})] {
+        let mut bad = wire["target"].clone();
+        bad["process"] = process;
+        assert!(!serde_json::from_value::<RoomComputerSecretTarget>(bad).unwrap().valid());
+    }
 }
 
 // MP-08/MP-10/MP-11: authenticated retirement/reset/deletion on consolidated 438/70.

@@ -142,11 +142,38 @@ pub(crate) struct RoomComputerSecretTarget {
     pub(crate) active_window: u64,
     pub(crate) geometry: [i64; 4],
     pub(crate) window_geometry: [i64; 4],
+    /// X-Resource owner of the active window; absent when the worker cannot prove it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) process: Option<RoomComputerNativeProcess>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RoomComputerNativeProcess {
+    pub(crate) pid: u32,
+    pub(crate) started: String,
 }
 
 impl RoomComputerSecretTarget {
+    /// Login consent key and description; reusable only with a process/start identity.
+    pub(crate) fn login_scope(&self, generation: impl std::fmt::Display) -> (String, String) {
+        match &self.process {
+            Some(p) => (
+                format!("room-native:{generation}:{}:{}:{}", self.active_window, p.pid, p.started),
+                format!("Room native window {}, process {} (start {})", self.active_window, p.pid, p.started),
+            ),
+            None => (
+                format!("room:{generation}:{}", self.active_window),
+                format!("Room native window {}", self.active_window),
+            ),
+        }
+    }
+
     pub(crate) fn valid(&self) -> bool {
-        self.focus_window > 1
+        self.process
+            .as_ref()
+            .is_none_or(|p| p.pid > 1 && !p.started.is_empty() && p.started.bytes().all(|b| b.is_ascii_digit()))
+            && self.focus_window > 1
             && self.active_window > 1
             && [self.geometry, self.window_geometry]
                 .iter()

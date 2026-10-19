@@ -109,6 +109,25 @@ class ComputerTextKeyboard(_XTestKeyboard):
         return code, modifiers, group
 
 
+def window_process(connection, window_id):
+    """X-Resource owner pid plus /proc start time; None unless the X server proves one client."""
+    try:
+        if not connection.has_extension("X-Resource"):
+            return None
+        version = connection.res_query_version()
+        if (version.server_major, version.server_minor) < (1, 2):
+            return None
+        ids = connection.res_query_client_ids([{"client": window_id, "mask": 2}]).ids
+        pids = [int(item.value[0]) for item in ids if item.spec.mask & 2 and len(item.value) == 1]
+        if len(pids) != 1 or pids[0] <= 1:
+            return None
+        with open("/proc/%d/stat" % pids[0]) as stat:
+            raw = stat.read()
+        return {"pid": pids[0], "started": raw[raw.rfind(")") + 2:].split()[19]}
+    except Exception:
+        return None
+
+
 def focused_target(connection):
     """MP-08: native focus identity/geometry only; never titles or field values."""
     focus = connection.get_input_focus().focus
@@ -140,13 +159,17 @@ def focused_target(connection):
     if active_window is None:
         raise SecretTargetChanged()
     window_geometry = active_window.get_geometry()
-    return {
+    target = {
         "focus_window": focus.id,
         "active_window": active_id,
         "geometry": [x, y, focus_geometry.width, focus_geometry.height],
         "window_geometry": [window_geometry.x, window_geometry.y,
                             window_geometry.width, window_geometry.height],
     }
+    process = window_process(connection, active_id)
+    if process is not None:
+        target["process"] = process
+    return target
 
 
 def assert_secret_target(connection, expected_target):
@@ -450,8 +473,10 @@ def main(args, stream):
             connection.close()
     elif len(args) == 2 and args[0] == 'secret':
         expected_target = json.loads(args[1])
-        if not isinstance(expected_target, dict) or set(expected_target) != {
+        if not isinstance(expected_target, dict) or not {
             'focus_window', 'active_window', 'geometry', 'window_geometry'
+        } <= set(expected_target) <= {
+            'focus_window', 'active_window', 'geometry', 'window_geometry', 'process'
         }:
             raise ValueError('invalid secret target')
         type_text(stream.read().decode('utf-8', errors='strict'), expected_target)
