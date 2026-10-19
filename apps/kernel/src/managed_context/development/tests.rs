@@ -2627,6 +2627,56 @@ fn development_import_refuses_a_clone_that_does_not_fit_before_launching_git() {
     fs::remove_dir_all(root).expect("remove test root");
 }
 
+// Dirty files larger than the room left refuse cleanly before the volume fills: every staged
+// object is admitted against its own volume with the reserve, including a second verification pass.
+#[test]
+fn development_export_refuses_dirty_files_that_do_not_fit_before_filling_the_volume() {
+    use crate::managed_context::limits::{tree_size, with_volume, DISK_RESERVE_BYTES};
+    const FILE_BYTES: usize = 1 << 20;
+    let root = test_root("overlay-staging-room");
+    let repository = root.join("repo");
+    init_repository(&repository, "tracked.txt", "base\n");
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    for index in 0..4 {
+        let noise: Vec<u8> = (0..FILE_BYTES)
+            .map(|_| {
+                seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                (seed >> 33) as u8
+            })
+            .collect();
+        fs::write(repository.join(format!("dirty-{index}.bin")), noise).expect("write dirty file");
+    }
+    let archive_dir = root.join("out");
+    fs::create_dir_all(&archive_dir).expect("archive dir");
+    let capacity = DISK_RESERVE_BYTES + (FILE_BYTES as u64) * 5 / 2;
+    let error = with_volume(&archive_dir, capacity, || {
+        export_development_context(DevelopmentContextExportRequest {
+            project_id: "overlay-staging-room".to_string(),
+            repositories: vec![DevelopmentRepositorySelection {
+                workspace_id: "repo".to_string(),
+                worktree_id: None,
+                worktree_path: repository.clone(),
+                role: DevelopmentRepositoryRole::Primary,
+            }],
+            archive_path: archive_dir.join("context.tar.gz"),
+        })
+    })
+    .expect_err("four 1 MiB dirty files do not fit 2.5 MiB of room");
+    // The refusal names the staging step, not the archive written after it.
+    assert!(
+        error
+            .to_string()
+            .contains("repository dirty overlay needs more than"),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains("free space on that volume"),
+        "{error}"
+    );
+    assert!(tree_size(&archive_dir) <= (FILE_BYTES as u64) * 5 / 2);
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
 #[test]
 fn development_export_admits_the_compressed_archive_not_a_second_raw_copy() {
     use crate::managed_context::limits::{tree_size, with_volume, DISK_RESERVE_BYTES};

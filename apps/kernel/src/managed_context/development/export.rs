@@ -362,27 +362,13 @@ fn export_repository(
     )?;
     let source_estimate =
         charge_overlay_materialization(source_estimate, &overlay, UNBOUNDED_BYTES, u64::MAX)?;
-    let verification_root = repository_root.join("snapshot-verification");
-    create_private_directory(&verification_root)?;
-    let mut verification_budget = ManifestMemoryBudget::new();
-    let verification_vault = vault.map(|v| {
-        vault_artifacts::ExportVault::new(
-            v.config,
-            v.context_id,
-            v.target_kernel_id,
-            v.target_public_key,
-            v.project_id,
-        )
-    });
-    let (verified_overlay, verified_overlay_size_bytes) = export_overlay(
+    let (verified_overlay, verified_overlay_size_bytes) = overlay::verify_overlay(
         worktree,
         &repository_id,
-        &verification_root,
-        &mut verification_budget,
-        verification_vault.as_ref(),
+        &repository_root,
+        &mut ManifestMemoryBudget::new(),
+        vault.is_some(),
     )?;
-    fs::remove_dir_all(&verification_root)
-        .map_err(|error| context_io_error("remove snapshot verification", error))?;
     let verified_estimate = charge_overlay_materialization(
         inspect_export_repository(worktree)?,
         &verified_overlay,

@@ -21,9 +21,9 @@ pub(crate) use model::{
     ReadyManagedContextImport,
 };
 use policy::{
-    authorization_error, authorize_entry, current_time_ms, disposable_consumed_contexts,
-    random_identifier, reserved_disposable_contexts, sha256_bytes, status, transfer_error,
-    validate_arm_request, validate_persisted_state, validate_sha256,
+    admit_archive, authorization_error, authorize_entry, current_time_ms,
+    disposable_consumed_contexts, random_identifier, reserved_disposable_contexts, sha256_bytes,
+    status, transfer_error, validate_arm_request, validate_persisted_state, validate_sha256,
 };
 use storage::{
     create_or_validate_empty_archive, ensure_private_directory, open_private_archive,
@@ -207,7 +207,7 @@ impl ManagedContextTransferStore {
         request: ArmManagedContextTransfer,
         now_ms: u64,
     ) -> Result<ArmedManagedContextTransfer, DaemonError> {
-        validate_arm_request(&request, &self.root, now_ms)?;
+        validate_arm_request(&request, now_ms)?;
         ensure_private_directory(&request.destination_parent)?;
         let canonical_destination_parent = fs::canonicalize(&request.destination_parent)
             .map_err(|error| transfer_io_error("resolve managed context destination", error))?;
@@ -283,6 +283,7 @@ impl ManagedContextTransferStore {
                 "managed context transfer record capacity is full",
             ));
         }
+        admit_archive(&request, &self.root)?;
         let transfer_id = random_identifier("ctx");
         let capability = request.capability;
         state.entries.insert(

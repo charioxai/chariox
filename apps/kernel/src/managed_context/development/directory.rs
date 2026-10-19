@@ -25,29 +25,21 @@ pub(super) fn export_directory(
         export::target_directory_for_export(&source_basename, target_directories)?;
     budget.consume(logical_name.len() + target_directory.len() + 2048)?;
     let root = open_root(worktree)?;
-    let (entries, directories, size) =
+    let (entries, directories, size, pending) =
         snapshot(worktree, &root, &repository_id, staging_root, budget, vault)?;
-    let verification = staging_root.join("directory-verification");
-    create_private_directory(&verification)?;
-    let verification_vault = vault.map(|v| {
-        vault_artifacts::ExportVault::new(
-            v.config,
-            v.context_id,
-            v.target_kernel_id,
-            v.target_public_key,
-            v.project_id,
-        )
-    });
-    let verified = snapshot(
-        worktree,
-        &root,
-        &repository_id,
-        &verification,
-        &mut ManifestMemoryBudget::new(),
-        verification_vault.as_ref(),
-    )?;
-    fs::remove_dir_all(&verification)
-        .map_err(|error| context_io_error("remove directory verification", error))?;
+    overlay::stage_objects(staging_root, &entries, pending, vault)?;
+    let verified = {
+        let (entries, directories, size, _) = snapshot(
+            worktree,
+            &root,
+            &repository_id,
+            staging_root,
+            &mut ManifestMemoryBudget::new(),
+            vault,
+        )?;
+        (entries, directories, size)
+    };
+    // The verification pass compares digests only; it stages nothing.
     if (&entries, &directories, size) != (&verified.0, &verified.1, verified.2)
         || fs::symlink_metadata(worktree.join(".git")).is_ok()
     {
@@ -94,6 +86,13 @@ pub(super) fn export_directory(
     ))
 }
 
+type SnapshotOverlay = (
+    Vec<DevelopmentOverlayEntry>,
+    Vec<String>,
+    u64,
+    BTreeMap<String, zeroize::Zeroizing<Vec<u8>>>,
+);
+
 fn snapshot(
     worktree: &Path,
     root: &File,
@@ -101,7 +100,7 @@ fn snapshot(
     staging: &Path,
     budget: &mut ManifestMemoryBudget,
     vault: Option<&vault_artifacts::ExportVault<'_>>,
-) -> Result<(Vec<DevelopmentOverlayEntry>, Vec<String>, u64), DaemonError> {
+) -> Result<SnapshotOverlay, DaemonError> {
     let patterns = match open_relative(root, Path::new(".charioxignore")) {
         Ok(file) => {
             overlay::parse_context_ignore_patterns(read_bounded(file, MAX_CONTEXT_IGNORE_BYTES)?.0)?
@@ -182,8 +181,12 @@ fn snapshot(
             worktree: state,
         });
     }
-    overlay::stage_objects(staging, &entries, pending_objects, vault)?;
-    Ok((entries, directories.into_iter().collect(), size))
+    Ok((
+        entries,
+        directories.into_iter().collect(),
+        size,
+        pending_objects,
+    ))
 }
 
 fn read_bounded(mut file: File, limit: u64) -> Result<(Vec<u8>, fs::Metadata), DaemonError> {

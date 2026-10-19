@@ -72,7 +72,6 @@ pub(super) fn status(transfer_id: &str, entry: &PersistedTransfer) -> ManagedCon
 
 pub(super) fn validate_arm_request(
     request: &ArmManagedContextTransfer,
-    store_root: &Path,
     now_ms: u64,
 ) -> Result<(), DaemonError> {
     for (label, value) in [
@@ -105,8 +104,24 @@ pub(super) fn validate_arm_request(
     if request.archive_size_bytes == 0 {
         return Err(transfer_error("managed context archive size is invalid"));
     }
-    // The received archive is written under the transfer store; the destination volume is admitted
-    // separately when the archive is extracted and materialized.
+    if request.expires_at_ms <= now_ms
+        || request.expires_at_ms > now_ms.saturating_add(MAX_TRANSFER_TTL_MS)
+    {
+        return Err(transfer_error(
+            "managed context transfer expiry must be within the allowed window",
+        ));
+    }
+    validate_destination(&request.destination_parent)?;
+    Ok(())
+}
+
+/// The received archive is written under the transfer store, so a new transfer is admitted against
+/// its full size there; the destination volume is admitted separately when the archive is extracted.
+/// A replayed arm is not admitted again: the bytes already accepted occupy the volume.
+pub(super) fn admit_archive(
+    request: &ArmManagedContextTransfer,
+    store_root: &Path,
+) -> Result<(), DaemonError> {
     let room = crate::managed_context::limits::disk_budget(store_root);
     if request.archive_size_bytes > room {
         return Err(transfer_error(
@@ -118,14 +133,6 @@ pub(super) fn validate_arm_request(
             ),
         ));
     }
-    if request.expires_at_ms <= now_ms
-        || request.expires_at_ms > now_ms.saturating_add(MAX_TRANSFER_TTL_MS)
-    {
-        return Err(transfer_error(
-            "managed context transfer expiry must be within the allowed window",
-        ));
-    }
-    validate_destination(&request.destination_parent)?;
     Ok(())
 }
 
