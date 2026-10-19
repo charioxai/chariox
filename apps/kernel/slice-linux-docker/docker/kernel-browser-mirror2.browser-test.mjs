@@ -1211,6 +1211,20 @@ test("MP-10 mirrorregion: a zero-size frame owner does not stop other regions fr
     assert.deepEqual(lease.rect, { x: 0, y: 0, width: 200, height: 100 });
   }, { "/child": { type: "text/html", body: "<!doctype html><p>child</p>" }, "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="rgb(255,0,0)"/></svg>' } }));
 
+// Reviewer #1056 P2-3: the crop of a region inside a frame owner maps by translation only, so a rotated owner admits none.
+const framedCanvas = async transform => { let count; await mirrored(
+  '<style>body{margin:0}</style><canvas id="c" width="200" height="100" style="display:block"></canvas><iframe src="http://localhost:PORT/child" style="width:200px;height:100px;border:0;' + transform + '"></iframe>', async ctx => {
+    const { next, host } = ctx;
+    await next(); await stayDom(next, 3000, "MP-10: stays DOM");
+    const stream = host.mirror.streams.get(ctx.subscription_id);
+    assert(stream.frames.size > 0, "MP-10: the foreign frame is attached");
+    count = (await host.mirror.v2.regionBoxes(stream, host.tabs.get(stream.tab_id))).length;
+  }, { "/child": { type: "text/html", body: '<!doctype html><body style="margin:0"><canvas id="k" width="120" height="60" style="display:block"></canvas><script>const x=document.getElementById("k").getContext("2d");x.fillStyle="red";x.fillRect(0,0,60,60)</script>' } }); return count; };
+test("MP-10 mirrorregion: a region inside a rotated frame owner is not admitted with a wrong crop", async () => {
+  assert.equal(await framedCanvas(""), 2, "control: the top canvas and the frame's canvas are regions");
+  assert.equal(await framedCanvas("transform:rotate(180deg)"), 1, "only the top canvas: the rotated owner's children are not boxed");
+});
+
 // DuckDuckGo results: many result videos faded in and out (opacity animation) next to a hidden carousel.
 test("MP-10 mirrorregion: many hidden or fading videos and a carousel with a fading tainted canvas never hand the page to video", () => mirrored(
   '<style>body{margin:0}.f{animation:fade 600ms linear infinite alternate;width:120px;height:68px;display:inline-block}@keyframes fade{from{opacity:.05}to{opacity:1}}</style><div id="row">' +
