@@ -93,6 +93,15 @@ fn session_members(
         .collect()
 }
 
+/// Field 6 of `/proc/<pid>/stat`; the command name (field 2) may hold spaces
+/// and parentheses, so fields are counted after its closing parenthesis.
+#[cfg(target_os = "linux")]
+fn session_of(pid: i32) -> Option<i32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_command = &stat[stat.rfind(')')? + 1..];
+    after_command.split_whitespace().nth(3)?.parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,13 +183,4 @@ mod tests {
             assert!(session_members(listed, invalid, lookup).is_empty());
         }
     }
-}
-
-/// Field 6 of `/proc/<pid>/stat`; the command name (field 2) may hold spaces
-/// and parentheses, so fields are counted after its closing parenthesis.
-#[cfg(target_os = "linux")]
-fn session_of(pid: i32) -> Option<i32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let after_command = &stat[stat.rfind(')')? + 1..];
-    after_command.split_whitespace().nth(3)?.parse().ok()
 }
