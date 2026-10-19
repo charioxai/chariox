@@ -612,11 +612,13 @@ impl KernelBrowserHost {
             }
             self.check_admission(admission)?;
         }
+        // Protocol 560: a window display names no Tab; seeding the ledger would read one page's document.
         if method == "host.browser"
             && matches!(
                 params["op"].as_str(),
                 Some("mirror_subscribe" | "display_subscribe")
             )
+            && params["target"]["kind"] != "browser_window"
         {
             // MP-08: attach may be the first post-recovery request. Seed the same
             // tab ledger before takeover, without registering another actor.

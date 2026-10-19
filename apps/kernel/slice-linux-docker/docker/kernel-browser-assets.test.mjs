@@ -57,3 +57,25 @@ test('MP-08 every helper an embedded kernel display module launches is embedded 
  }
  assert.deepEqual(missing,[]);
 });
+
+test('MP-08 every relative module a shipped controller imports is shipped in both the embedded table and the slice image',async()=>{
+ const inventory=await readFile(new URL('../../src/runtime/kernel_browser_assets.rs',import.meta.url),'utf8');
+ const embedded=new Set([...inventory.matchAll(/include_bytes!\("\.\.\/\.\.\/slice-linux-docker\/docker\/([^"\n]+)"\)/g)].map(m=>m[1]));
+ const dockerfile=await readFile(new URL('Dockerfile',import.meta.url),'utf8');
+ const image=new Set([...dockerfile.matchAll(/apps\/kernel\/slice-linux-docker\/docker\/([A-Za-z0-9._-]+\.mjs)/g)].map(m=>m[1]));
+ const missing=[];
+ for(const [label,set] of [['embedded',embedded],['image',image]])for(const name of set){
+  const text=await readFile(new URL(name,import.meta.url),'utf8');
+  for(const [,file] of text.matchAll(/(?:from|import\()\s*['"]\.\/([A-Za-z0-9._-]+\.mjs)['"]/g))if(!set.has(file))missing.push(`${label}: ${name} -> ${file}`);
+ }
+ assert.deepEqual(missing,[]);
+});
+
+test('MP-08 embedded window display module imports outside checkout',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'browserux-embedded-window-'));
+ try {
+  const inventory=await readFile(new URL('../../src/runtime/kernel_browser_assets.rs',import.meta.url),'utf8');
+  for(const [,name] of inventory.matchAll(/include_bytes!\("\.\.\/\.\.\/slice-linux-docker\/docker\/([^"\n]+)"\)/g))await writeFile(path.join(root,name),await readFile(new URL(name,import.meta.url)));
+  execFileSync(process.execPath,['--input-type=module','-e',`await import(${JSON.stringify('file://'+root+'/kernel-browser-window-display.mjs')})`],{timeout:10000});
+ }finally{await rm(root,{recursive:true,force:true});}
+});

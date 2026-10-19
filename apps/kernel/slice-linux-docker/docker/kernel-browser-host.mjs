@@ -680,6 +680,7 @@ export class KernelBrowserHost {
     // Protocol 540: a viewer's state read right after an address-bar key sees the list Chrome opened.
     if (command.op === "state" && this.chromium?.display && this.chromium.policy === "managed") await this.chromeWindows?.heal?.();
     if (command.op === "state") await this.chromeWindows?.refreshWarm?.();
+    if (command.op === "state") await this.chromeWindows?.refreshStale?.();
     if (["start", "state"].includes(command.op)) {
       const state = this.observe(await this.reconcile({readOnly:command.op==="state"}), null, scope);
       return command.state_wait === true ? { ...state, _state_signal: stateSignal } : state;
@@ -764,7 +765,7 @@ export class KernelBrowserHost {
     }));
     if (command.op === "close") {
       this.mirror.removeTab(tab.tab_id);
-      for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id && !['browser_chrome', 'browser_auxiliary'].includes(stream.regionTarget?.kind)) { await stream.close(); this.displays.delete(id); }
+      for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id && !['browser_chrome', 'browser_auxiliary', 'browser_window'].includes(stream.regionTarget?.kind)) { await stream.close(); this.displays.delete(id); }
       await this.closeCompositors(tab.tab_id);if(this.foreground.tab===tab.tab_id)this.foreground.reset();
       this.sampleLanes.delete(tab.tab_id);
       this.scales.delete(tab.tab_id);

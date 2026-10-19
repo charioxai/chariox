@@ -1,0 +1,15 @@
+{
+  "request": {
+    "KernelBrowser": {
+      "command": {
+        "op": "display_subscribe",
+        "tab_id": "tab-2",
+        "generation": 7,
+        "target": { "kind": "browser_window", "window_generation": 3 },
+        "codecs": ["png", "avc1.420033"],
+        "bitrate": 2000000,
+        "device_scale_factor": 2
+      }
+    }
+  }
+}

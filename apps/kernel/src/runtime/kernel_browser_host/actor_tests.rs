@@ -1671,6 +1671,48 @@ done
     );
 }
 
+// MP-08/MP-10/MP-11 (protocol 560): a window display names no Tab, so subscribing reads no Tab's state first.
+#[test]
+fn mp08_window_display_subscribe_reads_no_tab_state() {
+    let root = crate::test_support::TestWorktree::new("mp08-window-display-no-state");
+    let script = root.path().join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}
+' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}
+' "$id" ;;
+ *'"op":"state"'*) printf 'state
+' >> "$root/states"; printf '{"id":%s,"ok":true,"result":{"generation":1,"_observation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}
+' "$id" ;;
+ *'"op":"display_subscribe"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"subscription_id":"window"}}
+' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}
+' "$id";exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.path().to_path_buf());
+    host.install_fixture_backend("alice", &script, root.path());
+    host.backend("alice").unwrap().lock().unwrap().start().unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    let states = || std::fs::read_to_string(root.path().join("states")).map_or(0, |log| log.lines().count());
+    let subscribe = |target: serde_json::Value| {
+        let mut params = json!({"op":"display_subscribe","tab_id":"host-tab-a","generation":1});
+        params["target"] = target;
+        host.protected_request("alice", None, "host.browser", params, policy.clone()).unwrap();
+    };
+    subscribe(json!({"kind":"browser_chrome","window_generation":3}));
+    let band = states();
+    assert!(band > 0, "a band display still seeds the Tab ledger");
+    subscribe(json!({"kind":"browser_window","window_generation":3}));
+    assert_eq!(states(), band, "a window display reads no Tab's state");
+    host.shutdown().unwrap();
+}
+
 #[test]
 fn takeover_is_not_reported_before_the_host_retired_the_previous_owners_parked_input() {
     let root = crate::test_support::TestWorktree::new("mp11-takeover-retire");

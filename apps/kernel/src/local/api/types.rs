@@ -335,4 +335,6 @@ pub use workspace::*;
 /// parked behind a busy renderer); the viewer holds its preview handover until it is admitted.
 /// MP-08/MP-10/MP-11: allocated 556 adds `KernelBrowser` `state_wait`: a parked state read
 /// replacing the viewer's 250 ms poll.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 556;
+/// MP-08/MP-10/MP-11: allocated 560 adds the `browser_window` display target: the owner's view of
+/// the Chrome window's page area, bound to the window rather than to a Tab or document.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 560;

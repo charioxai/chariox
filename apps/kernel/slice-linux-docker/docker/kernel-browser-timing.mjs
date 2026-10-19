@@ -74,7 +74,7 @@ export function timedHostRequests(host, scheduleRequest) {
       // Native region input resolves its active Tab before ledger admission.
       // Attribute that separate seam without logging a binding, key or payload.
       const kind=display?host.displays?.get(request.params.display_subscription_id)?.regionTarget?.kind:null;
-      const sourceKind={browser_chrome:1,region:2,browser_auxiliary:3,visible_page:4}[kind]??0;
+      const sourceKind={browser_chrome:1,region:2,browser_auxiliary:3,visible_page:4,browser_window:5}[kind]??0;
       const at=timestamp(),complete=()=>display?host.timing.event?.('host_display',{at,source_kind:sourceKind}):host.timing('host_input_target',at);
       let result;
       try{result=host.handle(request,options)}catch(error){complete();throw error}
