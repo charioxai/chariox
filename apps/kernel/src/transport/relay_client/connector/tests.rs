@@ -308,6 +308,16 @@ fn relay_reconnect_delay_is_stable_jittered_and_bounded() {
     );
 }
 
+#[test]
+fn relay_reconnect_after_a_long_outage_waits_at_most_two_seconds() {
+    // A person's link that comes back after seconds must not wait out a long backoff (V1-INT-15).
+    for daemon in ["daemon-a", "daemon-b", "0123456789abcdef"] {
+        for attempt in [4, 20, 99] {
+            assert!(relay_reconnect_delay(daemon, attempt) <= Duration::from_secs(2));
+        }
+    }
+}
+
 #[tokio::test]
 async fn reconnect_delay_returns_false_after_delay() {
     let (_shutdown_tx, mut shutdown_rx) = watch::channel(false);
