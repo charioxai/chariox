@@ -13,10 +13,15 @@ import {assertNotCancelled} from './browser-controller-actions.mjs';
 const retry=()=>Object.assign(Error('MP-11: fill-target capture unavailable; retry'),{code:'fill_capture_retry'});
 const filled=host=>Boolean(host.protection?.targets?.length||host.browser?.fillTargets?.size);
 
+export function windowCaptureArgs(window){
+ const p=window.page_rect;
+ return {window:{id:window.xid,width:window.bounds.width,height:window.bounds.height},rect:{left:p.left,top:p.top,width:p.width-p.width%2,height:p.height-p.height%2},
+  contentRect:{left:p.left,top:p.top,width:p.width,height:p.height},contentHeight:p.height};
+}
 // No page session is attached: the browser-level connection carries only the lifetime events the base class needs.
 export class WindowPageCapture extends NativeWindowRegionCapture {
  constructor({host,...options}){
-  super({...options,surface:'page',contentRect:options.rect});
+  super({...options,surface:'page'});
   this.host=host;
  }
  onCdp(message){if(message.method==='Chariox.browserDisconnected')this.fence();}
@@ -65,7 +70,7 @@ export async function subscribeBrowserWindow(host,command,scope,signal,{Capture=
  if(!window||window.role!=='tabbed'||window.browser_generation!==generation||!window.isCurrent()||target.window_generation!==window.window_generation)throw new UserDomainRefusal('stale_reference');
  const p=window.page_rect;
  if(!p||p.top<=0||!Number.isSafeInteger(window.xid)||window.xid<=1)throw new UserDomainRefusal('stale_reference');
- const rect={left:p.left,top:p.top,width:p.width-p.width%2,height:p.height-p.height%2};
+ const {rect,...geometry}=windowCaptureArgs(window);
  const connection=await host.browser.ensureConnection();
  // One lease per window epoch: a new Tab or a navigation is not an epoch change.
  const document_id=`chrome-window-${generation}-${window.window_generation}-page`;
@@ -73,7 +78,7 @@ export async function subscribeBrowserWindow(host,command,scope,signal,{Capture=
  const lease={binding_id:`host-window-page-${randomUUID()}`,generation,document_id,sequence:window.window_generation,
   isAlive:()=>window.isCurrent(),isCurrent:async()=>window.isCurrent(),close:async()=>{}};
  const occluded=async()=>host.chromeWindows.inWindowOverNow({left:rect.left,top:rect.top,width:rect.width,height:rect.height});
- const args={window:{id:window.xid,width:window.bounds.width,height:window.bounds.height},rect,contentHeight:p.height,host,isCurrent:()=>window.isCurrent(),occluded,
+ const args={...geometry,rect,host,isCurrent:()=>window.isCurrent(),occluded,
   validateCurrent:async()=>window.isCurrent(),publishCurrent:async()=>window.isCurrent()};
  return createRegionDisplay({host,command,scope,signal,target,lease,args,window,tab,policy:host.protection,generation,connection,Capture});
 }

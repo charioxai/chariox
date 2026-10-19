@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {subscribeRegion,regionInput,regionInputTarget} from './kernel-browser-display-regions.mjs';
 import {KernelBrowserHost} from './kernel-browser-host.mjs';
-import {WindowPageCapture} from './kernel-browser-window-display.mjs';
+import {WindowPageCapture,windowCaptureArgs} from './kernel-browser-window-display.mjs';
 
 function fixture({fills=0}={}){
  const calls=[];let alive=true,active='target-a';
@@ -82,11 +82,19 @@ test('MP-11 a readback older than the fence is retried, and a fill target needs 
  assert.equal(f.calls.includes('page_session'),false);
 });
 test('MP-11 the real capture class derives the page crop from the window epoch alone',()=>{
- const f=fixture(),capture=new WindowPageCapture({host:f.host,window:{id:42,width:2560,height:1774},rect:{left:0,top:174,width:2560,height:1600},contentHeight:1600,
+ const f=fixture(),capture=new WindowPageCapture({host:f.host,window:{id:42,width:2560,height:1774},rect:{left:0,top:174,width:2560,height:1600},contentRect:{left:0,top:174,width:2560,height:1600},contentHeight:1600,
   isCurrent:()=>true,validateCurrent:async()=>true,occluded:async()=>false,tab:{tab_id:'t',document_id:'d'},scale:2,connection:{isOpen:()=>true,subscribe:()=>()=>{}},
   display:{},pid:42,policy:f.host.protection,browser:f.host.browser,allowed:()=>true,timing:()=>{}});
  assert.equal(capture.region.css_width,1280);assert.equal(capture.region.css_height,800);assert.equal(capture.region.pageTop,0);
  assert.equal(capture.surface,'page');assert.equal(typeof capture.occluded,'function');
  capture.onCdp({method:'Target.targetCreated',params:{targetInfo:{type:'page'}}});
  assert.equal(capture.closed,false,'a new Tab does not fence the window display');
+});
+
+test('MP-11 an odd page rect still builds the real capture (the kernel window need not be even)',()=>{
+ const f=fixture(),window={xid:42,bounds:{width:2560,height:1775},page_rect:{left:0,top:175,width:2559,height:1599}};
+ const capture=new WindowPageCapture({host:f.host,...windowCaptureArgs(window),
+  isCurrent:()=>true,validateCurrent:async()=>true,occluded:async()=>false,tab:{tab_id:'t',document_id:'d'},scale:2,connection:{isOpen:()=>true,subscribe:()=>()=>{}},
+  display:{},pid:42,policy:f.host.protection,browser:f.host.browser,allowed:()=>true,timing:()=>{}});
+ assert.equal(capture.region.css_width,1279);assert.equal(capture.region.css_height,799);assert.equal(capture.surface,'page');
 });
