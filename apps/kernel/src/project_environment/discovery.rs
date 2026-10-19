@@ -31,10 +31,10 @@ pub struct ProjectEnvironmentDiscoveryInput {
 /// A tool-free official-provider utility classifies the kernel's name/locator index.
 /// It must not receive source files, env files, shell output or a workspace credential binding.
 /// Gitignored files have no count ceiling, but the utility must decide each one it is offered
-/// within its turn budget (a real turn needs ~0.3 s per file). Files in small directories are
+/// within its turn budget (a real turn needs 0.3-1 s per file and loses track of long lists). Files in small directories are
 /// offered first because bulk output trees are regenerated; the rest are left out unless already
 /// decided.
-const OFFERED_PRIVATE_FILES: usize = 128;
+const OFFERED_PRIVATE_FILES: usize = 32;
 const OFFERED_PRIVATE_FILE_BYTES: usize = 512 * 1024;
 
 pub(crate) fn offered_private_files(
@@ -146,25 +146,22 @@ pub fn parse_project_environment_discovery_output(
     let mut manifest: ProjectEnvironmentManifest = serde_json::from_value(value)
         .map_err(|_| environment_error("invalid Project environment discovery output"))?;
     manifest.private_files = decisions;
+    let offered = offered_private_files(&input.private_files);
+    // Only a decision for an offered file counts, once, and never a plain overlay for a
+    // secret-looking one; anything else the model wrote is ignored, not an invalid answer.
+    let mut decided = HashSet::new();
+    manifest.private_files.retain(|decision| {
+        offered.iter().any(|candidate| {
+            candidate.workspace_id == decision.workspace_id
+                && candidate.path == decision.path
+                && (!decision.bring || !candidate.secret_looking)
+        }) && decided.insert((decision.workspace_id.clone(), decision.path.clone()))
+    });
     manifest.validate().map_err(environment_error)?;
     if manifest.project_id != input.project_id || manifest.evidence_digest != input.evidence_digest
     {
         return Err(environment_error(
             "discovery Project or evidence binding mismatch",
-        ));
-    }
-    let offered = offered_private_files(&input.private_files);
-    let mut decided = HashSet::new();
-    if manifest.private_files.iter().any(|decision| {
-        !decided.insert((decision.workspace_id.as_str(), decision.path.as_str()))
-            || !offered.iter().any(|candidate| {
-                candidate.workspace_id == decision.workspace_id
-                    && candidate.path == decision.path
-                    && (!decision.bring || !candidate.secret_looking)
-            })
-    }) {
-        return Err(environment_error(
-            "discovery private file decisions do not match the inventory",
         ));
     }
     for file in &mut manifest.private_files {

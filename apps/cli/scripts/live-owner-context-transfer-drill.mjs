@@ -273,7 +273,8 @@ try {
   if(scenario==='duplicate-json-history')await writeFile(path.join(workspace,'settings.json'),duplicateBytes)
   if(!encodedMode)for(const [name,contents] of Object.entries(metadata))await writeFile(path.join(workspace,name),contents)
   if(ignoredInventory) {
-    await writeFile(path.join(workspace,'.gitignore'),'scratch-out/\n')
+    await writeFile(path.join(workspace,'.gitignore'),'scratch-out/\nconfig-local/\n')
+    await mkdir(path.join(workspace,'config-local'));await writeFile(path.join(workspace,'config-local','settings.json'),'{"theme":"dark"}\n')
     for(let group=0;group<ignoredFiles/500;group++){
       const dir=path.join(workspace,'scratch-out',`part-${String(group).padStart(3,'0')}`);await mkdir(dir,{recursive:true})
       for(let i=0;i<500&&group*500+i<ignoredFiles;i++)await writeFile(path.join(dir,`artifact-${String(group*500+i).padStart(6,'0')}.dat`),`generated ${group*500+i}\n`)

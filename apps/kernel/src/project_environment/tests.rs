@@ -1298,7 +1298,7 @@ fn mp08_discovery_decides_a_gitignored_inventory_beyond_the_prompt_budget() {
     let prompt = project_environment_discovery_prompt(&input).unwrap();
     assert!(prompt.len() < 64 * 1024, "{}", prompt.len());
     let offered = discovery::offered_private_files(&candidates);
-    assert_eq!(offered.len(), 128, "a real turn decides ~0.3 s per file");
+    assert_eq!(offered.len(), 32, "a real turn loses track of long lists");
     assert_eq!(offered[0].path, "zz-config/local.json");
     assert!(prompt.contains("zz-config/local.json"));
     let left_out = candidates
@@ -1352,27 +1352,18 @@ fn mp08_discovery_decides_a_gitignored_inventory_beyond_the_prompt_budget() {
     // A model that derails partway (an entry without `bring`) leaves the rest undecided, not failed.
     let mut partial: serde_json::Value = serde_json::to_value(&answer).unwrap();
     let items = partial["private_files"].as_array_mut().unwrap();
-    items.truncate(80);
+    items.truncate(20);
     items.push(serde_json::json!({"workspace_id": "web", "path": "generated/bucket-1/entry-1.txt", "bytes": 10}));
     let partial = parse_project_environment_discovery_output(&partial.to_string(), &input).unwrap();
-    assert_eq!(partial.private_files.len(), 80);
-    // A decision for a file it was never offered, or a duplicate, is still rejected.
-    let mut invented = answer.clone();
-    invented.private_files[0].path = "not-in-the-inventory".into();
-    assert!(parse_project_environment_discovery_output(
-        &serde_json::to_string(&invented).unwrap(),
-        &input
-    )
-    .is_err());
-    let mut duplicated = answer;
-    duplicated
-        .private_files
-        .push(duplicated.private_files[0].clone());
-    assert!(parse_project_environment_discovery_output(
-        &serde_json::to_string(&duplicated).unwrap(),
-        &input
-    )
-    .is_err());
+    assert_eq!(partial.private_files.len(), 20);
+    // A decision for a file it was never offered, or a duplicate, is ignored.
+    let mut noisy = answer.clone();
+    noisy.private_files[0].path = "not-in-the-inventory".into();
+    noisy.private_files.push(noisy.private_files[1].clone());
+    let noisy =
+        parse_project_environment_discovery_output(&serde_json::to_string(&noisy).unwrap(), &input)
+            .unwrap();
+    assert_eq!(noisy.private_files.len(), offered - 1);
 }
 
 // MP-08 / MP-10 / MP-11: A declaration named password is code evidence, not a config secret.
