@@ -3,6 +3,9 @@
 //! proof of life; a driver owns one `kind` of source (the kernel timer, a
 //! terminal, a watcher) and only decides when it occurs. A driver wakes
 //! nobody directly: it reports through its `WakeSink`.
+// The terminal and the leased-agent wakes are the sink's callers and land
+// after this interface; the timer driver and the conformance tests use it.
+#![allow(dead_code, reason = "callers land with the terminal and leased agents")]
 use super::*;
 use crate::durable_state::agent_lifecycle::{
     AgentTaskExecution, AgentWake, Operation, Outcome, WakeEnd,

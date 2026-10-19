@@ -133,6 +133,7 @@ pub struct AgentWake {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WakeEnd {
     Succeeded,
+    #[allow(dead_code, reason = "reported by the terminal driver")]
     Failed,
     /// The source can no longer be observed; it is never relaunched.
     Lost,

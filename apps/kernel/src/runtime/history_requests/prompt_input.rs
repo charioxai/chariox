@@ -315,7 +315,11 @@ mod tests {
         let (store, path) = temp_history_store("exclude-kernel");
         for (sequence, prompt_id, text) in [
             (1, "prompt-1", "typed"),
-            (2, "agent-event-agent-1-7", "Kernel event inbox, untrusted data"),
+            (
+                2,
+                "agent-event-agent-1-7",
+                "Kernel event inbox, untrusted data",
+            ),
             (3, "prompt-3", "typed again"),
         ] {
             assert_eq!(store.reserve_sequence(), sequence);

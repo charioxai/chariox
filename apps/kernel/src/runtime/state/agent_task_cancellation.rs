@@ -4,6 +4,7 @@ use crate::durable_state::agent_lifecycle::{AgentTaskExecution, Operation};
 impl KernelRuntimeOwnedState {
     /// MP-08 / MP-09 / MP-10 / MP-11 A10/G03: the worker has settled this
     /// exact prompt; cancel its home task before promoting a queued successor.
+    #[allow(dead_code, reason = "called by leased-agent settlement")]
     pub(super) fn cancel_settled_remote_prompt_task(
         &self,
         room: &str,
@@ -35,6 +36,7 @@ impl KernelRuntimeOwnedState {
 
     /// Read current resource state: task cancellation is intent, not physical
     /// settlement. A matched process can outlive its satisfied obligation.
+    #[allow(dead_code, reason = "called by leased-agent settlement")]
     pub(super) fn agent_task_resources_unsettled(
         &self,
         task: &AgentTaskExecution,
