@@ -745,6 +745,13 @@ pub enum RelayPeerRequest {
         cols: u16,
         rows: u16,
     },
+    /// One Room terminal operation for the agent `leased_agent_id` runs as,
+    /// typed as `actor` (the home Room's identity).
+    RoomTerminal {
+        leased_agent_id: String,
+        actor: crate::room_terminal::TerminalActor,
+        operation: crate::local::RoomTerminalOperation,
+    },
     SubmitLeasedPrompt {
         leased_agent_id: String,
         expected_profile: RelayAgentExecutionProfile,
@@ -1113,6 +1120,9 @@ pub enum RelayPeerResponse {
         provider_run_id: String,
         cols: u16,
         rows: u16,
+    },
+    RoomTerminal {
+        result: crate::local::RoomTerminalResult,
     },
     LeasedPromptSubmitted {
         provider_run_id: String,
@@ -2180,5 +2190,56 @@ mod workflow_notification_128_shapes {
             format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
             "296b82ca90cf4e304380c2a868895efa41bdac182544232180a9b63396245866"
         );
+    }
+}
+
+#[cfg(test)]
+mod room_terminal_170_shapes {
+    use super::*;
+    use crate::local::{RoomTerminalOperation, RoomTerminalResult};
+    use crate::room_terminal::TerminalActor;
+    use sha2::{Digest, Sha256};
+
+    fn assert_wire<T>(wire: serde_json::Value, expected_sha256: &str)
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned,
+    {
+        let typed: T = serde_json::from_value(wire.clone()).unwrap();
+        let encoded = serde_json::to_value(typed).unwrap();
+        assert_eq!(encoded, wire);
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&encoded).unwrap())
+            ),
+            expected_sha256
+        );
+    }
+
+    #[test]
+    fn room_terminal_peer_170_request_and_response_shapes() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 170);
+        let request = RelayPeerRequest::RoomTerminal {
+            leased_agent_id: "leased-1".into(),
+            actor: TerminalActor::Agent("agent-2".into()),
+            operation: RoomTerminalOperation::Close {
+                terminal_id: "term-1".into(),
+            },
+        };
+        let wire = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({"kind": "room_terminal", "leased_agent_id": "leased-1",
+                "actor": {"kind": "agent", "agent_id": "agent-2"},
+                "operation": {"operation": "close", "terminal_id": "term-1"}})
+        );
+        assert_wire::<RelayPeerRequest>(
+            wire,
+            "eacffce23693fe298745f52ede63de4ea2f7015a31296ebf4d52f349e270988b",
+        );
+        let response = RelayPeerResponse::RoomTerminal {
+            result: RoomTerminalResult::Closed,
+        };
+        assert_wire::<RelayPeerResponse>(serde_json::to_value(&response).unwrap(), "97df114510c195b53e132e9bc4bc8fb9cad7d9bfe806b33ad8530022e46a03c9");
     }
 }

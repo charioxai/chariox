@@ -685,6 +685,12 @@ async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up_async() {
         &remote_agent,
     ))
     .await;
+    Box::pin(assert_remote_room_terminal(
+        &app_home,
+        &session_id,
+        &remote_agent,
+    ))
+    .await;
 
     {
         let mut app = app_home.lock().await;
@@ -787,6 +793,104 @@ async fn assert_remote_native_terminal_resize(
     ));
     let app = app_worker.lock().await;
     assert_eq!(app.pty().size(&worker_provider_run_id), Some((83, 27)));
+}
+
+/// A Room terminal for an agent leased to a worker runs on the worker, over
+/// the relay, and never on the home kernel.
+async fn assert_remote_room_terminal(
+    app_home: &Arc<Mutex<DaemonApp>>,
+    session_id: &str,
+    remote_agent: &crate::agent::AgentInstance,
+) {
+    use crate::local::{RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult};
+    use base64::Engine as _;
+    let home_router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(app_home), 8);
+    let call = |acting_agent: Option<&str>, host_agent: Option<&str>, operation| {
+        let router = home_router.clone();
+        let request = LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
+            session_id: session_id.to_string(),
+            acting_agent: acting_agent.map(str::to_string),
+            host_agent: host_agent.map(str::to_string),
+            operation,
+        });
+        async move {
+            let command = KernelCommand::from_local_request("room-terminal", None, None, &request);
+            match router.dispatch(command, request).await {
+                Ok(LocalDaemonResponse::RoomTerminal { result }) => result,
+                other => panic!("unexpected terminal response: {other:?}"),
+            }
+        }
+    };
+    let agent = Some(remote_agent.id());
+    let RoomTerminalResult::Opened { terminal } = call(
+        agent,
+        None,
+        RoomTerminalOperation::Open {
+            cols: 90,
+            rows: 24,
+            title: None,
+            command: None,
+        },
+    )
+    .await
+    else {
+        panic!("terminal should open on the worker");
+    };
+    let id = terminal.terminal_id;
+    let typed = call(
+        agent,
+        None,
+        RoomTerminalOperation::Input {
+            terminal_id: id.clone(),
+            data_base64: base64::engine::general_purpose::STANDARD
+                .encode("echo remote-$((6*7)); pwd\r"),
+        },
+    )
+    .await;
+    assert!(matches!(typed, RoomTerminalResult::Input { input } if input.accepted));
+    let mut screen = String::new();
+    for _ in 0..100 {
+        if let RoomTerminalResult::Snapshot { snapshot } = call(
+            agent,
+            None,
+            RoomTerminalOperation::Snapshot {
+                terminal_id: id.clone(),
+            },
+        )
+        .await
+        {
+            screen = snapshot.screen_text;
+        }
+        if screen.contains("remote-42") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        screen.contains("remote-42"),
+        "worker terminal output: {screen}"
+    );
+    assert!(
+        matches!(
+            call(None, None, RoomTerminalOperation::List).await,
+            RoomTerminalResult::Listed { terminals } if terminals.is_empty()
+        ),
+        "the home kernel must not hold the worker's terminal"
+    );
+    assert!(matches!(
+        call(None, agent, RoomTerminalOperation::List).await,
+        RoomTerminalResult::Listed { terminals } if terminals.len() == 1
+    ));
+    assert!(matches!(
+        call(
+            agent,
+            None,
+            RoomTerminalOperation::Close { terminal_id: id }
+        )
+        .await,
+        RoomTerminalResult::Closed
+    ));
 }
 
 #[test]

@@ -14,6 +14,10 @@ pub struct RoomTerminalRequest {
     /// separately.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acting_agent: Option<String>,
+    /// Run on the machine where this Room agent runs (a leased worker or a
+    /// slice). Defaults to the machine of `acting_agent`, else this kernel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_agent: Option<String>,
     pub operation: RoomTerminalOperation,
 }
 

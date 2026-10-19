@@ -576,7 +576,7 @@ impl RoomTerminalService {
 
     fn persist(&self, terminal: &mut Terminal) {
         terminal.unsaved_since = None;
-        if let Err(error) = self.inner.store.save(&terminal.to_record()) {
+        if let Err(error) = self.inner.store.save(&terminal.persisted_record()) {
             crate::logging::error_with_fields(
                 "room_terminal.persist",
                 "terminal scrollback could not be saved",

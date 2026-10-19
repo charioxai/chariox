@@ -34,6 +34,7 @@ async fn terminal_request(
     let request = LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
         session_id: session_id.to_string(),
         acting_agent: acting_agent.map(str::to_string),
+        host_agent: None,
         operation,
     });
     match router

@@ -1,29 +1,68 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use base64::Engine as _;
-
 use super::*;
 use crate::local::{
     LocalDaemonResponse, RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult,
 };
-use crate::room_terminal::{OpenRoomTerminal, TerminalActor};
+use crate::room_terminal::{OpenRoomTerminal, TerminalActor, MAX_WAIT};
 use crate::runtime::command::{KernelCaller, KernelCallerKind};
+use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
 const OPERATION: &str = "terminal.room";
 
 impl KernelRuntimeState {
     /// Terminals belong to the Room's owner (users and the owner's agents).
-    /// Other people in the Room get no access.
+    /// Other people in the Room get no access. The terminal runs on the machine
+    /// of the agent it is for: this kernel, or the worker the agent is leased to.
     pub(crate) async fn room_terminal_for_client(
         &self,
         caller: &KernelCaller,
         request: RoomTerminalRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let actor = self.authorize_room_terminal(caller, &request)?;
+        let host = request
+            .host_agent
+            .as_ref()
+            .or(request.acting_agent.as_ref());
+        let remote = match host {
+            Some(agent_id) => self
+                .owned
+                .agent_store
+                .get_agent(agent_id)?
+                .remote_execution()
+                .cloned(),
+            None => None,
+        };
+        let result = match remote {
+            Some(binding) => {
+                self.forward_room_terminal(binding, actor, request.operation)
+                    .await?
+            }
+            None => {
+                let working_directory = self.room_project_directory(&request.session_id)?;
+                self.run_room_terminal_operation(
+                    &request.session_id,
+                    working_directory,
+                    actor,
+                    request.operation,
+                )
+                .await?
+            }
+        };
+        Ok(LocalDaemonResponse::RoomTerminal { result })
+    }
+
+    /// Run one operation on this kernel's terminal service.
+    pub(crate) async fn run_room_terminal_operation(
+        &self,
+        session_id: &str,
+        working_directory: PathBuf,
+        actor: TerminalActor,
+        operation: RoomTerminalOperation,
+    ) -> Result<RoomTerminalResult, DaemonError> {
         let service = &self.owned.room_terminals;
-        let session_id = request.session_id.as_str();
-        let result = match request.operation {
+        Ok(match operation {
             RoomTerminalOperation::Open {
                 cols,
                 rows,
@@ -31,8 +70,8 @@ impl KernelRuntimeState {
                 command,
             } => RoomTerminalResult::Opened {
                 terminal: service.open(OpenRoomTerminal {
-                    session_id: request.session_id.clone(),
-                    working_directory: self.room_project_directory(session_id)?,
+                    session_id: session_id.to_string(),
+                    working_directory,
                     cols,
                     rows,
                     title,
@@ -101,8 +140,80 @@ impl KernelRuntimeState {
                 service.close(session_id, &terminal_id, &actor)?;
                 RoomTerminalResult::Closed
             }
+        })
+    }
+
+    /// Ask the worker an agent is leased to for the same operation. The worker
+    /// admits only the home kernel that holds the lease.
+    async fn forward_room_terminal(
+        &self,
+        binding: crate::agent::RemoteAgentBinding,
+        actor: TerminalActor,
+        operation: RoomTerminalOperation,
+    ) -> Result<RoomTerminalResult, DaemonError> {
+        if !binding.relay_peer_protocol_compatible() {
+            return Err(refused(format!(
+                "worker kernel `{}` is too old for Room terminals; update it",
+                binding.worker_kernel_id
+            )));
+        }
+        let mut relay_config = self.owned.config_projection.snapshot();
+        if let (Some(relay_url), Some(relay_token)) =
+            (binding.relay_url.clone(), binding.relay_token.clone())
+        {
+            relay_config.apply_remote_relay_override(relay_url, relay_token);
+        }
+        let blocking = match &operation {
+            RoomTerminalOperation::Wait { timeout_ms, .. } => {
+                (*timeout_ms).min(MAX_WAIT.as_millis() as u64)
+            }
+            RoomTerminalOperation::ReadOutput { wait_ms, .. } => *wait_ms,
+            _ => 0,
         };
-        Ok(LocalDaemonResponse::RoomTerminal { result })
+        let timeout = Duration::from_millis(relay_config.relay_request_timeout_ms)
+            .max(Duration::from_millis(blocking) + Duration::from_secs(20));
+        let response =
+            crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
+                &relay_config,
+                chariox_relay::protocol::ClientTarget {
+                    daemon_id: Some(binding.worker_kernel_id),
+                    daemon_alias: None,
+                },
+                RelayPeerRequest::RoomTerminal {
+                    leased_agent_id: binding.leased_agent_id,
+                    actor,
+                    operation,
+                },
+                timeout,
+                || self.authorize_current_external_command(),
+            )
+            .await?;
+        match response {
+            RelayPeerResponse::RoomTerminal { result } => Ok(result),
+            other => Err(refused(format!(
+                "unexpected worker response to a terminal request: {other:?}"
+            ))),
+        }
+    }
+
+    /// A terminal request from the home kernel that holds `leased_agent_id`'s
+    /// lease: it runs in the agent's backing Room on this worker.
+    pub(crate) async fn relay_room_terminal(
+        &self,
+        leased_agent_id: &str,
+        actor: TerminalActor,
+        operation: RoomTerminalOperation,
+    ) -> Result<RoomTerminalResult, DaemonError> {
+        let id = leased_agent_id.to_string();
+        let (backing_session_id, working_directory) = self
+            .with_app_side_effect(move |app| {
+                let mut runtime = crate::app::RemoteLeaseRuntime::new(app);
+                runtime.consume_leased_agent_authorization(&id)?;
+                runtime.leased_terminal_target(&id)
+            })
+            .await?;
+        self.run_room_terminal_operation(&backing_session_id, working_directory, actor, operation)
+            .await
     }
 
     pub(crate) fn end_room_terminals(&self, session_id: &str) {

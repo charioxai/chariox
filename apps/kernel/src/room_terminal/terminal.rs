@@ -12,7 +12,7 @@ use super::screen::Screen;
 use super::store::TerminalRecord;
 use super::types::{
     RoomTerminalDriver, RoomTerminalOutcome, RoomTerminalSnapshot, RoomTerminalStatus,
-    RoomTerminalSummary, TerminalActor,
+    RoomTerminalSummary,
 };
 use super::types::{RoomTerminalEventKind, RoomTerminalWatch};
 use crate::pty::PtyManager;
@@ -232,7 +232,7 @@ impl Terminal {
     }
 
     /// The record to persist now: metadata plus the text of the screen.
-    pub(super) fn to_record(&mut self) -> TerminalRecord {
+    pub(super) fn persisted_record(&mut self) -> TerminalRecord {
         let text = self.screen.text();
         TerminalRecord {
             scrollback_text: text.scrollback,

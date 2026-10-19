@@ -951,6 +951,22 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::RoomTerminal {
+            leased_agent_id,
+            actor,
+            operation,
+        } => match router
+            .relay_room_terminal(&leased_agent_id, actor, operation)
+            .await
+        {
+            Ok(result) => RelayPeerResponse::RoomTerminal { result },
+            Err(error) => {
+                return RelayRequestOutcome {
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                };
+            }
+        },
         RelayPeerRequest::SubmitLeasedPrompt {
             leased_agent_id,
             expected_profile,
@@ -2399,6 +2415,9 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
             leased_agent_id, ..
         }
         | RelayPeerRequest::ResizeLeasedProviderTerminal {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::RoomTerminal {
             leased_agent_id, ..
         }
         | RelayPeerRequest::SubmitLeasedPrompt {
