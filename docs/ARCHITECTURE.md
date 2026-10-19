@@ -1132,7 +1132,9 @@ live protection matrix has passed.
 
 Audience: the home kernel compares the authenticated caller with the Room's
 owner (owning an attachment is not Room ownership), and carries that decision
-in the authenticated worker request. Only the Room owner's own lease gets
+in the authenticated worker request. Audience-aware opens use a distinct wire
+tag so older workers reject them instead of ignoring the audience. Only the
+Room owner's own lease gets
 `audience: owner`; invited members retain the masked default. That owner lease
 reads the desktop as it is (the person may reveal a password to
 themselves), needs no protection proof, and keeps painting while protection is

@@ -83,12 +83,27 @@ mod tests {
             crate::test_support::expected_relay_peer_protocol_version()
         );
         let request = serde_json::json!({
-            "kind":"open_room_shared_display", "session_id":"room-1", "slice_id":"slice-1",
+            "kind":"open_room_shared_display_with_audience", "session_id":"room-1", "slice_id":"slice-1",
             "lease_id":"room-display-00000000000000000000000000000001", "viewer_public_key":"viewer-key",
             "audience":"viewer", "offer":{"codecs":["avc1.420033"],"bitrate":8000000,"device_scale_factor":1},
             "viewport":{"css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800,"revision":1,"last_actor_id":null},
             "target":{"kind":"desktop","surface_id":"slice:slice-1","generation":"native-one"}
         });
+        // The frozen worker accepted unknown fields on its old open variant.
+        #[derive(serde::Deserialize)]
+        #[serde(tag = "kind")]
+        enum LegacyOpen {
+            #[serde(rename = "open_room_shared_display")]
+            Open {},
+        }
+        let mut legacy = request.clone();
+        legacy["kind"] = "open_room_shared_display".into();
+        assert!(serde_json::from_value::<LegacyOpen>(legacy.clone()).is_ok());
+        assert!(serde_json::from_value::<RelayPeerRequest>(legacy).is_err());
+        assert!(
+            serde_json::from_value::<LegacyOpen>(request.clone()).is_err(),
+            "MP-11 old workers must not open an unmasked feed by ignoring audience"
+        );
         for audience in ["owner", "viewer"] {
             let mut value = request.clone();
             value["audience"] = audience.into();
@@ -112,7 +127,7 @@ mod tests {
                 "{:x}",
                 Sha256::digest(serde_json::to_vec(&request).unwrap())
             ),
-            "d76fa5a0f3e3e24b07c740eef38003e67a90079e9fd90e41813a32a60ba9cfba"
+            "7456be3802d0f40e2441b51555cf8f09483fa32663e9b391a43e6228b936259f"
         );
     }
 }
