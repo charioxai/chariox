@@ -7,3 +7,14 @@ export class UserDomainRefusal extends Error {
     this.code = 'user_domain_'+reason;
   }
 }
+// Region capture failures the person can act on. Not policy refusals: the code and text reach the viewer as written.
+const captureMessages = {
+  page_unavailable: 'The page is not ready to capture; try again in a moment',
+  view_resized: 'The page view changed size; select the region again',
+};
+export class CaptureRefusal extends Error {
+  constructor(reason) {
+    super(captureMessages[reason]);
+    this.code = 'capture_' + reason;
+  }
+}

@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11: kernel-owned visible-page admission over the shared region
 // pump. No caller geometry, native handles, alternate ledger or input path.
 import {randomUUID} from 'node:crypto';
-import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
+import {CaptureRefusal,UserDomainRefusal} from './kernel-browser-refusal.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {assertNotCancelled} from './browser-controller-actions.mjs';
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
@@ -131,40 +131,18 @@ export async function inputVisiblePage(host,stream,command,scope,signal){
  return host.request({...page,observed_by:scope},{signal,inputGuard,nativeDisplay:stream});
 }
 
-// MP-08/MP-11: the private frame-size hint may select an existing kernel crop;
-// it never grants a caller rectangle, a different observer or a stale document.
-export async function captureVisiblePage(host,tab,frame,scope){
- const stream=[...host.displays.values()].find(s=>s.regionTarget?.kind==='visible_page'&&s.observed_by===scope&&
-  s.tab_id===tab.tab_id&&s.generation===host.generation&&s.regionLease.document_id===tab.document_id&&
-  s.css_width*s.device_scale_factor===frame?.width&&s.css_height*s.device_scale_factor===frame?.height);
- if(!stream)return captureMirroredPage(host,tab,frame,scope);
- const policy=host.protection;
- const alive=()=>host.protection===policy&&!policy.unknown&&stream&&!stream.suspended&&host.displays.get(stream.subscription_id)===stream&&
-  stream.regionLease.isAlive()&&stream.regionSource.valid()&&stream.regionWindow.isCurrent();
- const current=async()=>alive()&&await stream.regionCurrent()&&alive();
- if(!await current())refuse();
- const shot=await host.displayScreenshot(tab,{x:0,y:0,width:stream.css_width,height:stream.css_height,scale:1},false);
- if(!await current()||shot.width!==frame.width||shot.height!==frame.height)refuse();
- return {...shot,protected_regions:shot[displayMaskRegions]??[]};
-}
-
-// MP-08/MP-10/MP-11: handover closes the temporary video producer. A current
-// opted-in mirror retains observation authority, never its old pixels/geometry.
-// Resolve the owned crop again and use the ordinary protected screenshot seam.
-async function captureMirroredPage(host,tab,frame,scope){
- const mirror=[...(host.mirror?.streams?.values()??[])].find(s=>s.wire===2&&s.navigationPreview&&s.scope===scope&&s.tab_id===tab.tab_id&&s.document_id===tab.document_id);
- if(!mirror||host.chromium?.policy!=='managed')refuse();
- const policy=host.protection,generation=host.generation,document=tab.document_id,window=host.chromeWindows.current().tabbed;
- const alive=()=>host.protection===policy&&!policy.unknown&&host.generation===generation&&window.isCurrent()&&
-  mirror.policy===policy&&mirror.expires>Date.now()&&[...host.mirror.streams.values()].includes(mirror)&&host.tabs.get(tab.tab_id)?.document_id===document;
- if(!alive()||window.scale!==host.scales.get(tab.tab_id))refuse();
- const {connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id);
- const measure=async()=>{const m=await connection.send('Page.getLayoutMetrics',{},sessionId);return {clientWidth:m.cssLayoutViewport?.clientWidth,clientHeight:m.cssLayoutViewport?.clientHeight,zoom:m.cssVisualViewport?.zoom??1,scale:m.cssVisualViewport?.scale};};
- const viewport=await measure(),geometry=visiblePageGeometry(window,viewport);
- if(geometry.width!==frame?.width||geometry.height!==frame?.height)refuse();
- const current=async()=>alive()&&await window.isPageCurrent(tab.target_id)&&JSON.stringify(await measure())===JSON.stringify(viewport)&&alive();
- if(!await current())refuse();
+// MP-08/MP-11: the owner's selection is served by the ordinary protected screenshot (exact Vault values masked,
+// document-fenced), clipped to the page crop the frame-size hint names. The hint never grants a caller rectangle;
+// no live stream or mirror binds the capture, so it works right after a navigation.
+export async function captureVisiblePage(host,tab,frame){
+ let geometry;
+ try{
+  const window=host.chromeWindows.current().tabbed,{connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id);
+  const m=await connection.send('Page.getLayoutMetrics',{},sessionId);
+  geometry=visiblePageGeometry(window,{clientWidth:m.cssLayoutViewport?.clientWidth,clientHeight:m.cssLayoutViewport?.clientHeight,zoom:m.cssVisualViewport?.zoom??1,scale:m.cssVisualViewport?.scale});
+ }catch(error){if(error?.code==='stale_document_reference')throw error;throw new CaptureRefusal('page_unavailable');}
+ if(geometry.width!==frame?.width||geometry.height!==frame?.height)throw new CaptureRefusal('view_resized');
  const shot=await host.displayScreenshot(tab,{x:0,y:0,width:geometry.css_width,height:geometry.css_height,scale:1},false);
- if(!await current()||shot.width!==frame.width||shot.height!==frame.height)refuse();
+ if(shot.width!==frame.width||shot.height!==frame.height)throw new CaptureRefusal('view_resized');
  return {...shot,protected_regions:shot[displayMaskRegions]??[]};
 }
