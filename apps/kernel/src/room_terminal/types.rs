@@ -84,6 +84,10 @@ pub struct RoomTerminalSummary {
     pub created_at_ms: u64,
     /// Bytes of output produced so far: the cursor for `ReadRoomTerminalOutput`.
     pub output_offset: u64,
+    /// The Room agent whose machine runs this terminal; `None` is this kernel.
+    /// Clients send it back as `host_agent` on requests about the terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_agent: Option<String>,
 }
 
 /// The screen as a person sees it plus the lines that scrolled off.

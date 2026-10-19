@@ -215,6 +215,7 @@ impl Terminal {
             user_interacted: record.user_interacted,
             created_at_ms: record.created_at_ms,
             output_offset: self.log.end_offset(),
+            host_agent: None,
         }
     }
 

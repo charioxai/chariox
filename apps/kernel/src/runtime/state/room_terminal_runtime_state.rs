@@ -34,23 +34,65 @@ impl KernelRuntimeState {
                 .cloned(),
             None => None,
         };
-        let result = match remote {
-            Some(binding) => {
-                self.forward_room_terminal(binding, actor, request.operation)
-                    .await?
-            }
-            None => {
-                let working_directory = self.room_project_directory(&request.session_id)?;
-                self.run_room_terminal_operation(
-                    &request.session_id,
-                    working_directory,
-                    actor,
-                    request.operation,
-                )
+        let result = match (remote, host) {
+            (Some(binding), Some(agent_id)) => self
+                .forward_room_terminal(binding, actor, request.operation)
                 .await?
+                .hosted_by(agent_id),
+            _ => {
+                let working_directory = self.room_project_directory(&request.session_id)?;
+                let everywhere =
+                    host.is_none() && matches!(request.operation, RoomTerminalOperation::List);
+                let mut result = self
+                    .run_room_terminal_operation(
+                        &request.session_id,
+                        working_directory,
+                        actor.clone(),
+                        request.operation,
+                    )
+                    .await?;
+                if everywhere {
+                    self.add_worker_terminals(&request.session_id, actor, &mut result)
+                        .await?;
+                }
+                result
             }
         };
         Ok(LocalDaemonResponse::RoomTerminal { result })
+    }
+
+    /// A Room-wide list also shows the terminals running on the workers its
+    /// agents are leased to. A worker that cannot be reached fails the list: a
+    /// missing tab must not look like a closed one.
+    async fn add_worker_terminals(
+        &self,
+        session_id: &str,
+        actor: TerminalActor,
+        listed: &mut RoomTerminalResult,
+    ) -> Result<(), DaemonError> {
+        let RoomTerminalResult::Listed { terminals } = listed else {
+            return Ok(());
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        for agent in self.session_agents(session_id) {
+            let Some(binding) = agent.remote_execution().cloned() else {
+                continue;
+            };
+            let worker = binding.worker_kernel_id.clone();
+            let RoomTerminalResult::Listed { terminals: remote } = self
+                .forward_room_terminal(binding, actor.clone(), RoomTerminalOperation::List)
+                .await?
+                .hosted_by(agent.id())
+            else {
+                continue;
+            };
+            terminals.extend(
+                remote
+                    .into_iter()
+                    .filter(|terminal| seen.insert((worker.clone(), terminal.terminal_id.clone()))),
+            );
+        }
+        Ok(())
     }
 
     /// Run one operation on this kernel's terminal service.

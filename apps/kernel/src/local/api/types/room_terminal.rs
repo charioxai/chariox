@@ -79,3 +79,19 @@ pub enum RoomTerminalResult {
     Waited { waited: RoomTerminalWaitResult },
     Closed,
 }
+
+impl RoomTerminalResult {
+    /// Mark the terminals in a worker's answer with the agent whose machine
+    /// runs them, so a client can address them again.
+    pub(crate) fn hosted_by(mut self, agent_id: &str) -> Self {
+        let host =
+            |terminal: &mut RoomTerminalSummary| terminal.host_agent = Some(agent_id.to_string());
+        match &mut self {
+            Self::Opened { terminal } | Self::Resized { terminal } => host(terminal),
+            Self::Listed { terminals } => terminals.iter_mut().for_each(host),
+            Self::Snapshot { snapshot } => host(&mut snapshot.terminal),
+            Self::Input { .. } | Self::Output { .. } | Self::Waited { .. } | Self::Closed => {}
+        }
+        self
+    }
+}

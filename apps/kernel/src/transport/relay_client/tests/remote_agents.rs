@@ -837,6 +837,11 @@ async fn assert_remote_room_terminal(
     else {
         panic!("terminal should open on the worker");
     };
+    assert_eq!(
+        terminal.host_agent.as_deref(),
+        agent,
+        "an opened worker terminal names the agent that hosts it"
+    );
     let id = terminal.terminal_id;
     let typed = call(
         agent,
@@ -871,12 +876,22 @@ async fn assert_remote_room_terminal(
         screen.contains("remote-42"),
         "worker terminal output: {screen}"
     );
-    assert!(
-        matches!(
-            call(None, None, RoomTerminalOperation::List).await,
-            RoomTerminalResult::Listed { terminals } if terminals.is_empty()
-        ),
-        "the home kernel must not hold the worker's terminal"
+    let RoomTerminalResult::Listed { terminals } =
+        call(None, None, RoomTerminalOperation::List).await
+    else {
+        panic!("a list answers with terminals");
+    };
+    assert_eq!(
+        terminals
+            .iter()
+            .map(|terminal| (
+                terminal.terminal_id.as_str(),
+                terminal.host_agent.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![(id.as_str(), agent)],
+        "the Room-wide list shows the worker's terminal and names the agent that hosts it; \
+         the home kernel holds none"
     );
     assert!(matches!(
         call(None, agent, RoomTerminalOperation::List).await,
