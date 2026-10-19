@@ -854,10 +854,10 @@ export class Mirror2 {
     stream.tilesPending = false;
     let boxes = [...(await this.evaluate(world, `${world.ref}.opaqueBoxes()`)).filter(b => !b.foreign || !stream.frames.has(b.id)), ...await this.frames.opaqueBoxes(stream, world)];
     stream.tileKeys = boxes.map(b => b.id).join(',');
-    if (!boxes.length || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
-    // Over the budget a still is only the placeholder until the region's video arrives (and what stays if it cannot
-    // start): a few per page, never a refreshed stream of lossless frames.
-    if (regionOverBudget(boxes)) { if (reset) stream.bigStills = 0; if ((stream.bigStills ?? 0) >= 3) return []; stream.bigStills = (stream.bigStills ?? 0) + 1; }
+    // Opaque regions over most of the viewport are carried by their region video leases alone (viewport-clipped): their
+    // lossless stills would be megabytes ahead of the page copy's handover, and a lease the page cannot prove
+    // hands the page to video (above).
+    if (!boxes.length || regionOverBudget(boxes) || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
     stream.tilesAt = Date.now();
     // The viewer keeps a still until replaced: unchanged pixels are not sent again.
     if (reset || !stream.tileHashes) stream.tileHashes = new Map();

@@ -690,7 +690,7 @@ test('MP-08/MP-10 r47 GitHub storm: credits based before a reset still in flight
  assert.equal((await credit(reset.sequence)).reset,true,'a viewer that applied the reset and is still far behind resets');
 });
 
-test('MP-08/MP-10 mirrorregion: theater mode: a region video refused for want of page pixels makes the page the video; otherwise a DOM copy with a bounded still', async () => {
+test('MP-08/MP-10 mirrorregion: theater mode: a region video refused for want of page pixels makes the page the video; otherwise a DOM copy without lossless stills', async () => {
  const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
  const connection={isOpen:()=>true,send:async()=>({})};
  const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
@@ -719,7 +719,7 @@ test('MP-08/MP-10 mirrorregion: theater mode: a region video refused for want of
  const handoff=await credit(echo.sequence);
  assert.equal(handoff.fallback,'region_area','a view the media fills has no page pixels to prove a region video: the page is the video');
  assert.equal(handoff.reset,true);
- // A player that fills 75 % of the view stays a DOM copy; its still is a placeholder, sent at most three times.
+ // A player that fills 75 % of the view stays a DOM copy; the region video serves it, no lossless still rides ahead.
  stream.fallback=null;stream.unattestable=false;boxes=[{id:'n9',box:[0,0,1280,600]}];
  for(let i=0;i<5;i++){stream.tilesAt=0;stream.tileHashes=new Map();const packet=await credit(0);assert.equal(packet.fallback,undefined,'75 % media stays a DOM copy');}
  // The document copy itself failing is the one page-level fallback that remains.
