@@ -71,7 +71,9 @@ impl WatchSet {
     pub(super) fn on_output(&mut self, plain: &PlainText) -> Fired {
         self.fire(|armed| match &armed.watch {
             RoomTerminalWatch::OutputContains { text }
-                if plain.since(armed.armed_at_plain_bytes).contains(text.as_str()) =>
+                if plain
+                    .since(armed.armed_at_plain_bytes)
+                    .contains(text.as_str()) =>
             {
                 Some(RoomTerminalEventKind::OutputMatched { text: text.clone() })
             }
@@ -104,7 +106,11 @@ impl WatchSet {
         })
     }
 
-    pub(super) fn on_shell_exit(&mut self, exit_code: Option<u32>, signal: Option<String>) -> Fired {
+    pub(super) fn on_shell_exit(
+        &mut self,
+        exit_code: Option<u32>,
+        signal: Option<String>,
+    ) -> Fired {
         self.fire(|armed| match armed.watch {
             RoomTerminalWatch::Finished => Some(RoomTerminalEventKind::Finished {
                 exit_code,
@@ -133,7 +139,10 @@ impl WatchSet {
     ) -> Fired {
         let mut fired = Fired::new();
         for armed in &self.armed {
-            if fired.iter().any(|(owner, _)| owner.wake_id == armed.owner.wake_id) {
+            if fired
+                .iter()
+                .any(|(owner, _)| owner.wake_id == armed.owner.wake_id)
+            {
                 continue;
             }
             if let Some(kind) = decide(armed) {
@@ -191,7 +200,12 @@ mod tests {
     fn a_wake_fires_once_even_with_several_conditions() {
         let mut plain = PlainText::new();
         let mut watches = WatchSet::default();
-        watches.arm(owner("w1"), RoomTerminalWatch::WaitingForInput, &plain, true);
+        watches.arm(
+            owner("w1"),
+            RoomTerminalWatch::WaitingForInput,
+            &plain,
+            true,
+        );
         watches.arm(
             owner("w1"),
             RoomTerminalWatch::OutputContains {

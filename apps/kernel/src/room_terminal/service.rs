@@ -117,7 +117,9 @@ impl RoomTerminalService {
                 let valid = !argv.is_empty()
                     && argv.len() <= 64
                     && !argv[0].is_empty()
-                    && argv.iter().all(|arg| arg.len() <= 4096 && !arg.contains('\0'));
+                    && argv
+                        .iter()
+                        .all(|arg| arg.len() <= 4096 && !arg.contains('\0'));
                 if !valid {
                     return Err(refused("command must be 1-64 arguments".to_string()));
                 }
@@ -384,7 +386,13 @@ impl RoomTerminalService {
             }
             let program_running = !terminal.shell_is_foreground(pty);
             terminal
-                .arm_watch(owner.clone(), watch, after_offset, Instant::now(), program_running)
+                .arm_watch(
+                    owner.clone(),
+                    watch,
+                    after_offset,
+                    Instant::now(),
+                    program_running,
+                )
                 .map(|kind| event(terminal, owner, kind, terminal.screen.visible_text()))
         };
         if let Some(event) = immediate {
@@ -578,7 +586,10 @@ impl RoomTerminalService {
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.inner.state.lock().expect("room terminal state poisoned")
+        self.inner
+            .state
+            .lock()
+            .expect("room terminal state poisoned")
     }
 }
 
@@ -651,7 +662,11 @@ fn validate_size(cols: u16, rows: u16) -> Result<(), DaemonError> {
 fn next_title(in_room: &[&Terminal]) -> String {
     (1..)
         .map(|number| format!("Terminal {number}"))
-        .find(|title| in_room.iter().all(|terminal| terminal.record.title != *title))
+        .find(|title| {
+            in_room
+                .iter()
+                .all(|terminal| terminal.record.title != *title)
+        })
         .expect("an unused title exists")
 }
 

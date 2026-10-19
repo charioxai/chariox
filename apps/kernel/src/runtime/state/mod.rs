@@ -130,7 +130,6 @@ mod provider_reload_pending_runtime;
 mod provider_run_read_state;
 mod publication_activation;
 mod room_browser_artifact;
-mod room_terminal_runtime_state;
 mod room_browser_controller;
 mod room_browser_controller_admission;
 mod room_browser_manifest_sync;
@@ -142,6 +141,7 @@ mod room_environment_placement;
 mod room_environment_state;
 mod room_screenshot;
 mod room_secret_observation;
+mod room_terminal_runtime_state;
 mod runtime_tool_call_activity;
 pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 

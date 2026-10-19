@@ -26,8 +26,7 @@ impl Terminal {
             pumped.output_changed = true;
             pumped.fired.extend(self.watches.on_output(&self.plain));
         }
-        if let Ok(PtyProcessState::Exited { exit_code, signal }) = pty.poll_process_state(&run_id)
-        {
+        if let Ok(PtyProcessState::Exited { exit_code, signal }) = pty.poll_process_state(&run_id) {
             if self.drain(pty, &run_id, now) {
                 pumped.fired.extend(self.watches.on_output(&self.plain));
             }
@@ -53,7 +52,9 @@ impl Terminal {
             });
         }
         self.program_running = program_running;
-        pumped.fired.extend(self.watches.on_foreground(program_running));
+        pumped
+            .fired
+            .extend(self.watches.on_foreground(program_running));
         if program_running
             && !self.waiting_reported
             && now.duration_since(self.last_output_at) >= QUIET_BEFORE_WAITING

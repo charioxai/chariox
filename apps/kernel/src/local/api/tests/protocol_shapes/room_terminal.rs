@@ -7,7 +7,10 @@ fn assert_round_trip(wire: serde_json::Value, expected_sha256: &str) {
     let encoded = serde_json::to_value(request).unwrap();
     assert_eq!(encoded, wire);
     assert_eq!(
-        format!("{:x}", Sha256::digest(serde_json::to_vec(&encoded).unwrap())),
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&encoded).unwrap())
+        ),
         expected_sha256
     );
 }
@@ -15,7 +18,10 @@ fn assert_round_trip(wire: serde_json::Value, expected_sha256: &str) {
 #[test]
 fn room_terminal_protocol_562_requests_snapshot_and_hash() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 562);
-    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 170);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        170
+    );
     assert_round_trip(
         serde_json::json!({"RoomTerminal": {
             "session_id": "room-a",
@@ -42,11 +48,13 @@ fn room_terminal_protocol_562_requests_snapshot_and_hash() {
         }}),
         "b04036b0df3810f15b001625952526db578c86a3486365e901a3567e58f765a0",
     );
-    assert!(serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({"RoomTerminal": {
-        "session_id": "room-a",
-        "operation": {"operation": "run_anything"}
-    }}))
-    .is_err());
+    assert!(
+        serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({"RoomTerminal": {
+            "session_id": "room-a",
+            "operation": {"operation": "run_anything"}
+        }}))
+        .is_err()
+    );
 }
 
 #[test]
@@ -61,12 +69,17 @@ fn room_terminal_protocol_562_results_snapshot_and_hash() {
     let response: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
     assert!(matches!(
         &response,
-        LocalDaemonResponse::RoomTerminal { result: RoomTerminalResult::Input { .. } }
+        LocalDaemonResponse::RoomTerminal {
+            result: RoomTerminalResult::Input { .. }
+        }
     ));
     let encoded = serde_json::to_value(response).unwrap();
     assert_eq!(encoded, wire);
     assert_eq!(
-        format!("{:x}", Sha256::digest(serde_json::to_vec(&encoded).unwrap())),
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&encoded).unwrap())
+        ),
         "909020e37bf1bb285c875761906626455d18750481536875ae14b21c0b8a8542"
     );
 }

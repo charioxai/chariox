@@ -70,7 +70,10 @@ impl TerminalStore {
         let mut records = Vec::new();
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().is_some_and(|extension| extension != "json") {
+            if path
+                .extension()
+                .is_some_and(|extension| extension != "json")
+            {
                 let _ = fs::remove_file(&path);
                 continue;
             }

@@ -119,7 +119,13 @@ async fn opens_the_login_shell_in_the_project_folder() {
     let id = &terminal.terminal_id;
     assert_eq!(terminal.working_directory, project.display().to_string());
 
-    type_as(&service, id, &TerminalActor::User, "pwd; shopt -q login_shell && echo LOGIN-$((6*7))\r").await;
+    type_as(
+        &service,
+        id,
+        &TerminalActor::User,
+        "pwd; shopt -q login_shell && echo LOGIN-$((6*7))\r",
+    )
+    .await;
     until("pwd and login shell", || async {
         screen_has(&service, id, "LOGIN-42").await && screen_has(&service, id, "project").await
     })
@@ -146,12 +152,20 @@ async fn one_driver_rule_protects_a_foreground_program() {
     let refused = type_as(&service, &id, &agent("b"), "echo intruder\r").await;
     assert!(!refused.accepted);
     assert_eq!(refused.refusal.as_deref(), Some("busy (driven by a)"));
-    assert!(type_as(&service, &id, &TerminalActor::User, "from-the-user\r").await.accepted);
+    assert!(
+        type_as(&service, &id, &TerminalActor::User, "from-the-user\r")
+            .await
+            .accepted
+    );
     until("the user's text to echo", || async {
         screen_has(&service, &id, "from-the-user").await
     })
     .await;
-    assert!(!service.snapshot("room-1", &id).unwrap().screen_text.contains("intruder"));
+    assert!(!service
+        .snapshot("room-1", &id)
+        .unwrap()
+        .screen_text
+        .contains("intruder"));
 
     assert!(type_as(&service, &id, &agent("a"), "\u{4}").await.accepted);
     until("cat to exit", || async {
@@ -159,8 +173,15 @@ async fn one_driver_rule_protects_a_foreground_program() {
         service.list("room-1")[0].driver == RoomTerminalDriver::Free
     })
     .await;
-    assert!(type_as(&service, &id, &agent("b"), "echo b-types-now\r").await.accepted);
-    until("b's command", || async { screen_has(&service, &id, "b-types-now").await }).await;
+    assert!(
+        type_as(&service, &id, &agent("b"), "echo b-types-now\r")
+            .await
+            .accepted
+    );
+    until("b's command", || async {
+        screen_has(&service, &id, "b-types-now").await
+    })
+    .await;
     service.end_session("room-1");
 }
 
@@ -222,7 +243,13 @@ async fn shell_exit_ends_the_terminal_and_keeps_its_screen() {
     let root = TempDir::new();
     let service = service(root.path());
     let id = open(&service, root.path()).terminal_id;
-    type_as(&service, &id, &TerminalActor::User, "echo kept-line; exit 3\r").await;
+    type_as(
+        &service,
+        &id,
+        &TerminalActor::User,
+        "echo kept-line; exit 3\r",
+    )
+    .await;
     until("the shell to end", || async {
         service.pump_once();
         matches!(
@@ -242,7 +269,11 @@ async fn shell_exit_ends_the_terminal_and_keeps_its_screen() {
             description: "ended: exited with code 3".to_string()
         }
     );
-    assert!(service.snapshot("room-1", &id).unwrap().screen_text.contains("kept-line"));
+    assert!(service
+        .snapshot("room-1", &id)
+        .unwrap()
+        .screen_text
+        .contains("kept-line"));
     assert!(service
         .input("room-1", &id, &TerminalActor::User, b"x")
         .await
@@ -254,8 +285,17 @@ async fn a_restart_ends_terminals_and_keeps_scrollback() {
     let root = TempDir::new();
     let first = service(root.path());
     let id = open(&first, root.path()).terminal_id;
-    type_as(&first, &id, &TerminalActor::User, "seq 1 80; echo before-restart\r").await;
-    until("output", || async { screen_has(&first, &id, "before-restart").await }).await;
+    type_as(
+        &first,
+        &id,
+        &TerminalActor::User,
+        "seq 1 80; echo before-restart\r",
+    )
+    .await;
+    until("output", || async {
+        screen_has(&first, &id, "before-restart").await
+    })
+    .await;
     tokio::time::sleep(Duration::from_millis(1200)).await;
     first.pump_once();
 
@@ -271,8 +311,15 @@ async fn a_restart_ends_terminals_and_keeps_scrollback() {
     );
     let snapshot = second.snapshot("room-1", &id).unwrap();
     assert!(snapshot.screen_text.contains("before-restart"));
-    assert!(snapshot.scrollback_text.contains("\n2\n"), "{}", snapshot.scrollback_text);
-    assert!(second.input("room-1", &id, &TerminalActor::User, b"x").await.is_err());
+    assert!(
+        snapshot.scrollback_text.contains("\n2\n"),
+        "{}",
+        snapshot.scrollback_text
+    );
+    assert!(second
+        .input("room-1", &id, &TerminalActor::User, b"x")
+        .await
+        .is_err());
     first.end_session("room-1");
 }
 
@@ -283,7 +330,11 @@ async fn closing_and_ending_a_room_stop_the_shell_processes() {
     let a = open(&service, root.path()).terminal_id;
     let b = open(&service, root.path()).terminal_id;
     assert_eq!(
-        service.list("room-1").iter().map(|t| t.title.as_str()).collect::<Vec<_>>(),
+        service
+            .list("room-1")
+            .iter()
+            .map(|t| t.title.as_str())
+            .collect::<Vec<_>>(),
         ["Terminal 1", "Terminal 2"]
     );
     service.close("room-1", &a, &TerminalActor::User).unwrap();
@@ -292,7 +343,11 @@ async fn closing_and_ending_a_room_stop_the_shell_processes() {
     service.end_session("room-1");
     assert!(service.list("room-1").is_empty());
     assert!(service.snapshot("room-1", &b).is_err());
-    assert!(!root.path().join("terminals").join(format!("{b}.json")).exists());
+    assert!(!root
+        .path()
+        .join("terminals")
+        .join(format!("{b}.json"))
+        .exists());
 }
 
 #[tokio::test]
@@ -322,7 +377,13 @@ async fn notifications_fire_for_text_waiting_and_finish() {
             None,
         )
         .unwrap();
-    type_as(&service, &id, &agent("agent-a"), "echo NEEDLE-$((3+4)); cat\r").await;
+    type_as(
+        &service,
+        &id,
+        &agent("agent-a"),
+        "echo NEEDLE-$((3+4)); cat\r",
+    )
+    .await;
     until("text and waiting events", || async {
         service.pump_once();
         !events.fired("w-text").is_empty() && !events.fired("w-wait").is_empty()
@@ -418,7 +479,11 @@ async fn a_blocking_wait_returns_when_the_program_finishes() {
         waited.fired,
         Some(RoomTerminalEventKind::Finished { .. })
     ));
-    assert!(waited.screen_text.contains("DONE-42"), "{}", waited.screen_text);
+    assert!(
+        waited.screen_text.contains("DONE-42"),
+        "{}",
+        waited.screen_text
+    );
     pumping.abort();
     service.end_session("room-1");
 }
@@ -478,7 +543,10 @@ async fn a_condition_that_held_before_arming_fires_at_once() {
     let id = open(&service, root.path()).terminal_id;
     let offset = service.snapshot("room-1", &id).unwrap().output_offset;
     type_as(&service, &id, &agent("a"), "echo EARLY-$((1+1))\r").await;
-    until("the output", || async { screen_has(&service, &id, "EARLY-2").await }).await;
+    until("the output", || async {
+        screen_has(&service, &id, "EARLY-2").await
+    })
+    .await;
     let waited = service
         .wait(
             "room-1",
@@ -519,7 +587,10 @@ async fn once_the_user_used_a_tab_only_the_user_can_close_it() {
     assert!(service.list("room-1")[0].user_interacted);
 
     let refused = service.close("room-1", &id, &agent("a")).unwrap_err();
-    assert!(refused.to_string().contains("only the user can close it"), "{refused}");
+    assert!(
+        refused.to_string().contains("only the user can close it"),
+        "{refused}"
+    );
     assert_eq!(service.list("room-1").len(), 1);
     service.close("room-1", &id, &TerminalActor::User).unwrap();
     assert!(service.list("room-1").is_empty());
@@ -546,14 +617,26 @@ async fn a_terminal_opened_with_a_command_belongs_to_its_opener() {
             rows: 24,
             title: Some("build".to_string()),
             opened_by: agent("a"),
-            command: Some(vec!["sh".into(), "-c".into(), "echo BUILT; sleep 30".into()]),
+            command: Some(vec![
+                "sh".into(),
+                "-c".into(),
+                "echo BUILT; sleep 30".into(),
+            ]),
         })
         .unwrap()
         .terminal_id;
-    until("the command output", || async { screen_has(&service, &id, "BUILT").await }).await;
+    until("the command output", || async {
+        screen_has(&service, &id, "BUILT").await
+    })
+    .await;
     let summary = &service.list("room-1")[0];
     assert_eq!(summary.title, "build");
-    assert_eq!(summary.driver, RoomTerminalDriver::Busy { driven_by: agent("a") });
+    assert_eq!(
+        summary.driver,
+        RoomTerminalDriver::Busy {
+            driven_by: agent("a")
+        }
+    );
     assert!(!type_as(&service, &id, &agent("b"), "x").await.accepted);
     service.end_session("room-1");
 }
@@ -563,8 +646,17 @@ async fn a_graceful_shutdown_keeps_output_newer_than_the_last_save() {
     let root = TempDir::new();
     let first = service(root.path());
     let id = open(&first, root.path()).terminal_id;
-    type_as(&first, &id, &TerminalActor::User, "echo LAST-WORDS-$((8*8))\r").await;
-    until("output", || async { screen_has(&first, &id, "LAST-WORDS-64").await }).await;
+    type_as(
+        &first,
+        &id,
+        &TerminalActor::User,
+        "echo LAST-WORDS-$((8*8))\r",
+    )
+    .await;
+    until("output", || async {
+        screen_has(&first, &id, "LAST-WORDS-64").await
+    })
+    .await;
     first.shutdown();
 
     let second = service(root.path());

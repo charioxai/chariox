@@ -30,7 +30,9 @@ pub enum RoomTerminalOperation {
         command: Option<Vec<String>>,
     },
     List,
-    Snapshot { terminal_id: String },
+    Snapshot {
+        terminal_id: String,
+    },
     /// Keystrokes as one unit; refused while another actor drives a program.
     Input {
         terminal_id: String,
@@ -56,7 +58,9 @@ pub enum RoomTerminalOperation {
         after_offset: Option<u64>,
         timeout_ms: u64,
     },
-    Close { terminal_id: String },
+    Close {
+        terminal_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

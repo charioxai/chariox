@@ -45,11 +45,7 @@ pub(super) struct ProgramEnd {
 }
 
 impl Terminal {
-    pub(super) fn running(
-        record: TerminalRecord,
-        run_id: String,
-        shell_pid: Option<i32>,
-    ) -> Self {
+    pub(super) fn running(record: TerminalRecord, run_id: String, shell_pid: Option<i32>) -> Self {
         let screen = Screen::new(record.rows, record.cols);
         let mut terminal = Self::new(record, Some(run_id), shell_pid, screen);
         if terminal.runs_a_command() {
@@ -154,8 +150,7 @@ impl Terminal {
         if let Some(kind) = self.already_true(&watch, after_offset, now, program_running) {
             return Some(kind);
         }
-        self.watches
-            .arm(owner, watch, &self.plain, program_running);
+        self.watches.arm(owner, watch, &self.plain, program_running);
         None
     }
 

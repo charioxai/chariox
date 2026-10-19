@@ -2,9 +2,7 @@
 //! one-driver rule between the user and two Room agents.
 
 use super::*;
-use crate::local::{
-    RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult,
-};
+use crate::local::{RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult};
 use crate::room_terminal::{RoomTerminalDriver, RoomTerminalInputResult, RoomTerminalSummary};
 use base64::Engine as _;
 
@@ -144,7 +142,10 @@ fn only_the_room_owner_reaches_terminals_and_drivers_do_not_collide() {
             panic!("unexpected result");
         };
         let id = terminal.terminal_id;
-        assert_eq!(terminal.working_directory, worktree.path().display().to_string());
+        assert_eq!(
+            terminal.working_directory,
+            worktree.path().display().to_string()
+        );
 
         // TERM-NO-OTHER-MEMBERS: an invited member is refused by the protocol.
         for operation in [
@@ -178,7 +179,10 @@ fn only_the_room_owner_reaches_terminals_and_drivers_do_not_collide() {
         )
         .await
         .expect_err("a stranger is refused");
-        assert!(matches!(stranger, DaemonError::SessionAccessDenied { .. }), "{stranger:?}");
+        assert!(
+            matches!(stranger, DaemonError::SessionAccessDenied { .. }),
+            "{stranger:?}"
+        );
         assert_eq!(list(&router, &session_id).await.len(), 1);
 
         // Only Room agents can be typed as.
@@ -196,7 +200,11 @@ fn only_the_room_owner_reaches_terminals_and_drivers_do_not_collide() {
         // TERM-DRIVER-LOCK: A starts a program; B is refused, the user is not.
         let a = Some(agent_a.id());
         let b = Some(agent_b.id());
-        assert!(type_text(&router, &session_id, &id, a, "cat\r").await.accepted);
+        assert!(
+            type_text(&router, &session_id, &id, a, "cat\r")
+                .await
+                .accepted
+        );
         until_driver(
             &router,
             &session_id,
@@ -211,10 +219,22 @@ fn only_the_room_owner_reaches_terminals_and_drivers_do_not_collide() {
             refused.refusal,
             Some(format!("busy (driven by {})", agent_a.id()))
         );
-        assert!(type_text(&router, &session_id, &id, None, "from-the-user\r").await.accepted);
-        assert!(type_text(&router, &session_id, &id, a, "\u{4}").await.accepted);
+        assert!(
+            type_text(&router, &session_id, &id, None, "from-the-user\r")
+                .await
+                .accepted
+        );
+        assert!(
+            type_text(&router, &session_id, &id, a, "\u{4}")
+                .await
+                .accepted
+        );
         until_driver(&router, &session_id, RoomTerminalDriver::Free).await;
-        assert!(type_text(&router, &session_id, &id, b, "echo b-now\r").await.accepted);
+        assert!(
+            type_text(&router, &session_id, &id, b, "echo b-now\r")
+                .await
+                .accepted
+        );
 
         // The user used the tab: an agent cannot close it, the user can.
         let refused_close = terminal_request(
@@ -228,7 +248,9 @@ fn only_the_room_owner_reaches_terminals_and_drivers_do_not_collide() {
         )
         .await
         .expect_err("an agent cannot close a used tab");
-        assert!(refused_close.to_string().contains("only the user can close it"));
+        assert!(refused_close
+            .to_string()
+            .contains("only the user can close it"));
         terminal_request(
             &router,
             DEFAULT_LOCAL_USER_ID,

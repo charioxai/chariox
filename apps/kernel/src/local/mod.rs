@@ -267,9 +267,9 @@ pub use api::{
 };
 pub use api::{
     BindRoomEnvironmentSliceRequest, CaptureRoomEnvironmentScreenshotRequest,
-    ReadRoomEnvironmentScreenshotChunkRequest, RoomBrowserArtifactRequest, RoomTerminalOperation,
-    RoomTerminalRequest, RoomTerminalResult,
+    ReadRoomEnvironmentScreenshotChunkRequest, RoomBrowserArtifactRequest,
     RoomEnvironmentScreenshotArtifact, RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,
+    RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult,
 };
 pub use api::{
     GetKernelResourceTelemetryRequest, KernelResourceTelemetryDisk, KernelResourceTelemetryLogs,

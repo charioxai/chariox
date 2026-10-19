@@ -54,7 +54,9 @@ impl KernelRuntimeState {
                     .decode(data_base64)
                     .map_err(|_| refused("terminal input is not valid base64".to_string()))?;
                 RoomTerminalResult::Input {
-                    input: service.input(session_id, &terminal_id, &actor, &input).await?,
+                    input: service
+                        .input(session_id, &terminal_id, &actor, &input)
+                        .await?,
                 }
             }
             RoomTerminalOperation::Resize {

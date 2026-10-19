@@ -16,8 +16,9 @@ pub(super) fn login_shell() -> Result<String, DaemonError> {
     }
     account_shell().ok_or_else(|| DaemonError::LocalTransport {
         operation: "room terminal",
-        message: "no login shell: $SHELL is unset and the account lists none; set SHELL for the kernel"
-            .to_string(),
+        message:
+            "no login shell: $SHELL is unset and the account lists none; set SHELL for the kernel"
+                .to_string(),
     })
 }
 

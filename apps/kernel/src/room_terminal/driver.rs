@@ -141,7 +141,9 @@ mod tests {
         tracker.record_write(&TerminalActor::User, true, b"top\r", start);
         assert!(matches!(
             tracker.admit(&agent("a"), false, start + LAUNCH_SETTLE * 2),
-            Admission::Refuse(RoomTerminalDriver::Busy { driven_by: TerminalActor::User })
+            Admission::Refuse(RoomTerminalDriver::Busy {
+                driven_by: TerminalActor::User
+            })
         ));
     }
 }
