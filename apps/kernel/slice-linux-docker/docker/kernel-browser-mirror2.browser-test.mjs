@@ -1177,7 +1177,9 @@ test("MP-10: review #941@f6fb77245-4 a screenshot-crop region inside a same-orig
       await evaluate(`f.style.cssText=${JSON.stringify(style)};true`);
       await new Promise(resolve => setTimeout(resolve, 1100));
       const packet = await stayDom(next, 3000, `MP-10: frame owner ${style} never hands the page to video`);
-      assert((await regionLease(ctx, packet.sequence)).rect.width > 0);
+      // A translucent owner moves nothing; a rotated one would misplace the crop (translation-only mapping): no lease.
+      if (/rotate/.test(style)) await assert.rejects(regionLease(ctx, packet.sequence), /region_target/);
+      else { const lease = await regionLease(ctx, packet.sequence); assert.equal(lease.rect.width, 120); assert.equal(lease.rect.height, 60); }
       await evaluate("f.style.cssText='';true");
       await new Promise(resolve => setTimeout(resolve, 1100));
       assert.equal((await next(1000)).fallback, undefined, `MP-10: still a DOM copy after ${style}`);

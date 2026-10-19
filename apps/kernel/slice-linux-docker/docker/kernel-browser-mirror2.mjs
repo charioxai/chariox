@@ -846,6 +846,8 @@ export class Mirror2 {
     // for an evaluation in the page's next task (MP-08 click path, 8-12 ms behind a busy source page).
     // Native attestation refused a region video because media leaves no page pixels to prove it against (a theater
     // player, a full-screen map): the page is the video (labelled; the client retries later).
+    // A refusal lasts only while opaque media is still on the page (the player closed or left).
+    if (none && !stream.frames.size) stream.unattestable = false;
     if (stream.unattestable) { const error = new Error('MP-10: opaque media fills the page'); error.mirrorReason = 'region_area'; throw error; }
     if (none && !stream.frames.size) { stream.tileKeys = ''; stream.tilesPending = false; return []; }
     // MP-08/MP-10: a DOM packet right after viewer input carries no still; its regions (and the 25% budget)

@@ -722,6 +722,9 @@ test('MP-08/MP-10 mirrorregion: theater mode: a region video refused for want of
  // A player that fills 75 % of the view stays a DOM copy; the region video serves it, no lossless still rides ahead.
  stream.fallback=null;stream.unattestable=false;boxes=[{id:'n9',box:[0,0,1280,600]}];
  for(let i=0;i<5;i++){stream.tilesAt=0;stream.tileHashes=new Map();const packet=await credit(0);assert.equal(packet.fallback,undefined,'75 % media stays a DOM copy');}
+ // A refusal is not kept for the stream: once the media is gone the next measurement recovers.
+ stream.fallback=null;stream.unattestable=true;stream.tilesAt=0;boxes=[];drain={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],opaque:false};
+ const recovered=await credit(0);assert.equal(recovered.fallback,undefined,'no media left: a DOM copy again');assert.equal(stream.unattestable,false,'the refusal is cleared with the media');
  // The document copy itself failing is the one page-level fallback that remains.
  connection.send=async method=>method==='Page.getFrameTree'?{frameTree:{frame:{loaderId:'D1'}}}:{};
  mirror.evaluate=async(_,expression)=>{if(expression==='m.snapshot()')throw new Error('snapshot failed');return{};};

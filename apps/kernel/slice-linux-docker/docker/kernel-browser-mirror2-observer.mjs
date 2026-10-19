@@ -832,6 +832,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let bounds=box(node),clip=intersect(bounds,[0,0,node.ownerDocument.defaultView.innerWidth,node.ownerDocument.defaultView.innerHeight]);
       for(let view=node.ownerDocument.defaultView;view !== window;view=view.parent){
         const owner=view.frameElement;if(!owner)throw new Error('mirror2 frame unavailable');
+        // The owner's origin maps the child by translation only: a rotated/scaled owner (or ancestor of it) would misplace the crop.
+        if(/^(transform|rotate|scale|size)/.test(distorted(owner)||''))throw new Error('mirror2 region frame transformed');
         const r=owner.getBoundingClientRect(),style=getComputedStyle(owner),x=r.x+owner.clientLeft+(parseFloat(style.paddingLeft)||0),y=r.y+owner.clientTop+(parseFloat(style.paddingTop)||0);
         bounds=[bounds[0]+x,bounds[1]+y,bounds[2],bounds[3]];clip=[clip[0]+x,clip[1]+y,clip[2],clip[3]];
         clip=intersect(clip,[0,0,view.parent.innerWidth,view.parent.innerHeight]);
