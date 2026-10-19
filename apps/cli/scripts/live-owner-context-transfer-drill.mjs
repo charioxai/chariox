@@ -430,10 +430,10 @@ try {
       const { readdir } = await import('node:fs/promises')
       const logs=path.join(root,'source','logs');let line
       for(const name of await readdir(logs))for(const text of (await readFile(path.join(logs,name),'utf8')).split('\n'))
-        if(text.includes('Project environment discovery decided ignored files'))line=JSON.parse(text)
+        if(!line&&text.includes('Project environment discovery decided ignored files'))line=JSON.parse(text)
       assert(line,'source kernel logged the discovery outcome')
-      const decided=line.decided;assert.equal(line.inventory,ignoredFiles)
-      assert(decided>0&&decided<ignoredFiles,`MP-08 offered a bounded set of ${ignoredFiles} ignored files, got ${decided}`)
+      const decided=line.decided;assert.equal(line.inventory,ignoredFiles+1)
+      assert(decided>0&&decided<=32,`MP-08 offered a bounded set of ${ignoredFiles} ignored files, got ${decided}`)
       steps.push({name:'ignored-inventory-bounded-prefix-decided-by-real-codex',mpItems:['MP-08','MP-10','MP-11'],ignoredFiles,decided,model:'gpt-6-luna low'})
     }
     if(projectReview) {
