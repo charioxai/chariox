@@ -655,7 +655,7 @@ impl RelayRegistry {
         realm_id: &str,
         targets: Option<&[String]>,
     ) -> Vec<RelayMachinePresence> {
-        let relay_aliases = self.relay_kernel_aliases(realm_id);
+        let machine_names = self.machine_names_in_realm(realm_id);
         let mut grouped = BTreeMap::<String, Vec<&DaemonRegistration>>::new();
         for registration in self.daemon_registrations_in_realm(realm_id) {
             if targets.is_some_and(|targets| !targets.contains(&registration.daemon_id)) {
@@ -680,11 +680,7 @@ impl RelayRegistry {
                         .iter()
                         .flat_map(|registration| registration.provider_accounts.iter().cloned()),
                 );
-                let machine_alias = registrations
-                    .iter()
-                    .min_by_key(|registration| normalized_kernel_started_at_ms(registration))
-                    .and_then(|registration| relay_aliases.get(&registration.daemon_id))
-                    .cloned();
+                let machine_alias = machine_names.get(&machine_id).map(MachineName::label);
                 RelayMachinePresence {
                     machine_alias,
                     machine_id,
@@ -706,6 +702,7 @@ impl RelayRegistry {
         machine_ref: &str,
     ) -> Vec<RelayKernelPresence> {
         let relay_aliases = self.relay_kernel_aliases(realm_id);
+        let machine_names = self.machine_names_in_realm(realm_id);
         self.daemon_registrations_in_realm(realm_id)
             .filter(|registration| {
                 registration.machine_id == machine_ref
@@ -713,9 +710,12 @@ impl RelayRegistry {
                         .get(&registration.daemon_id)
                         .map(String::as_str)
                         == Some(machine_ref)
-                    || registration.machine_alias.as_deref() == Some(machine_ref)
+                    || machine_names
+                        .get(&registration.machine_id)
+                        .and_then(|name| name.registered.as_deref())
+                        == Some(machine_ref)
             })
-            .map(|registration| self.kernel_presence(registration, &relay_aliases))
+            .map(|registration| Self::kernel_presence(&machine_names, registration, &relay_aliases))
             .collect()
     }
 
@@ -729,6 +729,7 @@ impl RelayRegistry {
         kernel_ref: &str,
     ) -> Option<RelayKernelPresence> {
         let relay_aliases = self.relay_kernel_aliases(realm_id);
+        let machine_names = self.machine_names_in_realm(realm_id);
         self.daemon_registrations_in_realm(realm_id)
             .find(|registration| {
                 registration.daemon_id == kernel_ref
@@ -739,18 +740,20 @@ impl RelayRegistry {
                         .map(String::as_str)
                         == Some(kernel_ref)
             })
-            .map(|registration| self.kernel_presence(registration, &relay_aliases))
+            .map(|registration| Self::kernel_presence(&machine_names, registration, &relay_aliases))
     }
 
     fn kernel_presence(
-        &self,
+        machine_names: &BTreeMap<String, MachineName>,
         registration: &DaemonRegistration,
         relay_aliases: &BTreeMap<String, String>,
     ) -> RelayKernelPresence {
         RelayKernelPresence {
             kernel_id: registration.daemon_id.clone(),
             machine_id: registration.machine_id.clone(),
-            machine_alias: relay_aliases.get(&registration.daemon_id).cloned(),
+            machine_alias: machine_names
+                .get(&registration.machine_id)
+                .map(MachineName::label),
             relay_alias: relay_aliases.get(&registration.daemon_id).cloned(),
             kernel_alias: registration
                 .kernel_alias
@@ -779,6 +782,43 @@ impl RelayRegistry {
             .filter(|registration| daemon_registration_is_kernel_target(registration))
     }
 
+    // Machine names are registration metadata, read once per query. Numbered
+    // relay aliases address kernels and change with live inventory; never
+    // project them as machine names.
+    fn machine_names_in_realm(&self, realm_id: &str) -> BTreeMap<String, MachineName> {
+        let mut names = BTreeMap::<String, (MachineName, (u64, &str))>::new();
+        for registration in self.daemon_registrations_in_realm(realm_id) {
+            let order = (
+                normalized_kernel_started_at_ms(registration),
+                registration.daemon_id.as_str(),
+            );
+            let (name, named_by) = names
+                .entry(registration.machine_id.clone())
+                .or_insert_with(|| (MachineName::default(), (u64::MAX, "")));
+            let registered = registration
+                .machine_alias
+                .as_deref()
+                .map(str::trim)
+                .filter(|alias| !alias.is_empty());
+            if let Some(alias) =
+                registered.filter(|_| name.registered.is_none() || order < *named_by)
+            {
+                name.registered = Some(alias.to_string());
+                *named_by = order;
+            }
+            if name.os_name.is_none() {
+                name.os_name = registration
+                    .os_name
+                    .clone()
+                    .filter(|os| !os.trim().is_empty());
+            }
+        }
+        names
+            .into_iter()
+            .map(|(id, (name, _))| (id, name))
+            .collect()
+    }
+
     fn relay_kernel_aliases(&self, realm_id: &str) -> BTreeMap<String, String> {
         let mut registrations = self
             .daemon_registrations_in_realm(realm_id)
@@ -804,6 +844,23 @@ impl RelayRegistry {
                 )
             })
             .collect()
+    }
+}
+
+/// What a machine is called: its registered name, else a plain label.
+#[derive(Default)]
+struct MachineName {
+    registered: Option<String>,
+    os_name: Option<String>,
+}
+
+impl MachineName {
+    fn label(&self) -> String {
+        match (&self.registered, &self.os_name) {
+            (Some(name), _) => name.clone(),
+            (None, Some(os)) => format!("{} computer", os.trim()),
+            (None, None) => "Unnamed computer".to_string(),
+        }
     }
 }
 

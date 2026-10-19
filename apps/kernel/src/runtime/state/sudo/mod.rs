@@ -11,6 +11,7 @@ use crate::session::{
 mod entry;
 mod external;
 mod lifecycle;
+mod login_recovery;
 mod policy;
 mod process;
 mod receipts;

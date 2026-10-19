@@ -419,3 +419,29 @@ fn mp07_mp08_mp11_ssh_receipts_share_the_typed_and_cached_public_boundary() {
     project_response_value(&mut cached).unwrap();
     assert_eq!(cached, expected);
 }
+
+// MP-08 / MP-11: a renamed/missing session has an actionable, value-free error.
+#[test]
+fn mp11_missing_session_reason_is_public_without_echoing_private_reference() {
+    for class in [
+        KernelConnectionClass::ExternalAgent,
+        KernelConnectionClass::KernelAgent,
+    ] {
+        let caller = command(class);
+        let error = finish_response(
+            &caller,
+            Err(DaemonError::SessionNotFound {
+                session_id: CANARY.into(),
+            }),
+        )
+        .unwrap_err();
+        let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+        assert_eq!(mapped.code, "session_not_found");
+        assert!(
+            mapped.message.contains("session not found"),
+            "{}",
+            mapped.message
+        );
+        assert!(!mapped.message.contains(CANARY));
+    }
+}

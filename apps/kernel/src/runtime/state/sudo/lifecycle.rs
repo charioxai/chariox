@@ -116,7 +116,7 @@ impl KernelRuntimeState {
             .collect::<Vec<_>>();
         let ended = turns
             .into_iter()
-            .filter(|turn| !self.sudo_live(turn))
+            .filter(|turn| !self.sudo_live(turn) && !self.sudo_login_recovery_pending(turn))
             .collect::<Vec<_>>();
         let removed = {
             let mut access = self.owned.sudo_turns.lock().expect("access state poisoned");

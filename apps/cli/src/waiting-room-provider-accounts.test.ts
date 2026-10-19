@@ -65,7 +65,7 @@ test("provider account display uses the public alias and sign-in state", () => {
   profile.label = "codex-1"
   profile.identity_summary = "owner@example.com"
 
-  assert.equal(providerAccountDisplayLabel(profile), "codex-1 · signed in")
+  assert.equal(providerAccountDisplayLabel(profile), "codex-1")
 })
 
 test("TUI marks hard exhaustion without hiding Claude and Codex accounts backed by credits", () => {
@@ -76,24 +76,24 @@ test("TUI marks hard exhaustion without hiding Claude and Codex accounts backed 
 
   assert.equal(
     providerAccountDisplayLabel(accountWithUsage("opencode", [allowance])),
-    "Account · signed in",
+    "Account",
     "unscoped exhaustion must not mark every OpenCode service exhausted",
   )
   assert.equal(
     providerAccountDisplayLabel(accountWithUsage("opencode", [
       { ...allowance, service_id: "opencode-go" },
     ]), "opencode-go/test-model"),
-    `Account · OpenCode Go (exhausted) · ${resetLabel} · signed in`,
+    `Account · OpenCode Go (exhausted) · ${resetLabel}`,
   )
   for (const provider of ["claude", "claude-headless", "claude-p", "codex"]) {
     assert.equal(
       providerAccountDisplayLabel(accountWithUsage(provider, [allowance])),
-      "Account · signed in",
+      "Account",
       `${provider} allowance exhaustion alone must remain selectable in the TUI`,
     )
     assert.equal(
       providerAccountDisplayLabel(accountWithUsage(provider, [allowance, credits])),
-      `Account (exhausted) · ${resetLabel} · signed in`,
+      `Account (exhausted) · ${resetLabel}`,
       `${provider} must be marked exhausted when allowance and credits are exhausted`,
     )
     assert.equal(
@@ -104,7 +104,7 @@ test("TUI marks hard exhaustion without hiding Claude and Codex accounts backed 
         state: "healthy",
         observed_at_ms: Date.now() - 86_400_001,
       }])),
-      "Account · signed in",
+      "Account",
       `${provider} must not discard a stale credit meter to claim total exhaustion`,
     )
   }
@@ -198,7 +198,7 @@ function usageMeter(
 test("MP-08 / MP-11 an unvalidated linked account asks for a check instead of another login", () => {
   const profile = account("codex", "linked", true)
   profile.auth_state = "unknown"
-  assert.match(providerAccountDisplayLabel(profile), /sign-in not checked$/)
+  assert.equal(providerAccountDisplayLabel(profile), profile.label)
   assert.match(selectedProviderAccountStartBlockReason([profile], "codex", "default") ?? "", /Refresh its status/)
   assert.equal(providerAccountSignInCommand(profile), "/provider accounts refresh codex linked")
 })
@@ -237,5 +237,15 @@ test("MP-08 / MP-10 / MP-11 missing target profile directs login or copy", () =>
   for (const mode of ["claude", "claude-p", "claude-headless"]) {
     assert.match(selectedProviderAccountStartBlockReason([], mode, "claude-miguel") ?? "",
       /not available on this kernel.*[Cc]opy login/)
+  }
+})
+
+// MP-08 / MP-10 / MP-11: normal account labels are quiet; detected problems stay visible.
+test("MP-08/MP-11 account labels show only detected authentication problems", () => {
+  const healthy = account("claude", "claude-test")
+  assert.equal(providerAccountDisplayLabel(healthy), "claude-test")
+  assert.equal(providerAccountDisplayLabel({ ...healthy, auth_state: "unknown" }), "claude-test")
+  for (const auth_state of ["not_configured", "expired", "error"] as const) {
+    assert.match(providerAccountDisplayLabel({ ...healthy, auth_state }), /needs sign-in$/)
   }
 })

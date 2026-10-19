@@ -74,6 +74,29 @@ fn current_starting_workflow_provider_run(
         .filter(|current| current.id() == provider_run_id)
 }
 
+/// MP-08 / MP-11: content-free facts at the actual native-dispatch guard.
+/// There is no content revision guard here: ownership and prompt identity fence writes.
+fn prompt_dispatch_guard_diagnostics(
+    dispatch: &crate::app::KernelPromptDispatch,
+    active: Option<&crate::session::PromptQueueItem>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "session_id": dispatch.session_id, "agent_id": dispatch.agent_id,
+        "provider_run_id": dispatch.provider_run_id, "dispatch_prompt_id": dispatch.prompt_id,
+        "target_active_prompt_id": dispatch.target_active_prompt_id, "steering": dispatch.steering,
+        "active_prompt_present": active.is_some(), "active_prompt_id": active.map(|p| p.id()),
+        "ownership_changed": active.map(|p| !p.is_chariox_owned()),
+        "prompt_id_changed": active.map(|p| p.id() != dispatch.target_active_prompt_id.as_deref().unwrap_or(&dispatch.prompt_id)),
+        "text_changed": active.map(|p| p.prompt() != dispatch.prompt),
+        "attachments_changed": active.map(|p| p.attachments() != dispatch.attachments.as_slice()),
+        "source_attachment_changed": active.map(|p| p.source_attachment_id() != dispatch.source_attachment_id),
+        "status": active.map(|p| p.status()), "delivery_phase": active.and_then(|p| p.durable_delivery_phase()),
+        "delivery_provider_run_changed": active.map(|p| p.durable_delivery_provider_run_id() != Some(dispatch.provider_run_id.as_str())),
+        "prompt_updated_at_ms": active.map(|p| p.updated_at_ms()),
+        "content_revision_guard": false,
+    })
+}
+
 impl KernelRuntimeOwnedState {
     fn prompt_dispatch_matches_active_prompt(
         &self,
@@ -94,10 +117,18 @@ impl KernelRuntimeOwnedState {
             }
             prompt.id() == dispatch.prompt_id
         };
-        Ok(self
+        let active = self
             .prompt_state_owner
-            .active_prompt_for_agent(&session, &dispatch.agent_id)
-            .is_some_and(|prompt| prompt_is_dispatch_prompt(&prompt)))
+            .active_prompt_for_agent(&session, &dispatch.agent_id);
+        let matches = active.as_ref().is_some_and(prompt_is_dispatch_prompt);
+        if !matches {
+            crate::logging::warn_with_fields(
+                "runtime.prompt_dispatch",
+                "stale provider dispatch skipped before native write",
+                prompt_dispatch_guard_diagnostics(dispatch, active.as_ref()),
+            );
+        }
+        Ok(matches)
     }
 
     fn ensure_prompt_dispatch_matches_active_prompt(
@@ -1611,6 +1642,132 @@ pub(in crate::runtime::state) mod tests {
             external_provider_turn_id: None,
             steering,
         }
+    }
+
+    // MP-08 / MP-10 / MP-11: the output pump can settle a turn while native
+    // dispatch waits for the app lock. A stale writer must not invent a failure
+    // for that settled turn, or send its text to a replacement turn.
+    #[tokio::test]
+    async fn mp08_claude_native_dispatch_skips_settled_and_replaced_prompts() {
+        crate::test_support::isolated_env_test!();
+        for replace in [false, true] {
+            let (_worktree, mut runtime, session_id, agent_id, source_id, run, dispatch) =
+                runtime_with_claude_headless_active_prompt().await;
+            let reached_native_attempt = Arc::new(tokio::sync::Notify::new());
+            runtime.observe_app_lock_wait_for_test(reached_native_attempt.clone());
+            let app = Arc::clone(&runtime.app);
+            let held = app.lock().await;
+            let writer = runtime.clone();
+            let task = tokio::spawn(async move {
+                writer
+                    .enqueue_prompt_dispatch_after_liveness_with_acceptance(
+                        &dispatch,
+                        &writer.owned,
+                    )
+                    .await
+            });
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                reached_native_attempt.notified(),
+            )
+            .await
+            .expect("native attempt should wait for app ownership");
+            if replace {
+                runtime
+                    .owned
+                    .cancel_active_prompt_only(&session_id, &agent_id)
+                    .expect("a real user cancellation should settle the old turn");
+            } else {
+                runtime
+                    .owned
+                    .complete_local_prompt_without_advance(&session_id, &agent_id, Some(run.id()))
+                    .expect("the independent output pump should settle the first turn");
+            }
+            if replace {
+                let session = runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap();
+                runtime
+                    .owned
+                    .prompt_state_owner
+                    .submit_prepared_prompt(
+                        &session,
+                        PromptQueueItem::new(
+                            "replacement-after-edit",
+                            &source_id,
+                            &agent_id,
+                            "replacement task",
+                            PromptStatus::Queued,
+                        ),
+                        false,
+                    )
+                    .expect("a replacement prompt should be admitted");
+            }
+            drop(held);
+            assert!(!task
+                .await
+                .unwrap()
+                .expect("settled prompt is a stale dispatch, not a provider failure"));
+            let session = runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .unwrap();
+            let active = runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id);
+            assert_eq!(
+                active.as_ref().map(|prompt| prompt.id()),
+                replace.then_some("replacement-after-edit")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn mp08_native_dispatch_diagnostics_identify_fields_without_content() {
+        crate::test_support::isolated_env_test!();
+        let (_root, runtime, session_id, agent_id, _source, _run, dispatch) =
+            runtime_with_claude_headless_active_prompt().await;
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let active = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .unwrap();
+        let mut stale = dispatch.clone();
+        stale.prompt = "private prompt text must not be logged".into();
+        stale
+            .attachments
+            .push(crate::session::PromptAttachment::new(
+                "private-file-url",
+                "text/plain",
+                Some("private-file-name".into()),
+            ));
+        let fields = prompt_dispatch_guard_diagnostics(&stale, Some(&active));
+        assert_eq!(fields["text_changed"], true);
+        assert_eq!(fields["attachments_changed"], true);
+        assert_eq!(fields["prompt_id_changed"], false);
+        assert_eq!(fields["ownership_changed"], false);
+        assert_eq!(fields["content_revision_guard"], false);
+        let output = fields.to_string();
+        for private in [
+            stale.prompt.as_str(),
+            "private-file-url",
+            "private-file-name",
+        ] {
+            assert!(!output.contains(private));
+        }
+        assert_eq!(
+            prompt_dispatch_guard_diagnostics(&dispatch, None)["active_prompt_present"],
+            false
+        );
     }
 
     #[tokio::test]
@@ -3857,10 +4014,11 @@ impl KernelRuntimeState {
                 let attempt = self
                     .with_app_side_effect(|app| {
                         if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
-                            return Err(DaemonError::LocalTransport {
-                                operation: "dispatch prompt",
-                                message: "prompt changed before native dispatch".into(),
-                            });
+                            // The output pump can acknowledge and finish the turn
+                            // before this retry acquires app ownership. A settled
+                            // or replaced prompt is a stale writer, not a new
+                            // provider failure. Keep the guard before every write.
+                            return Ok(None);
                         }
                         app.process_claude_native_prompt_dispatch_attempt_for_runtime(
                             &dispatch.session_id,
@@ -3868,8 +4026,12 @@ impl KernelRuntimeState {
                             &provider_run,
                             &dispatch_with_handoff,
                         )
+                        .map(Some)
                     })
                     .await?;
+                let Some(attempt) = attempt else {
+                    return Ok(false);
+                };
                 match attempt {
                     crate::app::ClaudeNativeDispatchAttempt::Completed => break,
                     crate::app::ClaudeNativeDispatchAttempt::AwaitingInjection => {
