@@ -1350,3 +1350,87 @@ fn driver_receipt_after_the_task_ended_is_refused() {
         })
         .is_err());
 }
+
+// MP-08/MP-10: long timers survive the hourly dead-man checks without
+// spending their delivery budget before their requested deadline.
+#[test]
+fn long_timer_wait_reaches_due_time_without_artificial_deadline_wakes() {
+    let f = Fixture::new();
+    let due = 7 * 86_400_000;
+    let deadline = due + 60_000;
+    f.create("tomorrow", "timer", Some(due), None);
+    f.apply(Operation::Yield {
+        task: "p".into(),
+        prompt: "p".into(),
+        registrations: vec!["completion-tomorrow".into()],
+        cursor: 0,
+        deadline,
+        reason: "remind me next week".into(),
+        now: 20,
+    });
+    f.apply(Operation::Settle {
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: "p".into(),
+        run: "run".into(),
+        cancelled: false,
+        now: 30,
+    });
+    for hour in 1..168 {
+        let now = hour * 3_600_000 + 30;
+        f.apply(Operation::FireWakes { now });
+        f.apply(Operation::Sweep {
+            now,
+            busy_recipients: Vec::new(),
+        });
+        assert!(f.inbox().is_empty(), "unexpected early wake at hour {hour}");
+        assert_eq!(f.task().state, ExecutionState::Waiting);
+        assert_eq!(f.task().no_progress_wakes, 0);
+        assert_eq!(f.task().wait.unwrap().deadline_ms, deadline);
+    }
+    f.apply(Operation::FireWakes { now: due });
+    let event = f.inbox().remove(0);
+    assert_eq!(event.kind, "source_completed");
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: event.sequence,
+        prompt: "wake-turn".into(),
+        target: None,
+        run: Some("run".into()),
+        now: due + 1,
+    });
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: event.sequence,
+        state: "accepted".into(),
+        now: due + 2,
+    });
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: "wake-turn".into(),
+        run: Some("run".into()),
+        now: due + 3,
+    });
+    f.apply(Operation::Ack {
+        room: "room".into(),
+        agent: "agent".into(),
+        sequence: event.sequence,
+        handled: true,
+        now: due + 4,
+    });
+    f.apply(Operation::Settle {
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: "wake-turn".into(),
+        run: "run".into(),
+        cancelled: false,
+        now: due + 5,
+    });
+    assert_eq!(f.task().state, ExecutionState::Done);
+    assert_eq!(f.wake("tomorrow").fire_count, 1);
+    assert_eq!(f.inbox()[0].state, "handled");
+}

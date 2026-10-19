@@ -26,8 +26,6 @@ pub(crate) const SWEEP_MS: u64 = 30_000;
 pub(crate) const DELIVERY_TIMEOUT_MS: u64 = 120_000;
 pub(crate) const LONG_WAIT_MS: u64 = 900_000;
 pub(crate) const NO_PROGRESS_LIMIT: u32 = 3;
-/// A wait is bounded; a longer one re-arms with a fresh finite deadline.
-const MAX_WAIT_MS: u64 = 3_600_000;
 const CORRECTION_PROMPT_PREFIX: &str = "task-correction-";
 /// The kernel's single correction instruction is internal protocol text; the
 /// agent's answer to it stays visible, the instruction itself does not.

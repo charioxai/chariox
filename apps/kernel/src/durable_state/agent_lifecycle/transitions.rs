@@ -108,7 +108,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     "yield sources must cover every unresolved obligation",
                 ));
             }
-            let deadline = deadline.min(now.saturating_add(MAX_WAIT_MS));
+            // Shortening the admitted deadline spends no-progress wakes before
+            // a long timer is due. The sweep still checks source liveness.
             t.wait = Some(AgentWait {
                 registration_ids: ids,
                 deadline_ms: deadline,
