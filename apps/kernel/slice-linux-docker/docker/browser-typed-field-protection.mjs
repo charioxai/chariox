@@ -8,7 +8,7 @@ export function typedBrowserTargets(snapshot,entry,targetId,documentId) {
    if(!['input','textarea'].includes(strings[nodes.nodeName[index]].toLowerCase()))continue;
    const attributes=nodes.attributes[index]??[],attrs=new Map();
    for(let i=0;i<attributes.length;i+=2)attrs.set(strings[attributes[i]].toLowerCase(),strings[attributes[i+1]].toLowerCase());
-   if(attrs.get('type')!=='password'&&!(attrs.get('autocomplete')??'').split(/\s+/).some(token=>token.startsWith('cc-')||token==='one-time-code'))continue;
+   if(attrs.get('type')!=='password'&&!(attrs.get('autocomplete')??'').split(/\s+/).some(token=>token.startsWith('cc-')||['one-time-code','current-password','new-password'].includes(token)))continue;
    targets.push({target_id:targetId,document_id:documentId,node_ref:entry.prefix+'backend:'+nodes.backendNodeId[index],frame_id:strings[document.frameId],model_typed:true});
   }
  }

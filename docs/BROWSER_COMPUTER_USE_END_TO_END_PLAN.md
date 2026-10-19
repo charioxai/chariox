@@ -103,7 +103,8 @@ is removed, or its value is cleared/replaced by the user. No text-echo,
 container/order/bidi/budget, iframe or media masking remains.
 The owner's 2026-10-18 22:59 UX-first amendment permits ordinary human and agent
 typing in sensitive fields. In MODEL screenshots/OCR only, additionally mask
-nonempty password inputs and fields with autocomplete cc-*/one-time-code;
+nonempty password inputs and fields with autocomplete cc-*/one-time-code
+or current-password/new-password (including Show password);
 the owner view remains unmasked by this transient typed-field policy. Retire
 these masks when the field is empty. Retain the independent Vault lifecycle
 and document/generation capture fences described above.

@@ -7,7 +7,9 @@ including password, payment-card and one-time-code fields. Native browser-band
 input retains document/generation ownership without reading sensitive focus.
 Model Browser screenshots and Computer screenshot/OCR observations additionally
 mask nonempty inputs with type=password and input/textarea controls with
-autocomplete cc-*/one-time-code.
+autocomplete cc-*/one-time-code/current-password/new-password. Password
+autocomplete continues to identify a password field after Show password changes
+its type to text.
 This transient measurement shares Vault geometry, frame/shadow traversal and
 before/after capture fences; it stores no typed values or durable registrations.
 Empty/cleared fields retire their masks. Owner Browser and Computer streams do

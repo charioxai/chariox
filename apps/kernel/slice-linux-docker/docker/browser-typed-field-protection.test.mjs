@@ -8,6 +8,12 @@ import {launchChromium} from './browser-protection-fixture.mjs';
 import {measurePageProtection} from './browser-protection-regions.mjs';
 import {captureBrowserSnapshot} from './browser-controller-snapshot.mjs';
 import {captureProtectedPage,decodePng} from './kernel-browser-pixels.mjs';
+import {typedBrowserTargets} from './browser-typed-field-protection.mjs';
+test('MP-11 password autocomplete survives a Show password type change',()=>{
+ const strings=['input','type','text','autocomplete','current-password','section-register new-password','frame'];
+ const snapshot={strings,documents:[{frameId:6,nodes:{nodeName:[0,0],attributes:[[1,2,3,4],[1,2,3,5]],backendNodeId:[11,12]}}]};
+ assert.deepEqual(typedBrowserTargets(snapshot,{prefix:''},'target','doc').map(target=>target.node_ref),['backend:11','backend:12']);
+});
 const executable=process.env.CHARIOX_PROTECTION_TEST_CHROME;
 for(const dpr of [1,2])test(`MP-11 typed sensitive fields mask model captures only at DPR ${dpr}`,{skip:!executable,timeout:30000},async()=>{
  const root=await mkdtemp(path.join(os.tmpdir(),'typed-fields-'));let chrome;
@@ -25,9 +31,12 @@ for(const dpr of [1,2])test(`MP-11 typed sensitive fields mask model captures on
   assert.equal(owner.regions.length,0,'owner has no typed-field masks');
   const model=await measurePageProtection(connection,sessionId,target.targetId,policy,{includeHidden:true,modelCapture:true});
   assert.equal(model.regions.length,6,'password, card, OTP, shadow and child-frame values all masked; empty and ordinary fields readable');
+  await connection.send('Runtime.evaluate',{expression:"const password=document.querySelector('[type=password]');password.autocomplete='current-password';password.type='text'"},sessionId);
+  assert.equal((await measurePageProtection(connection,sessionId,target.targetId,policy,{includeHidden:true,modelCapture:true})).regions.length,6,'Show password keeps semantic password protection');
+  assert.equal((await measurePageProtection(connection,sessionId,target.targetId,policy,{includeHidden:true})).regions.length,0,'owner can see the revealed password field');
   const {frameTree}=await connection.send('Page.getFrameTree',{},sessionId);
   const text=await captureBrowserSnapshot({connection,sessionId,targetId:target.targetId,documentId:frameTree.frame.loaderId,browserGeneration:1,snapshotRevision:1});
-  for(const label of ['Card','OTP','Textarea OTP'])assert.equal(text.accessibility_nodes.find(node=>node.name===label)?.value,'[redacted]','sensitive field AX value is withheld');
+  for(const label of ['Card','OTP','Textarea OTP','Password'])assert.equal(text.accessibility_nodes.find(node=>node.name===label)?.value,'[redacted]','sensitive field AX value is withheld');
   const shoot=async()=>(await connection.send('Page.captureScreenshot',{format:'png'},sessionId)).data;
   const raw=await shoot(),masked=await captureProtectedPage(browser,{target_id:target.targetId},[],[],shoot,dpr,null,()=>{},null,true);
   assert.notEqual(raw,masked,'model raster differs from owner raster');
