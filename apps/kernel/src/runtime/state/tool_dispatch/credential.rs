@@ -315,38 +315,6 @@ impl KernelRuntimeState {
                     })?,
                 })
             }
-            crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL => {
-                let _vault_unlock = self
-                    .ensure_vault_unlocked_for_provider_run(
-                        provider_run,
-                        "runtime_tool_send_secret_to_terminal",
-                    )
-                    .await?;
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::SendSecretToTerminalArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_send_secret_to_terminal",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let mut input = service.terminal_secret_input(&args.credential_id)?;
-                if args.append_newline {
-                    input.push('\n');
-                }
-                let provider_run_id = provider_run.id().to_string();
-                self.with_app_side_effect(move |app| {
-                    app.write_provider_pty_input_for_runtime(&provider_run_id, input.as_bytes())
-                })
-                .await?;
-                Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                    ok: true,
-                    payload: serde_json::json!({
-                        "submitted": true,
-                        "credential_id": args.credential_id,
-                        "target": "current_provider_run",
-                    }),
-                })
-            }
             crate::transport::runtime_tools::MANAGE_CREDENTIAL_VAULT_TOOL => {
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::ManageCredentialVaultArgs,
@@ -746,12 +714,7 @@ impl KernelRuntimeState {
                 })
             }
             crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL => {
-                Err(DaemonError::LocalTransport {
-                    operation: "home credential proxy",
-                    message:
-                        "send_secret_to_terminal must resolve the secret on home and inject on the worker"
-                            .to_string(),
-                })
+                Ok(crate::transport::runtime_tools::terminal_secret_refusal())
             }
             crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL => {
                 self.dispatch_forwarded_home_computer_secret_input_tool(
