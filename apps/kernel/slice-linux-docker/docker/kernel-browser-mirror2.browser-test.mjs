@@ -1614,3 +1614,13 @@ test('MP-10/MP-11 M2: a published subtree moved into an unvisited parent during 
     }
     assert(section, 'the continuation reaches the section'); assert(restored, 'the moved paragraph is mirrored under its new parent');
   }));
+
+// MP-08/MP-10/MP-11: a viewport crop includes the page's overlaid controls. The pointer belongs to the person.
+test("MP-08/MP-10 mirrorregion: pointer over a media patch reaches the real overlaid control", () => mirrored(
+  '<style>body{margin:0}canvas{position:absolute;left:100px;top:100px;width:400px;height:200px}button{position:absolute;left:200px;top:150px;width:120px;height:50px}</style><canvas id="media" width="400" height="200"></canvas><button onclick="this.textContent=\'clicked\'">cookie choice</button>',
+  async ({next,input,evaluate,host,subscription_id}) => {
+    const packet=await next(),node_id=[...host.mirror.streams.get(subscription_id).regionRecords].find(([,r])=>r.kind==='tile')[0];
+    await input(packet.sequence,{kind:'click',node_id,x:150,y:70});
+    assert.equal(await evaluate('document.querySelector("button").textContent'),'clicked','the real pointer hits the overlaid control, not the video underneath');
+  }
+));

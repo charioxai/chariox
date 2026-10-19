@@ -817,8 +817,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       for (let view = node.ownerDocument.defaultView; view && view !== window; view = view.parent) { const owner = view.frameElement; if (!owner) break; const b = owner.getBoundingClientRect(); x += b.x + owner.clientLeft; y += b.y + owner.clientTop; }
       return [x, y, width, height];
     };
-    // Protected boxes now: the pixels that native attestation cannot use as anchors.
-    const maskBoxes = () => { const out = []; for (const [id, node] of nodes) if (kindOf.get(id) === 'mask' && node.isConnected) out.push([id, topBox(node)]); return out; };
     // Opaque regions visible now, in top-level viewport CSS pixels.
     const opaqueBoxes = () => {
       const out = [];
@@ -947,7 +945,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       }
       return [x, y];
     };
-    // A point inside the live element at the viewer's offset (clamped), hit-tested.
+    // A point inside the live element at the viewer's offset (clamped). A media crop includes overlaid controls:
+    // the person's pointer is delivered at that location, even when another page element is on top of the media.
     const point = request => {
       const node = live(request.node_id);
       if (node.nodeType !== 1) throw new Error('mirror2 element required');
@@ -956,17 +955,22 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const ox = Number.isFinite(request.x) ? Math.min(Math.max(request.x, 0.5), width - 0.5) : width / 2;
       const oy = Number.isFinite(request.y) ? Math.min(Math.max(request.y, 0.5), height - 0.5) : height / 2;
       let x = bx + ox, y = by + oy;
-      let hit = node.ownerDocument.elementFromPoint(x, y);
-      for (let shadow = 0; shadow < 128 && hit?.shadowRoot; shadow++) { const child = hit.shadowRoot.elementFromPoint(x, y); if (!child || child === hit) break; hit = child; }
-      if (!hit || hit !== node && !node.contains(hit) && !(node.shadowRoot?.contains(hit))) throw new Error('mirror2 occluded node');
-      protectedAncestor(hit);
+      if (kindOf.get(request.node_id) !== 'tile') {
+        let hit = node.ownerDocument.elementFromPoint(x, y);
+        for (let shadow = 0; shadow < 128 && hit?.shadowRoot; shadow++) { const child = hit.shadowRoot.elementFromPoint(x, y); if (!child || child === hit) break; hit = child; }
+        if (!hit || hit !== node && !node.contains(hit) && !(node.shadowRoot?.contains(hit))) throw new Error('mirror2 occluded node');
+        protectedAncestor(hit);
+      }
       const [fx, fy] = frameOffset(node); x += fx; y += fy;
       if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) throw new Error('mirror2 offscreen node');
       return { x: Math.floor(x), y: Math.floor(y) };
     };
     // Re-validates at dispatch time: the same live target is still at the point.
     const hitCheck = (pt, id) => {
-      const node = live(id); let owner = document, x = pt.x, y = pt.y, hit;
+      const node = live(id);
+      // Opaque pixels already show the actual topmost control. The document/lease still fences dispatch.
+      if (kindOf.get(id) === 'tile') return true;
+      let owner = document, x = pt.x, y = pt.y, hit;
       for (let depth = 0; depth < 128; depth++) {
         hit = owner.elementFromPoint(x, y);
         for (let shadow = 0; shadow < 128 && hit?.shadowRoot; shadow++) { const child = hit.shadowRoot.elementFromPoint(x, y); if (!child || child === hit) break; hit = child; }
@@ -1179,6 +1183,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, maskBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
   }
 }

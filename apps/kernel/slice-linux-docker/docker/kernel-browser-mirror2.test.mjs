@@ -697,12 +697,11 @@ test('MP-08/MP-10 mirrorregion: full-viewport media stays a DOM copy without los
  const stream={id:'s',chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
  const host={protection:policy,generation:1,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
  const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});
- let boxes=[],masks=[],drain={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],opaque:false};
+ let boxes=[],drain={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],opaque:false};
  const page={snapshot_complete:true,font_failures:[],scroll:[0,0],focused:null,selection:null,fragment:null};
  mirror.evaluate=async(_,expression)=>{
   if(expression==='m.snapshot()')return{...page,root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'main'}],sheets:[],resources:[],opaque:false};
   if(expression==='m.opaqueBoxes()')return boxes;
-  if(expression==='m.maskBoxes()')return masks;
   if(expression==='m.drain()'){const d={...page,...drain};drain={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],opaque:true};return d;}
   return {...page,ops:[],changed:[],resources:[],sheets:[]};
  };
