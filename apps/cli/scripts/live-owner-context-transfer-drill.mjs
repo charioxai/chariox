@@ -233,7 +233,10 @@ try {
   const duplicateBytes=Buffer.from('{"api_key":"synthetic-canary","api_key":""}')
   const largeKernel=scenario==='kernel-large'
   const kernelOnly=scenario==='kernel-only'||largeKernel
-  const projectReview=scenario==='project-only'||scenario==='project-with-kernel'
+  // MP-08: a real provider decides a workspace holding far more gitignored files than the prompt can carry.
+  const ignoredInventory=scenario==='project-ignored-inventory'
+  const ignoredFiles=Number(process.env.CTXDRILL_IGNORED_FILES??12000)
+  const projectReview=scenario==='project-only'||scenario==='project-with-kernel'||ignoredInventory
   const packagedMode=scenario.startsWith('packaged-')||kernelOnly||scenario==='project-with-kernel'
   const structuredMode=scenario==='structured-header'||scenario==='packaged-metadata'
   const packagedAttack=scenario==='packaged-shell'
@@ -269,6 +272,13 @@ try {
   if(scenario==='utf16-history')await writeFile(path.join(workspace,'bootstrap.ps1'),canary)
   if(scenario==='duplicate-json-history')await writeFile(path.join(workspace,'settings.json'),duplicateBytes)
   if(!encodedMode)for(const [name,contents] of Object.entries(metadata))await writeFile(path.join(workspace,name),contents)
+  if(ignoredInventory) {
+    await writeFile(path.join(workspace,'.gitignore'),'scratch-out/\n')
+    for(let group=0;group<ignoredFiles/500;group++){
+      const dir=path.join(workspace,'scratch-out',`part-${String(group).padStart(3,'0')}`);await mkdir(dir,{recursive:true})
+      for(let i=0;i<500&&group*500+i<ignoredFiles;i++)await writeFile(path.join(dir,`artifact-${String(group*500+i).padStart(6,'0')}.dat`),`generated ${group*500+i}\n`)
+    }
+  }
   for(const args of [['init','-b','main'],['config','user.name','Chariox Drill'],['config','user.email','drill@example.test'],['add','.'],['commit','-m','ordinary setup']]) {
     const result=await run(`git-${steps.length}`,'git',['-C',workspace,...args],source.env);assert.equal(result.code,0)
   }
@@ -290,7 +300,14 @@ try {
   // The current TUI refuses --create-session while the provider account sign-in is unchecked; a
   // credential-free kernel creates the Project session over IPC and the TUI attaches to it.
   const { createSessionRequest } = await import('../../../packages/kernel-client/dist/ipc-session-requests.js')
-  const created=(await rpc(source,createSessionRequest(workspace,workspace,'owner-context-drill',{provider:'claude',model:'claude-haiku-4-5',effort:'low'}))).SessionCreated.session
+  if(ignoredInventory) {
+    // The reviewed Codex login is linked, never copied: the source kernel's discovery utility is a real turn.
+    const { linkProviderAccountProfileRequest, refreshProviderAccountProfileRequest, setDefaultProviderAccountProfileRequest } = await import('../../../packages/kernel-client/dist/ipc-provider-requests.js')
+    assert(process.env.CTXDRILL_CODEX_LINK_SCOPE,'CTXDRILL_CODEX_LINK_SCOPE names the product Codex scope to link')
+    const profile=(await rpc(source,linkProviderAccountProfileRequest('codex','ignored-inventory',process.env.CTXDRILL_CODEX_LINK_SCOPE))).ProviderAccountProfile.profile.profile_id
+    await rpc(source,refreshProviderAccountProfileRequest('codex',profile));await rpc(source,setDefaultProviderAccountProfileRequest('codex',profile))
+  }
+  const created=(await rpc(source,createSessionRequest(workspace,workspace,'owner-context-drill',ignoredInventory?{provider:'codex',model:'gpt-6-luna',effort:'low'}:{provider:'claude',model:'claude-haiku-4-5',effort:'low'}))).SessionCreated.session
   tui=start('source-tui','python3',[path.join(repo,'apps/cli/scripts/lib/owner-context-terminal.py'),path.join(binaryDir,'chariox-cli'),
     '--kernel-url',source.url,'--automation-socket',automationSocket,'--session',created.id],source.env)
   await until(async()=>{await access(automationSocket);const v=await automation({action:'snapshot'});return v.session?.id&&v},'real CLI Project creation',90000)
@@ -352,7 +369,7 @@ try {
       if(snapshot.interactions?.some(i=>i.id.startsWith(prefix)||i.id.startsWith('project-environment:')))return snapshot
       const status=(await cli(name+'-before-review-'+steps.length,source,['status',initial.contextId])).ManagedContextTransferStatus.status
       if(status.phase!=='preparing'||status.packageSizeBytes>0)return {premature:status}
-    },'compulsory native owner review')
+    },'compulsory native owner review',ignoredInventory?400000:45000)
     if(review.premature){await capture(name+'-missing-review');assert.fail('MP-11 owner copy packaged or sent before compulsory native confirmation')}
     await capture(name+'-review-pending')
     assert(review.interactions.some(i=>i.id.startsWith(prefix)),

@@ -30,26 +30,50 @@ pub struct ProjectEnvironmentDiscoveryInput {
 
 /// A tool-free official-provider utility classifies the kernel's name/locator index.
 /// It must not receive source files, env files, shell output or a workspace credential binding.
-/// Gitignored files have no count ceiling, but the utility's prompt does. It is offered
-/// the leading candidates that fit; the rest are left out unless already decided.
+/// Gitignored files have no count ceiling, but the utility must decide each one it is offered
+/// within its turn budget (a real turn needs ~0.3 s per file). Files in small directories are
+/// offered first because bulk output trees are regenerated; the rest are left out unless already
+/// decided.
+const OFFERED_PRIVATE_FILES: usize = 128;
 const OFFERED_PRIVATE_FILE_BYTES: usize = 512 * 1024;
 
 pub(crate) fn offered_private_files(
     candidates: &[ProjectPrivateFileCandidate],
-) -> &[ProjectPrivateFileCandidate] {
+) -> Vec<&ProjectPrivateFileCandidate> {
+    let directory = |candidate: &ProjectPrivateFileCandidate| {
+        (
+            candidate.workspace_id.clone(),
+            candidate
+                .path
+                .rsplit_once('/')
+                .map_or(String::new(), |(directory, _)| directory.to_owned()),
+        )
+    };
+    let mut fan_out: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for candidate in candidates {
+        *fan_out.entry(directory(candidate)).or_default() += 1;
+    }
+    let mut ordered: Vec<_> = candidates.iter().collect();
+    ordered.sort_by_key(|candidate| fan_out[&directory(candidate)]);
     let mut used = 0;
-    let offered = candidates.iter().take_while(|candidate| {
-        used += candidate.workspace_id.len() + candidate.path.len() + 64;
-        used <= OFFERED_PRIVATE_FILE_BYTES
-    });
-    &candidates[..offered.count()]
+    ordered
+        .into_iter()
+        .take(OFFERED_PRIVATE_FILES)
+        .take_while(|candidate| {
+            used += candidate.workspace_id.len() + candidate.path.len() + 64;
+            used <= OFFERED_PRIVATE_FILE_BYTES
+        })
+        .collect()
 }
 
 pub fn project_environment_discovery_prompt(
     input: &ProjectEnvironmentDiscoveryInput,
 ) -> Result<String, DaemonError> {
     let offered = ProjectEnvironmentDiscoveryInput {
-        private_files: offered_private_files(&input.private_files).to_vec(),
+        private_files: offered_private_files(&input.private_files)
+            .into_iter()
+            .cloned()
+            .collect(),
         ..input.clone()
     };
     let encoded = serde_json::to_string(&offered)
@@ -73,7 +97,19 @@ pub fn parse_project_environment_discovery_output(
             "environment discovery output exceeds bounds",
         ));
     }
-    let mut manifest: ProjectEnvironmentManifest = serde_json::from_str(output)
+    let mut value: serde_json::Value = serde_json::from_str(output)
+        .map_err(|_| environment_error("invalid Project environment discovery output"))?;
+    // A model often echoes the offered candidate's size beside its decision; it carries no meaning.
+    for decision in value
+        .get_mut("private_files")
+        .and_then(serde_json::Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_object_mut)
+    {
+        decision.remove("bytes");
+    }
+    let mut manifest: ProjectEnvironmentManifest = serde_json::from_value(value)
         .map_err(|_| environment_error("invalid Project environment discovery output"))?;
     manifest.validate().map_err(environment_error)?;
     if manifest.project_id != input.project_id || manifest.evidence_digest != input.evidence_digest
@@ -107,7 +143,11 @@ pub fn parse_project_environment_discovery_output(
     }
     // A file the utility was not shown keeps its earlier decision and is otherwise
     // left out: only an explicit decision brings a private file.
-    for candidate in &input.private_files[offered.len()..] {
+    for candidate in input.private_files.iter().filter(|candidate| {
+        !offered.iter().any(|offered| {
+            offered.workspace_id == candidate.workspace_id && offered.path == candidate.path
+        })
+    }) {
         if let Some(known) = input.previous_manifest.as_ref().and_then(|manifest| {
             manifest.private_files.iter().find(|known| {
                 known.workspace_id == candidate.workspace_id && known.path == candidate.path

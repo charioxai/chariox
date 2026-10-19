@@ -1263,17 +1263,24 @@ fn mp08_mp10_configfile_reference_reaches_discovery_without_contents() {
 }
 
 // MP-08 / MP-10 / MP-11: Gitignored files have no count ceiling. Only a bounded
-// prefix is offered to the utility; the kernel decides the rest.
+// set is offered to the utility, hand-placed files first; the kernel decides the rest.
 #[test]
 fn mp08_discovery_decides_a_gitignored_inventory_beyond_the_prompt_budget() {
-    let candidates: Vec<_> = (0..30_000)
+    let mut candidates: Vec<_> = (0..30_000)
         .map(|index| ProjectPrivateFileCandidate {
             workspace_id: "web".into(),
             path: format!("generated/bucket-{}/entry-{index}.txt", index % 97),
             bytes: 10,
-            secret_looking: index == 29_999,
+            secret_looking: false,
         })
         .collect();
+    // A single hand-placed file sorts after every bulk file but must still be offered.
+    candidates.push(ProjectPrivateFileCandidate {
+        workspace_id: "web".into(),
+        path: "zz-config/local.json".into(),
+        bytes: 10,
+        secret_looking: false,
+    });
     let manifest = fixture_manifest(vec![]);
     let input = ProjectEnvironmentDiscoveryInput {
         project_id: manifest.project_id.clone(),
@@ -1286,12 +1293,18 @@ fn mp08_discovery_decides_a_gitignored_inventory_beyond_the_prompt_budget() {
     };
     let prompt = project_environment_discovery_prompt(&input).unwrap();
     assert!(prompt.len() < 1024 * 1024);
-    let offered = discovery::offered_private_files(&candidates).len();
-    assert!(0 < offered && offered < candidates.len());
-    assert!(prompt.contains(&candidates[offered - 1].path));
-    assert!(!prompt.contains(&candidates[offered].path));
+    let offered = discovery::offered_private_files(&candidates);
+    assert_eq!(offered.len(), 128, "a real turn decides ~0.3 s per file");
+    assert_eq!(offered[0].path, "zz-config/local.json");
+    assert!(prompt.contains("zz-config/local.json"));
+    let left_out = candidates
+        .iter()
+        .find(|candidate| !offered.iter().any(|o| o.path == candidate.path))
+        .unwrap()
+        .clone();
+    assert!(!prompt.contains(&left_out.path));
     let mut answer = manifest;
-    answer.private_files = candidates[..offered]
+    answer.private_files = offered
         .iter()
         .map(|candidate| ProjectPrivateFileDecision {
             workspace_id: candidate.workspace_id.clone(),
@@ -1301,17 +1314,22 @@ fn mp08_discovery_decides_a_gitignored_inventory_beyond_the_prompt_budget() {
             secret_looking: false,
         })
         .collect();
+    let offered = offered.len();
     let decided = parse_project_environment_discovery_output(
         &serde_json::to_string(&answer).unwrap(),
         &input,
     )
     .unwrap();
     assert_eq!(decided.private_files.len(), offered);
-    // An earlier explicit decision for a file beyond the prompt budget survives.
+    // The candidate's size echoed beside a decision is ignored, not an invalid answer.
+    let mut echoed: serde_json::Value = serde_json::to_value(&answer).unwrap();
+    echoed["private_files"][0]["bytes"] = 10.into();
+    parse_project_environment_discovery_output(&echoed.to_string(), &input).unwrap();
+    // An earlier explicit decision for a file beyond the offered set survives.
     let mut previous = fixture_manifest(vec![]);
     previous.private_files = vec![ProjectPrivateFileDecision {
         workspace_id: "web".into(),
-        path: candidates[29_999].path.clone(),
+        path: left_out.path.clone(),
         bring: true,
         reason: "Needed local tooling".into(),
         secret_looking: false,
