@@ -923,7 +923,7 @@ export class Mirror2Inflater {
   }
   close(): void { void this.writer.abort().catch(() => {}); void this.reader.cancel().catch(() => {}) }
 }
-type Binding = { tab_id: string; generation: number; device_scale_factor: 1 | 2 }
+type Binding = { tab_id: string; generation: number; device_scale_factor: 1 | 2; layout_width?: number; layout_height?: number }
 const GAP_MS = 500
 // The oldest outstanding credit is answered within its wait; one overdue by this much was orphaned by the transport.
 const LOST_MS = 1000
