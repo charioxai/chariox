@@ -104,6 +104,7 @@ impl DurableKernelStateStore {
         ).optional().map_err(|error| DaemonError::LocalTransport {operation,message:error.to_string()})
     }
 
+    #[cfg(test)]
     pub(crate) fn workflow_invocation_is_owned(
         &self,
         owner_id: &str,

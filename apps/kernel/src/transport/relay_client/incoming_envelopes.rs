@@ -151,7 +151,7 @@ pub(super) async fn handle_incoming_envelope(
                 read = mirror_read;
                 turn = reconnect_gate.input_order.reserve(key);
                 if turn.is_none() {
-                    prepared = Err(super::daemon_requests::RelayRequestOutcome {
+                    prepared = Err(Box::new(super::daemon_requests::RelayRequestOutcome {
                         display_event: None,
                         encrypted_response: None,
                         error: Some(super::request_errors::relay_error(
@@ -159,7 +159,7 @@ pub(super) async fn handle_incoming_envelope(
                             "MP-08: browser input queue full",
                             false,
                         )),
-                    });
+                    }));
                 }
             }
             let timing_input = turn.is_some();
@@ -184,7 +184,7 @@ pub(super) async fn handle_incoming_envelope(
                         )
                         .await
                     }
-                    Err(outcome) => outcome,
+                    Err(outcome) => *outcome,
                 };
                 chariox_relay::transport_timing::record("kernel_request_end", timing_packet);
                 if timing_input {

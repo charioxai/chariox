@@ -50,12 +50,19 @@ pub(super) async fn handle_client_packet_route_envelope(
         registry,
         routes,
         auth_verifier,
-        peer_addr,
+        ClientPacketPeer {
+            peer_addr,
+            expected_daemon_public_key: None,
+        },
         outgoing_tx,
         relay_request_counter,
-        None,
     )
     .await
+}
+
+pub(super) struct ClientPacketPeer<'a> {
+    pub peer_addr: SocketAddr,
+    pub expected_daemon_public_key: Option<&'a str>,
 }
 
 /// MP-11: initial535 may bind only the previously admitted home key. Keep
@@ -65,11 +72,14 @@ pub(super) async fn handle_client_packet_route_envelope_with_target_pin(
     registry: &Arc<RwLock<RelayRegistry>>,
     routes: &Arc<crate::registry::RelayRouteIndex>,
     auth_verifier: &RelayAuthVerifier,
-    peer_addr: SocketAddr,
+    peer: ClientPacketPeer<'_>,
     outgoing_tx: &RelaySender,
     relay_request_counter: &AtomicU64,
-    expected_daemon_public_key: Option<&str>,
 ) -> Result<ConnectionAction, std::io::Error> {
+    let ClientPacketPeer {
+        peer_addr,
+        expected_daemon_public_key,
+    } = peer;
     match envelope {
         RelayEnvelope::ClientRequest {
             request_id,
@@ -373,10 +383,10 @@ pub(super) async fn handle_client_packet_route_envelope_with_target_pin(
             let (subscription_conflict, daemon_sender) = {
                 let guard = registry.write().await;
                 if expected_daemon_public_key.is_some_and(|expected| {
-                    !guard
+                    guard
                         .daemons
                         .get(&daemon_key)
-                        .is_some_and(|registration| registration.public_key == expected)
+                        .is_none_or(|registration| registration.public_key != expected)
                 }) {
                     send_close(
                         outgoing_tx,

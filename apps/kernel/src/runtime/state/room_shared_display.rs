@@ -3,6 +3,7 @@
 mod admission_tests;
 pub(super) mod timing;
 mod worker;
+use super::room_display::RoomDisplayAdmission;
 use super::*;
 use crate::runtime::command::KernelCaller;
 use crate::slice::{
@@ -119,10 +120,12 @@ impl KernelRuntimeState {
             let (slice, mut guard) = self
                 .admit_room_display(
                     caller,
-                    session,
-                    attachment,
-                    viewer,
-                    &request.slice_ref,
+                    RoomDisplayAdmission {
+                        session_id: session,
+                        attachment_id: attachment,
+                        viewer_public_key: viewer,
+                        slice_ref: &request.slice_ref,
+                    },
                     true,
                     None,
                 )
@@ -148,10 +151,12 @@ impl KernelRuntimeState {
         let (slice, mut guard) = self
             .admit_room_display(
                 caller,
-                session,
-                attachment,
-                viewer,
-                &request.slice_ref,
+                RoomDisplayAdmission {
+                    session_id: session,
+                    attachment_id: attachment,
+                    viewer_public_key: viewer,
+                    slice_ref: &request.slice_ref,
+                },
                 false,
                 None,
             )
@@ -357,7 +362,7 @@ impl KernelRuntimeState {
     ) -> Result<RoomDisplayBinding, DaemonError> {
         let result = self
             .room_display_peer(
-                &slice,
+                slice,
                 RelayPeerRequest::RoomSharedDisplay {
                     session_id: lease.session_id.clone(),
                     slice_id: lease.slice_id.clone(),
@@ -418,10 +423,12 @@ impl KernelRuntimeState {
         let (slice, mut guard) = self
             .admit_room_display(
                 caller,
-                &lease.session_id,
-                &lease.attachment_id,
-                &lease.viewer_public_key,
-                &lease.slice_id,
+                RoomDisplayAdmission {
+                    session_id: &lease.session_id,
+                    attachment_id: &lease.attachment_id,
+                    viewer_public_key: &lease.viewer_public_key,
+                    slice_ref: &lease.slice_id,
+                },
                 matches!(
                     command,
                     RoomDisplayCommand::Resume {} | RoomDisplayCommand::ResumeAttach {}
@@ -490,10 +497,12 @@ impl KernelRuntimeState {
         let (slice, _guard) = self
             .admit_room_display(
                 caller,
-                &lease.session_id,
-                &lease.attachment_id,
-                &lease.viewer_public_key,
-                &lease.slice_id,
+                RoomDisplayAdmission {
+                    session_id: &lease.session_id,
+                    attachment_id: &lease.attachment_id,
+                    viewer_public_key: &lease.viewer_public_key,
+                    slice_ref: &lease.slice_id,
+                },
                 true,
                 None,
             )

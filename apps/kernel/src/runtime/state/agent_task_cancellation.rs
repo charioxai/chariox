@@ -323,10 +323,8 @@ impl KernelRuntimeState {
                         })
                 {
                     first_error.get_or_insert(error);
-                } else {
-                    if let Err(error) = self.cancel_agent_watched_process(&wake.id).await {
-                        first_error.get_or_insert(error);
-                    }
+                } else if let Err(error) = self.cancel_agent_watched_process(&wake.id).await {
+                    first_error.get_or_insert(error);
                 }
             }
             if !physical_pending && !self.owned.agent_task_resources_unsettled(&task)? {

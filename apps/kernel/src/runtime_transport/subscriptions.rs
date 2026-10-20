@@ -418,8 +418,10 @@ where
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
 mod workflow_run_updates;
 
+#[cfg(test)]
 fn build_session_snapshot(
     app: &mut crate::app::DaemonApp,
     session_id: &str,
@@ -446,6 +448,7 @@ pub(crate) enum WatchResult {
     Unavailable(String),
 }
 
+#[cfg(test)]
 pub(crate) fn watch_subscription_state(
     app: &mut crate::app::DaemonApp,
     session_id: &str,

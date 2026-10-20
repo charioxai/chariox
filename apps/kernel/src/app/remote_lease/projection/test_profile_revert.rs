@@ -1,6 +1,5 @@
 // MP-08 / MP-10 / MP-11: a lagging projection of the previous provider's run
 // must not revert a committed provider switch.
-use super::*;
 use crate::app::DaemonApp;
 use crate::provider::{
     AgentEndpointMode, LaunchProviderRequest, ProviderClientInterface, ProviderLaunchResult,

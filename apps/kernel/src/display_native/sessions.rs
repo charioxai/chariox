@@ -8,7 +8,11 @@ use super::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap, fs::OpenOptions, io::Write, os::unix::fs::OpenOptionsExt, path::PathBuf,
+    collections::HashMap,
+    fs::OpenOptions,
+    io::Write,
+    os::unix::fs::OpenOptionsExt,
+    path::{Path, PathBuf},
 };
 fn row_y(height: i32, count: i32, index: i32) -> i32 {
     // MP-08/MP-10/MP-11: share the native encoder's macroblock-aligned edges.
@@ -128,11 +132,7 @@ pub(super) fn session_name(value: &str) -> Result<(), String> {
 /// MP-08/MP-10/MP-11: private packet file = big-endian u32 header length,
 /// JSON segment headers (each with `length`), then the raw segment bytes.
 /// The kernel binds these headers to the frame before projecting raw bytes.
-pub(super) fn packet(
-    root: &PathBuf,
-    headers: &[Value],
-    segments: &[&[u8]],
-) -> Result<Value, String> {
+pub(super) fn packet(root: &Path, headers: &[Value], segments: &[&[u8]]) -> Result<Value, String> {
     let header = serde_json::to_vec(headers).map_err(|_| "MP-11: native packet JSON")?;
     let length = 4 + header.len() + segments.iter().map(|s| s.len()).sum::<usize>();
     if headers.len() != segments.len()
@@ -655,7 +655,7 @@ impl Sessions {
                 &slot.tiles
             } {
                 for rect in rects {
-                    rectangles.extend(clips(&pixels, w, h, *rect, 32, 255, None));
+                    rectangles.extend(clips(pixels, w, h, *rect, 32, 255, None));
                 }
             } else {
                 if q.adjacent {
@@ -664,7 +664,7 @@ impl Sessions {
                 if (slot.bounds[2] - slot.bounds[0]) * (slot.bounds[3] - slot.bounds[1]) > 32768 {
                     return Err("MP-11: native patch bound".into());
                 }
-                rectangles = clips(&pixels, w, h, slot.bounds, 32, 255, None);
+                rectangles = clips(pixels, w, h, slot.bounds, 32, 255, None);
             }
         } else {
             let session = self
@@ -672,7 +672,7 @@ impl Sessions {
                 .get(&q.encoder)
                 .filter(|s| s.regions == regions);
             let rows = session.filter(|s| s.exact).map_or(255, |s| s.dirty);
-            rectangles = clips(&pixels, w, h, [0, 0, w, h], 128, rows, session);
+            rectangles = clips(pixels, w, h, [0, 0, w, h], 128, rows, session);
         }
         let stride = w as usize * 4;
         let tiles: Vec<([i32; 4], Vec<u8>)> = if q.patch {

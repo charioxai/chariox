@@ -142,6 +142,8 @@ pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_
 pub const PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE: &str = "project_environment_setup_rejected";
 
 // MP-08/MP-09/MP-10/MP-11 A10: start and queries use the exact admitted lease.
+// Preserve the serialized peer action and its existing public Rust fields.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LeasedWatchedProcessAction {
     Start {

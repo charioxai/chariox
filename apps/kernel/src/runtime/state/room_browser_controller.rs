@@ -1187,6 +1187,35 @@ pub(super) fn controller_route_error(message: &str) -> DaemonError {
     }
 }
 
+/// MP-10: numeric timing of controller routes that hold the route marker.
+struct RouteTrace(Option<(String, u64, u64)>);
+
+impl RouteTrace {
+    fn start(command: &Command, requested_ms: u64) -> Self {
+        if std::env::var("CHARIOX_BROWSER_DISPLAY_TIMING").as_deref() != Ok("1") {
+            return Self(None);
+        }
+        let debug = format!("{command:?}");
+        let kind = debug
+            .split(|c: char| !c.is_alphanumeric())
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        Self(Some((kind, requested_ms, crate::session::unix_epoch_ms())))
+    }
+}
+
+impl Drop for RouteTrace {
+    fn drop(&mut self) {
+        if let Some((kind, requested_ms, admitted_ms)) = self.0.take() {
+            eprintln!(
+                "[chariox.browser_route] {kind} requested={requested_ms} admitted={admitted_ms} ended={}",
+                crate::session::unix_epoch_ms()
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1230,34 +1259,5 @@ mod tests {
         };
 
         assert_eq!(receipt_recovery_command(&command), None);
-    }
-}
-
-/// MP-10: numeric timing of controller routes that hold the route marker.
-struct RouteTrace(Option<(String, u64, u64)>);
-
-impl RouteTrace {
-    fn start(command: &Command, requested_ms: u64) -> Self {
-        if std::env::var("CHARIOX_BROWSER_DISPLAY_TIMING").as_deref() != Ok("1") {
-            return Self(None);
-        }
-        let debug = format!("{command:?}");
-        let kind = debug
-            .split(|c: char| !c.is_alphanumeric())
-            .next()
-            .unwrap_or_default()
-            .to_string();
-        Self(Some((kind, requested_ms, crate::session::unix_epoch_ms())))
-    }
-}
-
-impl Drop for RouteTrace {
-    fn drop(&mut self) {
-        if let Some((kind, requested_ms, admitted_ms)) = self.0.take() {
-            eprintln!(
-                "[chariox.browser_route] {kind} requested={requested_ms} admitted={admitted_ms} ended={}",
-                crate::session::unix_epoch_ms()
-            );
-        }
     }
 }
