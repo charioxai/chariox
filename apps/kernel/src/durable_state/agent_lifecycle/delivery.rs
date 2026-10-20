@@ -331,7 +331,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         || e.payload["task_ids"].as_array().is_some_and(|ids| {
                             ids.iter().any(|id| id.as_str() == Some(t.task_id.as_str()))
                         });
-                    if changed || (!already_handled && belongs) {
+                    // A Blocked task awaits its owner: another task's outcome that merely
+                    // names it as a subscriber must not move its revision.
+                    if changed || (!already_handled && belongs && t.state != ExecutionState::Blocked) {
                         let timer_outcome = e.payload["public_answer"]["kind"].as_str() == Some("timer")
                             || tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_wakes WHERE id=?1 AND json_extract(payload,'$.kind')='timer')", [&e.source_id], |r| r.get::<_,bool>(0)).map_err(sql)?;
                         // Closing a timer obligation is required bookkeeping,
