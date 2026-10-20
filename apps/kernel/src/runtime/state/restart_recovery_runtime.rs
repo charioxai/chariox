@@ -28,6 +28,16 @@ pub(crate) struct DurableRestartRecoverySummary {
     pub(crate) failed_reconciliations: usize,
     pub(crate) unrecoverable_local_prompts_cancelled: usize,
     failed_local_prompts: Vec<DurableRestartRecoveryTarget>,
+    agents_awaiting_vault: BTreeSet<(String, String)>,
+}
+
+impl DurableRestartRecoverySummary {
+    fn note_vault_locked(&mut self, session_id: &str, agent_id: &str, error: &DaemonError) {
+        if crate::secret::is_chariox_vault_locked_error(error) {
+            self.agents_awaiting_vault
+                .insert((session_id.to_string(), agent_id.to_string()));
+        }
+    }
 }
 
 pub(super) enum UncertainLocalRecoveryOutcome {
@@ -137,6 +147,8 @@ impl KernelRuntimeState {
     ) -> DurableRestartRecoverySummary {
         let started = std::time::Instant::now();
         let mut attempt = 0_u32;
+        // The unlock is held across the next attempt so the redelivery never needs to prompt.
+        let mut vault_unlocks = Vec::new();
         loop {
             let mut summary = self
                 .recover_durable_runtime_after_restart_targets(
@@ -185,9 +197,32 @@ impl KernelRuntimeState {
                     .await;
                 return summary;
             }
+            vault_unlocks.clear();
+            vault_unlocks.extend(self.unlock_vault_for_failed_recoveries(&summary).await);
             attempt = attempt.saturating_add(1);
             tokio::time::sleep(retry_delay).await;
         }
+    }
+
+    /// The synchronous redelivery cannot open the Vault unlock, so a launch that needs a locked
+    /// Vault would fail silently until the window ends. Ask the owner here, once per agent.
+    async fn unlock_vault_for_failed_recoveries(
+        &self,
+        summary: &DurableRestartRecoverySummary,
+    ) -> Vec<super::runtime_vault_unlock_state::VaultUnlockGuard> {
+        let mut unlocks = Vec::new();
+        for (session_id, agent_id) in &summary.agents_awaiting_vault {
+            match self
+                .ensure_vault_unlocked_for_agent(session_id, agent_id, "restore interrupted prompt")
+                .await
+            {
+                Ok(guard) => unlocks.push(guard),
+                Err(error) => {
+                    log_restart_recovery_failure(session_id, agent_id, "vault-unlock", &error)
+                }
+            }
+        }
+        unlocks
     }
 
     /// A prompt restart recovery still cannot redeliver after its whole retry window (a locked
@@ -425,6 +460,7 @@ impl KernelRuntimeState {
                 Ok(None) => {}
                 Err(error) => {
                     summary.failed_reconciliations += 1;
+                    summary.note_vault_locked(session_id, agent_id, &error);
                     log_restart_recovery_failure(session_id, agent_id, prompt_id, &error);
                 }
             }
@@ -550,6 +586,7 @@ impl KernelRuntimeState {
                                 agent_id.to_string(),
                                 prompt.id().to_string(),
                             ));
+                            summary.note_vault_locked(session.id(), agent_id, &error);
                             log_restart_recovery_failure(
                                 session.id(),
                                 agent_id,
@@ -573,6 +610,7 @@ impl KernelRuntimeState {
                                 agent_id.to_string(),
                                 prompt.id().to_string(),
                             ));
+                            summary.note_vault_locked(session.id(), agent_id, &error);
                             log_restart_recovery_failure(
                                 session.id(),
                                 agent_id,
@@ -612,6 +650,7 @@ impl KernelRuntimeState {
                                 agent_id.to_string(),
                                 prompt.id().to_string(),
                             ));
+                            summary.note_vault_locked(session.id(), agent_id, &error);
                             log_restart_recovery_failure(
                                 session.id(),
                                 agent_id,
@@ -1298,6 +1337,34 @@ fn log_restart_recovery_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A launch the synchronous redelivery cannot complete because the Vault is locked must be
+    // handed to the unlock prompt; any other failure must not open one.
+    #[test]
+    fn only_a_locked_vault_failure_asks_the_owner_to_unlock() {
+        let mut summary = DurableRestartRecoverySummary::default();
+        summary.note_vault_locked(
+            "session",
+            "other",
+            &DaemonError::LocalTransport {
+                operation: "provider_launch",
+                message: "provider could not start".into(),
+            },
+        );
+        assert!(summary.agents_awaiting_vault.is_empty());
+        summary.note_vault_locked(
+            "session",
+            "agent",
+            &DaemonError::LocalTransport {
+                operation: "credential_vault_locked",
+                message: "Chariox vault is locked".into(),
+            },
+        );
+        assert_eq!(
+            summary.agents_awaiting_vault,
+            BTreeSet::from([("session".to_string(), "agent".to_string())])
+        );
+    }
     use crate::agent::CreateAgentRequest;
     use crate::app::KernelSessionService;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
