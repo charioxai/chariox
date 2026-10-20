@@ -709,7 +709,7 @@ mod tests {
         let pending_state = state.clone();
         let pending_session = session.clone();
         let pending_second_id = second_id.clone();
-        let second = tokio::spawn(async move {
+        let second_task = tokio::spawn(async move {
             request_runtime_interaction_with_timeout(
                 &pending_state,
                 &pending_session,
@@ -721,7 +721,7 @@ mod tests {
         });
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(
-            !second.is_finished(),
+            !second_task.is_finished(),
             "MP-10/MP-11 parallel permission must wait for the current decision"
         );
         state
@@ -741,7 +741,7 @@ mod tests {
             assert!(tokio::time::Instant::now() < deadline);
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        let resolution = second.await.unwrap().unwrap();
+        let resolution = second_task.await.unwrap().unwrap();
         assert_eq!(resolution.choice_id.as_deref(), Some("deny"));
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -779,17 +779,19 @@ mod tests {
     async fn native_permission_queue_cancellation_keeps_the_existing_decision() {
         let (router, session, agent, root) = permission_queue_fixture().await;
         let state = router.runtime_state();
+        let shared = format!("shared-{agent}");
         let first = state
-            .create_runtime_interaction(&session, queued_permission("shared", &agent, 10))
+            .create_runtime_interaction(&session, queued_permission(&shared, &agent, 10))
             .await
             .unwrap();
         let waiting_state = state.clone();
         let waiting_session = session.clone();
+        let waiting_shared = shared.clone();
         let waiting = tokio::spawn(async move {
             request_runtime_interaction_with_timeout(
                 &waiting_state,
                 &waiting_session,
-                queued_permission("shared", &agent, 5),
+                queued_permission(&waiting_shared, &agent, 5),
                 "native_permission_queue_test",
                 None,
             )
@@ -801,7 +803,7 @@ mod tests {
         assert!(waiting.await.unwrap_err().is_cancelled());
         tokio::task::yield_now().await;
         state
-            .resolve_runtime_interaction(&session, "shared", "allow", None)
+            .resolve_runtime_interaction(&session, &shared, "allow", None)
             .await
             .unwrap();
         assert_eq!(first.await.unwrap().choice_id.as_deref(), Some("allow"));

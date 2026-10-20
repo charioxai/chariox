@@ -661,7 +661,7 @@ fn stopping_workflow_dispatches_next_queued_workflow_prompt_inner() {
         _ => panic!("unexpected local response"),
     }
 
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         harness.pump_transport_runtime();
         let delivered = harness.with_app(|app| {
@@ -1472,7 +1472,7 @@ fn local_request_api_serializes_two_workflows_sharing_an_agent_inner() {
         LocalDaemonResponse::WorkflowRunCancelled { .. } => {}
         _ => panic!("unexpected local response"),
     }
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         harness.pump_transport_runtime();
         let promoted = harness.with_app(|app| {

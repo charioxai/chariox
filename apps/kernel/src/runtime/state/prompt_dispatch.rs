@@ -703,14 +703,15 @@ impl KernelRuntimeState {
                 if let Some(mut submission) =
                     owned.submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
                 {
-                    self.finish_owned_prompt_submission(&mut submission).await?;
+                    self.finish_owned_prompt_submission(&mut submission, prepared.force_queue)
+                        .await?;
                     return Ok(submission);
                 }
                 authorize()?;
                 if let Some(mut submission) =
                     owned.submit_remote_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
                 {
-                    self.finish_owned_prompt_submission(&mut submission).await?;
+                    self.finish_owned_prompt_submission(&mut submission, false).await?;
                     self.spawn_remote_prompt_projection_drain_if_needed(&submission);
                     return Ok(submission);
                 }
@@ -754,7 +755,7 @@ impl KernelRuntimeState {
                                 allow_queue,
                             )?
                         {
-                            self.finish_owned_prompt_submission(&mut submission).await?;
+                            self.finish_owned_prompt_submission(&mut submission, false).await?;
                             self.spawn_remote_prompt_projection_drain_if_needed(&submission);
                             return Ok(submission);
                         }
@@ -771,7 +772,8 @@ impl KernelRuntimeState {
                     if let Some(mut submission) = owned
                         .submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
                     {
-                        self.finish_owned_prompt_submission(&mut submission).await?;
+                        self.finish_owned_prompt_submission(&mut submission, prepared.force_queue)
+                            .await?;
                         return Ok(submission);
                     }
                 }
@@ -798,15 +800,20 @@ impl KernelRuntimeState {
     pub(super) async fn finish_owned_prompt_submission(
         &self,
         submission: &mut crate::app::KernelPromptSubmission,
+        parked_by_caller: bool,
     ) -> Result<(), DaemonError> {
         let prompt = match &submission.outcome {
             crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
             crate::session::PromptSubmissionOutcome::Queued { prompt } => {
                 let session_id = submission.session.id();
                 let agent_id = prompt.target_agent_id();
-                if !crate::scheduler::runtime::is_workflow_prompt_attachment(
-                    prompt.source_attachment_id(),
-                ) && self
+                // A prompt its caller force-queued is parked on purpose (a paused
+                // task's note); only an ordinary admission retries the backlog.
+                if !parked_by_caller
+                    && !crate::scheduler::runtime::is_workflow_prompt_attachment(
+                        prompt.source_attachment_id(),
+                    )
+                    && self
                     .owned
                     .agent_store
                     .get_agent(agent_id)?
