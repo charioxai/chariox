@@ -16,8 +16,8 @@ pub(crate) mod goals;
 mod migration;
 mod quarantine;
 mod replies;
-mod supervision;
 mod subscriptions;
+mod supervision;
 #[cfg(test)]
 mod tests;
 mod transitions;

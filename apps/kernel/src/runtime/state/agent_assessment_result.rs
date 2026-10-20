@@ -351,7 +351,7 @@ fn fence_private_assessment(value: &mut Assessment, live: &[String]) -> bool {
             evidence.clear();
             evidence.push("[protected completion evidence withheld]".into());
         }
-        Assessment::Continue { reason } | Assessment::Blocked { reason } => {
+        Assessment::Continue { reason, .. } | Assessment::Blocked { reason } => {
             if reason.trim().is_empty() {
                 return false;
             }

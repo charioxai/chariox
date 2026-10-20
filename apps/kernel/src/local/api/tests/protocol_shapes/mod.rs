@@ -104,11 +104,8 @@ fn history_page_entry(
 
 mod agent_lifecycle;
 mod owner_handoff;
+mod relay_transport;
 mod room_workflows;
 mod screenshot;
-
-mod relay_transport;
 mod ssh_machine;
-
 mod waiting_room_workspace;
-mod screenshot;

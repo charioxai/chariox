@@ -41,7 +41,13 @@ fn started_turn(label: &str) -> StartedTurn {
         )
         .unwrap();
     let crate::session::PromptSubmissionOutcome::Started { prompt } = app
-        .submit_prompt(session.id(), attachment.id(), Some(agent.id()), "work", Vec::new())
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "work",
+            Vec::new(),
+        )
         .unwrap()
     else {
         panic!("prompt should start")
@@ -88,7 +94,10 @@ fn begin(runtime: &KernelRuntimeState, turn: &StartedTurn) {
         .unwrap();
 }
 
-fn task_of(runtime: &KernelRuntimeState, turn: &StartedTurn) -> crate::durable_state::agent_lifecycle::AgentTaskExecution {
+fn task_of(
+    runtime: &KernelRuntimeState,
+    turn: &StartedTurn,
+) -> crate::durable_state::agent_lifecycle::AgentTaskExecution {
     runtime
         .owned
         .durable_state_store
@@ -262,7 +271,10 @@ async fn sweep_queues_a_continuation_persisted_before_restart() {
         })
         .unwrap();
     let before = task_of(&runtime, &turn);
-    let continuation = before.pending_prompt_id.clone().expect("continuation intent");
+    let continuation = before
+        .pending_prompt_id
+        .clone()
+        .expect("continuation intent");
     runtime
         .owned
         .complete_local_prompt_without_advance(&turn.session_id, &turn.agent_id, Some(&turn.run_id))
@@ -294,7 +306,9 @@ async fn sweep_assesses_an_answered_leased_turn_by_its_worker_history_run() {
             room: turn.session_id.clone(),
             agent: turn.agent_id.clone(),
             prompt: turn.prompt.id().into(),
-            run: Some(crate::provider::projected_leased_provider_run_id("lease-1", worker_run)),
+            run: Some(crate::provider::projected_leased_provider_run_id(
+                "lease-1", worker_run,
+            )),
             now: 1,
         })
         .unwrap();

@@ -121,10 +121,12 @@ fn completion_check_turn_is_not_delivered_to_clients() {
         session_id: "session-1".to_string(),
         provider_run_id: "run-1".to_string(),
         agent_id: Some("agent-1".to_string()),
+        prompt_id: None,
         prompt_origin: check,
         source_attachment_id: Some("attachment-1".to_string()),
         kind: TerminalOutputKind::ProviderOutput,
         merge_key: None,
+        sequence: None,
         recipient_attachment_ids: Arc::from(recipients()),
         bytes: b"{\"status\":\"continue\"}".to_vec(),
     }]);

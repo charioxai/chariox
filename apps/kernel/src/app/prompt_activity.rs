@@ -452,7 +452,11 @@ impl PromptWorkspaceClaimStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
-            .any(|claim| claim.snapshot().is_some_and(|snapshot| predicate(&snapshot)))
+            .any(|claim| {
+                claim
+                    .snapshot()
+                    .is_some_and(|snapshot| predicate(&snapshot))
+            })
     }
 
     pub(crate) fn insert(&self, provider_run_id: String, claim: WorkspaceClaimGuard) {

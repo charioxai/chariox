@@ -6,12 +6,25 @@ use sha2::{Digest, Sha256};
 fn mp08_mp10_mp11_aggregate_agent_model_protocol_snapshot_and_hash() {
     let snapshot: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../../../../fixtures/aggregate-agent-model-protocol.json"
-    )).unwrap();
-    assert_eq!(snapshot["local"], serde_json::json!(LOCAL_DAEMON_PROTOCOL_VERSION));
-    assert_eq!(snapshot["relayPeer"], serde_json::json!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION));
+    ))
+    .unwrap();
+    assert_eq!(
+        snapshot["local"],
+        serde_json::json!(LOCAL_DAEMON_PROTOCOL_VERSION)
+    );
+    assert_eq!(
+        snapshot["relayPeer"],
+        serde_json::json!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION)
+    );
     // This fixture is deliberately not generated from the runtime constants.
     // The hash binds the allocation and both parent contracts together.
-    assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&snapshot).unwrap())), "51c225d43003c5dfd9b1ae8673ae73ed624fac350702d7fc90f7d66393400712");
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "51c225d43003c5dfd9b1ae8673ae73ed624fac350702d7fc90f7d66393400712"
+    );
     for wire in snapshot["requests"].as_array().unwrap() {
         let typed: LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(typed).unwrap(), *wire);
@@ -21,11 +34,13 @@ fn mp08_mp10_mp11_aggregate_agent_model_protocol_snapshot_and_hash() {
         assert_eq!(serde_json::to_value(typed).unwrap(), *wire);
     }
     for wire in snapshot["peerRequests"].as_array().unwrap() {
-        let typed: crate::transport::relay_peer::RelayPeerRequest = serde_json::from_value(wire.clone()).unwrap();
+        let typed: crate::transport::relay_peer::RelayPeerRequest =
+            serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(typed).unwrap(), *wire);
     }
     for wire in snapshot["events"].as_array().unwrap() {
-        let typed: crate::transport::kernel_protocol::KernelEvent = serde_json::from_value(wire.clone()).unwrap();
+        let typed: crate::transport::kernel_protocol::KernelEvent =
+            serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(typed).unwrap(), *wire);
     }
 }

@@ -711,7 +711,8 @@ impl KernelRuntimeState {
                 if let Some(mut submission) =
                     owned.submit_remote_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
                 {
-                    self.finish_owned_prompt_submission(&mut submission, false).await?;
+                    self.finish_owned_prompt_submission(&mut submission, false)
+                        .await?;
                     self.spawn_remote_prompt_projection_drain_if_needed(&submission);
                     return Ok(submission);
                 }
@@ -755,7 +756,8 @@ impl KernelRuntimeState {
                                 allow_queue,
                             )?
                         {
-                            self.finish_owned_prompt_submission(&mut submission, false).await?;
+                            self.finish_owned_prompt_submission(&mut submission, false)
+                                .await?;
                             self.spawn_remote_prompt_projection_drain_if_needed(&submission);
                             return Ok(submission);
                         }
@@ -814,11 +816,11 @@ impl KernelRuntimeState {
                         prompt.source_attachment_id(),
                     )
                     && self
-                    .owned
-                    .agent_store
-                    .get_agent(agent_id)?
-                    .remote_execution()
-                    .is_none()
+                        .owned
+                        .agent_store
+                        .get_agent(agent_id)?
+                        .remote_execution()
+                        .is_none()
                     && self
                         .owned
                         .provider_store
