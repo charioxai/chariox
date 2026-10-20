@@ -324,8 +324,10 @@ async fn a02_unloaded_room_cannot_abort_live_room_supervision() {
         "unavailable Room obligations remain durable without guessed completion or replay"
     );
     let current = store.agent_tasks(Some(&f.session), None).unwrap().remove(0);
-    assert_eq!(current.state, ExecutionState::Blocked);
-    assert!(f.active_ids().contains(&format!(
+    // The current Room's stranded ordinary turn is swept: it ends as a stopped
+    // turn and asks the owner nothing (event-core D2).
+    assert_eq!(current.state, ExecutionState::Cancelled);
+    assert!(!f.active_ids().contains(&format!(
         "task-blocked-{}-{}",
         current.task_id, current.blocked_revision
     )));

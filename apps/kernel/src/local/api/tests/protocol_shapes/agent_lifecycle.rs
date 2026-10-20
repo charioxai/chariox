@@ -71,7 +71,7 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
     assert_eq!(value, expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
-        "4c248a2999981d5595b55343de0a317927e6e07a4eecb15bb2f85c076903aac1"
+        "1200a129c1634205e402b26eed546a5418aca143b91457f416e67438959e96af"
     );
 }
 
@@ -130,7 +130,7 @@ fn agent_wake_projection_shape_is_bound_to_protocol459() {
     assert_eq!(value, expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
-        "e3177f423a1bd3ff891a46566b5e2735a32bf6c1eec9f79c6cc7d31bebe64ed7"
+        "70b6f79b62077c01451c2c12808fef81d8239f20f72bf749d84b068cf018518c"
     );
 }
 

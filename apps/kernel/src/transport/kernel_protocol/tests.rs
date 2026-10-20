@@ -1155,7 +1155,8 @@ fn ledger_wake(state: &str) -> crate::durable_state::agent_lifecycle::AgentWake 
         "id": "wake-a", "task_id": "task-a", "room_id": "session-a", "agent_id": "agent-a",
         "registration_id": "reg-a", "kind": "timer", "label": "tick", "state": state,
         "created_at_ms": 1, "verified_at_ms": 1, "next_due_ms": 9, "interval_ms": null,
-        "fire_count": 0, "missed_fires": 0, "last_fired_at_ms": null, "last_sequence": null,
+        "command": [], "match_text": null, "matched_at_ms": null, "pid": null, "exit_code": null,
+            "fire_count": 0, "missed_fires": 0, "last_fired_at_ms": null, "last_sequence": null,
         "last_delivery": null, "last_delivered_at_ms": null, "last_acknowledged_at_ms": null,
         "alerted_sequence": null,
     }))

@@ -156,6 +156,7 @@ fn agent_tasks_and_wakes_follow_agent_trace_visibility() {
             "id": "wake", "task_id": "task", "room_id": "room", "agent_id": agent,
             "registration_id": "reg", "kind": "timer", "label": "tick", "state": "scheduled",
             "created_at_ms": 1, "verified_at_ms": 1, "next_due_ms": 9, "interval_ms": null,
+            "command": [], "match_text": null, "matched_at_ms": null, "pid": null, "exit_code": null,
             "fire_count": 0, "missed_fires": 0, "last_fired_at_ms": null, "last_sequence": null,
             "last_delivery": null, "last_delivered_at_ms": null, "last_acknowledged_at_ms": null,
             "alerted_sequence": null,

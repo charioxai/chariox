@@ -445,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn client_projection_hides_the_correction_prompt() {
+    fn client_projection_hides_the_correction_instruction() {
         for prompt_id in ["task-correction-prompt-1", "agent-event-agent-1-42"] {
             let mut runtime = PromptRuntimeState::default();
             runtime.mirror_agent_prompt_state(
@@ -455,8 +455,10 @@ mod tests {
                 Some("agent-1"),
             );
             runtime.hide_internal_prompts(Some("agent-1"));
-            assert!(runtime.active_prompt_for_agent("agent-1").is_none());
-            assert!(runtime.prompt_states().is_empty());
+            // A running internal turn stays stoppable; only its instruction is hidden.
+            let active = runtime.active_prompt_for_agent("agent-1").unwrap();
+            assert_eq!(active.id(), prompt_id);
+            assert_eq!(active.prompt(), "");
         }
     }
 

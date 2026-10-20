@@ -341,4 +341,6 @@ pub use workspace::*;
 /// Agent-model line (537, relay peer 145) contracts are merged into this number until the coordinator allocates the final one:
 /// task/wake, completion, leased-watcher, paired-display and historical-workflow projections, owner-only 520/128 direct carriers
 /// and owner-managed contexts (MP-08/MP-10/MP-11).
+/// The event-core line (561, relay peer 169) is merged too: task/wake driver sources (`AgentWake.summary`/`detail`) and the
+/// `agent_task_updated` delta event (MP-08/MP-10/MP-11).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 567;

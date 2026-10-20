@@ -69,7 +69,9 @@ struct Fixture {
 /// run has while it calls tools; without it the agent is idle.
 async fn fixture(name: &str, running_prompt: bool) -> Fixture {
     let worktree = crate::test_support::TestWorktree::new(name);
-    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .unwrap();
@@ -172,6 +174,7 @@ impl Fixture {
             "registration_id": format!("completion-{id}"), "kind": KIND, "label": "test source",
             "state": "starting", "created_at_ms": crate::session::unix_epoch_ms(),
             "verified_at_ms": null, "next_due_ms": null, "interval_ms": null,
+            "command": [], "match_text": null, "matched_at_ms": null, "pid": null, "exit_code": null,
             "fire_count": 0, "missed_fires": 0, "last_fired_at_ms": null,
             "last_sequence": null, "last_delivery": null, "last_delivered_at_ms": null,
             "last_acknowledged_at_ms": null, "alerted_sequence": null
@@ -658,10 +661,14 @@ async fn event_tools_arm_wait_and_cancel_through_the_runtime_mcp_entry() {
     assert_eq!(
         listed,
         [
+            "subscribe",
+            "unsubscribe",
+            "subscriptions",
             "inbox",
             "ack",
             "yield",
             "timer",
+            "process",
             "cancel_wake",
             "wakes",
             "blocked"

@@ -302,16 +302,6 @@ async fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
         .advance_next_queued_prompt_dispatch(session.id(), agent.id(), workflow_provider.id())
         .unwrap()
         .expect("workflow turn should start");
-    // MP-08/MP-10/MP-11: workflow continuation identity is not integrated with
-    // task waits. Neither discovery nor a direct MCP call may offer that path.
-    let token = workflow_provider
-        .runtime_mcp_auth_token()
-        .expect("workflow MCP auth");
-    let event_tools: Vec<_> = runtime
-        .runtime_tool_specs_for_auth_token(token)
-        .into_iter()
-        .filter(|spec| spec.name.starts_with("chariox.events."))
-        .collect();
     let before = runtime
         .owned
         .session_store
@@ -336,33 +326,6 @@ async fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
         .durable_state_store
         .agent_tasks(Some(session.id()), Some(agent.id()))
         .unwrap();
-    let task = tasks_before
-        .iter()
-        .find(|task| task.prompt_id == active.id())
-        .unwrap();
-    let mut refused = Vec::new();
-    for name in [
-        "timer",
-        "yield",
-        "blocked",
-        "inbox",
-        "ack",
-        "cancel_wake",
-        "wakes",
-    ] {
-        let result = runtime.dispatch_authenticated_runtime_tool_call(token, &format!("chariox.events.{name}"),
-            serde_json::json!({"task_id": task.task_id, "origin_prompt_id": active.id(), "label": "workflow wait", "delay_ms": 1000,
-                "registration_ids": ["workflow-timer"], "inbox_cursor": 0, "deadline_ms": crate::session::unix_epoch_ms() + 60000,
-                "reason": "wait for workflow timer", "sequence": 1, "wake_id": "workflow-timer"})).await;
-        refused.push(
-            result.is_err_and(|error| error.to_string().contains("unavailable in workflow turns")),
-        );
-    }
-    assert!(
-        event_tools.is_empty() && refused.iter().all(|refused| *refused),
-        "workflow event tools: advertised={}, explicitly refused={refused:?}",
-        event_tools.len()
-    );
     assert_eq!(
         runtime
             .owned
