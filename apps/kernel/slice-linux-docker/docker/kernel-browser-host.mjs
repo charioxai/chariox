@@ -198,8 +198,10 @@ export class KernelBrowserHost {
 
     // MP-11: retire helpers on the old display before Chromium recovery can
     // replace it. A failed key release still requires owned desktop teardown.
+    let preserveDesktop = this.chromium.desktop?.isLive?.() === true;
     try { await this.nativeComputer.close(); }
-    finally { await this.chromium.stop(); this.nativeAccessibility.clear(); }
+    catch { preserveDesktop = false; } // a failed physical release still resets the owned display
+    finally { await this.chromium.stop(undefined, { preserveDesktop }); this.nativeAccessibility.clear(); }
     for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
     this.displays.clear(); this.scales.clear(); this.inputEpochs.clear();
@@ -224,8 +226,8 @@ export class KernelBrowserHost {
       typeof group?.tab_id === 'string' && typeof group.label === 'string' && group.label.length <= 64) : [];
     assertNotCancelled(signal);
     // MP-08/MP-10: relaunch at the device scale of the last display viewer.
-    const connection = await this.chromium.start();
-    try{await this.nativeComputer.primeKeyboard();}catch(error){await this.chromium.stop(connection);throw error;}
+    const connection = await this.chromium.start({ preserveDesktop });
+    try{await this.nativeComputer.primeKeyboard();}catch(error){await this.chromium.stop(connection,{preserveDesktop});throw error;}
     assertNotCancelled(signal);
     this.browser = this.browserFactory(connection);
     this.browser.pageTiming = this.timing;
@@ -271,7 +273,7 @@ export class KernelBrowserHost {
       await this.rebindWindows();
       this.recovery.watch(connection);
       this.stateSignal.notify();
-    } catch (error) { await this.stop({ recovering: true }); throw error; }
+    } catch (error) { await this.stop({ recovering: true, preserveDesktop }); throw error; }
     finally { this.restoring = false; }
   }
   // MP-08/MP-10/MP-11: native binding changes stay on the host mutation lane.
@@ -402,7 +404,7 @@ export class KernelBrowserHost {
     }
     return await entry.ready;
   }
-  async stop({ recovering = false } = {}) {
+  async stop({ recovering = false, preserveDesktop = false } = {}) {
     if (!recovering) {
       this.recovery?.stop();
       await this.starting?.catch(() => {});
@@ -420,8 +422,8 @@ export class KernelBrowserHost {
     this.popupEvidence.clear();
     // A dead X server can make release fail; retirement still destroys the
     // owned desktop before acknowledging stop.
-    await this.nativeComputer.close().catch(() => {});
-    await this.chromium.stop(this.browser?.connection);
+    await this.nativeComputer.close().catch(() => { preserveDesktop = false; });
+    await this.chromium.stop(this.browser?.connection, { preserveDesktop });
     for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
     this.displays.clear(); this.scales.clear();
@@ -710,7 +712,8 @@ export class KernelBrowserHost {
     if (command.op.startsWith("mirror_") && process.env.CHARIOX_KERNEL_BROWSER_MIRROR !== "1") throw new Error("MP-08: DOM mirror disabled");
     if (command.op.startsWith("display_") && process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
     if (command.op === "stop") return this.stop();
-    // MP-11: observation never launches/relaunches the browser.
+    // MP-08/MP-10: reads never start a cold or explicitly stopped browser;
+    // an already wanted browser recovers independently of any observer.
     await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_input_target", "note_selection", "note_reanchor", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
     assertNotCancelled(signal);
     const browserAtStart = this.browser;

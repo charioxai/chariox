@@ -106,3 +106,14 @@ test('the owned window has no "Sign in to Chrome?" chip in its band', async () =
  const {launchArguments}=await import('./kernel-browser-process.mjs');
  assert(launchArguments('/private',false,true).includes('--disable-features=ExplicitBrowserSigninUIOnDesktop,SigninPromoOnAvatarPill'));
 });
+
+test('MP-08/MP-10 browser-only stop preserves a healthy shared desktop',async()=>{
+ const root=await mkdtemp(tmpdir()+'/chariox-browser-only-stop-');
+ const host=new HostChromium(root);let browserStops=0,desktopStops=0;
+ const desktop={isLive:()=>true,binding:()=>({}),stopBrowser:async()=>{browserStops++},stop:async()=>{desktopStops++},close:async()=>{desktopStops++}};
+ host.desktop=desktop;host.display=desktop;
+ try{
+  await host.stop(undefined,{preserveDesktop:true});
+  assert.equal(browserStops,1);assert.equal(desktopStops,0);assert.equal(host.display,desktop);
+ }finally{await host.stop();await rm(root,{recursive:true,force:true});}
+});

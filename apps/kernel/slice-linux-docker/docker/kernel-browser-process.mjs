@@ -80,13 +80,14 @@ export class HostChromium {
     // desktop's scale; only a private owned display may rescale it.
     this.scale = this.desktop ? 1 : geometry.dpr;
   }
-  async start() {
+  async start({ preserveDesktop = false } = {}) {
+    const keepDesktop = preserveDesktop && this.desktop?.isLive?.() === true;
     if (this.child && this.child.exitCode === null && this.child.signalCode === null) {
       if (this.connection?.isOpen()) return this.connection;
-      await this.stop();
+      await this.stop(this.connection, { preserveDesktop: keepDesktop });
     }
     // MP-08/MP-11: settle a previously owned display before failed recovery.
-    await this.display?.close(); this.display = null;
+    if (!keepDesktop) { await this.display?.close(); this.display = null; }
     let environment = platformPolicy(process.platform).launchEnvironment(this.environment);
     const profile = path.join(this.root, "profile");
     await mkdir(profile, { recursive: true, mode: 0o700 });
@@ -155,19 +156,20 @@ export class HostChromium {
       return connection;
     }
     catch {}
-    await this.stop();
+    await this.stop(this.connection, { preserveDesktop: keepDesktop });
     const code=browserLaunchFailureReason(startupStderr,spawnCode);startupStderr='';
     throw Object.assign(new Error('MD-2: host Chromium launch failed'),{code});
   }
-  async stop(connection = this.connection) {
+  async stop(connection = this.connection, { preserveDesktop = false } = {}) {
+    const keepDesktop = preserveDesktop && this.desktop?.isLive?.() === true;
     const child = this.child;
     this.child = null;
     this.browserPid = null;
     this.connection = null;
     if (!Number.isSafeInteger(child?.pid) || child.pid <= 1) {
-      await this.display?.close();this.display=null;
+      if (!keepDesktop) { await this.display?.close();this.display=null; }
       if (child?.pid !== undefined) throw new Error("MD-2: refusing unsafe browser process ID");
-      await this.desktop?.stop();
+      if (keepDesktop) await this.desktop.stopBrowser(); else await this.desktop?.stop();
       await this.temporaryDirectory?.close(); this.temporaryDirectory = null;
       return;
     }
@@ -185,8 +187,7 @@ export class HostChromium {
     }
     if (!exited()) await new Promise(resolve => child.once("exit", resolve));
     await connection?.close();
-    await this.desktop?.stop();
-    this.display = null;
+    if (keepDesktop) await this.desktop.stopBrowser(); else { await this.desktop?.stop(); this.display = null; }
     await this.temporaryDirectory?.close(); this.temporaryDirectory = null;
   }
 }

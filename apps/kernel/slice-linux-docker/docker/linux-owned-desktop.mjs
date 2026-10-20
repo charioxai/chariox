@@ -42,9 +42,10 @@ async function firstLine(stream, child) {
 export class LinuxOwnedDesktop {
   constructor(root, { environment = process.env, commands = {} } = {}) {
     this.root = root; this.source = environment; this.uid = process.getuid?.(); this.commands = commands;
-    this.children = []; this.known = new Map(); this.current = null; this.starting = null;
+    this.children = []; this.known = new Map(); this.browserKnown = new Map(); this.current = null; this.starting = null;
   }
   binding() { return this.current; }
+  isLive() { return readyDesktops.has(this) && Boolean(this.current) && !this.children.some(({child,core})=>core&&(child.exitCode!==null||child.signalCode!==null)); }
   get child() { return this.children.find(item => item.name === 'bwrap')?.child ?? null; }
   get environment() { return this.current?.environment; }
   async launch(name, args, env, stdio = ['ignore', 'ignore', 'ignore']) {
@@ -92,6 +93,7 @@ export class LinuxOwnedDesktop {
     const processes=await observedDescendants(roots.map(({identity})=>identity));
     const browserIds=new Set(roots.filter(({browser})=>browser).map(({identity})=>identity.pid));
     for(let changed=true;changed;){changed=false;for(const item of processes)if(!browserIds.has(item.pid)&&browserIds.has(item.parent)){browserIds.add(item.pid);changed=true}}
+    for(const item of processes)if(browserIds.has(item.pid))this.browserKnown.set(item.pid,item);
     return {processes,browser_processes:processes.filter(item=>browserIds.has(item.pid))};
   }
   async ownedProcesses() {
@@ -106,7 +108,21 @@ export class LinuxOwnedDesktop {
     this.children.push({child,identity,core:false,browser});
   }
   async browserProcesses() {
-    return descendants(this.children.filter(({child,identity,browser})=>browser && identity && child.exitCode===null && child.signalCode===null).map(({identity})=>identity));
+    const current=await descendants(this.children.filter(({child,identity,browser})=>browser && identity && child.exitCode===null && child.signalCode===null).map(({identity})=>identity));
+    for(const item of current)this.browserKnown.set(item.pid,item);
+    return current;
+  }
+  // MP-08/MP-10: a browser crash does not retire the user's other apps or X11
+  // identity. Use only verified browser roots/descendants, including orphans
+  // already observed before their supervisor exited.
+  async stopBrowser() {
+    const browser=this.children.filter(item=>item.browser);
+    const known=await descendants([...browser.map(item=>item.identity).filter(Boolean),...this.browserKnown.values()]);
+    for(const item of known)this.browserKnown.set(item.pid,item);
+    await settleOwned(browser,[...this.browserKnown.values()]);
+    this.children=this.children.filter(item=>!browser.includes(item));
+    for(const item of this.browserKnown.values())if(this.known.get(item.pid)?.started===item.started)this.known.delete(item.pid);
+    this.browserKnown.clear();
   }
   async start() {
     if (this.current) {
@@ -188,7 +204,7 @@ export class LinuxOwnedDesktop {
     readyDesktops.delete(this);
     this.current = null;
     await settleOwned(this.children.filter(({child}) => child.pid), [...this.known.values()]);
-    this.children = [];this.known.clear();
+    this.children = [];this.known.clear();this.browserKnown.clear();
     if (this.runtime) await rm(this.runtime, { recursive: true, force: true });
     this.runtime = null;
   }
