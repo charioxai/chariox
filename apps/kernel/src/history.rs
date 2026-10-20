@@ -6,7 +6,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
@@ -48,7 +48,6 @@ const OPERATIONAL_HISTORY_SIZE_BUDGET_CHECK_BYTES: u64 = 1024 * 1024;
 const OPERATIONAL_HISTORY_READ_CONNECTIONS: usize = 4;
 const OPERATIONAL_HISTORY_WRITE_QUEUE_LIMIT: usize = 4096;
 const OPERATIONAL_HISTORY_WRITE_BATCH_LIMIT: usize = 256;
-const OPERATIONAL_HISTORY_WRITE_BATCH_WINDOW: Duration = Duration::from_millis(5);
 
 pub fn steering_prompt_merge_key(prompt_id: &str) -> String {
     format!("{STEERING_PROMPT_MERGE_KEY_PREFIX}{prompt_id}")
@@ -1091,24 +1090,23 @@ fn run_operational_history_writer(
     projector: Arc<public_history::ProjectorSlot>,
 ) {
     while let Ok(first) = receiver.recv() {
-        let mut record_count = first.records.len();
-        let mut batch = vec![first];
-        let deadline = Instant::now() + OPERATIONAL_HISTORY_WRITE_BATCH_WINDOW;
-        while record_count < OPERATIONAL_HISTORY_WRITE_BATCH_LIMIT {
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                break;
-            };
-            match receiver.recv_timeout(remaining) {
-                Ok(request) => {
-                    record_count = record_count.saturating_add(request.records.len());
-                    batch.push(request);
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => break,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-        }
+        let batch = collect_ready_history_batch(first, || receiver.try_recv().ok());
         commit_operational_history_batch(&mut connection, batch, &health, &projector);
     }
+}
+
+fn collect_ready_history_batch(
+    first: OperationalHistoryWriteRequest,
+    mut try_next: impl FnMut() -> Option<OperationalHistoryWriteRequest>,
+) -> Vec<OperationalHistoryWriteRequest> {
+    let mut record_count = first.records.len();
+    let mut batch = vec![first];
+    while record_count < OPERATIONAL_HISTORY_WRITE_BATCH_LIMIT {
+        let Some(request) = try_next() else { break };
+        record_count = record_count.saturating_add(request.records.len());
+        batch.push(request);
+    }
+    batch
 }
 
 fn commit_operational_history_batch(
@@ -1551,3 +1549,6 @@ fn unix_epoch_ms() -> u64 {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod writer_latency_tests;

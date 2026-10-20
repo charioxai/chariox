@@ -1669,54 +1669,19 @@ fn run_durable_writer(
         // Commit at once; only writes already queued behind this one (for
         // example while the previous commit synced) share its transaction.
         let received_at = Instant::now();
-        let mut batch = vec![first];
-        while batch.len() < DURABLE_WRITE_BATCH_LIMIT {
+        let batch = collect_ready_durable_batch(first, || {
             if health.fatal.load(Ordering::Acquire) {
-                break;
+                return None;
             }
             match receiver.try_recv() {
-                Ok(DurableWriterRequest::Ordinary(request)) => batch.push(request),
-                #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-                Ok(
-                    request @ (DurableWriterRequest::AppTools(_)
-                    | DurableWriterRequest::AppFile(_)
-                    | DurableWriterRequest::AppHttp(_)
-                    | DurableWriterRequest::AppInstallationOperation(_)
-                    | DurableWriterRequest::AppRestore(_)),
-                ) => {
+                Ok(DurableWriterRequest::Ordinary(request)) => Some(request),
+                Ok(request) => {
                     pending = Some(request);
-                    break;
+                    None
                 }
-                Ok(
-                    request @ (DurableWriterRequest::App(_)
-                    | DurableWriterRequest::AppPublisher(_)
-                    | DurableWriterRequest::AppPublisherOperation(_)
-                    | DurableWriterRequest::VerifiedApp(_)
-                    | DurableWriterRequest::AppState(_)
-                    | DurableWriterRequest::AppWake(_)
-                    | DurableWriterRequest::AppInbox(_)
-                    | DurableWriterRequest::AppLog(_)
-                    | DurableWriterRequest::AppValidation(_)
-                    | DurableWriterRequest::AppFileGrant(_)
-                    | DurableWriterRequest::AppFileExport(_)
-                    | DurableWriterRequest::AppHostAction(_)
-                    | DurableWriterRequest::AppConnectionGrant(_)
-                    | DurableWriterRequest::AppBinding(_)
-                    | DurableWriterRequest::AppAutomation(_)
-                    | DurableWriterRequest::AgentLifecycle(_)
-                    | DurableWriterRequest::WorkflowNotification(_)
-                    | DurableWriterRequest::AppActivation(_)
-                    | DurableWriterRequest::AppWorkerLifecycle(_)
-                    | DurableWriterRequest::AppEventMaintenance(_)
-                    | DurableWriterRequest::WorkflowQueueStart(_)
-                    | DurableWriterRequest::AppEventQueue(_)),
-                ) => {
-                    pending = Some(request);
-                    break;
-                }
-                Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
+                Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => None,
             }
-        }
+        });
         let records = batch.len();
         let commit_started_at = Instant::now();
         commit_durable_write_batch(&mut connection, batch, &health);
@@ -1726,6 +1691,20 @@ fn run_durable_writer(
             commit_started_at.elapsed().as_micros(),
         );
     }
+}
+
+/// Batch only the writes ready now. The queue seam is nonblocking and an
+/// empty read ends collection; no timer or commit/disk timing enters this policy.
+fn collect_ready_durable_batch(
+    first: DurableWriteRequest,
+    mut try_next: impl FnMut() -> Option<DurableWriteRequest>,
+) -> Vec<DurableWriteRequest> {
+    let mut batch = vec![first];
+    while batch.len() < DURABLE_WRITE_BATCH_LIMIT {
+        let Some(next) = try_next() else { break };
+        batch.push(next);
+    }
+    batch
 }
 
 fn commit_durable_write_batch(

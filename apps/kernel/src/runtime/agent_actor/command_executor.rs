@@ -111,6 +111,7 @@ impl AgentRuntimeCommandExecutor {
         operation_fingerprint: String,
         response_mode: PromptSubmitResponseMode,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut timing = crate::runtime::perf_timing::Phases::new();
         let target_agent_id =
             request
                 .target_agent_id
@@ -206,6 +207,7 @@ impl AgentRuntimeCommandExecutor {
         .with_hidden_system_context(hidden_system_context)
         .with_durable_operation(operation_id, operation_fingerprint)
         .with_attachments(materialized_attachments);
+        timing.mark("prepare");
         let prepared = self
             .prompt_commands
             .submit_prepared_prompt(KernelPreparedPromptSubmission {
@@ -215,6 +217,7 @@ impl AgentRuntimeCommandExecutor {
                 refresh_projection: response_mode == PromptSubmitResponseMode::Full,
             })
             .await?;
+        timing.mark("admit");
         let mut response_session = prepared.session.clone();
         if !consumed_meta_slash {
             if let Some(updated_session) = self.prompt_commands.start_metaagent_task_for_prompt(
@@ -225,6 +228,7 @@ impl AgentRuntimeCommandExecutor {
                 response_session = updated_session;
             }
         }
+        timing.mark("meta_task");
         if response_mode == PromptSubmitResponseMode::Full {
             publish_session_runtime_projection(
                 &self.session_projection,
@@ -233,6 +237,7 @@ impl AgentRuntimeCommandExecutor {
             );
         }
 
+        timing.mark("publish");
         if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
             (&prepared.outcome, prepared.dispatch.as_ref())
         {
@@ -244,6 +249,7 @@ impl AgentRuntimeCommandExecutor {
                 &trace_id,
             );
         }
+        timing.mark("active_turn");
         let agent_activity = if response_mode == PromptSubmitResponseMode::Full {
             self.prompt_commands
                 .agent_activity_for_session(&response_session)
@@ -251,6 +257,7 @@ impl AgentRuntimeCommandExecutor {
             Default::default()
         };
 
+        timing.mark("activity_projection");
         if let Some(dispatch) = prepared.dispatch {
             self.prompt_commands.spawn_prompt_dispatch(dispatch);
         }
@@ -258,6 +265,8 @@ impl AgentRuntimeCommandExecutor {
             self.prompt_commands.spawn_remote_prompt_dispatch(dispatch);
         }
 
+        timing.mark("dispatch_spawn");
+        timing.finish("prompt_submit", &trace_id);
         Ok(LocalDaemonResponse::PromptSubmitted {
             outcome: prepared.outcome,
             session: response_session,

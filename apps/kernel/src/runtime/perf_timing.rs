@@ -54,3 +54,74 @@ pub(crate) fn record_durable_commit(records: usize, batch_wait_us: u128, commit_
             "committed_at_ms": crate::session::unix_epoch_ms()}),
     );
 }
+
+/// Phase clocks are dormant unless performance diagnostics are enabled.
+/// Callers supply only fixed labels and public operation/event identifiers.
+pub(crate) struct Phases {
+    previous: Option<std::time::Instant>,
+    phases: Vec<(&'static str, u128)>,
+    previous_cpu: Option<(std::thread::ThreadId, u128)>,
+    phases_cpu: Vec<(&'static str, u128)>,
+}
+
+impl Phases {
+    pub(crate) fn new() -> Self {
+        let previous = enabled().then(std::time::Instant::now);
+        Self {
+            previous,
+            phases: Vec::new(),
+            previous_cpu: previous.and_then(|_| thread_cpu_sample()),
+            phases_cpu: Vec::new(),
+        }
+    }
+
+    pub(crate) fn mark(&mut self, phase: &'static str) {
+        if let Some(previous) = self.previous.as_mut() {
+            let now = std::time::Instant::now();
+            self.phases
+                .push((phase, now.duration_since(*previous).as_micros()));
+            *previous = now;
+            let cpu = thread_cpu_sample();
+            if let (Some((old_thread, old)), Some((thread, current))) = (self.previous_cpu, cpu) {
+                if thread == old_thread {
+                    self.phases_cpu.push((phase, current.saturating_sub(old)));
+                }
+            }
+            self.previous_cpu = cpu;
+        }
+    }
+
+    pub(crate) fn finish(self, scope: &'static str, operation_id: impl std::fmt::Display) {
+        if self.previous.is_none() {
+            return;
+        }
+        let phases: std::collections::BTreeMap<_, _> = self.phases.into_iter().collect();
+        let phases_cpu: std::collections::BTreeMap<_, _> = self.phases_cpu.into_iter().collect();
+        crate::logging::info_with_fields(
+            "daemon.phase_timing",
+            "kernel path phases",
+            serde_json::json!({"scope": scope, "operation_id": operation_id.to_string(),
+                "phases_us": phases, "same_thread_cpu_us": phases_cpu}),
+        );
+    }
+}
+
+// Compare CPU and wall time only for synchronous phases. An async phase can
+// include other tasks on the same worker; a thread migration omits the sample.
+fn thread_cpu_sample() -> Option<(std::thread::ThreadId, u128)> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut time = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `time` is a valid output buffer and this clock has no input pointer.
+        if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) } == 0 {
+            return Some((
+                std::thread::current().id(),
+                time.tv_sec as u128 * 1_000_000 + time.tv_nsec as u128 / 1_000,
+            ));
+        }
+    }
+    None
+}

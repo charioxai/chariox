@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashSet, VecDeque};
 use std::fs;
 use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -20,7 +21,7 @@ const PERSISTENT_COMPACTION_FILE_GROWTH_MULTIPLIER: u64 = 1;
 const PERSISTENT_COMPACTION_TARGET_NUMERATOR: u64 = 3;
 const PERSISTENT_COMPACTION_TARGET_DENOMINATOR: u64 = 4;
 const PERSISTENT_EVENT_WRITE_QUEUE_CAPACITY: usize = 32;
-const COMPACTION_WRITEBACK_BYTES: usize = 1024 * 1024;
+const COMPACTION_WRITEBACK_BYTES: usize = 64 * 1024;
 const PERSISTENT_WRITE_MAX_ATTEMPTS: usize = 3;
 const PERSISTENT_WRITE_RETRY_BASE_DELAY_MS: u64 = 25;
 const PERSISTENCE_OUTCOME_PENDING: u8 = 0;
@@ -81,7 +82,8 @@ impl EventRetentionPolicy {
 #[derive(Debug)]
 struct EventStream<E> {
     next_stream_seq: u64,
-    retained: VecDeque<LoggedEvent<E>>,
+    // Grow pointer buffers rather than relocating every retained provider event.
+    retained: VecDeque<Box<LoggedEvent<E>>>,
     /// JSONL bytes of each retained event, in step with `retained`, so
     /// retention never re-serializes the events it drops.
     retained_sizes: VecDeque<u64>,
@@ -103,12 +105,12 @@ impl<E> Default for EventStream<E> {
 
 impl<E> EventStream<E> {
     fn retain(&mut self, event: LoggedEvent<E>, jsonl_bytes: u64) {
-        self.retained.push_back(event);
+        self.retained.push_back(Box::new(event));
         self.retained_sizes.push_back(jsonl_bytes);
         self.retained_jsonl_bytes = self.retained_jsonl_bytes.saturating_add(jsonl_bytes);
     }
 
-    fn drop_oldest(&mut self) -> Option<LoggedEvent<E>> {
+    fn drop_oldest(&mut self) -> Option<Box<LoggedEvent<E>>> {
         let event = self.retained.pop_front()?;
         let jsonl_bytes = self.retained_sizes.pop_front().unwrap_or(0);
         self.retained_jsonl_bytes = self.retained_jsonl_bytes.saturating_sub(jsonl_bytes);
@@ -179,15 +181,20 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
         // writer acknowledgement, making that ordering cancellation-safe. The streams
         // mutex is deliberately released before persistence and bounded retries so
         // replay and unrelated stream inspection do not stall on storage failures.
+        let mut timing = crate::runtime::perf_timing::Phases::new();
         let append_order_guard = Arc::clone(&persistence.append_order).lock_owned().await;
+        timing.mark("order_wait");
         let write_permit = persistence
             .write_tx
             .reserve()
             .await
             .map_err(|_| io::Error::other("persistent event writer stopped"))?;
+        timing.mark("queue_reserve");
         let event_id = self.event_ids.next()?;
+        timing.mark("event_id");
         let mut streams = self.streams.lock().await;
         persistence.reconcile_completed_events(&mut streams);
+        timing.mark("reconcile");
         let stream = streams.entry(stream_id.clone()).or_default();
         let logged = LoggedEvent {
             event_id,
@@ -197,10 +204,15 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
             event,
         };
         let append_jsonl = logged_event_jsonl_payload(&logged)?;
+        timing.mark("serialize");
         let logged_jsonl_bytes = append_jsonl.len() as u64;
         stream.next_stream_seq += 1;
-        stream.retain(logged.clone(), logged_jsonl_bytes);
+        let retained = logged.clone();
+        timing.mark("clone");
+        stream.retain(retained, logged_jsonl_bytes);
+        timing.mark("retain");
         let pending = persistence.register_pending_event(&logged, logged_jsonl_bytes);
+        timing.mark("pending");
         let (reply_tx, reply_rx) = oneshot::channel();
         write_permit.send(PersistentEventWrite::Append {
             append_jsonl,
@@ -209,6 +221,7 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
             reply_tx,
         });
         drop(streams);
+        timing.mark("prepare");
 
         let (result, append_order_guard) = match reply_rx.await {
             Ok(reply) => reply,
@@ -227,6 +240,7 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
             }
         };
 
+        timing.mark("writer_wait");
         let mut streams = self.streams.lock().await;
         persistence.reconcile_completed_events(&mut streams);
         if let Err(error) = result {
@@ -235,14 +249,18 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
             return Err(error);
         }
         let dropped = apply_retention(&mut streams, self.retention, unix_epoch_ms());
+        timing.mark("retention");
         // Rate-limited compaction only captures the retained ids under the guard;
         // the file is filtered into a side file off the append path.
         if !dropped.is_empty() && persistence.should_compact_now() {
             persistence.start_compaction(retained_event_ids(&streams));
         }
+        timing.mark("compaction_snapshot");
         drop(streams);
         drop(append_order_guard);
         release_dropped_events(dropped);
+        timing.mark("release");
+        timing.finish("event_append", event_id);
         Ok(logged)
     }
 
@@ -302,7 +320,7 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
                 .filter(|event| {
                     event.event_id > cursor_event_id && Some(event.event_id) != pending_event_id
                 })
-                .cloned()
+                .map(|event| event.as_ref().clone())
                 .collect(),
         )
     }
@@ -331,7 +349,7 @@ impl<E: Clone + Serialize + Send + 'static> EventLog<E> {
 
     /// Closes the writer's descriptor so the next append reopens the path.
     #[cfg(test)]
-    async fn close_persistent_file_for_tests(&self) {
+    pub(crate) async fn close_persistent_file_for_tests(&self) {
         let persistence = self
             .persistence
             .as_ref()
@@ -425,7 +443,7 @@ enum PersistentEventWrite {
     SwapCompacted {
         side_path: PathBuf,
         compacted_prefix_bytes: u64,
-        compacting: Arc<AtomicBool>,
+        reply_tx: std::sync::mpsc::Sender<io::Result<Option<fs::File>>>,
     },
     #[cfg(test)]
     Flush(oneshot::Sender<io::Result<()>>),
@@ -523,12 +541,19 @@ impl PersistentEventStore {
         let (write_tx, write_rx) = mpsc::channel(PERSISTENT_EVENT_WRITE_QUEUE_CAPACITY);
         #[cfg(test)]
         let append_test_gate = Arc::new(StdMutex::new(None));
+        // Open and recover the descriptor during startup, before clients can
+        // enqueue the first event. Normal appends never do cold path lookup.
+        let mut writer = EventFileWriter {
+            path: path.clone(),
+            file: None,
+            file_bytes: Arc::clone(&file_bytes),
+            append_space: retention.max_total_bytes,
+            space_reservation_started: false,
+        };
+        writer.open()?;
+        writer.reserve_append_space(false);
         spawn_persistent_event_writer(
-            EventFileWriter {
-                path: path.clone(),
-                file: None,
-                file_bytes: Arc::clone(&file_bytes),
-            },
+            writer,
             write_rx,
             #[cfg(test)]
             Arc::clone(&append_test_gate),
@@ -657,6 +682,7 @@ impl PersistentEventStore {
         self.skipped_compactions.store(0, Ordering::Release);
         let path = self.path.clone();
         let compacted_prefix_bytes = self.file_bytes.load(Ordering::Acquire);
+        let append_space = self.max_file_bytes_before_compaction;
         let write_tx = self.write_tx.clone();
         let compacting = Arc::clone(&self.compacting);
         let spawned = thread::Builder::new()
@@ -668,21 +694,34 @@ impl PersistentEventStore {
                     &side_path,
                     compacted_prefix_bytes,
                     &retained_event_ids,
+                    append_space,
                 )
                 .and_then(|()| {
+                    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
                     write_tx
                         .blocking_send(PersistentEventWrite::SwapCompacted {
                             side_path: side_path.clone(),
                             compacted_prefix_bytes,
-                            compacting: Arc::clone(&compacting),
+                            reply_tx,
                         })
-                        .map_err(|_| io::Error::other("persistent event writer stopped"))
+                        .map_err(|_| io::Error::other("persistent event writer stopped"))?;
+                    let retired = reply_rx.recv().map_err(|_| {
+                        io::Error::other("persistent event writer stopped before swap")
+                    })??;
+                    // The last close of an unlinked, multi-megabyte inode can
+                    // truncate its pages and wait on the filesystem journal.
+                    // Keep that work on the compactor, beside its file copy.
+                    let mut timing = crate::runtime::perf_timing::Phases::new();
+                    drop(retired);
+                    timing.mark("close_retired_file");
+                    timing.finish("event_file_retire", "");
+                    Ok(())
                 });
                 if let Err(error) = result {
                     let _ = fs::remove_file(&side_path);
                     warn_compaction_failed(&path, &error);
-                    compacting.store(false, Ordering::Release);
                 }
+                compacting.store(false, Ordering::Release);
             });
         if let Err(error) = spawned {
             warn_compaction_failed(&self.path, &error);
@@ -730,6 +769,8 @@ struct EventFileWriter {
     path: PathBuf,
     file: Option<fs::File>,
     file_bytes: Arc<AtomicU64>,
+    append_space: Option<u64>,
+    space_reservation_started: bool,
 }
 
 impl EventFileWriter {
@@ -747,18 +788,58 @@ impl EventFileWriter {
             self.file_bytes
                 .store(file.metadata()?.len(), Ordering::Release);
             self.file = Some(file);
+            self.space_reservation_started = false;
         }
         Ok(())
     }
 
+    fn reserve_append_space(&mut self, background: bool) {
+        let Some(limit) = self.append_space.filter(|_| cfg!(target_os = "linux")) else {
+            return;
+        };
+        if self.space_reservation_started
+            || self.file_bytes.load(Ordering::Acquire) < persistent_compaction_target_bytes(limit)
+        {
+            return;
+        }
+        self.space_reservation_started = true;
+        let Some(file) = self.file.as_ref() else {
+            return;
+        };
+        let file = match file.try_clone() {
+            Ok(file) => file,
+            Err(error) => {
+                warn_event_file_reservation(&error);
+                return;
+            }
+        };
+        if background {
+            if let Err(error) = thread::Builder::new()
+                .name("chariox-event-log-reserve".to_string())
+                .spawn(move || reserve_event_file_space(&file, limit))
+            {
+                warn_event_file_reservation(&error);
+            }
+        } else {
+            // A restored near-cap file reserves before clients can append.
+            reserve_event_file_space(&file, limit);
+        }
+    }
+
     fn append(&mut self, payload: &[u8]) -> io::Result<()> {
+        let mut timing = crate::runtime::perf_timing::Phases::new();
         self.open()?;
+        timing.mark("open");
         let complete_bytes = self.file_bytes.load(Ordering::Acquire);
         let file = self.file.as_mut().expect("event file is open");
         match file.write_all(payload) {
             Ok(()) => {
                 self.file_bytes
                     .store(complete_bytes + payload.len() as u64, Ordering::Release);
+                timing.mark("write");
+                self.reserve_append_space(true);
+                timing.mark("reserve_schedule");
+                timing.finish("event_file_append", "");
                 Ok(())
             }
             Err(error) => {
@@ -769,23 +850,40 @@ impl EventFileWriter {
         }
     }
 
-    fn swap_compacted(&mut self, side_path: &Path, compacted_prefix_bytes: u64) -> io::Result<()> {
+    fn swap_compacted(
+        &mut self,
+        side_path: &Path,
+        compacted_prefix_bytes: u64,
+    ) -> io::Result<Option<fs::File>> {
+        let mut timing = crate::runtime::perf_timing::Phases::new();
+        self.open()?;
         let complete_bytes = self.file_bytes.load(Ordering::Acquire);
         if complete_bytes < compacted_prefix_bytes {
             return Err(io::Error::other("event file shrank during compaction"));
         }
-        let mut tail = fs::File::open(&self.path)?;
-        tail.seek(SeekFrom::Start(compacted_prefix_bytes))?;
-        let mut side = fs::OpenOptions::new().append(true).open(side_path)?;
+        let old_file = self.file.as_mut().expect("event file is open");
+        old_file.seek(SeekFrom::Start(compacted_prefix_bytes))?;
+        let mut side = fs::OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(side_path)?;
         io::copy(
-            &mut tail.take(complete_bytes - compacted_prefix_bytes),
+            &mut old_file.take(complete_bytes - compacted_prefix_bytes),
             &mut side,
         )?;
         let compacted_bytes = side.metadata()?.len();
+        timing.mark("copy_tail");
         fs::rename(side_path, &self.path)?;
-        self.file = None;
+        timing.mark("rename");
+        // Keep both descriptors live across the rename. The compactor takes
+        // the retired inode; the writer immediately appends to the new one.
+        let retired = self.file.replace(side);
+        // The compactor reserved the new inode before handing it to us.
+        self.space_reservation_started = true;
         self.file_bytes.store(compacted_bytes, Ordering::Release);
-        Ok(())
+        timing.mark("activate");
+        timing.finish("event_file_swap", "");
+        Ok(retired)
     }
 }
 
@@ -846,13 +944,10 @@ fn run_persistent_event_writer(
             PersistentEventWrite::SwapCompacted {
                 side_path,
                 compacted_prefix_bytes,
-                compacting,
+                reply_tx,
             } => {
-                if let Err(error) = writer.swap_compacted(&side_path, compacted_prefix_bytes) {
-                    let _ = fs::remove_file(&side_path);
-                    warn_compaction_failed(&writer.path, &error);
-                }
-                compacting.store(false, Ordering::Release);
+                let result = writer.swap_compacted(&side_path, compacted_prefix_bytes);
+                let _ = reply_tx.send(result);
             }
             #[cfg(test)]
             PersistentEventWrite::Flush(reply_tx) => {
@@ -919,7 +1014,7 @@ fn apply_retention<E>(
     streams: &mut BTreeMap<String, EventStream<E>>,
     retention: EventRetentionPolicy,
     now_ms: u64,
-) -> Vec<LoggedEvent<E>> {
+) -> Vec<Box<LoggedEvent<E>>> {
     let mut dropped = Vec::new();
     for stream in streams.values_mut() {
         while stream.retained.len() > retention.max_stream_events {
@@ -936,12 +1031,32 @@ fn apply_retention<E>(
     }
 
     if let Some(max_total_bytes) = retention.max_total_bytes {
-        if retained_events_jsonl_bytes(streams) > max_total_bytes {
+        let mut total_bytes = retained_events_jsonl_bytes(streams);
+        if total_bytes > max_total_bytes {
             let target_total_bytes = persistent_compaction_target_bytes(max_total_bytes);
-            while retained_events_jsonl_bytes(streams) > target_total_bytes {
-                let Some(event) = remove_oldest_retained_event(streams) else {
+            // Visit each stream once, then advance only the stream whose oldest
+            // event was removed. Re-scanning every stream for every eviction
+            // makes a cap crossing quadratic in the retained stream count.
+            let mut oldest = streams
+                .iter()
+                .filter_map(|(id, stream)| {
+                    stream
+                        .retained
+                        .front()
+                        .map(|event| Reverse((event.event_id, id.clone())))
+                })
+                .collect::<BinaryHeap<_>>();
+            while total_bytes > target_total_bytes {
+                let Some(Reverse((_, id))) = oldest.pop() else {
                     break;
                 };
+                let stream = streams.get_mut(&id).expect("retained stream exists");
+                let before = stream.retained_jsonl_bytes;
+                let event = stream.drop_oldest().expect("indexed stream has an event");
+                total_bytes = total_bytes.saturating_sub(before - stream.retained_jsonl_bytes);
+                if let Some(next) = stream.retained.front() {
+                    oldest.push(Reverse((next.event_id, id)));
+                }
                 dropped.push(event);
             }
         }
@@ -952,11 +1067,24 @@ fn apply_retention<E>(
 
 /// Reaching the byte cap drops megabytes of events at once; free them beside
 /// the append instead of on it.
-fn release_dropped_events<E: Send + 'static>(dropped: Vec<LoggedEvent<E>>) {
+fn release_dropped_events<E: Send + 'static>(dropped: Vec<Box<LoggedEvent<E>>>) {
     if dropped.len() > 64 {
+        let count = dropped.len();
         let _ = thread::Builder::new()
             .name("chariox-event-log-release".to_string())
-            .spawn(move || drop(dropped));
+            .spawn(move || {
+                let mut timing = crate::runtime::perf_timing::Phases::new();
+                for (index, event) in dropped.into_iter().enumerate() {
+                    drop(event);
+                    // Bound remote allocator frees rather than returning a
+                    // whole cap-crossing batch to an appending worker at once.
+                    if (index + 1) % 64 == 0 {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                }
+                timing.mark("release_events");
+                timing.finish("event_memory_retire", count);
+            });
     }
 }
 
@@ -966,22 +1094,6 @@ fn persistent_compaction_target_bytes(max_total_bytes: u64) -> u64 {
         .checked_div(PERSISTENT_COMPACTION_TARGET_DENOMINATOR)
         .unwrap_or(0)
         .max(1)
-}
-
-fn remove_oldest_retained_event<E>(
-    streams: &mut BTreeMap<String, EventStream<E>>,
-) -> Option<LoggedEvent<E>> {
-    let oldest_stream_id = streams
-        .iter()
-        .filter_map(|(stream_id, stream)| {
-            stream
-                .retained
-                .front()
-                .map(|event| (stream_id, event.event_id))
-        })
-        .min_by_key(|(_, event_id)| *event_id)
-        .map(|(stream_id, _)| stream_id.clone());
-    streams.get_mut(&oldest_stream_id?)?.drop_oldest()
 }
 
 fn retained_event_ids<E>(streams: &BTreeMap<String, EventStream<E>>) -> HashSet<u64> {
@@ -998,6 +1110,7 @@ fn write_compacted_side_file(
     side_path: &Path,
     prefix_bytes: u64,
     retained_event_ids: &HashSet<u64>,
+    append_space: Option<u64>,
 ) -> io::Result<()> {
     #[derive(Deserialize)]
     struct RecordId {
@@ -1006,6 +1119,7 @@ fn write_compacted_side_file(
     let source = io::BufReader::new(fs::File::open(path)?.take(prefix_bytes));
     let mut side = io::BufWriter::new(fs::File::create(side_path)?);
     let mut unsynced_bytes = 0;
+    let mut writeback_offset = 0;
     for line in source.split(b'\n') {
         let line = line?;
         if serde_json::from_slice::<RecordId>(&line)
@@ -1019,15 +1133,87 @@ fn write_compacted_side_file(
         // the appends and durable commits that share this disk behind it.
         if unsynced_bytes >= COMPACTION_WRITEBACK_BYTES {
             side.flush()?;
-            side.get_ref().sync_data()?;
+            write_back_compaction_range(side.get_ref(), writeback_offset, unsynced_bytes)?;
+            writeback_offset += unsynced_bytes as u64;
             unsynced_bytes = 0;
         }
     }
     // Write the side file back here: renaming over the event file with unwritten
     // data would make the writer thread's swap flush it on the append path.
-    side.into_inner()
-        .map_err(io::IntoInnerError::into_error)?
-        .sync_data()
+    let side = side.into_inner().map_err(io::IntoInnerError::into_error)?;
+    if let Some(limit) = append_space {
+        reserve_event_file_space(&side, limit);
+    }
+    side.sync_data()
+}
+
+/// Drain each data burst without committing a filesystem journal transaction
+/// for every burst. The completed side file is still synced before the swap.
+fn write_back_compaction_range(file: &fs::File, offset: u64, bytes: usize) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let offset = i64::try_from(offset).map_err(io::Error::other)?;
+        let bytes = i64::try_from(bytes).map_err(io::Error::other)?;
+        // SAFETY: the descriptor is live and the range was just written. This
+        // waits for page writeback; the caller still syncs the completed side file.
+        let result = unsafe {
+            libc::sync_file_range(
+                file.as_raw_fd(),
+                offset,
+                bytes,
+                libc::SYNC_FILE_RANGE_WAIT_BEFORE
+                    | libc::SYNC_FILE_RANGE_WRITE
+                    | libc::SYNC_FILE_RANGE_WAIT_AFTER,
+            )
+        };
+        if result == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if !matches!(
+            error.raw_os_error(),
+            Some(libc::ENOSYS | libc::EOPNOTSUPP | libc::EINVAL)
+        ) {
+            return Err(error);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (offset, bytes);
+    // Preserve the existing bounded, durable path on other filesystems/platforms.
+    file.sync_data()
+}
+
+/// Reserve extents on startup or a background thread. KEEP_SIZE preserves JSONL
+/// length and replay bytes; failure only disables this optional optimization.
+fn reserve_event_file_space(file: &fs::File, limit: u64) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let Some(limit_i64) = i64::try_from(limit).ok().filter(|limit| *limit > 0) else {
+            return;
+        };
+        let mut timing = crate::runtime::perf_timing::Phases::new();
+        // SAFETY: this descriptor is live; KEEP_SIZE changes allocation only.
+        let result =
+            unsafe { libc::fallocate(file.as_raw_fd(), libc::FALLOC_FL_KEEP_SIZE, 0, limit_i64) };
+        let error = (result != 0).then(io::Error::last_os_error);
+        timing.mark("allocate");
+        timing.finish("event_file_reserve", if result == 0 { limit } else { 0 });
+        if let Some(error) = error {
+            warn_event_file_reservation(&error);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (file, limit);
+}
+
+fn warn_event_file_reservation(error: &io::Error) {
+    crate::logging::warn_with_fields(
+        "daemon.event_log",
+        "event file append-space reservation unavailable",
+        serde_json::json!({"error": error.to_string()}),
+    );
 }
 
 fn warn_compaction_failed(path: &Path, error: &io::Error) {
@@ -1046,7 +1232,7 @@ fn retained_events_jsonl_payload<E: Serialize>(
 ) -> io::Result<Vec<u8>> {
     let mut events = streams
         .values()
-        .flat_map(|stream| stream.retained.iter())
+        .flat_map(|stream| stream.retained.iter().map(Box::as_ref))
         .collect::<Vec<_>>();
     events.sort_unstable_by_key(|event| event.event_id);
     logged_events_jsonl_payload(&events)

@@ -238,6 +238,10 @@ async fn persistent_event_store_recovers_after_transient_append_failure() {
     let log = EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
         .expect("persistent event store should initialize");
 
+    // Startup already owns the descriptor. Close it before injecting a path
+    // open failure; replacing the pathname alone cannot invalidate that fd.
+    log.close_persistent_file_for_tests().await;
+    std::fs::remove_file(&events_path).expect("startup event file should be replaceable");
     std::fs::create_dir_all(&events_path).expect("event store path should become unwritable");
     log.append("session:a", "failed".to_string())
         .await
@@ -357,6 +361,10 @@ async fn persistent_event_store_cancelled_failed_append_is_never_replay_visible(
         EventLog::<String>::new_with_persistent_event_store(16, &counter_path, &events_path)
             .expect("persistent event store should initialize"),
     );
+    // Startup already owns the descriptor. Close it before injecting a path
+    // open failure; replacing the pathname alone cannot invalidate that fd.
+    log.close_persistent_file_for_tests().await;
+    std::fs::remove_file(&events_path).expect("startup event file should be replaceable");
     std::fs::create_dir_all(&events_path).expect("event store path should become unwritable");
 
     let gate = log.pause_next_persistent_append_for_tests();
@@ -683,13 +691,13 @@ fn compaction_serializes_borrowed_events_in_global_order() {
     for (stream_id, event_ids) in [("a", vec![2, 4]), ("b", vec![1, 3])] {
         let mut stream = super::EventStream::default();
         for event_id in event_ids {
-            stream.retained.push_back(LoggedEvent {
+            stream.retained.push_back(Box::new(LoggedEvent {
                 event_id,
                 stream_id: stream_id.to_string(),
                 stream_seq: event_id,
                 recorded_at_ms: 1,
                 event: BorrowOnlyEvent("payload"),
-            });
+            }));
         }
         streams.insert(stream_id.to_string(), stream);
     }
@@ -846,4 +854,192 @@ async fn persistent_event_store_compaction_does_not_block_appends() {
         ReplayOutcome::Gap(gap) => panic!("latest event should replay: {gap:?}"),
     }
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn persistent_event_file_is_open_before_first_append() {
+    let root = scratch_root("warm-event-file");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("events.jsonl");
+    let log =
+        EventLog::<String>::new_with_persistent_event_store(16, root.join("counter.json"), &path)
+            .unwrap();
+    assert!(
+        path.is_file(),
+        "startup must open the event file before admission begins"
+    );
+    // Renaming an already opened file must not force the first append to do
+    // path lookup, directory creation or torn-tail recovery.
+    let moved = root.join("opened.jsonl");
+    std::fs::rename(&path, &moved).unwrap();
+    log.append("a", "first".to_string()).await.unwrap();
+    assert!(!path.exists());
+    assert_eq!(std::fs::read_to_string(&moved).unwrap().lines().count(), 1);
+    drop(log);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn compaction_keeps_the_replacement_open_and_returns_the_retired_inode() {
+    use std::sync::{atomic::AtomicU64, Arc};
+    let root = scratch_root("retire-event-inode");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("events.jsonl");
+    let side = root.join("events.jsonl.compact");
+    let mut writer = super::EventFileWriter {
+        path: path.clone(),
+        file: None,
+        file_bytes: Arc::new(AtomicU64::new(0)),
+        append_space: None,
+        space_reservation_started: false,
+    };
+    writer.append(b"first\nsecond\n").unwrap();
+    std::fs::write(&side, b"second\n").unwrap();
+    let retired = writer
+        .swap_compacted(&side, 13)
+        .unwrap()
+        .expect("the compactor must receive the old inode");
+    assert_eq!(retired.metadata().unwrap().len(), 13);
+    assert!(
+        writer.file.is_some(),
+        "the next append must reuse the replacement descriptor"
+    );
+    writer.append(b"third\n").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"second\nthird\n");
+    // On the fixed path, this owns the unlinked inode until the compactor
+    // retires it; the writer never performs its last close on an append.
+    drop(retired);
+    drop(writer);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn growing_a_wrapped_retention_queue_does_not_relocate_existing_payloads() {
+    let mut stream = super::EventStream::default();
+    stream.retained.reserve(8);
+    let capacity = stream.retained.capacity();
+    let event = |id| LoggedEvent {
+        event_id: id,
+        stream_id: "a".to_string(),
+        stream_seq: id,
+        recorded_at_ms: 1,
+        event: id,
+    };
+    for id in 0..capacity as u64 {
+        stream.retain(event(id), 1);
+    }
+    for id in 0..capacity as u64 / 2 {
+        stream.drop_oldest();
+        stream.retain(event(capacity as u64 + id), 1);
+    }
+    let pointers = stream
+        .retained
+        .iter()
+        .map(|event| (event.event_id, std::ptr::from_ref(&event.event)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    stream.retain(event(2 * capacity as u64), 1);
+    assert!(stream.retained.capacity() > capacity);
+    for event in &stream.retained {
+        if let Some(previous) = pointers.get(&event.event_id) {
+            assert_eq!(*previous, std::ptr::from_ref(&event.event));
+        }
+    }
+}
+
+#[test]
+fn reserving_append_space_preserves_logical_bytes_and_append_position() {
+    use std::io::{Seek, Write};
+    let root = scratch_root("reserve-event-space");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("events.jsonl");
+    let mut file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    file.write_all(b"first\n").unwrap();
+    let position = file.stream_position().unwrap();
+    super::reserve_event_file_space(&file, 1024 * 1024);
+    assert_eq!(file.metadata().unwrap().len(), 6);
+    assert_eq!(file.stream_position().unwrap(), position);
+    file.write_all(b"second\n").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"first\nsecond\n");
+    drop(file);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn byte_retention_keeps_the_newest_global_ids_across_many_streams() {
+    let mut streams = std::collections::BTreeMap::new();
+    for id in 1..=12_000_u64 {
+        let key = format!("stream-{}", id % 300);
+        streams
+            .entry(key.clone())
+            .or_insert_with(super::EventStream::default)
+            .retain(
+                LoggedEvent {
+                    event_id: id,
+                    stream_id: key,
+                    stream_seq: id / 300 + 1,
+                    recorded_at_ms: 1,
+                    event: (),
+                },
+                1,
+            );
+    }
+    let dropped = super::apply_retention(
+        &mut streams,
+        EventRetentionPolicy {
+            max_stream_events: usize::MAX,
+            max_total_bytes: Some(10_000),
+            max_age_ms: None,
+        },
+        1,
+    );
+    assert_eq!(
+        dropped.iter().map(|e| e.event_id).collect::<Vec<_>>(),
+        (1..=4_500).collect::<Vec<_>>()
+    );
+    let mut retained = streams
+        .values()
+        .flat_map(|s| s.retained.iter().map(|e| e.event_id))
+        .collect::<Vec<_>>();
+    retained.sort_unstable();
+    assert_eq!(retained, (4_501..=12_000).collect::<Vec<_>>());
+    assert_eq!(super::retained_events_jsonl_bytes(&streams), 7_500);
+}
+
+#[test]
+fn compaction_finishes_all_data_bursts_before_handoff() {
+    use std::io::Write;
+    let root = scratch_root("compaction-data-bursts");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("events.jsonl");
+    let side = root.join("events.jsonl.compact");
+    let mut file = std::fs::File::create(&path).unwrap();
+    let mut kept = std::collections::HashSet::new();
+    let mut expected = Vec::new();
+    for id in 1..=1024 {
+        let event = LoggedEvent {
+            event_id: id,
+            stream_id: format!("stream-{}", id % 16),
+            stream_seq: id,
+            recorded_at_ms: 1,
+            event: format!("{id}:{}", "x".repeat(1024)),
+        };
+        let payload = super::logged_event_jsonl_payload(&event).unwrap();
+        file.write_all(&payload).unwrap();
+        if id % 3 != 0 {
+            kept.insert(id);
+            expected.extend_from_slice(&payload);
+        }
+    }
+    file.sync_all().unwrap();
+    let bytes = file.metadata().unwrap().len();
+    assert!(expected.len() > 8 * super::COMPACTION_WRITEBACK_BYTES);
+    super::write_compacted_side_file(&path, &side, bytes, &kept, None).unwrap();
+    assert_eq!(std::fs::read(&side).unwrap(), expected);
+    drop(file);
+    std::fs::remove_dir_all(root).unwrap();
 }
