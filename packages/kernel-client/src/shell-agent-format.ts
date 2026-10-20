@@ -80,7 +80,7 @@ function formatAgentListEntry(
   providerRunContext: ShellAgentProviderRunContext,
   sessionContext: ShellAgentSessionContext,
 ): string {
-  const runtimeState = agentTaskStatus(sessionContext.session, agent.id)?.label ?? agentRuntimeStateForSessionContext(agent, sessionContext)
+  const runtimeState = agentStatusLabelForSessionContext(agent, sessionContext)
   const parts = [
     runtimeState,
     formatAgentProvider(agent),
@@ -196,7 +196,7 @@ export function formatAgentInspectSummary(
   sessionContext: ShellAgentSessionContext = {},
 ): string {
   const slice = sliceForRemoteAgent(agent, slices)
-  const runtimeState = agentTaskStatus(sessionContext.session, agent.id)?.label ?? agentRuntimeStateForSessionContext(agent, sessionContext)
+  const runtimeState = agentStatusLabelForSessionContext(agent, sessionContext)
   const lines = [
     `${formatAgentRef(agent)} [${runtimeState}]`,
     `id: ${agent.id}`,
@@ -370,6 +370,17 @@ function agentIsBusyForSessionContext(
 ): boolean {
   return agentBusyForSessionContext(agent, sessionContext)
     ?? (agentRuntimeStateForSessionContext(agent, sessionContext) === "Working")
+}
+
+// A retained wait or block belongs to an earlier task; a running turn on the
+// same agent is the current fact and must not be masked by it.
+function agentStatusLabelForSessionContext(
+  agent: AgentInstance,
+  sessionContext: ShellAgentSessionContext,
+): string {
+  const runtimeState = agentRuntimeStateForSessionContext(agent, sessionContext)
+  if (runtimeState === "Working") return runtimeState
+  return agentTaskStatus(sessionContext.session, agent.id)?.label ?? runtimeState
 }
 
 function agentRuntimeStateForSessionContext(

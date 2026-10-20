@@ -4,6 +4,7 @@ import test from "node:test"
 import { withAgentTaskUpdate } from "./agent-task-state.js"
 import { agentTaskStatus } from "./agent-task-status.js"
 import { formatAgentWakeLines } from "./agent-wake-status.js"
+import { formatAgentInspectSummary, formatAgentListSummary } from "./shell-agent-format.js"
 import type { AgentTaskExecution, AgentWake, RuntimeSession } from "./kernel-types.js"
 import { sessionAgentPaneStatusBadgeForSession, sessionAgentTaskStatus } from "./session-runtime-status.js"
 
@@ -88,6 +89,19 @@ test("an older wait or block never masks a running turn on the same agent", () =
     assert.equal(badge(idle, { activeLabel: "Reading" }).tone, "working")
     assert.equal(badge(idle).label, retained.state === "blocked" ? "BLOCKED: needs owner" : "WAITING UNTIL 12:30:15Z")
   }
+})
+
+test("agent list and inspect show a running turn over an older retained wait", () => {
+  const agent = { id: "a1", agent_ref: "a1", session_id: "room", provider: "codex", state: "Idle" } as never
+  const running = session({
+    agent_tasks: [waiting],
+    prompt_states: { a1: { active_prompt: { prompt_id: "p2" } } },
+  } as never)
+  for (const [value, expected] of [[running, /\[Working;/], [session({ agent_tasks: [waiting] }), /\[WAITING ON build/]] as const) {
+    assert.match(formatAgentListSummary([agent], [], {}, { session: value }), expected)
+  }
+  assert.match(formatAgentInspectSummary(agent, [], null, {}, { session: running }).split("\n")[0]!, /\[Working\]/)
+  assert.match(formatAgentInspectSummary(agent, [], null, {}, { session: session({ agent_tasks: [waiting] }) }).split("\n")[0]!, /\[WAITING ON build/)
 })
 
 test("a task update applies once by revision and only to known agents of its room", () => {
