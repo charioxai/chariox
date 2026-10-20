@@ -208,6 +208,10 @@ pub struct DaemonApp {
     #[cfg(test)]
     leased_runtime_projection_pauses: BTreeMap<String, std::sync::Weak<()>>,
     #[cfg(test)]
+    #[allow(
+        clippy::type_complexity,
+        reason = "Test-only one-shot projection hook."
+    )]
     leased_projection_after_output_drain: Option<Box<dyn FnOnce(&mut DaemonApp) + Send>>,
     leased_agent_cleanup_phases: BTreeMap<String, remote_lease::LeasedAgentCleanupPhase>,
     #[cfg(test)]

@@ -111,10 +111,8 @@ impl DisplayPackets {
         #[cfg(unix)]
         {
             use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-            let root = std::env::temp_dir().join(format!(
-                "chariox-display-{}",
-                format!("{:032x}", rand::random::<u128>())
-            ));
+            let root = std::env::temp_dir()
+                .join(format!("chariox-display-{:032x}", rand::random::<u128>()));
             std::fs::DirBuilder::new()
                 .mode(0o700)
                 .create(&root)
@@ -533,7 +531,7 @@ mod tests {
         bytes
     }
     fn packet(spool: &DisplayPackets) -> (PathBuf, Value) {
-        let name = format!("{}.json", format!("{:032x}", rand::random::<u128>()));
+        let name = format!("{:032x}.json", rand::random::<u128>());
         let row = json!({"row":0,"sequence":1,"key":true,"length":1});
         let bytes = encode(&[row.clone()], &[&[0]]);
         let path = spool.root.join(&name);

@@ -196,6 +196,10 @@ pub(crate) struct DurableSnapshotScheduler {
 
 impl DurableSnapshotScheduler {
     #[cfg(test)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep explicit durable stores at the snapshot wiring boundary."
+    )]
     pub(crate) fn new(
         owner_id: impl Into<String>,
         durable_state: DurableKernelStateStore,
@@ -218,6 +222,10 @@ impl DurableSnapshotScheduler {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep explicit durable stores at the snapshot wiring boundary."
+    )]
     pub(crate) fn new_with_policy(
         owner_id: impl Into<String>,
         durable_state: DurableKernelStateStore,

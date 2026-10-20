@@ -13,6 +13,10 @@ const PAYLOAD_LIMIT: usize = 1024 * 1024;
 
 // MP-08/MP-10: preserve the configured path/authority/query exactly.
 // Older relays ignore this optional HTTP handshake header.
+#[allow(
+    clippy::result_large_err,
+    reason = "Keep the existing typed transport error contract."
+)]
 pub fn connection_request(
     url: &str,
 ) -> Result<

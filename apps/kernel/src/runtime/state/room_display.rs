@@ -78,7 +78,7 @@ impl KernelRuntimeState {
         ),
         DaemonError,
     > {
-        crate::transport::relay_crypto::decode_public_key(&viewer_public_key)
+        crate::transport::relay_crypto::decode_public_key(viewer_public_key)
             .map_err(|_| display_error("viewer public key is invalid"))?;
         match caller.caller_kind {
             KernelCallerKind::LocalClient => {}
@@ -87,7 +87,7 @@ impl KernelRuntimeState {
                     display_error("remote viewer admission requires a key-bound relay identity")
                 })?;
                 let actual =
-                    crate::runtime::terminal_pairings::public_key_thumbprint(&viewer_public_key);
+                    crate::runtime::terminal_pairings::public_key_thumbprint(viewer_public_key);
                 if expected != actual {
                     return Err(display_error(
                         "viewer key does not match the authenticated relay client",
@@ -100,20 +100,20 @@ impl KernelRuntimeState {
                 return Err(display_error("caller cannot open a Room display"));
             }
         }
-        self.ensure_attachment_in_session(&session_id, &attachment_id)
+        self.ensure_attachment_in_session(session_id, attachment_id)
             .await?;
         let caller_user_id = caller
             .user_id
             .as_deref()
             .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID);
-        if self.attachment_owner_user_id(&attachment_id).await? != caller_user_id {
+        if self.attachment_owner_user_id(attachment_id).await? != caller_user_id {
             return Err(DaemonError::SessionAccessDenied {
                 session_id: session_id.into(),
                 user_id: caller_user_id.to_string(),
             });
         }
         let binding = self
-            .room_environment_slice(&session_id)?
+            .room_environment_slice(session_id)?
             .ok_or_else(|| display_error("Room has no bound Environment slice"))?;
         let slice = self.resolve_slice(slice_ref)?;
         if binding.slice_id != slice.id {
@@ -129,7 +129,7 @@ impl KernelRuntimeState {
         let guard = self
             .owned
             .slice_store
-            .queue_environment_use(&slice.id, Some(&session_id), "environment.display.open")
+            .queue_environment_use(&slice.id, Some(session_id), "environment.display.open")
             .await?;
         let slice = self.resolve_slice(&slice.id)?;
         if slice.status != SliceStatus::Running {

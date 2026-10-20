@@ -302,7 +302,7 @@ impl KernelRuntimeState {
     ) -> Result<RoomDisplayBinding, DaemonError> {
         let result = self
             .room_display_peer(
-                &slice,
+                slice,
                 RelayPeerRequest::RoomSharedDisplay {
                     session_id: lease.session_id.clone(),
                     slice_id: lease.slice_id.clone(),

@@ -25,6 +25,10 @@ impl KernelRuntimeState {
             message,
         })
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the explicit admitted Room display binding."
+    )]
     pub(crate) async fn execute_bound_room_shared_display_open(
         &self,
         home: &str,

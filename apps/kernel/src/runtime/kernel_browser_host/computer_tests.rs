@@ -233,12 +233,10 @@ fn mp10_desktop_mirror_wait_does_not_block_input_or_cross_responses() {
 // lock meanwhile: it blocked every other request of the user (screenshots, state, credits, input) for that long.
 #[test]
 fn mp10_selection_note_wait_does_not_block_input_or_cross_responses() {
-    for op in ["note_selection"] {
-        held_observation_allows_desktop_input(
-            "host.browser",
-            json!({"op":op,"tab_id":"t","generation":1}),
-        );
-    }
+    held_observation_allows_desktop_input(
+        "host.browser",
+        json!({"op":"note_selection","tab_id":"t","generation":1}),
+    );
 }
 
 // MP-08/MP-10/MP-11: exercise the actual Rust backend lock and reply registry.

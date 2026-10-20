@@ -162,7 +162,7 @@ mod tests {
             header["frame"]["tiles"][1]["data"],
             serde_json::json!([3, 1])
         );
-        assert!(header.to_string().find("data_base64").is_none());
+        assert!(!header.to_string().contains("data_base64"));
         assert_eq!(&bytes[8 + length..], &[0, 1, 2, 255]);
         let bad = KernelEvent::KernelBrowserFrame {
             subscription_id: "s".into(),
