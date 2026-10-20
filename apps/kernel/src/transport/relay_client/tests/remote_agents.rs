@@ -725,13 +725,13 @@ async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up_async() {
     ))
     .await;
 
-    {
-        let mut app = app_home.lock().await;
-        let destroyed = crate::app::KernelSessionService::new(&mut app)
-            .destroy_agent(remote_agent.id())
-            .expect("remote agent should destroy");
-        assert_eq!(destroyed.id(), remote_agent.id());
-    }
+    Box::pin(assert_ending_the_room_stops_worker_terminals(
+        &app_home,
+        &app_worker,
+        &session_id,
+        &remote_agent,
+    ))
+    .await;
 
     {
         let mut app = app_worker.lock().await;
@@ -1155,6 +1155,78 @@ async fn assert_worker_provider_tools_act_as_the_home_agent(
         terminal_id: user_terminal,
     })
     .await;
+}
+
+/// Ending the Room stops the terminals its agents' workers host and releases
+/// their leases, so nothing keeps running there.
+async fn assert_ending_the_room_stops_worker_terminals(
+    app_home: &Arc<Mutex<DaemonApp>>,
+    app_worker: &Arc<Mutex<DaemonApp>>,
+    session_id: &str,
+    remote_agent: &crate::agent::AgentInstance,
+) {
+    use crate::local::{RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult};
+    let leased_agent_id = remote_agent
+        .remote_execution()
+        .expect("agent is leased to a worker")
+        .leased_agent_id
+        .clone();
+    let backing_session_id = {
+        let mut app = app_worker.lock().await;
+        RemoteLeaseRuntime::new(&mut app)
+            .leased_agent_snapshot_for_test(&leased_agent_id)
+            .expect("worker leased agent should exist")
+            .backing_session_id
+    };
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(app_home), 8);
+    let request = LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
+        session_id: session_id.to_string(),
+        acting_agent: Some(remote_agent.id().to_string()),
+        host_agent: None,
+        operation: RoomTerminalOperation::Open {
+            cols: 80,
+            rows: 24,
+            title: None,
+            command: Some(vec!["sleep".to_string(), "300".to_string()]),
+        },
+    });
+    let command = KernelCommand::from_local_request("room-terminal", None, None, &request);
+    match router.dispatch(command, request).await {
+        Ok(LocalDaemonResponse::RoomTerminal {
+            result: RoomTerminalResult::Opened { .. },
+        }) => {}
+        other => panic!("a long-running worker terminal should open: {other:?}"),
+    }
+    let worker_terminals = || async {
+        app_worker
+            .lock()
+            .await
+            .room_terminals()
+            .list(&backing_session_id)
+            .len()
+    };
+    assert_eq!(worker_terminals().await, 1, "the worker hosts the terminal");
+
+    let request = LocalDaemonRequest::EndSession(crate::local::EndSessionRequest {
+        session_id: session_id.to_string(),
+    });
+    let command = KernelCommand::from_local_request("end-room", None, None, &request);
+    router
+        .dispatch(command, request)
+        .await
+        .expect("the Room should end");
+    for _ in 0..50 {
+        if worker_terminals().await == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        worker_terminals().await,
+        0,
+        "ending the Room leaves no terminal running on the worker"
+    );
 }
 
 /// A Room terminal for an agent leased to a worker runs on the worker, over

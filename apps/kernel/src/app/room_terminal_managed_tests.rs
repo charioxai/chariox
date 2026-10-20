@@ -251,3 +251,69 @@ async fn an_ended_room_admits_no_new_terminal() {
     );
     assert!(fixture.open(sleep_command()).await.is_err());
 }
+
+/// Deleting a Room sweeps its terminals only once the Room is gone, so an open
+/// that races the delete cannot leave a shell behind a deleted Room. The wide
+/// window is the managed-environment stop awaited before the delete, which a
+/// unit fixture does not have; this guards the outcome, not the ordering.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_terminal_opened_while_the_room_is_deleted_does_not_survive_it() {
+    let fixture = Arc::new(fixture("terminal-deleted-room"));
+    let directory = fixture
+        .runtime
+        .room_project_directory(&fixture.session_id)
+        .unwrap();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let openers: Vec<_> = (0..3)
+        .map(|_| {
+            let (fixture, stop) = (Arc::clone(&fixture), Arc::clone(&stop));
+            let directory = directory.clone();
+            tokio::spawn(async move {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = fixture
+                        .runtime
+                        .run_room_terminal_operation(
+                            &fixture.session_id,
+                            directory.clone(),
+                            TerminalActor::User,
+                            RoomTerminalOperation::Open {
+                                cols: 80,
+                                rows: 24,
+                                title: None,
+                                command: sleep_command(),
+                            },
+                        )
+                        .await;
+                    tokio::task::yield_now().await;
+                }
+            })
+        })
+        .collect();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    fixture
+        .runtime
+        .delete_session_id(&fixture.session_id)
+        .await
+        .expect("room deletes");
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    for opener in openers {
+        opener.await.expect("opener joins");
+    }
+    let RoomTerminalResult::Listed { terminals } = fixture
+        .runtime
+        .run_room_terminal_operation(
+            &fixture.session_id,
+            directory,
+            TerminalActor::User,
+            RoomTerminalOperation::List,
+        )
+        .await
+        .expect("list")
+    else {
+        panic!("list expected")
+    };
+    assert!(
+        terminals.is_empty(),
+        "a deleted Room must not keep terminals: {terminals:?}"
+    );
+}
