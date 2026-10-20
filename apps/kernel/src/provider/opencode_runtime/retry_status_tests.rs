@@ -266,8 +266,8 @@ fn status_failure_preserves_drained_text_and_tool_output_through_http_recovery()
         .expect("failed status HTTP must not discard consumed SSE output");
     assert!(!first.prompt_completed);
     assert!(
-        !first.notices.is_empty(),
-        "status failure must remain visible"
+        first.notices.is_empty(),
+        "ready SSE output must not wait for a speculative HTTP poll"
     );
     assert_eq!(
         first
@@ -290,6 +290,11 @@ fn status_failure_preserves_drained_text_and_tool_output_through_http_recovery()
         1,
         "consumed completion metadata must also reach the actor"
     );
+    // MP-08 / MP-10 / MP-11: the following quiet drain exposes the HTTP failure.
+    let error = drain_opencode_events(&test_run(), &mut state, None)
+        .err()
+        .expect("quiet HTTP failure must remain visible after ready output is delivered");
+    assert!(error.to_string().contains("session_status"), "{error}");
     let body = serde_json::json!([{
         "info": {"id":"assistant-1", "sessionID":"session-1", "role":"assistant", "parentID":"message-user", "finish":"stop", "time":{"completed":1}},
         "parts": [

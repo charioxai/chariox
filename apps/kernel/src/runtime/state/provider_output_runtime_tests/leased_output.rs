@@ -67,6 +67,9 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
     .expect("observe isolated fixture account");
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
+    // MP-08 / MP-10 / MP-11: use the production independent readiness consumer.
+    let output_runtime = runtime.clone();
+    let output_pump = tokio::spawn(async move { output_runtime.run_provider_output_pump().await });
     let lease = runtime
         .create_relay_execution_lease("home", "room", "agent", false, "owner")
         .await
@@ -179,6 +182,8 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
             .is_none(),
         "failed turn must settle"
     );
+    output_pump.abort();
+    let _ = output_pump.await;
 }
 
 fn run_isolated_launch_fixture() {
