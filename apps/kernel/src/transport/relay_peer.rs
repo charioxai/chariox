@@ -126,7 +126,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Allocated 160 carries the local 552 `parked_input` reply field.
 /// MP-08/MP-10/MP-11: allocated 164 carries the local 556 `state_wait`.
 /// MP-08/MP-10/MP-11: allocated 168 carries the local 560 `browser_window` display target.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 168;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 174;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -2390,8 +2390,8 @@ mod multidomain_union_tests {
             crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
             crate::test_support::expected_local_protocol_version()
         );
-        let request = serde_json::json!({"kind":"room_browser_controller","session_id":"room-1","slice_id":"slice-1","command":{"kind":"note_observation","target_id":"target-1","document_id":"doc-1","quote":{"exact":"quote","prefix":"before","suffix":"after"}}});
-        let response = serde_json::json!({"kind":"room_browser_controller","session_id":"room-1","slice_id":"slice-1","result":{"kind":"note_observation","observation":{"target_id":"target-1","document_id":"doc-1","url":"https://example.test/","selection":null,"anchoring":null}}});
+        let request = serde_json::json!({"kind":"room_browser_controller","session_id":"room-1","slice_id":"slice-1","command":{"kind":"note_observation","target_id":"target-1","document_id":"doc-1"}});
+        let response = serde_json::json!({"kind":"room_browser_controller","session_id":"room-1","slice_id":"slice-1","result":{"kind":"note_observation","observation":{"target_id":"target-1","document_id":"doc-1","url":"https://example.test/","selection":null}}});
         let decoded: super::RelayPeerRequest = serde_json::from_value(request.clone()).unwrap();
         assert_eq!(serde_json::to_value(decoded).unwrap(), request);
         let decoded: super::RelayPeerResponse = serde_json::from_value(response.clone()).unwrap();
@@ -2402,7 +2402,7 @@ mod multidomain_union_tests {
                 "{:x}",
                 Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
             ),
-            "f56562dd26d9adb6d99f4173955085b8ac953b9f8064cfbbc3f93f9f01a8a7a0"
+            "9e4c866474f43f003928723345c0313c768824139d9eb765931d688d303d0785"
         );
     }
 }

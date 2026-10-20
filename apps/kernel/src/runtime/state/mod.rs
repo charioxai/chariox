@@ -217,7 +217,6 @@ struct KernelRuntimeOwnedState {
     external_provider_sessions: ExternalProviderSessionIndexStore,
     attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
     slice_store: crate::slice::SliceStore,
-    notes: crate::runtime::notes::NoteStore,
     kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost,
     leased_computer_changes: Arc<std::sync::Mutex<()>>,
     leased_computer_grants: Arc<
@@ -911,7 +910,6 @@ impl KernelRuntimeState {
                 external_provider_sessions,
                 attached_provider_transcript_cursors,
                 slice_store,
-                notes: crate::runtime::notes::NoteStore::new(config.private_runtime_state_root()),
                 kernel_browser_host,
                 leased_computer_changes: Default::default(),
                 leased_computer_grants: Default::default(),

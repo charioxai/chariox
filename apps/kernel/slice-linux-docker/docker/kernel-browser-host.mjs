@@ -59,12 +59,12 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
     (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && (request.params.target || nativeDesktop && request.method === 'host.browser')) && browser?.canReconcileConcurrently?.(viewport) === true ||
     request.params?.op === 'state_signal' ||
-    ['chrome_window_follow', 'note_selection', 'note_reanchor'].includes(request.params?.op))
+    ['chrome_window_follow', 'note_selection'].includes(request.params?.op))
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
 // Read-only host operations: they never dispatch input into a page.
-const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'subscribe', 'poll', 'unsubscribe', 'note_selection', 'note_reanchor', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target']);
+const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'subscribe', 'poll', 'unsubscribe', 'note_selection', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target']);
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
 const SLOW_OP_MS = 1000;
 const POST_INPUT_OBSERVE_MS = 500;
@@ -662,7 +662,7 @@ export class KernelBrowserHost {
     if (command.op.startsWith("display_") && process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
     if (command.op === "stop") return this.stop();
     // MP-11: observation never launches/relaunches the browser.
-    await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_input_target", "note_selection", "note_reanchor", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
+    await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_input_target", "note_selection", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
     assertNotCancelled(signal);
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
     for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
@@ -741,7 +741,7 @@ export class KernelBrowserHost {
     // Per-dispatch document/cancellation and secret-focus checks remain below.
     // MP-08/MP-10: a navigation or a selection note reads only its own Tab's live document: a full
     // all-tab reconcile waits for busy (loading) pages and held the mutation lane.
-    let tab = command.op === 'input' && typeof command.document_id === 'string' || ['navigate', 'note_selection', 'note_reanchor'].includes(command.op)
+    let tab = command.op === 'input' && typeof command.document_id === 'string' || ['navigate', 'note_selection'].includes(command.op)
       ? await slowMark(this.timing, 'input_wait display_target', this.displayTarget(command,nativeInputDocumentTarget(this,command,scope,nativeDisplay),INPUT_DOCUMENT_WAIT_MS)) : await this.target(command);
     assertNotCancelled(signal);
     if (agentRequest && ["input", "navigate"].includes(command.op) && extensionManagementUrl(tab.url)) throw new Error(EXTENSIONS_REFUSED);
@@ -805,7 +805,7 @@ export class KernelBrowserHost {
       this.observed = ++this.observations; // an older in-flight reconcile cannot restore the previous document
       return this.observe(this.tabState(), null, scope);
     }
-    if (command.op === "note_selection" || command.op === "note_reanchor") return this.observe({ generation:this.generation, observation:await this.browser.observeNote({ ...binding, ...(command.quote ? {quote:command.quote} : {}) }) },tab,scope);
+    if (command.op === "note_selection") return this.observe({ generation:this.generation, observation:await this.browser.observeNote({ ...binding, ...(command.quote ? {quote:command.quote} : {}) }) },tab,scope);
     if (command.op === "snapshot") return this.observe({ generation: this.generation, snapshot: await this.browser.snapshot(binding) }, tab, scope);
     if (command.op === "input") {
       const observed = command.document_id ?? (command.focused_agent ? null : this.observedDocuments.get(scope)?.get(tab.tab_id));

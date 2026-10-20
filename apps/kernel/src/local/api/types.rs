@@ -339,4 +339,4 @@ pub use workspace::*;
 /// replacing the viewer's 250 ms poll.
 /// MP-08/MP-10/MP-11: allocated 560 adds the `browser_window` display target: the owner's view of
 /// the Chrome window's page area, bound to the window rather than to a Tab or document.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 560;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 566;

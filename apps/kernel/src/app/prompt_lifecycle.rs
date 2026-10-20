@@ -909,12 +909,36 @@ pub(crate) fn serialize_remote_prompt_attachments(
                     contents_base64: Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
                 });
             }
+            // A note is its own payload: the worker turns it into hidden context.
+            let contents_base64 = crate::prompt_notes::is_note(attachment)
+                .then(|| attachment.contents_base64().map(str::to_string))
+                .flatten();
             Ok(RelayPromptAttachment {
                 url: attachment.url().to_string(),
                 mime: attachment.mime().to_string(),
                 filename: attachment.filename().map(str::to_string),
-                contents_base64: None,
+                contents_base64,
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod remote_note_tests {
+    use super::*;
+
+    #[test]
+    fn a_note_keeps_its_contents_across_the_relay_and_other_urls_do_not() {
+        let note = PromptAttachment::new(
+            "chariox-terminal://prompt-attachment/n/Note",
+            crate::prompt_notes::NOTE_ATTACHMENT_MIME,
+            Some("Note: hi".into()),
+        )
+        .with_contents_base64("eyJxdW90ZSI6ImEifQ==");
+        let other = PromptAttachment::new("chariox-terminal://x", "text/plain", None)
+            .with_contents_base64("aGk=");
+        let sent = serialize_remote_prompt_attachments(&[note, other]).unwrap();
+        assert_eq!(sent[0].contents_base64.as_deref(), Some("eyJxdW90ZSI6ImEifQ=="));
+        assert_eq!(sent[1].contents_base64, None);
+    }
 }

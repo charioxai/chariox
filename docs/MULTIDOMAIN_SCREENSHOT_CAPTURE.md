@@ -3,7 +3,8 @@
 A human selects a visible region and receives a PNG in their own prompt draft.
 The image uses the existing prompt attachment intake, transfer/materialization,
 and provider image input paths. No screenshot agent tool, provider adapter,
-relay authority or Cloud runtime proxy is added. Annotation editing is deferred.
+relay authority or Cloud runtime proxy is added. The web client edits the image in a
+paint-like editor opened from its prompt chip (see below).
 
 ## Capture contract and hosts
 
@@ -46,15 +47,27 @@ small padding before cropping; racing measurements drop the capture for retry.
 Unknown policy refuses capture. No direct-backend bypass or extra generic mask
 layer remains.
 
-## Flagged web prototype
+## Web capture and editor
 
 The existing `CHARIOX_USER_APP_VIEWS_PROTOTYPE=1` flag gates the entire capture
-flow. A host-owned top-layer overlay observes browser-trusted Ctrl+drag; Esc,
-pointer cancellation, owner/kernel/prompt target changes cancel it. Selection
-and pointer capture are outside the App iframe. App messages and synthetic
-keyboard events cannot begin capture or supply its region. A host activation
-button also starts selection: Ctrl initially pressed inside a cross-origin App
-iframe cannot be observed by its parent. No App key forwarding is trusted.
+flow. There is no capture button. **Cmd+Shift+S** (macOS) or **Ctrl+Shift+S**
+(elsewhere) starts capture and calls `preventDefault`, so the browser's own
+shortcut never fires (Super+S belongs to the OS on Windows/GNOME and plain Cmd+S
+is Save). A host-owned top-layer crosshair overlay then takes a drag for a
+region, or a click for the whole visible view under the pointer; Esc, pointer
+cancellation, blur and owner/kernel/prompt target changes cancel it. Selection and
+pointer capture are outside the App iframe; App messages and synthetic keyboard
+events cannot begin capture or supply its region (trusted events only).
+
+The capture goes straight into the prompt as a thumbnail chip with a "Click to edit"
+overlay (on hover or focus, always shown on touch); clicking the chip opens the editor. Tools (icons with tooltips and key hints): pen, highlighter, line,
+arrow, rectangle, ellipse, text, blur, redact, crop, eraser (removes shapes and
+strokes), select/move; a 10-colour palette and 3 stroke widths. Undo/redo
+(Cmd/Ctrl+Z, Shift+Cmd/Ctrl+Z), Revert to the original, Cancel and Done.
+The edit history (states, never mutated base canvases) lives with the attachment:
+clicking the chip reopens the editor with that history, and Done replaces the
+same attachment. Cancel on a reopened editor keeps the attached edit. The agent
+receives the edited, flattened PNG through the normal image input.
 
 Native panels use a client-side DOM render. Native Apps render the visible
 iframe viewport over a dedicated parent-bound MessagePort; the App channel API

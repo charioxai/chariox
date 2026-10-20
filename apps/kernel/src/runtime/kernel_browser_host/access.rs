@@ -162,15 +162,7 @@ impl KernelBrowserHost {
             let user = admission.user.clone();
             state
                 .loaded
-                .insert((user.clone(), child.into(), KernelBrowserCapability::Browser));
-            if resources
-                .iter()
-                .any(|resource| matches!(resource, UserDomainResource::Note { .. }))
-            {
-                state
-                    .loaded
-                    .insert((user, child.into(), KernelBrowserCapability::Notes));
-            }
+                .insert((user, child.into(), KernelBrowserCapability::Browser));
             Ok(())
         })?;
         self.arm_expiry();
@@ -466,24 +458,6 @@ impl KernelBrowserHost {
             }
         }
         Ok(())
-    }
-    pub(crate) fn resource_visible(
-        &self,
-        admission: Option<&KernelBrowserAdmission>,
-        resource: &UserDomainResource,
-    ) -> bool {
-        let Some(admission) = admission else {
-            return true;
-        };
-        let Some(agent) = admission.agent.as_deref() else {
-            return true;
-        };
-        let state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        state.access.focused(&admission.user) == Some(agent)
-            || state
-                .access
-                .grant(&admission.user, agent)
-                .is_ok_and(|grant| grant.resources.contains(resource))
     }
     /// MP-08/MP-11: whether the agent's own grant still holds `resource`.
     pub(crate) fn holds_resource(

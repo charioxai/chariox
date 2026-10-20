@@ -68,6 +68,9 @@ impl ProviderOutputClaudeNativeBridge<'_> {
                 prompt.attachments.to_vec(),
             ),
         };
+        let (attachments, notes_context) = crate::prompt_notes::split_for_provider(
+            attachments, provider_run.agent_instance_id(),
+        );
         let visible = redact_native_hidden_instructions(&text).trim().to_string();
         let native_hidden = extract_native_hidden_instructions(&text);
         let attachment_context = format_claude_attachment_context(&attachments, context_file);
@@ -90,6 +93,7 @@ impl ProviderOutputClaudeNativeBridge<'_> {
                 skill_context,
                 native_hidden,
                 attachment_context,
+                notes_context.unwrap_or_default(),
             ])
         } else {
             let scheduled_hidden = crate::prompt_assembly::strip_prompt_manifest_entries(&hidden);
@@ -98,6 +102,7 @@ impl ProviderOutputClaudeNativeBridge<'_> {
                 origin_context,
                 native_hidden,
                 attachment_context,
+                notes_context.unwrap_or_default(),
             ])
         };
         // MP-08 / MP-10 / MP-11: hook ACK rebuilds the original scheduled inputs.

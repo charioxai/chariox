@@ -22,33 +22,10 @@ fn notes_protocol_443_shapes_and_rejected_authority_claims() {
         },
     };
     let commands = vec![
-        NoteCommand::CaptureSelection {
-            window: window.clone(),
-        },
+        NoteCommand::CaptureSelection { window },
         NoteCommand::ReportSelection {
             anchor,
             box_css: None,
-        },
-        NoteCommand::Create {
-            selection_id: "s".into(),
-            comment: "explain".into(),
-        },
-        NoteCommand::List { window },
-        NoteCommand::Read {
-            note_id: "n".into(),
-        },
-        NoteCommand::Reply {
-            note_id: "n".into(),
-            comment: "answer".into(),
-        },
-        NoteCommand::Resolve {
-            note_id: "n".into(),
-        },
-        NoteCommand::Reanchor {
-            note_id: "n".into(),
-        },
-        NoteCommand::Ask {
-            note_id: "n".into(),
         },
     ];
     let values = commands
@@ -64,8 +41,8 @@ fn notes_protocol_443_shapes_and_rejected_authority_claims() {
         assert_eq!(serde_json::to_value(request).unwrap(), value);
     }
     for invalid in [
-        serde_json::json!({"Notes":{"user_id":"forged","command":{"op":"list","window":{"kind":"panel","window_id":"x"}}}}),
-        serde_json::json!({"Notes":{"command":{"op":"resolve","note_id":"n","agent_id":"forged"}}}),
+        serde_json::json!({"Notes":{"user_id":"forged","command":{"op":"capture_selection","window":{"kind":"panel","window_id":"x"}}}}),
+        serde_json::json!({"Notes":{"command":{"op":"resolve","note_id":"n"}}}),
         serde_json::json!({"Notes":{"command":{"op":"capture_selection","window":{"kind":"kernel_browser","tab_id":"x"}}}}),
     ] {
         assert!(serde_json::from_value::<LocalDaemonRequest>(invalid).is_err());
@@ -81,7 +58,7 @@ fn notes_protocol_443_shapes_and_rejected_authority_claims() {
 
 #[test]
 fn notes_protocol_443_response_snapshots() {
-    use crate::local::{NoteRecord, NoteReply, NoteSelection, NoteSummary};
+    use crate::local::NoteSelection;
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
@@ -90,7 +67,7 @@ fn notes_protocol_443_response_snapshots() {
         window_id: "message-42".into(),
     };
     let anchor = NoteAnchor {
-        window: window.clone(),
+        window,
         url: None,
         document_id: None,
         hint: Some("node-42".into()),
@@ -100,50 +77,12 @@ fn notes_protocol_443_response_snapshots() {
             suffix: "after".into(),
         },
     };
-    let note = NoteRecord {
-        note_id: "n".into(),
-        author: "alice".into(),
-        domain: "user".into(),
-        anchor: anchor.clone(),
-        comment: "explain".into(),
-        replies: vec![NoteReply {
-            author: "agent:focused".into(),
-            comment: "answer".into(),
-            created_at_ms: 101,
-        }],
-        resolved: false,
-        anchor_state: "attached".into(),
-        box_css: None,
-        created_at_ms: 100,
-        updated_at_ms: 101,
-    };
     let results = vec![
         NoteResult::SelectionChanged {
             selection: Some(NoteSelection {
-                selection_id: "s".into(),
                 anchor,
                 box_css: None,
             }),
-        },
-        NoteResult::NoteChanged { note },
-        NoteResult::NotesListed {
-            notes: vec![NoteSummary {
-                note_id: "n".into(),
-                window,
-                resolved: false,
-                anchor_state: "attached".into(),
-                updated_at_ms: 101,
-            }],
-        },
-        NoteResult::PromptDraft {
-            note_id: "n".into(),
-            text: "[Chariox note n]".into(),
-            attachment: crate::session::PromptAttachment::new(
-                "chariox-terminal://prompt-attachment/n/note.txt",
-                "text/plain",
-                Some("Chariox note.txt".into()),
-            )
-            .with_contents_base64("bm90ZQ=="),
         },
     ];
     let values = results
@@ -153,4 +92,27 @@ fn notes_protocol_443_response_snapshots() {
     let expected: serde_json::Value =
         serde_json::from_str(include_str!("notes-events-443.json")).unwrap();
     assert_eq!(serde_json::json!(values), expected);
+}
+
+// Notes in prompts (allocated 566/174): a note is an inline `PromptAttachment` with the note
+// mime. The kernel turns it into hidden context and keeps the attachment for history chips.
+#[test]
+fn prompt_notes_566_snapshot() {
+    use sha2::{Digest, Sha256};
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 566);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 174);
+    let bytes = include_bytes!("prompt-notes-566.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "f6b116624c6591676461cc42518775102004b2a2e717e9d2a140b001ae406849"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let request: crate::local::LocalDaemonRequest =
+        serde_json::from_value(snapshot["request"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(&request).unwrap(), snapshot["request"]);
+    let crate::local::LocalDaemonRequest::SubmitPrompt(submit) = request else {
+        panic!("expected SubmitPrompt")
+    };
+    assert_eq!(submit.attachments[0].mime(), crate::prompt_notes::NOTE_ATTACHMENT_MIME);
+    crate::prompt_notes::validate(&submit.attachments).unwrap();
 }

@@ -124,6 +124,12 @@ impl AgentRuntimeCommandExecutor {
         self.prompt_commands
             .ensure_attachment_in_session(&request.session_id, &request.attachment_id)
             .await?;
+        crate::prompt_notes::validate(&request.attachments)?;
+        let mut request = request;
+        request.prompt = crate::prompt_notes::prompt_for_admission(
+            std::mem::take(&mut request.prompt),
+            &request.attachments,
+        );
         let materialized_attachments = materialize_inline_prompt_attachments(
             &request.session_id,
             &target_agent_id,

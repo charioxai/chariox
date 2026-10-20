@@ -42,7 +42,6 @@ struct HostState {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum KernelBrowserCapability {
     Browser,
-    Notes,
     Computer,
 }
 
@@ -382,35 +381,6 @@ impl KernelBrowserHost {
             .subscription_owner
             .clone())
     }
-    /// MD-N4 / MP-11: a note read/write commits within one uninterrupted grant epoch.
-    pub(crate) fn note_operation<T>(
-        &self,
-        user: &str,
-        admission: Option<&KernelBrowserAdmission>,
-        call: impl FnOnce() -> Result<T, String>,
-    ) -> Result<T, String> {
-        self.check_admission(admission)?;
-        if let Some(admission) = admission {
-            if admission.user != user {
-                return Err("MD-N4: foreign note owner".into());
-            }
-            if let Some(agent) = admission.agent.as_deref() {
-                let state = self
-                    .inner
-                    .lock()
-                    .map_err(|_| "MD-N4: focus lock unavailable")?;
-                require_loaded(&state, user, agent, admission.capability)?;
-                if !Arc::ptr_eq(&state.access.grant(user, agent)?.epoch, &admission.epoch) {
-                    return Err("MD-N4: note grant changed".into());
-                }
-                call()
-            } else {
-                call()
-            }
-        } else {
-            call()
-        }
-    }
     pub(crate) fn protected_request_admitted(
         &self,
         user: &str,
@@ -532,7 +502,6 @@ impl KernelBrowserHost {
                             | "display_subscribe"
                             | "display_attach"
                             | "note_selection"
-                            | "note_reanchor"
                             | "mirror_subscribe"
                             | "mirror_next"
                             | "mirror_close"
@@ -726,7 +695,7 @@ impl KernelBrowserHost {
         let display_subscribe = method == "host.browser" && params["op"] == "display_subscribe";
         // r55: a selection note on a busy page waits for its renderer; it must not hold the controller lock meanwhile.
         let note = method == "host.browser"
-            && matches!(params["op"].as_str(), Some("note_selection" | "note_reanchor"));
+            && matches!(params["op"].as_str(), Some("note_selection"));
         let mut result = if display
             || mirror_credit
             || display_subscribe
@@ -1371,36 +1340,6 @@ mod tests {
         assert!(host.check_admission(Some(&admission)).is_ok());
         host.revoke_agent("waiting-agent");
         assert!(host.check_admission(Some(&admission)).is_err());
-    }
-    #[test]
-    fn notes_loader_is_independent_and_revoked_admissions_cannot_commit() {
-        let host = KernelBrowserHost::new(PathBuf::from("/unused/mdnotes-focus"));
-        host.set_focus("a", Some("first"));
-        host.load_for("a", "first", KernelBrowserCapability::Notes)
-            .unwrap();
-        assert!(!host.is_loaded("a", "first"));
-        let notes = host
-            .admit_for("a", "first", KernelBrowserCapability::Notes)
-            .unwrap();
-        assert!(host
-            .note_operation::<()>("other", Some(&notes), || panic!("foreign commit"))
-            .is_err());
-        host.load("a", "first").unwrap();
-        host.revoke_agent("first");
-        host.set_focus("a", Some("first"));
-        host.load_for("a", "first", KernelBrowserCapability::Notes)
-            .unwrap();
-        assert!(host
-            .note_operation::<()>("a", Some(&notes), || panic!("revoked commit"))
-            .is_err());
-        assert!(!host.is_loaded("a", "first"));
-        let fresh = host
-            .admit_for("a", "first", KernelBrowserCapability::Notes)
-            .unwrap();
-        assert_eq!(
-            host.note_operation("a", Some(&fresh), || Ok(42)).unwrap(),
-            42
-        );
     }
     #[test]
     fn retained_host_cannot_restart_after_shutdown() {
