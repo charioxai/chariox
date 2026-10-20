@@ -12,6 +12,7 @@ import { connectCdpPipe } from './kernel-browser-cdp-pipe.mjs';
 import { fenceScreenshotPresentation } from './browser-capture-presentation.mjs';
 import { writePolicyLayer } from './kernel-browser-policy.mjs';
 import { browserLaunchFailureReason } from './kernel-browser-error-label.mjs';
+import { isOwnedAlive, validOwnedPid } from './linux-owned-process.mjs';
 
 function platformPolicy(platform) {
   if (platform === "linux") return linux;
@@ -79,6 +80,27 @@ export class HostChromium {
     // MP-08/MP-10: on the shared owned desktop Chromium is one window at the
     // desktop's scale; only a private owned display may rescale it.
     this.scale = this.desktop ? 1 : geometry.dpr;
+  }
+  stopWatchingBrowser() {
+    clearTimeout(this.browserWatch?.timer);
+    this.browserWatch = null;
+  }
+  // MP-08/MP-10: a supervisor or orphan can hold CDP open after Chrome dies.
+  // Observe only the verified browser identity; this watcher never signals it.
+  watchBrowserProcess(connection, identity, { alive = isOwnedAlive, interval = 500 } = {}) {
+    if (!validOwnedPid(identity?.pid) || !identity.started) throw new Error('MP-11: missing owned browser identity');
+    this.stopWatchingBrowser();
+    const watch = this.browserWatch = { connection, identity };
+    const check = async () => {
+      if (this.browserWatch !== watch || this.connection !== connection) return;
+      if (connection.isOpen?.() === false) { this.stopWatchingBrowser(); return; }
+      let live = true;
+      try { live = await alive(identity); } catch {} // a temporary proc read failure is retried
+      if (this.browserWatch !== watch || this.connection !== connection) return;
+      if (!live) { this.stopWatchingBrowser(); await connection.close(); return; }
+      watch.timer = setTimeout(check, interval); watch.timer.unref?.();
+    };
+    watch.timer = setTimeout(check, interval); watch.timer.unref?.();
   }
   async start({ preserveDesktop = false } = {}) {
     const keepDesktop = preserveDesktop && this.desktop?.isLive?.() === true;
@@ -149,9 +171,11 @@ export class HostChromium {
     try {
       if (this.desktop?.binding()) await this.desktop.recordOwned(child, true);
       await connection.send('Browser.getVersion');
-      this.browserPid = this.desktop?.binding()
-        ? ownedBrowserPid((await connection.send('SystemInfo.getProcessInfo')).processInfo, await this.desktop.browserProcesses())
-        : child.pid;
+      if (this.desktop?.binding()) {
+        const owned = await this.desktop.browserProcesses();
+        this.browserPid = ownedBrowserPid((await connection.send('SystemInfo.getProcessInfo')).processInfo, owned);
+        this.watchBrowserProcess(connection, owned.find(item => item.pid === this.browserPid));
+      } else this.browserPid = child.pid;
       child.stderr.off('data',collectStderr);child.stderr.resume();startupStderr='';
       return connection;
     }
@@ -161,6 +185,7 @@ export class HostChromium {
     throw Object.assign(new Error('MD-2: host Chromium launch failed'),{code});
   }
   async stop(connection = this.connection, { preserveDesktop = false } = {}) {
+    this.stopWatchingBrowser();
     const keepDesktop = preserveDesktop && this.desktop?.isLive?.() === true;
     const child = this.child;
     this.child = null;

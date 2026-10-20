@@ -117,3 +117,32 @@ test('MP-08/MP-10 browser-only stop preserves a healthy shared desktop',async()=
   assert.equal(browserStops,1);assert.equal(desktopStops,0);assert.equal(host.display,desktop);
  }finally{await host.stop();await rm(root,{recursive:true,force:true});}
 });
+
+test('MP-08/MP-10 browser death closes CDP while its supervisor remains alive',async()=>{
+ const {spawn}=await import('node:child_process');
+ const {once}=await import('node:events');
+ const {processIdentity}=await import('./linux-owned-process.mjs');
+ const child=spawn(process.execPath,['-e','setTimeout(()=>{},30000)']);
+ assert(Number.isSafeInteger(child.pid)&&child.pid>1);
+ const host=new HostChromium('/unused');let closed=0;
+ const connection={close:async()=>{closed++}};host.connection=connection;
+ try{
+  const identity=await processIdentity(child.pid);assert(identity);
+  host.watchBrowserProcess(connection,identity,{interval:10});
+  const exited=once(child,'exit');child.kill('SIGTERM');await exited;
+  for(let i=0;i<100&&closed===0;i++)await new Promise(resolve=>setTimeout(resolve,10));
+  assert.equal(closed,1,'the actual browser death retires the held CDP pipe');
+ }finally{host.stopWatchingBrowser?.();if(child.exitCode===null&&child.signalCode===null)child.kill('SIGTERM');}
+});
+
+test('MP-08/MP-10 an old browser death check cannot close a replacement',async()=>{
+ const host=new HostChromium('/unused');let resolveAlive,closed=0;
+ const old={close:async()=>{closed++}},replacement={close:async()=>{closed++}};
+ host.connection=old;
+ try{
+  host.watchBrowserProcess(old,{pid:42,started:'old'},{interval:1,alive:()=>new Promise(resolve=>{resolveAlive=resolve})});
+  while(!resolveAlive)await new Promise(resolve=>setTimeout(resolve,1));
+  host.connection=replacement;host.stopWatchingBrowser();resolveAlive(false);
+  await new Promise(resolve=>setTimeout(resolve,10));assert.equal(closed,0);
+ }finally{host.stopWatchingBrowser?.();}
+});
