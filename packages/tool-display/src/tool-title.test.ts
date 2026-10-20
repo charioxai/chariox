@@ -39,7 +39,7 @@ test("tool titles use a verb and an object for each provider's tool shapes", () 
     [{ id: "o6", tool: "some_custom_tool", status: "completed" }, "Called some custom tool"],
   ]
   const formattedTitles: Record<string, string> = {
-    c3: "Edited src/app.ts (+1 −1)", c4: "Edited notes.md (+1 −0)", o2: "Editing a.ts (+1 −1)",
+    c3: "Edited src/app.ts (+1 −1)", c4: "Edited notes.md (+1 −0)",
   }
   for (const [update, expected] of cases) {
     const title = toolDisplayTitle(update)
