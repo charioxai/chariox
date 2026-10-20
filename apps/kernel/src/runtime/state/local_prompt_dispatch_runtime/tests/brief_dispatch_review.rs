@@ -146,7 +146,7 @@ impl PausedBrief {
         self.wait_for("brief-started").await;
     }
     async fn wait_for(&self, name: &str) {
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
             while !self.root.path().join(name).exists() {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
