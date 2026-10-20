@@ -581,11 +581,11 @@ test("managed release build requires a bounded, already-running Buildx builder b
 test("two Cargo jobs require explicit bounded CPU and memory headroom", async context => {
   const dockerfile = await readFile(join(repositoryRoot, 'apps/kernel/slice-linux-docker/docker/Dockerfile'), 'utf8')
   assert.match(dockerfile, /ARG CHARIOX_CARGO_BUILD_JOBS=1/)
-  const guard = dockerfile.match(/case "\$CHARIOX_CARGO_BUILD_JOBS" in 1\|2\)[^\n]*?esac/)?.[0]
+  const guard = dockerfile.match(/case "\$CHARIOX_CARGO_BUILD_JOBS" in 1\|2\|3\|4\)[^\n]*?esac/)?.[0]
   assert.ok(guard, 'Dockerfile must validate the finite job choice')
-  for (const jobs of ['0', '1', '2', '3', 'auto']) {
+  for (const jobs of ['0', '1', '2', '3', '4', '5', 'auto']) {
     const result = spawnSync('sh', ['-c', guard], { env: { ...process.env, CHARIOX_CARGO_BUILD_JOBS: jobs } })
-    assert.equal(result.status, jobs === '1' || jobs === '2' ? 0 : 2)
+    assert.equal(result.status, ['1', '2', '3', '4'].includes(jobs) ? 0 : 2)
   }
   for (const [label, container, jobs, accepted] of [
     ['insufficient both', builderContainer(), '2', false],

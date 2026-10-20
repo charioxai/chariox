@@ -58,7 +58,7 @@ test('arguments refuse non-Developer ID identities, bad profiles and credential 
   assert.throws(() => parseArguments(['--input', '--output', 'b'], {}), /--input needs a value/u);
 });
 
-test('MP-07 / MP-11: the plan grants JIT only to the App worker and Bun Setup', async t => {
+test('MP-07 / MP-11: the plan grants JIT to the CLI, App worker and Bun Setup', async t => {
   const paths = await fixture(t);
   const { plan } = await signMacosRelease(options(paths, ['--dry-run']),
     { run: () => assert.fail('dry run executed a command'), platform: 'linux' });
@@ -69,7 +69,7 @@ test('MP-07 / MP-11: the plan grants JIT only to the App worker and Bun Setup', 
     ['libnode.137.dylib', 'library'], ['sdk/index.js', 'data']]);
   const signing = plan.steps.filter(step => step.phase === 'sign');
   assert.deepEqual(signing.map(step => step.file.path), ['libchariox-app-runtime.dylib', 'libnode.137.dylib',
-    'chariox-app-runtime-install', 'chariox-app-worker', 'chariox-kernel', 'chariox-setup']);
+    'chariox', 'chariox-app-runtime-install', 'chariox-app-worker', 'chariox-kernel', 'chariox-setup']);
   for (const step of signing) {
     assert.deepEqual(step.command.slice(0, 7), ['/usr/bin/codesign', '--force', '--sign', IDENTITY, '--timestamp', '--options', 'runtime']);
     assert.equal(step.command.at(-1), join(plan.output, step.file.path));

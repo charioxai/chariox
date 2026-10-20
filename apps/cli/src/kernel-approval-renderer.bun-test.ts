@@ -54,7 +54,7 @@ for (const kind of ["access_grant", "access_extension"] as const) {
             kind, session_id: sessionId, interaction_id: "access-test", title: "External access", message: "Review access",
             approve_choice_id: "approve", refuse_choice_id: "refuse", requested_at_ms: 1, expires_at_ms: 300_001,
           }
-          listener({ event: "passkey_prompts_changed", prompts: [prompt] })
+          listener({ event: "passkey_prompts_changed", prompts: [prompt], closed: [], kernel_now_ms: 1 })
           const key = (name: string, extra = {}) => composition.handleKey({ name, preventDefault() {}, stopPropagation() {}, ...extra })
           key("f8")
           if (approve) { for (const sequence of "test-proof") key(sequence, { sequence }); key("return") }
