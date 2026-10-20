@@ -224,7 +224,7 @@ async fn handle_client_frame(
                         &subscription_tasks,
                         None,
                     ).await,
-                    Err(outcome) => outcome,
+                    Err(outcome) => *outcome,
                 };
                 drop(turn);
                 if let Some((display_id, event_id, encrypted_event)) = outcome.display_event {
