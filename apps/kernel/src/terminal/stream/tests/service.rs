@@ -65,6 +65,7 @@ fn zero_recipient_outputs_and_completions_are_not_retained() {
         session_id: "session-1".to_string(),
         provider_run_id: "provider-run-1".to_string(),
         agent_id: Some("agent-1".to_string()),
+        prompt_id: None,
         prompt_origin: Some(crate::session::PromptOrigin::Chariox),
         source_attachment_id: Some("attachment-detached".to_string()),
         kind: TerminalOutputKind::ProviderTool,
@@ -317,6 +318,7 @@ fn output_polling_drains_single_recipient_batch_records() {
             session_id: "session-1".to_string(),
             provider_run_id: "provider-run-1".to_string(),
             agent_id: Some("agent-1".to_string()),
+            prompt_id: None,
             prompt_origin: None,
             source_attachment_id: None,
             kind: TerminalOutputKind::ProviderOutput,
@@ -329,6 +331,7 @@ fn output_polling_drains_single_recipient_batch_records() {
             session_id: "session-1".to_string(),
             provider_run_id: "provider-run-1".to_string(),
             agent_id: Some("agent-1".to_string()),
+            prompt_id: None,
             prompt_origin: None,
             source_attachment_id: None,
             kind: TerminalOutputKind::ProviderOutput,
@@ -355,6 +358,35 @@ fn output_polling_drains_single_recipient_batch_records() {
 }
 
 #[test]
+fn batch_output_coalescing_keeps_reused_merge_keys_in_separate_prompts() {
+    let mut terminal = TerminalStreamService::with_output_coalesce_byte_limit(1024);
+    terminal.fan_out_outputs(
+        ["prompt-first", "prompt-second"]
+            .into_iter()
+            .map(|prompt_id| TerminalOutputAppend {
+                session_id: "session-1".to_string(),
+                provider_run_id: "provider-run-1".to_string(),
+                agent_id: Some("agent-1".to_string()),
+                prompt_id: Some(prompt_id.to_string()),
+                prompt_origin: Some(crate::session::PromptOrigin::Chariox),
+                source_attachment_id: Some("attachment-owner".to_string()),
+                kind: TerminalOutputKind::ProviderOutput,
+                merge_key: Some("assistant".to_string()),
+                recipient_attachment_ids: Arc::from(vec!["attachment-viewer".to_string()]),
+                bytes: prompt_id.as_bytes().to_vec(),
+            })
+            .collect(),
+    );
+
+    let records = terminal.drain_output_records("session-1", "attachment-viewer");
+    assert_eq!(records.len(), 2);
+    for (record, prompt_id) in records.iter().zip(["prompt-first", "prompt-second"]) {
+        assert_eq!(record.prompt_id.as_deref(), Some(prompt_id));
+        assert_eq!(record.bytes, prompt_id.as_bytes());
+    }
+}
+
+#[test]
 fn output_coalescing_is_scoped_by_prompt_metadata() {
     let mut terminal = TerminalStreamService::with_output_coalesce_byte_limit(1024);
     terminal.fan_out_output_with_prompt_metadata(
@@ -363,6 +395,7 @@ fn output_coalescing_is_scoped_by_prompt_metadata() {
         Some("agent-1"),
         TerminalOutputKind::ProviderOutput,
         Some("assistant".to_string()),
+        None,
         Some(crate::session::PromptOrigin::External),
         Some("attachment-1".to_string()),
         vec!["attachment-viewer".to_string()],
@@ -374,6 +407,7 @@ fn output_coalescing_is_scoped_by_prompt_metadata() {
         Some("agent-1"),
         TerminalOutputKind::ProviderOutput,
         Some("assistant".to_string()),
+        None,
         Some(crate::session::PromptOrigin::External),
         Some("attachment-2".to_string()),
         vec!["attachment-viewer".to_string()],
@@ -438,6 +472,7 @@ fn batch_fanout_deduplicates_repeated_single_recipient_changed_keys() {
                 session_id: "session-1".to_string(),
                 provider_run_id: format!("provider-run-{index}"),
                 agent_id: Some(format!("agent-{index}")),
+                prompt_id: None,
                 prompt_origin: None,
                 source_attachment_id: None,
                 kind: TerminalOutputKind::ProviderTool,

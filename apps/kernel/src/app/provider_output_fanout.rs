@@ -32,6 +32,7 @@ pub(crate) struct ProviderOutputFanout {
 
 #[derive(Debug, Clone, Default)]
 struct ActivePromptTranscriptMetadata {
+    prompt_id: Option<String>,
     prompt_origin: Option<crate::session::PromptOrigin>,
     source_attachment_id: Option<String>,
 }
@@ -225,6 +226,7 @@ impl ProviderOutputFanout {
                     .active_prompt_for_agent(&session, agent_id)
             })
             .map(|prompt| ActivePromptTranscriptMetadata {
+                prompt_id: Some(prompt.id().to_string()),
                 prompt_origin: Some(prompt.prompt_origin()),
                 source_attachment_id: Some(prompt.source_attachment_id().to_string()),
             })

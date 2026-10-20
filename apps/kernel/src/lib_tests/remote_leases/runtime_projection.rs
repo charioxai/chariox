@@ -455,6 +455,7 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
         .drain_output_records(session.id(), attachment.id());
     assert_eq!(outputs.len(), 1);
     assert_eq!(outputs[0].agent_id.as_deref(), Some(agent.id()));
+    assert_eq!(outputs[0].prompt_id.as_deref(), Some(prompt.id()));
     assert_eq!(outputs[0].bytes, b"remote output".to_vec());
 
     let notices = app
@@ -476,6 +477,7 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
         .drain_output_records(session.id(), &trace_subscription.recipient_attachment_id);
     assert_eq!(trace_outputs.len(), 1);
     assert_eq!(trace_outputs[0].agent_id.as_deref(), Some(agent.id()));
+    assert_eq!(trace_outputs[0].prompt_id.as_deref(), Some(prompt.id()));
     assert_eq!(trace_outputs[0].bytes, b"remote output".to_vec());
 
     let trace_notices = app
