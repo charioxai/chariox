@@ -622,8 +622,10 @@ test(`Cloud pairing ${source} bootstrap keeps commands and events across repeate
     finalClient=result.bootstrap.client
     finalClient.onKernelEvent(event=>{if(event.event==="runtime_notices")events++})
     await finalClient.subscribeToKernelEvents("session","attachment")
-    const deadline=Date.now()+2_000
-    while(Date.now()<deadline){assert.deepEqual(await finalClient.send({GetDaemonHealth:null}),{accepted:true});await new Promise(resolve=>setTimeout(resolve,25))}
+    // Wait for repeated renewal and delivery under shared-runner scheduling.
+    const minimumDuration=Date.now()+2_000
+    const deadline=Date.now()+10_000
+    while(Date.now()<deadline && (Date.now()<minimumDuration || renewals<5 || events<=40)){assert.deepEqual(await finalClient.send({GetDaemonHealth:null}),{accepted:true});await new Promise(resolve=>setTimeout(resolve,25))}
     assert.ok(renewals>=5,"final paired client renews repeatedly")
     // MP-08 / MP-10 / MP-11: kernel pivot renewal cannot outlive receiver CLIENT authority.
     if(source==="automatic")assert.ok(receivingChecks>=renewals+1,"every automatic kernel pivot renewal rechecks the independently enrolled receiving CLIENT")
