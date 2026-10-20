@@ -3370,7 +3370,7 @@ Workflow trigger and deployment direction:
   An unapproved Unix peer can only send `RequestKernelAccess` with
   `holder_pid` and optional `term` (protocol 568 replaces `lifetime_minutes`; protocol 451 removes `session_id`; old session-bearing requests are rejected). The holder
   must be the peer or an OS-verified ancestor. The kernel raises an owner-only
-  passkey popup. Its copy is one short kernel-written question (grant: "<name> (an external agent) wants access to Chariox. Allow?"; extension: "<name>'s access ends in N minutes. Extend?"); `<name>` is only a harness recognised by exact configured path, otherwise "An external agent". The popup shows no pid, path, process start, version or scope; those stay in `requester` and the audit stream. No session must exist. Access popups use the kernel-wide interaction routing id `kernel-access`; this is not a session or grant scope.
+  passkey popup. Its copy is one short kernel-written question (grant: "<name> (an external agent) wants access to this kernel and your other machines. Allow?"; extension: "<name>'s access ends in N minutes. Extend?"); `<name>` is only a harness recognised by exact configured path, otherwise "An external agent". The popup shows no pid, path, process start, version or scope; those stay in `requester` and the audit stream. No session must exist. Access popups use the kernel-wide interaction routing id `kernel-access`; this is not a session or grant scope.
   `RespondToInteraction` on this routing id returns `KernelAccessDecisionResponded { interaction_id }`, with no session projection.
   Grant and extension prompts have kind `access_grant` or `access_extension`,
   `term` (protocol 568), and `max_lifetime_minutes`. Protocol 470 adds an optional

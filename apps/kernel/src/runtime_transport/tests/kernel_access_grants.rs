@@ -703,7 +703,7 @@ async fn grant_for_holder(kernel: &mut Kernel, holder: &mut Client, holder_pid: 
     // structured requester and the audit record.
     assert_eq!(
         prompt["message"],
-        "An external agent wants access to Chariox. Allow?"
+        "An external agent wants access to this kernel and your other machines. Allow?"
     );
     assert_eq!(prompt["title"], "External agent access");
     // The popup starts on the kernel default; pre-568 clients read the minutes too.
@@ -1348,4 +1348,17 @@ async fn a_grant_request_naming_a_machine_is_not_a_local_grant_request() {
         serde_json::json!({"RequestKernelAccess":{"holder_pid":0}}),
     );
     assert_eq!(asked["error"]["code"], "kernel_access_not_covered", "{asked}");
+}
+
+// EA2-19: a request that does not parse tells the agent what the kernel expected,
+// instead of "details are available only in the host terminal".
+#[tokio::test]
+async fn a_malformed_request_explains_itself_to_the_grant_holder() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let refused = holder.request(serde_json::json!({"CreateSessoin": {"workspace_id": "/tmp"}}));
+    assert_eq!(refused["error"]["code"], "invalid_request", "{refused}");
+    let message = refused["error"]["message"].as_str().unwrap();
+    assert!(message.contains("CreateSessoin") && message.contains("CreateSession"), "{message}");
 }

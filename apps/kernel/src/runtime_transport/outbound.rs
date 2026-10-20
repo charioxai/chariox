@@ -164,7 +164,9 @@ fn project_error(value: &Value) -> KernelTransportError {
     }
     // The gateway writes these messages itself, from the machine name the agent
     // chose; they carry no provider or parser text.
-    if crate::runtime::machine_gateway::is_public_code(code) {
+    // A request that does not parse says which variant or field it expected;
+    // that text describes the agent's own request, and it is how an agent learns the vocabulary.
+    if crate::runtime::machine_gateway::is_public_code(code) || code == "invalid_request" {
         projected.code = code.into();
         projected.retryable = value["retryable"].as_bool().unwrap_or(false);
         projected.message = message.into();
