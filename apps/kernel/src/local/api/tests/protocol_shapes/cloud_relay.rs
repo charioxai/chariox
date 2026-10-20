@@ -32,7 +32,8 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "managed_environment_keep_running_v1",
             "terminal_relay_authorization_renewal_v1",
             "exact_prompt_cancellation_v499",
-            "owner_managed_context_transfer_v1"
+            "owner_managed_context_transfer_v1",
+            "machine_gateway_v1"
         ])
     );
     assert_eq!(
@@ -40,7 +41,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
         ),
-        "e5609c511db03c628f68312290ff1af79a2dd23ab6f379a2d421308961158ae8"
+        "01f4d7e33a2f2298f75e78e8f8397c47c0a900856ea7e807bb22b9f709c0d6cc"
     );
 }
 

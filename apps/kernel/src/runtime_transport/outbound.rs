@@ -161,6 +161,13 @@ fn project_error(value: &Value) -> KernelTransportError {
     if crate::runtime::external_response::public_error_message(message) {
         projected.message = message.into();
     }
+    // The gateway writes these messages itself, from the machine name the agent
+    // chose; they carry no provider or parser text.
+    if crate::runtime::machine_gateway::is_public_code(code) {
+        projected.code = code.into();
+        projected.retryable = value["retryable"].as_bool().unwrap_or(false);
+        projected.message = message.into();
+    }
     projected
 }
 

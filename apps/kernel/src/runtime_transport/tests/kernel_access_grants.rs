@@ -456,6 +456,12 @@ impl Client {
         self.send(request);
         self.result()
     }
+    fn request_on(&mut self, machine: &str, request: Value) -> Value {
+        let mut frame = frame(request);
+        frame["machine"] = machine.into();
+        writeln!(self.input, "{frame}").unwrap();
+        self.result()
+    }
     fn cached_request(&mut self, request: Value, command: &str) -> Value {
         let mut frame = frame(request);
         frame["command_id"] = command.into();
@@ -1280,4 +1286,44 @@ async fn access_request_refuses_out_of_policy_and_unknown_terms() {
         .as_array()
         .unwrap()
         .is_empty());
+}
+
+// EA2-04 / EA2-10 (origin half): a request that names a machine is decided by the
+// local kernel first. Unknown machines and human-only shapes end here, with a
+// definitive code, before anything leaves the machine; nothing falls back to local.
+#[tokio::test]
+async fn machine_requests_are_decided_locally_before_any_machine_is_reached() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let listed = holder.request(serde_json::json!({"ListGatewayMachines":{}}));
+    assert!(listed["error"].is_null(), "{listed}");
+    assert_eq!(
+        listed["response"]["GatewayMachinesListed"]["machines"],
+        serde_json::json!([]),
+        "a kernel with no relay has no machines"
+    );
+    let unknown = holder.request_on(
+        "b3",
+        serde_json::json!({"GetSessionState":{"session_id":SESSION}}),
+    );
+    assert_eq!(unknown["error"]["code"], "machine_unknown", "{unknown}");
+    assert!(unknown["response"].is_null(), "never answered locally: {unknown}");
+    let passkey = holder.request_on(
+        "b3",
+        serde_json::json!({"RespondToInteraction":{"session_id":SESSION,"interaction_id":"i","choice_id":"approve","passkey":PASSKEY}}),
+    );
+    assert_eq!(passkey["error"]["code"], "kernel_access_human_only", "{passkey}");
+    let relay = holder.request_on(
+        "b3",
+        serde_json::json!({"ConfigureRelay":{"relay_url":"wss://elsewhere.invalid","relay_token":null}}),
+    );
+    assert_eq!(relay["error"]["code"], "kernel_access_human_only", "{relay}");
+    // A stranger gets no machine reach: the grant is the only door.
+    let mut stranger = Client::start(&kernel.root);
+    let refused = stranger.request_on(
+        "b3",
+        serde_json::json!({"GetSessionState":{"session_id":SESSION}}),
+    );
+    assert_eq!(refused["error"]["code"], "kernel_access_not_covered", "{refused}");
 }

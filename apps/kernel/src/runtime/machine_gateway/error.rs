@@ -103,3 +103,23 @@ impl GatewayError {
         }
     }
 }
+
+/// Codes whose text the gateway or a target's gateway ledger writes itself, so
+/// the grant holder may read them in full.
+pub(crate) fn is_public_code(code: &str) -> bool {
+    matches!(
+        code,
+        "machine_unknown"
+            | "machine_ambiguous"
+            | "machine_offline"
+            | "machine_unreachable"
+            | "machine_unpaired"
+            | "machine_incompatible"
+            | "machine_request_timeout"
+            | "machine_connection_lost"
+            | "machine_outcome_unknown"
+            | "machine_not_available"
+            | "command_id_required"
+            | "ledger_unavailable"
+    )
+}

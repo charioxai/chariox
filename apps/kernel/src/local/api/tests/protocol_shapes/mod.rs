@@ -25,6 +25,7 @@ mod extension_apps;
 mod fresh_remote_relay_inventory;
 mod handoff_config;
 mod kernel_access;
+mod machine_gateway;
 mod kernel_browser;
 mod kernel_computer;
 mod kernel_operation_interactions;

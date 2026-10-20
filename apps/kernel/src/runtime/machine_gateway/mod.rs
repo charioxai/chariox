@@ -27,7 +27,7 @@ use crate::runtime::state::KernelRuntimeState;
 
 pub(crate) use directory::GATEWAY_CAPABILITY;
 use directory::{is_gateway_ready, Directory};
-pub(crate) use error::GatewayError;
+pub(crate) use error::{is_public_code, GatewayError};
 use identity::GatewayIdentity;
 pub(crate) use inventory::{InventorySource, RelayInventory};
 use link::{Link, LinkFailure, LinkParams};

@@ -389,15 +389,23 @@ pub(super) fn command_cache_id(peer: &ProcessIdentity, command: &KernelCommand) 
     .to_string()
 }
 
-/// Forwards an admitted request through the machine gateway and answers on the
-/// same connection. The permit bounds concurrent forwards like any other request.
-pub(super) fn forward_to_machine(
+/// What a grant holder asks of the machine gateway.
+pub(super) enum GatewayRoute {
+    List,
+    Forward {
+        machine: String,
+        request: crate::local::LocalDaemonRequest,
+    },
+}
+
+/// Serves an admitted gateway request and answers on the same connection. The
+/// permit bounds concurrent gateway requests like any other request.
+pub(super) fn serve_gateway(
     connection: &IncomingConnection<'_>,
     caller: &KernelCaller,
     request_id: String,
     command_id: Option<String>,
-    machine: String,
-    request: crate::local::LocalDaemonRequest,
+    route: GatewayRoute,
 ) {
     let IncomingConnection {
         runtime,
@@ -409,9 +417,10 @@ pub(super) fn forward_to_machine(
         close_requested,
         ..
     } = *connection;
-    let permit = match inbound_request_admission
-        .try_acquire(connection_inbound_request_permits, &KernelCommandPriority::Normal)
-    {
+    let permit = match inbound_request_admission.try_acquire(
+        connection_inbound_request_permits,
+        &KernelCommandPriority::Normal,
+    ) {
         Ok(permit) => permit,
         Err(error) => {
             runtime.transport_health.record_inbound_overload_rejection();
@@ -442,7 +451,10 @@ pub(super) fn forward_to_machine(
         .map(|grant| {
             std::path::Path::new(&grant.holder_executable)
                 .file_name()
-                .map_or_else(|| grant.holder_executable.clone(), |n| n.to_string_lossy().into())
+                .map_or_else(
+                    || grant.holder_executable.clone(),
+                    |n| n.to_string_lossy().into(),
+                )
         })
         .unwrap_or_else(|| "unknown".into());
     let router = Arc::clone(router);
@@ -456,16 +468,26 @@ pub(super) fn forward_to_machine(
         let _permit = permit;
         let command_id = command_id.unwrap_or_else(|| request_id.clone());
         let origin = crate::runtime::machine_gateway::Origin { grant_id, harness };
-        let outcome = router
-            .machine_gateway()
-            .forward(
-                &machine,
-                &origin,
-                &command_id,
-                &request,
-                crate::runtime::machine_gateway::REQUEST_DEADLINE,
-            )
-            .await;
+        let outcome = match route {
+            GatewayRoute::Forward { machine, request } => {
+                router
+                    .machine_gateway()
+                    .forward(
+                        &machine,
+                        &origin,
+                        &command_id,
+                        &request,
+                        crate::runtime::machine_gateway::REQUEST_DEADLINE,
+                    )
+                    .await
+            }
+            GatewayRoute::List => router.machine_gateway().machines().await.map(|machines| {
+                serde_json::to_value(crate::local::LocalDaemonResponse::GatewayMachinesListed {
+                    machines,
+                })
+                .expect("machine list serializes")
+            }),
+        };
         let (response, error) = match outcome {
             Ok(value) => (Some(value), None),
             Err(failure) => (None, Some(failure.transport_error())),

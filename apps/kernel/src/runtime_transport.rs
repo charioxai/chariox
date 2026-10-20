@@ -1316,16 +1316,24 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
             request,
         } => {
             runtime.transport_health.record_incoming_request();
-            if let Some(machine) = machine {
+            let route = match (machine, &request) {
+                (Some(machine), _) => Some(unix_access::GatewayRoute::Forward {
+                    machine,
+                    request: request.clone(),
+                }),
+                // A terminal's listing is answered by the router like any request.
+                (None, crate::local::LocalDaemonRequest::ListGatewayMachines(_))
+                    if external_caller.is_some() =>
+                {
+                    Some(unix_access::GatewayRoute::List)
+                }
+                (None, _) => None,
+            };
+            if let Some(route) = route {
                 match external_caller.as_ref() {
-                    Some(caller) => unix_access::forward_to_machine(
-                        &connection,
-                        caller,
-                        request_id,
-                        command_id,
-                        machine,
-                        request,
-                    ),
+                    Some(caller) => {
+                        unix_access::serve_gateway(&connection, caller, request_id, command_id, route)
+                    }
                     None => {
                         let _ = try_send_outgoing_frame(
                             outgoing_tx,
