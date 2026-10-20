@@ -113,6 +113,7 @@ impl AssessmentScratch {
 }
 impl Drop for AssessmentScratch {
     fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.0.join("system-context.txt"));
         let _ = std::fs::remove_dir(&self.0);
     }
 }
