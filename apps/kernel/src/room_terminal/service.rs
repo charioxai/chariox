@@ -582,7 +582,10 @@ impl RoomTerminalService {
         sweeps.iter().any(SessionSweep::has_jobs)
     }
 
-    fn report_work(&self) {
+    /// Report the answer now instead of at the next pump tick: a background
+    /// job ends without any kernel event, so a reader of the managed activity
+    /// would otherwise see a change nothing recorded yet.
+    pub(crate) fn report_work(&self) {
         self.inner.managed.report(|| self.has_running_work());
     }
 

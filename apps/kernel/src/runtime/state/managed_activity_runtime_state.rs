@@ -68,6 +68,7 @@ impl KernelRuntimeState {
     pub(crate) fn managed_activity_report_snapshot_with_transition(
         &self,
     ) -> Result<(u64, super::ManagedActivityObservation, u64), crate::error::DaemonError> {
+        self.owned.room_terminals.report_work();
         let _mutation = self
             .owned
             .managed_activity_mutation_lock

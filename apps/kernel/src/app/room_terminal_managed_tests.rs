@@ -98,6 +98,23 @@ impl Fixture {
         }
     }
 
+    /// Open a login shell and wait until its profile scripts are done: while
+    /// they run, a child owns the foreground and the shell counts as work.
+    async fn open_settled_shell(&self) -> String {
+        let shell = self.open(None).await.expect("shell opens");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut idle_since = std::time::Instant::now();
+        loop {
+            if self.runtime.managed_running_agent_count() != 0 {
+                idle_since = std::time::Instant::now();
+            } else if idle_since.elapsed() >= std::time::Duration::from_millis(500) {
+                return shell;
+            }
+            assert!(std::time::Instant::now() < deadline, "shell never settled");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
     fn reserve(&self) -> bool {
         let (sequence, observation, local_sequence) = self
             .runtime
@@ -147,7 +164,7 @@ async fn a_running_terminal_command_blocks_the_stop_reservation() {
 #[tokio::test]
 async fn an_idle_shell_does_not_count_as_work() {
     let fixture = fixture("terminal-idle-shell");
-    fixture.open(None).await.expect("shell opens");
+    fixture.open_settled_shell().await;
     assert_eq!(fixture.runtime.managed_running_agent_count(), 0);
     assert!(fixture.reserve());
 }
@@ -155,7 +172,7 @@ async fn an_idle_shell_does_not_count_as_work() {
 #[tokio::test]
 async fn terminal_commands_are_refused_after_the_stop_reservation() {
     let fixture = fixture("terminal-after-reservation");
-    let shell = fixture.open(None).await.expect("shell opens");
+    let shell = fixture.open_settled_shell().await;
     assert!(fixture.reserve());
 
     assert!(fixture.open(sleep_command()).await.is_err());
@@ -173,7 +190,7 @@ async fn terminal_commands_are_refused_after_the_stop_reservation() {
 #[tokio::test]
 async fn a_command_typed_at_the_prompt_counts_as_work_until_it_ends() {
     let fixture = fixture("terminal-typed-command");
-    let shell = fixture.open(None).await.expect("shell opens");
+    let shell = fixture.open_settled_shell().await;
     fixture
         .terminal(input(&shell, "sleep 2\n"))
         .await
@@ -187,7 +204,7 @@ async fn a_command_typed_at_the_prompt_counts_as_work_until_it_ends() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while fixture.runtime.managed_running_agent_count() != 0 {
         assert!(std::time::Instant::now() < deadline, "command never ended");
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
     assert!(fixture.reserve(), "the stop can be reserved once it ended");
 }
@@ -195,7 +212,7 @@ async fn a_command_typed_at_the_prompt_counts_as_work_until_it_ends() {
 #[tokio::test]
 async fn a_background_job_keeps_the_stop_back_after_the_prompt_returns() {
     let fixture = fixture("terminal-background-job");
-    let shell = fixture.open(None).await.expect("shell opens");
+    let shell = fixture.open_settled_shell().await;
     fixture
         .terminal(input(&shell, "sleep 30 >/dev/null 2>&1 &\n"))
         .await
@@ -221,7 +238,7 @@ async fn a_background_job_keeps_the_stop_back_after_the_prompt_returns() {
 #[tokio::test]
 async fn a_finished_background_job_stops_counting() {
     let fixture = fixture("terminal-job-finished");
-    let shell = fixture.open(None).await.expect("shell opens");
+    let shell = fixture.open_settled_shell().await;
     fixture
         .terminal(input(&shell, "sleep 2 >/dev/null 2>&1 &\n"))
         .await
@@ -231,7 +248,7 @@ async fn a_finished_background_job_stops_counting() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while fixture.runtime.managed_running_agent_count() != 0 {
         assert!(std::time::Instant::now() < deadline, "job never ended");
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
     assert!(fixture.reserve());
 }
