@@ -955,32 +955,15 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const ox = Number.isFinite(request.x) ? Math.min(Math.max(request.x, 0.5), width - 0.5) : width / 2;
       const oy = Number.isFinite(request.y) ? Math.min(Math.max(request.y, 0.5), height - 0.5) : height / 2;
       let x = bx + ox, y = by + oy;
-      if (kindOf.get(request.node_id) !== 'tile') {
-        let hit = node.ownerDocument.elementFromPoint(x, y);
-        for (let shadow = 0; shadow < 128 && hit?.shadowRoot; shadow++) { const child = hit.shadowRoot.elementFromPoint(x, y); if (!child || child === hit) break; hit = child; }
-        if (!hit || hit !== node && !node.contains(hit) && !(node.shadowRoot?.contains(hit))) throw new Error('mirror2 occluded node');
-        protectedAncestor(hit);
-      }
       const [fx, fy] = frameOffset(node); x += fx; y += fy;
       if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) throw new Error('mirror2 offscreen node');
       return { x: Math.floor(x), y: Math.floor(y) };
     };
-    // Re-validates at dispatch time: the same live target is still at the point.
+    // Revalidate the live reference and viewport at dispatch. A person's pointer may hit a control above
+    // that node (including beside a media crop); occlusion is not a secret flowing into a model.
     const hitCheck = (pt, id) => {
-      const node = live(id);
-      // Opaque pixels already show the actual topmost control. The document/lease still fences dispatch.
-      if (kindOf.get(id) === 'tile') return true;
-      let owner = document, x = pt.x, y = pt.y, hit;
-      for (let depth = 0; depth < 128; depth++) {
-        hit = owner.elementFromPoint(x, y);
-        for (let shadow = 0; shadow < 128 && hit?.shadowRoot; shadow++) { const child = hit.shadowRoot.elementFromPoint(x, y); if (!child || child === hit) break; hit = child; }
-        if (hit?.localName !== 'iframe') break;
-        let nested = null; try { nested = hit.contentDocument; } catch {} if (!nested) break;
-        const r = hit.getBoundingClientRect(), style = getComputedStyle(hit); if (style.transform !== 'none') throw new Error('mirror2 transformed frame');
-        x -= r.x + hit.clientLeft + (parseFloat(style.paddingLeft) || 0); y -= r.y + hit.clientTop + (parseFloat(style.paddingTop) || 0); owner = nested;
-      }
-      if (!hit || hit !== node && !node.contains(hit) && !(node.shadowRoot?.contains(hit))) throw new Error('mirror2 changed live target');
-      protectedAncestor(hit);
+      live(id);
+      if (![pt.x, pt.y].every(Number.isFinite) || pt.x < 0 || pt.y < 0 || pt.x >= innerWidth || pt.y >= innerHeight) throw new Error('mirror2 offscreen node');
       return true;
     };
     const activeTarget = (editable = true) => {

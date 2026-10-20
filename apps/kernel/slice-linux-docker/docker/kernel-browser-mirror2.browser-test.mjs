@@ -1624,3 +1624,14 @@ test("MP-08/MP-10 mirrorregion: pointer over a media patch reaches the real over
     assert.equal(await evaluate('document.querySelector("button").textContent'),'clicked','the real pointer hits the overlaid control, not the video underneath');
   }
 ));
+
+test("MP-08/MP-10 mirrorregion: pointer beside media reaches an overlaid control on an ordinary node", () => mirrored(
+  '<style>body{margin:0}canvas{position:absolute;left:100px;top:100px;width:400px;height:200px}#under{position:absolute;left:100px;top:310px;width:400px;height:100px}button{position:absolute;left:200px;top:330px;width:120px;height:50px}</style><canvas width="400" height="200"></canvas><div id="under">page copy</div><button onclick="this.textContent=\'clicked\'">cookie choice</button>',
+  async ({next,input,evaluate,host,subscription_id}) => {
+    const packet=await next(),stream=host.mirror.streams.get(subscription_id),world=stream.world;
+    const node_id=await host.mirror.v2.evaluate(world,`${world.ref}.idOfNode.call(document.getElementById("under"))`);
+    assert.equal(stream.regionRecords.get(node_id).kind,'element');
+    await input(packet.sequence,{kind:'click',node_id,x:150,y:40});
+    assert.equal(await evaluate('document.querySelector("button").textContent'),'clicked');
+  }
+));
