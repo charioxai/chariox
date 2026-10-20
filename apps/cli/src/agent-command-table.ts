@@ -114,6 +114,7 @@ export function guideText(): string {
     ...REQUEST_EXAMPLES.map(({ body, note }) => `  ${JSON.stringify(body)}  | ${note}`),
     "A request the kernel cannot parse comes back with a message naming the expected variants and fields: read it and fix the request.",
     "Give every request that changes state (CreateSession, SpawnAgent, SubmitPrompt, RunShellCommand, EndSession) its own --command-id ID; reuse one only to retry.",
+    "An AttachToSession made on another machine lapses after about 30 s idle (attachment_not_found): attach again right before the request that needs it.",
     "",
     "Output is one JSON document on stdout. Errors are JSON on stderr: {\"error\":{\"code\",\"message\",\"machine\"}}.",
     "Exit codes:",
