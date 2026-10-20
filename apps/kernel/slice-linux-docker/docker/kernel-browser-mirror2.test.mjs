@@ -326,12 +326,12 @@ test('MP-08/MP-11: a DOM echo is fenced by the page session\'s navigation events
 
 // UX-first (r72): a viewer scrolled ahead of the native page (smooth scrolling still animating) makes the point
 // briefly fall outside the native viewport. The click waits a moment for it instead of being refused.
-test('MP-10: a mirror click whose point is briefly outside the native viewport is retried, not refused', async () => {
+test('MP-10: a mirror click whose point is outside the native viewport is retried and revealed, not refused at once', async () => {
   const policy = {}, world = { contextId: 7, sessionId: 's', frame: { id: 'f', loaderId: 'doc' }, ref: 'm' };
   const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: 'doc' } } }) };
   world.connection = connection;
   const tab = { tab_id: 't', target_id: 'target', document_id: 'doc' };
-  const stream = { id: 's', world, tab_id: 't', document_id: 'doc', policy, issued: 1, resetAt: 1, attrSequence: new Map(), frameSlots: new Map() };
+  const stream = { id: 's', world, tab_id: 't', document_id: 'doc', policy, issued: 1, resetAt: 1, attrSequence: new Map(), frameSlots: new Map(), ownScrolls: new Map() };
   const mirror = new Mirror2({ host: { generation: 1, protection: policy, browser: { connection } }, assertWebTab() {}, require: () => stream });
   let attempts = 0, offscreen = 2;
   mirror.evaluate = async (_world, expr) => {
@@ -344,7 +344,7 @@ test('MP-10: a mirror click whose point is briefly outside the native viewport i
   assert.deepEqual(resolved.input, { kind: 'click', x: 10, y: 20 }); assert.equal(attempts, 3);
   offscreen = 99; attempts = 0;
   await assert.rejects(mirror.resolveInput(stream, tab, input, 'scope'), { mirrorReason: 'offscreen_node' });
-  assert.equal(attempts, 4, 'a point that stays outside is refused after a bounded wait');
+  assert.equal(attempts, 5, 'a point that stays outside is retried, the native page scrolled to the node once, then refused');
 });
 
 // MP-08/MP-10/MP-11: the applied snapshot already owns an isolated world. A

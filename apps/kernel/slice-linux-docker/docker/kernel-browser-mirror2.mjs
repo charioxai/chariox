@@ -934,7 +934,15 @@ export class Mirror2 {
         const origin = await call(`${m}.frameOrigin(${JSON.stringify(entry.owner)})`);
         at = { x: Math.floor(local.x + origin[0]), y: Math.floor(local.y + origin[1]) };
         if (at.x < 0 || at.y < 0 || at.x >= 1280 || at.y >= 800) throw new Error('MP-11: changed mirror input target');
-      } else at = await retryOffscreen(() => call(`${m}.point(${JSON.stringify({ node_id: action.node_id, x: action.x, y: action.y })})`));
+      } else {
+        const pointAt = () => call(`${m}.point(${JSON.stringify({ node_id: action.node_id, x: action.x, y: action.y })})`);
+        try { at = await retryOffscreen(pointAt); } catch (error) {
+          // Still outside the native viewport: scroll the native page to the node the viewer showed (the echo is this viewer's own).
+          if (error?.mirrorReason !== 'offscreen_node') throw error;
+          stream.ownScrolls.set(null, JSON.stringify(await call(`${m}.reveal(${JSON.stringify({ node_id: action.node_id })})`))); stream.movedAt = Date.now();
+          at = await pointAt();
+        }
+      }
       let checked = false;
       // MP-11: re-validated after focus emulation, immediately before the first
       // physical event; release stays paired even if the page reacts.

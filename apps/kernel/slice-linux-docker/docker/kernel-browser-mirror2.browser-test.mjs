@@ -337,6 +337,14 @@ test("MP-11: a click on a node that lost its box since the viewer's frame lands 
     assert.deepEqual(await evaluate("hits"), ["p"]);
   }));
 
+test("MP-10: a click on a node below the native viewport (the viewer scrolled ahead) reveals it natively and lands, not a refusal", () => mirrored(
+  '<div style="height:3000px"></div><button id="b" style="width:80px;height:30px">b</button><script>window.hits=[];addEventListener("click",e=>hits.push(e.target.id),true)</script>', async ({ next, evaluate, input }) => {
+    const snapshot = await next(), [button] = elements(snapshot).find(([, , attrs]) => attrs.id === "b");
+    assert.equal(await evaluate("scrollY"), 0);
+    await input(snapshot.sequence, { kind: "click", node_id: button, x: 5, y: 5 });
+    assert.deepEqual(await evaluate("hits"), ["b"]);
+  }));
+
 test("MP-10: review #941-4 property-only changes of unfocused controls reach the viewer (value, checked, radio group, select, form reset)", () => mirrored(
   '<form id="f"><input id="q" value="a"><input id="c" type="checkbox"><input type="radio" name="t" id="r1" checked><input type="radio" name="t" id="r2"><select id="s"><option>x</option><option>y</option></select></form><button id="b">b</button>', async ({ next, evaluate }) => {
     const snapshot = await next();
