@@ -252,8 +252,11 @@ export class KernelBrowserHost {
       for (const tab of saved.tabs.slice(0, TAB_LIMIT)) {
         if (typeof tab.tab_id !== "string" || !tab.tab_id.startsWith("host-tab-")) throw new Error("MD-2: invalid saved tab identity");
         assertNotCancelled(signal);
-        await this.open(restorationUrl(tab.url), tab.tab_id, { signal });
+        await this.createTab(restorationUrl(tab.url), tab.tab_id, { signal, background: true });
       }
+      // MP-08/MP-10: restore the registry in one inventory pass. A loading
+      // background page must not delay every subsequent Tab's creation.
+      if (saved.tabs.length) await this.reconcile({ readOnly: true });
       await this.syncTabGroups(this.savedGroups);
       const active = this.tabs.get(saved.active_tab_id);
       if (active) {
@@ -525,16 +528,19 @@ export class KernelBrowserHost {
   }
   async open(url, tabId = `host-tab-${randomUUID()}`, { signal } = {}) {
     await this.closeCompositors();this.foreground.reset();
+    await this.createTab(url, tabId, { signal });
+    const state = await this.reconcile();
+    return { ...state, tab_id: tabId };
+  }
+  async createTab(url, tabId, { signal, background = false } = {}) {
     if (this.tabs.size >= TAB_LIMIT) throw new Error("MD-2: host tab limit reached");
     const connection = await this.browser.ensureConnection();
     const browser = this.browser;
     assertNotCancelled(signal);
-    const { targetId } = await connection.send("Target.createTarget", { url: navigationUrl(url) });
+    const { targetId } = await connection.send("Target.createTarget", { url: navigationUrl(url), ...(background ? { background: true } : {}) });
     if (browser !== this.browser) throw new BrowserActionError('browser_unavailable', 'MP-08: browser restarted; interrupted action was not replayed');
     this.tabs.set(tabId, { tab_id: tabId, target_id: targetId, url, title: "", document_id: "" });
     this.observed = ++this.observations;
-    const state = await this.reconcile();
-    return { ...state, tab_id: tabId };
   }
   async target(command) {
     const started = timestamp();

@@ -2367,3 +2367,14 @@ test('MP-08/MP-10 a cancelled viewer does not cancel shared browser recovery', (
   assert.equal(state.generation,opened.generation+1);assert.equal(state.tabs[0].tab_id,opened.tab_id);
   assert(host.browser);assert.equal(host.recovery.enabled,true);
 }));
+
+test('MP-08/MP-10 recovery restores every tab before one inventory read', () => using(async ({host},root) => {
+  const tabs=Array.from({length:8},(_,i)=>({tab_id:`host-tab-restored-${i}`,url:`https://en.wikipedia.org/wiki/Web_browser#${i}`}));
+  await writeFile(path.join(root,'tabs.json'),JSON.stringify({generation:7,tabs,active_tab_id:tabs[2].tab_id}));
+  let reads=0;const factory=host.browserFactory;
+  host.browserFactory=connection=>{const browser=factory(connection),read=browser.reconcile;browser.reconcile=async(...args)=>{reads++;return read(...args)};return browser;};
+  await host.start();
+  assert.equal(reads,1,'restoring N tabs must not wait for N all-page renderer inventories');
+  assert.deepEqual([...host.tabs.keys()],tabs.map(tab=>tab.tab_id));
+  assert.equal(host.activeTarget,host.tabs.get(tabs[2].tab_id).target_id);
+}));
