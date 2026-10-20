@@ -29,22 +29,39 @@ pub(super) enum LinkFailure {
 
 type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Vec<u8>, LinkFailure>>>>>;
 
+/// One event of a subscription on the target: its id on the target's stream and
+/// the decrypted event body. The channel closes when the link does.
+pub(super) type EventChannel = mpsc::UnboundedSender<(u64, Vec<u8>)>;
+type Subscriptions = Arc<Mutex<HashMap<String, EventChannel>>>;
+
+/// What the target needs to start a subscription for this link's key.
+pub(super) struct SubscribeParams {
+    pub(super) session_id: String,
+    pub(super) attachment_id: String,
+    pub(super) scope: Option<String>,
+    pub(super) resume_from_event_id: Option<u64>,
+}
+
 pub(super) struct LinkParams {
     pub(super) relay_url: String,
     pub(super) auth_token: String,
     pub(super) target_kernel_id: String,
-    pub(super) target_public_key: String,
+    /// The key the target must announce; None only while pairing, when the
+    /// relay's announcement is learned and then pinned by the caller.
+    pub(super) target_public_key: Option<String>,
     pub(super) client_private_key: String,
 }
 
 pub(super) struct Link {
     outgoing: mpsc::UnboundedSender<Message>,
     pending: Pending,
+    subscriptions: Subscriptions,
     alive: Arc<AtomicBool>,
     opened_at: Instant,
     target: ClientTarget,
     target_public_key: String,
     client_private_key: String,
+    client_public_key: String,
 }
 
 impl Link {
@@ -104,13 +121,18 @@ impl Link {
         })
         .await
         .map_err(|_| LinkFailure::TimedOut)??;
-        if connected != params.target_public_key {
+        if params
+            .target_public_key
+            .as_ref()
+            .is_some_and(|pinned| *pinned != connected)
+        {
             return Err(LinkFailure::IdentityMismatch);
         }
 
         let (mut sink, mut stream) = socket.split();
         let (outgoing, mut outgoing_rx) = mpsc::unbounded_channel::<Message>();
         let pending: Pending = Arc::default();
+        let subscriptions: Subscriptions = Arc::default();
         let alive = Arc::new(AtomicBool::new(true));
         tokio::spawn({
             let alive = Arc::clone(&alive);
@@ -128,9 +150,10 @@ impl Link {
         tokio::spawn({
             let alive = Arc::clone(&alive);
             let pending = Arc::clone(&pending);
+            let subscriptions = Arc::clone(&subscriptions);
             let outgoing = outgoing.clone();
             let client_private_key = params.client_private_key.clone();
-            let target_public_key = params.target_public_key.clone();
+            let target_public_key = connected.clone();
             async move {
                 let mut last_activity = Instant::now();
                 loop {
@@ -138,6 +161,10 @@ impl Link {
                     let message = match next {
                         Err(_) => {
                             let idle = pending.lock().expect("pending poisoned").is_empty()
+                                && subscriptions
+                                    .lock()
+                                    .expect("subscriptions poisoned")
+                                    .is_empty()
                                 && last_activity.elapsed() >= IDLE_CLOSE;
                             if idle {
                                 let _ = outgoing.send(Message::Close(None));
@@ -156,8 +183,9 @@ impl Link {
                                 }
                                 if let Some(text) = text {
                                     last_activity = Instant::now();
-                                    settle(
+                                    route(
                                         &pending,
+                                        &subscriptions,
                                         &client_private_key,
                                         &target_public_key,
                                         &text,
@@ -173,20 +201,29 @@ impl Link {
                     }
                 }
                 alive.store(false, Ordering::SeqCst);
+                subscriptions
+                    .lock()
+                    .expect("subscriptions poisoned")
+                    .clear();
                 let senders: Vec<_> = pending.lock().expect("pending poisoned").drain().collect();
                 for (_, sender) in senders {
                     let _ = sender.send(Err(LinkFailure::Closed));
                 }
             }
         });
+        let client_public_key =
+            relay_crypto::public_key_from_private_key_base64(&params.client_private_key)
+                .map_err(|error| relay_failure("encrypt_failed", error.to_string()))?;
         Ok(Self {
             outgoing,
             pending,
+            subscriptions,
             alive,
             opened_at: Instant::now(),
             target,
-            target_public_key: params.target_public_key,
+            target_public_key: connected,
             client_private_key: params.client_private_key,
+            client_public_key,
         })
     }
 
@@ -239,21 +276,154 @@ impl Link {
     }
 }
 
+impl Link {
+    /// Starts a subscription on the target and returns its acknowledgement
+    /// with the channel its events arrive on.
+    pub(super) async fn subscribe(
+        &self,
+        subscription_id: String,
+        params: SubscribeParams,
+        deadline: Duration,
+    ) -> Result<(Vec<u8>, mpsc::UnboundedReceiver<(u64, Vec<u8>)>), LinkFailure> {
+        let (events, received) = mpsc::unbounded_channel();
+        self.subscriptions
+            .lock()
+            .expect("subscriptions poisoned")
+            .insert(subscription_id.clone(), events);
+        let request_id = format!("{subscription_id}-subscribe");
+        let (reply, answer) = oneshot::channel();
+        self.pending
+            .lock()
+            .expect("pending poisoned")
+            .insert(request_id.clone(), reply);
+        let envelope = RelayEnvelope::ClientSubscribe {
+            request_id: request_id.clone(),
+            subscription_id: subscription_id.clone(),
+            target: self.target.clone(),
+            session_id: params.session_id,
+            attachment_id: params.attachment_id,
+            client_public_key: self.client_public_key.clone(),
+            subscription_scope: params.scope,
+            resume_from_event_id: params.resume_from_event_id,
+        };
+        let text = serde_json::to_string(&envelope).expect("envelope serializes");
+        let outcome = if self.outgoing.send(Message::Text(text.into())).is_err() {
+            Err(LinkFailure::Closed)
+        } else {
+            match tokio::time::timeout(deadline, answer).await {
+                Ok(Ok(result)) => result,
+                Ok(Err(_)) => Err(LinkFailure::Closed),
+                Err(_) => Err(LinkFailure::TimedOut),
+            }
+        };
+        match outcome {
+            Ok(ack) => Ok((ack, received)),
+            Err(failure) => {
+                self.pending
+                    .lock()
+                    .expect("pending poisoned")
+                    .remove(&request_id);
+                self.subscriptions
+                    .lock()
+                    .expect("subscriptions poisoned")
+                    .remove(&subscription_id);
+                Err(failure)
+            }
+        }
+    }
+
+    /// Tells the target to stop a subscription; the link stays open.
+    pub(super) fn unsubscribe(&self, subscription_id: &str) {
+        self.subscriptions
+            .lock()
+            .expect("subscriptions poisoned")
+            .remove(subscription_id);
+        let envelope = RelayEnvelope::ClientUnsubscribe {
+            request_id: format!("{subscription_id}-unsubscribe"),
+            subscription_id: subscription_id.to_string(),
+            client_public_key: self.client_public_key.clone(),
+        };
+        let text = serde_json::to_string(&envelope).expect("envelope serializes");
+        let _ = self.outgoing.send(Message::Text(text.into()));
+    }
+
+    /// Replaces the relay token of an open connection before the old one
+    /// expires; routes and subscriptions stay.
+    pub(super) fn renew(&self, auth_token: String) -> bool {
+        let envelope = RelayEnvelope::ClientConnect {
+            auth_token,
+            target: self.target.clone(),
+        };
+        let text = serde_json::to_string(&envelope).expect("envelope serializes");
+        self.outgoing.send(Message::Text(text.into())).is_ok()
+    }
+
+    /// The key the target announced (and, when pinned, proved).
+    pub(super) fn target_public_key(&self) -> &str {
+        &self.target_public_key
+    }
+
+    pub(super) fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::SeqCst)
+    }
+}
+
 impl Drop for Link {
     fn drop(&mut self) {
         let _ = self.outgoing.send(Message::Close(None));
     }
 }
 
-fn settle(pending: &Pending, client_private_key: &str, target_public_key: &str, text: &str) {
-    let Ok(RelayEnvelope::ClientResponse {
-        request_id,
-        encrypted_response,
-        error,
-    }) = serde_json::from_str::<RelayEnvelope>(text)
-    else {
-        return;
-    };
+fn route(
+    pending: &Pending,
+    subscriptions: &Subscriptions,
+    client_private_key: &str,
+    target_public_key: &str,
+    text: &str,
+) {
+    match serde_json::from_str::<RelayEnvelope>(text) {
+        Ok(RelayEnvelope::ClientEvent {
+            subscription_id,
+            event_id,
+            encrypted_event,
+        }) => {
+            let Ok(decrypted) =
+                relay_crypto::decrypt_payload_for_private_key(client_private_key, &encrypted_event)
+            else {
+                return;
+            };
+            if decrypted.sender_public_key != target_public_key {
+                return;
+            }
+            let events = subscriptions.lock().expect("subscriptions poisoned");
+            if let Some(channel) = events.get(&subscription_id) {
+                let _ = channel.send((event_id, decrypted.plaintext.to_vec()));
+            }
+        }
+        Ok(RelayEnvelope::ClientResponse {
+            request_id,
+            encrypted_response,
+            error,
+        }) => settle(
+            pending,
+            client_private_key,
+            target_public_key,
+            request_id,
+            encrypted_response,
+            error,
+        ),
+        _ => {}
+    }
+}
+
+fn settle(
+    pending: &Pending,
+    client_private_key: &str,
+    target_public_key: &str,
+    request_id: String,
+    encrypted_response: Option<chariox_relay::protocol::EncryptedRelayPayload>,
+    error: Option<RelayError>,
+) {
     let Some(reply) = pending
         .lock()
         .expect("pending poisoned")
@@ -376,13 +546,92 @@ mod tests {
         url
     }
 
+    /// A relay that acknowledges a subscription, streams two events on it and
+    /// reports each envelope kind it receives afterwards.
+    async fn subscribing_relay(
+        target_private_key: String,
+        announced_key: String,
+    ) -> (String, mpsc::UnboundedReceiver<&'static str>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let (seen, observed) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let Some(Ok(Message::Text(text))) = socket.next().await else {
+                return;
+            };
+            let RelayEnvelope::ClientConnect { target, .. } = serde_json::from_str(&text).unwrap()
+            else {
+                return;
+            };
+            let connected = RelayEnvelope::ClientConnected {
+                target,
+                daemon_public_key: announced_key,
+            };
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&connected).unwrap().into(),
+                ))
+                .await
+                .unwrap();
+            while let Some(Ok(Message::Text(text))) = socket.next().await {
+                match serde_json::from_str::<RelayEnvelope>(&text) {
+                    Ok(RelayEnvelope::ClientSubscribe {
+                        request_id,
+                        subscription_id,
+                        client_public_key,
+                        ..
+                    }) => {
+                        let seal = |body: &[u8]| {
+                            relay_crypto::encrypt_payload_for_peer(
+                                &target_private_key,
+                                &client_public_key,
+                                body,
+                            )
+                            .unwrap()
+                        };
+                        let mut replies = vec![RelayEnvelope::ClientResponse {
+                            request_id,
+                            encrypted_response: Some(seal(br#"{"ok":true}"#)),
+                            error: None,
+                        }];
+                        for event_id in [7, 8] {
+                            replies.push(RelayEnvelope::ClientEvent {
+                                subscription_id: subscription_id.clone(),
+                                event_id,
+                                encrypted_event: seal(br#"{"event":"heartbeat","session_id":"s"}"#),
+                            });
+                        }
+                        for reply in replies {
+                            socket
+                                .send(Message::Text(serde_json::to_string(&reply).unwrap().into()))
+                                .await
+                                .unwrap();
+                        }
+                        let _ = seen.send("subscribe");
+                    }
+                    Ok(RelayEnvelope::ClientUnsubscribe { .. }) => {
+                        let _ = seen.send("unsubscribe");
+                    }
+                    Ok(RelayEnvelope::ClientConnect { .. }) => {
+                        let _ = seen.send("renew");
+                    }
+                    _ => {}
+                }
+            }
+        });
+        (url, observed)
+    }
+
     async fn open(url: String, target_private_key: &str) -> Result<Link, LinkFailure> {
         Link::open(LinkParams {
             relay_url: url,
             auth_token: "token".into(),
             target_kernel_id: "target".into(),
-            target_public_key: relay_crypto::public_key_from_private_key_base64(target_private_key)
-                .unwrap(),
+            target_public_key: Some(
+                relay_crypto::public_key_from_private_key_base64(target_private_key).unwrap(),
+            ),
             client_private_key: relay_crypto::generate_private_key_base64(),
         })
         .await
@@ -442,5 +691,64 @@ mod tests {
         assert!(
             matches!(outcome, Err(LinkFailure::Relay(error)) if error.code == "target_not_connected")
         );
+    }
+
+    // EA2-12: a subscription's events arrive decrypted and in order, the
+    // connection can renew its token in place, and dropping the subscription
+    // tells the target.
+    #[tokio::test]
+    async fn a_subscription_streams_events_renews_in_place_and_unsubscribes() {
+        let (private, public) = keys();
+        let (url, mut observed) = subscribing_relay(private.clone(), public).await;
+        let link = open(url, &private).await.ok().expect("link opens");
+        let (ack, mut events) = link
+            .subscribe(
+                "sub-1".into(),
+                SubscribeParams {
+                    session_id: "s".into(),
+                    attachment_id: "a".into(),
+                    scope: None,
+                    resume_from_event_id: Some(6),
+                },
+                Duration::from_secs(5),
+            )
+            .await
+            .ok()
+            .expect("subscribed");
+        assert_eq!(ack, br#"{"ok":true}"#);
+        for expected in [7, 8] {
+            let (event_id, body) = events.recv().await.unwrap();
+            assert_eq!(event_id, expected);
+            assert!(String::from_utf8(body).unwrap().contains("heartbeat"));
+        }
+        assert_eq!(observed.recv().await, Some("subscribe"));
+        assert!(link.renew("fresh-token".into()));
+        assert_eq!(observed.recv().await, Some("renew"));
+        link.unsubscribe("sub-1");
+        assert_eq!(observed.recv().await, Some("unsubscribe"));
+        assert!(link.is_alive());
+    }
+
+    #[tokio::test]
+    async fn a_dropped_connection_closes_the_event_channel() {
+        let (private, public) = keys();
+        let url = fake_relay(private.clone(), public, Behaviour::DropWithRequestInFlight).await;
+        let link = open(url, &private).await.ok().unwrap();
+        let outcome = link
+            .subscribe(
+                "sub-1".into(),
+                SubscribeParams {
+                    session_id: "s".into(),
+                    attachment_id: "a".into(),
+                    scope: None,
+                    resume_from_event_id: None,
+                },
+                Duration::from_secs(5),
+            )
+            .await;
+        assert!(matches!(
+            outcome,
+            Err(LinkFailure::Closed) | Err(LinkFailure::TimedOut)
+        ));
     }
 }

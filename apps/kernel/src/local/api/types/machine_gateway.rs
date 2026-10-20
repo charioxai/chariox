@@ -16,6 +16,47 @@ pub struct OnBehalfOf {
 #[serde(deny_unknown_fields)]
 pub struct ListGatewayMachinesRequest {}
 
+/// Protocol 568, human-only: pair this kernel's gateway with a self-hosted kernel
+/// through the terminal pairing link that kernel made. A scoped relay needs the
+/// operator's CLIENT transport token as well; it is stored privately and never returned.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JoinMachineLinkRequest {
+    pub link: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_token: Option<String>,
+}
+
+impl std::fmt::Debug for JoinMachineLinkRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JoinMachineLinkRequest")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Protocol 568, human-only: drop a paired machine from this kernel's gateway.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForgetGatewayMachineRequest {
+    pub name: String,
+}
+
+/// Protocol 568: one attachment a gateway keeps alive for its agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GatewayAttachmentRef {
+    pub session_id: String,
+    pub attachment_id: String,
+}
+
+/// Protocol 568: a terminal heartbeat for attachments a gateway opened for an
+/// agent. A relay terminal's attachment lapses after about 30 s without one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeartbeatAttachmentsRequest {
+    pub attachments: Vec<GatewayAttachmentRef>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GatewayMachineStatus {

@@ -208,6 +208,8 @@ pub(crate) fn restricted_request(request: &LocalDaemonRequest) -> bool {
                 | LocalDaemonRequest::JoinPairingInvite(_)
                 | LocalDaemonRequest::CreateTerminalPairingLink(_)
                 | LocalDaemonRequest::JoinTerminalPairingLink(_)
+                | LocalDaemonRequest::JoinMachineLink(_)
+                | LocalDaemonRequest::ForgetGatewayMachine(_)
                 | LocalDaemonRequest::RecordPairedClient(_)
                 | LocalDaemonRequest::ApproveRemoteMachine(_)
                 | LocalDaemonRequest::JoinSessionInvite(_)

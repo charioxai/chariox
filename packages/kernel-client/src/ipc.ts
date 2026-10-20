@@ -232,6 +232,9 @@ function isHostedPublicationGateway() {
 }
 
 /** MP-08/MP-10: fixed transport metadata only; never auth or packet contents. */
+/** A frame is present for events the kernel streamed, absent for events the client raises itself. */
+export type KernelEventHandler = (event: KernelEvent, frame?: KernelTransportEventFrame<KernelEvent>) => void
+
 export type KernelTransportDiagnostic = {
   lane: "control" | "event"
   cause: "reset" | "request_replay" | "heartbeat_missed" | "heartbeat_failed" | "socket_close" | "socket_error" | "lease_response_refused" | "lease_transport_failed"
@@ -264,10 +267,12 @@ export type LocalIpcClientOptions = {
   controlResponseStallMs?: number | undefined
   relayIdentity?: RelayClientIdentity | undefined
   relayAuthorizationIssuer?: RelayAuthorizationIssuer | undefined
-  /** Another machine for the local kernel to forward requests to; ignored in relay mode. */
+  /** Another machine for the local kernel to forward requests and event subscriptions to; ignored in relay mode. */
   machine?: string | undefined
   /** Idempotency key sent as the request's command id; ignored in relay mode. */
   commandId?: string | undefined
+  /** The kernel ended an acknowledged subscription by answering its request a second time with an error. */
+  onSubscriptionEnded?: ((error: LocalIpcError) => void) | undefined
 }
 
 export class LocalIpcClient {
@@ -277,6 +282,7 @@ export class LocalIpcClient {
 
   private readonly catalogReads = new KernelCatalogReads()
   private readonly transportObserver: LocalIpcClientOptions["onTransportDiagnostic"]
+  private readonly subscriptionEndedObserver: LocalIpcClientOptions["onSubscriptionEnded"]
   readonly socketPath: string
   private readonly relayIssuer: LocalIpcClient | null
   private readonly relayIssuerDaemonId: string | null
@@ -306,7 +312,7 @@ export class LocalIpcClient {
   private readonly requestKinds = new Map<string, number>()
   private readonly requestTimeline: Array<[string, number]> = []
   private readonly relaySubscriptionDiagnostics = new RelaySubscriptionDiagnostics()
-  private eventHandlers = new Set<(event: KernelEvent) => void>()
+  private eventHandlers = new Set<KernelEventHandler>()
   private activeKernelSubscription: KernelSubscriptionState | null = null
   private reconnectTimeout: NodeJS.Timeout | null = null
   private reconnectDelayMs = 250
@@ -335,6 +341,7 @@ export class LocalIpcClient {
 
   constructor(endpoint: string, options: LocalIpcClientOptions = {}) {
     this.transportObserver = options.onTransportDiagnostic
+    this.subscriptionEndedObserver = options.onSubscriptionEnded
     this.requestRoute = { machine: options.machine, commandId: options.commandId }
     if (!isWebSocketEndpoint(endpoint)) {
       if (endpoint.includes("://") && !endpoint.startsWith("unix://")) throw new Error("unsupported kernel endpoint")
@@ -477,7 +484,8 @@ export class LocalIpcClient {
     return this.send<KernelResourceTelemetryResponse>(getKernelResourceTelemetryRequest(options))
   }
 
-  async subscribeToKernelEvents(sessionId: string, attachmentId: string): Promise<void> {
+  /** `resumeFromEventId` starts a new subscription after that event of the kernel's (or the routed machine's) stream. */
+  async subscribeToKernelEvents(sessionId: string, attachmentId: string, resumeFromEventId: number | null = null): Promise<void> {
     if (!this.supportsKernelEvents()) {
       return
     }
@@ -494,16 +502,17 @@ export class LocalIpcClient {
       attachmentId,
       relaySubscriptionId: this.isRelayMode() ? randomUUID() : null,
     })
+    const resumeFrom = start.resumeFromEventId ?? resumeFromEventId
     if (start.resetLastReceivedEventId) {
-      this.lastReceivedEventId = null
+      this.lastReceivedEventId = resumeFromEventId
     }
     this.activeKernelSubscription = start.subscription
     try {
       if (this.isRelayMode()) {
-        await this.sendRelaySubscribe(start.subscription, start.resumeFromEventId)
+        await this.sendRelaySubscribe(start.subscription, resumeFrom)
       } else {
         await this.sendWebSocket<Record<string, unknown>>(
-          buildKernelSubscriptionTransportRequest(start.subscription, start.resumeFromEventId),
+          buildKernelSubscriptionTransportRequest(start.subscription, resumeFrom),
           "event",
         )
       }
@@ -600,7 +609,7 @@ export class LocalIpcClient {
     return this.relaySubscriptionDiagnostics.subscribe(handler)
   }
 
-  onKernelEvent(handler: (event: KernelEvent) => void) {
+  onKernelEvent(handler: KernelEventHandler) {
     this.eventHandlers.add(handler)
     return () => {
       this.eventHandlers.delete(handler)
@@ -1327,7 +1336,7 @@ export class LocalIpcClient {
       if (event.event !== "kernel_browser_frame") this.lastReceivedEventId = frame.event_id
       this.markKernelEventReceived()
       for (const handler of this.eventHandlers) {
-        handler(event)
+        handler(event, frame)
       }
       return
     }
@@ -1373,6 +1382,9 @@ export class LocalIpcClient {
     const requestId = "type" in frame ? frame.request_id : frame.request_id
     const pending = this.pendingRequests.take(requestId)
     if (!pending) {
+      if (lane === "event" && "type" in frame && frame.error) {
+        this.subscriptionEndedObserver?.(new LocalIpcError("handle kernel response", frame.error.message, frame.error.code, frame.error.retryable))
+      }
       return
     }
 

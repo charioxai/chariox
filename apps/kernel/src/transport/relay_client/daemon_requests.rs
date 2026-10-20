@@ -802,7 +802,10 @@ enum RelayDispatchOutcome {
 /// decides for itself from `on_behalf_of`: the human-only set is refused here,
 /// and a state-changing request is reserved durably before it runs so a retry
 /// of an interrupted one is answered "outcome unknown" instead of run again.
-#[allow(clippy::too_many_arguments, reason = "One dispatch seam shared with ordinary requests")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "One dispatch seam shared with ordinary requests"
+)]
 async fn dispatch_on_behalf_of(
     router: &CommandRouter,
     command_sequence: &AtomicU64,
@@ -813,7 +816,7 @@ async fn dispatch_on_behalf_of(
     on_behalf_of: &crate::local::OnBehalfOf,
     gateway_public_key: &str,
 ) -> RelayDispatchOutcome {
-    use crate::runtime::machine_gateway::ledger::{is_read_only, Failure, Settled};
+    use crate::runtime::machine_gateway::ledger::{is_repeatable, Failure, Settled};
     if let Err(error) = router
         .runtime_state()
         .authorize_on_behalf_of_request(on_behalf_of, &request)
@@ -825,7 +828,7 @@ async fn dispatch_on_behalf_of(
             false,
         ));
     }
-    if is_read_only(&request) {
+    if is_repeatable(&request) {
         return dispatch_relay_client_request(
             router,
             command_sequence,

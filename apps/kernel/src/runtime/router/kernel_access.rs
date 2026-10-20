@@ -104,6 +104,113 @@ impl CommandRouter {
         Ok(LocalDaemonResponse::GatewayMachinesListed { machines })
     }
 
+    /// Records the terminal heartbeat of the caller's own attachments; any that
+    /// is gone, in another session or owned by someone else is reported lapsed.
+    pub(super) async fn heartbeat_attachments(
+        &self,
+        command: &KernelCommand,
+        request: &crate::local::HeartbeatAttachmentsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let owner = crate::runtime::command::command_caller_user_id(command);
+        let mut lapsed = Vec::new();
+        for attachment in &request.attachments {
+            let mine = self
+                .runtime_state
+                .attachment_owner_user_id(&attachment.attachment_id)
+                .await
+                .is_ok_and(|id| id == owner);
+            let alive = mine
+                && self
+                    .runtime_state
+                    .record_terminal_attachment_heartbeat(
+                        &attachment.session_id,
+                        &attachment.attachment_id,
+                        crate::session::unix_epoch_ms(),
+                    )
+                    .await
+                    .is_ok();
+            if !alive {
+                lapsed.push(attachment.attachment_id.clone());
+            }
+        }
+        Ok(LocalDaemonResponse::AttachmentsHeartbeated { lapsed })
+    }
+
+    /// Pairing the gateway with a machine, or forgetting one, is a person's act at
+    /// a Chariox terminal; a grant holder or a forwarded request never reaches it.
+    pub(super) async fn dispatch_machine_pairing(
+        &self,
+        command: &KernelCommand,
+        request: &LocalDaemonRequest,
+    ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+        if !matches!(
+            request,
+            LocalDaemonRequest::JoinMachineLink(_) | LocalDaemonRequest::ForgetGatewayMachine(_)
+        ) {
+            return None;
+        }
+        let owner = command.is_terminal_caller()
+            && command_caller_user_id(command) == self.config_projection.local_owner_user_id();
+        if !owner {
+            return Some(Err(error(
+                "only the kernel's owner at a Chariox terminal can pair or forget a machine",
+            )));
+        }
+        let outcome = match request {
+            LocalDaemonRequest::JoinMachineLink(join) => self
+                .machine_gateway
+                .join(join.clone())
+                .await
+                .map(|machine| LocalDaemonResponse::GatewayMachineJoined { machine }),
+            LocalDaemonRequest::ForgetGatewayMachine(forget) => self
+                .machine_gateway
+                .forget(&forget.name)
+                .map(|kernel_id| LocalDaemonResponse::GatewayMachineForgotten { kernel_id }),
+            _ => unreachable!("filtered above"),
+        };
+        Some(outcome.map_err(|failure| error(format!("{}: {}", failure.code(), failure.message()))))
+    }
+
+    /// The machine file requests belong to the kernel's owner, at a Chariox terminal
+    /// or as a local grant holder (or the gateway acting for one).
+    pub(super) async fn dispatch_machine_file(
+        &self,
+        command: &KernelCommand,
+        request: &LocalDaemonRequest,
+    ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+        use crate::runtime::machine_files as files;
+        if !matches!(
+            request,
+            LocalDaemonRequest::StatMachineFile(_)
+                | LocalDaemonRequest::ListMachineDirectory(_)
+                | LocalDaemonRequest::ReadMachineFile(_)
+                | LocalDaemonRequest::WriteMachineFile(_)
+        ) {
+            return None;
+        }
+        let owner = matches!(
+            command.caller.connection_class,
+            Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
+        ) && command_caller_user_id(command)
+            == self.config_projection.local_owner_user_id();
+        if !owner {
+            return Some(Err(error(
+                "only the kernel's owner at a Chariox terminal or as a local grant holder can use machine files",
+            )));
+        }
+        let request = request.clone();
+        // Hashing and copying a large file must not stall the request loop.
+        let outcome = tokio::task::spawn_blocking(move || match &request {
+            LocalDaemonRequest::StatMachineFile(r) => files::stat(r),
+            LocalDaemonRequest::ListMachineDirectory(r) => files::list(r),
+            LocalDaemonRequest::ReadMachineFile(r) => files::read(r),
+            LocalDaemonRequest::WriteMachineFile(r) => files::write(r),
+            _ => unreachable!("filtered above"),
+        })
+        .await;
+        Some(outcome.unwrap_or_else(|join| Err(error(format!("machine file task failed: {join}")))))
+    }
+
     pub(super) fn dispatch_kernel_access(
         &self,
         command: &KernelCommand,

@@ -12,7 +12,9 @@ use std::sync::{Arc, Mutex};
 
 use super::{KernelRuntimeOwnedState, KernelRuntimeState, RuntimeChangeSignal};
 use crate::error::DaemonError;
-use crate::local::{KernelAccessTerm, PasskeyPrompt, PasskeyPromptClosureReason, PasskeyPromptKind};
+use crate::local::{
+    KernelAccessTerm, PasskeyPrompt, PasskeyPromptClosureReason, PasskeyPromptKind,
+};
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeSession};
 
 pub(crate) const PASSKEY_ALREADY_ANSWERED: &str = "PASSKEY_ALREADY_ANSWERED";

@@ -158,16 +158,25 @@ impl Drop for Unsettled {
     }
 }
 
-/// Reads never change state, so a retry may simply run them again. Everything
-/// else is state-changing and goes through the ledger.
-pub(crate) fn is_read_only(request: &crate::local::LocalDaemonRequest) -> bool {
+/// Reads, the attachment heartbeat and a file chunk (which names its own offset)
+/// may simply run again on a retry.
+/// Everything else is state-changing and goes through the ledger.
+pub(crate) fn is_repeatable(request: &crate::local::LocalDaemonRequest) -> bool {
     let Ok(Value::Object(tagged)) = serde_json::to_value(request) else {
         return false;
     };
     tagged.keys().next().is_some_and(|variant| {
-        ["List", "Get", "Search", "Stat"]
-            .iter()
-            .any(|p| variant.starts_with(p))
+        [
+            "List",
+            "Get",
+            "Search",
+            "Stat",
+            "Heartbeat",
+            "ReadMachineFile",
+            "WriteMachineFile",
+        ]
+        .iter()
+        .any(|p| variant.starts_with(p))
     })
 }
 
@@ -357,9 +366,9 @@ mod tests {
 
     #[test]
     fn only_reads_skip_the_ledger() {
-        assert!(is_read_only(&LocalDaemonRequest::ListSessions(
+        assert!(is_repeatable(&LocalDaemonRequest::ListSessions(
             ListSessionsRequest
         )));
-        assert!(!is_read_only(&create()));
+        assert!(!is_repeatable(&create()));
     }
 }

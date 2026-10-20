@@ -4851,9 +4851,19 @@ Machine gateway (same provisional 568/176). A grant holder names another machine
 forwards the request over the relay, as a terminal-class client of the target kernel; the target stays the
 authority for its own sessions, agents, terminals and files.
 - Unix-socket frames: `request` frames take an optional `machine` (kernel id, kernel alias or machine alias).
-  The response frame echoes it (`machine`, absent for local answers). `subscribe` frames with `machine` are
-  refused (`machine_not_available`) until forwarded subscriptions exist. A frame with `machine` on a connection
+  The response frame echoes it (`machine`, absent for local answers). A frame with `machine` on a connection
   that is not a grant holder's is refused; a machine request is never answered locally.
+- Subscriptions: a `subscribe` frame with `machine` starts the same event stream on that machine (a relay
+  `ClientSubscribe` from the gateway key; the target heartbeats the attachment itself). The ack is the target's;
+  each `event` frame carries `machine`, and its `event_id` counts on the target's stream, so a resume sends
+  `resume_from_event_id` from the last one seen. The gateway renews the relay token in place before it expires.
+  If the connection to the machine ends, the agent receives a second `response` frame with the subscribe
+  request's id and error `machine_connection_lost` naming the last event id. One subscription per connection.
+- Attachments: an `AttachToSession` answered by a machine is kept alive by the origin kernel while the grant is
+  live and the machine answers: every 10 s it sends `HeartbeatAttachments { attachments: [{session_id,
+  attachment_id}] }` -> `AttachmentsHeartbeated { lapsed: [attachment_id] }` (the target records a terminal
+  heartbeat for the caller's own attachments; any other id is reported lapsed). A `DetachFromSession` stops it; a
+  grant that ends or three missed beats stop it, and the target sweeps the attachment after 30 s.
 - `ListGatewayMachines {}` -> `GatewayMachinesListed { machines: [{name, kernel_id, machine_id, machine_alias,
   status: online|offline, last_seen_ms, gateway_ready, via: hosted|self_hosted}] }`. The list comes from one
   inventory source (the relay inventory, filtered to the account's fresh Cloud targets when hosted). An offline
@@ -4869,7 +4879,7 @@ authority for its own sessions, agents, terminals and files.
   any request that carries `on_behalf_of`, classifies `RespondToInteraction` from its own pending interactions and
   never needs the origin's grant. A target without it rejects the envelope; the gateway then sends a plain
   request for everything except `RespondToInteraction`, which is refused with `machine_incompatible`.
-- At most once: every non-read request (read-only means a variant that starts with List, Get, Search or Stat)
+- At most once: every non-read request (repeatable means a variant that starts with List, Get, Search, Stat or Heartbeat)
   is reserved in the target's durable gateway ledger (`gateway-ledger.jsonl`, at-most-once receipts, 512 entries)
   before it runs and settled after. A retry with the same `command_id` returns the original result; a retry of an
   interrupted reservation returns `machine_outcome_unknown` and never runs again; a different request under the same
@@ -4879,6 +4889,27 @@ authority for its own sessions, agents, terminals and files.
   `machine_connection_lost`, `machine_outcome_unknown`, `machine_not_available`. Nothing falls back to local or to
   another machine. Grant revoke, expiry and holder exit stop forwarding at once; work already started on the
   target keeps running.
+- Machine files (kernel API requests, any machine, owner only: a Chariox terminal or a local grant holder, or the
+  gateway acting for one): `StatMachineFile { path, with_sha256 }` -> `MachineFileStat { stat: {path, exists, kind,
+  size, modified_ms, sha256, partial_size} }`; `ListMachineDirectory { path }` -> `MachineDirectoryListed { path,
+  entries, truncated }` (2000 entries); `ReadMachineFile { path, offset, length }` (length <= 1 MiB) ->
+  `MachineFileChunk { path, offset, data_base64, size, eof }`; `WriteMachineFile { path, offset, data_base64,
+  total_size, sha256?, overwrite }` (chunk <= 1 MiB, in order) -> `MachineFileWritten { path, received, complete,
+  sha256 }`. Paths are absolute or `~/`. An upload lives in `<path>.chariox-partial` and the file appears at `path`
+  only when `total_size` is reached and `sha256`, if sent, matches (otherwise `file_hash_mismatch` and nothing is
+  kept); a chunk at the wrong offset is `file_offset_mismatch` and the message names the offset to continue at.
+  A file is at most 2 GiB (`file_too_large`). Reads and write chunks name their offset, so a retry is safe and they
+  skip the at-most-once ledger. Typed errors: `file_path_invalid`, `file_not_found`, `file_permission_denied`,
+  `file_not_a_file`, `file_too_large`, `file_chunk_too_large`, `file_offset_mismatch`, `file_hash_mismatch`,
+  `file_exists`, `file_io_failed`; each message already says what to do next.
+- Self-hosted machines (no Cloud profile): the machines are the kernels this kernel paired with. Human-only requests,
+  refused for grant holders and forwarded requests: `JoinMachineLink { link, relay_token? }` -> `GatewayMachineJoined
+  { machine }` (the gateway key asks the kernel that made a terminal pairing link, over the operator relay, to admit
+  it with `JoinTerminalPairingLink`; the link's relay must be this kernel's relay; a scoped relay also needs the
+  operator CLIENT token in `relay_token`) and `ForgetGatewayMachine { name }` -> `GatewayMachineForgotten
+  { kernel_id }`. Pairings are kept in `gateway-machines.json` (0600) with the target key learned at first contact
+  and pinned from then on; a machine seen on the relay is online, one not seen is listed offline. A refusal is
+  `machine_join_refused`. The grant on the other machine is revoked there; forgetting only drops it here.
 The Rust hash test `machine_gateway_protocol_568_shapes_and_hash` pins the shapes.
 
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and

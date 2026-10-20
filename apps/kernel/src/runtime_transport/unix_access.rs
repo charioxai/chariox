@@ -404,6 +404,97 @@ pub(super) enum GatewayRoute {
     },
 }
 
+/// Serves an admitted subscription on another machine: the target's events are
+/// relayed to this connection until the agent unsubscribes or the machine stops
+/// answering, which the agent is told with the subscribe request's own id.
+pub(super) async fn serve_gateway_subscription(
+    connection: &IncomingConnection<'_>,
+    request_id: String,
+    machine: String,
+    request: crate::runtime::machine_gateway::SubscribeRequest,
+) {
+    let IncomingConnection {
+        runtime,
+        router,
+        connection_state,
+        outgoing_tx,
+        close_tx,
+        close_requested,
+        ..
+    } = *connection;
+    let gateway = Arc::clone(router.machine_gateway());
+    let health = runtime.transport_health.clone();
+    let (outgoing_tx, close_tx, close_requested) = (
+        outgoing_tx.clone(),
+        close_tx.clone(),
+        Arc::clone(close_requested),
+    );
+    let task = tokio::spawn(async move {
+        let send = |frame| {
+            try_send_outgoing_frame(
+                &outgoing_tx,
+                &close_tx,
+                &close_requested,
+                &health,
+                frame,
+                None,
+                None,
+            )
+        };
+        let subscription = match gateway.subscribe(&machine, request).await {
+            Ok(subscription) => subscription,
+            Err(failure) => {
+                send(KernelOutgoingFrame::Response {
+                    machine: Some(machine),
+                    request_id,
+                    response: Box::new(None),
+                    error: Some(failure.transport_error()),
+                });
+                return;
+            }
+        };
+        let crate::runtime::machine_gateway::ForwardedSubscription {
+            ack, mut events, ..
+        } = subscription;
+        if !send(KernelOutgoingFrame::Response {
+            machine: Some(machine.clone()),
+            request_id: request_id.clone(),
+            response: Box::new(Some(ack)),
+            error: None,
+        }) {
+            return;
+        }
+        let mut last_event_id = None;
+        while let Some((event_id, body)) = events.recv().await {
+            let Ok(event) = serde_json::from_slice::<KernelEvent>(&body) else {
+                continue;
+            };
+            last_event_id = Some(event_id);
+            if !send(KernelOutgoingFrame::Event {
+                event_id,
+                machine: Some(machine.clone()),
+                event: Box::new(event),
+            }) {
+                return;
+            }
+        }
+        let ended = crate::runtime::machine_gateway::GatewayError::SubscriptionEnded {
+            name: machine.clone(),
+            last_event_id,
+        };
+        send(KernelOutgoingFrame::Response {
+            machine: Some(machine),
+            request_id,
+            response: Box::new(None),
+            error: Some(ended.transport_error()),
+        });
+    });
+    let mut state = connection_state.lock().await;
+    if let Some(previous) = state.watch_task.replace(task) {
+        previous.abort();
+    }
+}
+
 /// Serves an admitted gateway request and answers on the same connection. The
 /// permit bounds concurrent gateway requests like any other request.
 pub(super) fn serve_gateway(
@@ -481,8 +572,8 @@ pub(super) fn serve_gateway(
         };
         let outcome = match route {
             GatewayRoute::Forward { machine, request } => {
-                router
-                    .machine_gateway()
+                let gateway = router.machine_gateway();
+                let answered = gateway
                     .forward(
                         &machine,
                         &origin,
@@ -490,7 +581,11 @@ pub(super) fn serve_gateway(
                         &request,
                         crate::runtime::machine_gateway::REQUEST_DEADLINE,
                     )
-                    .await
+                    .await;
+                if let Ok(response) = &answered {
+                    gateway.note_forwarded(&machine, &origin, &request, response);
+                }
+                answered
             }
             GatewayRoute::List => router.machine_gateway().machines().await.map(|machines| {
                 serde_json::to_value(crate::local::LocalDaemonResponse::GatewayMachinesListed {

@@ -96,6 +96,7 @@ pub(crate) mod kernel_browser_host;
 pub(crate) mod kernel_lifecycle_executor;
 pub(crate) mod kernel_process_identity;
 pub(crate) mod kernel_runtime_role_policy;
+pub(crate) mod machine_files;
 pub(crate) mod managed_bootstrap_observation_control;
 pub(crate) mod managed_context_outbound_control;
 pub(crate) mod managed_context_target_control;

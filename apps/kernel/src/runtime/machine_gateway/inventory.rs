@@ -17,13 +17,21 @@ pub(crate) trait InventorySource: Send + Sync {
     fn via(&self) -> GatewayMachineVia;
     /// The kernels the latest refresh listed as live; never this kernel itself.
     fn kernels(&self) -> Vec<RelayKernelPresence>;
+    /// Machines that are listed even while no refresh shows them live (offline).
+    fn known(&self) -> Vec<RelayKernelPresence> {
+        Vec::new()
+    }
     fn is_fresh(&self) -> bool;
     fn refresh(&self) -> Pin<Box<dyn Future<Output = Result<(), DaemonError>> + Send + '_>>;
 }
 
+/// The relay's live kernels. Hosted, that is the account's own list. Self-hosted
+/// the relay shows every kernel connected to it, so only the kernels this
+/// gateway paired with count as machines.
 pub(crate) struct RelayInventory {
     pub(crate) config: DaemonConfigProjectionStore,
     pub(crate) projection: RemoteRelayInventoryProjectionStore,
+    pub(crate) paired: std::sync::Arc<super::paired::PairedMachines>,
 }
 
 impl InventorySource for RelayInventory {
@@ -36,7 +44,28 @@ impl InventorySource for RelayInventory {
     }
 
     fn kernels(&self) -> Vec<RelayKernelPresence> {
-        self.projection.snapshot().1
+        let live = self.projection.snapshot().1;
+        if self.via() == GatewayMachineVia::Hosted {
+            return live;
+        }
+        let paired = self.known();
+        live.into_iter()
+            .filter(|kernel| {
+                paired
+                    .iter()
+                    .any(|known| known.kernel_id == kernel.kernel_id)
+            })
+            .collect()
+    }
+
+    fn known(&self) -> Vec<RelayKernelPresence> {
+        if self.via() == GatewayMachineVia::Hosted {
+            return Vec::new();
+        }
+        self.paired
+            .all()
+            .map(|all| all.into_iter().map(|machine| machine.presence).collect())
+            .unwrap_or_default()
     }
 
     fn is_fresh(&self) -> bool {

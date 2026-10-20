@@ -26,6 +26,9 @@ pub enum DaemonError {
     },
     #[error("failed while waiting for daemon shutdown signal: {0}")]
     ShutdownSignal(std::io::Error),
+    /// A machine file request that cannot be done; `message` already says what to do next.
+    #[error("{message}")]
+    MachineFile { code: &'static str, message: String },
     #[error("local transport `{operation}` failed: {message}")]
     LocalTransport {
         operation: &'static str,

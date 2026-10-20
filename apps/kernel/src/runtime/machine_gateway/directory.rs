@@ -7,7 +7,7 @@ use chariox_relay::protocol::RelayKernelPresence;
 
 use super::error::GatewayError;
 use super::inventory::InventorySource;
-use crate::local::{GatewayMachine, GatewayMachineStatus};
+use crate::local::{GatewayMachine, GatewayMachineStatus, GatewayMachineVia};
 
 /// The capability a kernel advertises when it enforces `on_behalf_of`.
 pub(crate) const GATEWAY_CAPABILITY: &str = "machine_gateway_v1";
@@ -106,6 +106,18 @@ impl Directory {
                 },
             );
         }
+        let known = self.source.known();
+        seen.retain(|id, _| {
+            self.source.via() == GatewayMachineVia::Hosted
+                || known.iter().any(|k| &k.kernel_id == id)
+        });
+        for kernel in known {
+            seen.entry(kernel.kernel_id.clone()).or_insert(Seen {
+                kernel,
+                last_seen_ms: 0,
+                online: false,
+            });
+        }
         Ok(())
     }
 }
@@ -126,7 +138,7 @@ fn display_name(kernel: &RelayKernelPresence) -> String {
         .unwrap_or_else(|| kernel.kernel_id.clone())
 }
 
-fn names_of(kernel: &RelayKernelPresence) -> Vec<String> {
+pub(super) fn names_of(kernel: &RelayKernelPresence) -> Vec<String> {
     [
         Some(kernel.kernel_id.clone()),
         kernel.kernel_alias.clone(),
@@ -148,7 +160,6 @@ pub(super) fn is_gateway_ready(kernel: &RelayKernelPresence) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::local::GatewayMachineVia;
     use std::future::Future;
     use std::pin::Pin;
 

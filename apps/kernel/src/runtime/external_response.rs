@@ -20,6 +20,11 @@ pub(crate) fn finish_response(
 }
 
 fn protect_error(error: DaemonError) -> DaemonError {
+    // A machine file error says what to do next in words the kernel wrote from the
+    // agent's own path; it carries no provider or parser text.
+    if matches!(&error, DaemonError::MachineFile { .. }) {
+        return error;
+    }
     // These exact lifecycle messages are kernel constants, never provider or
     // parser output. Preserve refusal/revocation so callers can react correctly.
     if matches!(&error, DaemonError::LocalTransport { operation: "kernel access", message }
@@ -169,6 +174,13 @@ response_policies! {
         KernelAccessGrantsListed,
         KernelAccessRevoked,
         GatewayMachinesListed,
+        AttachmentsHeartbeated,
+        GatewayMachineJoined,
+        GatewayMachineForgotten,
+        MachineFileStat,
+        MachineDirectoryListed,
+        MachineFileChunk,
+        MachineFileWritten,
         RoomBrowserArtifact,
         AppPublisherEnrollmentStatus,
         AppInstallOperationStatus,

@@ -2512,7 +2512,9 @@ fn undecodable_frame_without_request_id_replies_as_invalid_frame() {
     match incoming_frame_decode_error(payload, &error) {
         KernelOutgoingFrame::Response {
             machine: None,
-            request_id, error, ..
+            request_id,
+            error,
+            ..
         } => {
             assert_eq!(request_id, "unknown");
             assert_eq!(error.expect("error").code, "invalid_frame");

@@ -8,8 +8,12 @@ mod directory;
 mod error;
 mod identity;
 mod inventory;
+mod join;
+mod keeper;
 pub(crate) mod ledger;
 mod link;
+mod paired;
+mod subscription;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,11 +35,12 @@ pub(crate) use error::{is_public_code, GatewayError};
 use identity::GatewayIdentity;
 use inventory::RelayInventory;
 use link::{Link, LinkFailure, LinkParams};
+pub(crate) use subscription::{ForwardedSubscription, SubscribeRequest};
 
 /// The default time a forwarded request may take before `machine_request_timeout`.
 pub(crate) const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 const GATEWAY_CLIENT_ID: &str = "agent-gateway";
-static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+pub(super) static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// The grant a forwarded request acts under, as the origin kernel knows it.
 pub(crate) struct Origin {
@@ -50,6 +55,8 @@ pub(crate) struct MachineGateway {
     identity: std::sync::Mutex<Option<GatewayIdentity>>,
     links: Mutex<HashMap<String, Arc<Link>>>,
     ledger: OnceLock<ledger::GatewayLedger>,
+    keeper: keeper::Keeper,
+    paired: Arc<paired::PairedMachines>,
 }
 
 impl MachineGateway {
@@ -58,9 +65,16 @@ impl MachineGateway {
         config: DaemonConfigProjectionStore,
         projection: RemoteRelayInventoryProjectionStore,
     ) -> Self {
+        let paired = Arc::new(paired::PairedMachines::new(
+            config
+                .snapshot()
+                .private_runtime_state_root()
+                .join("gateway-machines.json"),
+        ));
         let source = Arc::new(RelayInventory {
             config: config.clone(),
             projection,
+            paired: Arc::clone(&paired),
         });
         Self {
             directory: Directory::new(source),
@@ -69,6 +83,8 @@ impl MachineGateway {
             identity: std::sync::Mutex::new(None),
             links: Mutex::new(HashMap::new()),
             ledger: OnceLock::new(),
+            keeper: keeper::Keeper::default(),
+            paired,
         }
     }
 
@@ -134,7 +150,7 @@ impl MachineGateway {
         }
     }
 
-    async fn link_for(
+    pub(super) async fn link_for(
         &self,
         machine: &str,
         kernel: &chariox_relay::protocol::RelayKernelPresence,
@@ -144,7 +160,48 @@ impl MachineGateway {
             return Ok(Arc::clone(link));
         }
         let identity = self.identity()?;
-        let connection = crate::runtime::cloud_relay_connection_executor::kernel_client_connection(
+        let connection = self.connection(machine, kernel, &identity).await?;
+        let link = Link::open(LinkParams {
+            relay_url: connection.relay_url,
+            auth_token: connection.relay_token,
+            target_kernel_id: kernel.kernel_id.clone(),
+            target_public_key: Some(kernel.public_key.clone()),
+            client_private_key: identity.private_key,
+        })
+        .await
+        .map_err(|failure| map_open_failure(machine, failure))?;
+        let link = Arc::new(link);
+        links.insert(kernel.kernel_id.clone(), Arc::clone(&link));
+        Ok(link)
+    }
+
+    pub(super) async fn connection(
+        &self,
+        machine: &str,
+        kernel: &chariox_relay::protocol::RelayKernelPresence,
+        identity: &GatewayIdentity,
+    ) -> Result<crate::local::KernelClientConnection, GatewayError> {
+        // A scoped self-hosted relay admits this kernel as a client only with the
+        // CLIENT token the person gave when pairing.
+        let config = self.config.snapshot();
+        if let (None, Some(relay_url), Some(token)) = (
+            &config.cloud_relay,
+            &config.relay_url,
+            self.paired
+                .find(&kernel.kernel_id)
+                .and_then(|machine| machine.relay_token),
+        ) {
+            return Ok(crate::local::KernelClientConnection {
+                relay_url: relay_url.clone(),
+                relay_token: token,
+                target_daemon_id: Some(kernel.kernel_id.clone()),
+                target_daemon_alias: kernel.kernel_alias.clone(),
+                token_expires_at: None,
+                machine_id: Some(kernel.machine_id.clone()),
+                kernel_id: Some(kernel.kernel_id.clone()),
+            });
+        }
+        crate::runtime::cloud_relay_connection_executor::kernel_client_connection(
             &self.runtime_state,
             &self.config,
             kernel,
@@ -156,22 +213,10 @@ impl MachineGateway {
         .map_err(|error| GatewayError::Unreachable {
             name: machine.into(),
             detail: error.to_string(),
-        })?;
-        let link = Link::open(LinkParams {
-            relay_url: connection.relay_url,
-            auth_token: connection.relay_token,
-            target_kernel_id: kernel.kernel_id.clone(),
-            target_public_key: kernel.public_key.clone(),
-            client_private_key: identity.private_key,
         })
-        .await
-        .map_err(|failure| map_open_failure(machine, failure))?;
-        let link = Arc::new(link);
-        links.insert(kernel.kernel_id.clone(), Arc::clone(&link));
-        Ok(link)
     }
 
-    fn identity(&self) -> Result<GatewayIdentity, GatewayError> {
+    pub(super) fn identity(&self) -> Result<GatewayIdentity, GatewayError> {
         let mut identity = self.identity.lock().expect("identity poisoned");
         if let Some(identity) = identity.as_ref() {
             return Ok(identity.clone());
@@ -184,7 +229,7 @@ impl MachineGateway {
 
 /// Opening the link sends nothing to the machine, so a connect that does not
 /// finish is "unreachable", never a request timeout that invites a retry.
-fn map_open_failure(machine: &str, failure: LinkFailure) -> GatewayError {
+pub(super) fn map_open_failure(machine: &str, failure: LinkFailure) -> GatewayError {
     match failure {
         LinkFailure::TimedOut => GatewayError::Unreachable {
             name: machine.into(),
@@ -194,7 +239,7 @@ fn map_open_failure(machine: &str, failure: LinkFailure) -> GatewayError {
     }
 }
 
-fn map_failure(machine: &str, failure: LinkFailure) -> GatewayError {
+pub(super) fn map_failure(machine: &str, failure: LinkFailure) -> GatewayError {
     let name = machine.to_string();
     match failure {
         LinkFailure::Closed => GatewayError::ConnectionLost { name },

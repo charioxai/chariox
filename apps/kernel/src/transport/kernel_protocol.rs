@@ -86,6 +86,10 @@ pub(crate) enum KernelOutgoingFrame {
     },
     Event {
         event_id: u64,
+        /// Protocol 568: the machine whose subscription produced this event; its
+        /// `event_id` counts on that machine's stream. Absent for this kernel's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machine: Option<String>,
         event: Box<KernelEvent>,
     },
 }
@@ -948,6 +952,7 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             kernel_error(code, error, *retryable)
         }
         DaemonError::UserDomainRefused { reason } => kernel_error(reason.code(), error, false),
+        DaemonError::MachineFile { code, .. } => kernel_error(code, error, false),
         DaemonError::AgentWorkerCleanup { source, .. } => {
             let mut mapped = map_kernel_error(source);
             mapped.message = error.to_string();

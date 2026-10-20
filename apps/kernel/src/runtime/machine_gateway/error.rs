@@ -30,6 +30,15 @@ pub(crate) enum GatewayError {
     ConnectionLost {
         name: String,
     },
+    /// A pairing link could not be used; `detail` says why and what to do.
+    JoinRefused {
+        detail: String,
+    },
+    /// The events of a subscription stopped because the connection ended.
+    SubscriptionEnded {
+        name: String,
+        last_event_id: Option<u64>,
+    },
     /// The target kernel answered with its own typed refusal; it is passed through.
     Remote {
         name: String,
@@ -49,7 +58,10 @@ impl GatewayError {
             Self::Unpaired { .. } => "machine_unpaired",
             Self::Incompatible { .. } => "machine_incompatible",
             Self::RequestTimeout { .. } => "machine_request_timeout",
-            Self::ConnectionLost { .. } => "machine_connection_lost",
+            Self::ConnectionLost { .. } | Self::SubscriptionEnded { .. } => {
+                "machine_connection_lost"
+            }
+            Self::JoinRefused { .. } => "machine_join_refused",
             Self::Remote { code, .. } => code,
         }
     }
@@ -81,6 +93,14 @@ impl GatewayError {
             Self::ConnectionLost { name } => format!(
                 "The connection to machine \"{name}\" ended while the request was in flight. Retry once with the same --command-id."
             ),
+            Self::SubscriptionEnded { name, last_event_id } => {
+                let resume = last_event_id.map_or_else(
+                    || "Subscribe again.".to_string(),
+                    |id| format!("Subscribe again with resume_from_event_id {id}."),
+                );
+                format!("The subscription on machine \"{name}\" ended because the connection was lost. {resume}")
+            }
+            Self::JoinRefused { detail } => format!("Could not pair with that machine: {detail}"),
             Self::Remote { message, .. } => message.clone(),
         }
     }
@@ -89,7 +109,8 @@ impl GatewayError {
         match self {
             Self::Unreachable { .. }
             | Self::RequestTimeout { .. }
-            | Self::ConnectionLost { .. } => true,
+            | Self::ConnectionLost { .. }
+            | Self::SubscriptionEnded { .. } => true,
             Self::Remote { retryable, .. } => *retryable,
             _ => false,
         }
@@ -119,6 +140,7 @@ pub(crate) fn is_public_code(code: &str) -> bool {
             | "machine_connection_lost"
             | "machine_outcome_unknown"
             | "machine_not_available"
+            | "machine_join_refused"
             | "command_id_required"
             | "ledger_unavailable"
     )

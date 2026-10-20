@@ -1362,9 +1362,13 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
             };
             if let Some(route) = route {
                 match external_caller.as_ref() {
-                    Some(caller) => {
-                        unix_access::serve_gateway(&connection, caller, request_id, command_id, route)
-                    }
+                    Some(caller) => unix_access::serve_gateway(
+                        &connection,
+                        caller,
+                        request_id,
+                        command_id,
+                        route,
+                    ),
                     None => {
                         let _ = try_send_outgoing_frame(
                             outgoing_tx,
@@ -1643,6 +1647,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                                 &close_requested,
                                 &runtime.transport_health,
                                 KernelOutgoingFrame::Event {
+                                    machine: None,
                                     // MD-DISPLAY-04: no durable replay cursor.
                                     // Per-display sequence lives inside frame.
                                     event_id: 0,
@@ -1693,25 +1698,40 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
             resume_from_event_id,
             machine,
         } => {
-            if machine.is_some() {
-                let _ = try_send_outgoing_frame(
-                    outgoing_tx,
-                    close_tx,
-                    close_requested,
-                    &runtime.transport_health,
-                    KernelOutgoingFrame::Response {
-                        machine: None,
-                        request_id,
-                        response: Box::new(None),
-                        error: Some(KernelTransportError {
-                            code: "machine_not_available".into(),
-                            message: "event subscriptions on another machine are not available yet; poll the session state".into(),
-                            retryable: false,
-                        }),
+            if let Some(machine) = machine {
+                if external_caller.is_none() {
+                    let _ = try_send_outgoing_frame(
+                        outgoing_tx,
+                        close_tx,
+                        close_requested,
+                        &runtime.transport_health,
+                        KernelOutgoingFrame::Response {
+                            machine: None,
+                            request_id,
+                            response: Box::new(None),
+                            error: Some(KernelTransportError {
+                                code: "machine_not_available".into(),
+                                message: "machine routing is only available to a local access grant holder".into(),
+                                retryable: false,
+                            }),
+                        },
+                        None,
+                        None,
+                    );
+                    return;
+                }
+                unix_access::serve_gateway_subscription(
+                    &connection,
+                    request_id,
+                    machine,
+                    crate::runtime::machine_gateway::SubscribeRequest {
+                        session_id,
+                        attachment_id,
+                        scope: subscription_scope,
+                        resume_from_event_id,
                     },
-                    None,
-                    None,
-                );
+                )
+                .await;
                 return;
             }
             let scope = kernel_subscription_scope(subscription_scope.as_deref());

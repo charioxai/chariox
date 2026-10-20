@@ -280,8 +280,13 @@ pub use api::{
     RoomEnvironmentScreenshotArtifact, RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,
 };
 pub use api::{
-    ExtendKernelSudoRequest, KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest, GatewayMachine, GatewayMachineStatus, GatewayMachineVia, ListGatewayMachinesRequest, OnBehalfOf,
-    RequestKernelAccessRequest, RequestKernelSudoRequest, RevokeKernelAccessGrantRequest,
+    ExtendKernelSudoRequest, ForgetGatewayMachineRequest, GatewayAttachmentRef, GatewayMachine,
+    GatewayMachineStatus, GatewayMachineVia, HeartbeatAttachmentsRequest, JoinMachineLinkRequest,
+    KernelAccessGrant, KernelSudoTurn, ListGatewayMachinesRequest, ListKernelAccessGrantsRequest,
+    ListMachineDirectoryRequest, MachineDirectoryEntry, MachineFileKind, MachineFileStat,
+    OnBehalfOf, ReadMachineFileRequest, RequestKernelAccessRequest, RequestKernelSudoRequest,
+    RevokeKernelAccessGrantRequest, StatMachineFileRequest, WriteMachineFileRequest,
+    MACHINE_FILE_MAX_BYTES, MACHINE_FILE_MAX_CHUNK_BYTES,
 };
 pub use api::{
     GetKernelResourceTelemetryRequest, KernelResourceTelemetryDisk, KernelResourceTelemetryLogs,

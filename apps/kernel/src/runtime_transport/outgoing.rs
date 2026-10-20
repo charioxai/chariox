@@ -90,6 +90,7 @@ mod tests {
         sender
             .try_send(KernelOutgoingFrame::Event {
                 event_id: 1,
+                machine: None,
                 event: Box::new(crate::transport::kernel_protocol::KernelEvent::Heartbeat {
                     session_id: "session-1".to_string(),
                 }),
