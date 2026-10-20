@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { UserDomainAccessController, userDomainGrantExpiry, userDomainUseNotice, type UserDomainAccessClient } from "./user-domain-access.js"
 import type { UserDomainGrant, UserDomainGrantEvent } from "./kernel-types-kernel-browser.js"
-const grant: UserDomainGrant = { agent_id: "a", session_id: "s", kernel_id: "k", resources: [{ kind: "note", note_id: "n" }], since_ms: 100, focused: false, idle_since_ms: null, idle_timeout_seconds: 1800, expiry_rule: "kernel policy" }
+const grant: UserDomainGrant = { agent_id: "a", session_id: "s", kernel_id: "k", resources: [{ kind: "capture", capture_id: "n" }], since_ms: 100, focused: false, idle_since_ms: null, idle_timeout_seconds: 1800, expiry_rule: "kernel policy" }
 const event = (cursor: number, grants = [grant], notice: UserDomainGrantEvent["notice"] = null): UserDomainGrantEvent => ({ event: "user_domain_grants_changed", cursor, grants, notice })
 const tick = () => new Promise(resolve => setImmediate(resolve))
 function fixture(version = 494) {
