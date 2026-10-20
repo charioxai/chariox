@@ -84,6 +84,10 @@ pub struct RoomTerminalSummary {
     pub created_at_ms: u64,
     /// Bytes of output produced so far: the cursor for `ReadRoomTerminalOutput`.
     pub output_offset: u64,
+    /// Bytes of typed or pasted input that an interrupt (Ctrl-C, Ctrl-\\,
+    /// Ctrl-Z) discarded because the program had not read them yet.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub dropped_input_bytes: u64,
     /// The Room agent whose machine runs this terminal; `None` is this kernel.
     /// Clients send it back as `host_agent` on requests about the terminal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -170,4 +174,8 @@ pub struct RoomTerminalEvent {
     pub armed_by: String,
     pub kind: RoomTerminalEventKind,
     pub screen_text: String,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }

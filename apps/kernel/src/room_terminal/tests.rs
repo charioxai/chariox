@@ -1182,6 +1182,90 @@ async fn a_terminal_that_stops_reading_does_not_lock_the_others() {
     service.end_session("room-1");
 }
 
+/// What the user pasted before Ctrl-C must not run later: the interrupt
+/// discards it, the shell that resumes reading gets only what is typed
+/// afterwards, and the terminal says how much was dropped.
+#[tokio::test]
+async fn ctrl_c_discards_the_paste_it_overtakes() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = service
+        .open(OpenRoomTerminal {
+            session_id: "room-1".to_string(),
+            working_directory: root.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+            title: None,
+            opened_by: TerminalActor::User,
+            command: Some(vec![
+                "sh".into(),
+                "-c".into(),
+                "stty -icanon -echo; trap : INT; echo NOT-READING; sleep 600; \
+                 stty sane; echo SHELL-IS-BACK; exec sh"
+                    .into(),
+            ]),
+        })
+        .unwrap()
+        .terminal_id;
+    until("the program to stop reading", || async {
+        screen_has(&service, &id, "NOT-READING").await
+    })
+    .await;
+    // Junk the program never reads, then a command a shell would run.
+    let junk = vec![b'x'; 60 * 1024];
+    let command = b"\necho STALE-$((6*7))\n";
+    for paste in [&junk[..], &junk[..], &command[..]] {
+        let queued = service
+            .input("room-1", &id, &TerminalActor::User, paste)
+            .await
+            .unwrap();
+        assert!(queued.accepted);
+    }
+    let paste_len = (2 * junk.len() + command.len()) as u64;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let interrupt = service
+        .input("room-1", &id, &TerminalActor::User, b"\x03")
+        .await
+        .unwrap();
+    assert!(interrupt.accepted);
+    until("the shell to come back", || async {
+        screen_has(&service, &id, "SHELL-IS-BACK").await
+    })
+    .await;
+    // A fresh command works, and runs before anything stale could.
+    let fresh = service
+        .input(
+            "room-1",
+            &id,
+            &TerminalActor::User,
+            b"echo FRESH-$((6*7))\n",
+        )
+        .await
+        .unwrap();
+    assert!(fresh.accepted);
+    until("the fresh command to run", || async {
+        screen_has(&service, &id, "FRESH-42").await
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    service.pump_once();
+    let snapshot = service.snapshot("room-1", &id).unwrap();
+    assert!(
+        !snapshot.screen_text.contains("STALE-42")
+            && !snapshot.scrollback_text.contains("STALE-42"),
+        "the discarded paste ran: {}{}",
+        snapshot.scrollback_text,
+        snapshot.screen_text
+    );
+    let dropped = snapshot.terminal.dropped_input_bytes;
+    assert!(
+        dropped > 0 && dropped < paste_len,
+        "the terminal reports what the interrupt dropped, got {dropped} of {paste_len}"
+    );
+    service.end_session("room-1");
+}
+
 #[tokio::test]
 async fn a_needle_split_across_the_wait_registration_still_matches() {
     let root = TempDir::new();

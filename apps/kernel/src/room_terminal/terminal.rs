@@ -39,6 +39,8 @@ pub(super) struct Terminal {
     /// A command line the shell reported started and not yet finished.
     pub command_in_flight: bool,
     pub waiting_reported: bool,
+    /// Input an interrupt discarded before the terminal's program read it.
+    pub dropped_input_bytes: u64,
     pub unsaved_since: Option<Instant>,
     /// The last time a program returned to the prompt (or the shell exited).
     pub last_program_end: Option<ProgramEnd>,
@@ -96,6 +98,7 @@ impl Terminal {
             mark_tracking: false,
             command_in_flight: false,
             waiting_reported: false,
+            dropped_input_bytes: 0,
             unsaved_since: None,
             last_program_end: None,
         }
@@ -296,6 +299,7 @@ impl Terminal {
             user_interacted: record.user_interacted,
             created_at_ms: record.created_at_ms,
             output_offset: self.log.end_offset(),
+            dropped_input_bytes: self.dropped_input_bytes,
             host_agent: None,
         }
     }

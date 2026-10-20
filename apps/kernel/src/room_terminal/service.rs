@@ -271,12 +271,13 @@ impl RoomTerminalService {
                         // long as a program ignores its input.
                         // A lone interrupt key must still stop the program
                         // when the paste before it is stuck in the queue.
-                        let signalled = match input {
+                        let interrupted = match input {
                             [key] => pty.signal_key_behind_blocked_input(&run_id, *key)?,
-                            _ => false,
+                            _ => None,
                         };
-                        if !signalled {
-                            pty.input_writer(&run_id)?.enqueue_input(input)?;
+                        match interrupted {
+                            Some(dropped) => terminal.dropped_input_bytes += dropped as u64,
+                            None => pty.input_writer(&run_id)?.enqueue_input(input)?,
                         }
                         if *actor == TerminalActor::User {
                             terminal.mark_user_interacted();
