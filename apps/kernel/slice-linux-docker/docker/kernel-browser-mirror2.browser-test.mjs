@@ -161,7 +161,7 @@ test("MP-10: adopted stylesheet edits with an unchanged rule count reach the vie
 
 // Compact rows -> [id, tag] for element rows (kind codes are numbers).
 const elements = packet => { const out = []; let id = 0; for (const row of packet.nodes) { id += row[0]; if (typeof row[2] === "string") out.push([`n${id}`, row[2], row[3] || {}]); } return out; };
-test("MP-08/MP-11: typing reaches a field inside a mirrored cross-origin frame; its password field stays refused", () => mirrored(
+test("MP-08/MP-11: typing reaches a field inside a mirrored cross-origin frame, password field included", () => mirrored(
   '<p>top</p><iframe src="http://localhost:PORT/form" style="width:400px;height:120px"></iframe>', async ({ next, input }) => {
     await new Promise(resolve => setTimeout(resolve, 500));
     const snapshot = await next();
@@ -171,7 +171,11 @@ test("MP-08/MP-11: typing reaches a field inside a mirrored cross-origin frame; 
     await input(snapshot.sequence, { kind: "text", node_id: field, text: "hi" });
     const changed = await next(1000);
     assert.deepEqual(changed.ops.filter(op => op.op === "form").map(op => [op.id, op.form.value]), [[field, "hi"]]);
-    await assert.rejects(input(changed.sequence, { kind: "text", node_id: secret, text: "x" }), /sensitive|protected|refus/i);
+    // UX-first: what a person types is delivered to every field, a password field too.
+    await input(changed.sequence, { kind: "text", node_id: secret, text: "x" });
+    const typed = await next(1000);
+    // The mirror shows the typed character masked ("•"), as it does for every password field.
+    assert.deepEqual(typed.ops.filter(op => op.op === "form").map(op => [op.id, op.form.value]), [[secret, "\u2022"]]);
   }, {
     "/form": { type: "text/html", body: '<!doctype html><input id="f" type="text"><input id="p" type="password">' },
   }));
@@ -852,18 +856,19 @@ test("MP-08: a long title travels as a 1 KB tooltip, in the snapshot and in late
 }));
 
 // Audit 2026-10-10 §4.8: packets whose replies were lost (a dropped socket) are sent again instead of a gap and a reset.
-test("MP-10: a credit that still names an older base after a packet's reply was lost gets that packet again (original bytes, in order), not a newer sequence", () => mirrored('<p id="x">one</p>', async ({ next, evaluate, host }) => {
+test("MP-10: a resend credit that still names an older base after a packet's reply was lost gets that packet again (original bytes, in order)", () => mirrored('<p id="x">one</p>', async ({ next, evaluate, host }) => {
   const first = await next();
   assert.equal(first.reset, true);
   const subscription_id = [...host.mirror.streams.keys()][0], generation = host.generation;
-  const credit = after => host.request({ op: "mirror_next", subscription_id, generation, after_sequence: after, drift_nodes: [], wait_ms: 1000 });
+  const credit = (after, resend) => host.request({ op: "mirror_next", subscription_id, generation, after_sequence: after, drift_nodes: [], wait_ms: 1000, ...(resend ? { resend: true } : {}) });
   // Two packets are issued but their replies never reach the viewer (it still names sequence 1).
   await evaluate("x.firstChild.data='two';true"); const lost2 = await credit(first.sequence);
   await evaluate("x.firstChild.data='three';true"); const lost3 = await credit(first.sequence);
   assert.deepEqual([lost2.sequence, lost3.sequence], [2, 3]);
   await new Promise(resolve => setTimeout(resolve, 1700));
   await evaluate("x.firstChild.data='four';true");
-  const again = [await credit(first.sequence), await credit(first.sequence)];
+  // Packet age never establishes loss; the viewer's explicit resend credits (protocol 501) ask for each packet after its base.
+  const again = [await credit(first.sequence, true), await credit(lost2.sequence, true)];
   assert.deepEqual(again, [lost2, lost3], "MP-10: the lost packets come back byte for byte, in order");
   assert.equal((await credit(3)).sequence, 4, "MP-10: then the stream continues");
 }));
