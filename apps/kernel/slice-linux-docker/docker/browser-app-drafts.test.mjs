@@ -9,21 +9,24 @@ function storage() {
   const db = { createObjectStore() {}, transaction(_store, mode, option) {
     options.push(option);
     const tx = { objectStore: () => ({
-      get(key) { const request = {}; queueMicrotask(() => { request.result = values.get(key); request.onsuccess?.(); }); return request; },
+      get(key) { const request = {}; queueMicrotask(() => {
+        if (store.readFailures > 0) { store.readFailures--; return request.onerror(); }
+        request.result = values.get(key); request.onsuccess?.();
+      }); return request; },
       put(value, key) { const commit = () => { values.set(key, structuredClone(value)); tx.oncomplete(); }; commit.abort = () => tx.onabort(); commits.push(commit); },
     }) };
     if (mode === 'readonly') queueMicrotask(() => tx.oncomplete?.());
     return tx;
   } };
-  const store = { values, commits, options, unavailable: false, indexedDB: { open() { const request = {}; queueMicrotask(() => {
+  const store = { values, commits, options, unavailable: false, readFailures: 0, indexedDB: { open() { const request = {}; queueMicrotask(() => {
     if (store.unavailable) return request.onerror();
     request.result = db; request.onupgradeneeded?.(); request.onsuccess();
   }); return request; } } };
   return store;
 }
-function page(store, readyState = 'complete', selection = 'normal') {
+function page(store, readyState = 'complete', selection = 'normal', titleDefault = '') {
   const listeners = new Map(), form = { id: 'todo', getAttribute: () => null };
-  const title = { tagName: 'INPUT', type: 'text', id: 'title', name: 'title', value: '', defaultValue: '', form, getAttribute: () => null };
+  const title = { tagName: 'INPUT', type: 'text', id: 'title', name: 'title', value: titleDefault, defaultValue: titleDefault, form, getAttribute: () => null };
   const secret = { ...title, id: 'password', type: 'password', value: 'private-password' };
   const apiKey = { ...title, id: 'api_key', name: 'api_key', value: 'private-api-key' };
   const protectedField = { ...title, id: 'private-notice', name: 'notice', value: 'private-protected-value', closest: () => ({}) };
@@ -150,4 +153,46 @@ test('the newest edit wins while an unsaved draft retry is in flight', async () 
   assert.equal(first.notices.length, 0);
   const restored = page(store); await restored.context.__charioxAppDraftFlushed();
   assert.equal(restored.title.value, 'new edit');
+});
+
+// MP-08/MP-10/MP-11: emptying a field is an edit; it must come back empty, not as the field default.
+test('a field the person emptied is restored empty', async () => {
+  const store = storage(), first = page(store, 'complete', 'normal', 'Untitled');
+  await first.context.__charioxAppDraftFlushed();
+  first.input('');
+  const flush = first.context.__charioxAppDraftFlushed();
+  await turn(); store.commits.shift()(); await flush;
+  const recovered = page(store, 'complete', 'normal', 'Untitled'); await recovered.context.__charioxAppDraftFlushed();
+  assert.equal(recovered.title.value, '');
+});
+
+// MP-08/MP-10/MP-11: a transient read failure must never replace the retained draft.
+test('a failed draft read is retried before the retained draft is replaced', async () => {
+  const store = storage(); store.values.set('chariox.form-draft.v1:/', { '["todo","INPUT","title"]': 'retained draft' });
+  store.readFailures = 1;
+  const current = page(store);
+  await current.context.__charioxAppDraftFlushed();
+  assert.equal(current.title.value, '', 'the failed read restored nothing yet');
+  current.change('high');
+  const flush = current.context.__charioxAppDraftFlushed();
+  await turn(); store.commits.shift()(); await flush;
+  assert.equal(current.title.value, 'retained draft', 'the retry restores the retained draft');
+  assert.equal(store.values.get('chariox.form-draft.v1:/')['["todo","INPUT","title"]'], 'retained draft');
+});
+
+test('a draft whose read keeps failing is not written over the retained one', async () => {
+  const store = storage(); store.values.set('chariox.form-draft.v1:/', { '["todo","INPUT","title"]': 'retained draft' });
+  store.readFailures = 3;
+  const current = page(store);
+  await current.context.__charioxAppDraftFlushed();
+  current.change('high');
+  assert.equal(await current.context.__charioxAppDraftFlushed(), true, 'publication is never blocked');
+  await turn();
+  assert.equal(store.commits.length, 0, 'nothing is written while the retained draft cannot be read');
+  assert.match(current.notices[0]?.textContent ?? '', /not saved/i);
+  store.readFailures = 0;
+  assert.equal(await current.context.__charioxAppDraftFlushed(), true);
+  await turn(); store.commits.shift()(); await turn();
+  assert.equal(current.notices.length, 0);
+  assert.equal(store.values.get('chariox.form-draft.v1:/')['["todo","INPUT","title"]'], 'retained draft');
 });

@@ -31,7 +31,8 @@ export function installAppDrafts() {
   const snapshot = () => {
     const next = {};
     for (const field of fields()) {
-      if (typeof field.value === 'string' && field.value && field.value.length <= 16384) next[identity(field)] = field.value;
+      // Emptied fields are kept: an empty value differs from a nonempty default.
+      if (typeof field.value === 'string' && field.value !== defaultValue(field) && field.value.length <= 16384) next[identity(field)] = field.value;
     }
     return JSON.stringify(next).length <= 65536 ? next : {};
   };
@@ -54,14 +55,15 @@ export function installAppDrafts() {
       tx.objectStore('drafts').put(value, key);
     });
   };
-  let pending = open().then(db => new Promise((resolve, reject) => {
+  const read = () => open().then(db => new Promise((resolve, reject) => {
     const request = db.transaction('drafts', 'readonly').objectStore('drafts').get(key);
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(new Error('App draft read failed'));
   })).then(value => {
     saved = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
     loaded = true; restore();
-  }).catch(() => {});
+  });
+  let pending = read().catch(() => {});
   let latest = null, queued = 0, unsaved = false, notice;
   const setUnsaved = value => {
     unsaved = value;
@@ -77,9 +79,11 @@ export function installAppDrafts() {
   const enqueue = draft => {
     ++queued;
     pending = pending.then(async () => {
-      saved = draft.value ?? snapshot();
-      draft.value = saved;
       try {
+        // A retained draft that could not be read is never replaced: read it again first.
+        if (!loaded) await read();
+        saved = draft.value ?? snapshot();
+        draft.value = saved;
         await commit(saved);
         if (latest === draft) { latest = null; setUnsaved(false); }
       } catch { setUnsaved(true); }
