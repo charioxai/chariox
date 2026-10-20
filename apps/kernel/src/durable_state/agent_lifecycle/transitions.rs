@@ -446,8 +446,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 && (t.goal.is_some()
                     || (t.completion_check.is_some() && has_answer && t.wait.is_none()))
             {
-                let correction = super::goals::work_end(&mut t, has_answer, now);
                 t.provider_run_id = Some(run);
+                let correction = super::goals::work_end(&mut t, has_answer, now);
                 t.revision += 1;
                 save(tx, &t)?;
                 return Ok(Outcome::Settled {

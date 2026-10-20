@@ -284,7 +284,17 @@ pub(super) fn evaluate(
             .obligations
             .iter()
             .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
-    if plain_correction_finished {
+    // A reply that is no JSON object at all (the assessor answered the request
+    // instead of assessing it) carries no verdict; the public answer stands.
+    let answered_instead = t.goal.is_none()
+        && valid
+        && !result.contains('{')
+        && work_answer.as_deref().is_some_and(|a| !a.trim().is_empty())
+        && !t
+            .obligations
+            .iter()
+            .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
+    if plain_correction_finished || answered_instead {
         if let Some(answer) = work_answer.filter(|s| !s.trim().is_empty()) {
             let evidence = format!(
                 "history:{}:prompt:{}",

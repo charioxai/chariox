@@ -1364,3 +1364,46 @@ fn r22_malformed_plain_assessment_uses_one_bounded_correction() {
         assert!(!correction && !task.correction_used);
     }
 }
+
+// A turn admitted before it had a provider run (queued behind another turn)
+// settles with the run that ended it; its check must read that run's answer.
+#[test]
+fn completion_check_names_the_run_that_ended_the_work_turn() {
+    let f = Fixture::new();
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "parent".into(),
+        prompt: "p".into(),
+        run: None,
+        now: 1,
+    });
+    f.apply(Operation::EnableCompletionCheck { task: "p".into() });
+    f.settle("p", true);
+    let task = f.task();
+    let check = completion::evaluation(&task).unwrap();
+    assert_eq!(check.work_provider_run_id.as_deref(), Some("run"));
+}
+
+// Real Codex answered the request ("CTV1-B") instead of assessing it. That is no
+// verdict; repeating the visible answer through a correction helps nobody.
+#[test]
+fn assessor_answering_the_request_leaves_the_public_answer_standing() {
+    let f = Fixture::new();
+    plain(&f);
+    f.settle("p", true);
+    let id = f.task().pending_prompt_id.unwrap();
+    f.begin(&id);
+    let Outcome::Settled { task, correction } = f.apply(Operation::EvaluateGoal {
+        task: "p".into(),
+        prompt: id,
+        result: "CTV1-B".into(),
+        work_answer: Some("CTV1-B".into()),
+        now: 4,
+    }) else {
+        panic!()
+    };
+    assert!(!correction);
+    assert_eq!(task.state, ExecutionState::Done, "{}", task.reason);
+    assert!(!task.correction_used);
+}
