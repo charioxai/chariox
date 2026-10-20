@@ -26,7 +26,7 @@ pub(in crate::worker_process) struct Lease {
     pub package: Option<Dir>,
     pub runtime: Option<Dir>,
     path: PathBuf,
-    local_mount_ids: [u64; 2],
+    _local_mount_ids: [u64; 2],
     released: bool,
 }
 #[derive(Serialize)]
@@ -48,8 +48,8 @@ enum Operation<'a> {
     },
 }
 
-/// Before its first install commits, an installation's committed generation is
-/// 0: there is no committed data to snapshot, and the helper refuses 0.
+// Before its first install commits, an installation's committed generation is
+// 0: there is no committed data to snapshot, and the helper refuses 0.
 
 /// The helper's authenticated per-UID socket, served by root.
 fn connect(uid: u32) -> Result<UnixStream> {
@@ -187,7 +187,7 @@ impl Lease {
             package: None,
             runtime: None,
             path,
-            local_mount_ids,
+            _local_mount_ids: local_mount_ids,
             released: false,
         })
     }
@@ -250,8 +250,8 @@ impl Lease {
     #[cfg(test)]
     pub fn mount_observations(&self) -> [(u64, u64); 2] {
         [
-            (self.grant.data_mount_id, self.local_mount_ids[0]),
-            (self.grant.temporary_mount_id, self.local_mount_ids[1]),
+            (self.grant.data_mount_id, self._local_mount_ids[0]),
+            (self.grant.temporary_mount_id, self._local_mount_ids[1]),
         ]
     }
     /// Call after the worker cgroup is empty and every broker/worker directory

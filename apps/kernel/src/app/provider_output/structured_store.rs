@@ -231,6 +231,7 @@ impl StructuredOutputRecordStore {
         self.clear_poll_failures(provider_run_id);
     }
 
+    #[cfg(test)]
     pub(crate) fn schedule_after_poll_failure(
         &self,
         provider_run_id: &str,

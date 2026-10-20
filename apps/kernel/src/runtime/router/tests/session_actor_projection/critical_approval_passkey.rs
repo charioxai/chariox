@@ -772,7 +772,7 @@ async fn a_passkey_from_a_refused_class_is_neither_verified_nor_counted() {
         (
             cli.clone(),
             local_caller(KernelConnectionClass::KernelAgent),
-            not_accepted,
+            "agents cannot answer approvals",
         ),
         (
             cli.clone(),

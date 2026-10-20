@@ -1,5 +1,6 @@
 mod action;
 mod action_ledger;
+pub(crate) use action_ledger::EnvironmentActionLedger;
 mod durability;
 mod elements;
 mod event;
@@ -9,6 +10,7 @@ mod ownership;
 mod registry;
 mod state;
 mod tabs;
+pub(crate) use tabs::TabRegistry;
 
 pub use action::{
     ActionAdmission, ActionCancellationOutcome, EnvironmentAction, EnvironmentActionArguments,

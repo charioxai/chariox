@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct TransportHealthSnapshot {
     pub active_connections: usize,
     pub active_subscriptions: usize,
@@ -23,30 +23,6 @@ pub struct TransportHealthSnapshot {
     pub relay_last_reconnect_delay_ms: Option<u64>,
     pub relay_last_reconnect_url: Option<String>,
     pub relay_last_connected_url: Option<String>,
-}
-
-impl Default for TransportHealthSnapshot {
-    fn default() -> Self {
-        Self {
-            active_connections: 0,
-            active_subscriptions: 0,
-            retained_event_limit: 0,
-            command_result_cache_limit: 0,
-            inbound_request_limit: 0,
-            incoming_requests: 0,
-            emitted_events: 0,
-            replay_gaps: 0,
-            inbound_overload_rejections: 0,
-            duplicate_command_conflicts: 0,
-            outgoing_queue_overflows: 0,
-            slow_consumer_closes: 0,
-            relay_reconnect_attempts: 0,
-            relay_last_reconnect_reason: None,
-            relay_last_reconnect_delay_ms: None,
-            relay_last_reconnect_url: None,
-            relay_last_connected_url: None,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default)]

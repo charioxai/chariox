@@ -1,5 +1,178 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-10 / MP-11 failed workflow delegate settlement (2026-10-14)
+
+A durable Failed/Stopped workflow settles an unstarted delegate only when the
+parent has an accepted receipt for that invocation, is its immutable creator,
+and the delegate names a node with no admitted task. The shared lifecycle writer
+cancels that obligation and subscription, with a redacted failure/recovery
+event. Acknowledging the workflow error or blocking the parent does not strand
+the delegate; periodic reconciliation also reads archived failures. Already
+admitted workflow tasks use normal exact-task cancellation and resource
+settlement. Other invocations and completed delegates retain their outcomes.
+
+Isolated validation workers mount the selected source plus its referenced Git
+common directory read-only through `scripts/e2e-stack/read-only-worktree-mounts.mjs`;
+no enclosing checkout/state directory is mounted to repair Git. Both corrections
+retain local513/peer121 and apply below client-specific behavior. Focused
+regressions and physical mount checks supplement the real-provider/client cells;
+this inventory alone closes no MP acceptance item.
+
+## MP-08 / MP-10 / MP-11 queued schedule and display errors (2026-10-13)
+
+Busy Queue schedules emit an enqueue-only runtime plan rather than mutating the
+queue during collection. The shared runtime admission writes the queued prompt
+and immutable endpoint-owner record in one SQLite transition with rollback.
+Later dispatch reuses that exact queue identity and owner. Display pairing
+lookup failures map to definitive subscription responses and preserve unrelated
+relay subscribers. These shared changes add no managed-only path or serialized
+shape and retain allocated local513/peer121. Source red/green checks supplement
+the BQ-01 and DS-01 real live requirements in `AGENT_MODEL_OVERHAUL_PLAN.md`;
+source checks alone close no MP item or security-anchor review.
+
+The 2026-10-13 17:12 coordinator amendment allows the live kernel owner to Stop
+non-terminal history without changing its provenance or read-only marker.
+Individual and captured paths share the guard, rechecked at commit; agent
+origins, other users, Pause/Resume and terminal history keep the denial. Read
+projection looks up the invoker once per autonomous run and captures the owner
+identity once per projection without cloning the full config. Interrupted/resumed
+control fixtures now use legitimate immutable creator provenance.
+
+## MP-08 / MP-10 / MP-11 historical workflow admission (2026-10-13)
+
+Allocated local513/peer121 carries paired display caller normalization and an
+owner-only historical workflow read marker. Runs with no immutable agent creator
+or invoking-user proof are read-only to the authenticated kernel owner; Full
+collaboration does not expose them to another user. Current Room, endpoint and
+node ownership never creates historical proof. List/Get, snapshots, updates and
+Room inventory share the same provenance policy. Individual and captured Room
+controls reject legacy runs below client adapters except the authenticated kernel
+owner's Stop of a non-terminal run under the 17:12 amendment. New runs
+retain atomic invoking-user proof and their ordinary control path. Web/TUI
+project the historical label; native clients receive the same shared marker.
+
+This is common kernel behavior, not a managed-only policy. Managed upgrade pins
+retain506 as an explicit predecessor and the consuming web floor follows513.
+Focused regressions, real pre-proof upgrade cells HW-01/HW-02/HW-03/HW-04 in the agent
+model plan, and current semantic review of this admission anchor are separate
+requirements. No MP item gains acceptance from this inventory alone.
+
+## MP-08 / MP-10 / MP-11 home App authority across leases (2026-10-13)
+
+Under Miguel's D1 decision, an agent's placement does not select a different App
+capability policy. The home kernel projects installed App tools to the worker's
+ordinary leased manifest, validates the authenticated current worker epoch, and
+executes the call through the same home App catalog, timed binding, cancellation,
+trust and critical-effect approval path used by an ordinary home agent. App
+packages, storage and authority stay on the home kernel. The existing App bridge
+receives `actor: {kind: "agent", id: <home agent id>}` and `agent_id`; a worker
+surrogate or the human owner is not the calling actor.
+
+App acquisition retains the human prompt witness, explicit owner interaction and
+binding generation through its writer boundary, using the projected leased run
+instead of a local provider-store run. An old local provider token cannot acquire
+an App after its agent moves to a worker. Kernel-browser acquisition keeps its
+existing local-agent contract; native App-tab behavior is a separate lane.
+
+Source regressions and scoped live receipts do not close MP-10's complete
+ordinary/managed matrix or replace current semantic review of App admission.
+No LocalDaemon or relay shape changes in this correction.
+
+## MP-08/MP-10/MP-11 visual protection amendment (2026-10-09)
+
+Miguel’s fill-target decision supersedes earlier visual echo/media/container and
+whole-frame protection entries below. Record the exact Vault-filled browser
+frame/backend node/document/generation or native window/AT-SPI object. On each
+capture cover only a still-filled plain text field with small device-pixel
+padding. Password fields show dots and are not masked; show-password toggles
+are checked each capture. Removal, navigation/generation change or user
+clearing/replacement retires tracking. No other page/desktop content is masked.
+Source regressions alone do not establish MP-10 real live acceptance.
+## MP-11 room security corrections, am1 (2026-10-08)
+
+Agent allocation uses random 128-bit identities independent of the live-agent
+snapshot, so deletion and kernel restart do not restore a retired counter value.
+Current and legacy ID forms are reserved from aliases; message resolution rejects
+ambiguous references already present in restored state. New workflow execution
+bindings require the caller or an immutable direct child, including code-built
+definitions. MP-08 / MP-10 / MP-11 A01-S04 integration correction: invoking an
+existing public workflow may execute saved peer bindings in the same room and
+owner scope. This grants no edit, rebind, or destructive authority. Resume retains
+run ownership checks and validates every saved agent, runtime binding, and graph
+node against the same room and owner scope.
+
+Current-session recall rejects an explicit session ID different from the
+authenticated provider run's room. The shared check covers keyword, semantic,
+agent-assisted, and structured recall. Provider instructions describe regular
+agent spawning and workflows when the room tools are exposed, with the same
+self/direct-child policy for new bindings and saved public-peer execution policy. MP-08 / MP-10 / MP-11 obligation settlement
+cells require the PR2 lifecycle implementation; PR1 dispatch registration alone
+does not establish completion settlement.
+
+The workflow lane retains each command's provider epoch and forwarded peer binding
+and rechecks authority before execution and result delivery. Compiler work, including
+registry compilation and summary generation, runs outside the global app mutex with
+bounded admission; authorization and target validation are repeated after the wait.
+MP-11 R1: registry additions reserve the scope/name with a nonblocking filesystem
+lock throughout compilation and atomic publication. Each job atomically creates
+its own random staging directory; failure cleans up only that job's directory.
+Concurrent same-name callers receive a clear conflict. Hidden staging directories
+and lock files are excluded from registry discovery. Empty per-name lock files
+remain on disk so their inode cannot be replaced while a writer holds the lock.
+Linux adds `workflow_code/compiler_seccomp.rs`: Node threads remain allowed, process
+and namespace creation are refused, and root-launched compilers drop host UID/GID and supplementary groups before
+exec so a process-count limit of 64 is effective. Nonroot kernels retain the
+operator user's inherited process limit; seccomp, memory, time and concurrency
+bounds apply to both. An unreadable private Node path fails closed after the
+privilege drop, with no root fallback. The private scratch mount is non-writable; no generated executable can be
+placed there. Trusted runtime mounts remain read-only. These are shared kernel
+policies, with no managed provider launch restriction or client-specific behavior.
+
+These corrections change no serialized protocol shape (local450/peer73). This entry
+records source policy only. Focused RED/GREEN checks, real relay/TUI/Codex evidence,
+current semantic review, and hosted/fresh-machine acceptance are separate gates;
+no acceptance result is inferred from this inventory.
+
+## MP-08 / MP-10 / MP-11 room workflow compilation boundary, am1 (2026-10-07)
+
+The shared compiler selects Node from kernel operator configuration and ignores
+caller-selected executable paths, including direct IPC compilation requests.
+The builder, console and promise callbacks are created inside the source realm;
+only serialized JSON crosses into or out of it. The Linux compiler process has
+a read-only root containing its executable, libraries and exactly identified
+Node runtime data files (including distribution-packaged built-ins), a size-limited private
+scratch mount, isolated network/PID/IPC namespaces, no inherited environment or
+non-stdio file handles, and heap/address-space, CPU and wall-time bounds.
+Only requested approved schema data is bounded and opened beneath a held root
+without following symlinks before serialization. Declarative evaluation replays
+with that data under one total deadline; unrelated workspace JSON is never read. These controls live in
+`workflow_code/compiler_isolation.rs` and `compiler_runtime.rs`, below clients.
+Provider launch paths are unchanged; compiler isolation adds no provider fence.
+The private compiler envelope changes no shared client shape (local450/peer73).
+
+MP-11 F14: root compiler jobs use one randomized high host UID/GID per kernel
+process, so their 64-task budget does not collide with ordinary UID 65534 services.
+The namespace UID remains 65534; private operator runtime paths still fail closed.
+
+MP-11 F7 / review R1: all source-compiling request paths, including Room artifact
+create/update and stored-source rebuild/update, use the shared two-job compiler
+lane without holding the app mutex. Caller authority and current artifact/workflow
+snapshots are checked again before persistence. The authenticated Room timeout
+regressions cover another room's app-dependent artifact listing during both create
+and update; live evidence retains separate source identities and acceptance limits.
+
+Linux requires Bubblewrap, runtime-file discovery and the isolation syscalls.
+Shared libnode and ICU data libraries are discovered through linked dependencies;
+external built-in/ICU file paths are read from bounded read-only Node/libnode ELF
+data and mounted individually, never as package directories. macOS uses the
+Seatbelt backend described in `WORKFLOW_COMPILER_ISOLATION.md`; unsupported hosts
+fail closed. These shared compiler backends are not ordinary/managed parity
+acceptance. Current security-anchor semantic review and the real hosted/fresh
+managed comparison remain coordinator gates. No non-security exact-blob review
+is required by this correction. Focused and real-provider results are recorded
+in the lane handoff after completion; no MP item is closed by this inventory.
+
+
 ## MP-08 / MP-10 / MP-11 fatal Computer child settlement, b204 (2026-10-04)
 
 The shared hold adapter resets input for direct signal exits and Bash's

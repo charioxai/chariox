@@ -22,11 +22,13 @@ type KernelSessionUnavailableControllerOptions<TSession extends { id: string }, 
 export function createKernelSessionUnavailableController<TSession extends { id: string }, TAttachment, TProviderRun>(
   options: KernelSessionUnavailableControllerOptions<TSession, TAttachment, TProviderRun>,
 ) {
-  const handle = async (message: string) => {
+  let inFlight: Promise<void> | null = null
+  const recover = async (message: string) => {
     const sessionId = options.getSession().id
     if (options.isAttached() && sessionId) {
       try {
         const nextSession = await options.getSessionState(sessionId)
+        if (!options.isAttached() || options.getSession().id !== sessionId) return
         const nextAttachment = await options.attachToSession(sessionId)
         if (!options.isAttached() || options.getSession().id !== sessionId) {
           return
@@ -42,9 +44,7 @@ export function createKernelSessionUnavailableController<TSession extends { id: 
         options.onRecovered()
         return
       } catch (error) {
-        if (!options.isAttached() || options.getSession().id !== sessionId) {
-          return
-        }
+        if (!options.isAttached() || options.getSession().id !== sessionId) return
         options.onStateLookupFailed(sessionId, message, error)
         if (!options.isSessionUnavailableError(error)) {
           options.onTransientFailure()
@@ -53,6 +53,15 @@ export function createKernelSessionUnavailableController<TSession extends { id: 
       }
     }
     await options.transitionToNoSession(message)
+  }
+
+  const handle = (message: string): Promise<void> => {
+    if (inFlight) return inFlight
+    const recovery = recover(message).finally(() => {
+      if (inFlight === recovery) inFlight = null
+    })
+    inFlight = recovery
+    return recovery
   }
 
   return { handle }

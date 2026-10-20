@@ -346,3 +346,69 @@ fn paused_unsubmitted_workflow_entry_is_not_recovered_or_blocking_new_admissions
         "explicit resume must retain the original entry identity"
     );
 }
+
+#[test]
+fn mp11_private_owner_can_list_and_get_app_event_run_after_reopen() {
+    let fixture = Fixture::new();
+    let (store, _sessions, session_id, _receipt, ready) = ready_fixture(&fixture);
+    store.commit_workflow_queue_start(ready.clone()).unwrap();
+    let session = ready.after().clone();
+    let run_id = ready.next().unwrap().1.id().to_string();
+    drop(store);
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.state.path =
+        Some(fixture.root.join("kernel.sqlite").to_string_lossy().into());
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+        .build()
+        .unwrap();
+    let router = {
+        let _entered = runtime.enter();
+        let app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        app.sessions_mut().restore_session(session);
+        crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            4,
+        )
+    };
+    let dispatch = |request: crate::local::LocalDaemonRequest| {
+        let mut command = crate::runtime::command::KernelCommand::from_local_request(
+            "MP-11-event-owner",
+            None,
+            None,
+            &request,
+        );
+        command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
+        runtime.block_on(router.dispatch(command, request))
+    };
+    let listed = dispatch(crate::local::LocalDaemonRequest::ListWorkflowRuns(
+        crate::local::ListWorkflowRunsRequest {
+            session_id: session_id.clone(),
+            workflow_ref: None,
+            cursor: None,
+            limit: None,
+        },
+    ))
+    .unwrap();
+    let crate::local::LocalDaemonResponse::WorkflowRunsListed { workflow_runs, .. } = listed else {
+        panic!("unexpected list");
+    };
+    assert!(
+        workflow_runs.iter().any(|run| run.id() == run_id),
+        "MP-11: a private owner sees the App-event run after reopen"
+    );
+    assert!(matches!(
+        dispatch(crate::local::LocalDaemonRequest::GetWorkflowRun(
+            crate::local::GetWorkflowRunRequest {
+                session_id,
+                workflow_run_ref: run_id,
+            }
+        ))
+        .unwrap(),
+        crate::local::LocalDaemonResponse::WorkflowRun { .. }
+    ));
+    runtime
+        .block_on(router.runtime_state().shutdown_cleanup())
+        .unwrap();
+}

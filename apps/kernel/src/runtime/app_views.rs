@@ -172,6 +172,17 @@ impl ViewCall {
         self.cancelled.has_changed().is_err()
     }
 
+    /// Queue work retains this document's cancellation even while SQLite
+    /// admission waits, so a closed view never starts queued work later.
+    pub(crate) fn operation_budget(
+        &self,
+    ) -> crate::runtime::app_operation_budget::AppOperationBudget {
+        let cancelled = self.cancelled.clone();
+        crate::runtime::app_operation_budget::AppOperationBudget::from_supervisor(move || {
+            cancelled.has_changed().is_err()
+        })
+    }
+
     /// Resolves once the call is cancelled.
     pub(crate) async fn cancelled(&mut self) {
         while self.cancelled.changed().await.is_ok() {}
@@ -878,7 +889,7 @@ mod tests {
             placement: None,
             minimized: true,
         };
-        assert_eq!(resolve_panel(none, minimized).minimized, false);
+        assert!(!resolve_panel(none, minimized).minimized);
         assert_eq!(resolve_panel(none, moved).placement, right);
         assert_eq!(PanelRequest::from_manifest(None), PanelRequest::default());
     }

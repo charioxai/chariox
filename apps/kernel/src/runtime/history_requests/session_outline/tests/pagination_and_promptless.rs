@@ -175,7 +175,7 @@ fn agent_outline_pages_older_turns_with_cursor() {
                 "session-1",
                 &format!("attachment-{index}"),
                 "agent-1",
-                &format!("prompt {index}"),
+                format!("prompt {index}"),
             ),
             context,
         );
@@ -807,4 +807,44 @@ fn agent_outline_groups_large_blob_metadata_sets() {
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+// MP-08/MP-10/MP-11: legacy diagnostic blobs never become agent speech on expansion.
+#[test]
+fn amfix_r19_internal_dispatch_history_diagnostics_are_not_agent_output() {
+    let text = "Provider prompt dispatch failed: provider protocol `session_permissions` failed for run `private-run`: read failed";
+    let error = SessionHistoryEntry::provider_output(
+        "s",
+        "r",
+        Some("a"),
+        crate::terminal::TerminalOutputKind::ProviderError,
+        None,
+        text,
+    );
+    let context = HistoryEventTurnContext {
+        session_id: Some("s".into()),
+        agent_id: Some("a".into()),
+        provider_run_id: Some("r".into()),
+        ..Default::default()
+    };
+    let event = HistoryEvent::transcript(1, &error, context.clone());
+    assert!(page_entry_from_event(event.clone()).is_none());
+    let mut notice = event.clone();
+    notice.kind = HistoryEventKind::Notice;
+    assert!(page_entry_from_event(notice).is_none());
+    let mut agent = event.clone();
+    agent.kind = HistoryEventKind::ProviderOutput;
+    assert!(
+        page_entry_from_event(agent).is_some(),
+        "actual agent text remains visible"
+    );
+    let user = HistoryEvent::transcript(
+        2,
+        &SessionHistoryEntry::user_prompt("s", "t", "a", text),
+        context,
+    );
+    assert!(
+        page_entry_from_event(user).is_some(),
+        "quoting a diagnostic does not hide a user prompt"
+    );
 }

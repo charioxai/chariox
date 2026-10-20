@@ -220,7 +220,7 @@ impl KernelRuntimeState {
                 ensure_browser_target_matches_expectations(&browser_status, &args)?;
                 let selector = browser_selector(args.selector.as_deref(), args.field_id.as_deref());
                 ensure_browser_fill_target(&browser_status, selector.as_deref())?;
-                ensure_browser_secret_target_is_masked(&browser_status, selector.as_deref())?;
+                ensure_browser_secret_target_is_editable(&browser_status, selector.as_deref())?;
                 let secret = match self
                     .resolve_remote_home_credential_secret(
                         provider_run,
@@ -1095,6 +1095,10 @@ pub(crate) async fn run_room_pointer_move(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing run_room_pointer_drag operation signature and explicit context arguments"
+)]
 pub(crate) async fn run_room_pointer_drag(
     from_x: u32,
     from_y: u32,

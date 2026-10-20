@@ -30,14 +30,14 @@ test("session switching clears an attachment the kernel already removed", async 
 
 test("session switching preserves its attachment on other detach failures", async () => {
   const attachment = { id: "att-live", session_id: "session-1" }
-  let cleared = false
+  let current: typeof attachment | null = attachment
   const { deps } = createBaseDeps({
-    attachmentState: () => attachment,
+    attachmentState: () => current,
     detachAttachment: async () => { throw new Error("permission denied") },
-    setAttachmentState: () => { cleared = true },
+    setAttachmentState: (next: typeof current) => { current = next },
   })
   await assert.rejects(createSessionLifecycleController(deps as never).detachCurrentAttachment(), /permission denied/)
-  assert.equal(cleared, false)
+  assert.equal(current, attachment)
 })
 
 test("a completed detach cannot clear a newer attachment", async () => {
@@ -1198,4 +1198,25 @@ test("attachBinding adopts the attached session response layout immediately", as
 
   assert.deepEqual(appliedLayouts, ["split", "split"])
   assert.deepEqual(repaintCalls, ["refresh", "refresh"])
+})
+
+// MP-08 / MP-10 / MP-11 G03: user intent must cancel old-room recovery before transport I/O.
+test("detach releases the client binding before the kernel acknowledgement", async () => {
+  let attachment: {id: string; session_id: string} | null = {id: "att-1", session_id: "session-1"}
+  let acknowledge!: () => void
+  const pending = new Promise<void>(resolve => {acknowledge = resolve})
+  const {deps} = createBaseDeps({
+    attachmentState: () => attachment,
+    setAttachmentState: (next: typeof attachment) => {attachment = next},
+    detachAttachment: () => pending,
+  })
+  const controller = createSessionLifecycleController(deps as never)
+  const detaching = controller.detachCurrentAttachment()
+  const bindingDuringAck = attachment
+  const next = {id: "att-2", session_id: "session-2"}
+  attachment = next
+  acknowledge()
+  await detaching
+  assert.equal(bindingDuringAck, null)
+  assert.equal(attachment, next)
 })

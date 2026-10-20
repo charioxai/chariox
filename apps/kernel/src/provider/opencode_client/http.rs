@@ -84,7 +84,25 @@ impl OpenCodeClient {
                 break;
             }
             attempts += 1;
-            match self.send_request_once(method, path, body, read_timeout) {
+            let started = Instant::now();
+            let result = self.send_request_once(method, path, body, read_timeout);
+            if let Err(error) = &result {
+                // Operation names are fixed here; never log paths, payloads or credentials.
+                crate::logging::debug_with_fields(
+                    "daemon.provider.opencode",
+                    "opencode native request failed",
+                    serde_json::json!({
+                        "provider_run_id": self.provider_run_id,
+                        "operation": method_to_operation(method, path),
+                        "method": method,
+                        "attempt": attempt + 1,
+                        "attempt_limit": retry_attempts,
+                        "elapsed_ms": started.elapsed().as_millis(),
+                        "io_kind": error.io_kind.map(|kind| format!("{kind:?}")),
+                    }),
+                );
+            }
+            match result {
                 Ok(response) => return Ok(response),
                 Err(error) if is_retryable_opencode_http_error(method, path, &error) => {
                     last_error = Some(error.into_daemon_error(self, method, path));
@@ -97,11 +115,7 @@ impl OpenCodeClient {
         }
         let operation = method_to_operation(method, path);
         let message = last_error
-            .map(|error| {
-                format!(
-                    "OpenCode {method} {path} request failed after {attempts} attempts: {error}"
-                )
-            })
+            .map(|error| format!("OpenCode request failed after {attempts} attempts: {error}"))
             .unwrap_or_else(|| "OpenCode request failed".to_string());
         Err(self.protocol_error(operation, message))
     }
@@ -304,6 +318,12 @@ fn read_timeout_for_request(method: &'static str, path: &str) -> Duration {
 fn method_to_operation(method: &str, path: &str) -> &'static str {
     match (method, path) {
         ("GET", "/global/health") => "health",
+        ("GET", "/provider") => "provider_catalog",
+        ("GET", "/config") => "configuration_read",
+        ("GET", "/agent") => "agent_catalog",
+        ("GET", "/mcp") => "mcp_status",
+        ("POST", "/mcp") => "mcp_registration",
+        ("GET", "/config/providers") => "provider_configuration",
         ("GET", "/event") => "event_subscribe",
         ("POST", "/session") => "session_create",
         ("GET", "/session/status") => "session_status",
@@ -312,6 +332,7 @@ fn method_to_operation(method: &str, path: &str) -> &'static str {
         _ if method == "POST" && path.ends_with("/abort") => "session_abort",
         _ if method == "POST" && is_mcp_connect_path(path) => "mcp_connect",
         _ if method == "GET" && path.ends_with("/message") => "session_messages",
+        _ if method == "PATCH" && path.starts_with("/session/") => "session_permissions",
         _ => "opencode_http",
     }
 }
@@ -627,6 +648,34 @@ mod tests {
             .expect("healthy native server must finish its cold Instance bootstrap")
             .all
             .is_empty());
+    }
+
+    #[test]
+    fn names_native_initialization_and_permission_dispatch_failures() {
+        assert_eq!(method_to_operation("GET", "/mcp"), "mcp_status");
+        assert_eq!(method_to_operation("POST", "/mcp"), "mcp_registration");
+        assert_eq!(
+            method_to_operation("GET", "/config/providers"),
+            "provider_configuration"
+        );
+        assert_eq!(method_to_operation("GET", "/config"), "configuration_read");
+        assert_eq!(method_to_operation("GET", "/agent"), "agent_catalog");
+        assert_eq!(
+            method_to_operation("PATCH", "/session/private-session"),
+            "session_permissions"
+        );
+        assert_eq!(
+            read_timeout_for_request("PATCH", "/session/private-session"),
+            Duration::from_secs(2)
+        );
+        assert!(!is_retryable_opencode_http_error(
+            "PATCH",
+            "/session/private-session",
+            &OpenCodeHttpFailure {
+                message: "timed out".into(),
+                io_kind: Some(ErrorKind::TimedOut),
+            }
+        ));
     }
 
     #[test]

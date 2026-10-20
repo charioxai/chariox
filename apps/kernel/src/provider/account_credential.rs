@@ -221,6 +221,31 @@ fn canonical_label(provider: &str) -> &'static str {
 mod tests {
     use super::*;
 
+    // MP-08 / MP-09 / MP-10 / MP-11: adapter aliases must resolve the
+    // canonical profile's existing Vault handle, never a second credential.
+    #[test]
+    fn claude_execution_aliases_reuse_the_enrolled_credential_handle() {
+        let canonical = provider_account_credential_id("owner", "claude", "work");
+        assert_eq!(
+            canonical,
+            "provider-account-claude-7c5263ec8de6df8703dc016fe277740a618d6110"
+        );
+        for provider in ["claude-p", "claude-headless"] {
+            assert_eq!(
+                provider_account_credential_id("owner", provider, "work"),
+                canonical
+            );
+        }
+        assert_ne!(
+            provider_account_credential_id("other-owner", "claude-p", "work"),
+            canonical
+        );
+        assert_ne!(
+            provider_account_credential_id("owner", "claude-p", "other-profile"),
+            canonical
+        );
+    }
+
     #[test]
     fn credential_handle_is_stable_and_registry_safe() {
         let first = provider_account_credential_id("local", "Claude", "Work account");

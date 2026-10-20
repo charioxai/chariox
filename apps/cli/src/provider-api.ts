@@ -308,7 +308,7 @@ export async function listProviderAccountProfiles(client: LocalIpcClient, provid
   return expectVariant<{ profiles: ProviderAccountProfile[] }>(response, "ProviderAccountProfilesListed").profiles
 }
 
-/** MP-08 / MP-11: saved observations do not run official token verification. */
+/** MP-08 / MP-10 / MP-11: saved observations resolve the launch namespace without token verification. */
 export async function getProviderAccountProfile(client: LocalIpcClient, provider: string, accountProfile: string): Promise<ProviderAccountProfile> {
   const response = await client.send<Record<string, unknown>>(getProviderAccountProfileRequest(provider, accountProfile))
   return expectVariant<{ profile: ProviderAccountProfile }>(response, "ProviderAccountProfile").profile

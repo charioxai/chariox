@@ -81,6 +81,21 @@ impl KernelRuntimeOwnedState {
         let mut session = self.session_store.get_session(session_id)?;
         let agents = self.agent_store.get_session_agents(session_id);
         session.set_agents(agents);
+        session.set_agent_tasks(
+            self.durable_state_store
+                .agent_tasks(Some(session_id), None)?
+                .into_iter()
+                .map(|mut task| {
+                    task.reason = crate::terminal::public_task_failure_reason(&task.reason);
+                    task
+                })
+                .collect(),
+        );
+        session.set_agent_wakes(super::agent_wake_scheduler::visible_wakes(
+            self.durable_state_store
+                .agent_wakes(Some(session_id), None)?,
+            crate::session::unix_epoch_ms(),
+        ));
         self.project_session_runtime_view(&mut session);
         Ok(session)
     }
@@ -89,6 +104,8 @@ impl KernelRuntimeOwnedState {
         &self,
         session: &mut crate::session::RuntimeSession,
     ) {
+        // MP-08/MP-10/MP-11: every ordinary refresh carries current window state.
+        session.set_sudo_windows(self.sudo_windows_for_session(session.id()));
         self.prompt_state_owner.project_into_session(session);
         let prompt_session = session.clone();
         let active_prompt_agent_id = self.prompt_state_owner.active_prompt_agent_id(session);
@@ -379,6 +396,10 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
     ) -> Result<(crate::session::RuntimeSession, Vec<String>), DaemonError> {
         let session = self.session_store.get_session(session_id)?;
+        for agent in self.agent_store.get_session_agents(session_id) {
+            self.kernel_browser_host.revoke_agent(agent.id());
+        }
+        self.cancel_owned_agent_wakes(session_id, None);
         self.withdraw_agent_interactions(session_id, None)?;
 
         if session.status() == crate::session::SessionStatus::Ended {
@@ -454,6 +475,7 @@ impl KernelRuntimeOwnedState {
         });
     }
 
+    #[cfg(test)]
     pub(super) fn delete_session_ref(
         &self,
         session_ref: &str,

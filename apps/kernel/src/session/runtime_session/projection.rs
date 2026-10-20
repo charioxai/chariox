@@ -4,6 +4,10 @@ use super::{RuntimeSession, SessionCollaborationAgentCounts};
 use crate::session::CollaborationLevel;
 
 pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> RuntimeSession {
+    // MP-08 / MP-10 / MP-11: private runs need participant ownership, too.
+    session.workflow_runs = session
+        .visible_workflow_runs_for_user(user_id, None)
+        .unwrap_or_default();
     let collaboration_level = session
         .collaboration_level_for_user(user_id)
         .unwrap_or(CollaborationLevel::Private);
@@ -81,8 +85,22 @@ pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> R
         .prompt_runtime
         .retain_agent_ids(&visible_agent_ids, session.focused_agent_id.as_deref());
     session
+        .prompt_runtime
+        .hide_internal_prompts(session.focused_agent_id.as_deref());
+    session
         .metaagent_tasks
         .retain(|task| visible_agent_ids.contains(task.metaagent_id()));
+    // MP-08/MP-09/MP-10/MP-11: lifecycle reasons and process argv follow trace visibility.
+    session
+        .agent_tasks
+        .retain(|task| visible_agent_ids.contains(&task.agent_id));
+    session
+        .agent_wakes
+        .retain(|wake| visible_agent_ids.contains(&wake.agent_id));
+    // A04: window, run and requester details belong to the window's owner.
+    session
+        .sudo_windows
+        .retain(|window| window.owner_user_id == user_id);
     if !collaboration_level.can_view_agent_trace() {
         session.workflows = session
             .workflows

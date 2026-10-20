@@ -102,15 +102,24 @@ impl KernelRuntimeState {
         const PASSKEY: &str = "Access TEST Passkey";
         let root = vault.parent().unwrap().to_owned();
         match action {
-            "agent-question" => {
+            "agent-question" | "agent-critical-question" => {
+                let critical = action == "agent-critical-question";
                 let receiver = self
                     .create_runtime_interaction(
                         SESSION,
                         crate::session::RuntimeInteraction::new(
-                            "routine-access-question",
+                            if critical {
+                                "critical-access-question"
+                            } else {
+                                "routine-access-question"
+                            },
                             AGENT,
                             crate::session::RuntimeInteractionKind::Choice,
-                            crate::session::RuntimeInteractionLevel::Info,
+                            if critical {
+                                crate::session::RuntimeInteractionLevel::Critical
+                            } else {
+                                crate::session::RuntimeInteractionLevel::Info
+                            },
                             None,
                             "Continue this agent task?",
                             vec![crate::session::RuntimeInteractionChoice::new(

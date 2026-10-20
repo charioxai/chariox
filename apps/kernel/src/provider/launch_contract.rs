@@ -245,9 +245,7 @@ impl ProviderResumeState {
         provider: &str,
         operation: &str,
     ) -> Option<Self> {
-        if self.provider_session_id(provider).is_none() {
-            return None;
-        }
+        self.provider_session_id(provider)?;
         match (
             provider.trim().to_ascii_lowercase().as_str(),
             operation.trim(),
@@ -472,6 +470,11 @@ pub struct LaunchProviderRequest {
     /// execution kernel resolves the stable profile id against its registry.
     #[serde(skip)]
     pub(crate) provider_account_env: BTreeMap<String, String>,
+    /// MP-08/MP-10/MP-11: execution-kernel account authority, derived from
+    /// its current lease binding on every preparation/reload. Clients cannot
+    /// supply it and provider runs do not persist a stale namespace decision.
+    #[serde(skip)]
+    pub(crate) provider_account_owner_user_id: Option<String>,
     /// Selected kernel-local namespace survives subsequent preparation passes.
     #[serde(skip)]
     pub(crate) resolved_provider_account: Option<crate::account_profile::ResolvedProviderAccount>,
@@ -648,6 +651,7 @@ impl LaunchProviderRequest {
             provider_config_overrides: BTreeMap::new(),
             provider_env_remove: Vec::new(),
             provider_account_env: BTreeMap::new(),
+            provider_account_owner_user_id: None,
             resolved_provider_account: None,
             provider_credential_env: super::ProviderCredentialEnvironment::default(),
             project_environment_revision: None,

@@ -36,6 +36,17 @@ impl OutboundBoundary {
             return false;
         }
         let message = match payload {
+            // MP-08/MP-10: protocol 466 display events are binary WebSocket messages
+            // with raw payload segments. External peers never receive them (MP-11).
+            Payload::Frame(KernelOutgoingFrame::Event { event, .. })
+                if self.peer.is_none()
+                    && matches!(*event, KernelEvent::KernelBrowserFrame { .. }) =>
+            {
+                match crate::transport::kernel_browser_display::encode_display_event(*event) {
+                    Ok(bytes) => Message::Binary(bytes.into()),
+                    Err(_) => return false,
+                }
+            }
             Payload::Frame(frame) => {
                 let payload = if self.peer.is_some() {
                     if let KernelOutgoingFrame::Event { event, .. } = &frame {
@@ -157,7 +168,7 @@ macro_rules! public_events {
         fn classify_event(event: &KernelEvent) {
             match event {
                 $(KernelEvent::$variant { .. } => {},)*
-                KernelEvent::PasskeyPromptsChanged { .. } => {},
+                KernelEvent::PasskeyPromptsChanged { .. } | KernelEvent::KernelBrowserFrame { .. } => {},
             }
         }
         fn public_event(name: &str) -> bool { matches!(name, $($wire)|*) }
@@ -168,6 +179,7 @@ public_events! {
     RuntimeNotices => "runtime_notices",
     AssistantMessageCompleted => "assistant_message_completed",
     SessionSnapshot => "session_snapshot",
+    AgentTaskUpdated => "agent_task_updated",
     AgentActivityChanged => "agent_activity_changed",
     ProviderRunChanged => "provider_run_changed",
     SessionMetadataChanged => "session_metadata_changed",

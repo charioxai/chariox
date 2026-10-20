@@ -583,8 +583,12 @@ async fn exercise_post_connect_confirmation(
 fn mp08_mp10_mp11_browser_artifact_peer_current_hosted_confirmation_gate() {
     let home = crate::config::DaemonConfig::for_tests();
     let worker = crate::config::DaemonConfig::for_tests();
-    let current = crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
-    for version in [current - 1, current] {
+    let minimum = crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION;
+    for version in [
+        minimum - 1,
+        minimum,
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+    ] {
         for (slice_id, nonce) in [
             ("slice-1", "nonce-1"),
             ("other", "nonce-1"),
@@ -624,8 +628,85 @@ fn mp08_mp10_mp11_browser_artifact_peer_current_hosted_confirmation_gate() {
                     "slice-1",
                     "nonce-1",
                 ),
-                version == current && slice_id == "slice-1" && activation_nonce == "nonce-1"
+                version >= minimum && slice_id == "slice-1" && activation_nonce == "nonce-1"
             );
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mp08_mp10_mp11_in_place_activation_starts_confirmation_without_socket_reconnect() {
+    use chariox_relay::{RelayConfig, RelayServer};
+    let server = Arc::new(RelayServer::new(RelayConfig {
+        host: "127.0.0.1".into(),
+        port: 0,
+        shared_token: Some("activation-fixture".into()),
+    }));
+    let listener = server.bind_listener().await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (server_stop, server_rx) = tokio::sync::oneshot::channel();
+    let server_task = tokio::spawn(async move {
+        server
+            .run_listener_until(listener, async {
+                let _ = server_rx.await;
+            })
+            .await
+            .unwrap();
+    });
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.relay_url = Some(format!("ws://{addr}"));
+    config.relay_token = Some("activation-fixture".into());
+    config.relay_heartbeat_ms = 50;
+    let worker_id = config.daemon_id.clone();
+    let app = Arc::new(Mutex::new(DaemonApp::bootstrap(config).unwrap()));
+    let state = Arc::new(RwLock::new(RelayClientState::default()));
+    let (stop, stop_rx) = watch::channel(false);
+    let connector = tokio::spawn(run_daemon_relay_connector(app, Arc::clone(&state), stop_rx));
+    timeout(Duration::from_secs(2), async {
+        while !state.read().await.connected() {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // Installation occurs on the already connected socket. No reconnect hook
+    // follows same-identity token renewal. The absent owner makes the real
+    // relay return a bounded routing refusal; starting the confirmation is
+    // the seam under test, not successful activation or provider acceptance.
+    let owner = crate::config::DaemonConfig::for_tests();
+    state
+        .write()
+        .await
+        .stage_managed_slice_activation_confirmation(
+            super::super::connection_state::PendingManagedSliceActivationConfirmation::new(
+                "slice-in-place".into(),
+                owner.daemon_id,
+                owner.relay_public_key,
+                worker_id,
+                "nonce-in-place".into(),
+            ),
+        );
+    let attempted = timeout(Duration::from_secs(3), async {
+        loop {
+            // A claim consumes an attempt; after the bounded attempt cap the
+            // next claim returns None. Observe through the existing state API.
+            let pending = state
+                .read()
+                .await
+                .pending_managed_slice_activation_confirmation();
+            if pending.is_none() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let _ = stop.send(true);
+    connector.await.unwrap();
+    let _ = server_stop.send(());
+    server_task.await.unwrap();
+    assert!(
+        attempted.is_ok(),
+        "pending activation was stranded on the healthy socket"
+    );
 }

@@ -178,7 +178,7 @@ fn ensure_release(
         deployed.digest.clone(),
         release.to_owned(),
     );
-    harness.block_on_test_task(async move {
+    let future = async move {
         runtime
             .fixture_ensure_deployment_app_copy(
                 &session_id,
@@ -188,7 +188,15 @@ fn ensure_release(
                 &digest,
             )
             .await
-    })
+    };
+    // MD-4: a caller must be able to construct this future on the default
+    // thread stack; larger test stacks would conceal production regressions.
+    assert!(
+        std::mem::size_of_val(&future) < 64 * 1024,
+        "deployment copy future is too large: {}",
+        std::mem::size_of_val(&future)
+    );
+    harness.block_on_test_task(future)
 }
 
 /// Applies the copy while the kernel's pump drives App installs.

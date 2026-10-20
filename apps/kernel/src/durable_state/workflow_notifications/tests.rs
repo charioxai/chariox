@@ -285,6 +285,19 @@ fn completion_persists_before_router_restart_deduplicates_and_events_are_selecte
         NotificationOutcome::Ack(WorkflowNotificationAck::Duplicate)
     ));
     let queued = f.queue(sub.clone(), env.clone());
+    let room = f.sessions.get_session(&f.session).unwrap();
+    assert!(
+        f.store
+            .workflow_invocation_is_owned(
+                room.host_daemon_id(),
+                room.id(),
+                &queued,
+                &sub.owner_user_id
+            )
+            .unwrap(),
+        "MP-11: notification admission retains the subscription owner's immutable provenance"
+    );
+
     assert_eq!(
         f.sessions
             .get_session(&f.session)

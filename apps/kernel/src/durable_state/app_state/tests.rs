@@ -320,6 +320,28 @@ fn package_build(
     incoming: bool,
     clipboard_write: bool,
 ) -> (Vec<u8>, TrustedPublisher) {
+    package_build_ui(
+        with_tools,
+        with_network,
+        version,
+        schema,
+        incoming,
+        clipboard_write,
+        false,
+    )
+}
+pub(super) fn browser_tool_package() -> (Vec<u8>, TrustedPublisher) {
+    package_build_ui(true, false, "1.0.0", 0, false, false, true)
+}
+fn package_build_ui(
+    with_tools: bool,
+    with_network: bool,
+    version: &str,
+    schema: u32,
+    incoming: bool,
+    clipboard_write: bool,
+    browser_ui: bool,
+) -> (Vec<u8>, TrustedPublisher) {
     let mut manifest: Manifest=serde_json::from_value(json!({
         "schema":"chariox.app.v1","appId":"com.example.state","version":version,
         "publisher":{"id":"com.example","keyId":"state-key","name":"Developer"},
@@ -396,6 +418,10 @@ fn package_build(
             "inputSchema":{"type":"object","additionalProperties":false,"required":["text"],"properties":{"text":{"type":"string"}}},
             "outputSchema":{"type":"object","additionalProperties":false,"required":["ok"],"properties":{"ok":{"type":"boolean"}}}
         }]})).unwrap());
+    }
+    if browser_ui {
+        files.insert("ui/index.html".into(), b"<!doctype html><title>MD integration App</title><h1>Kernel-hosted App</h1><p id='result'>Loading</p><form id='action'><input id='message' aria-label='Message'><button>Call App</button></form><p id='keyboard'>No keyboard action</p><script src='app.js'></script>".to_vec());
+        files.insert("ui/app.js".into(), b"window.chariox.call('echo',{text:'kernel browser page'}).then(result=>document.getElementById('result').textContent='App channel '+JSON.stringify(result)).catch(()=>document.getElementById('result').textContent='App channel refused');document.getElementById('action').addEventListener('submit',event=>{event.preventDefault();window.chariox.call('echo',{text:document.getElementById('message').value}).then(result=>document.getElementById('keyboard').textContent='Keyboard App channel '+JSON.stringify(result));});".to_vec());
     }
     let bytes = pack(
         &manifest,

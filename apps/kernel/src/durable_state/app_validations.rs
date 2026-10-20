@@ -99,6 +99,10 @@ pub(crate) enum ValidationCommand {
         now_ms: u64,
     },
     /// Single use: approved and unexpired for exactly this binding.
+    #[allow(
+        dead_code,
+        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
+    )]
     Consume {
         receipt: EffectReceipt,
         now_ms: u64,

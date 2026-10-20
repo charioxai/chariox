@@ -41,14 +41,12 @@ pub(super) async fn admit_frame(
                 attachment_id,
                 subscription_scope,
                 ..
-            } => (kernel_subscription_scope(subscription_scope.as_deref())
-                != KernelSubscriptionScope::WaitingRoomInventory
-                && router
-                    .session_id_for_attachment_access(attachment_id)
-                    .as_deref()
-                    == Some(session_id.as_str()))
-            .then_some(())
-            .ok_or(Refusal::NotCovered),
+            } => (session_id == &turn.session_id
+                && runtime_state.attachment_owner_user_id(attachment_id).await
+                    .is_ok_and(|owner| owner == turn.owner_user_id)
+                && kernel_subscription_scope(subscription_scope.as_deref()) != KernelSubscriptionScope::WaitingRoomInventory
+                && router.session_id_for_attachment_access(attachment_id).as_deref() == Some(session_id.as_str()))
+                .then_some(()).ok_or(Refusal::NotCovered),
             KernelIncomingFrame::Unsubscribe { .. } => Ok(()),
         };
         if let Err(refusal) = verdict {

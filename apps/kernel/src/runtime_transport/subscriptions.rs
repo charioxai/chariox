@@ -15,11 +15,10 @@ use crate::terminal::{
     AssistantMessageCompletionRecord, RuntimeNoticeRecord, TerminalOutputRecord,
 };
 use crate::transport::kernel_protocol::{
-    agent_activity_changed_event, event_is_relevant_to_attachment, event_session_id,
-    event_stream_id_for_event, kernel_event_trace_payload, provider_run_changed_event,
-    runtime_interactions_changed_event, session_metadata_changed_event,
-    subscription_event_stream_id, workflow_run_only_changed, workflow_run_updated_events,
-    KernelEvent, KernelOutgoingFrame, KernelSubscriptionScope, WaitingRoomInventoryEventProjection,
+    can_skip_session_snapshot, event_is_relevant_to_attachment, event_session_id,
+    event_stream_id_for_event, kernel_event_trace_payload, subscription_event_stream_id,
+    workflow_run_only_changed, workflow_run_updated_events, KernelEvent, KernelOutgoingFrame,
+    KernelSubscriptionScope, WaitingRoomInventoryEventProjection,
     WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 
@@ -241,14 +240,11 @@ pub(super) async fn run_subscription_loop(
                     // hot-session snapshot cannot immediately erase it in the client.
                     let mut emitted_projection_delta = emitted_terminal_workflow_run_update;
                     let mut emit_failed = false;
-                    for event in [
-                        agent_activity_changed_event(&snapshot, previous_snapshot_ref),
-                        provider_run_changed_event(&snapshot, previous_snapshot_ref),
-                        session_metadata_changed_event(&snapshot, previous_snapshot_ref),
-                        runtime_interactions_changed_event(&snapshot, previous_snapshot_ref),
-                    ]
-                    .into_iter()
-                    .flatten()
+                    for event in
+                        crate::transport::kernel_protocol::session_projection_changed_events(
+                            &snapshot,
+                            previous_snapshot_ref,
+                        )
                     {
                         emitted_projection_delta = true;
                         if !emit_kernel_event(
@@ -304,8 +300,13 @@ pub(super) async fn run_subscription_loop(
                             return;
                         }
                     }
+                    let skip_snapshot = can_skip_session_snapshot(
+                        &snapshot,
+                        previous_snapshot_ref,
+                        emitted_projection_delta || workflow_run_only,
+                    );
                     previous_snapshot = Some(snapshot.clone());
-                    if emitted_projection_delta || workflow_run_only {
+                    if skip_snapshot {
                         continue;
                     }
                     if !emit_kernel_event(
@@ -468,41 +469,20 @@ where
 
 #[cfg(test)]
 mod tests;
+mod workflow_run_updates;
 
 fn build_session_snapshot(
     app: &mut crate::app::DaemonApp,
     session_id: &str,
     attachment_owner_user_id: &str,
 ) -> Result<SessionSnapshotProjection, DaemonError> {
-    let mut snapshot = SessionSnapshotProjection::from_daemon_app_for_user(
+    let snapshot = SessionSnapshotProjection::from_daemon_app_for_user(
         app,
         session_id,
         0,
         Some(attachment_owner_user_id),
     )?;
-    snapshot.session = snapshot.session.redacted_for_user(attachment_owner_user_id);
-    snapshot.agent_activity.retain(|agent_id, _| {
-        snapshot
-            .session
-            .agents()
-            .iter()
-            .any(|agent| agent.id() == agent_id)
-    });
-    if snapshot
-        .provider_run
-        .as_ref()
-        .and_then(|run| run.agent_instance_id())
-        .is_some_and(|agent_id| {
-            !snapshot
-                .session
-                .agents()
-                .iter()
-                .any(|agent| agent.id() == agent_id)
-        })
-    {
-        snapshot.provider_run = None;
-    }
-    Ok(snapshot)
+    snapshot.redacted_for_user(attachment_owner_user_id, &app.durable_state_store())
 }
 
 pub(crate) enum WatchResult {
@@ -566,9 +546,19 @@ pub(crate) fn watch_subscription_state(
     let completions = app
         .terminal_mut()
         .drain_completion_records(session_id, attachment_id);
-    let workflow_run_updates = app
-        .terminal()
-        .drain_workflow_run_updates(session_id, attachment_id);
+    let workflow_run_updates = match workflow_run_updates::drain_visible_workflow_run_updates(
+        app,
+        session_id,
+        attachment_id,
+        &attachment_owner_user_id,
+    ) {
+        Ok(updates) => updates,
+        Err(_) => {
+            return WatchResult::Unavailable(
+                "Workflow history is currently unavailable.".to_string(),
+            );
+        }
+    };
     let workflow_design_events = app.workflow_design_event_store().events_since(
         session_id,
         last_workflow_design_sequence,
@@ -615,6 +605,10 @@ pub(crate) fn watch_subscription_state(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing emit_kernel_event operation signature and explicit context arguments"
+)]
 async fn emit_kernel_event(
     runtime: &Arc<KernelTransportRuntime>,
     outgoing_tx: &KernelOutgoingSender,

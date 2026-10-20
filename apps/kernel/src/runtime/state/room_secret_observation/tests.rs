@@ -2,6 +2,78 @@ use super::*;
 
 mod lifecycle;
 
+#[test]
+fn a02_forwarded_task_answers_protect_recovered_room_history() {
+    use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let root = TestRoot::new();
+    let mut room = TestRoom::new("am2-protected-task-answer");
+    room.runtime.owned.room_secret_observations =
+        RoomSecretObservations::new(root.path().to_path_buf(), BTreeSet::new());
+    let mut prompt = crate::history::SessionHistoryEntry::user_prompt(
+        &room.session_id,
+        "fixture-attachment",
+        &room.agent_id,
+        "task",
+    );
+    prompt.merge_key = Some("prompt:task-prompt".into());
+    let output = crate::history::SessionHistoryEntry::provider_output(
+        &room.session_id,
+        "run",
+        Some(&room.agent_id),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        None,
+        "synthetic-only",
+    );
+    for entry in [prompt, output] {
+        room.runtime
+            .owned
+            .operational_history_store
+            .append_transcript(&entry, Default::default())
+            .unwrap();
+    }
+    // Recovered history must be protected even if it predates the observation fence.
+    room.runtime
+        .owned
+        .room_secret_observations
+        .register(&room.session_id, "synthetic-only")
+        .unwrap();
+    let store = &room.runtime.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: "owner".into(),
+            room: room.session_id.clone(),
+            agent: room.agent_id.clone(),
+            prompt: "task-prompt".into(),
+            run: Some("run".into()),
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Settled { task, .. } = store
+        .agent_lifecycle(Operation::Settle {
+            room: room.session_id.clone(),
+            agent: room.agent_id.clone(),
+            prompt: "task-prompt".into(),
+            run: "run".into(),
+            has_answer: true,
+            cancelled: false,
+            now: 2,
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    let answer = room
+        .runtime
+        .owned
+        .public_agent_task_answer(&task)
+        .unwrap()
+        .unwrap();
+    let excerpt = answer["excerpt"].as_str().unwrap();
+    assert!(!excerpt.contains("synthetic-only"));
+    assert!(excerpt.contains("withheld"));
+}
+
 // MP-08/MP-10/MP-11: even non-Vault peer requests construct these shared
 // futures. Keep relay delivery out of their inline state on kernel stacks.
 #[tokio::test]
@@ -809,6 +881,47 @@ fn empty_or_revoked_rooms_never_match_vault_keys() {
 }
 
 // MP-08/MP-10/MP-11: revoked values are scrub-only, including after restart.
+#[test]
+fn public_history_stored_values_scrub_after_restart_without_fencing_streams() {
+    // MP-08 / MP-10 / MP-11: persistence must preserve stored-versus-inserted
+    // provenance, and every value-match observation policy must include it.
+    let root = TestRoot::new();
+    let key = crate::transport::relay_crypto::generate_private_key_base64();
+    let path = root.path().join("observations");
+    let store = RoomSecretObservations::new(path.clone(), BTreeSet::new()).with_identity(&key);
+    store
+        .register_stored_with_locked_public_history("room", "synthetic-stored-value")
+        .unwrap();
+    let restarted = RoomSecretObservations::new(path, BTreeSet::new()).with_identity(&key);
+    for store in [&store, &restarted] {
+        assert!(!store.protects_bytes("room"));
+        assert_eq!(
+            store.protect_unframed_bytes("room", b"later answer"),
+            b"later answer"
+        );
+        assert_eq!(
+            store.scrub_text_or_withhold("room", "echo synthetic-stored-value"),
+            "echo [redacted]"
+        );
+        assert!(store
+            .controller_values("room")
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str() == "synthetic-stored-value"));
+        let policy: serde_json::Value =
+            serde_json::from_str(&store.capture_policy("room").unwrap()).unwrap();
+        assert_eq!(
+            policy["values"],
+            serde_json::json!(["synthetic-stored-value"])
+        );
+    }
+    // The normal insertion path promotes it to the existing split-stream fence.
+    restarted
+        .register("room", "synthetic-stored-value")
+        .unwrap();
+    assert!(restarted.protects_bytes("room"));
+}
+
 #[test]
 fn retired_values_scrub_prior_echoes_without_fencing_runtime_results() {
     let root = TestRoot::new();

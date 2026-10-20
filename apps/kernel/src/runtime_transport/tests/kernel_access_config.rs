@@ -39,7 +39,7 @@ async fn kernel_access_config_websocket_drill() {
     );
     for (key, value) in [
         ("grant_default_minutes", "45"),
-        ("grant_max_minutes", "600"),
+        ("grant_max_minutes", "900"),
         ("grant_extend_notice_minutes", "7"),
         ("request_timeout_minutes", "12"),
     ] {

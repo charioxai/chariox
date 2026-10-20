@@ -90,7 +90,10 @@ impl KernelRuntimeState {
                         return Ok(false);
                     }
                     crate::app::ProviderLaunchProcessRuntime::new(app)
-                        .spawn_for_launch(&started.run)
+                        .spawn_for_launch_with_credentials(
+                            &started.run,
+                            &started.provider_credential_env,
+                        )
                         .map(|_| true)
                 })
                 .await;
@@ -111,8 +114,12 @@ impl KernelRuntimeState {
                 return;
             }
             let run = started.run.clone();
+            let credentials = started.provider_credential_env.clone();
             let binding = tokio::task::spawn_blocking(move || {
-                crate::provider::ProviderProcessService::initialize_runtime_binding(&run)
+                crate::provider::ProviderProcessService::initialize_runtime_binding_with_credentials(
+                    &run,
+                    &credentials,
+                )
             })
             .await
             .map_err(|error| DaemonError::LocalTransport {
@@ -219,6 +226,68 @@ mod tests {
             metaagent_events,
             workspace_coordinator,
         )
+    }
+
+    // MP-08/MP-10/MP-11 F01: policy reloads deliver ephemeral credentials
+    // to both process seams while persisted run metadata remains public.
+    #[tokio::test]
+    async fn policy_relaunch_preserves_selected_claude_credentials() {
+        crate::test_support::isolated_env_test!();
+        let worktree = crate::test_support::TestWorktree::new("policy-relaunch-credentials");
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let probe = crate::provider::ProviderCredentialDeliveryProbe::install(
+            "provider-run-1",
+            &[("CLAUDE_CODE_OAUTH_TOKEN", "synthetic-relaunch-credential")],
+        );
+        let mut credentials = crate::provider::ProviderCredentialEnvironment::default();
+        credentials.insert(
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            zeroize::Zeroizing::new("synthetic-relaunch-credential".into()),
+        );
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "claude",
+            "selected",
+            "haiku",
+        )
+        .with_agent_id(agent.id())
+        .with_provider_credential_env(credentials);
+        runtime.spawn_provider_relaunch(request, 0, None, 0);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if runtime
+                    .owned
+                    .provider_store
+                    .get_run_for_agent(session.id(), agent.id())
+                    .is_some_and(|r| r.state() == crate::provider::ProviderRunState::Running)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("replacement runtime must initialize");
+        let run = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(session.id(), agent.id())
+            .unwrap();
+        assert!(!run.pty_env().contains_key("CLAUDE_CODE_OAUTH_TOKEN"));
+        assert!(
+            probe.observed_exactly("pty_spawn"),
+            "reload must deliver the selected credential at process spawn"
+        );
+        assert!(
+            probe.observed_exactly("runtime_binding"),
+            "reload must deliver the selected credential at structured initialization"
+        );
     }
 
     #[tokio::test]

@@ -15,6 +15,10 @@ pub(super) enum ClaudeRuntimeMessage {
     Stderr(String),
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing spawn_claude_child operation signature and explicit context arguments"
+)]
 pub(super) fn spawn_claude_child(
     provider_run_id: &str,
     program: &str,

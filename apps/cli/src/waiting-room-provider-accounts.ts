@@ -97,9 +97,9 @@ export function selectedProviderAccountStartBlockReason(
   if (remoteExecution && remoteExecution.kind !== "local") return null
   if (profiles === undefined) return null
   const profile = selectedProviderAccount(profiles, provider, profileId)
-  if (!profile) {
-    return `${profileId ?? "default"} is not available on this kernel. Sign in on this machine, or copy login from the machine that owns the account.`
-  }
+  // MP-08 / MP-10 / MP-11: replicas and retained home aliases may be outside
+  // this inventory. The kernel resolves their namespace and authentication.
+  if (!profile && profileId && profileId !== "default") return null
   if (profile?.auth_state === "authenticated") {
     if (!providerAccountAdmissionBlocked(profile, Date.now(), model)) return null
     const reset = providerAccountCapacityResetLabel(profile, Date.now(), model)

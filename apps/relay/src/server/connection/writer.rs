@@ -122,6 +122,7 @@ pub(super) async fn run_writer<S>(
     mut writer: S,
     mut outgoing: mpsc::Receiver<Message>,
     chunks: bool,
+    binary_events: bool,
     mut receipts: mpsc::Receiver<(u32, u32)>,
     mut controls: mpsc::Receiver<Message>,
 ) where
@@ -158,7 +159,10 @@ pub(super) async fn run_writer<S>(
         }
         while pending.len() < capacity {
             match outgoing.try_recv() {
-                Ok(message) => pending.push_back(message),
+                Ok(message) => match receiver_message(message, binary_events) {
+                    Some(message) => pending.push_back(message),
+                    None => return,
+                },
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     open = false;
                     break;
@@ -272,7 +276,7 @@ pub(super) async fn run_writer<S>(
                 if !active.as_mut().is_some_and(|transfer| transfer.receipt(id, offset)) { return; }
             }
             message = outgoing.recv(), if open && pending.len() < capacity => {
-                match message { Some(message) => pending.push_back(message), None => open = false }
+                match message { Some(message) => match receiver_message(message, binary_events) { Some(message) => pending.push_back(message), None => return }, None => open = false }
             }
         }
     }
@@ -303,7 +307,7 @@ mod tests {
         tx.send(Message::Text("x".repeat(CHUNK_BYTES + 1).into()))
             .await
             .unwrap();
-        let task = tokio::spawn(run_writer(socket, rx, false, ack_rx, control_rx));
+        let task = tokio::spawn(run_writer(socket, rx, false, false, ack_rx, control_rx));
         let message = client.next().await.unwrap().unwrap();
         assert!(
             matches!(message, Message::Text(text) if text.contains("requires an updated client"))
@@ -396,7 +400,7 @@ mod tests {
                 tx.send(Message::Text(serde_json::json!({"kind":"daemon_request","relay_request_id":format!("small-{index}"),"payload":"x".repeat(4096)}).to_string().into())).await.unwrap();
             }
         });
-        let writer = tokio::spawn(run_writer(sink, rx, true, ack_rx, control_rx));
+        let writer = tokio::spawn(run_writer(sink, rx, true, false, ack_rx, control_rx));
         let mut frames = crate::frame_transport::FrameReceiver::default();
         let mut complete = false;
         let mut small = 0;
@@ -466,7 +470,7 @@ mod tests {
         tx.send(Message::Text(response.clone().into()))
             .await
             .unwrap();
-        let writer = tokio::spawn(run_writer(socket, rx, true, ack_rx, control_rx));
+        let writer = tokio::spawn(run_writer(socket, rx, true, false, ack_rx, control_rx));
         let first = client.next().await.unwrap().unwrap();
         let bulk_request = serde_json::json!({"kind":"daemon_request", "relay_request_id":"A", "payload":"x".repeat(2 * WINDOW_BYTES)}).to_string();
         for message in [
@@ -567,7 +571,7 @@ mod tests {
         let (_ack_tx, ack_rx) = mpsc::channel(8);
         let (control_tx, control_rx) = mpsc::channel(8);
         tx.send(Message::Text(serde_json::json!({"kind":"client_response", "request_id":"large", "payload":"x".repeat(2_932_256)}).to_string().into())).await.unwrap();
-        let task = tokio::spawn(run_writer(socket, rx, true, ack_rx, control_rx));
+        let task = tokio::spawn(run_writer(socket, rx, true, false, ack_rx, control_rx));
         let first = tokio::time::timeout(std::time::Duration::from_secs(3), client.next())
             .await
             .unwrap()
@@ -633,4 +637,17 @@ mod tests {
         let _ = task.await;
         let _ = client.close(None).await;
     }
+}
+
+// MP-08 / MP-10 / MP-11: negotiation changes framing, never the encrypted payload.
+fn receiver_message(message: Message, binary_events: bool) -> Option<Message> {
+    if !binary_events {
+        if let Message::Binary(bytes) = &message {
+            let envelope = crate::binary_event::legacy_client_envelope(bytes).ok()?;
+            return serde_json::to_string(&envelope)
+                .ok()
+                .map(|text| Message::Text(text.into()));
+        }
+    }
+    Some(message)
 }

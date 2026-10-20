@@ -348,6 +348,9 @@ async fn metaagent_run_command_routes_owned_agent_lifecycle_commands_inner() {
         .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
         .expect("metaagent should spawn");
     let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
+    let mut worker_receipt = worker.clone();
+    worker_receipt.record_spawn_creator(Some(metaagent.id().to_string()));
+    app.agents_mut().restore_agent(worker_receipt);
     mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
     let meta_run = launch_test_provider(
         &mut app,
@@ -587,7 +590,8 @@ async fn collaborator_metaagents_are_allowed_and_controller_scoped_inner() {
         .spawn_agent(
             CreateAgentRequest::new(&session_id, "dev-stub")
                 .with_alias("owner-worker")
-                .with_controlled_by_metaagent_id(owner_metaagent.id()),
+                .with_controlled_by_metaagent_id(owner_metaagent.id())
+                .with_spawned_by_agent_id(owner_metaagent.id()),
         )
         .expect("owner worker should spawn");
     let peer_worker = crate::app::KernelSessionService::new(&mut app)
@@ -595,7 +599,8 @@ async fn collaborator_metaagents_are_allowed_and_controller_scoped_inner() {
             CreateAgentRequest::new(&session_id, "dev-stub")
                 .with_alias("peer-worker")
                 .with_owner_user_id("user-2")
-                .with_controlled_by_metaagent_id(peer_metaagent.id()),
+                .with_controlled_by_metaagent_id(peer_metaagent.id())
+                .with_spawned_by_agent_id(peer_metaagent.id()),
         )
         .expect("peer worker should spawn");
 

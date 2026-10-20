@@ -834,11 +834,10 @@ done
         value["result"]["structuredContent"]["browser"]["focusedElement"]["label"],
         "Email"
     );
-    assert_eq!(
+    assert!(
         value["result"]["structuredContent"]["browser"]["fields"][0]["field_id"]
             .as_str()
-            .is_some_and(|field_id| field_id.starts_with("element-")),
-        true
+            .is_some_and(|field_id| field_id.starts_with("element-"))
     );
     assert_eq!(
         value["result"]["structuredContent"]["browser"]["buttons"][0]["text"],

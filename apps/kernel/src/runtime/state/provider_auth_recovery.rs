@@ -20,7 +20,7 @@ impl Drop for RecoveryClaim {
 }
 
 impl KernelRuntimeState {
-    pub(super) fn publish_credential_copy_notices(&self, session_id: &str) {
+    pub(super) async fn publish_credential_copy_notices(&self, session_id: &str) {
         let config = self.owned.config_projection.snapshot();
         for agent in self
             .owned
@@ -29,13 +29,29 @@ impl KernelRuntimeState {
             .into_iter()
             .filter(|agent| agent.session_id() == session_id && agent.remote_execution().is_none())
         {
-            let Ok(owner) = crate::account_profile::provider_account_authority_owner_for_profile(
-                &config,
-                &self.owned.provider_account_profiles,
-                agent.owner_user_id(),
-                agent.provider(),
-                agent.provider_account_profile(),
-            ) else {
+            let Ok(owner) = self
+                .with_app_side_effect(|app| {
+                    app.provider_account_owner_for_execution(session_id, Some(agent.id()))
+                })
+                .await
+                .and_then(|owner| {
+                    if owner
+                        != crate::account_profile::provider_account_authority_owner_user_id(
+                            &config,
+                            agent.owner_user_id(),
+                        )
+                    {
+                        return Ok(owner);
+                    }
+                    crate::account_profile::provider_account_authority_owner_for_profile(
+                        &config,
+                        &self.owned.provider_account_profiles,
+                        agent.owner_user_id(),
+                        agent.provider(),
+                        agent.provider_account_profile(),
+                    )
+                })
+            else {
                 continue;
             };
             if let Ok(Some(message)) = self
@@ -59,6 +75,27 @@ impl KernelRuntimeState {
                 );
             }
         }
+    }
+
+    pub(super) async fn resolved_provider_account_owner_for_run(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<String, DaemonError> {
+        let owner = self.provider_account_owner_for_run(run).await?;
+        let config = self.owned.config_projection.snapshot();
+        if owner
+            != crate::account_profile::provider_account_authority_owner_user_id(
+                &config,
+                run.owner_user_id(),
+            )
+        {
+            return Ok(owner);
+        }
+        crate::account_profile::provider_account_authority_for_run(
+            &config,
+            &self.owned.provider_account_profiles,
+            run,
+        )
     }
 
     pub(super) fn try_provider_auth_recovery<'a>(
@@ -95,11 +132,7 @@ impl KernelRuntimeState {
             let Some(agent_id) = run.agent_instance_id() else {
                 return Ok(false);
             };
-            let owner = crate::account_profile::provider_account_authority_for_run(
-                &self.owned.config_projection.snapshot(),
-                &self.owned.provider_account_profiles,
-                run,
-            )?;
+            let owner = self.resolved_provider_account_owner_for_run(run).await?;
             let setup_token = run.adapter_key() == "claude"
                 && crate::provider::provider_account_credential_registered(
                     &owner,
@@ -415,11 +448,7 @@ impl KernelRuntimeState {
                 return Ok(false);
             }
         }
-        let owner = crate::account_profile::provider_account_authority_for_run(
-            &self.owned.config_projection.snapshot(),
-            &self.owned.provider_account_profiles,
-            run,
-        )?;
+        let owner = self.resolved_provider_account_owner_for_run(run).await?;
         let response = crate::runtime::provider_auth_control::execute_start_provider_login_request(
             self,
             &owner,

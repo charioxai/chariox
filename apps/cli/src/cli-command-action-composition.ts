@@ -1,3 +1,5 @@
+import { withAgentTaskUpdate } from "@chariox/kernel-client/agent-task-state"
+import type { AgentTaskExecution } from "@chariox/kernel-client/kernel-types"
 import { getManagedContextTransferStatus } from "./managed-environment-api.js"
 import { getCloudClientControlProfile } from "./cloud-client-control.js"
 import { appHostOperationIds, type AppHostTerminal } from "./app-host-action.js"
@@ -95,7 +97,7 @@ import {
   validateScript,
   testConnector,
 } from "./extension-api.js"
-import { deleteKernel, exportDebugBundle, getDaemonHealth, listKernelAccessGrants, revokeKernelAccessGrant } from "./kernel-api.js"
+import { deleteKernel, exportDebugBundle, extendKernelSudo, getDaemonHealth, listKernelAccessGrants, revokeKernelAccessGrant } from "./kernel-api.js"
 import {
   mergeRelayCloudProfile,
   mergeUiPreferences,
@@ -165,7 +167,7 @@ import {
   updateMetaagentTask,
 } from "./session-api.js"
 import { SESSION_CONFIG_RESPONSE_LAYOUT_KEY } from "@chariox/kernel-client/session-config-projection"
-import { createAgentPromptScheduleRequest } from "@chariox/kernel-client/ipc-requests"
+import { submitPromptRequest, createAgentPromptScheduleRequest } from "@chariox/kernel-client/ipc-requests"
 import { formatSessionList } from "./sessions.js"
 import {
   createSlice,
@@ -199,6 +201,7 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
+  userAppViews?: { handle(args: string[], sessionId?: string): Promise<boolean> }
   cloudClient?: CloudClient
   kernelConnected?: () => boolean
   appHostTerminal?: AppHostTerminal
@@ -480,6 +483,24 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     currentAccountProfileId: () => currentAccountProfileId?.() || options.accountProfile || "default",
     currentExecutionMode,
     currentPermissionLevel,
+    submitGoalPrompt: async (text, targetAgentId) => {
+      const attachment = attachmentState()
+      if (!attachment) throw new Error("goal needs an attached terminal")
+      const response = await client.send<{ PromptSubmitted?: { session: RuntimeSession }; SessionState?: { session: RuntimeSession }; AgentTaskUpdated?: { session_id: string; task: AgentTaskExecution } }>(submitPromptRequest(sessionState().id, attachment.id, targetAgentId, text, []))
+      if (response.AgentTaskUpdated) {
+        const update = response.AgentTaskUpdated
+        if (update.session_id !== sessionState().id || update.task.agent_id !== targetAgentId) throw new Error("foreign goal control confirmation")
+        deps.applySessionState(withAgentTaskUpdate(sessionState(), update.session_id, update.task))
+        requestRootRender()
+        return
+      }
+      const payload = response.PromptSubmitted ?? response.SessionState
+      if (!payload?.session) throw new Error("goal admission did not return session state")
+      deps.applySessionState(payload.session)
+      await deps.refreshAgentPanes(payload.session)
+      deps.rebuildTranscript()
+      requestRootRender()
+    },
     focusedAgentId,
     multiAgentResponseLayout,
     maxAgentsPerScreen,
@@ -508,6 +529,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     },
     sendWorkflowEventPublicationRequest: (request) => client.send(request),
     sendAppRequest: (request) => client.send(request),
+    ...(deps.userAppViews ? { userAppViews: deps.userAppViews } : {}),
     ...(deps.appFileInstaller ? { appFileInstaller: deps.appFileInstaller } : {}),
     ...(deps.appDevLoop ? { appDevLoop: deps.appDevLoop } : {}),
     ...(deps.appPublisherEnrollment ? { appPublisherEnrollment: deps.appPublisherEnrollment } : {}),
@@ -531,6 +553,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getContextTransferStatus: contextId => getManagedContextTransferStatus(client, contextId),
     listKernelAccessGrants: () => listKernelAccessGrants(client),
     revokeKernelAccessGrant: (id) => revokeKernelAccessGrant(client, id),
+    sendExtendKernelSudo: (request) => extendKernelSudo(client, request),
     exportDebugBundle: (sessionId, label) => exportDebugBundle(client, sessionId, label),
     assignSessionAlias: (sessionId, alias) => aliasSession(client, sessionId, alias),
     aliasAgent: (sessionId, agentId, alias) => aliasAgent(client, sessionId, agentId, alias),

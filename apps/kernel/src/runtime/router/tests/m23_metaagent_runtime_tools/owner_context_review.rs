@@ -131,15 +131,14 @@ async fn human_review(source_project: bool, legacy_local: bool) {
         let attempted = router
             .dispatch_authenticated_runtime_tool_call(
                 &auth,
-                crate::transport::runtime_tools::META_RESOLVE_RUNTIME_INTERACTION_TOOL,
+                "chariox.meta.resolve_runtime_interaction",
                 serde_json::json!({"interaction_id": id, "choice_id": "continue"}),
             )
-            .await
-            .unwrap();
+            .await;
+        // MP-11: the retired agent approval tool is either refused or unknown.
         assert!(
-            !attempted.ok,
-            "MP-11 Meta approval bypassed owner review: {:?}",
-            attempted.payload
+            !attempted.as_ref().is_ok_and(|result| result.ok),
+            "MP-11 retired Meta approval bypassed owner review: {attempted:?}",
         );
         if source_project {
             assert_eq!(interaction.agent_id(), Some(worker.id()));

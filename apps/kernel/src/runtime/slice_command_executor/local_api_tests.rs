@@ -5,12 +5,12 @@ use super::*;
 #[cfg(unix)]
 use std::ffi::OsString;
 #[cfg(unix)]
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 #[cfg(unix)]
 use tokio::sync::Mutex;
 
 #[cfg(unix)]
-static SLICE_DOCKER_ENV_LOCK: StdMutex<()> = StdMutex::new(());
+static SLICE_DOCKER_ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
 #[cfg(unix)]
 struct SliceDockerEnv(Vec<(&'static str, Option<OsString>)>);
@@ -54,9 +54,7 @@ async fn save_api_rejects_unsupported_layout_before_snapshot_or_park() {
     crate::test_support::isolated_env_test!();
     use std::os::unix::fs::PermissionsExt;
 
-    let _environment_lock = SLICE_DOCKER_ENV_LOCK
-        .lock()
-        .expect("Docker provisioner test lock should not be poisoned");
+    let _environment_lock = SLICE_DOCKER_ENV_LOCK.lock().await;
     struct Scratch(std::path::PathBuf);
     impl Drop for Scratch {
         fn drop(&mut self) {

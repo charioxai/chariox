@@ -45,6 +45,16 @@ impl KernelRuntimeOwnedState {
                 terminal_credential_owner,
             );
         }
+        if session_id.is_empty() {
+            if forwarding.is_some() || terminal_credential_owner.is_some() {
+                return Err(interaction_error("Invalid unattached decision authority"));
+            }
+            return self.register_user_domain_interaction(
+                interaction,
+                responder,
+                kernel_operation_owner,
+            );
+        }
         // Resolve agent identity before taking the session write guard; session
         // updates must not acquire the agent store in the opposite lock order.
         let mut remote_binding = None;
@@ -251,6 +261,7 @@ impl KernelRuntimeOwnedState {
             agent_lifetime,
             session_id: session_id.into(),
             session_store_identity: self.session_store.weak_identity(),
+            user_domain_interaction: None,
             kernel_operation_owner: kernel_operation_owner.map(str::to_owned),
             terminal_credential_owner: terminal_credential_owner.map(str::to_owned),
             kernel_operation_deadline: kernel_operation_owner.map(|_| {

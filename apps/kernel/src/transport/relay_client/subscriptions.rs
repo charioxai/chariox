@@ -22,6 +22,9 @@ pub(super) struct RelaySubscriber {
 pub(super) struct RelaySubscriptionTask {
     pub(super) relay_subscription_id: String,
     pub(super) client_public_key: String,
+    pub(super) display_id: Option<String>,
+    /// MP-08/MP-10: protocol 491 push pump of a display subscription.
+    pub(super) display_pump: Option<Arc<super::display_pump::DisplayPump>>,
     pub(super) handle: JoinHandle<()>,
 }
 
@@ -57,6 +60,10 @@ pub(super) fn relay_subscription_task_key(
     format!("{scope}\u{1f}{session_id}\u{1f}{attachment_id}\u{1f}{relay_subscription_id}")
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing handle_relay_subscribe operation signature and explicit context arguments"
+)]
 pub(super) async fn handle_relay_subscribe(
     router: &Arc<CommandRouter>,
     outgoing_tx: &RelayOutgoingSender,
@@ -85,6 +92,23 @@ pub(super) async fn handle_relay_subscribe(
             return Ok(());
         }
     };
+    if subscription_scope.as_deref() == Some("kernel_browser_display") {
+        return super::browser_display::handle_subscribe(
+            router,
+            outgoing_tx,
+            subscription_tasks,
+            super::browser_display::DisplaySubscription {
+                request_id: relay_request_id,
+                relay_id: relay_subscription_id,
+                display_id: session_id,
+                generation: attachment_id,
+                identity: caller_identity,
+                public_key: client_public_key,
+                resume: resume_from_event_id,
+            },
+        )
+        .await;
+    }
     let subscriber = RelaySubscriber {
         caller: crate::runtime::command::KernelCaller::for_relay_request(caller_identity.clone()),
         user_id: if paired {
@@ -303,6 +327,8 @@ pub(super) async fn handle_relay_subscribe(
     subscription_tasks.lock().await.insert(
         task_key,
         RelaySubscriptionTask {
+            display_id: None,
+            display_pump: None,
             relay_subscription_id,
             client_public_key,
             handle: task,
@@ -341,6 +367,9 @@ pub(super) async fn handle_relay_unsubscribe(
             .await;
     if let Some(task) = existing {
         task.handle.abort();
+        if let Some(pump) = &task.display_pump {
+            pump.stop();
+        }
     }
     let ack = match encrypt_json_response(
         router,
@@ -372,6 +401,10 @@ pub(super) async fn handle_relay_unsubscribe(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing run_relay_subscription_loop operation signature and explicit context arguments"
+)]
 pub(super) async fn run_relay_subscription_loop(
     router: Arc<CommandRouter>,
     outgoing_tx: RelayOutgoingSender,
@@ -591,14 +624,11 @@ pub(super) async fn run_relay_subscription_loop(
                     // hot-session snapshot cannot immediately erase it in the client.
                     let mut emitted_projection_delta = emitted_terminal_workflow_run_update;
                     let mut emit_failed = false;
-                    for event in [
-                        agent_activity_changed_event(&snapshot, previous_snapshot_ref),
-                        provider_run_changed_event(&snapshot, previous_snapshot_ref),
-                        session_metadata_changed_event(&snapshot, previous_snapshot_ref),
-                        runtime_interactions_changed_event(&snapshot, previous_snapshot_ref),
-                    ]
-                    .into_iter()
-                    .flatten()
+                    for event in
+                        crate::transport::kernel_protocol::session_projection_changed_events(
+                            &snapshot,
+                            previous_snapshot_ref,
+                        )
                     {
                         emitted_projection_delta = true;
                         if emit_relay_event(
@@ -654,8 +684,13 @@ pub(super) async fn run_relay_subscription_loop(
                             return;
                         }
                     }
+                    let skip_snapshot = can_skip_session_snapshot(
+                        &snapshot,
+                        previous_snapshot_ref,
+                        emitted_projection_delta || workflow_run_only,
+                    );
                     previous_snapshot = Some(snapshot.clone());
-                    if emitted_projection_delta || workflow_run_only {
+                    if skip_snapshot {
                         continue;
                     }
                     if emit_relay_event(
@@ -1198,6 +1233,8 @@ mod tests {
         tasks.lock().await.insert(
             first_key.clone(),
             RelaySubscriptionTask {
+                display_id: None,
+                display_pump: None,
                 relay_subscription_id: "relay-subscription-1".to_string(),
                 client_public_key: "client-public-key-1".to_string(),
                 handle: first_handle,
@@ -1210,6 +1247,8 @@ mod tests {
         tasks.lock().await.insert(
             second_key,
             RelaySubscriptionTask {
+                display_id: None,
+                display_pump: None,
                 relay_subscription_id: "relay-subscription-2".to_string(),
                 client_public_key: "client-public-key-2".to_string(),
                 handle: second_handle,
@@ -1255,6 +1294,8 @@ mod tests {
             sleep(Duration::from_secs(60)).await;
         });
         let task = RelaySubscriptionTask {
+            display_id: None,
+            display_pump: None,
             relay_subscription_id: "relay-subscription-1".to_string(),
             client_public_key: "client-public-key-1".to_string(),
             handle,
@@ -1266,11 +1307,7 @@ mod tests {
             "client-public-key-1",
         ));
         assert!(
-            !relay_subscription_task_matches(
-                &task,
-                "relay-subscription-1",
-                "client-public-key-2",
-            ),
+            !relay_subscription_task_matches(&task, "relay-subscription-1", "client-public-key-2",),
             "browser event-socket reconnects can reuse the relay subscription id with a fresh client keypair"
         );
         task.handle.abort();

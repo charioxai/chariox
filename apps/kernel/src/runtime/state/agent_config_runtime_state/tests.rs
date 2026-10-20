@@ -5,6 +5,9 @@ use tokio::sync::Mutex;
 #[path = "tests/automatic_substitutes.rs"]
 mod automatic_substitutes;
 
+#[path = "tests/goal_assessment.rs"]
+mod goal_assessment;
+
 #[path = "tests/worker_failure_settlement.rs"]
 mod worker_failure_settlement;
 

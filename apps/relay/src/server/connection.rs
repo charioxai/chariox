@@ -106,15 +106,43 @@ pub(crate) async fn handle_connection(
     auth_verifier: RelayAuthVerifier,
     relay_request_counter: Arc<AtomicU64>,
 ) -> Result<(), std::io::Error> {
+    stream.set_nodelay(true)?;
     let mut chunks = false;
+    let mut binary_events = false;
     let handshake = accept_hdr_async(
         stream,
-        |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+        |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+         mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
             chunks = request.uri().query().is_some_and(|query| {
                 query
                     .split('&')
                     .any(|part| part == crate::frame_transport::TRANSPORT_QUERY)
             });
+            let protocol_offered = request
+                .headers()
+                .get("sec-websocket-protocol")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|protocols| {
+                    protocols
+                        .split(',')
+                        .any(|p| p.trim() == crate::binary_event::CAPABILITY)
+                });
+            binary_events = protocol_offered
+                || request
+                    .headers()
+                    .get(crate::binary_event::VERSION_HEADER)
+                    .is_some_and(|version| version == "96");
+            if protocol_offered {
+                response.headers_mut().insert(
+                    "sec-websocket-protocol",
+                    crate::binary_event::CAPABILITY.parse().unwrap(),
+                );
+            }
+            if binary_events {
+                response
+                    .headers_mut()
+                    .insert(crate::binary_event::VERSION_HEADER, "96".parse().unwrap());
+            }
             Ok(response)
         },
     );
@@ -132,6 +160,7 @@ pub(crate) async fn handle_connection(
         writer,
         outgoing_rx,
         chunks,
+        binary_events,
         receipt_rx,
         control_rx,
     )));
@@ -987,6 +1016,13 @@ pub(crate) async fn handle_connection(
                         | RelayEnvelope::DaemonUnsubscribe { .. }
                         | RelayEnvelope::ClientEvent { .. } => {}
                     }
+                }
+                Message::Binary(bytes) => {
+                    let Some(current_daemon_key) = registered_daemon_key.as_ref().filter(|_| binary_events) else {
+                        send_close(&outgoing_tx, "binary events require a negotiated daemon connection".into());
+                        break;
+                    };
+                    route_daemon_binary_event(&registry, &routes, current_daemon_key, &relay_request_counter, &bytes).await?;
                 }
                 Message::Ping(payload) => {
                     if control_tx.try_send(Message::Pong(payload)).is_err() {

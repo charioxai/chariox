@@ -154,12 +154,14 @@ impl KernelRuntimeOwnedState {
         if crate::provider::canonical_provider_family(&request.provider)
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
-            let account_owner_user_id =
-                crate::account_profile::provider_account_authority_for_launch(
+            let account_owner_user_id = match request.provider_account_owner_user_id.clone() {
+                Some(owner) => owner,
+                None => crate::account_profile::provider_account_authority_for_launch(
                     &config,
                     &self.provider_account_profiles,
                     &request,
-                )?;
+                )?,
+            };
             let profile = self.provider_account_profiles.get(
                 &account_owner_user_id,
                 &request.provider,
@@ -320,12 +322,14 @@ impl KernelRuntimeOwnedState {
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
             let config = self.config_projection.snapshot();
-            let account_owner_user_id =
-                crate::account_profile::provider_account_authority_for_launch(
+            let account_owner_user_id = match request.provider_account_owner_user_id.clone() {
+                Some(owner) => owner,
+                None => crate::account_profile::provider_account_authority_for_launch(
                     &config,
                     &self.provider_account_profiles,
                     &request,
-                )?;
+                )?,
+            };
             let provider_credential_env =
                 crate::provider::resolve_provider_account_credentials_for_launch(
                     &config,
@@ -350,11 +354,14 @@ impl KernelRuntimeOwnedState {
         {
             return Ok(false);
         }
-        let account_owner_user_id = crate::account_profile::provider_account_authority_for_launch(
-            &config,
-            &self.provider_account_profiles,
-            request,
-        )?;
+        let account_owner_user_id = match request.provider_account_owner_user_id.clone() {
+            Some(owner) => owner,
+            None => crate::account_profile::provider_account_authority_for_launch(
+                &config,
+                &self.provider_account_profiles,
+                request,
+            )?,
+        };
         crate::provider::provider_account_credential_uses_vault(
             &account_owner_user_id,
             &request.provider,
@@ -2069,6 +2076,8 @@ mod tests {
             .await
             .expect("vault passphrase interaction should resolve");
     }
+
+    mod leased_account_authority_tests;
 
     async fn owned_runtime_state(app: &Arc<Mutex<crate::app::DaemonApp>>) -> KernelRuntimeState {
         let (

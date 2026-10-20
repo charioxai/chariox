@@ -59,37 +59,13 @@ def locate_regions(policy):
     if policy.get('unknown'):
         raise ObservationRedacted(RETRY_MESSAGE)
     regions = []
-    for target in list(policy.get('targets', [])):
-        if target['kind'] == 'native':
-            from selkies.Xlib import display, error
-            connection = display.Display()
-            try:
-                # Re-locate this exact approved control even if focus now differs.
-                window = connection.create_resource_object('window', target['target']['focus_window'])
-                root = connection.screen().root
-                if window.get_attributes().map_state != 2:
-                    continue  # A confirmed unmapped control contributes no desktop pixels.
-                geometry = window.get_geometry()
-                translated = root.translate_coords(window, 0, 0)
-                ancestors = []
-                for _ in range(64):
-                    ancestors.append(window.id)
-                    parent = window.query_tree().parent
-                    if parent.id == root.id:
-                        break
-                    window = parent
-                if target['target']['active_window'] not in ancestors:
-                    raise ObservationRedacted(RETRY_MESSAGE)
-                regions.append([translated.x, translated.y, geometry.width, geometry.height])
-            except error.BadWindow:
-                # X confirms that this exact approved window no longer exists.
-                policy['targets'].remove(target)
-            finally:
-                connection.close()
-        elif target['kind'] != 'browser':
-            raise ObservationRedacted(RETRY_MESSAGE)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('native_fill_targets', Path(__file__).with_name('native-fill-targets.py'))
+    native = importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
+    try:regions.extend(native.regions())
+    except Exception:pass  # Native best effort; browser targets still measured.
     browser_targets = [target for target in policy.get('targets', []) if target['kind'] == 'browser']
-    if browser_targets or policy.get('values'):
+    if browser_targets:
         result = subprocess.run(['node', str(Path(__file__).with_name('browser-observation-regions.mjs'))],
                                 input=json.dumps({'targets': browser_targets, 'values': policy.get('values', [])}), text=True, capture_output=True,
                                 timeout=2, check=True)
@@ -108,8 +84,6 @@ def capture_pixels():
 
 def observe(mode, argument, policy, locate=locate_regions, capture=capture_pixels,
             run=subprocess.run, scratch=None):
-    native_ids = {target['target']['focus_window'] for target in policy.get('targets', [])
-                  if target.get('kind') == 'native'}
     image = None
     try:
         image = capture_masked(policy, locate, capture)
@@ -129,13 +103,7 @@ def observe(mode, argument, policy, locate=locate_regions, capture=capture_pixel
     finally:
         if image is not None:
             image.close()
-        remaining = {target['target']['focus_window'] for target in policy.get('targets', [])
-                     if target.get('kind') == 'native'}
-        pruned = sorted(native_ids - remaining)
-        if pruned:
-            # Private helper receipt contains only XIDs, never observation text.
-            print('CHARIOX_OBSERVATION_PRUNED_NATIVE:' + json.dumps(pruned, separators=(',', ':')),
-                  file=sys.stderr)
+
 
 
 if __name__ == '__main__':

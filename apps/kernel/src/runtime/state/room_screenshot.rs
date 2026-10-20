@@ -193,7 +193,7 @@ impl KernelRuntimeState {
         }
     }
 
-    async fn read_complete_room_screenshot(
+    pub(super) async fn read_complete_room_screenshot(
         &self,
         session_id: &str,
         slice: &SliceRecord,
@@ -343,6 +343,10 @@ impl KernelRuntimeState {
         })
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing execute_bound_room_screenshot_chunk operation signature and explicit context arguments"
+    )]
     pub(crate) fn execute_bound_room_screenshot_chunk(
         &self,
         authenticated_kernel_id: &str,
@@ -389,7 +393,7 @@ impl KernelRuntimeState {
         })
     }
 
-    async fn authorize_room_screenshot(
+    pub(super) async fn authorize_room_screenshot(
         &self,
         caller: &KernelCaller,
         session_id: &str,
