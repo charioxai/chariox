@@ -605,7 +605,8 @@ async fn proxied_session_subscriptions_share_one_attachment_without_replacement(
     let second_prompts =
         expect_client_event(&mut second_client_socket, &second_subscription_private_key).await;
     assert_empty_passkey_event(&second_prompts);
-    let catalog = expect_client_event(&mut second_client_socket, &second_subscription_private_key).await;
+    let catalog =
+        expect_client_event(&mut second_client_socket, &second_subscription_private_key).await;
     assert_client_catalog_event(&catalog);
     let second_event =
         expect_client_event(&mut second_client_socket, &second_subscription_private_key).await;
@@ -1096,7 +1097,9 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
     let catalog = tokio::time::timeout(
         Duration::from_secs(5),
         decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key),
-    ).await.expect("current client catalog revision should precede the snapshot");
+    )
+    .await
+    .expect("current client catalog revision should precede the snapshot");
     assert_client_catalog_event(&catalog.1);
     let current_snapshot = tokio::time::timeout(
         Duration::from_secs(5),
@@ -1369,7 +1372,10 @@ fn assert_empty_passkey_event(event: &serde_json::Value) {
 
 fn assert_client_catalog_event(event: &serde_json::Value) {
     assert!(event["revision"].as_u64().is_some());
-    assert_eq!(event, &serde_json::json!({
-        "event": "client_catalog_changed", "revision": event["revision"],
-    }));
+    assert_eq!(
+        event,
+        &serde_json::json!({
+            "event": "client_catalog_changed", "revision": event["revision"],
+        })
+    );
 }

@@ -1797,8 +1797,18 @@ async fn sudo_review_uses_verified_requester_instead_of_summary_path() {
         .unwrap()
         .summary
         .holder_executable = path.into();
-    let verified_executable = f.state.owned.kernel_access.lock().unwrap()
-        .grants.get(&grant_id).unwrap().holder.executable.clone();
+    let verified_executable = f
+        .state
+        .owned
+        .kernel_access
+        .lock()
+        .unwrap()
+        .grants
+        .get(&grant_id)
+        .unwrap()
+        .holder
+        .executable
+        .clone();
     let state = f.state.clone();
     let request = external_request(&f);
     let task = tokio::spawn(async move { state.request_kernel_sudo(&grant_id, request).await });

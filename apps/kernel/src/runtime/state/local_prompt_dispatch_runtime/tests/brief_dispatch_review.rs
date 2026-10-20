@@ -646,7 +646,12 @@ async fn room_retirement_between_brief_chunks_never_replays_the_next_utility_inp
     fixture.release();
     fixture.wait_for("final-provider-envelope").await;
     let inputs = std::fs::read_to_string(fixture.root.path().join("brief-utility-inputs")).unwrap();
-    let parts = inputs.lines().next().unwrap().split("1 of ").nth(1)
+    let parts = inputs
+        .lines()
+        .next()
+        .unwrap()
+        .split("1 of ")
+        .nth(1)
         .and_then(|suffix| suffix.split(|c: char| !c.is_ascii_digit()).next())
         .and_then(|number| number.parse::<usize>().ok());
     assert!(
