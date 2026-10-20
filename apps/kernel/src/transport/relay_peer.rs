@@ -333,6 +333,35 @@ impl std::fmt::Debug for RemoteRoomBrowserRuntimeToolResult {
     }
 }
 
+/// An agent's terminal tool call, forwarded by the worker its provider runs on
+/// to the home kernel that owns the Room and the agent's identity. Arguments
+/// and results carry typed text and terminal output, so they stay out of logs.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteTerminalRuntimeToolCall {
+    pub tool_name: String,
+    pub arguments: serde_json::Value,
+}
+
+impl std::fmt::Debug for RemoteTerminalRuntimeToolCall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RemoteTerminalRuntimeToolCall")
+            .field("tool_name", &self.tool_name)
+            .field("arguments", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RemoteTerminalRuntimeToolResult(pub crate::transport::runtime_tools::RuntimeToolResult);
+
+impl std::fmt::Debug for RemoteTerminalRuntimeToolResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RemoteTerminalRuntimeToolResult(<redacted>)")
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RemoteRoomComputerObservationCall {
@@ -899,6 +928,10 @@ pub enum RelayPeerRequest {
         context: RemoteExtensionInvocationContext,
         call: RemoteRoomBrowserRuntimeToolCall,
     },
+    ForwardTerminalRuntimeTool {
+        context: RemoteExtensionInvocationContext,
+        call: RemoteTerminalRuntimeToolCall,
+    },
     InvokeHomeExtensionTool {
         context: RemoteExtensionInvocationContext,
         #[serde(default)]
@@ -1208,6 +1241,9 @@ pub enum RelayPeerResponse {
     },
     RoomBrowserRuntimeToolHandled {
         result: RemoteRoomBrowserRuntimeToolResult,
+    },
+    TerminalRuntimeToolHandled {
+        result: RemoteTerminalRuntimeToolResult,
     },
     HomeExtensionToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,

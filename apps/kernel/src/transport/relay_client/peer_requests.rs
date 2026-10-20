@@ -1551,6 +1551,26 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::ForwardTerminalRuntimeTool { context, call } => {
+            let handled = router
+                .dispatch_forwarded_terminal_runtime_tool_call(
+                    stable_peer_daemon_id(from_daemon_id),
+                    context,
+                    call,
+                )
+                .await;
+            match handled {
+                Ok(result) => RelayPeerResponse::TerminalRuntimeToolHandled {
+                    result: crate::transport::relay_peer::RemoteTerminalRuntimeToolResult(result),
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::InvokeHomeExtensionTool {
             context,
             metadata,

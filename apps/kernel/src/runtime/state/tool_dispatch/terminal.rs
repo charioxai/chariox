@@ -4,7 +4,8 @@
 use super::workspace_live_sync_permission::allow_deny_choices;
 use super::*;
 use crate::local::{RoomTerminalOperation, RoomTerminalResult};
-use crate::room_terminal::{RoomTerminalWatch, TerminalActor};
+use crate::room_terminal::{RoomTerminalWatch, TerminalActor, MAX_WAIT};
+use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use crate::transport::runtime_tools::{
     RuntimeToolResult, TerminalIdArgs, TerminalListArgs, TerminalNamedCondition, TerminalOpenArgs,
     TerminalSendArgs, TerminalWaitArgs, TerminalWaitCondition, TERMINAL_CLOSE_TOOL,
@@ -26,6 +27,107 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
+        let call = TerminalCall::parse(tool_name, arguments.clone())?;
+        // A provider on a worker acts as the home agent in the home Room: the
+        // home kernel owns the Room, its other machines and the terminals the
+        // agent started, so the call is carried there after approval.
+        let leased = self
+            .with_app_side_effect(|app| {
+                crate::app::RemoteLeaseRuntime::new(app)
+                    .leased_extension_invocation_context_for_runtime_provider_run(provider_run)
+            })
+            .await;
+        let (session_id, agent_id) = self.terminal_tool_caller(provider_run, tool_name)?;
+        if let Some(typed) = call.typed_text() {
+            // Permission stays the run's own: its sudo turn and its level.
+            if let Some(denied) = self
+                .ask_before_typing(provider_run, &session_id, &agent_id, &typed)
+                .await?
+            {
+                return Ok(denied);
+            }
+        }
+        match leased {
+            Some(context) => {
+                self.forward_terminal_tool_to_home(context, tool_name, arguments)
+                    .await
+            }
+            None => self.run_terminal_call(&session_id, &agent_id, call).await,
+        }
+    }
+
+    /// The home side of a worker provider's terminal tool: the call was
+    /// approved on the worker and runs as the home agent.
+    pub(crate) async fn dispatch_forwarded_terminal_runtime_tool_call(
+        &self,
+        from_worker_kernel_id: &str,
+        context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        call: crate::transport::relay_peer::RemoteTerminalRuntimeToolCall,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let operation = "forwarded terminal runtime tool";
+        let expected_worker =
+            context
+                .worker_kernel_id
+                .as_deref()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation,
+                    message: "forwarded terminal context omitted the worker kernel".to_string(),
+                })?;
+        if from_worker_kernel_id != expected_worker {
+            return Err(DaemonError::LocalTransport {
+                operation,
+                message: "relay sender does not match the bound worker kernel".to_string(),
+            });
+        }
+        super::home_extension_authorizer::authorize_remote_home_context(self, &context, operation)?;
+        let parsed = TerminalCall::parse(&call.tool_name, call.arguments)?;
+        self.run_terminal_call(&context.home_session_id, &context.home_agent_id, parsed)
+            .await
+    }
+
+    async fn forward_terminal_tool_to_home(
+        &self,
+        context: crate::transport::relay_peer::RemoteExtensionInvocationContext,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
+        // A wait blocks up to its own timeout, and the home may itself wait on a
+        // worker; leave room for both relay answers.
+        let timeout = std::cmp::max(
+            std::time::Duration::from_millis(relay_config.relay_request_timeout_ms),
+            MAX_WAIT + std::time::Duration::from_secs(40),
+        );
+        let home_kernel_id = context.home_kernel_id.clone();
+        let response = self
+            .send_worker_home_runtime_request(
+                &relay_config,
+                &home_kernel_id,
+                RelayPeerRequest::ForwardTerminalRuntimeTool {
+                    context,
+                    call: crate::transport::relay_peer::RemoteTerminalRuntimeToolCall {
+                        tool_name: tool_name.to_string(),
+                        arguments,
+                    },
+                },
+                timeout,
+            )
+            .await?;
+        match response {
+            RelayPeerResponse::TerminalRuntimeToolHandled { result } => Ok(result.0),
+            other => Err(terminal_tool_error(
+                tool_name,
+                format!("unexpected home response: {other:?}"),
+            )),
+        }
+    }
+
+    /// The Room and agent a provider run belongs to on this kernel.
+    fn terminal_tool_caller(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        tool_name: &str,
+    ) -> Result<(String, String), DaemonError> {
         let session_id = provider_run.session_id().to_string();
         let session = self.owned.session_store.get_session(&session_id)?;
         let agent_id = provider_run
@@ -42,85 +144,41 @@ impl KernelRuntimeState {
                     "terminals are used by an agent of a Room".to_string(),
                 )
             })?;
-        let actor = TerminalActor::Agent(agent_id.clone());
+        Ok((session_id, agent_id))
+    }
+
+    /// Run an approved call as `agent_id` of `session_id` on this kernel,
+    /// placed on the machine it names.
+    async fn run_terminal_call(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        call: TerminalCall,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let actor = TerminalActor::Agent(agent_id.to_string());
         // Where the call runs: the machine the arguments name, else the
         // calling agent's own. A list without a machine covers all of them.
-        let (host_agent, operation) = match tool_name {
-            TERMINAL_OPEN_TOOL => {
-                let args: TerminalOpenArgs = parse_arguments(tool_name, arguments)?;
-                if let Some(command) = &args.command {
-                    if let Some(denied) = self
-                        .ask_before_typing(provider_run, &agent_id, &command.join(" "))
-                        .await?
-                    {
-                        return Ok(denied);
-                    }
-                }
-                (
-                    args.host_agent,
-                    RoomTerminalOperation::Open {
-                        cols: args.cols.unwrap_or(DEFAULT_COLS),
-                        rows: args.rows.unwrap_or(DEFAULT_ROWS),
-                        title: args.title,
-                        command: args.command,
-                    },
-                )
-            }
-            TERMINAL_LIST_TOOL => (
-                parse_arguments::<TerminalListArgs>(tool_name, arguments)?.host_agent,
-                RoomTerminalOperation::List,
-            ),
-            TERMINAL_SEND_TOOL => {
-                let args: TerminalSendArgs = parse_arguments(tool_name, arguments)?;
-                if let Some(denied) = self
-                    .ask_before_typing(provider_run, &agent_id, &args.text)
-                    .await?
-                {
-                    return Ok(denied);
-                }
+        let (host_agent, operation) = match call {
+            TerminalCall::Send(args) => {
                 let host =
-                    self.terminal_tool_host(&session_id, &agent_id, args.host_agent.as_deref())?;
+                    self.terminal_tool_host(session_id, agent_id, args.host_agent.as_deref())?;
                 return self
-                    .send_terminal_text(&session_id, actor, host.as_deref(), args)
+                    .send_terminal_text(session_id, actor, host.as_deref(), args)
                     .await;
             }
-            TERMINAL_READ_TOOL => {
-                let args: TerminalIdArgs = parse_arguments(tool_name, arguments)?;
-                (
-                    args.host_agent,
-                    RoomTerminalOperation::Snapshot {
-                        terminal_id: args.terminal_id,
-                    },
-                )
-            }
-            TERMINAL_WAIT_TOOL => {
-                let args: TerminalWaitArgs = parse_arguments(tool_name, arguments)?;
-                (args.host_agent.clone(), wait_operation(args))
-            }
-            TERMINAL_CLOSE_TOOL => {
-                let args: TerminalIdArgs = parse_arguments(tool_name, arguments)?;
-                (
-                    args.host_agent,
-                    RoomTerminalOperation::Close {
-                        terminal_id: args.terminal_id,
-                    },
-                )
-            }
-            other => {
-                return Err(terminal_tool_error(
-                    other,
-                    "unsupported terminal tool".to_string(),
-                ))
-            }
+            TerminalCall::Operate {
+                host_agent,
+                operation,
+            } => (host_agent, operation),
         };
         let everywhere = host_agent.is_none() && matches!(operation, RoomTerminalOperation::List);
         let host = if everywhere {
             None
         } else {
-            self.terminal_tool_host(&session_id, &agent_id, host_agent.as_deref())?
+            self.terminal_tool_host(session_id, agent_id, host_agent.as_deref())?
         };
         let result = self
-            .route_room_terminal(&session_id, actor, host.as_deref(), everywhere, operation)
+            .route_room_terminal(session_id, actor, host.as_deref(), everywhere, operation)
             .await?;
         Ok(terminal_result_payload(result))
     }
@@ -203,10 +261,10 @@ impl KernelRuntimeState {
     async fn ask_before_typing(
         &self,
         provider_run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
         agent_id: &str,
         typed: &str,
     ) -> Result<Option<RuntimeToolResult>, DaemonError> {
-        let session_id = provider_run.session_id();
         if provider_run.runtime_mcp_auth_token().is_some_and(|auth| {
             self.sudo_for_auth_token(auth).is_ok_and(|turn| {
                 turn.session_id == session_id
@@ -261,6 +319,87 @@ impl KernelRuntimeState {
                 "next_action": "The terminal input was not approved. Ask the user, or ask them to switch this agent to yolo permissions.",
             }),
         }))
+    }
+}
+
+/// A terminal tool call with its arguments checked once.
+enum TerminalCall {
+    Send(TerminalSendArgs),
+    Operate {
+        host_agent: Option<String>,
+        operation: RoomTerminalOperation,
+    },
+}
+
+impl TerminalCall {
+    fn parse(tool_name: &str, arguments: serde_json::Value) -> Result<Self, DaemonError> {
+        let operate = |host_agent, operation| Self::Operate {
+            host_agent,
+            operation,
+        };
+        Ok(match tool_name {
+            TERMINAL_OPEN_TOOL => {
+                let args: TerminalOpenArgs = parse_arguments(tool_name, arguments)?;
+                operate(
+                    args.host_agent,
+                    RoomTerminalOperation::Open {
+                        cols: args.cols.unwrap_or(DEFAULT_COLS),
+                        rows: args.rows.unwrap_or(DEFAULT_ROWS),
+                        title: args.title,
+                        command: args.command,
+                    },
+                )
+            }
+            TERMINAL_LIST_TOOL => operate(
+                parse_arguments::<TerminalListArgs>(tool_name, arguments)?.host_agent,
+                RoomTerminalOperation::List,
+            ),
+            TERMINAL_SEND_TOOL => Self::Send(parse_arguments(tool_name, arguments)?),
+            TERMINAL_READ_TOOL => {
+                let args: TerminalIdArgs = parse_arguments(tool_name, arguments)?;
+                operate(
+                    args.host_agent,
+                    RoomTerminalOperation::Snapshot {
+                        terminal_id: args.terminal_id,
+                    },
+                )
+            }
+            TERMINAL_WAIT_TOOL => {
+                let args: TerminalWaitArgs = parse_arguments(tool_name, arguments)?;
+                operate(args.host_agent.clone(), wait_operation(args))
+            }
+            TERMINAL_CLOSE_TOOL => {
+                let args: TerminalIdArgs = parse_arguments(tool_name, arguments)?;
+                operate(
+                    args.host_agent,
+                    RoomTerminalOperation::Close {
+                        terminal_id: args.terminal_id,
+                    },
+                )
+            }
+            other => {
+                return Err(terminal_tool_error(
+                    other,
+                    "unsupported terminal tool".to_string(),
+                ))
+            }
+        })
+    }
+
+    /// What the agent would run or type, when that needs approval.
+    fn typed_text(&self) -> Option<String> {
+        match self {
+            Self::Send(args) => Some(args.text.clone()),
+            Self::Operate {
+                operation:
+                    RoomTerminalOperation::Open {
+                        command: Some(command),
+                        ..
+                    },
+                ..
+            } => Some(command.join(" ")),
+            Self::Operate { .. } => None,
+        }
     }
 }
 

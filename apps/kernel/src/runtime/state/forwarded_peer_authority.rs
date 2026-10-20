@@ -148,7 +148,8 @@ impl KernelRuntimeState {
                 | RelayPeerRequest::CancelHomeExtensionInvocation { context, .. }
                 | RelayPeerRequest::InvokeHomeCredentialTool { context, .. }
                 | RelayPeerRequest::ResolveHomeCredentialSecret { context, .. }
-                | RelayPeerRequest::ForwardRoomBrowserRuntimeTool { context, .. } => {
+                | RelayPeerRequest::ForwardRoomBrowserRuntimeTool { context, .. }
+                | RelayPeerRequest::ForwardTerminalRuntimeTool { context, .. } => {
                     Some((&context.home_session_id, &context.home_agent_id))
                 }
                 RelayPeerRequest::ForwardWorkflowRuntimeTool { context, .. } => {
@@ -199,7 +200,8 @@ impl KernelRuntimeState {
             | RelayPeerRequest::CancelHomeExtensionInvocation { context, .. }
             | RelayPeerRequest::InvokeHomeCredentialTool { context, .. }
             | RelayPeerRequest::ResolveHomeCredentialSecret { context, .. }
-            | RelayPeerRequest::ForwardRoomBrowserRuntimeTool { context, .. } => {
+            | RelayPeerRequest::ForwardRoomBrowserRuntimeTool { context, .. }
+            | RelayPeerRequest::ForwardTerminalRuntimeTool { context, .. } => {
                 super::tool_dispatch::authorize_remote_home_context_for_peer(self, context)
                     .map(|_| ())
             }

@@ -717,6 +717,14 @@ async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up_async() {
     ))
     .await;
 
+    Box::pin(assert_worker_provider_tools_act_as_the_home_agent(
+        &app_home,
+        &app_worker,
+        &session_id,
+        &remote_agent,
+    ))
+    .await;
+
     {
         let mut app = app_home.lock().await;
         let destroyed = crate::app::KernelSessionService::new(&mut app)
@@ -909,6 +917,159 @@ async fn assert_home_agent_tools_reach_worker_terminal(
     )
     .await;
     assert_eq!(closed.payload["closed"], true);
+}
+
+/// A provider that runs on the worker uses terminals as its home agent in
+/// the home Room: it continues a program the home agent started, and it can
+/// open a terminal on the home kernel, a machine of the home Room.
+async fn assert_worker_provider_tools_act_as_the_home_agent(
+    app_home: &Arc<Mutex<DaemonApp>>,
+    app_worker: &Arc<Mutex<DaemonApp>>,
+    session_id: &str,
+    remote_agent: &crate::agent::AgentInstance,
+) {
+    use crate::local::{RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult};
+    use base64::Engine as _;
+    let (worker_token, home_agent_id) = {
+        let home = app_home.lock().await;
+        let worker_provider_run_id = home
+            .agents()
+            .get_agent(remote_agent.id())
+            .expect("remote agent should remain available")
+            .remote_execution()
+            .and_then(|binding| binding.active_worker_provider_run_id.clone())
+            .expect("worker provider run should be projected");
+        let worker = app_worker.lock().await;
+        let token = worker
+            .providers()
+            .get_run(&worker_provider_run_id)
+            .expect("worker provider run should exist")
+            .runtime_mcp_auth_token()
+            .expect("the worker run should hold runtime tool auth")
+            .to_string();
+        let home_agent_id = home
+            .agents()
+            .list_agents()
+            .into_iter()
+            .find(|agent| agent.session_id() == session_id && agent.id() != remote_agent.id())
+            .expect("the Room has its own home agent")
+            .id()
+            .to_string();
+        (token, home_agent_id)
+    };
+    let home_router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(app_home), 8);
+    let client = |operation| {
+        let router = home_router.clone();
+        let request = LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
+            session_id: session_id.to_string(),
+            acting_agent: Some(remote_agent.id().to_string()),
+            host_agent: None,
+            operation,
+        });
+        async move {
+            let command = KernelCommand::from_local_request("room-terminal", None, None, &request);
+            match router.dispatch(command, request).await {
+                Ok(LocalDaemonResponse::RoomTerminal { result }) => result,
+                other => panic!("unexpected terminal response: {other:?}"),
+            }
+        }
+    };
+    let worker_router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(app_worker), 8);
+    let tool = |name: &'static str, arguments: serde_json::Value| {
+        let router = worker_router.clone();
+        let token = worker_token.clone();
+        async move {
+            router
+                .runtime_state()
+                .dispatch_authenticated_runtime_tool_call(&token, name, arguments)
+                .await
+                .unwrap_or_else(|error| panic!("{name}: {error}"))
+        }
+    };
+
+    // The home agent starts `cat` on its worker; it now drives the terminal.
+    let RoomTerminalResult::Opened { terminal } = client(RoomTerminalOperation::Open {
+        cols: 90,
+        rows: 24,
+        title: None,
+        command: None,
+    })
+    .await
+    else {
+        panic!("the home agent's terminal should open on the worker");
+    };
+    let id = terminal.terminal_id;
+    client(RoomTerminalOperation::Input {
+        terminal_id: id.clone(),
+        data_base64: base64::engine::general_purpose::STANDARD.encode("cat\r"),
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // The same agent's tool call, authenticated by the worker's provider
+    // token, continues that program instead of being a different driver.
+    let sent = tool(
+        "chariox.terminal_send",
+        serde_json::json!({ "terminal_id": id, "text": "from-the-provider", "enter": true }),
+    )
+    .await;
+    assert!(
+        sent.ok,
+        "the worker provider is the home agent that started `cat`: {:?}",
+        sent.payload
+    );
+    let waited = tool(
+        "chariox.terminal_wait",
+        serde_json::json!({
+            "terminal_id": id,
+            "until": [{"text": "from-the-provider"}],
+            "after_offset": sent.payload["after_offset"],
+            "timeout_seconds": 20,
+        }),
+    )
+    .await;
+    assert_eq!(
+        waited.payload["still_running"], false,
+        "{:?}",
+        waited.payload
+    );
+    let closed = tool(
+        "chariox.terminal_close",
+        serde_json::json!({ "terminal_id": id }),
+    )
+    .await;
+    assert_eq!(closed.payload["closed"], true, "{:?}", closed.payload);
+
+    // The home kernel is a machine of the home Room the provider can name.
+    let opened = tool(
+        "chariox.terminal_open",
+        serde_json::json!({ "host_agent": home_agent_id }),
+    )
+    .await;
+    assert!(opened.ok, "{:?}", opened.payload);
+    assert!(
+        opened.payload["terminal"]["host_agent"].is_null(),
+        "a terminal on the home kernel names no worker: {:?}",
+        opened.payload
+    );
+    let home_terminal = opened.payload["terminal"]["terminal_id"]
+        .as_str()
+        .expect("home terminal id")
+        .to_string();
+    let read = tool(
+        "chariox.terminal_read",
+        serde_json::json!({ "terminal_id": home_terminal, "host_agent": home_agent_id }),
+    )
+    .await;
+    assert!(read.ok, "{:?}", read.payload);
+    let closed = tool(
+        "chariox.terminal_close",
+        serde_json::json!({ "terminal_id": home_terminal, "host_agent": home_agent_id }),
+    )
+    .await;
+    assert_eq!(closed.payload["closed"], true, "{:?}", closed.payload);
 }
 
 /// A Room terminal for an agent leased to a worker runs on the worker, over
