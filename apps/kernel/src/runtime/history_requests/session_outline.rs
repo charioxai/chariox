@@ -92,6 +92,7 @@ pub(crate) async fn execute_scoped_session_history_blob_content_request(
         let entries = events
             .into_iter()
             .filter(|event| event_belongs_to_external_import(agent_import.as_ref(), event))
+            .filter(|event| !event_is_internal_prompt_turn(event))
             .filter_map(page_entry_from_event)
             .collect::<Vec<_>>();
         Ok(LocalDaemonResponse::SessionHistoryBlobContent {
