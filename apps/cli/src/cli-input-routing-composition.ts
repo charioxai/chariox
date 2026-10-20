@@ -39,6 +39,7 @@ type AnyFn = (...args: any[]) => any
 export type CliInputRoutingCompositionDeps = {
   hydrateComposer?: () => Promise<void>
   hydratePromptInputHistory?: () => Promise<void>
+  bootstrapProviderLaunch?: import("./cli-types.js").BootstrapDeferredState["providerLaunch"]
   cloudClient?: import("./cloud-client.js").CloudClient
 
   roomWorkflowsOwnsInput?: () => boolean
@@ -430,6 +431,11 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       const agent = deps.sessionState().agents.find((candidate: { id: string; alias?: string | null }) =>
         alias ? candidate.alias?.toLowerCase() === alias.toLowerCase() : candidate.id === agentId,
       )
+      const launch = deps.bootstrapProviderLaunch
+      if (launch && launch.sessionId === deps.sessionState().id && launch.isPending()
+        && (!launch.agentId || launch.agentId === agent?.id)) {
+        return "Agent is starting. Answer its pending request before sending a prompt."
+      }
       const reason = agent ? selectedProviderAccountStartBlockReason(deps.providerAccountsState(), agent.provider, agent.account_profile ?? undefined, agent.remote_execution, agent.model) : null
       if (reason && agent) deps.onProviderAccountPromptBlocked?.({sessionId: deps.sessionState().id, agentId: agent.id})
       return reason

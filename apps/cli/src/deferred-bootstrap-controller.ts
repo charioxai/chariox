@@ -21,6 +21,9 @@ export type DeferredBootstrapControllerDeps = {
   currentPromptHistoryEntries?: () => readonly string[]
   currentPromptHistoryIndex?: () => number | null
   currentPromptHistoryDraft?: () => string | null
+  focusedAgentId?: () => string | null
+  setProviderRun?: (run: RuntimeProviderRun) => void
+  providerLaunchFailed?: (message: string) => void
   currentTranscriptEntryCount: () => number
   entryCounter: () => number
   setProviderCatalog: (catalog: ProviderCatalog) => void
@@ -149,6 +152,23 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
         deps.setSessionHydratingState(false)
       }
     })
+
+    const launch = deferred.providerLaunch
+    if (launch && deps.currentAttachmentSessionId() === launch.sessionId) {
+      void launch.start().then(({ providerRun }) => {
+        if (deps.currentAttachmentSessionId() !== launch.sessionId) return
+        if (providerRun && (!deps.focusedAgentId || !providerRun.agent_instance_id
+          || providerRun.agent_instance_id === deps.focusedAgentId())) {
+          deps.setProviderRun?.(providerRun)
+        }
+        deps.updateSessionChrome()
+      }).catch(error => {
+        warn("provider launch after terminal mount failed", error)
+        if (deps.currentAttachmentSessionId() === launch.sessionId) {
+          deps.providerLaunchFailed?.(deps.formatError(error))
+        }
+      })
+    }
   }
 
   let promptFlight: Promise<void> | undefined, promptAttachment: string | null | undefined

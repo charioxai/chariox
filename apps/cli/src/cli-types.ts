@@ -445,6 +445,7 @@ export type ComposerInventory = {
 }
 
 export type AttachLaunch = {
+  providerLaunch?: BootstrapDeferredState["providerLaunch"]
   sessionId: string
   session: RuntimeSession | null
   providerRun: RuntimeProviderRun | null
@@ -460,6 +461,12 @@ export type BootstrapDeferredState = {
   loadComposer?: () => Promise<ComposerInventory>
 
   promptInputHistory?: Promise<{ sessionId: string; entries: string[] }>
+  providerLaunch?: {
+    sessionId: string
+    agentId: string | null
+    isPending: () => boolean
+    start: () => Promise<{ providerRun: RuntimeProviderRun | null }>
+  }
   waitingRoomDefaults?: Promise<{ provider?: string; model?: string; effort?: string }>
   providerCatalog?: Promise<ProviderCatalog>
   providerCommandCatalogs?: Promise<ProviderCommandCatalogs>

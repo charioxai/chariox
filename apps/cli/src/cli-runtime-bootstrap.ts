@@ -367,6 +367,8 @@ async function bootstrapAttachedSessionWithRuntimeDeps(
   logger?: CharioxLogger | null,
 ): Promise<BootstrapState> {
   return bootstrapSession(client, options, workspace, worktree, preferences, {
+    // MP-08 / MP-10: mount before a launch can ask the human for Vault input.
+    deferProviderLaunch: true,
     listProviderAccountProfiles,
     logger: logger ?? null,
     getConfiguredProviderLaunchDefaults: async (ipcClient) => {

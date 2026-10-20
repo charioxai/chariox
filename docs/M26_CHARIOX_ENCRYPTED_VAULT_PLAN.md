@@ -34,7 +34,7 @@ max_ttl_minutes = 240
 
 Supported policies:
 
-- `kernel_init`: request unlock during kernel startup and keep it until shutdown.
+- `kernel_init`: request unlock on first Vault use after kernel startup and keep it until shutdown.
 - `session`: unlock per session and keep access for that session until it ends or expires.
 - `agent`: unlock per agent and keep access for that agent until it ends or expires.
 - `ttl`: unlock for a configured time window, defaulting to 30 minutes.
@@ -82,7 +82,9 @@ Add a small vault coordinator owned by the kernel:
 
 - Tracks locked/unlocked state.
 - Tracks unlocked scopes and expiry timestamps.
-- Deduplicates concurrent unlock requests into one interaction.
+- Deduplicates concurrent unlock requests within each requesting session. A
+  pending request in another session must not hide this session's unlock prompt.
+  A shared lease unlocked in either session resumes the other waiting requests.
 - Holds decrypted vault key material in memory only while unlocked.
 - Clears key material on expiry, explicit lock, kernel shutdown, or failed integrity checks.
 - Emits terminal/runtime events when vault state changes.
@@ -95,6 +97,11 @@ Secret service flow:
 4. If locked, coordinator creates or joins a pending unlock interaction.
 5. The tool waits for unlock, times out, or returns a clear cancellation error.
 6. Secret values are injected only through existing browser, terminal, connector, MCP, or HTTP injection paths.
+
+MP-08 / MP-10 / MP-11: launch unlock and duration prompts expire after 60
+seconds with a clear timeout and retry guidance. Restarted or abandoned Vault
+cards cannot block a fresh request. Clients render before awaiting human input;
+Web startup and TUI attachment must keep the same kernel interaction visible.
 
 Keep the existing warm in-memory secret cache, but make it subordinate to unlock state:
 

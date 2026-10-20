@@ -32,6 +32,7 @@ import { selectedProviderAccountStartBlockReason } from "./waiting-room-provider
 
 export type BootstrapDeps = {
   getClientCatalogRevisions?: typeof import("./client-catalog-api.js").getClientCatalogRevisions
+  deferProviderLaunch?: boolean
   listProviderAccountProfiles?: (client: LocalIpcClient) => Promise<ProviderAccountProfile[]>
   logger?: CharioxLogger | null
   getConfiguredProviderLaunchDefaults?: (client: LocalIpcClient) => Promise<{
@@ -205,7 +206,7 @@ export async function bootstrapSession(
   // launch result, so the attach-time launch runs beside the first paint.
   const launching = settleAttachLaunch(client, session, attachedSession, attachment.id, createdSession, Boolean(initialView), options, deps)
   launching.catch(() => {})
-  const settled = initialView ? null : await launching
+  const settled = deps.deferProviderLaunch ? await launching : initialView ? null : await launching
   const hydratedSession = settled?.session ?? attachedSession
   const visibleAgentId = deps.resolveVisibleAgentId(hydratedSession, preferences)
   // MP-08 / MP-10: composer inventories are user requested, never attach work.
@@ -259,7 +260,8 @@ export async function bootstrapSession(
       composerScopeKey: () => JSON.stringify([options.provider, options.accountProfile]),
       loadPromptInputHistory: (sessionId: string) => loadSessionPromptHistory(client, sessionId, deps).then(entries => ({ sessionId, entries })),
       attachedHistory: attachedHistoryPromise,
-      ...(initialView ? { attachLaunch: launching, historyIsBundled: true as const } : {}),
+      ...(settled?.providerLaunch ? { providerLaunch: settled.providerLaunch } : {}),
+      ...(initialView && !deps.deferProviderLaunch ? { attachLaunch: launching, historyIsBundled: true as const } : {}),
     },
   }
 }
@@ -287,12 +289,18 @@ async function settleAttachLaunch(
       ...(deps.getCredentialVaultStatus
         ? { getCredentialVaultStatus: () => deps.getCredentialVaultStatus!(client) }
         : {}),
+      deferLaunch: deps.deferProviderLaunch === true,
       launchProviderRun: (sessionId, provider, accountProfile, model, effort, targetAgentId) =>
         deps.launchProviderRun(client, sessionId, provider, accountProfile, model, effort, targetAgentId),
       getSessionState: (sessionId) => deps.getSessionState(client, sessionId),
       tryGetProviderRun: (providerRunId) => deps.tryGetProviderRun(client, providerRunId, deps.logger),
     },
   )
+  if (providerSettlement.action === "deferred") {
+    return { sessionId: session.id, session: null, providerRun: null, issue: null,
+      providerLaunch: { sessionId: session.id, agentId: providerSettlement.targetAgentId,
+        isPending: providerSettlement.isPending, start: providerSettlement.start } }
+  }
   const settledSession = providerSettlement.session
   if (providerSettlement.action === "skipped") {
     if (providerSettlement.recoveredRemotePlacement) {

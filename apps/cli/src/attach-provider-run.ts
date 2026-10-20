@@ -11,9 +11,17 @@ import type {
 import { LocalIpcError } from "./ipc.js"
 
 type RuntimeAgent = RuntimeSession["agents"][number]
-type SkipReason = "no_visible_agents" | "missing_focused_agent" | "remote_backed_agent" | "credential_vault_locked"
+type SkipReason = "no_visible_agents" | "missing_focused_agent" | "remote_backed_agent" | "credential_vault_locked" | "pending_interaction"
 
 export type AttachProviderRunSettlement =
+  | {
+    action: "deferred"
+    session: RuntimeSession
+    providerRun: null
+    targetAgentId: string | null
+    isPending: () => boolean
+    start: () => Promise<AttachProviderRunSettlement>
+  }
   | {
     action: "launched"
     session: RuntimeSession
@@ -39,6 +47,8 @@ export type AttachProviderRunSettlement =
 
 type AttachProviderRunDeps = {
   getCredentialVaultStatus?: () => Promise<Record<string, unknown>>
+  /** Bootstrap has no rendered terminal in which to answer an interaction. */
+  deferLaunch?: boolean
   launchProviderRun: (
     sessionId: string,
     provider: string,
@@ -51,6 +61,20 @@ type AttachProviderRunDeps = {
   tryGetProviderRun: (providerRunId: string) => Promise<RuntimeProviderRun | null>
 }
 
+export function settleAttachProviderRun(
+  session: RuntimeSession,
+  fallback: SessionLifecycleLaunchSelection,
+  accountProfile: string,
+  createdSession: boolean,
+  deps: AttachProviderRunDeps & { deferLaunch?: false },
+): Promise<Exclude<AttachProviderRunSettlement, { action: "deferred" }>>
+export function settleAttachProviderRun(
+  session: RuntimeSession,
+  fallback: SessionLifecycleLaunchSelection,
+  accountProfile: string,
+  createdSession: boolean,
+  deps: AttachProviderRunDeps,
+): Promise<AttachProviderRunSettlement>
 export async function settleAttachProviderRun(
   session: RuntimeSession,
   fallback: SessionLifecycleLaunchSelection,
@@ -78,19 +102,26 @@ export async function settleAttachProviderRun(
         recoveredRemotePlacement: false,
       }
     case "launch_provider_run": {
-      // A bootstrap has no interaction UI yet. Leave eager Claude startup to
-      // the normal kernel prompt path when its Vault is locked, so the TUI can
-      // render the kernel-owned unlock interaction before a launch waits on it.
-      if (["claude", "claude-p", "claude-headless"].includes(decision.launch.provider)
-        && (await deps.getCredentialVaultStatus?.())?.unlocked === false) {
+      // MP-08 / MP-10: another client may already own the launch awaiting this
+      // interaction. Attach and project it without starting a competing run.
+      if (session.active_interactions?.some(interaction => interaction.agent_id === decision.targetAgentId)) {
         return {
-          action: "skipped",
+          action: "skipped", session, providerRun: null, launch: decision.launch,
+          reason: "pending_interaction", targetAgent: decision.targetAgent, recoveredRemotePlacement: false,
+        }
+      }
+      if (deps.deferLaunch) {
+        let pending = true
+        let launch: Promise<AttachProviderRunSettlement> | undefined
+        return {
+          action: "deferred",
           session,
           providerRun: null,
-          launch: decision.launch,
-          reason: "credential_vault_locked",
-          targetAgent: decision.targetAgent,
-          recoveredRemotePlacement: false,
+          targetAgentId: decision.targetAgentId,
+          isPending: () => pending,
+          start: () => launch ??= settleAttachProviderRun(session, fallback, accountProfile, createdSession, {
+            ...deps, deferLaunch: false,
+          }).finally(() => { pending = false }),
         }
       }
       try {
@@ -121,6 +152,21 @@ export async function settleAttachProviderRun(
           }
         }
         let refreshedSession: RuntimeSession
+      // A bootstrap has no interaction UI yet. Leave eager Claude startup to
+      // the normal kernel prompt path when its Vault is locked, so the TUI can
+      // render the kernel-owned unlock interaction before a launch waits on it.
+      if (["claude", "claude-p", "claude-headless"].includes(decision.launch.provider)
+        && (await deps.getCredentialVaultStatus?.())?.unlocked === false) {
+        return {
+          action: "skipped",
+          session,
+          providerRun: null,
+          launch: decision.launch,
+          reason: "credential_vault_locked",
+          targetAgent: decision.targetAgent,
+          recoveredRemotePlacement: false,
+          }
+        }
         try {
           refreshedSession = await deps.getSessionState(session.id)
         } catch {

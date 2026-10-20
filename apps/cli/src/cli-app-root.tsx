@@ -900,7 +900,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       setEntries(reconcile(nextEntries))
     },
     promptHistoryEntries, promptHistoryIndex, promptHistoryDraft,
-    setPromptHistoryEntries, setPromptHistoryIndex, setPromptHistoryDraft, setProviderCatalogState,
+    setPromptHistoryEntries, setPromptHistoryIndex, setPromptHistoryDraft, setProviderCatalogState, setProviderRunState,
     setProviderCommandCatalogState, setTerminalCommandCatalogState, updateSessionChrome, flashFooter,
     applyAttachLaunch: (launch) => {
       if (launch.providerRun) setProviderRunState(launch.providerRun)
@@ -1047,6 +1047,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     submitPrompt, submitWorkspaceShellCommand,
   } = createCliAppCommandRoutingComposition({
     userAppViews,
+    bootstrapProviderLaunch: props.bootstrap.deferred?.providerLaunch,
     onProviderAccountPromptBlocked: (target: {sessionId: string; agentId: string}) => { blockedAccountTarget = target },
     providerAccountRecoveryOwnsInput: providerAccountRecovery.ownsInput,
     handleProviderAccountRecoveryKey: providerAccountRecovery.handleKey,
