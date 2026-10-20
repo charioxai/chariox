@@ -3689,6 +3689,7 @@ fn claude_types_the_prompt_and_never_the_note_text() {
             prompt: "fix it",
             hidden_system_context: "",
             attachments: &attachments,
+            context_handoff: &|_| String::new(),
         },
         "/nonexistent/context",
     );

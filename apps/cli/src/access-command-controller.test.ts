@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { createAccessCommandController } from "./access-command-controller.js"
 import { parseSlashCommand } from "./commands.js"
-const snapshot = { event: "user_domain_grants_changed", cursor: 1, grants: [{ agent_id: "holder", session_id: "session", kernel_id: "kernel", resources: [{ kind: "note", note_id: "note" }], since_ms: 100, focused: false, idle_since_ms: null, idle_timeout_seconds: 1800 }], notice: null }
+const snapshot = { event: "user_domain_grants_changed", cursor: 1, grants: [{ agent_id: "holder", session_id: "session", kernel_id: "kernel", resources: [{ kind: "browser_tab", tab_id: "tab" }], since_ms: 100, focused: false, idle_since_ms: null, idle_timeout_seconds: 1800 }], notice: null }
 test("MP-08 / MP-11 leased Computer uses explicit target and rejects older kernels", async () => {
   const old = fixture(494)
   await assert.rejects(old.controller.handle(["grant-computer", "holder", "desktop", "g"]), /500/)
@@ -29,7 +29,7 @@ test("lists scoped grants and uses owner revoke shapes", async () => {
   // Skip the live feed in this focused command test.
   await h.controller.handle([])
   assert.match(h.lines.at(-1)!, /holder · session session · kernel kernel/)
-  assert.match(h.lines.at(-1)!, /resources: note note/)
+  assert.match(h.lines.at(-1)!, /resources: tab tab/)
   await h.controller.handle(["revoke", "holder"])
   assert.deepEqual(h.requests.at(-1), { KernelBrowser: { command: { op: "revoke_grants", agent_id: "holder" } } })
   await h.controller.handle(["revoke", "all"])
@@ -49,9 +49,9 @@ test("retained-use feed prints the shared notice once and stops after cleanup", 
   } }, appendNotice: line => lines.push(line) })
   const tick = () => new Promise(resolve => setImmediate(resolve))
   controller.start(); await tick()
-  const notice = { agent_id: "holder", resource: { kind: "note", note_id: "note" }, at_ms: 500 }
+  const notice = { agent_id: "holder", resource: { kind: "browser_tab", tab_id: "tab" }, at_ms: 500 }
   pending.shift()!({ KernelBrowser: { result: { ...snapshot, cursor: 2, notice } } }); await tick()
-  assert.deepEqual(lines, ["Agent holder used retained access to note note while not focused."])
+  assert.deepEqual(lines, ["Agent holder used retained access to tab tab while not focused."])
   pending.shift()!({ KernelBrowser: { result: { ...snapshot, cursor: 3, notice } } }); await tick()
   assert.equal(lines.length, 1)
   controller.stop()
