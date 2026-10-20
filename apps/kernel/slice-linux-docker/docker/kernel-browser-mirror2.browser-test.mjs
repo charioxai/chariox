@@ -330,6 +330,32 @@ test("MP-11: a click inside a transformed same-origin frame is delivered at the 
     assert.equal(await evaluate("f.contentWindow.hit"), 1);
   }));
 
+test("MP-11 review r72-1: a click inside a scaled same-origin frame is mapped through the frame's scale", () => mirrored(
+  '<iframe id="f" style="position:absolute;left:20px;top:20px;width:200px;height:100px;border:0;transform-origin:0 0;transform:scale(2)" srcdoc="<button id=b style=\'width:80px;height:30px\' onclick=hit=(window.hit||0)+1>b</button>"></iframe>', async ({ next, evaluate, input }) => {
+    await evaluate("new Promise(resolve => f.contentDocument?.getElementById('b') ? resolve(true) : f.addEventListener('load', () => resolve(true)))");
+    const snapshot = await next(600), [button] = elements(snapshot).find(([, tag, attrs]) => tag === "button" && attrs.id === "b") ?? [];
+    assert(button, "the frame's button is mirrored");
+    await input(snapshot.sequence, { kind: "click", node_id: button, x: 5, y: 5 });
+    assert.equal(await evaluate("f.contentWindow.hit"), 1);
+  }));
+
+test("MP-11 review r72-2: a click on a node clipped by a native scroll pane (viewer scrolled ahead) reveals it in the pane and lands", () => mirrored(
+  '<div id="pane" style="position:absolute;left:10px;top:50px;width:300px;height:100px;overflow:auto"><div style="height:300px"></div><button id="b" style="width:80px;height:30px">b</button></div><div id="under" style="position:absolute;left:10px;top:340px;width:300px;height:60px">under</div><script>window.hits=[];addEventListener("click",e=>hits.push(e.target.id),true)</script>', async ({ next, evaluate, input }) => {
+    const snapshot = await next(), [button] = elements(snapshot).find(([, , attrs]) => attrs.id === "b");
+    await input(snapshot.sequence, { kind: "click", node_id: button, x: 5, y: 5 });
+    assert.deepEqual(await evaluate("hits"), ["b"]);
+    assert(await evaluate("pane.scrollTop") > 0, "the pane scrolled the button into view");
+  }));
+
+test("MP-11 review r72-2: a click on a node below its own frame's viewport reveals it in the frame and lands", () => mirrored(
+  '<iframe id="f" style="position:absolute;left:20px;top:20px;width:200px;height:100px;border:0" srcdoc="<div style=\'height:500px\'></div><button id=b style=\'width:80px;height:30px\' onclick=hit=(window.hit||0)+1>b</button>"></iframe><div id="under" style="position:absolute;left:20px;top:300px;width:300px;height:60px">under</div>', async ({ next, evaluate, input }) => {
+    await evaluate("new Promise(resolve => f.contentDocument?.getElementById('b') ? resolve(true) : f.addEventListener('load', () => resolve(true)))");
+    const snapshot = await next(600), [button] = elements(snapshot).find(([, tag, attrs]) => tag === "button" && attrs.id === "b") ?? [];
+    assert(button, "the frame's button is mirrored");
+    await input(snapshot.sequence, { kind: "click", node_id: button, x: 5, y: 5 });
+    assert.equal(await evaluate("f.contentWindow.hit"), 1);
+  }));
+
 test("MP-11: a click on a node that lost its box since the viewer's frame lands on its nearest boxed ancestor", () => mirrored(
   '<div id="p" style="position:absolute;left:200px;top:100px;width:100px;height:40px;background:#ccc">box<span id="z" style="display:contents"></span></div><script>window.hits=[];addEventListener("click",e=>hits.push(e.target.id),true)</script>', async ({ next, evaluate, input }) => {
     const snapshot = await next(), [collapsed] = elements(snapshot).find(([, , attrs]) => attrs.id === "z");
