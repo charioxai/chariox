@@ -2142,7 +2142,8 @@ async fn failed_workflow_delegate_settlement(settled_upstream: bool, shared: Sha
         }
     }
     if shared_delegate {
-        for (id, kind) in [("failed-parent-second-workflow", "workflow_run")] {
+        {
+            let (id, kind) = ("failed-parent-second-workflow", "workflow_run");
             store
                 .agent_lifecycle(Operation::RegisterObligation {
                     owner: session.owner_user_id().into(),
