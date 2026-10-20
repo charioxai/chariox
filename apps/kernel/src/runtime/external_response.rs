@@ -147,12 +147,6 @@ response_policies! {
         KernelBrowser,
         Notes,
         VisibleRegionCaptured,
-        UserAppViewCallResult,
-        UserAppViewClosed,
-        UserAppViewFrontend,
-        UserAppViewOpened,
-        UserAppViewsChanged,
-        UserAppViewsListed,
         UserDomainInteractionAnswered,
     ],
     Public => [
@@ -165,10 +159,6 @@ response_policies! {
         ActivePromptSteered,
         CloudRelayLoggedOut,
         // MP-08 / MP-11: protection-filtered like ScreenshotCaptured and RoomBrowserArtifact.
-        KernelBrowser,
-        VisibleRegionCaptured,
-        Notes,
-        UserDomainInteractionAnswered,
         KernelSudoRequested,
         KernelSudoExtended,
         KernelAccessGranted,

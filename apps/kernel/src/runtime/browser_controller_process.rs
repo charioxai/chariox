@@ -556,6 +556,7 @@ impl BrowserControllerProcessStdioBackend {
     // MD-DISPLAY-04: host RPCs validate their own outcome. The host health RPC
     // reports only this same supervisor PID, so don't repeat it per frame.
     // Keep exact owned-child exit detection and cold/recovery health admission.
+    #[cfg(test)]
     pub(crate) fn ensure_host_started(&mut self) -> Result<bool, String> {
         if !self.host {
             return Err("host controller required".into());
