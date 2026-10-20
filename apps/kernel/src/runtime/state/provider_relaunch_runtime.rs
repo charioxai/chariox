@@ -90,7 +90,10 @@ impl KernelRuntimeState {
                         return Ok(false);
                     }
                     crate::app::ProviderLaunchProcessRuntime::new(app)
-                        .spawn_for_launch(&started.run)
+                        .spawn_for_launch_with_credentials(
+                            &started.run,
+                            &started.provider_credential_env,
+                        )
                         .map(|_| true)
                 })
                 .await;
