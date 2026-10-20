@@ -280,15 +280,11 @@ export class KernelBrowserHost {
       }
       // MP-08/MP-10: restore the registry in one inventory pass. A loading
       // background page must not delay every subsequent Tab's creation.
-      if (saved.tabs.length) await this.reconcile({ readOnly: true });
-      await this.syncTabGroups(this.savedGroups,{restore:true});
-      const active = this.tabs.get(saved.active_tab_id);
-      if (active) {
-        await connection.send('Target.activateTarget', { targetId: active.target_id });
-        this.activeTarget = active.target_id;
-      }
+      // Every target now exists. Apply the pending Tab/App selection inside
+      // this same inventory pass, after the restoration fence is released.
       this.restoring = false;
-      await this.reconcile();
+      await this.reconcile({ readOnly: true });
+      await this.syncTabGroups(this.savedGroups,{restore:true});
       await this.save();
       await this.rebindWindows();
       this.recovery.watch(connection);
