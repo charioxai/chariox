@@ -5,17 +5,21 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::events::OutputMatcher;
+use super::events::{FinishBinding, OutputMatcher};
 use super::*;
 
 struct TempDir(std::path::PathBuf);
 
 impl TempDir {
     fn new() -> Self {
+        // Tests start in the same millisecond; the counter keeps their
+        // directories apart so one test's cleanup cannot remove another's.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "chariox-room-terminal-{}-{}",
+            "chariox-room-terminal-{}-{}-{}",
             std::process::id(),
-            crate::session::unix_epoch_ms()
+            crate::session::unix_epoch_ms(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&path).unwrap();
         Self(path)
@@ -932,6 +936,133 @@ async fn a_finished_wait_belongs_to_the_command_that_was_submitted() {
     service.end_session("room-1");
 }
 
+fn finished_with(code: u32) -> Option<RoomTerminalEventKind> {
+    Some(RoomTerminalEventKind::Finished {
+        exit_code: Some(code),
+        signal: None,
+    })
+}
+
+async fn wait_finished_after(
+    service: &RoomTerminalService,
+    id: &str,
+    offset: u64,
+) -> Option<RoomTerminalEventKind> {
+    service
+        .wait(
+            "room-1",
+            id,
+            "a",
+            vec![RoomTerminalWatch::Finished],
+            Some(offset),
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap()
+        .fired
+}
+
+fn pump_in_background(service: &RoomTerminalService) -> tokio::task::JoinHandle<()> {
+    let pump = service.clone();
+    tokio::spawn(async move {
+        loop {
+            pump.pump_once();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+}
+
+#[tokio::test]
+async fn a_second_send_by_the_same_agent_waits_for_its_own_command() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    let pumping = pump_in_background(&service);
+    assert!(
+        type_as(&service, &id, &agent("a"), "(sleep 1; exit 3)\r")
+            .await
+            .accepted
+    );
+    until("the first command to run", || async {
+        service.lock().terminals[&id].command_in_flight
+    })
+    .await;
+    // The second line waits in the terminal's input until the first command
+    // returns to the prompt.
+    let offset = service.snapshot("room-1", &id).unwrap().output_offset;
+    assert!(
+        type_as(&service, &id, &agent("a"), "(exit 5)\r")
+            .await
+            .accepted
+    );
+    assert_eq!(
+        wait_finished_after(&service, &id, offset).await,
+        finished_with(5)
+    );
+    pumping.abort();
+    service.end_session("room-1");
+}
+
+#[tokio::test]
+async fn two_sends_before_the_next_pump_wait_for_their_own_commands() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    assert!(
+        type_as(&service, &id, &agent("a"), "(sleep 1; exit 3)\r")
+            .await
+            .accepted
+    );
+    let second = service.snapshot("room-1", &id).unwrap().output_offset;
+    assert!(
+        type_as(&service, &id, &agent("a"), "(exit 5)\r")
+            .await
+            .accepted
+    );
+    let pumping = pump_in_background(&service);
+    assert_eq!(
+        wait_finished_after(&service, &id, second).await,
+        finished_with(5)
+    );
+    pumping.abort();
+    service.end_session("room-1");
+}
+
+#[tokio::test]
+async fn input_a_running_command_reads_does_not_hide_its_finish() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    let pumping = pump_in_background(&service);
+    assert!(
+        type_as(
+            &service,
+            &id,
+            &agent("a"),
+            "read -r answer; exit_code=4; (exit $exit_code)\r"
+        )
+        .await
+        .accepted
+    );
+    until("the command to run", || async {
+        service.lock().terminals[&id].command_in_flight
+    })
+    .await;
+    let offset = service.snapshot("room-1", &id).unwrap().output_offset;
+    // The running command takes this line, so no other command follows it.
+    assert!(
+        type_as(&service, &id, &agent("a"), "answer\r")
+            .await
+            .accepted
+    );
+    assert_eq!(
+        wait_finished_after(&service, &id, offset).await,
+        finished_with(4)
+    );
+    pumping.abort();
+    service.end_session("room-1");
+}
+
 #[tokio::test]
 async fn a_shell_started_inside_the_terminal_does_not_repeat_the_marks() {
     let root = TempDir::new();
@@ -1055,7 +1186,7 @@ async fn an_output_marker_survives_a_large_burst_in_one_pump_batch() {
         },
         OutputMatcher::new(&terminal.plain),
         false,
-        None,
+        FinishBinding::default(),
     );
     let now = Instant::now();
     let mut fired = terminal.apply_output(b"ready-", now);
@@ -1071,7 +1202,7 @@ async fn an_output_marker_survives_a_large_burst_in_one_pump_batch() {
         },
         OutputMatcher::new(&terminal.plain),
         false,
-        None,
+        FinishBinding::default(),
     );
     for part in long_needle.as_bytes().chunks(1023) {
         fired.extend(terminal.apply_output(part, now));

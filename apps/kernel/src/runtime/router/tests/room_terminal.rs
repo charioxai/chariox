@@ -220,6 +220,8 @@ fn only_the_room_owner_reaches_terminals_and_drivers_do_not_collide() {
         assert!(unknown.to_string().contains("no agent"), "{unknown}");
 
         // TERM-DRIVER-LOCK: A starts a program; B is refused, the user is not.
+        // A login shell that is still running its profile owns the foreground.
+        until_driver(&router, &session_id, RoomTerminalDriver::Free).await;
         let a = Some(agent_a.id());
         let b = Some(agent_b.id());
         assert!(
