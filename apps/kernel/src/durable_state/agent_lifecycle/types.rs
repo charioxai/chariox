@@ -157,6 +157,9 @@ pub(crate) enum Operation {
     EnableCompletionCheck {
         task: String,
     },
+    DisableCompletionCheck {
+        task: String,
+    },
     AdoptGoal {
         owner: String,
         room: String,

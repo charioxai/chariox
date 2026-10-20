@@ -316,3 +316,17 @@ fn catalog_handoff_cannot_replace_a_wait_or_another_pending_intent() {
         assert_eq!(f.task(), before);
     }
 }
+
+#[test]
+fn a_withdrawn_completion_check_settles_the_task_on_its_answer() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.apply(Operation::EnableCompletionCheck { task: "p".into() });
+    f.apply(Operation::DisableCompletionCheck { task: "p".into() });
+    let Outcome::Settled { task, correction } = f.settle("p", true) else {
+        panic!()
+    };
+    assert!(!correction);
+    assert_eq!(task.state, ExecutionState::Done);
+    assert!(task.completion_check.is_none() && task.pending_prompt_id.is_none());
+}

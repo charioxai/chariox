@@ -118,6 +118,26 @@ async fn eventually<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
     .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
 }
 
+/// The home projects the worker run just before the worker's backing prompt is
+/// active; finish it as soon as it is.
+async fn complete_worker_turn(fixture: &LiveWorker, backing_session: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        match dispatch_json(
+            &fixture.worker,
+            json!({"CompletePrompt":{"session_id":backing_session}}),
+        )
+        .await
+        {
+            Ok(_) => return,
+            Err(DaemonError::NoActivePrompt { .. }) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(error) => panic!("the worker finishes the leased turn: {error:?}"),
+        }
+    }
+}
+
 async fn local_agent(fixture: &LiveWorker, room: &str, leased: &str) -> String {
     let app = fixture.home.app.lock().await;
     app.agents()
@@ -233,12 +253,7 @@ async fn leased_delegate_completion_wakes_the_home_delegator(worker_completes: b
             crate::app::RemoteLeaseRuntime::new(&mut *fixture.worker.app.lock().await)
                 .leased_agent_backing(&leased)
                 .expect("worker backing agent");
-        dispatch_json(
-            &fixture.worker,
-            json!({"CompletePrompt":{"session_id":backing_session}}),
-        )
-        .await
-        .expect("the worker finishes the leased turn");
+        complete_worker_turn(&fixture, &backing_session).await;
     } else {
         dispatch_json(&fixture.home, json!({"CompletePrompt":{"session_id":room}}))
             .await
@@ -328,12 +343,7 @@ async fn leased_requested_reply_carries_worker_answer() {
         crate::app::RemoteLeaseRuntime::new(&mut *fixture.worker.app.lock().await)
             .leased_agent_backing(&remote.leased_agent_id)
             .unwrap();
-    dispatch_json(
-        &fixture.worker,
-        json!({"CompletePrompt":{"session_id":backing_session}}),
-    )
-    .await
-    .unwrap();
+    complete_worker_turn(&fixture, &backing_session).await;
     let logical = format!("agent-event-{child}-{}", request.sequence);
     let replies = eventually("the correlated requested reply", || {
         let events: Vec<_> = store

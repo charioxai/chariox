@@ -218,6 +218,22 @@ impl KernelRuntimeOwnedState {
                 }
             }
         }
+        if !cancelled
+            && self
+                .provider_run_projection
+                .get(run)
+                .is_some_and(|run| !crate::provider::provider_run_uses_structured_prompt_io(&run))
+        {
+            if let Some(task) = self
+                .durable_state_store
+                .agent_tasks(Some(room), Some(agent))?
+                .into_iter()
+                .find(|t| t.prompt_id == prompt.id())
+            {
+                self.durable_state_store
+                    .agent_lifecycle(Operation::DisableCompletionCheck { task: task.task_id })?;
+            }
+        }
         let entries = self
             .operational_history_store
             .load_session_history_entries(room, Some(agent))?;
