@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto"
 import { createReadStream, type Stats } from "node:fs"
+import { resolve } from "node:path"
 import { open, rename, rm, stat } from "node:fs/promises"
 import { CommandFailure } from "./agent-command-table.js"
+import { terminalCwd } from "./app-install-file.js"
 
 // Matches the kernel: a chunk travels base64 inside one relayed request of at most 768 KiB.
 const CHUNK_BYTES = 256 * 1024
@@ -97,7 +99,8 @@ export async function runFilesVerb(
   switch (verb) {
     case "stat": return remoteStat(send, first!, flags.sha256)
     case "ls": return (await send({ ListMachineDirectory: { path: first! } }) as { MachineDirectoryListed: unknown }).MachineDirectoryListed
-    case "get": return getFile(send, first!, second!, flags.overwrite)
-    case "put": return putFile(send, first!, second!, flags.overwrite)
+    // The launcher runs from the repository; a relative local path means the agent's directory.
+    case "get": return getFile(send, first!, resolve(terminalCwd(), second!), flags.overwrite)
+    case "put": return putFile(send, resolve(terminalCwd(), first!), second!, flags.overwrite)
   }
 }

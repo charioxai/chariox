@@ -58,7 +58,7 @@ impl MachineGateway {
         machine: &str,
         request: SubscribeRequest,
     ) -> Result<ForwardedSubscription, GatewayError> {
-        let kernel = self.directory.resolve(machine).await?;
+        let kernel = self.resolve(machine).await?;
         // Its own connection: the relay token it renews is the one it was opened with,
         // not one shared with requests that may be minutes older.
         let link = self.open_link(machine, &kernel).await?;

@@ -216,3 +216,23 @@ test("a wrong command line is a usage error before anything connects", async () 
     assert.equal(result.exit, 2, argv.join(" "))
   }
 })
+
+test("a relative local path means the directory the agent runs in, not the CLI's own", async () => {
+  await withRig(async ({ store, dir, socket }) => {
+    const before = process.env.CHARIOX_CLI_ORIGINAL_CWD
+    process.env.CHARIOX_CLI_ORIGINAL_CWD = dir
+    try {
+      const content = randomBytes(1000)
+      await writeFile(join(dir, "rel.bin"), content)
+      const put = await chariox(["files", "put", ...socket, "rel.bin", "/srv/rel.bin"])
+      assert.equal(put.exit, 0, put.stderr)
+      assert.deepEqual(store.files.get("/srv/rel.bin"), content)
+      const get = await chariox(["files", "get", ...socket, "/srv/rel.bin", "back.bin"])
+      assert.equal(get.exit, 0, get.stderr)
+      assert.deepEqual(await readFile(join(dir, "back.bin")), content)
+    } finally {
+      if (before === undefined) delete process.env.CHARIOX_CLI_ORIGINAL_CWD
+      else process.env.CHARIOX_CLI_ORIGINAL_CWD = before
+    }
+  })
+})

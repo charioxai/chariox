@@ -10,10 +10,11 @@ use serde_json::Value;
 use super::error::GatewayError;
 use super::link::{Link, LinkParams};
 use super::paired::PairedMachine;
+use super::self_hosted::capabilities_of;
 use super::{map_failure, map_open_failure, MachineGateway, REQUEST_COUNTER};
 use crate::local::{
     GatewayMachine, GatewayMachineStatus, GatewayMachineVia, JoinMachineLinkRequest,
-    JoinTerminalPairingLinkRequest, LocalDaemonRequest, RelayStatusRequest, TerminalType,
+    JoinTerminalPairingLinkRequest, LocalDaemonRequest, TerminalType,
 };
 
 /// A scoped relay's pairing link carries this instead of a transport token.
@@ -117,7 +118,7 @@ impl MachineGateway {
             kernel_alias: token.target_daemon_alias.clone(),
             available_providers: Vec::new(),
             provider_accounts: Vec::new(),
-            capabilities: self.capabilities_of(&link).await,
+            capabilities: capabilities_of(&link).await.unwrap_or_default(),
             accepting_remote_leases: false,
             leased_agent_count: 0,
             local_session_count: 0,
@@ -139,28 +140,6 @@ impl MachineGateway {
             paired_at_ms: crate::session::unix_epoch_ms(),
         })?;
         Ok(machine)
-    }
-
-    /// What the just-paired kernel advertises (for example `machine_gateway_v1`). The
-    /// pairing is complete either way; a refresh of the machine list learns it later.
-    async fn capabilities_of(&self, link: &Link) -> Vec<String> {
-        let request = serde_json::to_vec(
-            &serde_json::json!({"request": LocalDaemonRequest::RelayStatus(RelayStatusRequest)}),
-        )
-        .expect("relay status serializes");
-        let request_id = format!(
-            "gw-status-{}-{}",
-            crate::session::unix_epoch_ms(),
-            REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
-        );
-        let Ok(answer) = link.request(request_id, &request, JOIN_DEADLINE).await else {
-            return Vec::new();
-        };
-        serde_json::from_slice::<Value>(&answer)
-            .ok()
-            .and_then(|value| value.pointer("/RelayStatus/status/capabilities").cloned())
-            .and_then(|capabilities| serde_json::from_value(capabilities).ok())
-            .unwrap_or_default()
     }
 
     /// Drops a paired machine; the machine keeps its grant until revoked there.

@@ -13,6 +13,7 @@ mod keeper;
 pub(crate) mod ledger;
 mod link;
 mod paired;
+mod self_hosted;
 mod subscription;
 
 use std::collections::HashMap;
@@ -57,6 +58,8 @@ pub(crate) struct MachineGateway {
     ledger: OnceLock<ledger::GatewayLedger>,
     keeper: keeper::Keeper,
     paired: Arc<paired::PairedMachines>,
+    /// When each paired machine last answered, for the self-hosted list.
+    last_answer: std::sync::Mutex<HashMap<String, u64>>,
 }
 
 impl MachineGateway {
@@ -74,8 +77,6 @@ impl MachineGateway {
         let source = Arc::new(RelayInventory {
             config: config.clone(),
             projection,
-            own: RemoteRelayInventoryProjectionStore::default(),
-            paired: Arc::clone(&paired),
         });
         Self {
             directory: Directory::new(source),
@@ -86,11 +87,8 @@ impl MachineGateway {
             ledger: OnceLock::new(),
             keeper: keeper::Keeper::default(),
             paired,
+            last_answer: std::sync::Mutex::new(HashMap::new()),
         }
-    }
-
-    pub(crate) async fn machines(&self) -> Result<Vec<GatewayMachine>, GatewayError> {
-        self.directory.machines().await
     }
 
     /// The durable ledger a target keeps for requests forwarded to it.
@@ -114,7 +112,7 @@ impl MachineGateway {
         request: &LocalDaemonRequest,
         deadline: Duration,
     ) -> Result<Value, GatewayError> {
-        let kernel = self.directory.resolve(machine).await?;
+        let kernel = self.resolve(machine).await?;
         let gateway_ready = is_gateway_ready(&kernel);
         if !gateway_ready && matches!(request, LocalDaemonRequest::RespondToInteraction(_)) {
             return Err(GatewayError::Incompatible {
@@ -147,7 +145,13 @@ impl MachineGateway {
                     detail: format!("unreadable answer: {error}"),
                 })
             }
-            Err(failure) => Err(map_failure(machine, failure)),
+            Err(failure) => {
+                if matches!(&failure, LinkFailure::Relay(error) if error.message.starts_with("invalid relay request payload"))
+                {
+                    self.links.lock().await.remove(&kernel.kernel_id);
+                }
+                Err(map_failure(machine, failure))
+            }
         }
     }
 
@@ -273,6 +277,14 @@ fn map_failure(machine: &str, failure: LinkFailure) -> GatewayError {
             "authorization_denied" if error.message.contains("unpaired or revoked") => {
                 GatewayError::Unpaired { name }
             }
+            // The machine could not decrypt the request: it restarted with another key since
+            // this connection pinned the old one. A new connection checks the key again.
+            "invalid_request" if error.message.starts_with("invalid relay request payload") => {
+                GatewayError::Unreachable {
+                    name,
+                    detail: "the machine could not read the request; it may have restarted with a new key. Retry once".into(),
+                }
+            }
             "invalid_request" => GatewayError::Incompatible {
                 name,
                 // An older target lists every variant it knows; the first part says what is wrong.
@@ -312,6 +324,16 @@ mod tests {
         assert_eq!(
             map_open_failure("b3", LinkFailure::Closed).code(),
             "machine_connection_lost"
+        );
+        // A target that restarted with a new key cannot read an old pinned request: retry, not "update".
+        let unreadable = chariox_relay::protocol::RelayError {
+            code: "invalid_request".into(),
+            message: "invalid relay request payload: aead::Error".into(),
+            retryable: false,
+        };
+        assert_eq!(
+            map_failure("b3", LinkFailure::Relay(unreadable)).code(),
+            "machine_unreachable"
         );
         // EA2-09(a): the target killed with a request in flight is a lost connection, not a raw relay code.
         let disconnected = chariox_relay::protocol::RelayError {
