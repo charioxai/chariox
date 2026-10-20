@@ -2286,7 +2286,7 @@ async fn outline_hides_goal_completion_check_turn() {
     }
     let store = OperationalHistoryStore::open(path.clone()).expect("reopen history");
     let response = execute_session_history_outline_request(
-        store,
+        store.clone(),
         GetSessionHistoryOutlineRequest {
             session_id: "session-1".into(),
             agent_ids: Some(vec!["agent-1".into()]),
@@ -2296,6 +2296,25 @@ async fn outline_hides_goal_completion_check_turn() {
     )
     .await
     .expect("history response");
+    let LocalDaemonResponse::SessionHistoryBlobContent { entries, .. } =
+        execute_session_history_blob_content_request(
+            store,
+            GetSessionHistoryBlobContentRequest {
+                session_id: "session-1".into(),
+                agent_id: "agent-1".into(),
+                blob_id: blob_id(1, 5),
+            },
+        )
+        .await
+        .expect("blob response")
+    else {
+        panic!("expected blob content");
+    };
+    let blob = serde_json::to_string(&entries).expect("serialize blob");
+    assert!(!blob.contains("completion_check"), "{blob}");
+    assert!(!blob.contains("final_answer"), "{blob}");
+    assert!(blob.contains("work answer"), "{blob}");
+    assert!(blob.contains("published final answer"), "{blob}");
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
