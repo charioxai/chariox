@@ -63,10 +63,24 @@ async function sendWithin<T>(send: Promise<T>, seconds: number): Promise<T> {
   try { return await Promise.race([send, timeout]) } finally { clearTimeout(timer) }
 }
 
+// An older kernel ignores `machine` and would run the request on this computer.
+async function requireMachineGateway(socket: string | undefined, timeoutSeconds: number): Promise<void> {
+  const unsupported = new CommandFailure("machine_not_available", "This computer's Chariox kernel cannot forward to other machines; update it.")
+  const client = kernelUnixClient(socket)
+  try {
+    const response = await sendWithin(client.send<{ RelayStatus?: { status?: { capabilities?: unknown } } }>({ RelayStatus: null }), timeoutSeconds)
+    const capabilities = response.RelayStatus?.status?.capabilities
+    if (!Array.isArray(capabilities) || !capabilities.includes("machine_gateway_v1")) throw unsupported
+  } catch (error) {
+    throw error instanceof LocalIpcError && error.operation !== CONNECT_OPERATION ? unsupported : error
+  } finally { await client.close() }
+}
+
 export async function sendRequest(
   body: Record<string, unknown>,
   options: { socket: string | undefined; machine?: string | undefined; commandId?: string | undefined; timeoutSeconds: number },
 ): Promise<unknown> {
+  if (options.machine !== undefined) await requireMachineGateway(options.socket, options.timeoutSeconds)
   const client = kernelUnixClient(options.socket, { machine: options.machine, commandId: options.commandId })
   try {
     return await sendWithin(client.send<unknown>(body), options.timeoutSeconds)

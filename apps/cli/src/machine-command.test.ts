@@ -5,6 +5,9 @@ import { CommandFailure } from "./agent-command-table.js"
 import { failureOf, lostConnectionFailure, parseRequestBody, sendRequest } from "./machine-command.js"
 import { replyWith, startFakeKernel } from "./fake-unix-kernel.test-support.js"
 
+const relayStatus = (capabilities?: string[]) => ({ response: { RelayStatus: { status: { daemon_id: "d", machine_id: "m", ...(capabilities ? { capabilities } : {}) } } } })
+const requestNames = (frames: { request: Record<string, unknown> }[]) => frames.map(frame => Object.keys(frame.request)[0])
+
 const refusal = (code: string) => ({ error: { code, message: `refused ${code}`, retryable: false } })
 
 test("kernel errors keep their code and lose the transport wrapper; local connection loss is machine_connection_lost", () => {
@@ -37,20 +40,46 @@ test("request bodies must be one JSON object and not a subscription", () => {
   }
 })
 
+test("a machine request is never written when the local kernel cannot forward", async () => {
+  for (const answer of [relayStatus(), relayStatus(["disposable_worker_control_v1"]), refusal("invalid_request")]) {
+    const kernel = await startFakeKernel((socket, frame) => replyWith(socket, frame, answer))
+    try {
+      await assert.rejects(sendRequest({ Ping: {} }, { socket: kernel.path, machine: "b3", timeoutSeconds: 5 }), (error: unknown) => {
+        const failure = failureOf(error)
+        assert.equal(failure.code, "machine_not_available")
+        assert.equal(failure.message, "This computer's Chariox kernel cannot forward to other machines; update it.")
+        return true
+      })
+      assert.deepEqual(requestNames(kernel.frames), ["RelayStatus"])
+    } finally { await kernel.close() }
+  }
+})
+
+test("a machine request preflights the gateway capability on a client without machine; local requests skip it", async () => {
+  const kernel = await startFakeKernel((socket, frame) => replyWith(socket, frame, "RelayStatus" in frame.request ? relayStatus(["machine_gateway_v1"]) : { response: { Pong: {} } }))
+  try {
+    await sendRequest({ Ping: {} }, { socket: kernel.path, machine: "b3", timeoutSeconds: 5 })
+    assert.deepEqual(requestNames(kernel.frames), ["RelayStatus", "Ping"])
+    assert.deepEqual(kernel.frames.map(frame => frame.machine), [undefined, "b3"])
+    await sendRequest({ Ping: {} }, { socket: kernel.path, timeoutSeconds: 5 })
+    assert.deepEqual(requestNames(kernel.frames), ["RelayStatus", "Ping", "Ping"])
+  } finally { await kernel.close() }
+})
+
 test("a request carries machine and command id and prints the kernel's answer", async () => {
-  const kernel = await startFakeKernel((socket, frame) => replyWith(socket, frame, { response: { Pong: {} } }))
+  const kernel = await startFakeKernel((socket, frame) => replyWith(socket, frame, "RelayStatus" in frame.request ? relayStatus(["machine_gateway_v1"]) : { response: { Pong: {} } }))
   try {
     const response = await sendRequest({ Ping: {} }, { socket: kernel.path, machine: "b3", commandId: "cmd-1", timeoutSeconds: 5 })
     assert.deepEqual(response, { Pong: {} })
-    assert.equal(kernel.frames[0]!.machine, "b3")
-    assert.equal(kernel.frames[0]!.command_id, "cmd-1")
+    assert.equal(kernel.frames[1]!.machine, "b3")
+    assert.equal(kernel.frames[1]!.command_id, "cmd-1")
     await sendRequest({ Ping: {} }, { socket: kernel.path, timeoutSeconds: 5 })
-    assert.equal(kernel.frames[1]!.machine, undefined)
+    assert.equal(kernel.frames[2]!.machine, undefined)
   } finally { await kernel.close() }
 })
 
 test("machine errors from the kernel arrive with their code", async () => {
-  const kernel = await startFakeKernel((socket, frame) => replyWith(socket, frame, refusal("machine_offline")))
+  const kernel = await startFakeKernel((socket, frame) => replyWith(socket, frame, "RelayStatus" in frame.request ? relayStatus(["machine_gateway_v1"]) : refusal("machine_offline")))
   try {
     await assert.rejects(sendRequest({ Ping: {} }, { socket: kernel.path, machine: "b3", timeoutSeconds: 5 }), (error: unknown) => failureOf(error).code === "machine_offline")
   } finally { await kernel.close() }
