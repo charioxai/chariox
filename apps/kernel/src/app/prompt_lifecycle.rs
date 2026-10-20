@@ -165,6 +165,16 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 message: "provider has no tool-free structured assessment path".into(),
             });
         }
+        let private_evidence = match self.app.private_assessment_dispatch.as_ref() {
+            Some(dispatch) => dispatch.for_app_dispatch(
+                &self.app.sessions.get_session(session_id)?,
+                &agent_id,
+                prompt_id,
+                provider_run_id,
+                origin,
+            )?,
+            None => None,
+        };
         if structured {
             let (source_client_id, _source_user_id) = self
                 .app
@@ -186,7 +196,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 hidden_system_context,
                 attachments,
                 mode.with_prompt_origin(origin),
-                None,
+                private_evidence,
                 false,
             )?;
             return Ok(());

@@ -20,7 +20,7 @@ import { redactObservation } from "./browser-controller-snapshot.mjs";
 
 import {hostErrorLabel} from './kernel-browser-error-label.mjs';
 import {RoomSharedDisplay} from './room-shared-display.mjs';
-import {displayTiming} from './kernel-browser-timing.mjs';
+import {roomDisplayTiming} from './kernel-browser-timing.mjs';
 import {RoomNativeAccessibility} from "./room-native-accessibility.mjs";
 import {UserDomainRefusal} from "./kernel-browser-refusal.mjs";
 let browserImportModule;
@@ -57,7 +57,7 @@ async function handleBrowserControllerRequestInner(
     if (request.method === "room.display") {
       browser.roomComputer ??= new RoomNativeAccessibility();
       browser.roomDisplay ??= new RoomSharedDisplay({binding:viewport=>browser.roomComputer.displayBinding(viewport,browser)},
-        process.env.CHARIOX_BROWSER_DISPLAY_TIMING==='1'&&path.isAbsolute(process.env.CHARIOX_HOME??'')?{timing:displayTiming(process.env.CHARIOX_HOME)}:{});
+        {timing:roomDisplayTiming()});
       try{return successResponse(request.id,await browser.roomDisplay.request(request.params,{signal}));}
       catch(error){if(error instanceof UserDomainRefusal)throw error;return errorResponse(request.id,'room_display_unavailable',hostErrorLabel(error));}
     }

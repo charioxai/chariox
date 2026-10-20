@@ -401,12 +401,10 @@ impl KernelRuntimeState {
         let RoomBrowserControllerResult::Reconciled {
             reconciliation: Some(reconciliation),
         } = self
-            .room_browser_controller_command(
+            .room_browser_controller_health_probe(
                 session_id,
-                RoomBrowserControllerCommand::Reconcile {
-                    viewport: environment.viewport.clone(),
-                    browser_bar_visible: environment.browser_bar_visible,
-                },
+                environment.viewport.clone(),
+                environment.browser_bar_visible,
             )
             .await?
         else {

@@ -652,8 +652,11 @@ The 525/133 hash fixture is `room-shared-display-525.json` beside the protocol
 shape tests. Source regressions are supplementary. Acceptance requires the
 actual Room View on the integrated shared producer: four window/density network
 changes to a painted frame within 1 s, takeover/release, protected desktop and
-a 2-hour hosted soak on a quiet host or KVM guest. No result from the legacy
-Room/Selkies comparator establishes acceptance of this carry.
+a 2-hour hosted soak on a quiet host or KVM guest. Run timing cells without a
+per-View screen recorder (a 3840x2160 recorder delayed the paint boundary by
+58-430 ms on a CPU-only client) and review recordings in separate cells. No
+result from the legacy Room/Selkies comparator establishes acceptance of this
+carry.
 
 Run the focused network drill with
 `node apps/cli/scripts/live-room-shared-display-drill.mjs`. It requires an
@@ -666,6 +669,41 @@ records all four window/density cells, requires an actual socket retirement,
 captures video/screenshots and checks three network changes per cell. It never
 automatically labels the feature accepted: review the recordings, the normal
 public-site/control/protection tasks and the separate 2-hour soak first.
+
+MP-08/MP-10/MP-11 recovery attribution also requires the home kernel's existing
+`kernel_receive` and `kernel_request_end` marks. Set
+`CHARIOX_BROWSER_DISPLAY_TIMING=1` before starting that kernel and pipe its
+stderr into `node apps/cli/scripts/home-request-timing.mjs /absolute/drill/root`.
+For a Node launcher, call `captureHomeRequestTiming(kernel.stderr, drillRoot)`
+from that module and await it after stopping the owned kernel. Keep stdout and
+normal runtime logs in private state. The collector exclusively creates
+`home-request-timing.jsonl` (0600, at most 64 MiB), accepts only the two stages,
+52-bit ciphertext digests and numeric timestamps, and discards unrelated stderr.
+It never copies commands, identities, auth envelopes or arbitrary diagnostic
+fields. The network drill requires at least one joined receive/end pair in that
+file; a missing capture is an instrumentation failure. These encrypted-request
+marks do not cover the separate 535 subscription exchange: keep its client and
+worker phase timings too. Preserve exact home/worker/relay/client source and
+binary receipts with every run. Worker `desktop_frame_out` and first-frame
+records include the same anonymous numeric viewer and delivery values: sequence
+numbers alone repeat across concurrent viewers and resumed deliveries. These
+local timing fields carry no lease identity or authority. Source collector tests establish neither
+timing acceptance nor a completed live drill.
+
+MP-08/MP-10/MP-11 home admission does not hold a per-slice write lock across
+the worker round trip. Exact-lease resume restores an already admitted
+delivery: it keeps the lifecycle use marker and the caller, attachment, key,
+Room, slice and Running checks, but neither queues behind controller routes nor
+waits for their route markers (a Notes/Reconcile backlog held it 0.25-1.3 s on a
+quiet host). Open/control routes release their queue guard after admission.
+Their use markers remain until I/O finishes, excluding lifecycle changes;
+controller route markers still order later observation/input. Marker admission
+is atomic under the slice store lock, and registered `Notify` waiters replace
+timer polling. Inventory reconciliation uses the existing health-probe checks
+instead of queueing an exclusive controller route. Worker lease serialization,
+observation barriers, Room Actions input authority and 525 resume authority
+remain in their existing services. Focused checks do not establish the real
+one-, two- or four-viewer recovery gate.
 
 MP-08/MP-10/MP-11 519→525 integration: region and native Chrome streams use
 the same `DisplaySessions` lifetime. Resume rechecks the owner lease, native

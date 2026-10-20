@@ -35,6 +35,9 @@ pub(super) async fn abort_subscription_tasks(
     let mut guard = subscription_tasks.lock().await;
     for task in guard.values() {
         task.handle.abort();
+        if let Some(pump) = &task.display_pump {
+            pump.stop();
+        }
     }
     guard.clear();
 }

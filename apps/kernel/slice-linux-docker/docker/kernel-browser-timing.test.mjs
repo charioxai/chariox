@@ -1,7 +1,7 @@
 // MP-08/MP-10/MP-11: bounded timing records must survive batching/shutdown.
 import test from 'node:test';import assert from 'node:assert/strict';
 import {mkdtempSync,readFileSync,existsSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import path from 'node:path';
-import {displayTiming,slowMark,timedHostRequests} from './kernel-browser-timing.mjs';
+import {displayTiming,slowMark,roomDisplayTiming,timedHostRequests} from './kernel-browser-timing.mjs';
 test('MP-08/MP-10 native diagnostics batch without losing order or final shutdown records',()=>{
  const root=mkdtempSync(path.join(tmpdir(),'chariox-mp24-timing-')),old=process.env.CHARIOX_BROWSER_DISPLAY_TIMING;
  const timing=displayTiming(root),file=path.join(root,'display-timing.jsonl');
@@ -81,4 +81,16 @@ test('MP-08/MP-10 a stage over a quarter second is named in the timing log, a qu
  assert.equal(await slowMark((stage)=>marks.push(stage),'input_wait quick',Promise.resolve(7)),7);
  await assert.rejects(slowMark((stage)=>marks.push(stage),'input_wait slow',new Promise((_,reject)=>setTimeout(()=>reject(new Error('late')),300))),/late/);
  assert.deepEqual(marks,['input_wait slow']);
+});
+
+test('MP-08/MP-10/MP-11 Room worker trace uses the kernel-owned packet root after environment scrubbing',()=>{
+ const root=mkdtempSync(path.join(tmpdir(),'chariox-room-timing-')),old=process.env.CHARIOX_BROWSER_DISPLAY_TIMING;
+ try{
+  process.env.CHARIOX_BROWSER_DISPLAY_TIMING='1';
+  const timing=roomDisplayTiming({CHARIOX_BROWSER_DISPLAY_PACKET_ROOT:root});
+  timing.event('room_display_queue',{at:1,viewer:2,delivery:1});timing.flush();
+  const [row]=readFileSync(path.join(root,'display-timing.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(row.viewer,2);assert.equal(row.delivery,1);
+  const disabled=roomDisplayTiming({});assert.doesNotThrow(()=>disabled('room_display_queue',1));
+ }finally{if(old===undefined)delete process.env.CHARIOX_BROWSER_DISPLAY_TIMING;else process.env.CHARIOX_BROWSER_DISPLAY_TIMING=old;rmSync(root,{recursive:true,force:true})}
 });

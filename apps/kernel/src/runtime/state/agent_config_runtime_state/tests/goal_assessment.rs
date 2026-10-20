@@ -693,10 +693,21 @@ async fn mp11_neutral_assessment_uses_private_work_result_without_public_or_dura
             .take_private_assessment_evidence(r, a, p, run)
             .is_none());
     }
-    let evidence = runtime
-        .owned
-        .take_private_assessment_evidence(&room, &agent, &check, "run")
-        .expect("MP-11 exact private work outcome required by neutral utility");
+    let evidence = {
+        let app = _app.lock().await;
+        app.private_assessment_dispatch
+            .as_ref()
+            .unwrap()
+            .for_app_dispatch(
+                &app.sessions().get_session(&room).unwrap(),
+                &agent,
+                &check,
+                "run",
+                crate::session::PromptOrigin::CompletionCheck,
+            )
+            .unwrap()
+            .expect("MP-11 App completion must consume the exact shared private result")
+    };
     assert!(evidence.as_str().contains("PRIVATE_WORK_OUTCOME"));
     assert!(!evidence.as_str().contains("PRIVATE_VALUE_CANARY"));
     assert!(runtime

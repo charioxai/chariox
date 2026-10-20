@@ -21,6 +21,18 @@ pub(super) fn execute_assessment(
     envelope: PromptEnvelope,
     prompt_id: &str,
 ) -> Result<super::ProviderPromptSubmitAcknowledgement, DaemonError> {
+    // MP-11 review1016: never submit private evidence to a durable provider session.
+    // OpenCode's current utility endpoint creates persistent sessions. Until an
+    // official nonpersistent seam is available, reject before any provider I/O.
+    if envelope.private_assessment_evidence.is_some()
+        && !matches!(run.adapter_key(), "codex" | "claude")
+    {
+        return Err(DaemonError::ProviderProtocol {
+            provider_run_id: run.id().to_string(),
+            operation: "assessment_session_persistence_unavailable",
+            message: "provider has no nonpersistent private assessment path".into(),
+        });
+    }
     let scratch = AssessmentScratch::new()?;
     let assessment = prepare_assessment_run(run, scratch.0.clone());
     let timeout = std::time::Duration::from_millis(
@@ -104,8 +116,8 @@ mod tests {
     };
 
     #[test]
-    fn review971_assessment_never_inherits_native_build_yolo_authority() {
-        for provider in ["codex", "claude", "opencode"] {
+    fn review1016_assessment_never_inherits_native_build_yolo_authority() {
+        for provider in ["opencode", "claude", "codex"] {
             let request =
                 LaunchProviderRequest::new("room", provider, provider, "default", "default")
                     .with_execution_mode(AgentExecutionMode::Build)
@@ -145,6 +157,45 @@ mod tests {
                 AgentPermissionLevel::Required
             );
             assert!(assessment.metadata_only_discovery());
+            if provider == "claude" {
+                assert!(
+                    assessment
+                        .pty_args()
+                        .iter()
+                        .any(|a| a == "--no-session-persistence"),
+                    "MP-11 review1016: private assessor must never write a Claude transcript"
+                );
+            }
+            if provider == "opencode" {
+                let mut envelope = PromptEnvelope::new(
+                    "public check",
+                    "",
+                    vec![],
+                    crate::prompt_assembly::PromptManifest::default(),
+                );
+                envelope.assessment_only = true;
+                envelope.private_assessment_evidence =
+                    crate::prompt_assembly::AssessmentEvidence::new(
+                        "SYNTHETIC_PRIVATE_RESULT".into(),
+                    );
+                let error = execute_assessment(
+                    &ProviderRunRuntimeRegistry::default(),
+                    &run,
+                    envelope,
+                    "check",
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(
+                        error,
+                        DaemonError::ProviderProtocol {
+                            operation: "assessment_session_persistence_unavailable",
+                            ..
+                        }
+                    ),
+                    "MP-11: reject before contacting a durable provider session: {error}"
+                );
+            }
             assert!(assessment.mcp_servers().is_empty());
             assert!(assessment.runtime_mcp_server_url().is_none());
             assert!(assessment.provider_config_overrides().is_empty());

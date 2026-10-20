@@ -1637,3 +1637,97 @@ async fn mp08_mp10_mp11_old_chunk_capability_is_rejected_before_registration() {
     assert!(task.await.unwrap().is_err());
     assert!(registry.read().await.peers.is_empty());
 }
+
+#[tokio::test]
+async fn mp11_initial535_pin_is_checked_at_the_subscription_sender_transaction() {
+    use futures_util::poll;
+    let key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
+    let original_addr = peer_addr(39_001);
+    let replacement_addr = peer_addr(39_002);
+    let client_addr = peer_addr(39_003);
+    let (original_tx, mut original_rx) = mpsc::channel(8);
+    let (replacement_tx, mut replacement_rx) = mpsc::channel(8);
+    let (client_tx, mut client_rx) = mpsc::channel(8);
+    let registration = daemon_registration("daemon-1");
+    let mut state = RelayRegistry::default();
+    state.daemons.insert(key.clone(), registration.clone());
+    state.daemon_peers.insert(key.clone(), original_addr);
+    state.peers.insert(
+        original_addr,
+        daemon_peer(original_tx.clone(), registration.clone()),
+    );
+    let routes = state.route_index();
+    routes.set_daemon_sender(key.clone(), original_tx);
+    let registry = Arc::new(RwLock::new(state));
+    let verifier = RelayAuthVerifier::shared(None);
+    let counter = AtomicU64::new(0);
+    let mut identity = None;
+    let mut expiry = None;
+    // Park admission at its registry write, then place a replacement writer
+    // immediately after it. Tokio's fair lock makes the post-ack routing read
+    // observe that replacement, without timing sleeps or production hooks.
+    let held = registry.read().await;
+    let admitting = super::client_connect::admit(
+        RelayEnvelope::ClientConnectDisplayResume {
+            auth_token: "client-token".into(),
+            target: ClientTarget {
+                daemon_id: Some("daemon-1".into()),
+                daemon_alias: None,
+            },
+            expected_daemon_public_key: registration.public_key.clone(),
+            registration: crate::protocol::InitialDisplayResumeRegistration {
+                request_id: "resume-request".into(),
+                subscription_id: "fresh-route".into(),
+                session_id: "old-delivery".into(),
+                attachment_id: "1".into(),
+                client_public_key: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".into(),
+            },
+        },
+        super::client_connect::ClientConnectContext {
+            registry: &registry,
+            routes: &routes,
+            auth_verifier: &verifier,
+            peer_addr: client_addr,
+            outgoing_tx: &client_tx,
+            relay_request_counter: &counter,
+            verified_identity: &mut identity,
+            auth_expiry_deadline: &mut expiry,
+            initial_resume_negotiated: true,
+        },
+    );
+    tokio::pin!(admitting);
+    assert!(poll!(admitting.as_mut()).is_pending());
+    let replacing = registry.write();
+    tokio::pin!(replacing);
+    assert!(poll!(replacing.as_mut()).is_pending());
+    drop(held);
+    assert!(poll!(admitting.as_mut()).is_pending());
+    let Message::Text(ack) = client_rx
+        .try_recv()
+        .expect("MP-11 reach the admitted-before-routing seam")
+    else {
+        panic!("expected connect ack")
+    };
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&ack).unwrap()["kind"],
+        "client_connected"
+    );
+    let mut replacing = replacing.await;
+    let mut replacement = registration;
+    replacement.public_key = "replacement-home-key".into();
+    replacing.daemons.insert(key.clone(), replacement.clone());
+    replacing.daemon_peers.insert(key.clone(), replacement_addr);
+    replacing.peers.insert(
+        replacement_addr,
+        daemon_peer(replacement_tx.clone(), replacement),
+    );
+    routes.set_daemon_sender(key, replacement_tx);
+    drop(replacing);
+    let _ = admitting.await.unwrap();
+    assert!(
+        replacement_rx.try_recv().is_err(),
+        "MP-11 an initial535 registration crossed its expected home key after admission"
+    );
+    assert!(original_rx.try_recv().is_err());
+    assert_eq!(registry.read().await.pending_request_count(), 0);
+}

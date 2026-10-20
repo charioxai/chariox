@@ -123,8 +123,15 @@ impl KernelRuntimeState {
         session_id: &str,
         slice_id: &str,
         agent_id: &str,
+        cursor: u64,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        run_controller_browser_status_tool(self, session_id, slice_id, agent_id).await
+        let mut result =
+            run_controller_browser_status_tool(self, session_id, slice_id, agent_id).await?;
+        result.payload = bound_controller_browser_status(
+            result.payload,
+            usize::try_from(cursor).unwrap_or(usize::MAX),
+        );
+        Ok(result)
     }
 
     pub(super) async fn controller_browser_tab_tool_result(

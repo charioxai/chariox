@@ -256,19 +256,29 @@ pub(super) async fn handle_subscribe(
     if initial_credit {
         pump.acknowledge(generation, 0, true, None);
     }
-    tokio::spawn(super::display_pump::run(
-        super::display_pump::PumpRoute {
-            router: router.clone(),
-            outgoing_tx: outgoing_tx.clone(),
-            tasks: tasks.clone(),
-            key,
-            caller: pump_caller,
-            display_id,
-            relay_id,
-            public_key,
-        },
-        pump,
-    ));
+    let delivery_key = key.clone();
+    let delivery_relay = relay_id.clone();
+    let delivery_viewer = public_key.clone();
+    super::display_delivery::start(
+        tasks,
+        &delivery_key,
+        &delivery_relay,
+        &delivery_viewer,
+        super::display_pump::run(
+            super::display_pump::PumpRoute {
+                router: router.clone(),
+                outgoing_tx: outgoing_tx.clone(),
+                tasks: tasks.clone(),
+                key,
+                caller: pump_caller,
+                display_id,
+                relay_id,
+                public_key,
+            },
+            pump,
+        ),
+    )
+    .await;
     Ok(())
 }
 

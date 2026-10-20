@@ -230,6 +230,7 @@ struct KernelRuntimeOwnedState {
     browser_controller_processes:
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
+    human_control_task_waits: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
     room_computer_revoked: Arc<std::sync::Mutex<BTreeSet<String>>>,
     room_display_leases: room_shared_display::RoomDisplayLeases,
     room_secret_observations: room_secret_observation::RoomSecretObservations,
@@ -296,6 +297,7 @@ struct KernelRuntimeOwnedState {
     native_tui_turns: std::sync::Arc<
         std::sync::Mutex<std::collections::BTreeMap<String, crate::session::PromptQueueItem>>,
     >,
+    private_assessment_dispatch: agent_assessment_result::PrivateAssessmentDispatch,
     metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
     metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
     connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool,
@@ -875,6 +877,27 @@ impl KernelRuntimeState {
         }));
         let room_secret_observations =
             room_secret_observations.with_public_history(operational_history_store.clone());
+        let private_assessment_dispatch = {
+            let started = Instant::now();
+            loop {
+                if let Ok(mut app) = app.try_lock() {
+                    break app
+                        .private_assessment_dispatch
+                        .get_or_insert_with(|| {
+                            PrivateAssessmentDispatch::new(
+                                config_projection.clone(),
+                                durable_state_store.clone(),
+                                room_secret_observations.clone(),
+                            )
+                        })
+                        .clone();
+                }
+                if started.elapsed() >= Duration::from_secs(5) {
+                    panic!("KernelRuntimeState could not bind private assessment dispatch");
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
         let runtime = Self {
             external_command_authority: None,
             room_provider_origin: None,
@@ -933,6 +956,7 @@ impl KernelRuntimeState {
                 browser_import_admission:
                     crate::runtime::browser_import_admission::BrowserImportAdmission::default(),
                 environment_execution_gates: Default::default(),
+                human_control_task_waits: Default::default(),
                 room_computer_revoked,
                 room_secret_observations,
                 room_display_leases: Default::default(),
@@ -993,7 +1017,8 @@ impl KernelRuntimeState {
                 pending_agent_context_handoffs,
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
                 private_assessment_results: Default::default(),
-                private_work_results: Default::default(),
+                private_work_results: private_assessment_dispatch.work_results.clone(),
+                private_assessment_dispatch,
                 native_tui_turns: Default::default(),
                 metaagent_events,
                 metaagent_trace_subscriptions,
@@ -1328,6 +1353,7 @@ mod room_agent_admission;
 
 mod agent_assessment_result;
 mod agent_delegation_runtime;
+pub(crate) use agent_assessment_result::PrivateAssessmentDispatch;
 mod agent_goal_context;
 mod agent_goal_migration;
 mod agent_goal_runtime;
@@ -1340,6 +1366,7 @@ mod agent_process_group;
 mod agent_process_output;
 mod agent_process_watch;
 mod agent_task_cancellation;
+mod agent_task_human_control_wait;
 mod agent_task_owner_interactions;
 mod agent_task_owner_resolution;
 mod agent_task_projection;
