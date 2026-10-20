@@ -1640,3 +1640,69 @@ async fn sudo_revocation_removes_authority_and_reports_failed_durable_end_receip
         .unwrap();
     assert_eq!(events.last().unwrap().payload["outcome"], "restart_dropped");
 }
+
+#[tokio::test]
+async fn terminal_commands_use_only_the_exact_live_sudo_turn() {
+    let f = fixture();
+    let agent = f.request.target_agent_id.as_deref().unwrap();
+    f.state
+        .owned
+        .agent_store
+        .update_agent_config(
+            agent,
+            None,
+            Some(Some(crate::provider::AgentPermissionLevel::Required)),
+            None,
+            None,
+        )
+        .unwrap();
+    let turn = running(&f);
+    let call = || {
+        f.state.dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            crate::transport::runtime_tools::TERMINAL_OPEN_TOOL,
+            serde_json::json!({"command": ["/bin/cat"]}),
+        )
+    };
+    let admitted = tokio::time::timeout(Duration::from_secs(2), call()).await;
+    assert!(
+        admitted.is_ok(),
+        "a live sudo turn asked for terminal approval"
+    );
+    let admitted = admitted.unwrap().unwrap();
+    assert!(admitted.ok);
+    let id = admitted.payload["terminal"]["terminal_id"]
+        .as_str()
+        .unwrap();
+    let sent = tokio::time::timeout(
+        Duration::from_secs(2),
+        f.state.dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            crate::transport::runtime_tools::TERMINAL_SEND_TOOL,
+            serde_json::json!({"terminal_id": id, "text": "sudo-input", "enter": true}),
+        ),
+    )
+    .await
+    .expect("a sudo terminal_send must not ask for approval")
+    .unwrap();
+    assert!(sent.ok);
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&turn.session_id)
+        .unwrap();
+    f.state
+        .owned
+        .prompt_state_owner
+        .cancel_active_prompt_only(&session, &turn.agent_id)
+        .unwrap();
+    assert!(!f.state.sudo_live(&turn));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), call())
+            .await
+            .is_err(),
+        "terminal approval was bypassed after sudo ended"
+    );
+    f.state.owned.room_terminals.end_session(&turn.session_id);
+}

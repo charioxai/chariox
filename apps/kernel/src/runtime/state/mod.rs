@@ -141,6 +141,7 @@ mod room_environment_placement;
 mod room_environment_state;
 mod room_screenshot;
 mod room_secret_observation;
+mod room_terminal_runtime_state;
 mod runtime_tool_call_activity;
 pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 
@@ -189,6 +190,7 @@ struct KernelRuntimeOwnedState {
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
     room_secret_observations: room_secret_observation::RoomSecretObservations,
+    room_terminals: crate::room_terminal::RoomTerminalService,
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
@@ -630,6 +632,7 @@ impl KernelRuntimeState {
             app_control,
             managed_kernel_registration,
             runtime_tool_call_activity,
+            room_terminals,
         ) = {
             let started = Instant::now();
             loop {
@@ -645,6 +648,7 @@ impl KernelRuntimeState {
                         app.app_control_service(),
                         app.managed_kernel_registration(),
                         app.runtime_tool_call_activity.clone(),
+                        app.room_terminals(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -810,6 +814,7 @@ impl KernelRuntimeState {
                     crate::runtime::browser_import_admission::BrowserImportAdmission::default(),
                 environment_execution_gates: Default::default(),
                 room_secret_observations,
+                room_terminals,
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
                 room_browser_health_inflight: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
@@ -897,6 +902,7 @@ impl KernelRuntimeState {
                 project_environment_setups,
             },
         };
+        runtime.link_room_terminals_to_managed_kernel();
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
         runtime

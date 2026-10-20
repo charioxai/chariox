@@ -38,6 +38,7 @@ mod request;
 mod resource_telemetry;
 mod response;
 mod room_environment;
+mod room_terminal;
 mod session_control;
 mod slice;
 mod ssh_machine;
@@ -76,6 +77,7 @@ pub use request::*;
 pub use resource_telemetry::*;
 pub use response::*;
 pub use room_environment::*;
+pub use room_terminal::*;
 pub use session_control::*;
 pub use slice::*;
 pub use ssh_machine::*;
@@ -282,4 +284,7 @@ pub use workspace::*;
 /// credential-free owner-managed context admission and destination receipts.
 /// Branch-only numbers 456/464/473/502/509 were never released
 /// (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 520;
+/// Version 562 adds Room terminals: `RoomTerminal` requests open, list, type
+/// into, resize, read, wait on and close kernel-owned shells in a Room's project
+/// folder, with the one-driver rule and the owner-only gate.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 562;

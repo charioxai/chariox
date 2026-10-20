@@ -430,6 +430,7 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
+        self.owned.room_terminals.shutdown();
         let sessions = self.owned.session_store.read().list_sessions();
         for session in sessions {
             self.owned.withdraw_agent_interactions(session.id(), None)?;

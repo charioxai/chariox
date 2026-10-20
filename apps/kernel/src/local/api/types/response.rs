@@ -23,6 +23,7 @@ pub enum LocalDaemonResponse {
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },
     KernelAccessRevoked { revoked: usize, },
     RoomBrowserArtifact { result: crate::transport::runtime_tools::RuntimeToolResult },
+    RoomTerminal { result: RoomTerminalResult },
     AppPublisherEnrollmentStatus { operation: AppPublisherEnrollmentSummary, },
     AppInstallOperationStatus { operation: AppInstallOperationSummary, },
     AppPackageUploadStatus { upload: AppPackageUploadSummary, },

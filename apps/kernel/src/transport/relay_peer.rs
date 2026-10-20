@@ -108,7 +108,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version 128 binds owner-managed destinations in context import arm/receipt
 /// shapes to local protocol 520 (landing 2026-10-14; branch-only 117 was never
 /// released; MP-08/MP-11).
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 128;
+/// Version 170 binds the embedded local response union to local protocol 562
+/// (Room terminal results).
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 170;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -328,6 +330,35 @@ pub struct RemoteRoomBrowserRuntimeToolResult(
 impl std::fmt::Debug for RemoteRoomBrowserRuntimeToolResult {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("RemoteRoomBrowserRuntimeToolResult(<redacted>)")
+    }
+}
+
+/// An agent's terminal tool call, forwarded by the worker its provider runs on
+/// to the home kernel that owns the Room and the agent's identity. Arguments
+/// and results carry typed text and terminal output, so they stay out of logs.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteTerminalRuntimeToolCall {
+    pub tool_name: String,
+    pub arguments: serde_json::Value,
+}
+
+impl std::fmt::Debug for RemoteTerminalRuntimeToolCall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RemoteTerminalRuntimeToolCall")
+            .field("tool_name", &self.tool_name)
+            .field("arguments", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RemoteTerminalRuntimeToolResult(pub crate::transport::runtime_tools::RuntimeToolResult);
+
+impl std::fmt::Debug for RemoteTerminalRuntimeToolResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RemoteTerminalRuntimeToolResult(<redacted>)")
     }
 }
 
@@ -743,6 +774,13 @@ pub enum RelayPeerRequest {
         cols: u16,
         rows: u16,
     },
+    /// One Room terminal operation for the agent `leased_agent_id` runs as,
+    /// typed as `actor` (the home Room's identity).
+    RoomTerminal {
+        leased_agent_id: String,
+        actor: crate::room_terminal::TerminalActor,
+        operation: crate::local::RoomTerminalOperation,
+    },
     SubmitLeasedPrompt {
         leased_agent_id: String,
         expected_profile: RelayAgentExecutionProfile,
@@ -889,6 +927,10 @@ pub enum RelayPeerRequest {
     ForwardRoomBrowserRuntimeTool {
         context: RemoteExtensionInvocationContext,
         call: RemoteRoomBrowserRuntimeToolCall,
+    },
+    ForwardTerminalRuntimeTool {
+        context: RemoteExtensionInvocationContext,
+        call: RemoteTerminalRuntimeToolCall,
     },
     InvokeHomeExtensionTool {
         context: RemoteExtensionInvocationContext,
@@ -1112,6 +1154,9 @@ pub enum RelayPeerResponse {
         cols: u16,
         rows: u16,
     },
+    RoomTerminal {
+        result: crate::local::RoomTerminalResult,
+    },
     LeasedPromptSubmitted {
         provider_run_id: String,
         outcome: PromptSubmissionOutcome,
@@ -1196,6 +1241,9 @@ pub enum RelayPeerResponse {
     },
     RoomBrowserRuntimeToolHandled {
         result: RemoteRoomBrowserRuntimeToolResult,
+    },
+    TerminalRuntimeToolHandled {
+        result: RemoteTerminalRuntimeToolResult,
     },
     HomeExtensionToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
@@ -1313,7 +1361,7 @@ mod tests {
 
     #[test]
     fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 170);
         let request = RelayPeerRequest::CancelLeasedPrompt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1350,7 +1398,7 @@ mod tests {
 
     #[test]
     fn remote_room_browser_capability_manifest_is_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 170);
         let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id: "leased-agent-1".to_string(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest {
@@ -1372,7 +1420,7 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 170);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -1438,7 +1486,7 @@ mod tests {
 
     #[test]
     fn leased_project_setup_target_resolution_is_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 170);
         let request = RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
             leased_agent_id: "leased-agent-1".to_string(),
             home_session_id: "home-session-1".to_string(),
@@ -1482,7 +1530,7 @@ mod tests {
 
     #[test]
     fn project_environment_setup_relay_shapes_round_trip_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 170);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
@@ -1657,7 +1705,7 @@ mod tests {
 
     #[test]
     fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 170);
         let request = RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1962,7 +2010,7 @@ mod native_approval_protocol_tests {
     #[test]
     fn native_approval_origin_relay_shape_is_versioned() {
         use sha2::{Digest, Sha256};
-        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 520);
+        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 562);
         let snapshot = serde_json::json!({"kind": "forward_native_turn_interaction",
             "context": {"home_session_id":"home-session", "home_agent_id":"home-agent",
                 "leased_agent_id":"lease", "worker_provider_run_id":"run", "home_prompt_id":"home-prompt-A"},
@@ -1989,7 +2037,7 @@ mod project_environment_adjustment_shapes {
     #[test]
     fn mp08_mp10_mp11_worker_environment_shapes_are_protocol_66() {
         use sha2::{Digest, Sha256};
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 170);
         let request = RelayPeerRequest::ReadLeasedProjectEnvironment {
             context: RemoteSkillSyncContext {
                 home_kernel_id: "home".into(),
@@ -2027,7 +2075,7 @@ mod project_environment_export_shapes {
     #[test]
     fn mp08_mp10_mp11_source_export_and_target_reuse_shapes_require_peer_66() {
         use sha2::{Digest, Sha256};
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 170);
         let value: serde_json::Value = serde_json::from_str(r#"{"kind":"export_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent"},"interactive":true,"target_name":"second","target":{"context_id":"lease2","kernel_id":"worker2","public_key":"public2"}}"#).unwrap();
         let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
         let roundtrip = serde_json::to_value(request).unwrap();
@@ -2086,7 +2134,7 @@ mod owner_managed_context_shapes {
     use sha2::{Digest, Sha256};
     #[test]
     fn mp08_mp11_owner_managed_arm_shape_requires_peer_117() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 170);
         let value: serde_json::Value = serde_json::from_str(r#"{"kind":"arm_managed_context_import","plan":{"contextId":"context","planDigest":"digest","destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"kernelContext":"source_kernel_without_credentials","development":{"kind":"empty"},"providerAccounts":{"kind":"none"},"gitCredentials":{"kind":"none"}},"destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"target_kernel_id":"kernel","target_key_thumbprint":"thumbprint","capability":"capability","archive_sha256":"archive","archive_size_bytes":128}"#).unwrap();
         let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), value);
@@ -2105,7 +2153,7 @@ mod workflow_notification_128_shapes {
     use sha2::{Digest, Sha256};
     #[test]
     fn mp08_mp10_completion_peer_128_snapshot() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 128);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 170);
         let sub = WorkflowNotificationSubscription {
             delivery_mode: crate::local::NotificationDeliveryMode::Queue,
             subscription_id: "sub".into(),
@@ -2136,26 +2184,26 @@ mod workflow_notification_128_shapes {
         };
         let requests = vec![
             RelayPeerRequest::ListWorkflowNotificationSources {
-                protocol_version: 128,
+                protocol_version: 170,
             },
             RelayPeerRequest::SubscribeWorkflowNotifications {
-                protocol_version: 128,
+                protocol_version: 170,
                 source_workflow_ref: "source".into(),
                 target_ref: sub.clone(),
             },
             RelayPeerRequest::DeliverWorkflowNotification {
-                protocol_version: 128,
+                protocol_version: 170,
                 subscription_id: "sub".into(),
                 envelope: env,
             },
             RelayPeerRequest::UnsubscribeWorkflowNotifications {
-                protocol_version: 128,
+                protocol_version: 170,
                 subscription_id: "sub".into(),
             },
         ];
         let responses = vec![
             RelayPeerResponse::WorkflowNotificationSources {
-                protocol_version: 128,
+                protocol_version: 170,
                 sources: vec![WorkflowNotificationSourceSummary {
                     source_id: "source".into(),
                     kernel_id: "kernel".into(),
@@ -2176,7 +2224,113 @@ mod workflow_notification_128_shapes {
         let wire = serde_json::json!({"requests":requests,"responses":responses});
         assert_eq!(
             format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-            "66d568554856f2038651d28e63ff0f35e1d10dc93831fdbca44fe46420a630c2"
+            "296b82ca90cf4e304380c2a868895efa41bdac182544232180a9b63396245866"
+        );
+    }
+}
+
+#[cfg(test)]
+mod room_terminal_170_shapes {
+    use super::*;
+    use crate::local::{RoomTerminalOperation, RoomTerminalResult};
+    use crate::room_terminal::TerminalActor;
+    use sha2::{Digest, Sha256};
+
+    fn assert_wire<T>(wire: serde_json::Value, expected_sha256: &str)
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned,
+    {
+        let typed: T = serde_json::from_value(wire.clone()).unwrap();
+        let encoded = serde_json::to_value(typed).unwrap();
+        assert_eq!(encoded, wire);
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&encoded).unwrap())
+            ),
+            expected_sha256
+        );
+    }
+
+    #[test]
+    fn room_terminal_peer_170_request_and_response_shapes() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 170);
+        let request = RelayPeerRequest::RoomTerminal {
+            leased_agent_id: "leased-1".into(),
+            actor: TerminalActor::Agent("agent-2".into()),
+            operation: RoomTerminalOperation::Close {
+                terminal_id: "term-1".into(),
+            },
+        };
+        let wire = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({"kind": "room_terminal", "leased_agent_id": "leased-1",
+                "actor": {"kind": "agent", "agent_id": "agent-2"},
+                "operation": {"operation": "close", "terminal_id": "term-1"}})
+        );
+        assert_wire::<RelayPeerRequest>(
+            wire,
+            "eacffce23693fe298745f52ede63de4ea2f7015a31296ebf4d52f349e270988b",
+        );
+        let response = RelayPeerResponse::RoomTerminal {
+            result: RoomTerminalResult::Closed,
+        };
+        assert_wire::<RelayPeerResponse>(
+            serde_json::to_value(&response).unwrap(),
+            "97df114510c195b53e132e9bc4bc8fb9cad7d9bfe806b33ad8530022e46a03c9",
+        );
+    }
+
+    #[test]
+    fn forwarded_terminal_tool_peer_170_request_and_response_shapes() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 170);
+        let request = RelayPeerRequest::ForwardTerminalRuntimeTool {
+            context: RemoteExtensionInvocationContext {
+                home_kernel_id: "home".into(),
+                home_session_id: "room-1".into(),
+                home_agent_id: "agent-1".into(),
+                leased_agent_id: "leased-1".into(),
+                worker_provider_run_id: "run-1".into(),
+                worker_kernel_id: Some("worker".into()),
+                worker_machine_id: None,
+            },
+            call: RemoteTerminalRuntimeToolCall {
+                tool_name: "chariox.terminal_read".into(),
+                arguments: serde_json::json!({"terminal_id": "term-1", "home_kernel": true}),
+            },
+        };
+        let wire = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({"kind": "forward_terminal_runtime_tool",
+                "context": {"home_kernel_id": "home", "home_session_id": "room-1",
+                    "home_agent_id": "agent-1", "leased_agent_id": "leased-1",
+                    "worker_provider_run_id": "run-1", "worker_kernel_id": "worker"},
+                "call": {"tool_name": "chariox.terminal_read",
+                    "arguments": {"terminal_id": "term-1", "home_kernel": true}}})
+        );
+        assert_wire::<RelayPeerRequest>(
+            wire,
+            "a351eac8619e213b3af207f645f068c2fc28a8046125b98d26c447b0861f2139",
+        );
+        let response = RelayPeerResponse::TerminalRuntimeToolHandled {
+            result: RemoteTerminalRuntimeToolResult(
+                crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({"closed": true}),
+                },
+            ),
+        };
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({"kind": "terminal_runtime_tool_handled",
+                "result": {"ok": true, "payload": {"closed": true}}})
+        );
+        assert_wire::<RelayPeerResponse>(
+            wire,
+            "48fbcd5f06df3e69938eb9c3d53b4d84f3c73901fa1c953aa2e364f3b098ae2a",
         );
     }
 }
