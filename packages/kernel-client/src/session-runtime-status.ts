@@ -175,10 +175,8 @@ export function sessionAgentPaneStatusBadgeForSession(options: {
   if (!agent) {
     return sessionAgentPaneStatusBadge({ agent: null, activeLabel: options.activeLabel })
   }
-  const taskStatus = sessionAgentTaskStatus(options.session, agent.id)
-  if (taskStatus) return taskStatus
   const runtimeState = sessionAgentRuntimeState(options.session, agent)
-  return sessionAgentPaneStatusBadge({
+  const badge = sessionAgentPaneStatusBadge({
     agent: { state: runtimeState, is_processing: false },
     activeLabel: options.activeLabel,
     hasPromptWork: runtimeState === "Working",
@@ -186,6 +184,10 @@ export function sessionAgentPaneStatusBadgeForSession(options: {
     busyLatch: options.busyLatch ?? false,
     useLegacyAgentProcessingState: false,
   })
+  // A retained wait or block belongs to an earlier task; a running turn on the
+  // same agent is the current fact and must not be masked by it.
+  if (badge.tone === "working") return badge
+  return sessionAgentTaskStatus(options.session, agent.id) ?? badge
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11 A02: the kernel's wait or block. A static

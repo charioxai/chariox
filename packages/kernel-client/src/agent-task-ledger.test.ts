@@ -71,6 +71,25 @@ test("the pane badge shows the wait with a static clock and otherwise stays the 
   assert.equal(badge(session()).label, "IDLE")
 })
 
+test("an older wait or block never masks a running turn on the same agent", () => {
+  const agent = { id: "a1", state: "Idle" } as never
+  const blocked = task({ task_id: "t2", state: "blocked", reason: "needs owner" })
+  for (const retained of [waiting, blocked]) {
+    const idle = session({ agent_tasks: [retained] })
+    const running = session({
+      agent_tasks: [retained],
+      prompt_states: { a1: { active_prompt: { prompt_id: "p2" } } },
+    } as never)
+    const badge = (value: RuntimeSession, extra: object = {}) =>
+      sessionAgentPaneStatusBadgeForSession({ session: value, agent, activeLabel: null, ...extra })
+    assert.equal(badge(running).tone, "working")
+    assert.equal(badge(idle, { isStreaming: true }).tone, "working")
+    assert.equal(badge(idle, { busyLatch: true }).tone, "working")
+    assert.equal(badge(idle, { activeLabel: "Reading" }).tone, "working")
+    assert.equal(badge(idle).label, retained.state === "blocked" ? "BLOCKED: needs owner" : "WAITING UNTIL 12:30:15Z")
+  }
+})
+
 test("a task update applies once by revision and only to known agents of its room", () => {
   const base = session({ agent_tasks: [task()] })
   const updated = withAgentTaskUpdate(base, "room", task({ revision: 2, state: "waiting" }))
