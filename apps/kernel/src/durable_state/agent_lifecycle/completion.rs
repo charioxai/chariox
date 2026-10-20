@@ -41,6 +41,21 @@ pub(super) fn admit(tx: &Transaction<'_>, task: String) -> Result<Outcome, Daemo
     Ok(Outcome::Task(t))
 }
 
+/// A provider that cannot take a tool-free check turn settles on its answer instead:
+/// drop a check that has not started.
+pub(super) fn withdraw(tx: &Transaction<'_>, task: String) -> Result<Outcome, DaemonError> {
+    let mut t = load(tx, &task)?;
+    if t.completion_check
+        .as_ref()
+        .is_some_and(|c| c.evaluation.is_none())
+    {
+        t.completion_check = None;
+        t.revision += 1;
+        save(tx, &t)?;
+    }
+    Ok(Outcome::Task(t))
+}
+
 pub(crate) fn evaluation(t: &AgentTaskExecution) -> Option<&goals::GoalEvaluation> {
     t.goal
         .as_ref()

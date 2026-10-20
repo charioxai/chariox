@@ -26,6 +26,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             now,
         } => super::continuations::prepare_catalog(tx, room, agent, prompt, run, next_prompt, now),
         Operation::EnableCompletionCheck { task } => super::completion::admit(tx, task),
+        Operation::DisableCompletionCheck { task } => super::completion::withdraw(tx, task),
         Operation::AdoptGoal {
             owner,
             room,
