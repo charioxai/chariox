@@ -902,7 +902,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let x = 0, y = 0;
       for (let view = node.ownerDocument.defaultView; view !== window; view = view.parent) {
         const owner = view.frameElement; if (!owner) throw new Error('mirror2 frame unavailable');
-        if (getComputedStyle(owner).transform !== 'none') throw new Error('mirror2 transformed frame');
+        if (linear(getComputedStyle(owner).transform)) throw new Error('mirror2 transformed frame');
         const b = owner.getBoundingClientRect(), style = getComputedStyle(owner);
         x += b.x + owner.clientLeft + (parseFloat(style.paddingLeft) || 0); y += b.y + owner.clientTop + (parseFloat(style.paddingTop) || 0);
       }
@@ -933,7 +933,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         for (let shadow = 0; shadow < 128 && hit?.shadowRoot; shadow++) { const child = hit.shadowRoot.elementFromPoint(x, y); if (!child || child === hit) break; hit = child; }
         if (hit?.localName !== 'iframe') break;
         let nested = null; try { nested = hit.contentDocument; } catch {} if (!nested) break;
-        const r = hit.getBoundingClientRect(), style = getComputedStyle(hit); if (style.transform !== 'none') throw new Error('mirror2 transformed frame');
+        const r = hit.getBoundingClientRect(), style = getComputedStyle(hit); if (linear(style.transform)) throw new Error('mirror2 transformed frame');
         x -= r.x + hit.clientLeft + (parseFloat(style.paddingLeft) || 0); y -= r.y + hit.clientTop + (parseFloat(style.paddingTop) || 0); owner = nested;
       }
       if (!hit || hit !== node && !node.contains(hit) && !(node.shadowRoot?.contains(hit))) throw new Error('mirror2 changed live target');
@@ -998,7 +998,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // Content-box origin of a cross-origin frame element in this viewport.
     const frameOrigin = id => {
       const node = live(id); if (node.localName !== 'iframe' || !foreign.has(id)) throw new Error('mirror2 frame required');
-      const style = getComputedStyle(node); if (style.transform !== 'none') throw new Error('mirror2 transformed frame');
+      const style = getComputedStyle(node); if (linear(style.transform)) throw new Error('mirror2 transformed frame');
       const r = node.getBoundingClientRect(), [fx, fy] = frameOffset(node);
       return [r.x + node.clientLeft + (parseFloat(style.paddingLeft) || 0) + fx, r.y + node.clientTop + (parseFloat(style.paddingTop) || 0) + fy];
     };

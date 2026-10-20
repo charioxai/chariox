@@ -166,6 +166,21 @@ test("MP-08/MP-11: typing reaches a field inside a mirrored cross-origin frame; 
     "/form": { type: "text/html", body: '<!doctype html><input id="f" type="text"><input id="p" type="password">' },
   }));
 
+// Stripe Elements styles its card frame `transform: translate(0px)`: a translation moves nothing, so the owner's typing is
+// admitted (a scaled or rotated frame would put the mirrored coordinates in the wrong place and stays refused).
+for (const transform of ["translate(0px)", "translateZ(0)"]) {
+  test(`MP-08/MP-11: typing into a cross-origin frame styled transform:${transform} reaches its field`, () => mirrored(
+    `<p>top</p><iframe src="http://localhost:PORT/form" style="width:400px;height:120px;transform:${transform}"></iframe>`, async ({ next, input }) => {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      const snapshot = await next();
+      const [field] = elements(snapshot).filter(([id, tag, attrs]) => tag === "input" && Number(id.slice(1)) >= 1e9 && attrs.id === "f")[0] ?? [];
+      assert(field, "MP-10: the frame's input is mirrored");
+      await input(snapshot.sequence, { kind: "text", node_id: field, text: "hi" });
+      const changed = await next(1000);
+      assert.deepEqual(changed.ops.filter(op => op.op === "form").map(op => [op.id, op.form.value]), [[field, "hi"]]);
+    }, { "/form": { type: "text/html", body: '<!doctype html><input id="f" type="text">' } }));
+}
+
 // A page may shrink its Resource Timing buffer (Chrome keeps 250 entries by default): bytes the
 // page loads afterwards (here a CSS image applied after load) must still reach the viewer.
 const svg = color => `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="${color}"/></svg>`;
