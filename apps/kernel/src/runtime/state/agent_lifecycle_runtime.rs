@@ -516,9 +516,21 @@ impl KernelRuntimeState {
         let workflow_attachment = workflow
             .as_ref()
             .map(|(run, _)| crate::scheduler::runtime::workflow_prompt_source_attachment_id(run));
+        // The turn's client can be gone after a restart or detach; the kernel's
+        // own agent attachment carries this kernel-originated turn instead.
+        let attachment = if self
+            .owned
+            .ensure_attachment_in_session(&task.room_id, attachment)
+            .is_ok()
+        {
+            attachment.to_string()
+        } else {
+            let agent = self.owned.agent_store.get_agent(&task.agent_id)?;
+            self.ensure_agent_message_attachment(&task.room_id, &agent)?
+        };
         let prompt = crate::session::PromptQueueItem::new(
             id.clone(),
-            workflow_attachment.as_deref().unwrap_or(attachment),
+            workflow_attachment.as_deref().unwrap_or(&attachment),
             &task.agent_id,
             text,
             crate::session::PromptStatus::Queued,
