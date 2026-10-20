@@ -299,6 +299,8 @@ export class LocalIpcClient {
   private eventWebsocketConnectPromise: Promise<WebSocket> | null = null
   private readonly pendingRequests = new KernelPendingRequestRegistry(IPC_TIMEOUT_MS)
   private readonly requestLifetime = new KernelRequestLifetime()
+  private readonly requestKinds = new Map<string, number>()
+  private readonly requestTimeline: Array<[string, number]> = []
   private readonly relaySubscriptionDiagnostics = new RelaySubscriptionDiagnostics()
   private eventHandlers = new Set<(event: KernelEvent) => void>()
   private activeKernelSubscription: KernelSubscriptionState | null = null
@@ -431,6 +433,20 @@ export class LocalIpcClient {
 
   private isRelayMode() {
     return this.relayAuthToken != null
+  }
+
+  /** Requests written to the kernel by kind (no payloads); drills read it as "requests on open". */
+  requestStats(): { count: number; kinds: Record<string, number>; timeline: Array<[string, number]> } {
+    const kinds = Object.fromEntries(this.requestKinds)
+    return { count: [...this.requestKinds.values()].reduce((sum, n) => sum + n, 0), kinds, timeline: [...this.requestTimeline] }
+  }
+
+  private countRequest(request: unknown): void {
+    const kind = typeof request === "string" ? request
+      : request && typeof request === "object" ? Object.keys(request)[0] ?? "unknown" : "unknown"
+    this.requestKinds.set(kind, (this.requestKinds.get(kind) ?? 0) + 1)
+    // [kind, ms since process start], bounded: enough to order the requests of an open.
+    if (this.requestTimeline.length < 64) this.requestTimeline.push([kind, Math.round(process.uptime() * 1000)])
   }
 
   async send<TResponse>(request: unknown): Promise<TResponse> {
@@ -738,6 +754,7 @@ export class LocalIpcClient {
           ? relayRequest.frame
           : normalizeWebSocketRequest(requestId, request)
         socket.send(JSON.stringify(payload))
+        this.countRequest(request)
       } catch (error) {
         pending.reject(new LocalIpcError("write kernel request", error instanceof Error ? error.message : String(error), "write_failed", true))
       }
@@ -871,6 +888,7 @@ export class LocalIpcClient {
         subscriptionScope,
       })
       socket.send(JSON.stringify(frame))
+      this.countRequest("RelaySubscribe")
       this.relaySubscriptionDiagnostics.emit("binding_sent", subscriptionId)
     } catch (error) {
       pending.reject(new LocalIpcError("write relay subscribe", error instanceof Error ? error.message : String(error), "write_failed", true))
@@ -1552,7 +1570,16 @@ export class LocalIpcClient {
         session_id: subscription.sessionId,
         resumed_from_event_id: resumeFromEventId,
       })
-    } catch {
+    } catch (error) {
+      // The kernel rejected this session/attachment pair: retrying it can
+      // never succeed. Hand it to session-unavailable recovery (re-attach).
+      const message = error instanceof Error ? error.message : String(error)
+      if (subscription.sessionId && kernelRejectedSubscriptionPair(message)) {
+        this.activeKernelSubscription = null
+        this.clearReconnectState()
+        this.emitSyntheticEvent({ event: "session_unavailable", session_id: subscription.sessionId, message })
+        return
+      }
       this.scheduleReconnect()
     }
   }
@@ -1765,4 +1792,8 @@ function clampRandom(value: number): number {
     return 0
   }
   return Math.min(Math.max(value, 0), 0.999999)
+}
+
+function kernelRejectedSubscriptionPair(message: string): boolean {
+  return /does not belong to session|attachment `[^`]+` was not found|session `[^`]+` was not found/i.test(message)
 }

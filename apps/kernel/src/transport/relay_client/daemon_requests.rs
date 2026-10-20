@@ -467,6 +467,11 @@ pub(super) async fn handle_prepared_daemon_request(
                     };
                 }
             };
+            crate::runtime::perf_timing::record_relay_request(
+                request_kind,
+                received_at_ms,
+                plaintext.len(),
+            );
             if !quiet_success_request {
                 crate::logging::info_with_fields(
                     "daemon.relay_client",

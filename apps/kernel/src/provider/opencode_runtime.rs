@@ -1712,4 +1712,87 @@ mod tests {
         assert!(!first.prompt_completed);
         assert!(state.active_user_message_id.is_none());
     }
+    // MP-08 / MP-10 PANE-06: a snapshot can overtake queued SSE deltas.
+    #[test]
+    fn snapshot_ahead_of_word_deltas_does_not_repeat_the_assistant_block() {
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(
+                std::sync::mpsc::channel().1,
+            ),
+        );
+        state.note_prompt_submitted("msg_user".to_string());
+        state
+            .message_roles
+            .insert("message-1".to_string(), "assistant".to_string());
+        let part = |text: &str| OpenCodePart {
+            id: "part-1".to_string(),
+            session_id: "session-1".to_string(),
+            message_id: "message-1".to_string(),
+            kind: "text".to_string(),
+            text: text.to_string(),
+            tool: String::new(),
+            state: None,
+            time: None,
+        };
+        let mut chunks = Vec::new();
+        handle_message_part_updated(
+            &mut state,
+            "run-1",
+            &RemoteExtensionManifest::default(),
+            part(""),
+            &mut chunks,
+        )
+        .unwrap();
+        super::parts::emit_authoritative_part_text(
+            &mut state,
+            "part-1",
+            "Step 2 completed.",
+            TerminalOutputKind::ProviderOutput,
+            &mut chunks,
+        );
+        for delta in ["Step ", "2 ", "completed."] {
+            handle_message_part_delta(
+                &mut state,
+                "run-1",
+                "session-1".to_string(),
+                "message-1".to_string(),
+                "part-1".to_string(),
+                "text".to_string(),
+                delta.to_string(),
+                &mut chunks,
+            )
+            .unwrap();
+        }
+        handle_message_part_updated(
+            &mut state,
+            "run-1",
+            &RemoteExtensionManifest::default(),
+            part("Step 2 completed."),
+            &mut chunks,
+        )
+        .unwrap();
+        handle_message_part_delta(
+            &mut state,
+            "run-1",
+            "session-1".to_string(),
+            "message-1".to_string(),
+            "part-1".to_string(),
+            "text".to_string(),
+            " Again again.".to_string(),
+            &mut chunks,
+        )
+        .unwrap();
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
+                .collect::<String>(),
+            "Step 2 completed. Again again."
+        );
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.merge_key.as_deref() == Some("part-1")));
+    }
 }

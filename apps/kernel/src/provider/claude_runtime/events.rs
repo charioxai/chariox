@@ -363,10 +363,7 @@ fn emit_stream_text_delta(
         .entry(key.to_string())
         .or_default()
         .push_str(text);
-    match block_kind {
-        "thinking" => push_reasoning_chunk(provider_run_id, batch, text),
-        _ => push_text_chunk(provider_run_id, batch, text),
-    }
+    push_block_chunk(provider_run_id, batch, key, block_kind, text);
 }
 
 fn emit_authoritative_text(
@@ -399,10 +396,7 @@ fn emit_authoritative_text(
         );
         return;
     };
-    match block_kind {
-        "thinking" => push_reasoning_chunk(provider_run_id, batch, suffix),
-        _ => push_text_chunk(provider_run_id, batch, suffix),
-    }
+    push_block_chunk(provider_run_id, batch, key, block_kind, suffix);
     *emitted = text.to_string();
 }
 
@@ -487,24 +481,26 @@ fn claude_block_text<'a>(block: &'a Value, block_kind: &str) -> Option<&'a str> 
     }
 }
 
-fn push_text_chunk(provider_run_id: &str, batch: &mut ProviderPromptSignalBatch, text: &str) {
+/// One merge key per content block, so text written after a tool call is its
+/// own transcript entry below that call instead of folding into the first
+/// text block of the run.
+fn push_block_chunk(
+    provider_run_id: &str,
+    batch: &mut ProviderPromptSignalBatch,
+    block_key: &str,
+    block_kind: &str,
+    text: &str,
+) {
     if text.is_empty() {
         return;
     }
+    let (kind, role) = match block_kind {
+        "thinking" => (TerminalOutputKind::ProviderReasoning, "reasoning"),
+        _ => (TerminalOutputKind::ProviderOutput, "assistant"),
+    };
     batch.chunks.push(ProviderPromptChunk {
-        kind: TerminalOutputKind::ProviderOutput,
-        merge_key: Some(format!("claude:{provider_run_id}:assistant")),
-        bytes: text.as_bytes().to_vec(),
-    });
-}
-
-fn push_reasoning_chunk(provider_run_id: &str, batch: &mut ProviderPromptSignalBatch, text: &str) {
-    if text.is_empty() {
-        return;
-    }
-    batch.chunks.push(ProviderPromptChunk {
-        kind: TerminalOutputKind::ProviderReasoning,
-        merge_key: Some(format!("claude:{provider_run_id}:reasoning")),
+        kind,
+        merge_key: Some(format!("claude:{provider_run_id}:{block_key}:{role}")),
         bytes: text.as_bytes().to_vec(),
     });
 }

@@ -81,6 +81,7 @@ export async function getProviderCatalog(
 export async function getProviderCommandCatalogs(
   client: LocalIpcClient,
   logger?: CharioxLogger | null,
+  fallbackOnError = true,
 ): Promise<ProviderCommandCatalogs> {
   try {
     const response = await client.send<Record<string, unknown>>(getProviderCommandCatalogsRequest())
@@ -100,6 +101,7 @@ export async function getProviderCommandCatalogs(
       ]),
     ) as ProviderCommandCatalogs
   } catch (error) {
+    if (!fallbackOnError) throw error
     const message = describeCliError(error)
     logger?.warn("provider command catalog lookup failed; using fallback command catalogs", {
       error: message,

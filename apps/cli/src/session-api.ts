@@ -9,6 +9,7 @@ import type { LocalIpcClient } from "./ipc.js"
 import {
   aliasSessionRequest,
   attachToSessionRequest,
+  attachSessionViewRequest,
   createSessionRequest,
   createWorkspaceWorktreeRequest,
   deleteSessionRequest,
@@ -25,6 +26,30 @@ import {
 import { expectVariant } from "./ipc-response.js"
 import { resolvePendingWaitingRoomWorktreePath } from "./waiting-room-worktrees.js"
 import type { SessionProjectSelection } from "@chariox/kernel-client"
+import type { SessionHistoryOutline } from "./cli-types.js"
+
+export async function attachSessionView(client: LocalIpcClient, sessionId: string, clientId: string, preferredAgentId: string | null = null) {
+  const response = await client.send<Record<string, unknown>>(attachSessionViewRequest(sessionId, clientId, preferredAgentId))
+  const view = expectVariant<{
+    attachment: RuntimeAttachment
+    state: Record<string, unknown>
+    history: Record<string, unknown>
+  }>(response, "SessionViewAttached")
+  const state = expectVariant<{
+    session: RuntimeSession
+    agent_activity?: RuntimeSession["agent_activity"] | null
+    agent_activity_revision?: number | null
+    room_workflows?: import("@chariox/kernel-client/kernel-types").RoomWorkflowInventory
+  }>(view.state, "SessionState")
+  if (state.session.id !== sessionId || view.attachment.session_id !== sessionId) throw new Error("initial view session mismatch")
+  const history = expectVariant<SessionHistoryOutline>(view.history, "SessionHistoryOutline")
+  if (history.agents.some(agent => !state.session.agents.some(visible => visible.id === agent.agent_id))) throw new Error("initial view history agent mismatch")
+  return {
+    attachment: view.attachment,
+    session: normalizeRuntimeSessionWithAgentActivity({ ...state, session: { ...state.session, room_workflows: state.room_workflows, room_workflows_fresh: true } }),
+    history: { ...history, agents: history.agents.map(agent => ({ ...agent, loadedBlobs: agent.prefetched_blobs ?? [] })) },
+  }
+}
 
 export async function listSessions(client: LocalIpcClient): Promise<RuntimeSession[]> {
   const response = await client.send<Record<string, unknown>>(listSessionsRequest())

@@ -171,6 +171,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::AttachToSession(request) => {
             LocalRequestMetadata::new("session.attach", Interactive).session(&request.session_id)
         }
+        LocalDaemonRequest::AttachSessionView(request) => {
+            LocalRequestMetadata::new("session.view.attach", Interactive).session(&request.session_id)
+        }
         LocalDaemonRequest::DetachFromSession(request) => {
             LocalRequestMetadata::new("session.detach", Interactive)
                 .attachment(&request.attachment_id)
@@ -481,6 +484,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
+        LocalDaemonRequest::GetSessionHistoryBlobContents(request) => {
+            LocalRequestMetadata::new("session.history.blobs", Background)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
         LocalDaemonRequest::GetPromptInputHistory(request) => {
             LocalRequestMetadata::new("prompt_input_history.get", Background)
                 .session(&request.session_id)
@@ -757,6 +765,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AbortMetaagentTask(_) => "metaagent.task.abort",
         LocalDaemonRequest::GetTerminalCommandCatalog(_) => "terminal.command_catalog.get",
         LocalDaemonRequest::GetProviderCatalog(_) => "provider.catalog.get",
+        LocalDaemonRequest::GetClientCatalogSnapshot(_) => "client.catalog_snapshot.get",
+        LocalDaemonRequest::GetClientCatalogRevisions(_) => "client.catalog_revisions.get",
         LocalDaemonRequest::GetProviderCommandCatalogs(_) => "provider.command_catalogs.get",
         LocalDaemonRequest::ListProviderAccountProfiles(_) => "provider_account.list",
         LocalDaemonRequest::GetProviderAccountProfile(_) => "provider_account.get",
@@ -1096,6 +1106,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListWorkflowSchedules(_) => "workflow_schedule.list",
         LocalDaemonRequest::PreviewWorkflowSchedule(_) => "workflow_schedule.preview",
         LocalDaemonRequest::AttachToSession(_)
+        | LocalDaemonRequest::AttachSessionView(_)
         | LocalDaemonRequest::DetachFromSession(_)
         | LocalDaemonRequest::SubmitPrompt(_)
         | LocalDaemonRequest::SubmitPrompts(_)
@@ -1139,6 +1150,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::GetManagedContextLaunchTarget(_)
         | LocalDaemonRequest::GetSessionHistoryOutline(_)
         | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
+        | LocalDaemonRequest::GetSessionHistoryBlobContents(_)
         | LocalDaemonRequest::GetProviderRun(_) => unreachable!("handled by metadata matcher"),
     }
 }

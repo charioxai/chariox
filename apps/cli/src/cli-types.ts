@@ -434,7 +434,32 @@ export type SessionBinding = {
   nextHistoryCursor: SessionHistoryCursorState
 }
 
+export type ComposerInventory = {
+  catalogRevisions?: import("./ipc-requests.js").ClientCatalogRevisions
+  sessionId: string
+  providerCatalog: ProviderCatalog
+  providerCommandCatalogs: ProviderCommandCatalogs
+  terminalCommandCatalog: TerminalCommandCatalog
+  promptHistoryEntries: string[]
+  reconciliation?: Promise<ComposerInventory>
+}
+
+export type AttachLaunch = {
+  sessionId: string
+  session: RuntimeSession | null
+  providerRun: RuntimeProviderRun | null
+  issue: "credential_vault_locked" | null
+}
+
 export type BootstrapDeferredState = {
+  // attachedHistory comes from the attach reply, so it is available without another request.
+  historyIsBundled?: true
+  attachLaunch?: Promise<AttachLaunch>
+  composerScopeKey?: () => string
+  loadPromptInputHistory?: (sessionId: string) => Promise<{ sessionId: string; entries: string[] }>
+  loadComposer?: () => Promise<ComposerInventory>
+
+  promptInputHistory?: Promise<{ sessionId: string; entries: string[] }>
   waitingRoomDefaults?: Promise<{ provider?: string; model?: string; effort?: string }>
   providerCatalog?: Promise<ProviderCatalog>
   providerCommandCatalogs?: Promise<ProviderCommandCatalogs>
@@ -445,12 +470,15 @@ export type BootstrapDeferredState = {
     agentEntries: Record<string, TranscriptEntry[]>
     historyEntries: TranscriptEntry[]
     promptHistoryEntries: string[]
+    includesPromptHistory?: boolean
     nextHistoryCursor: SessionHistoryCursorState
   }>
   attachedProviderRun?: Promise<{ sessionId: string; providerRun: RuntimeProviderRun | null; statusLine: string | null }>
 }
 
 export type BootstrapState = {
+  isTranscriptViewCovered?: () => boolean
+  onTranscriptFrame?: () => void
   client: LocalIpcClient
   binding: SessionBinding | null
   sessions: RuntimeSession[]

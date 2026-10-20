@@ -1,3 +1,4 @@
+import { invalidateClientInventories } from "./client-inventory-cache.js"
 import {
   normalizeRuntimeSessionWithAgentActivity,
   type RuntimeNoticeRecord,
@@ -149,6 +150,7 @@ export function createKernelEventDispatchController(
         await applyProviderRunChanged(event)
         return
       case "provider_catalog_changed":
+        void invalidateClientInventories()
         deps.recordDaemonActivity("kernel_provider_catalog_changed")
         await applyProviderCatalogChanged(event)
         return

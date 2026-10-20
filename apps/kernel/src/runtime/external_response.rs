@@ -88,6 +88,7 @@ response_policies! {
         CredentialsListed,
     ],
     Withhold => [
+        SessionViewAttached,
         SessionInviteCreated,
         // MP-11: prototype user App views carry App frontends and channel data.
         UserAppViewOpened,
@@ -259,6 +260,8 @@ response_policies! {
         ProviderRun,
         ProviderRunSelectionUpdated,
         ProviderCatalog,
+        ClientCatalogRevisions,
+        ClientCatalogSnapshot,
         ProviderCommandCatalogs,
         McpServerUninstalled,
         EnvironmentRegistered,
@@ -365,6 +368,7 @@ response_policies! {
         ProviderProcessesTornDown,
         SessionHistoryOutline,
         SessionHistoryBlobContent,
+        SessionHistoryBlobContents,
         PromptInputHistory,
         PromptInputHistoryRecorded,
         PromptSettingsListed,

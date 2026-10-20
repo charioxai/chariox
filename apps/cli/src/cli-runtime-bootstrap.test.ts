@@ -68,6 +68,22 @@ test("bootstrapCliRuntime attaches and resizes attached sessions", async () => {
   ])
 })
 
+test("MP-08 / MP-10: advisory resize does not delay the attached transcript", async () => {
+  let finish!: () => void
+  const pending = new Promise<void>(resolve => { finish = resolve })
+  const client = fakeClient()
+  const options = cliOptions({ kernelUrl: "ws://kernel.example/session" })
+  const deps = createDeps({ parseArgs: () => options, createClient: () => client,
+    bootstrapAttachedSession: async (c, o, _workspace, _worktree, prefs) => attachedBootstrap(c, o, prefs),
+    maybeResize: () => pending,
+  })
+  const mounting = bootstrapCliRuntime({ argv: ["--session", "session-1"], cwd: "/repo" }, deps)
+  const result = await Promise.race([mounting, new Promise<"blocked">(resolve => setTimeout(() => resolve("blocked"), 20))])
+  finish()
+  await mounting
+  assert.notEqual(result, "blocked")
+})
+
 test("remote bootstrap passes the original issuing kernel route to the shared client", async () => {
   const issuer = { endpoint: "ws://127.0.0.1:49911/kernel", daemonId: "account-kernel" }
   const options = cliOptions({ relayUrl: "wss://relay.example", relayToken: "synthetic", targetDaemonId: "managed-kernel", relayTokenIssuer: issuer })

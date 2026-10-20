@@ -26,6 +26,7 @@ const SESSION_HOTKEYS: HotkeyItem[] = [
   { keys: "Shift+Enter", description: "Insert a newline in the prompt." },
   { keys: "Tab", description: "Cycle focus to the next agent or workflow node." },
   { keys: "Ctrl+P", description: "Toggle between the agent screens and workflow outline." },
+  { keys: "Ctrl+O", description: "Expand or collapse every tool call and thought of the focused agent." },
   { keys: "Up / Down", description: "Browse submitted prompts in the prompt area." },
   { keys: "Shift+Up / Shift+Down", description: "Jump between user turns when the prompt is empty." },
   { keys: "Backspace / Delete", description: "Remove pending attachment tokens from the prompt." },

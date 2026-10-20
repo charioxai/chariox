@@ -154,3 +154,55 @@ fn quiet_active_claude_tool_survives_the_native_stall_guard() {
         "the guard remains active after the tool has settled"
     );
 }
+
+// MP-08 / MP-10 (panes R6, PANE-06): text after a tool call is its own
+// transcript entry below the call, not folded into the run's first text.
+#[test]
+fn claude_text_blocks_around_a_tool_call_keep_separate_merge_keys() {
+    let batch = drain(vec![
+        json!({"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[
+            {"type":"text","text":"Listing the files."}
+        ]}}),
+        json!({"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[
+            {"type":"tool_use","id":"toolu_ls","name":"Bash","input":{"command":"ls"}}
+        ]}}),
+        json!({"type":"user","message":{"role":"user","content":[{
+            "type":"tool_result","tool_use_id":"toolu_ls","content":"README.md"
+        }]}}),
+        json!({"type":"assistant","message":{"id":"msg_2","role":"assistant","content":[
+            {"type":"text","text":"Found one file."}
+        ]}}),
+    ]);
+    let order = batch
+        .chunks
+        .iter()
+        .map(|chunk| {
+            (
+                chunk.kind.clone(),
+                chunk.merge_key.clone().unwrap_or_default(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let texts = order
+        .iter()
+        .filter(|(kind, _)| *kind == TerminalOutputKind::ProviderOutput)
+        .map(|(_, key)| key.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(texts.len(), 2, "{order:?}");
+    assert_ne!(texts[0], texts[1], "{order:?}");
+    assert!(texts
+        .iter()
+        .all(|key| key.starts_with("claude:run-1:") && key.ends_with(":assistant")));
+    assert_eq!(
+        order
+            .iter()
+            .map(|(kind, _)| kind.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            TerminalOutputKind::ProviderOutput,
+            TerminalOutputKind::ProviderTool,
+            TerminalOutputKind::ProviderTool,
+            TerminalOutputKind::ProviderOutput,
+        ]
+    );
+}

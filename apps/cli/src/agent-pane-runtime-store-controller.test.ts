@@ -30,3 +30,16 @@ test("agent pane runtime store owns pane render and auxiliary-agent state", () =
   assert.equal(store.getCurrentAuxiliaryAgentId(0), null)
   assert.equal(store.toolUpdatesForAgent("missing"), undefined)
 })
+
+
+test("MP-08 / MP-10 / MP-11 only the selected mounted auxiliary surface releases startup", () => {
+  const store = createAgentPaneRuntimeStoreController<never, { id: number }, { id: string }, never>()
+  assert.equal(store.hasMountedSurface("agent-1"), false)
+  store.emptyRenderables.set("agent-1", { id: "loading-or-genuinely-empty" })
+  assert.equal(store.hasMountedSurface("agent-1"), true)
+  assert.equal(store.hasMountedSurface("agent-2"), false)
+  store.emptyRenderables.delete("agent-1")
+  assert.equal(store.hasMountedSurface("agent-1"), false)
+  store.entryRenderables.set("agent-1", new Map([[1, { id: 1 }]]))
+  assert.equal(store.hasMountedSurface("agent-1"), true)
+})

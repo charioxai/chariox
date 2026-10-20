@@ -7,6 +7,16 @@ pub struct AttachToSessionRequest {
     pub capability_level: ClientCapabilityLevel,
 }
 
+/// MP-08 / MP-10: a bounded initial view through normal session read/attach commands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachSessionViewRequest {
+    pub session_id: String,
+    pub client_id: String,
+    pub capability_level: ClientCapabilityLevel,
+    #[serde(default)]
+    pub preferred_agent_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DetachFromSessionRequest {
     pub attachment_id: String,

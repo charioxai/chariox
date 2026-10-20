@@ -152,3 +152,13 @@ for (const provider of ["claude", "claude-p", "claude-headless"]) {
   })
 
 }
+// MP-08 / MP-10, PANE-13: attaching preserves the kernel-selected account.
+test("attach launch keeps the existing agent account instead of CLI defaults", async () => {
+  let account: string | null = null
+  await settleAttachProviderRun(session, { provider: "codex", model: "default", effort: "" }, "default", false, {
+    launchProviderRun: async (_session, _provider, profile) => { account = profile; return {} as never },
+    getSessionState: async () => session,
+    tryGetProviderRun: async () => null,
+  })
+  assert.equal(account, "codex-secondary")
+})

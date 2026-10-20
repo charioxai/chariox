@@ -42,7 +42,10 @@ pub(crate) mod command_cache;
 mod outbound;
 mod outgoing;
 mod socket_options;
+mod subscription_projection;
 mod subscriptions;
+
+pub(crate) use subscription_projection::session_projection_events;
 
 pub(crate) use command_cache::COMMAND_RESULT_CACHE_LIMIT;
 use command_cache::{

@@ -33,7 +33,7 @@ test("formatToolTranscriptUpdate renders bash command inline with output", () =>
       description: "Shows working tree status",
     }),
     [
-      "**bash** · COMPLETED",
+      "**Ran git status** · COMPLETED",
       "Shows working tree status",
       "**Command**\n```bash\n$ git status\n```",
       "**Output**\n```text\nOn branch main\n```",
@@ -51,7 +51,7 @@ test("formatToolTranscriptUpdate falls back to rendered input and errors", () =>
       error: "file not found",
     }),
     [
-      "**read** · ERROR",
+      "**Read /tmp/demo.txt** · ERROR",
       '**Input**\n```json\n{\n  "filePath": "/tmp/demo.txt"\n}\n```',
       "**Error**\n```text\nfile not found\n```",
     ].join("\n\n"),
@@ -305,7 +305,7 @@ test("formatToolTranscriptUpdate uses webfetch format for syntax highlighting", 
       output: "# Example\n\n```ts\nconst value = 1\n```",
     }),
     [
-      "**webfetch** · COMPLETED",
+      "**Fetched https://example.com** · COMPLETED",
       '**Input**\n```json\n{\n  "url": "https://example.com",\n  "format": "markdown"\n}\n```',
       "**Output**\n````markdown\n# Example\n\n```ts\nconst value = 1\n```\n````",
     ].join("\n\n"),
@@ -324,7 +324,7 @@ test("formatToolTranscriptUpdate infers file rendering generically from tool inp
       output: "1: export function App() {\n2:   return null\n3: }",
     }),
     [
-      "**read_file_like** · COMPLETED",
+      "**Called read file like** · COMPLETED",
       '**Input**\n```json\n{\n  "filePath": "apps/cli/src/index.tsx"\n}\n```',
       [
         "**Output**",
@@ -348,7 +348,7 @@ test("formatToolTranscriptUpdate infers embedded file payloads generically", () 
       output: "<path>/Users/miguel/chariox/apps/cli/src/transcript.ts</path>\n<type>file</type>\n<content>1: export const value = 1\n</content>",
     }),
     [
-      "**custom** · COMPLETED",
+      "**Called custom** · COMPLETED",
       [
         "**Output**",
         "`/Users/miguel/chariox/apps/cli/src/transcript.ts`",
@@ -372,7 +372,7 @@ test("formatToolTranscriptUpdate truncates large generic blobs in the middle", (
       output,
     }),
     [
-      "**bash** · COMPLETED",
+      "**Ran a command** · COMPLETED",
       "Shows long output",
       [
         "**Output**",
@@ -701,7 +701,7 @@ test("mergeToolTranscriptUpdate keeps prior tool details across partial updates"
   assert.equal(
     formatToolTranscriptUpdate(merged),
     [
-      "**bash** · COMPLETED",
+      "**Ran git status** · COMPLETED",
       "Shows working tree status",
       "**Command**\n```bash\n$ git status\n```",
       "**Output**\n```text\nOn branch main\n```",

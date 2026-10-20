@@ -513,6 +513,7 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
                 operational_history,
                 crate::local::GetSessionHistoryOutlineRequest {
                     session_id: session.id().to_string(),
+                    include_prefetched_content: false,
                     agent_ids: Some(vec![agent.id().to_string()]),
                     latest_prompt_count: Some(4),
                     cursor: None,

@@ -194,6 +194,7 @@ public_events! {
     RemoteMachinesChanged => "remote_machines_changed",
     WaitingRoomInventoryChanged => "waiting_room_inventory_changed",
     WaitingRoomRowsChanged => "waiting_room_rows_changed",
+    ClientCatalogChanged => "client_catalog_changed",
     ProviderCatalogChanged => "provider_catalog_changed",
     SlicesChanged => "slices_changed",
     WorkflowDesignOp => "workflow_design_op",

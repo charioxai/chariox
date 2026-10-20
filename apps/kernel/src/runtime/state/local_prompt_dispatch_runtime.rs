@@ -2856,7 +2856,29 @@ pub(in crate::runtime::state) mod tests {
         String,
         crate::app::KernelPromptDispatch,
     ) {
+        runtime_with_admitted_prompt_in_git(false).await
+    }
+
+    async fn runtime_with_admitted_prompt_in_git(
+        git_worktree: bool,
+    ) -> (
+        crate::test_support::TestWorktree,
+        KernelRuntimeState,
+        String,
+        String,
+        String,
+        String,
+        crate::app::KernelPromptDispatch,
+    ) {
         let worktree = crate::test_support::TestWorktree::new("local-prompt-admitted");
+        if git_worktree {
+            let status = std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(worktree.path())
+                .status()
+                .expect("git should initialize the real test workspace");
+            assert!(status.success());
+        }
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = KernelSessionService::new(&mut app)
             .create_session(worktree.session_request())
@@ -3519,6 +3541,38 @@ pub(in crate::runtime::state) mod tests {
             .owned
             .prompt_dispatch_matches_active_prompt(&dispatch)
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn local_prompt_admission_echo_does_not_wait_for_git_observation() {
+        let (_worktree, runtime, session_id, _, observer_id, provider_run_id, dispatch) =
+            runtime_with_admitted_prompt_in_git(true).await;
+        let echoes = runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(&session_id, &observer_id);
+        assert!(
+            echoes.iter().any(|record| {
+                record.kind == crate::terminal::TerminalOutputKind::PromptEcho
+                    && record.prompt_id.as_deref() == Some(dispatch.prompt_id.as_str())
+                    && record.sequence.is_some()
+            }),
+            "the durable prompt must be visible before provider dispatch"
+        );
+        assert!(runtime.owned.git_turn_snapshots.get(&provider_run_id, &dispatch.prompt_id).is_none(),
+            "admission must not wait for repository observation; the dispatch owner captures it before provider input");
+        runtime
+            .enqueue_prompt_dispatch(&dispatch)
+            .await
+            .expect("provider dispatch should succeed");
+        assert!(
+            runtime
+                .owned
+                .git_turn_snapshots
+                .get(&provider_run_id, &dispatch.prompt_id)
+                .is_some(),
+            "the dispatch owner must still capture the real repository before provider input"
+        );
     }
 
     #[tokio::test]

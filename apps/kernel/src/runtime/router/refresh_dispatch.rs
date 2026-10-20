@@ -174,6 +174,7 @@ impl CommandRouter {
             }),
             request @ (LocalDaemonRequest::GetSessionHistoryOutline(_)
             | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
+            | LocalDaemonRequest::GetSessionHistoryBlobContents(_)
             | LocalDaemonRequest::GetPromptInputHistory(_)
             | LocalDaemonRequest::RecordPromptInputHistory(_)
             | LocalDaemonRequest::QueryRecall(_)

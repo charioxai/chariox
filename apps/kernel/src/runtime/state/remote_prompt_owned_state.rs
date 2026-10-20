@@ -180,7 +180,6 @@ impl KernelRuntimeOwnedState {
             queued_prompts,
             activity_mutation,
         )?;
-        self.persist_prompt_session_state(&self.session_store.get_session(session_id)?, agent_id)?;
         let remote_dispatch = crate::app::KernelRemotePromptDispatch {
             session_id: session_id.to_string(),
             agent_id: agent_id.to_string(),
@@ -290,6 +289,10 @@ impl KernelRuntimeOwnedState {
                 prompt.target_agent_id().to_string()
             }
         };
+        let prompt_sent_at_ms = crate::session::unix_epoch_ms();
+        if let crate::session::PromptSubmissionOutcome::Started { .. } = &outcome {
+            self.note_started_prompt_sent_at(&session_id, &outcome_agent_id, prompt_sent_at_ms)?;
+        }
         let (active_prompt, queued_prompts) = self
             .prompt_state_owner
             .state_parts(&session, &outcome_agent_id);
@@ -301,14 +304,11 @@ impl KernelRuntimeOwnedState {
         )?;
         let remote_dispatch = match &outcome {
             crate::session::PromptSubmissionOutcome::Started { prompt } => {
-                let _ = self.record_started_user_prompt(
+                self.append_started_user_prompt_history(
                     &session_id,
                     prompt.source_attachment_id(),
                     prompt,
-                )?;
-                self.persist_prompt_session_state(
-                    &self.session_store.get_session(&session_id)?,
-                    &outcome_agent_id,
+                    prompt_sent_at_ms,
                 )?;
                 Some(crate::app::KernelRemotePromptDispatch {
                     session_id: session_id.clone(),

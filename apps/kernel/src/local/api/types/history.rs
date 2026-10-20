@@ -9,6 +9,9 @@ pub struct GetSessionHistoryOutlineRequest {
     pub latest_prompt_count: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<SessionHistoryOutlineCursor>,
+    /// Protocol 508: include the bounded initial content for every requested agent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_prefetched_content: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,12 +21,29 @@ pub struct GetSessionHistoryBlobContentRequest {
     pub blob_id: String,
 }
 
+/// Several blobs of one agent in one round trip (a pane opening fetches the
+/// details of its latest turn at once).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetSessionHistoryBlobContentsRequest {
+    pub session_id: String,
+    pub agent_id: String,
+    pub blob_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionHistoryBlobContentPage {
+    pub blob_id: String,
+    pub entries: Vec<crate::session_history_page::SessionHistoryPageEntry>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionHistoryOutlineAgent {
     pub agent_id: String,
     pub turns: Vec<SessionHistoryOutlineTurn>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<SessionHistoryOutlineCursor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefetched_blobs: Option<Vec<SessionHistoryBlobContentPage>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +95,13 @@ pub struct SessionHistoryOutlineBlob {
     pub entry_count: usize,
     pub total_chars: usize,
     pub timestamp_ms: u64,
+    /// Display metadata so a row renders before its content is fetched: a
+    /// tool call's snapshot without its output, or a thought's first line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+    /// Distinguish a budgeted steer from observed/recovery prompt envelopes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub steering: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

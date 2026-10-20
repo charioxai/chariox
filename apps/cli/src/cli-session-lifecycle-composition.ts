@@ -1,3 +1,4 @@
+import { isSessionUnavailableError } from "./session-errors.js"
 import process from "node:process"
 
 import { createCliExitController } from "./cli-exit-controller.js"
@@ -14,11 +15,9 @@ import {
   listSessions,
 } from "./session-api.js"
 import {
-  getProviderCatalog,
   launchProviderRun,
   tryGetProviderRun,
 } from "./provider-api.js"
-import { getTerminalCommandCatalog } from "./terminal-command-catalog-api.js"
 import {
   DEFAULT_CONNECTED_STATUS,
   getExitCleanupDecision,
@@ -38,6 +37,7 @@ import { createWaitingRoomTransitionController } from "./waiting-room-transition
 type AnyFn = (...args: any[]) => any
 
 export type CliSessionLifecycleCompositionDeps = {
+  handleSessionUnavailable?: (message: string) => Promise<void> | void
   drainAppInstall?: () => Promise<void>
   client: any
   options: any
@@ -113,8 +113,6 @@ export type CliSessionLifecycleCompositionDeps = {
   setSessionHydratingState: AnyFn
   setHistoryLoadingState: AnyFn
   setStatusLine: AnyFn
-  setProviderCatalogState: AnyFn
-  setTerminalCommandCatalogState: AnyFn
   availableSessions: AnyFn
   setAvailableSessions: AnyFn
   scheduleShortViewportHistoryCheck: AnyFn
@@ -184,6 +182,11 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
         error: deps.formatError(error),
       })
       deps.onKernelTransportClosed("Kernel event subscription failed")
+      // A stale attachment never subscribes: re-attach and re-subscribe
+      // (session-unavailable recovery) instead of retrying the same pair.
+      if (isSessionUnavailableError(error)) {
+        void deps.handleSessionUnavailable?.(deps.formatError(error))
+      }
     },
   })
   const syncKernelEventSubscription = () => kernelEventSubscriptionController.sync()
@@ -286,10 +289,6 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
     launchProviderRun: (sessionId, provider, accountProfile, model, effort, targetAgentId) =>
       launchProviderRun(deps.client, sessionId, provider, accountProfile, model, effort, targetAgentId),
     tryGetProviderRun: (providerRunId) => tryGetProviderRun(deps.client, providerRunId, deps.appLogger),
-    setProviderCatalogState: deps.setProviderCatalogState,
-    setTerminalCommandCatalogState: deps.setTerminalCommandCatalogState,
-    getProviderCatalog: () => getProviderCatalog(deps.client, deps.appLogger),
-    getTerminalCommandCatalog: () => getTerminalCommandCatalog(deps.client, deps.appLogger),
     syncCliProviderSelection: ({ provider, model, effort }) => {
       deps.options.provider = provider
       deps.options.model = model

@@ -584,3 +584,35 @@ async fn rejected_owned_local_prompt_does_not_persist_history() {
         1
     );
 }
+
+#[tokio::test]
+async fn projection_only_subscription_does_not_wait_for_the_app_lock() {
+    // MP-08 / MP-10 / MP-11: prove the production owner already skips the
+    // legacy app-lock/provider pump on a projection-only subscription wake.
+    let worktree = crate::test_support::TestWorktree::new("panes-projection-only-lock");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "projection-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let held = app.lock().await;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(150),
+        runtime.watch_relay_subscription_state(session.id(), attachment.id(), true, None, 0),
+    )
+    .await;
+    drop(held);
+    assert!(
+        matches!(result, Ok(crate::runtime_transport::WatchResult::Ok { records, snapshot, .. })
+        if records.is_empty() && snapshot.is_some()),
+        "projection-only watch waited for the app lock"
+    );
+}

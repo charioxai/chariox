@@ -238,6 +238,98 @@ The kernel remains the workspace/runtime authority in all cases.
 
 ## 3.1 Terminal Lane (Provider Output Stream)
 
+MP-08 / MP-10, allocated local protocol 508 / peer 116: persisted terminal
+output carries its history `sequence`. Consecutive output or reasoning rows
+with the same run, merge key and recipient scope may coalesce. `sequence_end`
+is the inclusive last sequence; `sequence_byte_lengths` gives each persisted
+row's UTF-8 byte length, in order. A single row omits both fields. Clients split
+the range at these byte boundaries before replay deduplication, preserving
+unseen rows when history hydration overlaps only part of a range. Gaps and
+unsequenced bytes never join a persisted range.
+
+`GetSessionHistoryOutline.include_prefetched_content=true` returns optional
+`prefetched_blobs` on each requested agent, including an explicit empty array
+when no content is selected. The kernel selects up to 64 latest-turn detail,
+assistant-output and steering blobs per agent, with a shared 1 MiB encoded
+content budget. Other details remain available through the existing blob
+requests. The outline's `steering` flag identifies budgeted steering prompts;
+observed and recovery prompt envelopes retain their collapsed, on-demand role.
+Clients that omit the request flag retain the earlier outline and blob paths.
+
+MP-08 / MP-10 / MP-11: `AttachSessionView` was introduced in 508/116 and
+its first-screen behavior is updated in the allocated 518/126 bump. It
+accepts the ordinary session/client/capability binding plus an optional
+`preferred_agent_id`. `SessionViewAttached` returns an attachment, the normal
+`SessionState` response under `state`, and the normal `SessionHistoryOutline`
+response under `history`. The kernel uses the existing authorized and redacted
+read commands, selects at most six visible agents in the preferred agent's pane
+group and the latest turn without downloading tool/thought bodies. State and
+history reads run concurrently after the ordinary attachment; details and older
+turns remain available through normal history requests.
+It binds through `AttachToSession` before either read, so later output
+already includes the new recipient; a history failure retires that exact new
+attachment through normal detach. This removes client round trips without
+adding session or history authority.
+The event subscription remains the existing attachment-scoped path. Its first
+pump replays output for the new attachment, including output produced between
+the initial read and subscription. Clients render the initial view while event
+admission is pending, deduplicate replay by persisted sequence, and enable
+prompt controls only after subscription and hydration settle. Clients below
+508 retain their existing attach, subscribe, state and history requests.
+External-agent grants cannot request this full-terminal response bundle.
+
+MP-08 / MP-10 / MP-11, allocated 518/126: `GetClientCatalogRevisions` accepts
+exactly the same owner/provider/profile/execution-location scope as
+`GetProviderCatalog`. `ClientCatalogRevisions.revisions` returns content hashes
+for `provider_accounts`, `provider_catalog`, `provider_commands`, and the existing
+`terminal_commands` revision (`sha256:` prefix). It uses the normal scoped catalog
+loader and refreshes stale metadata before returning a revision. It adds no
+credential or provider execution path. Clients show their bounded private stored
+inventories immediately, then compare revisions in the background after four
+hours or explicit invalidation; unchanged inventories need no full download.
+Older kernels retain ordinary full catalog requests. Projection subscriptions
+send activity/metadata before terminal output batches on the same wake; the relay
+still routes opaque packets and owns no session state.
+
+
+### Conditional client catalogs (MP-08 / MP-10 / MP-11, protocol534 / peer142)
+
+`GetClientCatalogSnapshot` takes the ordinary `GetProviderCatalog` selection in
+`scope` plus nullable `known: ClientCatalogRevisions`. The response has
+`ClientCatalogSnapshot.snapshot.revisions` and only changed sections:
+`provider_accounts`, `provider_catalog`, `provider_commands`, `terminal_commands`.
+An omitted section means unchanged only when its returned revision equals the
+client's revision. No cache means `known: null`, returning all four sections.
+Model discovery for a scope the kernel has not yet read can take many seconds.
+A caller that already holds a catalog (`known` set) is answered at once: accounts,
+commands and revisions are current, `provider_catalog` is omitted with the caller's
+own revision, discovery continues in the background and `client_catalog_changed`
+follows when it ends. Accounts are read after discovery, and a discovery that an
+invalidation overtook is kept as stale metadata, never turned into a failed read.
+Provider kinds/availability are projected from `provider_catalog`; a session's
+live agent roster is never part of this cache. Account selection and admission
+remain kernel-owned and caller-scoped.
+
+Both local and relay session/waiting-room subscriptions emit
+`client_catalog_changed { revision }` on catalog invalidation or changed model
+metadata. `revision` is a process-local change sequence, not a cross-restart
+content hash. It contains no account data. Clients fetch conditional snapshots
+on first connection, reconnect, and this event; they do not poll catalog data.
+Authorized user/kernel-scoped cached catalogs can paint while revalidation
+runs. Sign-out/account switch clears private browser caches; cache values never
+include bootstrap credentials, provider authentication state files or clients.
+Older kernels use the preexisting catalog requests rather than receiving a
+protocol534 request.
+
+
+MP-08 / MP-10: complete owned output/thought groups in initial history pages
+also compact repeated delta metadata. `sequence_end`, `sequence_byte_lengths`
+and `sequence_indices` retain each original row identity, including gaps left
+by another agent. Clients reconstruct the rows before fragment reconciliation;
+inline summaries admit all those identities while displaying one message.
+The first row's timestamp is retained. Partial rows, tool snapshots and external
+observations are not compacted; persisted operational history is unchanged.
+
 Purpose:
 
 - user keystrokes to provider PTY
@@ -1361,6 +1453,26 @@ a zero-total/zero-offset/empty-payload chunk checkpoint with its own increasing
 ID. Its receipt accounts for both the preceding binary envelope and checkpoint.
 Larger binary events use the existing encrypted JSON envelope and bounded
 chunks; the ciphertext is never decrypted or inspected by the relay.
+The lane's unreleased local534/peer142 allocation adds the optional query
+`chariox_window=262144` beside `chariox_transport=chunks-v1`. Updated clients
+request a 256KiB bound so a typical catalog can leave in one transport flight.
+An older relay ignores this additive hint and retains its existing bound;
+without the exact hint, the new relay also retains64KiB. The chunk size,
+receiver grammar, total bound, ordered receipts, independent small/control
+traffic and all admission/encryption checks are unchanged. The hint alone
+without `chunks-v1` does not opt a socket into bounded framing.
+
+
+Relay egress text envelopes larger than 16 KiB use JSON `transport_chunk`
+frames with `transfer_id`, `offset`, `total_bytes` and `payload`. Offsets and
+totals count UTF-8 bytes of the original envelope. Each serialized chunk is at
+most 16 KiB; at most 64 KiB of unacknowledged chunk bytes are written by default. The
+receiver immediately returns `transport_ack` with the same transfer ID and the
+exclusive byte offset received, then dispatches only the completely reassembled
+original envelope. Totals are bounded to 64 MiB, IDs increase per connection,
+and a receiver admits one contiguous transfer. Invalid bounds, duplicate or
+cross-transfer receipts, overlap, unknown chunk fields, and nested transport
+frames terminate the connection without retaining payloads in errors.
 
 A socket admits at most four active transfers and 128 MiB of aggregate declared
 assembly, with a 64 MiB per-envelope maximum. Buffers grow only with received

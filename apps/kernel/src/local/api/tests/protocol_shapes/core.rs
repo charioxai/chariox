@@ -1114,6 +1114,11 @@ fn relay_chunk_transport_490_100_schema_and_wire_hashes() {
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         crate::test_support::expected_relay_peer_protocol_version()
     );
+    // MP-08 / MP-10 / MP-11: additive burst opt-in on our unreleased534/142.
+    use chariox_relay::frame_transport::{CHUNK_BYTES,WINDOW_BYTES,WIDE_WINDOW_BYTES,WIDE_WINDOW_QUERY,MAX_MESSAGE_BYTES};
+    let options = serde_json::json!({"chunk_bytes":CHUNK_BYTES,"window_bytes":WINDOW_BYTES,
+        "wide_window_bytes":WIDE_WINDOW_BYTES,"wide_query":WIDE_WINDOW_QUERY,"max_message_bytes":MAX_MESSAGE_BYTES});
+    assert_eq!(format!("{:x}",Sha256::digest(serde_json::to_vec(&options).unwrap())),"037e6717ce81b8e80193110c46f58ddbd7cb62590bfbea29d6c3adc0633da035");
     let source = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../relay/src/frame_transport.rs"

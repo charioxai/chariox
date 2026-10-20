@@ -166,6 +166,7 @@ async fn panes_stream_terminal_delivery_does_not_wait_for_history_writer() {
                 ..Default::default()
             })),
         );
+    let history_store = app.history_store();
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
 
@@ -205,7 +206,37 @@ async fn panes_stream_terminal_delivery_does_not_wait_for_history_writer() {
             started.elapsed().as_millis()
         },
     );
+    // MP-08 / MP-10: an attaching client must not read history before an
+    // already-published asynchronous write becomes durable.
+    let history_runtime = runtime.clone();
+    let history_session = session.id().to_string();
+    let history_agent = agent.id().to_string();
+    let reading = tokio::spawn(async move {
+        crate::runtime::history_executor::execute_history_request(
+            history_store,
+            history_runtime.owned.operational_history_store.clone(),
+            &history_runtime,
+            &history_runtime.owned.config_projection,
+            crate::local::LocalDaemonRequest::GetSessionHistoryOutline(
+                crate::local::GetSessionHistoryOutlineRequest {
+                    session_id: history_session,
+                    agent_ids: Some(vec![history_agent]),
+                    latest_prompt_count: Some(4),
+                    cursor: None,
+                    include_prefetched_content: true,
+                },
+            ),
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let read_waited = !reading.is_finished();
     holder.join().unwrap();
+    reading.await.unwrap().unwrap();
+    assert!(
+        read_waited,
+        "MP-08 / MP-10: initial history raced a published pending write"
+    );
     drop(cleanup);
     assert!(output
         .unwrap()
@@ -428,6 +459,85 @@ async fn panes_stream_next_ready_batch_does_not_wait_for_previous_history_ack() 
     );
 }
 
+#[tokio::test]
+async fn panes_stream_batch_reaches_an_attachment_registered_after_the_recipient_snapshot() {
+    // MP-08 / MP-10: a view attached while the pump waited for its run lane reads
+    // history that cannot yet contain the batch; it must receive the batch live.
+    let worktree = crate::test_support::TestWorktree::new("panes-stream-late-attachment");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let late = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "panes-stream-late-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "opencode",
+        "opencode",
+        "default",
+        "opencode-go/gpt-6-luna",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-panes-stream-late-attachment",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "panes-stream-late-fixture".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("http://127.0.0.1:1".into()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.update_provider_run_projection(run.clone());
+    spawn_inert_pty_for_run(&mut app, run.id());
+    app.structured_output_record_store()
+        .mark_poll_enqueued(run.id(), None);
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let _cleanup = InertPtyCleanup {
+        app: app.clone(),
+        provider_run_id: run.id().into(),
+    };
+    // The pump took its recipients before `late` attached.
+    let stale_recipients = Vec::new();
+    let records = runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            stale_recipients,
+            crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("late-text".into()),
+                    bytes: b"LATE".to_vec(),
+                }],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(records.into_iter().flat_map(|r| r.bytes).collect::<Vec<_>>(), b"LATE");
+    let crate::runtime_transport::WatchResult::Ok { records, .. } = runtime
+        .watch_relay_subscription_state(session.id(), late.id(), false, None, 0)
+        .await
+    else {
+        panic!("late attachment cannot watch");
+    };
+    assert_eq!(records.into_iter().flat_map(|r| r.bytes).collect::<Vec<_>>(), b"LATE");
+}
+
 #[test]
 fn publication_output_rejects_opencode_model_substitution_before_run_mutation() {
     let request = crate::provider::LaunchProviderRequest::new(
@@ -563,6 +673,9 @@ async fn assert_owned_output_pump_drains_pending_record_after_run_state_change(
     app.update_provider_run_projection(run.clone());
     let expected = crate::terminal::TerminalOutputRecord {
         record_id: None,
+        sequence: None,
+        sequence_end: None,
+        sequence_byte_lengths: Vec::new(),
         timestamp_ms: 1_000,
         session_id: session.id().to_string(),
         provider_run_id: run.id().to_string(),
@@ -1154,6 +1267,7 @@ async fn structured_output_and_completion_fanout_respect_collaborator_trace_visi
                 agent_id: Some(agent.id().to_string()),
                 kind: crate::terminal::TerminalOutputKind::ProviderTerminal,
                 merge_key: Some("collaborator-raw-terminal".to_string()),
+                sequence: None,
                 bytes: b"raw terminal paint".to_vec(),
             },
         ],
@@ -1358,6 +1472,44 @@ async fn structured_output_batch_persists_one_turn_id_for_all_chunks() {
             Some("trace-structured-history-turn".to_string()),
             Some("trace-structured-history-turn".to_string())
         ]
+    );
+    // MP-08 / MP-10 (panes R5): each live record carries the sequence of the
+    // history row it was stored as, so clients order live and hydrated rows by
+    // one key.
+    let history_sequences = ["structured-history-turn-1", "structured-history-turn-2"]
+        .into_iter()
+        .map(|merge_key| {
+            events
+                .iter()
+                .find(|event| {
+                    event
+                        .metadata
+                        .get("merge_key")
+                        .and_then(|value| value.as_str())
+                        == Some(merge_key)
+                })
+                .map(|event| event.sequence)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.sequence)
+            .collect::<Vec<_>>(),
+        history_sequences
+    );
+    assert!(history_sequences[0] < history_sequences[1]);
+    // The per-attachment copies clients receive keep it too.
+    assert_eq!(
+        runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(session.id(), attachment.id())
+            .iter()
+            .filter(|record| record.kind != crate::terminal::TerminalOutputKind::PromptEcho)
+            .map(|record| record.sequence)
+            .collect::<Vec<_>>(),
+        history_sequences
     );
 }
 

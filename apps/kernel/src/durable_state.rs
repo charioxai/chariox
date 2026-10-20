@@ -59,6 +59,8 @@ pub(crate) mod worker_prompt_receipts;
 pub(crate) mod worker_steer_receipts;
 pub(crate) mod workflow_invocation_provenance;
 mod writer_fence;
+#[cfg(test)]
+mod writer_latency_tests;
 use writer_fence::fenced_writer_error;
 pub(crate) mod notification_target;
 pub(crate) mod workflow_dispatch_intents;
@@ -82,7 +84,6 @@ pub struct DurableKernelStateStore {
 
 const DURABLE_WRITE_QUEUE_CAPACITY: usize = 4_096;
 const DURABLE_WRITE_BATCH_LIMIT: usize = 256;
-const DURABLE_WRITE_BATCH_WINDOW: Duration = Duration::from_millis(5);
 const DURABLE_SETTLEMENT_RETRY_BASE_MS: u64 = 100;
 const DURABLE_SETTLEMENT_RETRY_MAX_MS: u64 = 5_000;
 
@@ -1387,14 +1388,7 @@ impl DurableStateWriter {
         let worker = std::thread::Builder::new()
             .name("chariox-durable-writer".to_string())
             .stack_size(512 * 1024)
-            .spawn(move || {
-                run_durable_writer(
-                    connection,
-                    receiver,
-                    worker_health,
-                    DURABLE_WRITE_BATCH_WINDOW,
-                )
-            })
+            .spawn(move || run_durable_writer(connection, receiver, worker_health))
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.spawn_writer",
                 message: error.to_string(),
@@ -1412,8 +1406,17 @@ impl DurableStateWriter {
             operation,
             response: response_tx,
         }))?;
-        response_rx
-            .recv()
+        // The commit includes an fsync. Hand this Tokio worker's queue to another
+        // thread while waiting so a slow disk cannot stall unrelated tasks.
+        let await_commit = || response_rx.recv();
+        let reply = if tokio::runtime::Handle::try_current().is_ok_and(|handle| {
+            handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
+        }) {
+            tokio::task::block_in_place(await_commit)
+        } else {
+            await_commit()
+        };
+        reply
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.await_write",
                 message: error.to_string(),
@@ -1488,7 +1491,6 @@ fn run_durable_writer(
     mut connection: Connection,
     receiver: Receiver<DurableWriterRequest>,
     health: Arc<DurableWriterHealth>,
-    batch_window: Duration,
 ) {
     struct MarkStopped(Arc<DurableWriterHealth>);
     impl Drop for MarkStopped {
@@ -1664,16 +1666,15 @@ fn run_durable_writer(
                 continue;
             }
         };
+        // Commit at once; only writes already queued behind this one (for
+        // example while the previous commit synced) share its transaction.
+        let received_at = Instant::now();
         let mut batch = vec![first];
-        let deadline = Instant::now() + batch_window;
         while batch.len() < DURABLE_WRITE_BATCH_LIMIT {
             if health.fatal.load(Ordering::Acquire) {
                 break;
             }
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                break;
-            };
-            match receiver.recv_timeout(remaining) {
+            match receiver.try_recv() {
                 Ok(DurableWriterRequest::Ordinary(request)) => batch.push(request),
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 Ok(
@@ -1713,11 +1714,17 @@ fn run_durable_writer(
                     pending = Some(request);
                     break;
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => break,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
             }
         }
+        let records = batch.len();
+        let commit_started_at = Instant::now();
         commit_durable_write_batch(&mut connection, batch, &health);
+        crate::runtime::perf_timing::record_durable_commit(
+            records,
+            commit_started_at.duration_since(received_at).as_micros(),
+            commit_started_at.elapsed().as_micros(),
+        );
     }
 }
 

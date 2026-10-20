@@ -690,51 +690,66 @@ impl KernelRuntimeState {
                 .record_terminal_diagnostic(provider_run_id, message.to_string())?;
             owned.provider_run_projection.update(run);
         }
-        let mut history_entries = Vec::with_capacity(poll_result.chunks.len());
         let prompt_metadata =
             owned.active_prompt_transcript_metadata_for_agent(session_id, agent_id.as_deref());
         let terminal_outputs = poll_result
             .chunks
             .into_iter()
             .map(|chunk| {
-                let history_text = String::from_utf8_lossy(&chunk.bytes).into_owned();
-                if chunk.kind != crate::terminal::TerminalOutputKind::PromptEcho {
-                    history_entries.push(
+                let history_entry = (chunk.kind != crate::terminal::TerminalOutputKind::PromptEcho)
+                    .then(|| {
                         crate::history::SessionHistoryEntry::provider_output(
                             session_id,
                             provider_run_id,
                             agent_id.as_deref(),
                             chunk.kind.clone(),
                             chunk.merge_key.clone(),
-                            history_text.clone(),
+                            String::from_utf8_lossy(&chunk.bytes).into_owned(),
                         )
                         .with_prompt_origin(prompt_metadata.prompt_origin)
-                        .with_source_attachment_id(prompt_metadata.source_attachment_id.clone()),
-                    );
-                }
-                super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
-                    provider_run_id: provider_run_id.to_string(),
-                    agent_id: agent_id.clone(),
-                    kind: chunk.kind,
-                    merge_key: chunk.merge_key,
-                    bytes: chunk.bytes,
-                }
+                        .with_source_attachment_id(prompt_metadata.source_attachment_id.clone())
+                    });
+                (
+                    super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+                        provider_run_id: provider_run_id.to_string(),
+                        agent_id: agent_id.clone(),
+                        kind: chunk.kind,
+                        merge_key: chunk.merge_key,
+                        sequence: None,
+                        bytes: chunk.bytes,
+                    },
+                    history_entry,
+                )
             })
             .collect::<Vec<_>>();
-        // MP-08 / MP-10: reserve bounded persistence capacity before publishing.
-        // The handoff itself is synchronous, so cancellation cannot leave an
-        // already-visible batch without an accepted write. Context was frozen
-        // while this batch still belonged to its original turn.
-        let history_entries = owned.prepare_history_entries(session_id, history_entries);
+        let (mut terminal_outputs, history_entries): (Vec<_>, Vec<_>) =
+            terminal_outputs.into_iter().unzip();
+        let positions = history_entries
+            .iter()
+            .enumerate()
+            .filter_map(|(position, entry)| entry.as_ref().map(|_| position))
+            .collect::<Vec<_>>();
+        // Capacity is reserved before publication; no await can cancel the handoff.
         let history_lease = self
-            .reserve_provider_history(provider_run_id, !history_entries.is_empty())
+            .reserve_provider_history(provider_run_id, !positions.is_empty())
             .await?;
+        let prepared = owned
+            .prepare_history_entries(session_id, history_entries.into_iter().flatten().collect());
+        for item in &prepared {
+            terminal_outputs[positions[item.position]].sequence = Some(item.sequence);
+        }
+        // A view attached from here on reads these rows from history; one that
+        // attached earlier is a recipient now, whatever the pump saw before it
+        // waited for the run lane.
+        self.enqueue_provider_history(prepared, history_lease);
+        let recipient_attachment_ids = owned
+            .attachment_store
+            .list_session_attachment_ids(session_id);
         let records = owned.fan_out_terminal_outputs_to_recipients(
             session_id,
             recipient_attachment_ids.clone(),
             terminal_outputs,
         );
-        self.enqueue_provider_history(history_entries, history_lease);
         if !completions.is_empty() || prompt_completed || terminal_failure.is_some() {
             self.flush_provider_history(provider_run_id).await?;
         }

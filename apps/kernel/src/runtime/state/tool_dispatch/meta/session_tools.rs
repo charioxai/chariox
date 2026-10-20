@@ -181,6 +181,7 @@ impl KernelRuntimeState {
         let latest_prompt_count = args.turns_back.unwrap_or(0).saturating_add(1).clamp(1, 20);
         let request = crate::local::GetSessionHistoryOutlineRequest {
             session_id: session.id().to_string(),
+            include_prefetched_content: false,
             agent_ids: Some(vec![target.id().to_string()]),
             latest_prompt_count: Some(latest_prompt_count),
             cursor: None,

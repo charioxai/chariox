@@ -7,6 +7,14 @@ import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
 } from "@chariox/kernel-client/external-provider-observation"
 
+test("MP-08 / MP-10 coalesced rows reach the real TUI processor with independent UTF-8 boundaries", () => {
+  const h = processorHarness()
+  h.processor.process(terminalRecord("provider_output", "é中", {
+    sequence: 10, sequence_end: 11, sequence_byte_lengths: [2, 3],
+  }))
+  assert.deepEqual(h.records.map((r) => [r.sequence, Buffer.from(r.bytes).toString("utf8")]), [[10, "é"], [11, "中"]])
+})
+
 test("terminal output record processor stores prompt echoes before kernel processing", () => {
   const harness = processorHarness()
   const record = terminalRecord("prompt_echo", "hello")

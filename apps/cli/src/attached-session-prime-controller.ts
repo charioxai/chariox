@@ -4,7 +4,6 @@ import type {
   SessionHistoryOutline,
   TranscriptEntry,
 } from "./cli-types.js"
-import type { PromptHistoryHydrationController } from "./prompt-history-hydration-controller.js"
 import { selectResponsePaneAgents } from "@chariox/kernel-client/response-pane-selection"
 import {
   sessionHistoryCursorForVisibleAgent,
@@ -16,7 +15,6 @@ import { formatTranscriptPreview } from "@chariox/kernel-client/session-history-
 import { reindexTranscriptEntries } from "@chariox/kernel-client/transcript-entry-state"
 
 export type AttachedSessionPrimeControllerDeps = {
-  promptHistoryHydrationController: Pick<PromptHistoryHydrationController, "begin" | "loadAndApply">
   splitAgentResponseMode: () => boolean
   maxAgentsPerScreen: () => number
   loadSessionHistoryOutline: (sessionId: string, agentIds: readonly string[]) => Promise<SessionHistoryOutline>
@@ -30,7 +28,8 @@ export function createAttachedSessionPrimeController(
   deps: AttachedSessionPrimeControllerDeps,
 ) {
   const prime = async (session: RuntimeSession) => {
-    const promptHistoryGeneration = deps.promptHistoryHydrationController.begin()
+    // The attachment controller owns prompt-history generations. Transcript
+    // priming must not invalidate its in-flight read after a room switch.
     const visibleAgentId = selectResponsePaneAgents(
       session.agents,
       session.focused_agent_id,
@@ -41,7 +40,6 @@ export function createAttachedSessionPrimeController(
     if (!visibleAgentId) {
       deps.replaceTranscriptEntries([], null)
       deps.setNextHistoryCursor(null)
-      await deps.promptHistoryHydrationController.loadAndApply(session.id, promptHistoryGeneration)
       return
     }
 
@@ -49,7 +47,6 @@ export function createAttachedSessionPrimeController(
       session.id,
       session.agents.map((agent) => agent.id),
     )
-    await deps.promptHistoryHydrationController.loadAndApply(session.id, promptHistoryGeneration)
     const entriesByAgent = new Map(outline.agents.map((agent) => {
       return [
         agent.agent_id,

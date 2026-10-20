@@ -1,78 +1,5 @@
-use super::writer::{RelayEventWriteCoalescer, RELAY_EVENT_WRITE_COALESCE_MS};
 use super::*;
 use tokio::time::Instant as TokioInstant;
-
-#[test]
-fn relay_event_writer_coalesces_event_lane_with_stable_deadline() {
-    let now = TokioInstant::now();
-    let mut coalescer = RelayEventWriteCoalescer::new(RELAY_EVENT_WRITE_COALESCE_MS);
-
-    assert!(coalescer.push_event("event-1", now).is_none());
-    assert_eq!(
-        coalescer.ready_at(),
-        Some(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS))
-    );
-    assert!(coalescer
-        .push_event("event-2", now + Duration::from_millis(10))
-        .is_none());
-    assert_eq!(
-        coalescer.ready_at(),
-        Some(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS))
-    );
-
-    assert_eq!(
-        coalescer.pop_ready(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS)),
-        Some("event-1")
-    );
-    assert_eq!(
-        coalescer.ready_at(),
-        Some(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS))
-    );
-    assert_eq!(
-        coalescer.pop_ready(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS)),
-        Some("event-2")
-    );
-    assert_eq!(coalescer.ready_at(), None);
-    assert!(coalescer.is_empty());
-}
-
-#[test]
-fn relay_event_writer_can_disable_event_coalescing_for_tests() {
-    let now = TokioInstant::now();
-    let mut coalescer = RelayEventWriteCoalescer::new(0);
-
-    assert_eq!(coalescer.push_event("event-1", now), Some("event-1"));
-    assert_eq!(coalescer.ready_at(), None);
-    assert!(coalescer.pop_ready(now).is_none());
-}
-
-#[test]
-fn relay_event_writer_bounds_a_continuously_ready_producer_without_reordering() {
-    // MP-08/MP-10: the writer's ready event receiver may win over its timer.
-    // Force that receive path repeatedly without draining the timer branch.
-    let now = TokioInstant::now();
-    let mut coalescer = RelayEventWriteCoalescer::new(RELAY_EVENT_WRITE_COALESCE_MS);
-    let mut sent = Vec::new();
-    for event in 0..10_000 {
-        if let Some(ready) = coalescer.push_event(event, now) {
-            sent.push(ready);
-        }
-        assert!(
-            event + 1 - sent.len() <= 32,
-            "event coalescer exceeded its 32-event bound"
-        );
-        assert_eq!(
-            coalescer.ready_at(),
-            Some(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS))
-        );
-    }
-    while let Some(event) = coalescer.pop_ready(now) {
-        sent.push(event);
-    }
-    assert_eq!(sent, (0..10_000).collect::<Vec<_>>());
-    assert!(coalescer.is_empty());
-    assert_eq!(coalescer.ready_at(), None);
-}
 
 #[test]
 fn missing_relay_config_without_cloud_profile_is_local_idle() {
@@ -797,4 +724,104 @@ fn mp08_mp10_mp11_activation_confirms_only_on_a_socket_with_the_current_token() 
     assert!(socket_has_current_token(Some("renewed"), "renewed"));
     assert!(!socket_has_current_token(Some("renewed"), "previous"));
     assert!(!socket_has_current_token(None, "previous"));
+}
+
+// MP-08 / MP-10 / MP-11: one ready event must not wait for a render-frame timer.
+#[tokio::test]
+async fn relay_event_writer_delivers_ready_events_without_a_frame_wait() {
+    use std::task::Context;
+    let (priority_tx, priority_rx) = mpsc::channel(2);
+    let (event_tx, event_rx) = mpsc::channel(2);
+    let (pong_tx, pong_rx) = mpsc::channel(2);
+    let (receipt_tx, receipt_rx) = mpsc::channel(2);
+    let (sent_tx, mut sent_rx) = mpsc::unbounded_channel();
+    let sink = Box::pin(futures_util::sink::unfold(
+        sent_tx,
+        |tx, message| async move {
+            tx.send(message).unwrap();
+            Ok::<_, std::convert::Infallible>(tx)
+        },
+    ));
+    event_tx
+        .try_send(RelayEnvelope::Close {
+            reason: "accepted-turn-event".into(),
+        })
+        .unwrap();
+    let mut writing = Box::pin(super::writer::run_relay_writer(
+        sink,
+        priority_rx,
+        event_rx,
+        pong_rx,
+        receipt_rx,
+    ));
+    let waker = futures_util::task::noop_waker();
+    let mut context = Context::from_waker(&waker);
+    assert!(writing.as_mut().poll(&mut context).is_pending());
+    assert!(
+        sent_rx.try_recv().is_ok(),
+        "ready event is still held behind the frame coalescer"
+    );
+    drop((priority_tx, event_tx, pong_tx, receipt_tx));
+}
+
+// MP-08 / MP-10 / MP-11: bounded lanes, control priority, and subscription FIFO survive the timer removal.
+#[tokio::test]
+async fn relay_event_writer_preserves_controls_bounded_events_and_fifo() {
+    use std::task::Context;
+    let (priority_tx, priority_rx) = mpsc::channel(2);
+    let (event_tx, event_rx) = mpsc::channel(2);
+    let (pong_tx, pong_rx) = mpsc::channel(2);
+    let (receipt_tx, receipt_rx) = mpsc::channel(2);
+    let (sent_tx, mut sent_rx) = mpsc::unbounded_channel();
+    let sink = Box::pin(futures_util::sink::unfold(
+        sent_tx,
+        |tx, message| async move {
+            tx.send(message).unwrap();
+            Ok::<_, std::convert::Infallible>(tx)
+        },
+    ));
+    for reason in ["event-1", "event-2"] {
+        event_tx
+            .try_send(RelayEnvelope::Close {
+                reason: reason.into(),
+            })
+            .unwrap();
+    }
+    assert!(matches!(
+        event_tx.try_send(RelayEnvelope::Close {
+            reason: "over-capacity".into()
+        }),
+        Err(mpsc::error::TrySendError::Full(_))
+    ));
+    priority_tx
+        .try_send(RelayEnvelope::Close {
+            reason: "priority".into(),
+        })
+        .unwrap();
+    pong_tx.try_send(vec![1]).unwrap();
+    receipt_tx.try_send("public-receipt".into()).unwrap();
+    let mut writing = Box::pin(super::writer::run_relay_writer(
+        sink,
+        priority_rx,
+        event_rx,
+        pong_rx,
+        receipt_rx,
+    ));
+    let waker = futures_util::task::noop_waker();
+    let mut context = Context::from_waker(&waker);
+    assert!(writing.as_mut().poll(&mut context).is_pending());
+    let sent: Vec<_> = std::iter::from_fn(|| sent_rx.try_recv().ok()).collect();
+    assert_eq!(sent.len(), 5);
+    assert_eq!(sent[0].to_text().unwrap(), "public-receipt");
+    assert!(matches!(&sent[1], Message::Pong(bytes) if bytes.as_ref() == [1]));
+    let reasons: Vec<_> = sent[2..]
+        .iter()
+        .map(|message| {
+            serde_json::from_str::<serde_json::Value>(message.to_text().unwrap()).unwrap()["reason"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(reasons, ["priority", "event-1", "event-2"]);
 }

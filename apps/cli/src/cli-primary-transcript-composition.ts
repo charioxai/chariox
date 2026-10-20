@@ -43,12 +43,17 @@ export type CliPrimaryTranscriptCompositionDeps = {
   setSessionHydratingState: AnyFn
   setEntries: AnyFn
   setPromptHistoryEntries: AnyFn
+  promptHistoryEntries?: AnyFn
+  promptHistoryIndex?: AnyFn
+  promptHistoryDraft?: AnyFn
   setPromptHistoryIndex: AnyFn
   setPromptHistoryDraft: AnyFn
   setProviderCatalogState: AnyFn
   setProviderCommandCatalogState: AnyFn
   setTerminalCommandCatalogState: AnyFn
   updateSessionChrome: AnyFn
+  applyAttachLaunch: AnyFn
+  reportAttachLaunchFailure: AnyFn
   flashFooter: AnyFn
   attachmentState: AnyFn
   sessionState: AnyFn
@@ -118,7 +123,6 @@ export type CliPrimaryTranscriptCompositionDeps = {
   requestTranscriptRender: AnyFn
   requestRootRender: AnyFn
   logViewDebug: AnyFn
-  promptHistoryHydrationController: any
   splitAgentResponseMode: AnyFn
   maxAgentsPerScreen: AnyFn
   setAgentPaneEntries: AnyFn
@@ -301,7 +305,6 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
   }
 
   const attachedSessionPrimeController = createAttachedSessionPrimeController({
-    promptHistoryHydrationController: deps.promptHistoryHydrationController,
     splitAgentResponseMode: deps.splitAgentResponseMode,
     maxAgentsPerScreen: deps.maxAgentsPerScreen,
     loadSessionHistoryOutline: (sessionId, agentIds) => getSessionHistoryOutline(deps.client, sessionId, agentIds, 4),
@@ -329,12 +332,17 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
     applyAttachedProviderRun: deps.applyAttachedProviderRun,
     currentAttachmentSessionId: () => deps.attachmentState()?.session_id ?? null,
     currentAttachmentId: () => deps.attachmentState()?.id ?? null,
+    ...(deps.promptHistoryEntries ? { currentPromptHistoryEntries: deps.promptHistoryEntries } : {}),
+    ...(deps.promptHistoryIndex ? { currentPromptHistoryIndex: deps.promptHistoryIndex } : {}),
+    ...(deps.promptHistoryDraft ? { currentPromptHistoryDraft: deps.promptHistoryDraft } : {}),
     currentTranscriptEntryCount: () => deps.transcriptEntryProjectionController.renderableEntries().length,
     entryCounter: deps.entryCounter,
     setProviderCatalog: deps.setProviderCatalogState,
     setProviderCommandCatalogs: deps.setProviderCommandCatalogState,
     setTerminalCommandCatalog: deps.setTerminalCommandCatalogState,
     updateSessionChrome: deps.updateSessionChrome,
+    applyAttachLaunch: deps.applyAttachLaunch,
+    reportAttachLaunchFailure: deps.reportAttachLaunchFailure,
     setPromptHistoryEntries: deps.setPromptHistoryEntries,
     resetPromptHistoryNavigation: () => {
       deps.setPromptHistoryIndex(null)
@@ -374,6 +382,8 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
   })
 
   return {
+    hydrateComposer: deferredBootstrapController.hydrateComposer,
+    hydratePromptInputHistory: deferredBootstrapController.hydratePromptInputHistory,
     mountTranscriptEntry,
     reconcileMountedTranscript,
     updateTranscriptEntry,

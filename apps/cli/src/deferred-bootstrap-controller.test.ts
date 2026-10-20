@@ -10,6 +10,60 @@ import { createDeferredBootstrapController } from "./deferred-bootstrap-controll
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
 
+test("MP-08 / MP-10: delayed composer history belongs to its unchanged startup attachment and input", async () => {
+  for (const change of ["none", "attachment", "input", "navigation"]) {
+    let resolve!: (value: { sessionId: string; entries: string[] }) => void
+    const harness = bootstrapHarness({ attachmentSessionId: "session-1", attachmentId: "attachment-1",
+      deferred: { promptInputHistory: new Promise(r => { resolve = r }) } })
+    harness.controller.apply()
+    if (change === "attachment") harness.attachmentId = "attachment-2"
+    if (change === "input") harness.promptHistoryEntries = ["fresh user prompt"]
+    if (change === "navigation") { harness.promptHistoryIndex = 0; harness.promptHistoryDraft = "draft" }
+    resolve({ sessionId: "session-1", entries: ["earlier input"] })
+    await flushPromises()
+    assert.deepEqual(harness.promptHistoryEntries, change === "none" ? ["earlier input"] : change === "input" ? ["fresh user prompt"] : [])
+    assert.equal(harness.promptHistoryResetCount, change === "none" ? 1 : 0)
+  }
+})
+
+test("MP-08 / MP-10 composer inventory stays lazy and rejects a superseded attachment", async () => {
+  for (const replace of [false, true]) {
+    let finish!: (value: Awaited<ReturnType<NonNullable<BootstrapDeferredState["loadComposer"]>>>) => void
+    let calls = 0
+    const h = bootstrapHarness({ attachmentSessionId: "session-1", attachmentId: "binding-1", deferred: {
+      loadComposer: () => { calls++; return new Promise(resolve => { finish = resolve }) },
+    } })
+    h.controller.apply(); assert.equal(calls, 0)
+    const pending = h.controller.hydrateComposer(); void h.controller.hydrateComposer(); assert.equal(calls, 1)
+    if (replace) h.attachmentId = "binding-2"
+    const catalog = { all: [], connected: [], default: {} } as ProviderCatalog
+    finish({ sessionId: "session-1", providerCatalog: catalog, providerCommandCatalogs: {} as ProviderCommandCatalogs,
+      terminalCommandCatalog: { revision: "one", nodes: [] }, promptHistoryEntries: ["earlier"] })
+    await pending
+    assert.equal(h.providerCatalog, replace ? null : catalog)
+    assert.deepEqual(h.promptHistoryEntries, [])
+  }
+})
+
+// MP-08 / MP-10 / MP-11: catalog refresh and prompt navigation own independent data.
+test("a composer scope refresh preserves prompt history already loaded on this attachment", async () => {
+  let scope = "codex:first", historyCalls = 0
+  const catalog = {all:[],connected:[],default:{}} as ProviderCatalog
+  const h = bootstrapHarness({attachmentSessionId:"session-1",attachmentId:"binding-1",deferred:{
+    composerScopeKey:()=>scope,
+    loadPromptInputHistory:async()=>{historyCalls++;return {sessionId:"session-1",entries:["earlier input"]}},
+    loadComposer:async()=>({sessionId:"session-1",providerCatalog:catalog,providerCommandCatalogs:{} as ProviderCommandCatalogs,terminalCommandCatalog:{revision:"one",nodes:[]},promptHistoryEntries:[]}),
+  }})
+  await h.controller.hydratePromptInputHistory()
+  assert.deepEqual(h.promptHistoryEntries,["earlier input"])
+  await h.controller.hydrateComposer()
+  scope="claude:second"
+  await h.controller.hydrateComposer()
+  await h.controller.hydratePromptInputHistory()
+  assert.deepEqual(h.promptHistoryEntries,["earlier input"])
+  assert.equal(historyCalls,1)
+})
+
 test("deferred bootstrap controller applies provider catalog hydration", async () => {
   const providerCatalog = {} as ProviderCatalog
   const providerCommandCatalogs = {} as ProviderCommandCatalogs
@@ -188,6 +242,29 @@ test("deferred bootstrap controller applies the attach-time launch once it settl
   assert.deepEqual(switched.attachedProviderRuns, [])
 })
 
+test("MP-08 / MP-10 PANE-03: the attach-time launch result is applied to the attachment that started it", async () => {
+  const launch = { sessionId: "s", session: null, providerRun: null, issue: "credential_vault_locked" as const }
+  const harness = bootstrapHarness({ deferred: { attachLaunch: Promise.resolve(launch) }, attachmentSessionId: "s", attachmentId: "a" })
+  harness.controller!.apply()
+  await flushPromises()
+  assert.deepEqual(harness.launches, [launch])
+
+  const moved = bootstrapHarness({ deferred: { attachLaunch: Promise.resolve(launch) }, attachmentSessionId: "s", attachmentId: "a" })
+  moved.controller!.apply()
+  moved.attachmentId = "b"
+  await flushPromises()
+  assert.deepEqual(moved.launches, [])
+})
+
+test("MP-08 / MP-10 PANE-03: a failed attach-time launch is reported, never swallowed", async () => {
+  const harness = bootstrapHarness({ deferred: { attachLaunch: Promise.reject(new Error("launch refused")) }, attachmentSessionId: "s", attachmentId: "a" })
+  harness.controller!.apply()
+  await flushPromises()
+  assert.deepEqual(harness.launches, [])
+  assert.equal(harness.launchFailures.length, 1)
+  assert.match(harness.launchFailures[0]!, /launch refused/)
+})
+
 function bootstrapHarness(options: {
   deferred?: BootstrapDeferredState
   attachmentSessionId?: string | null
@@ -207,6 +284,8 @@ function bootstrapHarness(options: {
     chromeUpdates: 0,
     promptHistoryEntries: [] as string[],
     promptHistoryResetCount: 0,
+    promptHistoryIndex: null as number | null,
+    promptHistoryDraft: null as string | null,
     nextHistoryCursor: undefined as SessionHistoryCursorState | undefined,
     terminalCommandCatalog: null as unknown,
     agentPaneEntries: {} as Record<string, TranscriptEntry[]>,
@@ -214,6 +293,8 @@ function bootstrapHarness(options: {
     replaceCalls: [] as Array<{ agentId: string | null; entries: string[] }>,
     prependCalls: [] as Array<Array<{ id: number; text: string }>>,
     warnings: [] as string[],
+    launches: [] as unknown[],
+    launchFailures: [] as string[],
     hydrating: [] as boolean[],
     controller: null as ReturnType<typeof createDeferredBootstrapController> | null,
   }
@@ -224,6 +305,9 @@ function bootstrapHarness(options: {
     },
     currentAttachmentSessionId: () => harness.attachmentSessionId,
     currentAttachmentId: () => harness.attachmentId,
+    currentPromptHistoryEntries: () => harness.promptHistoryEntries,
+    currentPromptHistoryIndex: () => harness.promptHistoryIndex,
+    currentPromptHistoryDraft: () => harness.promptHistoryDraft,
     currentTranscriptEntryCount: () => harness.currentTranscriptEntryCount,
     entryCounter: () => harness.entryCounter,
     setProviderCatalog: (catalog) => {
@@ -238,6 +322,8 @@ function bootstrapHarness(options: {
     updateSessionChrome: () => {
       harness.chromeUpdates += 1
     },
+    applyAttachLaunch: (launch) => { harness.launches.push(launch) },
+    reportAttachLaunchFailure: (message) => { harness.launchFailures.push(message) },
     setPromptHistoryEntries: (entries) => {
       harness.promptHistoryEntries = entries
     },

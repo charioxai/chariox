@@ -43,11 +43,6 @@ pub(super) fn handle_message_part_delta(
         return Ok(());
     }
     let Some(role) = state.message_roles.get(&message_id).map(String::as_str) else {
-        state
-            .buffered_text_deltas
-            .entry(part_id)
-            .or_default()
-            .push(delta);
         return Ok(());
     };
     if role != "assistant" {
@@ -73,13 +68,7 @@ pub(super) fn handle_message_part_delta(
             );
         }
         Some(_) => {}
-        None => {
-            state
-                .buffered_text_deltas
-                .entry(part_id)
-                .or_default()
-                .push(delta);
-        }
+        None => {}
     }
     Ok(())
 }
@@ -147,6 +136,15 @@ fn emit_part_text(
     if !is_assistant {
         return;
     }
+    // Only the SSE cumulative update establishes the event stream's position.
+    // A snapshot may already have published a later prefix of this same block.
+    let streamed = state
+        .streamed_text_by_part
+        .entry(part.id.clone())
+        .or_default();
+    if !streamed.starts_with(&part.text) {
+        *streamed = part.text.clone();
+    }
     emit_authoritative_part_text(state, &part.id, &part.text, kind, chunks);
 }
 
@@ -164,29 +162,18 @@ pub(super) fn emit_authoritative_part_text(
         if text.is_empty() && !state.live_text_from_start {
             return;
         }
-        let buffered = state
-            .buffered_text_deltas
-            .remove(part_id)
-            .unwrap_or_default();
-        let text = if text.is_empty() {
-            buffered.concat()
-        } else {
-            text.to_string()
-        };
         state
             .emitted_text_by_part
-            .insert(part_id.to_string(), text.clone());
+            .insert(part_id.to_string(), text.to_string());
         if !text.is_empty() {
             chunks.push(OpenCodeOutputChunk {
                 kind,
                 merge_key: Some(part_id.to_string()),
-                bytes: text.into_bytes(),
+                bytes: text.as_bytes().to_vec(),
             });
         }
         return;
     };
-
-    state.buffered_text_deltas.remove(part_id);
 
     if text == emitted || emitted.starts_with(text) {
         return;
@@ -214,30 +201,46 @@ fn emit_part_delta(
     kind: TerminalOutputKind,
     chunks: &mut Vec<OpenCodeOutputChunk>,
 ) {
-    let Some(emitted) = state.emitted_text_by_part.get_mut(&part_id) else {
+    if state.live_text_from_start
+        && state
+            .emitted_text_by_part
+            .get(&part_id)
+            .is_some_and(String::is_empty)
+    {
         state
-            .buffered_text_deltas
-            .entry(part_id)
-            .or_default()
-            .push(delta);
+            .streamed_text_by_part
+            .entry(part_id.clone())
+            .or_default();
+    }
+    let Some(streamed) = state.streamed_text_by_part.get_mut(&part_id) else {
         return;
     };
-    // MP-08 / MP-10: a gap invalidates even an empty baseline established
-    // before the disconnect. Wait for its authoritative prefix again.
-    if !state.live_text_from_start && emitted.is_empty() {
-        state
-            .buffered_text_deltas
-            .entry(part_id)
-            .or_default()
-            .push(delta);
+    if !state.live_text_from_start && streamed.is_empty() {
         return;
     }
-    emitted.push_str(&delta);
-    chunks.push(OpenCodeOutputChunk {
-        kind,
-        merge_key: Some(part_id),
-        bytes: delta.into_bytes(),
-    });
+    let caught_up = state
+        .emitted_text_by_part
+        .get(&part_id)
+        .is_some_and(|emitted| emitted.as_str() == streamed.as_str());
+    streamed.push_str(&delta);
+    if caught_up {
+        state
+            .emitted_text_by_part
+            .get_mut(&part_id)
+            .unwrap()
+            .push_str(&delta);
+        chunks.push(OpenCodeOutputChunk {
+            kind,
+            merge_key: Some(part_id),
+            bytes: delta.into_bytes(),
+        });
+        return;
+    }
+    if !state.emitted_text_by_part.contains_key(&part_id) {
+        return;
+    }
+    let cumulative = streamed.clone();
+    emit_authoritative_part_text(state, &part_id, &cumulative, kind, chunks);
 }
 
 fn emit_tool_summary(

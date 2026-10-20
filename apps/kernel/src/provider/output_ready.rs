@@ -1,6 +1,6 @@
 //! MP-08 / MP-10: readiness hints wake the shared pump without moving provider
 //! I/O or prompt settlement out of the provider actor.
-use crate::runtime::state::RuntimeChangeSignal;
+use crate::runtime::state::{ProviderOutputDeadlineStore, RuntimeChangeSignal};
 use std::collections::BTreeSet;
 use std::sync::{mpsc, Arc, Mutex};
 
@@ -8,6 +8,7 @@ use std::sync::{mpsc, Arc, Mutex};
 pub(crate) struct ProviderOutputReadySignal {
     changes: Arc<RuntimeChangeSignal>,
     ready: Arc<Mutex<BTreeSet<String>>>,
+    deadlines: ProviderOutputDeadlineStore,
 }
 impl ProviderOutputReadySignal {
     pub(crate) fn sequence(&self) -> u64 {
@@ -17,14 +18,29 @@ impl ProviderOutputReadySignal {
         self.changes.wait_for_change_after(sequence).await;
     }
     pub(crate) fn take_ready_provider_run_ids(&self) -> BTreeSet<String> {
-        std::mem::take(
+        let mut ready = std::mem::take(
             &mut *self
                 .ready
                 .lock()
                 .expect("provider output readiness poisoned"),
-        )
+        );
+        ready.extend(
+            self.deadlines
+                .take_due_provider_run_ids(crate::session::unix_epoch_ms()),
+        );
+        ready
     }
-    fn record(&self, run_id: &str) {
+    pub(crate) fn next_due_at_ms(&self) -> Option<u64> {
+        self.deadlines.next_due_at_ms()
+    }
+    pub(crate) fn record_after(&self, run_id: &str, delay_ms: u64) {
+        self.deadlines.schedule(
+            run_id,
+            crate::session::unix_epoch_ms().saturating_add(delay_ms),
+        );
+        self.changes.record_change();
+    }
+    pub(crate) fn record(&self, run_id: &str) {
         if self
             .ready
             .lock()
@@ -104,6 +120,23 @@ mod tests {
         assert_eq!(rx.try_recv().unwrap(), "second");
         assert!(signal.take_ready_provider_run_ids().is_empty());
     }
+    #[tokio::test]
+    async fn a_quiet_provider_phase_becomes_ready_at_its_deadline() {
+        let signal = ProviderOutputReadySignal::default();
+        let sequence = signal.sequence();
+        signal.record_after("quiet-run", 25);
+        signal.wait_for_change_after(sequence).await;
+        assert!(signal.take_ready_provider_run_ids().is_empty());
+        let due = signal.next_due_at_ms().unwrap();
+        let delay = due.saturating_sub(crate::session::unix_epoch_ms());
+        tokio::time::sleep(std::time::Duration::from_millis(delay + 1)).await;
+        assert_eq!(
+            signal.take_ready_provider_run_ids(),
+            BTreeSet::from(["quiet-run".into()])
+        );
+        assert_eq!(signal.next_due_at_ms(), None);
+    }
+
     #[test]
     fn reconnect_inherits_the_binding_without_changing_the_reader_notifier() {
         let signal = ProviderOutputReadySignal::default();

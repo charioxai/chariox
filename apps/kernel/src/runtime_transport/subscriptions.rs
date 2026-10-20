@@ -53,6 +53,7 @@ pub(super) async fn run_subscription_loop(
         .await;
         return;
     }
+    let mut previous_catalog_revision = None;
     let mut previous_snapshot: Option<SessionSnapshotProjection> = None;
     let mut last_workflow_design_sequence = 0_u64;
     let mut last_snapshot_projection_sequence: Option<u64> = None;
@@ -77,6 +78,13 @@ pub(super) async fn run_subscription_loop(
             {
                 break;
             }
+        }
+        let client_catalog_sequence = router.client_catalog_change_sequence();
+        if previous_catalog_revision != Some(client_catalog_sequence) {
+            previous_catalog_revision = Some(client_catalog_sequence);
+            if !emit_kernel_event(&runtime, &outgoing_tx, &close_tx, &close_requested,
+                KernelEvent::ClientCatalogChanged { revision: client_catalog_sequence },
+                Some(&event_stream_id), Some(&subscription.session_id), Some(&subscription.attachment_id)).await { break; }
         }
         let terminal_attachment_change_sequence = router.terminal_attachment_change_sequence(
             &subscription.session_id,
@@ -140,6 +148,35 @@ pub(super) async fn run_subscription_loop(
                 workflow_run_updates,
                 snapshot,
             } => {
+                // The same wake can contain an accepted prompt and a large output
+                // backlog. Publish its authoritative projection before that backlog.
+                let projection_events = (*snapshot)
+                    .map(|snapshot| {
+                        let events = crate::runtime_transport::session_projection_events(
+                            &snapshot,
+                            previous_snapshot.as_ref(),
+                            !workflow_run_updates.is_empty(),
+                        );
+                        previous_snapshot = Some(snapshot);
+                        events
+                    })
+                    .unwrap_or_default();
+                for event in projection_events {
+                    if !emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
+                        event,
+                        Some(&event_stream_id),
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
+                    )
+                    .await
+                    {
+                        return;
+                    }
+                }
                 if !records.is_empty()
                     && !emit_kernel_event(
                         &runtime,
@@ -213,7 +250,6 @@ pub(super) async fn run_subscription_loop(
                         break;
                     }
                 }
-                let emitted_terminal_workflow_run_update = !workflow_run_updates.is_empty();
                 for workflow_run in workflow_run_updates {
                     if !emit_kernel_event(
                         &runtime,
@@ -396,6 +432,7 @@ pub(super) async fn run_subscription_loop(
                     _ = router.wait_for_workflow_design_change_after(
                         workflow_design_change_sequence
                     ) => {}
+                    _ = router.wait_for_client_catalog_change_after(client_catalog_sequence) => {}
                     _ = passkey_prompts.changed(&router) => {}
                 }
             },
@@ -871,6 +908,7 @@ async fn run_waiting_room_inventory_subscription_loop(
     close_requested: Arc<AtomicBool>,
     mut passkey_prompts: PasskeyPromptFeed,
 ) {
+    let mut previous_catalog_revision = None;
     let mut waiting_room_event_projection = WaitingRoomInventoryEventProjection::default();
     let mut previous_relay_status: Option<RelayStatus> = None;
     let mut previous_remote_machines: Option<Vec<RemoteMachineRecord>> = None;
@@ -896,6 +934,13 @@ async fn run_waiting_room_inventory_subscription_loop(
             {
                 break;
             }
+        }
+        let client_catalog_sequence = router.client_catalog_change_sequence();
+        if previous_catalog_revision != Some(client_catalog_sequence) {
+            previous_catalog_revision = Some(client_catalog_sequence);
+            if !emit_kernel_event(&runtime, &outgoing_tx, &close_tx, &close_requested,
+                KernelEvent::ClientCatalogChanged { revision: client_catalog_sequence },
+                Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE), None, None).await { break; }
         }
         let waiting_room_change_sequence = router.waiting_room_change_sequence();
         let session_projection_change_sequence = router.session_projection_change_sequence();
@@ -1073,6 +1118,7 @@ async fn run_waiting_room_inventory_subscription_loop(
                         ),
                     ) => true,
                     // Popups are sent at once, without the inventory coalescing.
+                    _ = router.wait_for_client_catalog_change_after(client_catalog_sequence) => false,
                     _ = passkey_prompts.changed(&router) => false,
                 }
             },

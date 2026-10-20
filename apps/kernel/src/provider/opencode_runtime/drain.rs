@@ -322,6 +322,9 @@ pub(in crate::provider) fn drain_opencode_events(
             }
             Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Disconnected) => {
+                // The new subscription has no known delta offset. Its first
+                // cumulative SSE part update must establish that position.
+                state.streamed_text_by_part.clear();
                 let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
                 state.live_text_from_start = false;
                 let output_notifier = state.event_subscription.output_notifier.clone();

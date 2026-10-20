@@ -49,6 +49,7 @@ async fn failed_turn_history_request_preserves_settlement_after_store_reopen() {
         store,
         GetSessionHistoryOutlineRequest {
             session_id: "session-1".into(),
+            include_prefetched_content: false,
             agent_ids: Some(vec!["agent-1".into()]),
             latest_prompt_count: Some(4),
             cursor: None,
@@ -118,6 +119,60 @@ fn outline_turn_joins_trailing_assistant_fragments_into_complete_summary() {
     );
     assert_eq!(turn.lifecycle, SessionHistoryOutlineTurnLifecycle::Open);
     assert_eq!(turn.completed_at_ms, None);
+}
+
+#[test]
+fn outline_turn_keeps_whitespace_only_fragments_inside_a_streamed_message() {
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("turn-1".to_string()),
+        prompt_id: Some("prompt-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let prompt = HistoryEvent::transcript(
+        10,
+        &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "hello"),
+        context.clone(),
+    );
+    let fragments = [
+        ("msg-1", "Step"),
+        ("msg-1", " "),
+        ("msg-1", "1"),
+        ("msg-1", " done"),
+        ("msg-2", "Final."),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (merge_key, text))| {
+        HistoryEvent::transcript(
+            11 + index as u64,
+            &SessionHistoryEntry::provider_output(
+                "session-1",
+                "run-1",
+                Some("agent-1"),
+                TerminalOutputKind::ProviderOutput,
+                Some(merge_key.to_string()),
+                text,
+            ),
+            context.clone(),
+        )
+    })
+    .collect::<Vec<_>>();
+    let mut events = vec![prompt.clone()];
+    events.extend(fragments);
+
+    let turn = outline_turn_from_events(&prompt, events, false).expect("turn should be outlined");
+
+    assert_eq!(
+        turn.entries
+            .iter()
+            .filter(|entry| entry.entry.merge_key.as_deref() == Some("msg-1"))
+            .map(|entry| entry.entry.text.as_str())
+            .collect::<String>(),
+        "Step 1 done"
+    );
 }
 
 #[test]

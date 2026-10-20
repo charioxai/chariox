@@ -114,6 +114,8 @@ pub(super) async fn handle_incoming_envelope(
             caller_identity,
             encrypted_request,
         } => {
+            let timing_packet = super::request_timing::packet(&encrypted_request);
+            super::request_timing::record("kernel_receive", timing_packet);
             if !reconnect_gate.begin_daemon_request() {
                 // MP-08/MP-10/MP-11: never leave a new client request hanging
                 // behind the retained bulk reply. Reuse the relay's own
