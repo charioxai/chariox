@@ -817,21 +817,21 @@ test("display subscription captures the current document after navigation", () =
 
 // Fail-first coverage for each of the nine live hardening gaps.
 const refusalCases = [
-  ['foreign tab snapshot', 'snapshot', 'not_granted'],
-  ['foreign tab screenshot', 'screenshot', 'not_granted'],
-  ['foreign browser region capture', 'screenshot', 'not_granted'],
-  ['foreign note-window observation', 'note_selection', 'not_granted'],
-  ['forged resource references', 'snapshot', 'not_granted'],
+  ['foreign tab snapshot', 'snapshot', 'stale_reference', true],
+  ['foreign tab screenshot', 'screenshot', 'stale_reference', true],
+  ['foreign browser region capture', 'screenshot', 'stale_reference', true],
+  ['foreign note-window observation', 'note_selection', 'stale_reference', true],
+  ['forged resource references', 'snapshot', 'stale_reference', true],
   ['stale browser input document', 'input', 'stale_reference'],
   ['stale App input document', 'input', 'stale_reference'],
-  ['cross-identity capture correlation replay', 'screenshot', 'not_granted'],
+  ['cross-identity capture correlation replay', 'screenshot', 'stale_reference', true],
   ['stale capture generation', 'screenshot', 'stale_epoch'],
 ];
-for (const [label, op, reason] of refusalCases) test('MD434 explicit refusal: '+label, () => using(async ({host}) => {
+for (const [label, op, reason, missing] of refusalCases) test('MD434 explicit refusal: '+label, () => using(async ({host}) => {
   const opened=await host.handle({id:1,method:'host.browser',params:{op:'open',url:'https://fixture.invalid/'}});
   const generation=host.generation;
   const tab=[...host.tabs.values()][0];
-  const params={op,generation,tab_id:reason==='not_granted'?'foreign-or-forged-id':tab.tab_id,observed_by:'terminal:fixture'};
+  const params={op,generation,tab_id:missing?'foreign-or-forged-id':tab.tab_id,observed_by:'terminal:fixture'};
   if(op==='input'){params.document_id='old-document';params.input={kind:'key',key:'Tab'};}
   if(reason==='stale_epoch')params.generation++;
   const result=await host.handle({id:2,method:'host.browser',params});
@@ -1287,7 +1287,7 @@ test('MP-08/MP-10 a tab-scoped state preflight reads only its own Tab', () => us
   assert.equal(reconciles, 0, 'no all-tab reconcile');
   assert.ok(state._observation > opened._observation, 'a newer observation for the kernel ledger');
   assert.ok(state.tabs.some(tab => tab.tab_id === opened.tab_id));
-  await assert.rejects(host.request({ op: 'state', tab_id: 'host-tab-unknown', generation: opened.generation }), error => error.code === 'user_domain_not_granted');
+  await assert.rejects(host.request({ op: 'state', tab_id: 'host-tab-unknown', generation: opened.generation }), error => error.code === 'user_domain_stale_reference');
   await host.request({ op: 'state' }); assert.equal(reconciles, 1, 'a client state read keeps its reconcile');
 }));
 
@@ -2394,3 +2394,11 @@ for(const late of [false,true])test(`MP-08/MP-10 a disconnected page input never
  for(let n=0;n<150&&host.generation===opened.generation;n++)await new Promise(r=>setTimeout(r,10));await host.starting;
  assert.equal(host.generation,opened.generation+1);assert(host.browser);assert.equal(host.recovery.enabled,true);assert(host.tabs.has(opened.tab_id));assert.equal(presses,1,'the old input is never replayed');
 }));
+
+// MP-08/MP-10: an opaque absent Tab is obsolete, not evidence of a lost grant.
+test('retired tab reads do not revoke an owner grant',async()=>{
+ const {resolveDisplayTarget}=await import('./kernel-browser-display-document.mjs');
+ const host=Object.assign(Object.create(KernelBrowserHost.prototype),{generation:1,tabs:new Map(),reconcile:async()=>{},timing:()=>{}});
+ const command={generation:1,tab_id:'retired-tab'};
+ for(const read of [()=>host.target(command),()=>host.mirrorTarget(command),()=>resolveDisplayTarget(host,command)])await assert.rejects(read(),e=>e.code==='user_domain_stale_reference'&&e.race==='display_retired');
+});

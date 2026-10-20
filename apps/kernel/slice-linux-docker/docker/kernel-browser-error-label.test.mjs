@@ -139,11 +139,12 @@ test('MP-08/MP-10/MP-11 host replies retain closed user-domain and display-regio
  for(const error of [{code:'user_domain_private_canary'},{message:'MP-11: region lease retired private-canary'}])assert(!hostFailureMessage(error).includes('private'))
 });
 
-test('MIRROR-ROBUST-STALE-REF navigation races are labelled apart from host errors; a plain stale reference stays one',()=>{
+test('MIRROR-ROBUST-STALE-REF expired references are fixed race labels with their public refusal code',()=>{
  assert.equal(hostErrorLabel(new UserDomainRefusal('stale_reference','region_retired')),'navigation_race region_retired');
  assert.equal(hostErrorLabel(new UserDomainRefusal('stale_reference','display_suspended')),'navigation_race display_suspended');
  assert.equal(hostErrorLabel({name:'Error',code:'stale_document_reference'}),'navigation_race stale_document');
- assert.match(hostErrorLabel(new UserDomainRefusal('stale_reference')),/^host_error Error user_domain_stale_reference/);
+ assert.equal(hostErrorLabel(new UserDomainRefusal('stale_reference')),'navigation_race user_domain_stale_reference');
+ assert.equal(hostErrorLabel(new UserDomainRefusal('stale_epoch')),'navigation_race user_domain_stale_epoch');
  assert.equal(hostErrorLabel(Object.assign(new UserDomainRefusal('stale_reference'),{race:'protectedcanary'})).includes('protectedcanary'),false);
 });
 

@@ -96,6 +96,7 @@ const nativeStages=new Set('native_codec_unavailable x_extensions desktop_geomet
 const races=new Set(['region_retired','display_suspended','display_retired']);
 export function hostErrorLabel(error) {
  if(races.has(error?.race))return 'navigation_race '+error.race;
+ if(error?.code==='user_domain_stale_reference'||error?.code==='user_domain_stale_epoch')return 'navigation_race '+error.code;
  if(error?.code==='stale_document_reference')return 'navigation_race stale_document';
  const name=names.has(error?.name)?error.name:'Error';
  const known=typeof error?.stack==='string'?[...error.stack.matchAll(/\/([a-z0-9-]+\.mjs):(\d{1,5}):(\d{1,5})/g)].filter(m=>files.has(m[1])):[];

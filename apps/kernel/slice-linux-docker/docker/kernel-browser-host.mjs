@@ -554,13 +554,13 @@ export class KernelBrowserHost {
     await this.reconcile();
     this.timing('target_reconcile', started);
     const tab = this.tabs.get(command.tab_id);
-    if (!tab) throw new UserDomainRefusal("not_granted");
+    if (!tab) throw new UserDomainRefusal("stale_reference", "display_retired");
     return tab;
   }
   async mirrorTarget(command) {
     if (command.generation !== this.generation) throw new UserDomainRefusal("stale_epoch");
     const stored = this.tabs.get(command.tab_id);
-    if (!stored) throw new UserDomainRefusal("not_granted");
+    if (!stored) throw new UserDomainRefusal("stale_reference", "display_retired");
     const current = this.browser.currentPageFrame?.(stored.target_id);
     return current ? { ...stored, document_id: current.frame.loaderId } : this.displayTarget(command);
   }
