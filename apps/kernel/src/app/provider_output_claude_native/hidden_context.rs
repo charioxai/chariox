@@ -68,9 +68,8 @@ impl ProviderOutputClaudeNativeBridge<'_> {
                 prompt.attachments.to_vec(),
             ),
         };
-        let (attachments, notes_context) = crate::prompt_notes::split_for_provider(
-            attachments, provider_run.agent_instance_id(),
-        );
+        let (attachments, notes_context) =
+            crate::prompt_notes::split_for_provider(attachments, provider_run.agent_instance_id());
         let visible = redact_native_hidden_instructions(&text).trim().to_string();
         let native_hidden = extract_native_hidden_instructions(&text);
         let attachment_context = format_claude_attachment_context(&attachments, context_file);

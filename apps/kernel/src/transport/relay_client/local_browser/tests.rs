@@ -643,7 +643,10 @@ fn mp11_authority_tracks_pairing_origin_and_kernel_key() {
 #[test]
 fn mp08_mp11_local_browser_wire_is_bound_to_protocol473() {
     use sha2::{Digest, Sha256};
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, crate::test_support::expected_local_protocol_version());
+    assert_eq!(
+        crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let payload = EncryptedRelayPayload {
         sender_public_key: "key".into(),
         nonce: "nonce".into(),
@@ -1188,13 +1191,14 @@ fn mp11_admitted_direct_command_settles_once_after_disconnect_and_relay_retry() 
             "direct session did not close"
         );
         let _ = release.send(());
+        let display_subscriptions = Default::default();
         let retry = handle_daemon_request(
             &kernel.direct.router,
             &kernel.direct.command_sequence,
             Some(browser.identity()),
             encrypted.clone(),
             &kernel.direct.command_result_cache,
-            &Default::default(),
+            &display_subscriptions,
             Some(&kernel.direct),
         );
         let outcome = timeout(Duration::from_secs(2), retry)
