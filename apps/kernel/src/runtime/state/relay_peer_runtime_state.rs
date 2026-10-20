@@ -49,11 +49,9 @@ impl KernelRuntimeState {
         let home_prompt_id = home_prompt_id.to_string();
         let reason = rejection_reason(error);
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).reject_leased_prompt_receipt(
-                &leased_agent_id,
-                &home_prompt_id,
-                reason,
-            )
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.begin_leased_prompt_receipt(&leased_agent_id, &home_prompt_id)?;
+            runtime.reject_leased_prompt_receipt(&leased_agent_id, &home_prompt_id, reason)
         })
         .await
     }
