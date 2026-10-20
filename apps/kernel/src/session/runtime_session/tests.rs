@@ -92,3 +92,49 @@ fn lifecycle_projection_obeys_private_and_transparent_collaboration() {
         );
     }
 }
+
+// MP-08/MP-10: a goal completion check stays stoppable by id and status in a
+// user projection, but its instruction is never part of it; a queued one is
+// omitted entirely.
+#[test]
+fn user_projection_hides_goal_completion_check_instruction() {
+    use crate::agent::{AgentInstance, GridPosition};
+    let mut session =
+        RuntimeSession::new("room", None, "workspace", "worktree", "machine", "daemon");
+    session.set_agents(vec![AgentInstance::new(
+        "agent",
+        "agent",
+        "room",
+        None,
+        "codex",
+        None,
+        None,
+        None,
+        GridPosition::new(0, 0, 1, 1),
+    )]);
+    session.activate_prompt(super::PromptQueueItem::new(
+        "goal-check-task-1-1-1",
+        "attachment",
+        "agent",
+        "This turn has origin completion_check.",
+        crate::session::PromptStatus::Queued,
+    ));
+    session.submit_prompt(super::PromptQueueItem::new(
+        "goal-check-task-1-1-2",
+        "attachment",
+        "agent",
+        "This turn has origin completion_check.",
+        crate::session::PromptStatus::Queued,
+    ));
+
+    let owner = session.redacted_for_user(crate::session::DEFAULT_LOCAL_USER_ID);
+    let active = owner
+        .active_prompt_for_agent("agent")
+        .expect("a running check stays stoppable by its prompt id");
+    assert_eq!(active.id(), "goal-check-task-1-1-1");
+    assert_eq!(active.status(), crate::session::PromptStatus::Running);
+    assert_eq!(active.prompt(), "");
+    assert!(owner
+        .queued_prompts_for_agent("agent")
+        .is_none_or(|q| q.is_empty()));
+}

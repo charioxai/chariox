@@ -98,3 +98,12 @@ test('MP-08/MP-11 cancellation of suspend or resume preserves the browser and re
   assert.equal(reply.ok,false);assert.equal(reply.error.code,'browser_action_cancelled');assert.equal(stopped,0,'viewer cancellation does not stop the source');
  }
 });
+
+
+test('MP-08/MP-10 retired display resume hints are races while foreign owners stay denied', async()=>{
+ const f=fixture();
+ await assert.rejects(f.sessions.resume('missing','owner',7,()=>f.binding),error=>error.code==='user_domain_stale_reference'&&error.race==='display_retired');
+ await assert.rejects(f.sessions.resume('old','owner',6,()=>f.binding),error=>error.code==='user_domain_stale_reference'&&error.race==='display_retired');
+ await assert.rejects(f.sessions.resume('old','foreign',7,()=>f.binding),{code:'user_domain_not_granted'});
+ assert.equal(f.host.displays.get('old'),f.stream);
+});

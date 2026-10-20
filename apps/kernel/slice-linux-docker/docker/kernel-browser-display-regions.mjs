@@ -11,7 +11,7 @@ import {lateInputAck,markDispatched} from './kernel-browser-input-queue.mjs';
 import {popupActionId} from './kernel-browser-popup-evidence.mjs';
 import {slowMark} from './kernel-browser-timing.mjs';
 
-const refuse=()=>{throw new UserDomainRefusal('stale_reference');};
+const refuse=()=>{throw new UserDomainRefusal('stale_reference','region_retired');};
 // The kernel Chrome's own UI (band, popups): window leases, not page regions.
 const chromeUi=target=>target?.kind==='browser_chrome'||target?.kind==='browser_auxiliary';
 function checkedTarget(target) {
@@ -126,6 +126,7 @@ export async function regionInputTarget(host,command,scope,signal) {
  return {tab_id:target.tab_id,document_id:target.document_id,region_document_id:stream.regionLease.document_id};
 }
 export async function regionInput(host,command,scope,signal) {
+ const browserAtStart=host.browser;
  const stream=inputStream(host,command,scope);assertNotCancelled(signal);
  // Protocol 560: the window display is view-only; the mirror and the band own input.
  if(stream.regionTarget.kind==='browser_window')refuse();
@@ -157,6 +158,6 @@ export async function regionInput(host,command,scope,signal) {
    dispatched=true;
    host.inputEpochs.set(tab.tab_id,(host.inputEpochs.get(tab.tab_id)??0)+1);host.inputChangedAt.set(tab.tab_id,performance.now());stream.regionSource.wake();return beginDispatch();
   }}))); }
- catch(error){if(dispatched)markDispatched(error);if(dispatched&&!lateInputAck(error)||['browser_action_cancelled','stale_document_reference'].includes(error?.code))await host.stop();throw error;}
+ catch(error){if(dispatched)markDispatched(error);if((dispatched&&!lateInputAck(error)||['browser_action_cancelled','stale_document_reference'].includes(error?.code))&&(host.isBrowserLive?.(browserAtStart)??host.browser===browserAtStart))await host.stop();throw error;}
  return host.observe(await host.reconcile().catch(error=>{if(error?.code==='browser_cdp_timeout')return host.tabState();throw markDispatched(error);}),null,scope);
 }

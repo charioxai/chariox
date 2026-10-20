@@ -126,6 +126,66 @@ impl KernelRuntimeOwnedState {
         let text = crate::secret_redaction::redact_secrets(&text);
         crate::prompt_assembly::AssessmentEvidence::new(serde_json::json!({"task_id":task.task_id,"work_prompt_id":check.work_prompt_id,"provider_run_id":work_run,"complete":true,"provider_assistant_result":text}).to_string())
     }
+    /// The check turn is agent-only, but an achieved receipt's final answer is
+    /// ordinary agent text for the owner. Protected rooms never publish it.
+    pub(super) fn publish_check_answer(&self, room: &str, agent: &str, run: &str, result: &str) {
+        let Ok(Assessment::Achieved { final_answer, .. }) =
+            serde_json::from_str::<Assessment>(result)
+        else {
+            return;
+        };
+        if final_answer.trim().is_empty() || self.room_secret_observations.protects_bytes(room) {
+            return;
+        }
+        let bytes = self
+            .room_secret_observations
+            .protect_unframed_bytes(room, final_answer.as_bytes());
+        // Prompt-owned history needs a source attachment; the check turn still
+        // being active supplies the requester's.
+        let source = self
+            .active_prompt_transcript_metadata_for_agent(room, Some(agent))
+            .source_attachment_id;
+        let origin = source
+            .is_some()
+            .then_some(crate::session::PromptOrigin::Chariox);
+        let recipients = self.agent_trace_recipient_attachment_ids(
+            room,
+            Some(agent),
+            self.attachment_store.list_session_attachment_ids(room),
+        );
+        let recipients = self.with_metaagent_trace_recipient_ids(room, Some(agent), recipients);
+        self.terminal_stream
+            .fan_out_outputs(vec![crate::terminal::TerminalOutputAppend {
+                session_id: room.into(),
+                provider_run_id: run.into(),
+                agent_id: Some(agent.into()),
+                prompt_origin: origin,
+                source_attachment_id: source.clone(),
+                kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                merge_key: None,
+                recipient_attachment_ids: std::sync::Arc::from(recipients),
+                bytes: bytes.clone(),
+            }]);
+        // Not attributed to the hidden check turn (its id would hide the entry),
+        // and not to the work turn (it would change that turn's public outputs).
+        let entry = crate::history::SessionHistoryEntry::provider_output(
+            room,
+            run,
+            Some(agent),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            None,
+            String::from_utf8_lossy(&bytes).into_owned(),
+        )
+        .with_prompt_origin(origin)
+        .with_source_attachment_id(source);
+        let context = crate::history::HistoryEventTurnContext {
+            session_id: Some(room.into()),
+            agent_id: Some(agent.into()),
+            provider_run_id: Some(run.into()),
+            ..crate::history::HistoryEventTurnContext::default()
+        };
+        self.append_operational_history_entry_with_context(&entry, context);
+    }
     pub(super) fn take_private_assessment(
         &self,
         room: &str,

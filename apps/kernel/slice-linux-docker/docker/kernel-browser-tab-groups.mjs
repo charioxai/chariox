@@ -51,6 +51,7 @@ const activeViewport = async () => {
   return null;
 };
 globalThis.charioxTabs = {
+  revision: 2,
   async viewport(target) {
     if (target === undefined) return activeViewport();
     const id = (await targetTabs()).get(target);
@@ -64,8 +65,9 @@ globalThis.charioxTabs = {
     for (const { target_ids, title, color } of groups) {
       const tabIds = target_ids.map(id => ids.get(id)).filter(id => id !== undefined);
       if (!tabIds.length) continue;
-      const existing = (await chrome.tabGroups.query({ title }))[0];
-      const groupId = await chrome.tabs.group({ tabIds, ...(existing ? { groupId: existing.id } : {}) });
+      const windowId = (await chrome.tabs.get(tabIds[0])).windowId;
+      const existing = (await chrome.tabGroups.query({ title, windowId }))[0];
+      const groupId = await chrome.tabs.group({ tabIds, ...(existing ? { groupId: existing.id } : { createProperties: { windowId } }) });
       await chrome.tabGroups.update(groupId, { title, color, collapsed: false });
       tabIds.forEach(id => grouped.add(id));
     }
@@ -94,6 +96,7 @@ export class ChromeTabGroups {
     if (id !== TAB_GROUPS_EXTENSION_ID) throw new Error("MP-11: unexpected kernel tab-groups extension id");
     this.directory = directory;
   }
+
   async worker(polls) {
     for (let n = 0; n < polls; n++) {
       const worker = (await this.connection.send("Target.getTargets")).targetInfos
@@ -114,8 +117,20 @@ export class ChromeTabGroups {
         await this.load(this.directory);this.signature="[]";worker=await this.worker(40);
       }
       if(!worker)throw Error("MP-11: kernel tab-groups extension unavailable");
-      const {sessionId}=await this.connection.send("Target.attachToTarget",{targetId:worker.targetId,flatten:true});
-      await this.nativeState.attach(sessionId);this.session=sessionId;return sessionId;
+      // MP-08/MP-10: an existing profile can run cached component code even
+      // after its files change. Bind first, reload only an older worker, and
+      // attach the replacement before exposing native state to callers.
+      for(let attempt=0;attempt<2;attempt++){
+        const {sessionId}=await this.connection.send("Target.attachToTarget",{targetId:worker.targetId,flatten:true});
+        await this.nativeState.attach(sessionId);
+        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 2",returnByValue:true},sessionId);
+        if(result?.value===true){this.session=sessionId;return sessionId;}
+        this.nativeState.detach();this.signature="[]";
+        if(attempt)throw Error("MP-11: kernel tab-groups extension unavailable");
+        await this.connection.send("Runtime.evaluate",{expression:"chrome.runtime.reload()"},sessionId).catch(()=>{});
+        await delay(500);worker=await this.worker(40);
+        if(!worker)throw Error("MP-11: kernel tab-groups extension unavailable");
+      }
     })().finally(()=>{this.connecting=null;});
   }
   async evaluate(expression,kind) {

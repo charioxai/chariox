@@ -506,6 +506,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         "kernel-browser-process.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-process.mjs"),
     ),
+    (
+        "kernel-browser-recovery.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-recovery.mjs"),
+    ),
 ];
 pub(super) fn materialize(root: &Path) -> Result<PathBuf, String> {
     let mut digest = Sha256::new();

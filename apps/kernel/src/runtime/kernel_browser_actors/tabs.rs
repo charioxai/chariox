@@ -13,6 +13,12 @@ pub(super) struct BrowserTabActivity {
     activity: Option<Value>,
 }
 impl BrowserTabActivity {
+    // MP-08/MP-10: restored stable Tabs keep their opener attribution. Actions
+    // and activity belong to the dead browser and cannot attribute new popups.
+    pub(super) fn browser_restarted(&mut self) {
+        self.actions.clear();
+        self.activity = None;
+    }
     pub(super) fn retain(&mut self, tabs: &Value) {
         if let Some(tabs) = tabs.as_array() {
             let live = |id: &str| tabs.iter().any(|tab| tab["tab_id"] == id);

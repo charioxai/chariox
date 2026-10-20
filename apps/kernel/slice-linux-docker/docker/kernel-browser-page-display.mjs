@@ -10,7 +10,7 @@ import {createRegionDisplay} from './kernel-browser-region-display.mjs';
 import {VisiblePageCapture,visiblePageGeometry} from './kernel-browser-visible-page.mjs';
 import {nativeRefusalReason} from './kernel-browser-native.mjs';
 import {observeLayout} from './kernel-browser-layout-observer.mjs';
-const refuse=()=>{throw new UserDomainRefusal('stale_reference');};
+const refuse=()=>{throw new UserDomainRefusal('stale_reference','region_retired');};
 // MP-08/MP-10/MP-11: one shared human-viewer predicate, also used before
 // selecting cached document metadata. It grants no input by itself.
 export function viewerPageInputActive(host,command,scope){

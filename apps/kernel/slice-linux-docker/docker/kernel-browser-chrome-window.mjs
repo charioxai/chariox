@@ -6,7 +6,6 @@ import {nativePageRect} from './kernel-browser-page-geometry.mjs';
 import {ownsDisplay} from './kernel-browser-owned-display.mjs';
 import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
 import {keysyms, notches} from './kernel-browser-input.mjs';
-import {assertCurrentDocument} from './browser-controller-actions.mjs';
 import {markDispatched} from './kernel-browser-input-queue.mjs';
 import {slowMark} from './kernel-browser-timing.mjs';
 import {retireNativeStates} from './kernel-browser-native-worker.mjs';
@@ -53,13 +52,7 @@ export function rowMode(bgr0) {
 
 // The owned display's numeric window inventory comes from the native producer
 // (vidlat nativeWindowInventory, wired with the 519 region step); without it no binding.
-const FOCUS_READ_MS = 250, timedOut = Symbol('timed out');
 const slowStep = (host, step, operation) => slowMark(host.timing, `band_key_wait ${step}`, operation);
-/** `operation`'s result, or `timedOut` after `ms` (the operation is left to settle on its own). */
-async function within(ms, operation) {
-  let timer;
-  try { return await Promise.race([operation(), new Promise(resolve => { timer = setTimeout(resolve, ms, timedOut); })]); } finally { clearTimeout(timer); }
-}
 const noInventory = async () => { throw new UserDomainRefusal('stale_reference'); };
 
 /** The inventory poll is a backstop: the worker announces its changes. */
@@ -573,7 +566,7 @@ export class InputArbiter {
     const source = stream?.regionSource, input = command.input ?? {};
     // Clicks, wheel and browser shortcuts reach only Chrome's UI (the band crop holds no page
     // pixels): they need the admitted active Tab, not its document, so a strip click while the
-    // page loads is not dropped. Text and other keys may reach the page: document fenced too.
+    // page loads is not dropped. The person's text follows that same native focus.
     const activeAdmitted = async () => {
       if (signal?.aborted || !['browser_chrome', 'browser_auxiliary'].includes(source?.surface) || !source.isCurrent?.()) throw new UserDomainRefusal('stale_reference');
       const tab = await this.activeTab();
@@ -582,59 +575,12 @@ export class InputArbiter {
       return tab;
     };
     const uiFocus = tab => ({tab_id:tab.tab_id, generation:this.host.generation, window_generation:stream.regionWindow?.window_generation});
-    // Isolated world: the page cannot redefine what it reports. The shared
-    // input owner suspends a mirror's focus emulation for the physical read.
-    const textTarget = async () => {
-      const tab = await slowStep(this.host, 'key_active', activeAdmitted()), documentId = tab.document_id;
-      if (documentId !== command.document_id) throw new UserDomainRefusal('stale_reference');
-      const ownsUiFocus = this.chromeFocus?.tab_id === tab.tab_id && this.chromeFocus.generation === command.generation
-        && this.chromeFocus.window_generation === stream.regionWindow?.window_generation;
-      const {connection, sessionId} = await slowStep(this.host, 'key_target', this.host.browser.resolvePageTarget(tab.target_id));
-      const currentProof = async () => {
-        const active = await activeAdmitted();
-        if (active.target_id !== tab.target_id || active.document_id !== documentId) throw new UserDomainRefusal('stale_reference');
-        // The page session's ordered navigation events prove the document: a busy renderer is not asked.
-        const cached = this.host.browser.currentPageFrame?.(tab.target_id);
-        const frame = cached && cached.connection === connection && cached.sessionId === sessionId && cached.frame.loaderId === documentId
-          ? {frameTree:{frame:cached.frame}} : await assertCurrentDocument(connection, sessionId, tab.target_id, documentId);
-        if (tab.document_id !== documentId) throw new UserDomainRefusal('stale_reference');
-        return frame;
-      };
-      const {frameTree} = await slowStep(this.host, 'key_proof', currentProof());
-      const focusWorld = async () => {
-        const world = await this.host.browser.ensureFocusWorld(connection, sessionId, tab.target_id, frameTree.frame);
-        return expression => connection.send('Runtime.evaluate', {contextId: world.contextId, expression, returnByValue: true}, sessionId);
-      };
-      // Review #1016 P2: Chromium keeps the page's activeElement while its own UI owns the keys.
-      // The person's own native action (a toolbar click, Ctrl+L) puts them in Chrome's UI; the page's
-      // physical focus confirms it (read with focus emulation suspended: a mirror keeps it on, so
-      // document.hasFocus() alone is always true, culinux 12:10Z). A page that has its focus back is fenced.
-      // r54: band keys never wait on a renderer that cannot answer. The kernel's own record of the person's
-      // action (bound to the Tab, browser and band window, the document proven above by ordered events) stands
-      // for the proof once the page failed to answer one bounded read; Enter, Tab, Escape, a page click or a Tab switch clear it; the late read settles it.
-      if (ownsUiFocus) {
-        const claim = this.chromeFocus, capture = this.host.browser.inputCapture;
-        if (typeof capture?.physicalFocus !== 'function') { await slowStep(this.host, 'key_claim_proof', currentProof()); return; }
-        let pageFocused = false;
-        if (!claim.unread) {
-          const pending = (async () => {
-            const evaluate = await focusWorld();
-            return capture.physicalFocus(connection, sessionId, async () => (await evaluate('document.hasFocus()')).result?.value === true);
-          })();
-          const read = await within(FOCUS_READ_MS, () => pending);
-          if (read === timedOut) {
-            // The record stands in only until the late read settles: a page that has its focus back ends the claim,
-            // any other answer (or a failed read) resumes verification on the next key.
-            claim.unread = true;
-            pending.then(focused => { if (focused && this.chromeFocus === claim) this.chromeFocus = null; }, () => {}).then(() => { claim.unread = false; });
-          } else pageFocused = read;
-        }
-        await slowStep(this.host, 'key_claim_proof', currentProof());
-        // A late read that found the page focused ended this claim while the proof ran: the keys belong to the page.
-        if (!pageFocused && this.chromeFocus === claim) return;
-        if (this.chromeFocus === claim) this.chromeFocus = null;
-      }
-    };
+    // MP-08/MP-10: these are the person's physical keys into their own
+    // Chrome window. Navigation can replace the page after ledger admission;
+    // it does not replace the omnibox. Input is not a model observation and
+    // must not wait for a renderer/focus/document proof. The owned source,
+    // browser generation and active Tab still admit every physical dispatch.
+    const textTarget = activeAdmitted;
     // At most once: a native action without a reply may have run; never replayed.
     // vidlat C10: `onDispatch` marks the native action after every fence, right before it runs.
     const dispatched = async action => {

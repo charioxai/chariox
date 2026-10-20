@@ -20,6 +20,7 @@ import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./
 import { NativeAccessibility } from './native-accessibility.mjs';
 import { NativeComputer } from './native-computer.mjs';
 import { HostChromium } from "./kernel-browser-process.mjs";
+import { BrowserRecovery } from "./kernel-browser-recovery.mjs";
 import { admitComputerMutation, blockedUrl, extensionManagementUrl, EXTENSIONS_REFUSED } from "./kernel-browser-policy.mjs";
 import { ChromeTabGroups, writeTabGroupsExtension } from "./kernel-browser-tab-groups.mjs";
 import {nativeWindowInventory} from './kernel-browser-native-windows.mjs';
@@ -101,6 +102,8 @@ export class KernelBrowserHost {
     this.arbiter = new InputArbiter(this, this.chromeWindows);
     this.browserFactory = browserFactory;
     this.browser = null;
+    this.recovery = new BrowserRecovery(this);
+    this.savedGroups = [];
     this.generation = 0;
     this.observations = 0; this.observed = 0;
     this.tabs = new Map();
@@ -158,18 +161,41 @@ export class KernelBrowserHost {
   }
   async write() {
     const name = path.join(this.root, "tabs.json");
-    const data = { generation: this.generation, tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => ({ tab_id, url: redactObservation(url, this.protection.values) === url ? restorationUrl(url) : "about:blank" })) };
+    const active = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget);
+    const data = { generation: this.generation, active_tab_id: active?.tab_id ?? null, groups: this.savedGroups,
+      tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => ({ tab_id, url: redactObservation(url, this.protection.values) === url ? restorationUrl(url) : "about:blank" })) };
     const serialized = JSON.stringify(data);
     if (serialized === this.lastSaved) return;
     await writeFile(`${name}.new`, serialized, { mode: 0o600 });
     await rename(`${name}.new`, name);
     this.lastSaved = serialized;
   }
+  isBrowserLive(browser = this.browser) {
+    return !!browser && browser === this.browser
+      && this.chromium?.child?.exitCode === null && this.chromium?.child?.signalCode === null
+      && this.chromium?.connection?.isOpen?.() !== false && browser.connection?.isOpen?.() !== false;
+  }
   async start({ signal, allowStart = true } = {}) {
     assertNotCancelled(signal);
-    if (this.browser && this.chromium.child?.exitCode === null && this.chromium.child?.signalCode === null
-      && this.chromium.connection?.isOpen() !== false) return;
-    if (!allowStart) throw new BrowserActionError("browser_unavailable", "MP-11: user browser is stopped or unavailable; explicitly start/open the browser");
+    if (this.starting) return this.starting;
+    if (this.isBrowserLive()) return;
+    if (!allowStart && !this.recovery.enabled) throw new BrowserActionError("browser_unavailable", "MP-11: user browser is stopped or unavailable; explicitly start/open the browser");
+    const recovering = this.recovery.enabled;
+    this.recovery.enabled = true;
+    this.recovery.disarm();
+    // MP-08/MP-10: attribution/state reads can arrive during teardown. Keep
+    // their empty live inventory from replacing the durable recovery snapshot.
+    this.restoring = true;
+    // Recovery belongs to the shared browser, not the viewer whose read first
+    // notices the loss. Its caller still checks cancellation after this wait.
+    this.starting = this.startNow({ signal: recovering ? undefined : signal });
+    try { return await this.starting; }
+    catch (error) { this.recovery.schedule(); throw error; }
+    finally { this.starting = null; this.restoring = false; }
+  }
+  async startNow({ signal } = {}) {
+    // MP-08/MP-10: settle the last durable tab snapshot before replacing CDP.
+    await this.saving?.catch(() => {});
     await this.desktopDisplay.close();
     await this.closeCompositors();
     this.foreground.reset();
@@ -177,8 +203,10 @@ export class KernelBrowserHost {
 
     // MP-11: retire helpers on the old display before Chromium recovery can
     // replace it. A failed key release still requires owned desktop teardown.
+    let preserveDesktop = this.chromium.desktop?.isLive?.() === true;
     try { await this.nativeComputer.close(); }
-    finally { await this.chromium.stop(); this.nativeAccessibility.clear(); }
+    catch { preserveDesktop = false; } // a failed physical release still resets the owned display
+    finally { await this.chromium.stop(undefined, { preserveDesktop }); this.nativeAccessibility.clear(); }
     for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
     this.displays.clear(); this.scales.clear(); this.inputEpochs.clear();
@@ -199,10 +227,12 @@ export class KernelBrowserHost {
     if (!Number.isSafeInteger(saved.generation) || saved.generation < 0 || !Array.isArray(saved.tabs)) {
       throw new Error("MD-2: invalid browser tab registry");
     }
+    this.savedGroups = Array.isArray(saved.groups) ? saved.groups.slice(0, TAB_LIMIT).filter(group =>
+      typeof group?.tab_id === 'string' && typeof group.label === 'string' && group.label.length <= 64) : [];
     assertNotCancelled(signal);
     // MP-08/MP-10: relaunch at the device scale of the last display viewer.
-    const connection = await this.chromium.start();
-    try{await this.nativeComputer.primeKeyboard();}catch(error){await this.chromium.stop(connection);throw error;}
+    const connection = await this.chromium.start({ preserveDesktop });
+    try{await this.nativeComputer.primeKeyboard();}catch(error){await this.chromium.stop(connection,{preserveDesktop});throw error;}
     assertNotCancelled(signal);
     this.browser = this.browserFactory(connection);
     this.browser.pageTiming = this.timing;
@@ -211,7 +241,6 @@ export class KernelBrowserHost {
     this.generation = saved.generation + 1;
     this.chromeWindows.retire('browser_generation');
     // Publish the new generation before any restoration, so old references never revive.
-    this.restoring = true;
     try {
       const connection = await this.browser.ensureConnection();
       await this.lockdown(connection);
@@ -233,25 +262,39 @@ export class KernelBrowserHost {
       for (const tab of saved.tabs.slice(0, TAB_LIMIT)) {
         if (typeof tab.tab_id !== "string" || !tab.tab_id.startsWith("host-tab-")) throw new Error("MD-2: invalid saved tab identity");
         assertNotCancelled(signal);
-        await this.open(restorationUrl(tab.url), tab.tab_id, { signal });
+        await this.createTab(restorationUrl(tab.url), tab.tab_id, { signal, background: true });
+      }
+      // MP-08/MP-10: restore the registry in one inventory pass. A loading
+      // background page must not delay every subsequent Tab's creation.
+      if (saved.tabs.length) await this.reconcile({ readOnly: true });
+      await this.syncTabGroups(this.savedGroups,{restore:true});
+      const active = this.tabs.get(saved.active_tab_id);
+      if (active) {
+        await connection.send('Target.activateTarget', { targetId: active.target_id });
+        this.activeTarget = active.target_id;
       }
       await this.save();
       await this.rebindWindows();
-    } catch (error) { await this.stop(); throw error; }
-    finally { this.restoring = false; }
+      this.recovery.watch(connection);
+      this.stateSignal.notify();
+    } catch (error) { await this.stop({ recovering: true, preserveDesktop }); throw error; }
   }
   // MP-08/MP-10/MP-11: native binding changes stay on the host mutation lane.
   async rebindWindows() {
     if (!this.chromium.display) return;
     try { await this.chromeWindows.resolve(); } catch { this.chromeWindows.retire('window_changed'); }
   }
-  async syncTabGroups(groups) {
+  async syncTabGroups(groups,{restore=false}={}) {
+    this.savedGroups = groups.slice(0, TAB_LIMIT).filter(group => typeof group?.tab_id === 'string' && typeof group.label === 'string' && group.label)
+      .map(({ tab_id, label }) => ({ tab_id, label: label.slice(0, 64) }));
+    if(this.restoring&&!restore)return;
     const labels = new Map();
-    for (const { tab_id, label } of groups.slice(0, TAB_LIMIT)) {
+    for (const { tab_id, label } of this.savedGroups) {
       const target = this.tabs.get(tab_id)?.target_id;
       if (target && typeof label === "string" && label) labels.set(label, [...(labels.get(label) ?? []), target]);
     }
     await this.tabGroups?.sync([...labels].map(([label, target_ids]) => ({ label: label.slice(0, 64), target_ids })));
+    if (!this.restoring) await this.save();
   }
   // MP-11: fail-closed second layer behind the kernel's managed policies: a Tab that
   // still reaches a blocked scheme is closed unless it shows the policy's own refusal
@@ -365,7 +408,12 @@ export class KernelBrowserHost {
     }
     return await entry.ready;
   }
-  async stop() {
+  async stop({ recovering = false, preserveDesktop = false } = {}) {
+    if (!recovering) {
+      this.recovery?.stop();
+      await this.starting?.catch(() => {});
+      this.recovery?.stop();
+    }
     this.busyInputs.retireAll(); // a stopped browser is not relaunched by an input that waited for its renderer
     await this.desktopDisplay.close();
     this.displayDocuments.clear();
@@ -378,8 +426,8 @@ export class KernelBrowserHost {
     this.popupEvidence.clear();
     // A dead X server can make release fail; retirement still destroys the
     // owned desktop before acknowledging stop.
-    await this.nativeComputer.close().catch(() => {});
-    await this.chromium.stop(this.browser?.connection);
+    await this.nativeComputer.close().catch(() => { preserveDesktop = false; });
+    await this.chromium.stop(this.browser?.connection, { preserveDesktop });
     for (const stream of this.displays.values()) await stream.close();
     this.mirror.clear();
     this.displays.clear(); this.scales.clear();
@@ -420,6 +468,7 @@ export class KernelBrowserHost {
     return { window_generation: tabbed.window_generation, active_tab_id: active?.tab_id ?? null, auxiliary: this.chromeWindows.auxiliaryState() };
   }
   async reconcile({readOnly=false}={}) {
+    const browser = this.browser, generation = this.generation;
     const observation = ++this.observations;
     const stateOptions = await nativeStateObservationOptions(this, readOnly);
     let state;
@@ -428,12 +477,13 @@ export class KernelBrowserHost {
     // Restored pages can finish navigation between CDP document reads. Retry
     // only this observation, never the mutation that led to reconciliation.
     for (let attempt = 0; attempt < 3; attempt++) {
-      try { state = await this.browser.reconcile(this.viewport(), stateOptions); break; }
+      try { state = await browser.reconcile(this.viewport(), stateOptions); break; }
       catch (error) {
         if (error.code !== "stale_document_reference" || attempt === 2) throw error;
         await delay(25);
       }
     }
+    if (browser !== this.browser || generation !== this.generation) throw new BrowserActionError('browser_unavailable', 'MP-08: browser restarted; interrupted action was not replayed');
     if (observation < this.observed) return this.tabState();
     this.observed = observation;
     // Native address-bar navigation turns the initial blank target into a user
@@ -488,14 +538,19 @@ export class KernelBrowserHost {
   }
   async open(url, tabId = `host-tab-${randomUUID()}`, { signal } = {}) {
     await this.closeCompositors();this.foreground.reset();
-    if (this.tabs.size >= TAB_LIMIT) throw new Error("MD-2: host tab limit reached");
-    const connection = await this.browser.ensureConnection();
-    assertNotCancelled(signal);
-    const { targetId } = await connection.send("Target.createTarget", { url: navigationUrl(url) });
-    this.tabs.set(tabId, { tab_id: tabId, target_id: targetId, url, title: "", document_id: "" });
-    this.observed = ++this.observations;
+    await this.createTab(url, tabId, { signal });
     const state = await this.reconcile();
     return { ...state, tab_id: tabId };
+  }
+  async createTab(url, tabId, { signal, background = false } = {}) {
+    if (this.tabs.size >= TAB_LIMIT) throw new Error("MD-2: host tab limit reached");
+    const connection = await this.browser.ensureConnection();
+    const browser = this.browser;
+    assertNotCancelled(signal);
+    const { targetId } = await connection.send("Target.createTarget", { url: navigationUrl(url), ...(background ? { background: true } : {}) });
+    if (browser !== this.browser) throw new BrowserActionError('browser_unavailable', 'MP-08: browser restarted; interrupted action was not replayed');
+    this.tabs.set(tabId, { tab_id: tabId, target_id: targetId, url, title: "", document_id: "" });
+    this.observed = ++this.observations;
   }
   async target(command) {
     const started = timestamp();
@@ -503,13 +558,13 @@ export class KernelBrowserHost {
     await this.reconcile();
     this.timing('target_reconcile', started);
     const tab = this.tabs.get(command.tab_id);
-    if (!tab) throw new UserDomainRefusal("not_granted");
+    if (!tab) throw new UserDomainRefusal("stale_reference", "display_retired");
     return tab;
   }
   async mirrorTarget(command) {
     if (command.generation !== this.generation) throw new UserDomainRefusal("stale_epoch");
     const stored = this.tabs.get(command.tab_id);
-    if (!stored) throw new UserDomainRefusal("not_granted");
+    if (!stored) throw new UserDomainRefusal("stale_reference", "display_retired");
     const current = this.browser.currentPageFrame?.(stored.target_id);
     return current ? { ...stored, document_id: current.frame.loaderId } : this.displayTarget(command);
   }
@@ -598,21 +653,21 @@ export class KernelBrowserHost {
     assertNotCancelled(signal);
     if(stream.source_kind==='region'){
       const source=stream.regionSource;
-      if(!source||typeof stream.regionCurrent!=='function'||!await stream.regionCurrent()||!stream.regionLease?.isAlive()||!stream.regionWindow?.isCurrent()||!source.valid()||source.closed||source.allowed&&!source.allowed(this.protection))throw new UserDomainRefusal('stale_reference');
+      if(!source||typeof stream.regionCurrent!=='function'||!await stream.regionCurrent()||!stream.regionLease?.isAlive()||!stream.regionWindow?.isCurrent()||!source.valid()||source.closed||source.allowed&&!source.allowed(this.protection))throw new UserDomainRefusal('stale_reference','display_retired');
       assertNotCancelled(signal);
       return source;
     }
     if(stream.source_kind==='desktop'){
       const binding=this.chromium.desktop?.binding();
-      if(!binding||binding.surface_id!==stream.tab_id||binding.generation!==stream.desktop_generation)throw new UserDomainRefusal('stale_reference');
+      if(!binding||binding.surface_id!==stream.tab_id||binding.generation!==stream.desktop_generation)throw new UserDomainRefusal('stale_reference','display_retired');
       return binding;
     }
     const tab=await this.displayTarget({tab_id:stream.tab_id,generation:this.generation});
     assertNotCancelled(signal);
-    if(tab.document_id!==stream.document_id)throw new UserDomainRefusal('stale_reference');
+    if(tab.document_id!==stream.document_id)throw new UserDomainRefusal('stale_reference','display_retired');
     const viewport=this.viewport();
     const source=this.compositors.get(tab.tab_id)?.source;
-    if(source?.closed||source?.allowed&&!source.allowed(this.protection))throw new UserDomainRefusal('stale_reference');
+    if(source?.closed||source?.allowed&&!source.allowed(this.protection))throw new UserDomainRefusal('stale_reference','display_retired');
     const key=JSON.stringify([tab.target_id,tab.document_id,viewport.width,viewport.height,viewport.device_scale_factor,source?.regionRevision]);
     if(stream.resumeSourceIdentity?.key!==key||stream.resumeSourceIdentity?.source!==source)stream.resumeSourceIdentity={key,source};
     return stream.resumeSourceIdentity;
@@ -664,6 +719,7 @@ export class KernelBrowserHost {
     // MP-11: observation never launches/relaunches the browser.
     await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_input_target", "note_selection", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
     assertNotCancelled(signal);
+    const browserAtStart = this.browser;
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
     for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
     // MP-08/MP-10: the kernel's navigate/subscribe preflight reads only its own Tab
@@ -717,7 +773,8 @@ export class KernelBrowserHost {
     const encodedCapture = command.op === "screenshot" && typeof command.display_subscription_id === "string";
     if (encodedCapture || command.op === "display_attach" || (command.op === "unsubscribe" && this.displays.has(command.subscription_id))) {
       const stream = this.displays.get(command.display_subscription_id ?? command.subscription_id);
-      if (!stream || stream.observed_by !== scope || command.generation !== this.generation) throw new UserDomainRefusal("not_granted");
+      if (stream && stream.observed_by !== scope) throw new UserDomainRefusal("not_granted");
+      if (!stream || command.generation !== this.generation) throw new UserDomainRefusal('stale_reference', 'display_retired');
       if(stream.source_kind==='desktop')return this.desktopDisplay.request(command,scope,{signal});
       if (command.op === "unsubscribe") { await this.removeDisplay(stream); return { generation: this.generation, unsubscribed: true }; }
       if(stream.suspended)throw new UserDomainRefusal('stale_reference','display_suspended');
@@ -729,7 +786,7 @@ export class KernelBrowserHost {
       return command.push ? displayPushCredit(this, stream, command, signal) : displayCredit(this, stream, command, signal);
     }
     if (["poll", "unsubscribe"].includes(command.op)) {
-      if (command.generation !== this.generation || !this.streams.has(command.subscription_id)) throw new UserDomainRefusal("stale_reference");
+      if (command.generation !== this.generation || !this.streams.has(command.subscription_id)) throw new UserDomainRefusal("stale_reference", "display_retired");
       const stream = this.streams.get(command.subscription_id);
       stream.expires = Date.now() + 60_000;
       this.armExpiry(command.subscription_id, stream);
@@ -855,7 +912,7 @@ export class KernelBrowserHost {
       catch (error) {
         if (dispatched) markDispatched(error);
         // A busy renderer that is only late to acknowledge a CDP press/release (both already queued in order) leaves nothing held: it must not take the browser down.
-        if (dispatched && !lateInputAck(error) || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) {
+        if ((dispatched && !lateInputAck(error) || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) && this.isBrowserLive(browserAtStart)) {
           // Clear any dispatched key/button state before another actor can use
           // the browser. Recovery rotates generation; cancelled input never replays.
           await this.stop();
@@ -898,6 +955,7 @@ export class KernelBrowserHost {
     return { app, agent };
   }
   async handle(request, { signal } = {}) {
+    const browserAtEntry = this.browser;
     try { assertNotCancelled(signal); } catch { return { id: request.id, ok: false, error: { code: "browser_action_cancelled", message: "MD-3: browser action cancelled" } }; }
     try {
       if (request.method === "health") return { id: request.id, ok: true, result: { state: "ready", process_id: process.pid, diagnostic_code: null } };
@@ -1040,12 +1098,15 @@ export class KernelBrowserHost {
     } catch (error) {
       // MP-11: only fixed error classes/codes and public source positions.
       this.timing(hostErrorLabel(error),timestamp());
+      if (browserAtEntry && this.recovery?.enabled && (browserAtEntry !== this.browser || browserAtEntry.connection?.isOpen?.() === false)) {
+        return { id: request.id, ok: false, error: { code: 'browser_unavailable', message: 'MP-08: browser disconnected; interrupted action was not replayed' } };
+      }
       if (error instanceof UserDomainRefusal || error instanceof CaptureRefusal) return {id:request.id,ok:false,error:{code:error.code,message:error.message}};
       if (isTrustedStaleReferenceError(error)) return {id:request.id,ok:false,error:{code:"user_domain_stale_reference",message:"User-domain request refused"}};
       // A cancelled request that may have dispatched input stops the browser (no held keys/buttons). A
       // cancelled read-only observation (a viewer's credit on a huge page) must not stop every Tab (MP-08/MP-10).
       if (error?.code === "browser_action_cancelled" && request.method !== "host.computer" && !request.params?.display_subscription_id
-        && !(request.method === "host.browser" && OBSERVATION_OPS.has(request.params?.op))) await this.stop();
+        && this.browser === browserAtEntry && !(request.method === "host.browser" && OBSERVATION_OPS.has(request.params?.op))) await this.stop();
       if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }

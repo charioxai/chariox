@@ -252,10 +252,10 @@ test("MD-2: latest-frame subscription is bounded and invalidated by recovery", (
   assert.equal(polled.frame.mime_type,'image/png');assert.equal(decodePng(polled.frame.data_base64).pixels[0],255);
   assert.equal(sent.filter(call => call.method === "Page.screencastFrameAck").length, 100);
   await host.request({ op: "unsubscribe", ...subscription });
-  assert.equal(handlers.size, 1, "only the browser lockdown observer remains");
+  assert.equal(handlers.size, 2, "lockdown and browser recovery observers remain");
   assert(sent.some(call => call.method === "Page.stopScreencast"));
   chromium.child.exitCode = 1;
-  await assert.rejects(host.request({ op: "poll", ...subscription }), /unavailable/);
+  await assert.rejects(host.request({ op: "poll", ...subscription }), {code:"user_domain_stale_reference"});
   await host.request({ op: "start" });
   await assert.rejects(host.request({ op: "poll", ...subscription }), {code:'user_domain_stale_reference'});
 }));
@@ -743,7 +743,7 @@ test("MD integration: target close revokes its frame subscription", () => using(
   await host.browser.manageTab({target_id:host.tabs.get(tab.tab_id).target_id});
   await host.reconcile();
   assert.equal(host.streams.size,0);
-  assert.equal(handlers.size,1,'only the browser lockdown observer remains');
+  assert.equal(handlers.size,2,'lockdown and browser recovery observers remain');
   assert(sent.some(call=>call.method==="Page.stopScreencast"));
   await assert.rejects(host.request({op:"poll",...stream}),error => error.code === "user_domain_stale_reference");
 }));
@@ -817,21 +817,21 @@ test("display subscription captures the current document after navigation", () =
 
 // Fail-first coverage for each of the nine live hardening gaps.
 const refusalCases = [
-  ['foreign tab snapshot', 'snapshot', 'not_granted'],
-  ['foreign tab screenshot', 'screenshot', 'not_granted'],
-  ['foreign browser region capture', 'screenshot', 'not_granted'],
-  ['foreign note-window observation', 'note_selection', 'not_granted'],
-  ['forged resource references', 'snapshot', 'not_granted'],
+  ['foreign tab snapshot', 'snapshot', 'stale_reference', true],
+  ['foreign tab screenshot', 'screenshot', 'stale_reference', true],
+  ['foreign browser region capture', 'screenshot', 'stale_reference', true],
+  ['foreign note-window observation', 'note_selection', 'stale_reference', true],
+  ['forged resource references', 'snapshot', 'stale_reference', true],
   ['stale browser input document', 'input', 'stale_reference'],
   ['stale App input document', 'input', 'stale_reference'],
-  ['cross-identity capture correlation replay', 'screenshot', 'not_granted'],
+  ['cross-identity capture correlation replay', 'screenshot', 'stale_reference', true],
   ['stale capture generation', 'screenshot', 'stale_epoch'],
 ];
-for (const [label, op, reason] of refusalCases) test('MD434 explicit refusal: '+label, () => using(async ({host}) => {
+for (const [label, op, reason, missing] of refusalCases) test('MD434 explicit refusal: '+label, () => using(async ({host}) => {
   const opened=await host.handle({id:1,method:'host.browser',params:{op:'open',url:'https://fixture.invalid/'}});
   const generation=host.generation;
   const tab=[...host.tabs.values()][0];
-  const params={op,generation,tab_id:reason==='not_granted'?'foreign-or-forged-id':tab.tab_id,observed_by:'terminal:fixture'};
+  const params={op,generation,tab_id:missing?'foreign-or-forged-id':tab.tab_id,observed_by:'terminal:fixture'};
   if(op==='input'){params.document_id='old-document';params.input={kind:'key',key:'Tab'};}
   if(reason==='stale_epoch')params.generation++;
   const result=await host.handle({id:2,method:'host.browser',params});
@@ -849,25 +849,20 @@ test('MD434 page/transport errors cannot forge host policy refusals', () => usin
  assert.equal(result.error.code,'kernel_browser_failed');
 }));
 
-test("MP-11: state reads never start or recover Chromium; explicit retained start can", () => using(async ({ host, chromium, sent }) => {
-  for (const retained of [true,false]) await assert.rejects(host.request({op:'state',_retained_agent:retained}), {code:'browser_unavailable'});
-  assert.equal(chromium.child,null); assert.deepEqual(sent,[]);
+test("MP-08/MP-10 state follows browser recovery but never starts an explicitly stopped browser", () => using(async ({host,chromium,sent}) => {
+  for(const retained of [true,false])await assert.rejects(host.request({op:'state',_retained_agent:retained}),{code:'browser_unavailable'});
+  assert.equal(chromium.child,null);assert.deepEqual(sent,[]);
   const opened=await host.request({op:'open',url:'https://example.com'});
-  for (const stopped of [false,true]) {
-    if (stopped) await host.stop(); else chromium.child.exitCode=1;
-    const generation=host.generation, requests=sent.length;
-    for (const retained of [true,false]) {
-      const reply=await host.handle({id:'read',method:'host.browser',params:{op:'state',_retained_agent:retained}});
-      assert.equal(reply.ok,false); assert.equal(reply.error.code,'browser_unavailable');
-      assert.equal(host.generation,generation); assert.equal(sent.length,requests);
-    }
-    const recovered=await host.request({op:'start',_retained_agent:true});
-    assert.equal(recovered.generation,generation+1);
-    assert.equal(recovered.tabs[0].tab_id,opened.tab_id);
-  }
+  chromium.child.exitCode=1;
+  const recovered=await host.request({op:'state'});
+  assert.equal(recovered.generation,opened.generation+1);
+  assert.equal(recovered.tabs[0].tab_id,opened.tab_id);
+  await host.stop();const requests=sent.length;
+  for(const retained of [true,false])await assert.rejects(host.request({op:'state',_retained_agent:retained}),{code:'browser_unavailable'});
+  assert.equal(sent.length,requests);
 }));
 
-test("MP-11: mirror reads and cleanup never start or recover Chromium", () => using(async ({ host, chromium, sent }) => {
+test("MP-08/MP-10 mirror reads and cleanup never start an explicitly stopped browser", () => using(async ({ host, chromium, sent }) => {
   const previous = process.env.CHARIOX_KERNEL_BROWSER_MIRROR;
   process.env.CHARIOX_KERNEL_BROWSER_MIRROR = "1";
   try {
@@ -875,8 +870,8 @@ test("MP-11: mirror reads and cleanup never start or recover Chromium", () => us
     const start = chromium.start;
     chromium.start = async () => { launches++; return start(); };
     const opened = await host.request({ op:'open', url:'https://example.com' });
-    for (const stopped of [false, true]) {
-      if (stopped) await host.stop(); else chromium.child.exitCode = 1;
+    for (const stopped of [true]) {
+      await host.stop();
       const generation = host.generation, requests = sent.length, before = launches;
       for (const op of ['mirror_subscribe', 'mirror_next', 'mirror_close']) {
         const reply = await host.handle({ id:op, method:'host.browser', params:{ op, tab_id:opened.tabs[0].tab_id, subscription_id:'s', generation } });
@@ -918,8 +913,7 @@ test('private CDP pipe loss retires the browser generation even while child is l
   chromium.start=async()=>{open=true;return start()};
   const before=await host.request({op:'open',url:'https://example.com/'});
   open=false;
-  await assert.rejects(host.request({op:'state'}),{code:'browser_unavailable'});
-  const after=await host.request({op:'start'});
+  const after=await host.request({op:'state'});
   assert.equal(after.generation,before.generation+1);
   assert.equal(after.tabs[0].tab_id,before.tab_id);
   await assert.rejects(host.request({op:'screenshot',tab_id:before.tab_id,generation:before.generation}),{code:'user_domain_stale_epoch'});
@@ -1116,7 +1110,7 @@ test("MP-08 completed agent input cannot attribute a later native popup on the s
   assert.equal(state._tab_openers?.[human.tab_id], undefined, "opener alone carries no actor evidence");
   assert.equal(state._tab_creation_actions?.[agent.tab_id], "action-agent");
   assert.equal(state._tab_creation_actions?.[human.tab_id], undefined);
-  assert.equal(handlers.size, 2, "activation and lockdown observers remain until host shutdown");
+  assert.equal(handlers.size, 3, "activation, lockdown and recovery observers remain until host shutdown");
 }));
 
 // MP-08/MP-10/MP-11: shared viewers observe one canonical tab, never change
@@ -1293,7 +1287,7 @@ test('MP-08/MP-10 a tab-scoped state preflight reads only its own Tab', () => us
   assert.equal(reconciles, 0, 'no all-tab reconcile');
   assert.ok(state._observation > opened._observation, 'a newer observation for the kernel ledger');
   assert.ok(state.tabs.some(tab => tab.tab_id === opened.tab_id));
-  await assert.rejects(host.request({ op: 'state', tab_id: 'host-tab-unknown', generation: opened.generation }), error => error.code === 'user_domain_not_granted');
+  await assert.rejects(host.request({ op: 'state', tab_id: 'host-tab-unknown', generation: opened.generation }), error => error.code === 'user_domain_stale_reference');
   await host.request({ op: 'state' }); assert.equal(reconciles, 1, 'a client state read keeps its reconcile');
 }));
 
@@ -1951,11 +1945,11 @@ test('MP-08/MP-10/MP-11 a native key reads the active Tab live on a snapshot mis
 // MP-08/MP-10/MP-11: failed extension startup and browser recovery release observers.
 test('MP-08/MP-10/MP-11 native owner observers retire on recovery and shutdown',()=>using(async({host,chromium,handlers,connection})=>{
  const {ChromeTabGroups}=await import('./kernel-browser-tab-groups.mjs');
- await host.request({op:'open',url:'about:blank'});assert.equal(host.tabGroups,null);assert.equal(handlers.size,1,'failed extension load leaves only lockdown');
- const groups=new ChromeTabGroups(connection);await groups.nativeState.attach('worker-session');host.tabGroups=groups;assert.equal(handlers.size,2);
+ await host.request({op:'open',url:'about:blank'});assert.equal(host.tabGroups,null);assert.equal(handlers.size,2,'failed extension load leaves lockdown and recovery');
+ const groups=new ChromeTabGroups(connection);await groups.nativeState.attach('worker-session');host.tabGroups=groups;assert.equal(handlers.size,3);
  chromium.child.exitCode=1;await host.request({op:'start'});
  assert.equal(groups.nativeState.closed,true);assert.equal(groups.nativeState.off,null);assert.equal(host.tabGroups,null);
- assert.equal(handlers.size,1,'only lockdown remains after the unsupported extension reload; the retired native observer is gone');
+ assert.equal(handlers.size,2,'lockdown and recovery remain; the retired native observer is gone');
  await host.request({op:'stop'});assert.equal(handlers.size,0);
 }));
 
@@ -2305,4 +2299,127 @@ test('MP-08/MP-10 a parked wait starts no browser and never queues behind the ho
  const parked={method:'host.browser',params:{op:'state_signal',after:3,wait_ms:2000}};
  for(const reconcilable of [true,false,undefined])assert.deepEqual(scheduleHostRequest(parked,{canReconcileConcurrently:()=>reconcilable}),{kind:'bridge'});
  assert.deepEqual(scheduleHostRequest({method:'host.browser',params:{op:'state'}},{canReconcileConcurrently:()=>false}),{kind:'barrier'},'a plain state read keeps its viewport barrier');
+}));
+
+
+test('MP-08/MP-10 browser death automatically restores stable tabs, active tab and groups', {timeout: 10000}, () => using(async ({host,chromium,handlers,sent,connection}) => {
+  const a=await host.request({op:'open',url:'https://www.wikipedia.org/'});
+  const b=await host.request({op:'open',url:'https://github.com/charioxai/chariox'});
+  host.activeTarget=host.tabs.get(a.tab_id).target_id;
+  await host.syncTabGroups([{tab_id:b.tab_id,label:'Mara'}]);
+  await host.save();
+  const generation=host.generation;
+  chromium.child.signalCode='SIGSEGV';
+  for(const handler of [...handlers])handler({method:'Chariox.browserDisconnected',params:{code:'browser_cdp_disconnected'}});
+  for(let n=0;n<150&&host.generation===generation;n++)await new Promise(r=>setTimeout(r,10));
+  await host.starting;
+  assert.equal(host.generation,generation+1,'the loss signal restarts without a user request');
+  assert.deepEqual([...host.tabs.keys()],[a.tab_id,b.tab_id]);
+  assert.equal(host.activeTarget,host.tabs.get(a.tab_id).target_id);
+  assert.deepEqual(host.savedGroups,[{tab_id:b.tab_id,label:'Mara'}]);
+  assert(sent.some(call=>call.method==='Target.activateTarget'&&call.params.targetId===host.activeTarget));
+  const saved=JSON.parse(await readFile(path.join(host.root,'tabs.json'),'utf8'));
+  assert.equal(saved.active_tab_id,a.tab_id);
+}));
+
+test('MP-08/MP-10 a retired display is a navigation race; a foreign display remains denied', () => using(async ({host}) => {
+  const opened=await host.request({op:'open',url:'about:blank'});
+  await assert.rejects(host.request({op:'screenshot',display_subscription_id:'retired',generation:opened.generation}), error=>error.code==='user_domain_stale_reference'&&error.race==='display_retired');
+  host.displays.set('foreign',{observed_by:'terminal:other',expires:Date.now()+60000,close:async()=>{}});
+  await assert.rejects(host.request({op:'screenshot',display_subscription_id:'foreign',generation:opened.generation}),{code:'user_domain_not_granted'});
+}));
+
+test('MP-08/MP-10 interrupted old-browser actions settle without replay or stopping the recovered browser', {timeout:10000}, () => using(async ({host,chromium,handlers}) => {
+  const opened=await host.request({op:'open',url:'https://www.wikipedia.org/'});
+  const began=Promise.withResolvers(),ended=Promise.withResolvers();
+  host.browser.navigate=async()=>{began.resolve();await ended.promise;throw Object.assign(Error('cancelled'),{code:'browser_action_cancelled'});};
+  const action=host.handle({id:'interrupted',method:'host.browser',params:{op:'navigate',tab_id:opened.tab_id,generation:opened.generation,url:'https://github.com/charioxai/chariox'}});
+  await began.promise;
+  chromium.child.signalCode='SIGSEGV';
+  for(const handler of [...handlers])handler({method:'Chariox.browserDisconnected',params:{code:'browser_cdp_disconnected'}});
+  for(let n=0;n<150&&host.generation===opened.generation;n++)await new Promise(r=>setTimeout(r,10));
+  await host.starting;ended.resolve();
+  const reply=await action;
+  assert.equal(reply.ok,false);assert.equal(reply.error.code,'browser_unavailable');assert.match(reply.error.message,/disconnected.*not replayed/);
+  assert.equal(host.generation,opened.generation+1);assert(host.browser);assert.equal(chromium.child.signalCode,null);
+  assert.equal(host.tabs.get(opened.tab_id).url,'https://www.wikipedia.org/');
+}));
+
+test('MP-08/MP-10 concurrent recovery reads launch one browser and explicit stop stays stopped', () => using(async ({host,chromium}) => {
+  let starts=0;const start=chromium.start;chromium.start=async()=>{starts++;return start();};
+  const opened=await host.request({op:'open',url:'about:blank'});chromium.child.exitCode=139;
+  const states=await Promise.all(Array.from({length:8},()=>host.request({op:'state'})));
+  assert.equal(starts,2);assert(states.every(state=>state.generation===opened.generation+1));
+  assert(states.every(state=>state.tabs.length===1&&state.tabs[0].tab_id===opened.tab_id));
+  await host.stop();await new Promise(r=>setTimeout(r,300));assert.equal(starts,2);assert.equal(host.recovery.enabled,false);
+  await assert.rejects(host.request({op:'state'}),{code:'browser_unavailable'});
+}));
+
+test('MP-08/MP-10 a cancelled viewer does not cancel shared browser recovery', () => using(async ({host,chromium}) => {
+  const opened=await host.request({op:'open',url:'about:blank'});chromium.child.exitCode=139;
+  const start=chromium.start,began=Promise.withResolvers(),gate=Promise.withResolvers();
+  chromium.start=async()=>{began.resolve();await gate.promise;return start();};
+  const controller=new AbortController();
+  const cancelled=host.request({op:'state'},{signal:controller.signal});
+  const rejected=assert.rejects(cancelled,{code:'browser_action_cancelled'});
+  await began.promise;const other=host.request({op:'state'});controller.abort();gate.resolve();
+  await rejected;const state=await other;
+  assert.equal(state.generation,opened.generation+1);assert.equal(state.tabs[0].tab_id,opened.tab_id);
+  assert(host.browser);assert.equal(host.recovery.enabled,true);
+}));
+
+test('MP-08/MP-10 recovery restores every tab before one inventory read', () => using(async ({host},root) => {
+  const tabs=Array.from({length:8},(_,i)=>({tab_id:`host-tab-restored-${i}`,url:`https://en.wikipedia.org/wiki/Web_browser#${i}`}));
+  await writeFile(path.join(root,'tabs.json'),JSON.stringify({generation:7,tabs,active_tab_id:tabs[2].tab_id}));
+  let reads=0;const factory=host.browserFactory;
+  host.browserFactory=connection=>{const browser=factory(connection),read=browser.reconcile;browser.reconcile=async(...args)=>{reads++;return read(...args)};return browser;};
+  await host.start();
+  assert.equal(reads,1,'restoring N tabs must not wait for N all-page renderer inventories');
+  assert.deepEqual([...host.tabs.keys()],tabs.map(tab=>tab.tab_id));
+  assert.equal(host.activeTarget,host.tabs.get(tabs[2].tab_id).target_id);
+}));
+
+for(const late of [false,true])test(`MP-08/MP-10 a disconnected page input never cancels browser recovery (late=${late})`,{timeout:10000},()=>using(async({host,chromium,connection,handlers})=>{
+ let live=true;chromium.connection=connection;connection.isOpen=()=>live;
+ const start=chromium.start;chromium.start=async()=>{live=true;return start();};
+ const opened=await host.request({op:'open',url:'https://www.wikipedia.org/'}),tab=opened.tabs[0];
+ const began=Promise.withResolvers(),gate=Promise.withResolvers();let presses=0;
+ connection.beforeSend=async method=>{if(method==='Input.dispatchMouseEvent'){presses++;began.resolve();await gate.promise;throw Object.assign(Error('pipe closed'),{code:'browser_cdp_disconnected'});}};
+ const action=host.handle({id:'page-input',method:'host.browser',params:{op:'input',_agent_input:true,tab_id:opened.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'scroll',x:20,y:20,delta_x:0,delta_y:120}}});
+ await began.promise;chromium.child.signalCode='SIGSEGV';live=false;
+ for(const handler of [...handlers])handler({method:'Chariox.browserDisconnected',params:{code:'browser_cdp_disconnected'}});
+ if(late){for(let n=0;n<150&&host.generation===opened.generation;n++)await new Promise(r=>setTimeout(r,10));await host.starting;}
+ gate.resolve();const reply=await action;
+ assert.equal(reply.ok,false);assert.equal(reply.error.code,'browser_unavailable');assert.match(reply.error.message,/not replayed/);
+ for(let n=0;n<150&&host.generation===opened.generation;n++)await new Promise(r=>setTimeout(r,10));await host.starting;
+ assert.equal(host.generation,opened.generation+1);assert(host.browser);assert.equal(host.recovery.enabled,true);assert(host.tabs.has(opened.tab_id));assert.equal(presses,1,'the old input is never replayed');
+}));
+
+// MP-08/MP-10: an opaque absent Tab is obsolete, not evidence of a lost grant.
+test('retired tab reads do not revoke an owner grant',async()=>{
+ const {resolveDisplayTarget}=await import('./kernel-browser-display-document.mjs');
+ const host=Object.assign(Object.create(KernelBrowserHost.prototype),{generation:1,tabs:new Map(),reconcile:async()=>{},timing:()=>{}});
+ const command={generation:1,tab_id:'retired-tab'};
+ for(const read of [()=>host.target(command),()=>host.mirrorTarget(command),()=>resolveDisplayTarget(host,command)])await assert.rejects(read(),e=>e.code==='user_domain_stale_reference'&&e.race==='display_retired');
+});
+
+// MP-08/MP-10: a state request carries agent groups while teardown has no live
+// targets. That attribution update must not replace the last durable inventory.
+test('group synchronization during recovery cannot save an empty registry',()=>using(async({host,chromium})=>{
+ const first=await host.request({op:'open',url:'https://www.wikipedia.org/'});
+ const second=await host.request({op:'open',url:'https://github.com/charioxai/chariox'});
+ const groups=[{tab_id:second.tab_id,label:'Agent'}];await host.syncTabGroups(groups);
+ const ids=[...host.tabs.keys()],old=host.browser;
+ old.close=async()=>{host.tabs.clear();await host.syncTabGroups(groups)};
+ chromium.child.signalCode='SIGSEGV';await host.request({op:'start'});
+ assert.deepEqual([...host.tabs.keys()],ids);
+ assert.deepEqual(host.savedGroups,groups);assert.equal(host.restoring,false);
+}));
+
+test('group updates during restoration do not apply a partial native inventory',()=>using(async({host})=>{
+ const opened=await host.request({op:'open',url:'https://www.wikipedia.org/'});let applied=0;
+ host.tabGroups={sync:async()=>{applied++}};host.restoring=true;
+ const groups=[{tab_id:opened.tab_id,label:'Agent'}];await host.syncTabGroups(groups);
+ assert.equal(applied,0);assert.deepEqual(host.savedGroups,groups);
+ await host.syncTabGroups(groups,{restore:true});assert.equal(applied,1);host.restoring=false;
 }));

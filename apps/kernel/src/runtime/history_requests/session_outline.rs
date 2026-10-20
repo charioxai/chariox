@@ -160,7 +160,9 @@ fn load_scoped_agent_outline(
         agent_import,
     )?;
     prompts.retain(|prompt| {
-        !external_observed_tool_call_prompt(prompt) && !external_recovery_envelope_prompt(prompt)
+        !external_observed_tool_call_prompt(prompt)
+            && !external_recovery_envelope_prompt(prompt)
+            && !event_is_internal_prompt_turn(prompt)
     });
     suppress_chariox_owned_external_prompt_echoes(
         &mut prompts,
@@ -208,6 +210,8 @@ fn load_scoped_agent_outline(
                 }
             }
         }
+        // A hidden check turn's reply sits between two visible prompts.
+        events.retain(|event| !event_is_internal_prompt_turn(event));
         let lifecycle_events = scoped_history_events(events, agent_import);
         let events = if outline_turn_prompt_origin(prompt) == PromptOrigin::Chariox {
             suppress_external_observed_events_from_chariox_turn(lifecycle_events.clone())
@@ -823,6 +827,13 @@ fn persisted_prompt_settlement_at_ms(event: &HistoryEvent) -> Option<u64> {
         .metadata
         .get(crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY)
         .and_then(serde_json::Value::as_u64)
+}
+
+fn event_is_internal_prompt_turn(event: &HistoryEvent) -> bool {
+    let origin = event
+        .to_session_history_entry()
+        .and_then(|entry| entry.prompt_origin);
+    crate::session::is_internal_prompt_turn(origin, event.prompt_id.as_deref())
 }
 
 fn outline_turn_prompt_origin(prompt: &HistoryEvent) -> PromptOrigin {

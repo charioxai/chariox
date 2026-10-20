@@ -1240,3 +1240,60 @@ fn workflow_run_updates_are_bounded_per_attachment() {
     );
     assert!(terminal.workflow_run_update_records.is_empty());
 }
+
+// MP-08/MP-10: goal completion-check turns are agent-only. The instruction
+// echo (by its kernel-owned id) and every record of the turn (by origin) are
+// never delivered; ordinary prompts and replies still are.
+#[test]
+fn goal_completion_check_turn_is_not_delivered_to_clients() {
+    let mut terminal = TerminalStreamService::new();
+    for origin in [None, Some(crate::session::PromptOrigin::Chariox), Some(crate::session::PromptOrigin::CompletionCheck)] {
+        terminal.fan_out_prompt_output(
+            "session-1",
+            "run-1",
+            Some("agent-1"),
+            "goal-check-task-1-1-1",
+            origin,
+            "attachment-1",
+            vec!["attachment-1".into()],
+            b"This turn has origin completion_check.",
+        );
+    }
+    terminal.fan_out_output_with_prompt_origin(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        Some(crate::session::PromptOrigin::CompletionCheck),
+        vec!["attachment-1".into()],
+        br#"{"status":"achieved"}"#,
+    );
+    assert!(terminal
+        .drain_output_records("session-1", "attachment-1")
+        .is_empty());
+    terminal.fan_out_prompt_output(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        "prompt-1",
+        Some(crate::session::PromptOrigin::Chariox),
+        "attachment-1",
+        vec!["attachment-1".into()],
+        b"ordinary prompt",
+    );
+    terminal.fan_out_output_with_prompt_origin(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        Some(crate::session::PromptOrigin::Chariox),
+        vec!["attachment-1".into()],
+        b"ordinary reply",
+    );
+    let delivered = terminal.drain_output_records("session-1", "attachment-1");
+    assert_eq!(delivered.len(), 2);
+    assert_eq!(delivered[0].bytes, b"ordinary prompt");
+    assert_eq!(delivered[1].bytes, b"ordinary reply");
+}

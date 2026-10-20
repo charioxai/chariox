@@ -95,7 +95,7 @@ impl KernelBrowserActors {
             self.pointers.clear();
             self.pointer_tabs.clear();
             self.generation = generation;
-            self.tab_activity = BrowserTabActivity::default();
+            self.tab_activity.browser_restarted();
         }
         if let (Some(width), Some(height)) = (
             state["viewport"]["css_width"].as_u64(),
@@ -184,6 +184,26 @@ impl KernelBrowserActors {
             .is_some_and(|binding| {
                 params["document_id"].as_str() == Some(binding.document_id.as_str())
             })
+    }
+    // MP-08/MP-10: the private host already admitted the person's Chrome UI
+    // window and active Tab. A home-page commit between that read and this
+    // ledger admission must not lose omnibox keys. Attribute them to the
+    // current document without replaying an action or changing its Tab/actor.
+    pub(crate) fn refresh_chrome_input_document(&self, params: &mut Value) -> Result<(), String> {
+        if params["op"] != "input" || params["generation"].as_u64() != Some(self.generation) {
+            return Err("MD-3: stale Chrome input generation".into());
+        }
+        let tab = self.tab(
+            params["tab_id"]
+                .as_str()
+                .ok_or("MD-3: missing Chrome input Tab")?,
+        )?;
+        let binding = self
+            .tabs
+            .controller_binding(&tab)
+            .map_err(|_| "MD-3: missing Chrome input document")?;
+        params["document_id"] = binding.document_id.clone().into();
+        Ok(())
     }
     fn tab(&self, host_tab: &str) -> Result<String, String> {
         self.tabs
@@ -637,6 +657,19 @@ mod tests {
         json!({"op":"input","tab_id":tab,"generation":1,"input":{"kind":"text","text":"synthetic-private-value"}})
     }
     #[test]
+    fn mp08_chrome_input_tracks_home_commit_without_retargeting_or_replay() {
+        let model = ready();
+        let mut params = json!({"op":"input","generation":1,"tab_id":"host-tab-a","document_id":"old"});
+        model.refresh_chrome_input_document(&mut params).unwrap();
+        assert_eq!(params["document_id"], "d");
+        assert_eq!(params["tab_id"], "host-tab-a");
+        params["generation"] = 0.into();
+        assert!(model.refresh_chrome_input_document(&mut params).is_err());
+        params["generation"] = 1.into();
+        params["tab_id"] = "unknown".into();
+        assert!(model.refresh_chrome_input_document(&mut params).is_err());
+    }
+    #[test]
     fn mp11_input_cache_requires_exact_observed_generation_target_and_document() {
         let mut model = ready();
         let current = json!({"generation":1,"tab_id":"host-tab-a","document_id":"d"});
@@ -873,9 +906,11 @@ mod visible_tab_tests {
             .reconcile(&json!({"generation":1,"tabs":[{"tab_id":"host-a","document_id":"a"}]}))
             .unwrap();
         let action = completed(&mut model, "agent:a", "host-a");
+        model.opened_tab(actor("agent:a"), "host-a");
         let mut state = json!({"generation":2,"_tab_creation_actions":{"restored":action},"tabs":[{"tab_id":"host-a","document_id":"a"},{"tab_id":"restored","document_id":"restored"}]});
         model.reconcile(&state).unwrap();
         model.project_tabs(&mut state);
+        assert_eq!(state["tabs"][0]["opened_by"]["actor_id"], "agent:a");
         assert!(state["tabs"][1]["opened_by"].is_null());
         assert!(state["agent_activity"].is_null());
     }

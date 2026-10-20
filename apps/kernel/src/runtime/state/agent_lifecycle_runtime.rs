@@ -232,10 +232,15 @@ impl KernelRuntimeOwnedState {
                     .agent_lifecycle(Operation::EvaluateGoal {
                         task: task.task_id,
                         prompt: prompt.id().into(),
-                        result,
+                        result: result.clone(),
                         now: crate::session::unix_epoch_ms(),
                     })? {
-                    Outcome::Settled { task, correction } => Ok(Some((task, correction))),
+                    Outcome::Settled { task, correction } => {
+                        if task.state == ExecutionState::Done {
+                            self.publish_check_answer(room, agent, answer_run, &result);
+                        }
+                        Ok(Some((task, correction)))
+                    }
                     _ => unreachable!(),
                 };
             }

@@ -88,7 +88,7 @@ export class DisplayDocuments {
 // MP-08/MP-10/MP-11: native metadata reads use the same document owner as mirrors/captures.
 export async function resolveDisplayTarget(host, command, native = false, wait = 0) {
  if(command.generation!==host.generation)throw new UserDomainRefusal('stale_epoch');
- const stored=host.tabs.get(command.tab_id);if(!stored)throw new UserDomainRefusal('not_granted');
+ const stored=host.tabs.get(command.tab_id);if(!stored)throw new UserDomainRefusal('stale_reference','display_retired');
  if(native)return host.displayDocuments.target(host.browser,stored,wait);
  const browser=host.browser,target=stored.target_id,generation=host.generation,frame=browser.currentPageFrame?.(target);
  const owner=frame?captureDocumentOwner(browser,{target_id:target,document_id:frame.frame.loaderId}):null;
@@ -100,8 +100,8 @@ export async function resolveDisplayTarget(host, command, native = false, wait =
  const document_id=frame?.frame.loaderId??cachedDocument??(await connection.send('Page.getFrameTree',{},sessionId)).frameTree?.frame?.loaderId;
  if(typeof document_id!=='string'||!document_id)throw Error('MD-DISPLAY: document unavailable');
  const current=()=>{
-  if(host.browser!==browser||host.generation!==generation||host.tabs.get(command.tab_id)?.target_id!==target)throw new UserDomainRefusal('stale_reference');
-  if(cachedDocument&&(connection.isOpen?.()===false||'connection' in browser&&browser.connection!==connection||browser.sessionsByTarget&&browser.sessionsByTarget.get(target)!==sessionId||browser.documentIdsByTarget?.get(target)!==document_id))throw new UserDomainRefusal('stale_reference');
+  if(host.browser!==browser||host.generation!==generation||host.tabs.get(command.tab_id)?.target_id!==target)throw new UserDomainRefusal('stale_reference','display_retired');
+  if(cachedDocument&&(connection.isOpen?.()===false||'connection' in browser&&browser.connection!==connection||browser.sessionsByTarget&&browser.sessionsByTarget.get(target)!==sessionId||browser.documentIdsByTarget?.get(target)!==document_id))throw new UserDomainRefusal('stale_reference','display_retired');
   owner?.assertCurrent();
  };
  current();

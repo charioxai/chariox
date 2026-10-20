@@ -150,3 +150,15 @@ test('missing owned-desktop prerequisites name the fixed program before spawning
   assert.equal(desktop.children.length,0);assert.equal(desktop.binding(),null);await desktop.stop();
  }}finally{await rm(root,{recursive:true,force:true})}
 });
+
+test('MP-08/MP-10 retiring browser processes preserves other desktop applications',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'browser-only-retire-')),desktop=new LinuxOwnedDesktop(root);
+ try{
+  const browser=await desktop.launch('/bin/sleep',['60'],process.env),app=await desktop.launch('/bin/sleep',['60'],process.env);
+  desktop.children.find(record=>record.child===browser).browser=true;
+  const identity=desktop.binding();
+  await desktop.stopBrowser();
+  assert(browser.exitCode!==null||browser.signalCode!==null);assert.equal(app.exitCode,null);assert.equal(app.signalCode,null);
+  assert.equal(desktop.children.some(record=>record.child===app),true);assert.equal(desktop.binding(),identity);
+ }finally{await desktop.stop();await rm(root,{recursive:true,force:true});}
+});

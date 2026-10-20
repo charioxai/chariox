@@ -396,7 +396,14 @@ impl TerminalStreamService {
     }
 
     fn push_output_record(&mut self, record: TerminalOutputRecord) {
-        if record.pending_recipient_attachment_ids.is_empty() {
+        // Goal completion-check turns are agent-only: no client sees the
+        // instruction, the receipt reply, or anything else the turn produces.
+        if record.pending_recipient_attachment_ids.is_empty()
+            || crate::session::is_internal_prompt_turn(
+                record.prompt_origin,
+                record.prompt_id.as_deref(),
+            )
+        {
             return;
         }
         let record_id = self.next_output_record_id;

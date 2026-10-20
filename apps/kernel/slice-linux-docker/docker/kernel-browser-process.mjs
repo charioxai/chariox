@@ -12,6 +12,7 @@ import { connectCdpPipe } from './kernel-browser-cdp-pipe.mjs';
 import { fenceScreenshotPresentation } from './browser-capture-presentation.mjs';
 import { writePolicyLayer } from './kernel-browser-policy.mjs';
 import { browserLaunchFailureReason } from './kernel-browser-error-label.mjs';
+import { isOwnedAlive, validOwnedPid } from './linux-owned-process.mjs';
 
 function platformPolicy(platform) {
   if (platform === "linux") return linux;
@@ -80,13 +81,35 @@ export class HostChromium {
     // desktop's scale; only a private owned display may rescale it.
     this.scale = this.desktop ? 1 : geometry.dpr;
   }
-  async start() {
+  stopWatchingBrowser() {
+    clearTimeout(this.browserWatch?.timer);
+    this.browserWatch = null;
+  }
+  // MP-08/MP-10: a supervisor or orphan can hold CDP open after Chrome dies.
+  // Observe only the verified browser identity; this watcher never signals it.
+  watchBrowserProcess(connection, identity, { alive = isOwnedAlive, interval = 500 } = {}) {
+    if (!validOwnedPid(identity?.pid) || !identity.started) throw new Error('MP-11: missing owned browser identity');
+    this.stopWatchingBrowser();
+    const watch = this.browserWatch = { connection, identity };
+    const check = async () => {
+      if (this.browserWatch !== watch || this.connection !== connection) return;
+      if (connection.isOpen?.() === false) { this.stopWatchingBrowser(); return; }
+      let live = true;
+      try { live = await alive(identity); } catch {} // a temporary proc read failure is retried
+      if (this.browserWatch !== watch || this.connection !== connection) return;
+      if (!live) { this.stopWatchingBrowser(); await connection.close(); return; }
+      watch.timer = setTimeout(check, interval); watch.timer.unref?.();
+    };
+    watch.timer = setTimeout(check, interval); watch.timer.unref?.();
+  }
+  async start({ preserveDesktop = false } = {}) {
+    const keepDesktop = preserveDesktop && this.desktop?.isLive?.() === true;
     if (this.child && this.child.exitCode === null && this.child.signalCode === null) {
       if (this.connection?.isOpen()) return this.connection;
-      await this.stop();
+      await this.stop(this.connection, { preserveDesktop: keepDesktop });
     }
     // MP-08/MP-11: settle a previously owned display before failed recovery.
-    await this.display?.close(); this.display = null;
+    if (!keepDesktop) { await this.display?.close(); this.display = null; }
     let environment = platformPolicy(process.platform).launchEnvironment(this.environment);
     const profile = path.join(this.root, "profile");
     await mkdir(profile, { recursive: true, mode: 0o700 });
@@ -148,26 +171,30 @@ export class HostChromium {
     try {
       if (this.desktop?.binding()) await this.desktop.recordOwned(child, true);
       await connection.send('Browser.getVersion');
-      this.browserPid = this.desktop?.binding()
-        ? ownedBrowserPid((await connection.send('SystemInfo.getProcessInfo')).processInfo, await this.desktop.browserProcesses())
-        : child.pid;
+      if (this.desktop?.binding()) {
+        const owned = await this.desktop.browserProcesses();
+        this.browserPid = ownedBrowserPid((await connection.send('SystemInfo.getProcessInfo')).processInfo, owned);
+        this.watchBrowserProcess(connection, owned.find(item => item.pid === this.browserPid));
+      } else this.browserPid = child.pid;
       child.stderr.off('data',collectStderr);child.stderr.resume();startupStderr='';
       return connection;
     }
     catch {}
-    await this.stop();
+    await this.stop(this.connection, { preserveDesktop: keepDesktop });
     const code=browserLaunchFailureReason(startupStderr,spawnCode);startupStderr='';
     throw Object.assign(new Error('MD-2: host Chromium launch failed'),{code});
   }
-  async stop(connection = this.connection) {
+  async stop(connection = this.connection, { preserveDesktop = false } = {}) {
+    this.stopWatchingBrowser();
+    const keepDesktop = preserveDesktop && this.desktop?.isLive?.() === true;
     const child = this.child;
     this.child = null;
     this.browserPid = null;
     this.connection = null;
     if (!Number.isSafeInteger(child?.pid) || child.pid <= 1) {
-      await this.display?.close();this.display=null;
+      if (!keepDesktop) { await this.display?.close();this.display=null; }
       if (child?.pid !== undefined) throw new Error("MD-2: refusing unsafe browser process ID");
-      await this.desktop?.stop();
+      if (keepDesktop) await this.desktop.stopBrowser(); else await this.desktop?.stop();
       await this.temporaryDirectory?.close(); this.temporaryDirectory = null;
       return;
     }
@@ -185,8 +212,7 @@ export class HostChromium {
     }
     if (!exited()) await new Promise(resolve => child.once("exit", resolve));
     await connection?.close();
-    await this.desktop?.stop();
-    this.display = null;
+    if (keepDesktop) await this.desktop.stopBrowser(); else { await this.desktop?.stop(); this.display = null; }
     await this.temporaryDirectory?.close(); this.temporaryDirectory = null;
   }
 }

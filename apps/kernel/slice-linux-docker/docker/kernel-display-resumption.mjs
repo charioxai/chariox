@@ -11,7 +11,8 @@ export class DisplaySessions {
   }
   require(id,owner,generation) {
     const stream=this.host.displays.get(id);
-    if(!stream||stream.observed_by!==owner||generation!==this.host.generation)throw new UserDomainRefusal('not_granted');
+    if(stream&&stream.observed_by!==owner)throw new UserDomainRefusal('not_granted');
+    if(!stream||generation!==this.host.generation)throw new UserDomainRefusal('stale_reference','display_retired');
     return stream;
   }
   async retire(stream) {

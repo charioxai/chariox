@@ -93,9 +93,10 @@ for(const name of ['bwrap','Xvfb','dbus-daemon','openbox','setxkbmap'])fixedReas
 const nativeStages=new Set('native_codec_unavailable x_extensions desktop_geometry window_tree_bound window_ambiguous window_not_found window_retired composite_redirect composite_pixmap native_admission native_pool_metadata native_pool_owner native_packet_root native_root_owner native_capture_unavailable native_window_retired native_config native_config_pipe native_config_bound'.split(' '));
 // MIRROR-ROBUST-STALE-REF: navigation and teardown races the viewer answers by rebinding are not host errors;
 // a binding that is really stale shows as the viewer failing to follow, never as one of these.
-const races=new Set(['region_retired','display_suspended']);
+const races=new Set(['region_retired','display_suspended','display_retired']);
 export function hostErrorLabel(error) {
  if(races.has(error?.race))return 'navigation_race '+error.race;
+ if(error?.code==='user_domain_stale_reference'||error?.code==='user_domain_stale_epoch')return 'navigation_race '+error.code;
  if(error?.code==='stale_document_reference')return 'navigation_race stale_document';
  const name=names.has(error?.name)?error.name:'Error';
  const known=typeof error?.stack==='string'?[...error.stack.matchAll(/\/([a-z0-9-]+\.mjs):(\d{1,5}):(\d{1,5})/g)].filter(m=>files.has(m[1])):[];
@@ -115,7 +116,8 @@ export function hostErrorLabel(error) {
 // Keep kernel_browser_failed as the outer code; no serialized contract changes.
 // Existing Web clients match this sentence when retrying a read; append the cause.
 export function hostFailureMessage(error) {
- return 'MD-2: host browser operation failed; refresh state or check host browser readiness ('+hostErrorLabel(error).slice('host_error '.length)+')';
+ const label=hostErrorLabel(error);
+ return 'MD-2: host browser operation failed; refresh state or check host browser readiness ('+(label.startsWith('host_error ')?label.slice('host_error '.length):label)+')';
 }
 
 // MP-08/MP-10/MP-11: classify bounded startup stderr; never expose its text,
