@@ -191,3 +191,134 @@ async fn assessment_after_source_client_left(reattach: bool) {
     );
     assert_ne!(task.state, ExecutionState::Blocked);
 }
+
+// A restart can land after an assessment persisted Continue but before its
+// continuation was queued. The sweep must queue that exact continuation, not
+// re-read the settled assessment forever.
+#[tokio::test]
+async fn sweep_queues_a_continuation_persisted_before_restart() {
+    let turn = started_turn("amfix-sweep-pending-continuation");
+    let runtime = owned_runtime_state(&turn.app).await;
+    let store = &runtime.owned.durable_state_store;
+    begin(&runtime, &turn);
+    append_answer(&runtime, &turn);
+    store
+        .agent_lifecycle(Operation::EnableCompletionCheck {
+            task: turn.prompt.id().into(),
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Settle {
+            room: turn.session_id.clone(),
+            agent: turn.agent_id.clone(),
+            prompt: turn.prompt.id().into(),
+            run: turn.run_id.clone(),
+            has_answer: true,
+            cancelled: false,
+            now: 2,
+        })
+        .unwrap();
+    let check = task_of(&runtime, &turn).pending_prompt_id.unwrap();
+    let check_run = "check-run";
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: turn.session_id.clone(),
+            agent: turn.agent_id.clone(),
+            prompt: check.clone(),
+            run: Some(check_run.into()),
+            now: 3,
+        })
+        .unwrap();
+    let mut asked = crate::history::SessionHistoryEntry::user_prompt(
+        &turn.session_id,
+        &turn.attachment_id,
+        &turn.agent_id,
+        "check",
+    );
+    asked.merge_key = Some(format!("prompt:{check}"));
+    let answered = crate::history::SessionHistoryEntry::provider_output(
+        &turn.session_id,
+        check_run,
+        Some(&turn.agent_id),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        None,
+        "{}",
+    );
+    for entry in [&asked, &answered] {
+        runtime
+            .owned
+            .operational_history_store
+            .append_transcript(entry, Default::default())
+            .unwrap();
+    }
+    store
+        .agent_lifecycle(Operation::EvaluateGoal {
+            task: turn.prompt.id().into(),
+            prompt: check,
+            result: r#"{"status":"continue","reason":"Answer the request"}"#.into(),
+            work_answer: None,
+            now: 4,
+        })
+        .unwrap();
+    let before = task_of(&runtime, &turn);
+    let continuation = before.pending_prompt_id.clone().expect("continuation intent");
+    runtime
+        .owned
+        .complete_local_prompt_without_advance(&turn.session_id, &turn.agent_id, Some(&turn.run_id))
+        .unwrap();
+    runtime.sweep_agent_lifecycle().await.unwrap();
+    let task = task_of(&runtime, &turn);
+    assert_eq!(task.state, ExecutionState::Working, "{}", task.reason);
+    assert_eq!(
+        task.prompt_id, continuation,
+        "the persisted continuation must be admitted, not left pending"
+    );
+}
+
+// A leased task binds the projected `leased:<lease>:<worker-run>` id while its
+// public history carries the worker's own run id.
+#[tokio::test]
+async fn sweep_assesses_an_answered_leased_turn_by_its_worker_history_run() {
+    let turn = started_turn("amfix-sweep-leased-turn");
+    let runtime = owned_runtime_state(&turn.app).await;
+    let worker_run = "worker-run-1";
+    runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: turn.session_id.clone(),
+            agent: turn.agent_id.clone(),
+            prompt: turn.prompt.id().into(),
+            run: Some(crate::provider::projected_leased_provider_run_id("lease-1", worker_run)),
+            now: 1,
+        })
+        .unwrap();
+    let answer = crate::history::SessionHistoryEntry::provider_output(
+        &turn.session_id,
+        worker_run,
+        Some(&turn.agent_id),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        None,
+        "The requested work is finished.",
+    );
+    runtime
+        .owned
+        .operational_history_store
+        .append_transcript(&answer, Default::default())
+        .unwrap();
+    runtime
+        .owned
+        .complete_local_prompt_without_advance(&turn.session_id, &turn.agent_id, Some(&turn.run_id))
+        .unwrap();
+    runtime.sweep_agent_lifecycle().await.unwrap();
+    let task = task_of(&runtime, &turn);
+    assert!(
+        !task.reason.contains("No live provider turn"),
+        "an answered leased turn must be assessed, not blocked: {:?} {}",
+        task.state,
+        task.reason
+    );
+    assert_ne!(task.state, ExecutionState::Working);
+}

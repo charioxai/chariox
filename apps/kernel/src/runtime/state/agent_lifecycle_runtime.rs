@@ -133,7 +133,10 @@ impl KernelRuntimeOwnedState {
         let entries = self
             .operational_history_store
             .load_session_history_entries(&task.room_id, Some(&task.agent_id))?;
-        if !Self::entries_answer_prompt(&entries, &task.prompt_id, run) {
+        // A leased task binds a projected run id; its history uses the worker's.
+        let answer_run =
+            super::agent_task_projection::task_answer_history_run(Some(run)).unwrap_or(run);
+        if !Self::entries_answer_prompt(&entries, &task.prompt_id, answer_run) {
             return Ok(None);
         }
         let prompt = crate::session::PromptQueueItem::new(
@@ -143,7 +146,14 @@ impl KernelRuntimeOwnedState {
             "",
             crate::session::PromptStatus::Completed,
         );
-        self.settle_agent_task(&task.room_id, &task.agent_id, &prompt, run, false)
+        self.settle_agent_task_answered_by(
+            &task.room_id,
+            &task.agent_id,
+            &prompt,
+            run,
+            answer_run,
+            false,
+        )
     }
 
     pub(super) fn settle_agent_task(
@@ -766,6 +776,24 @@ impl KernelRuntimeState {
                     .durable_state_store
                     .agent_has_live_wake_admission(&task, crate::session::unix_epoch_ms)?
             {
+                // An assessment that already persisted its continuation only
+                // lacks the delivery: queue that exact intent, not a re-assessment.
+                if task.pending_prompt_id.is_some()
+                    && ledger::completion::evaluation(&task).is_some_and(|e| e.result.is_some())
+                {
+                    let source = crate::session::PromptQueueItem::new(
+                        task.prompt_id.clone(),
+                        "kernel-supervisor",
+                        &task.agent_id,
+                        "",
+                        crate::session::PromptStatus::Completed,
+                    );
+                    Box::pin(
+                        self.finish_agent_task_settlement(Some((task.clone(), true)), &source),
+                    )
+                    .await?;
+                    continue;
+                }
                 // A turn that answered but was never settled lands here: assess
                 // it instead of blocking an answered task.
                 match self.owned.settle_answered_unsettled_turn(&task) {
