@@ -1330,6 +1330,7 @@ fn interrupt_fixture_with_creator(
     let unrelated_agent_id = unrelated_agent.id().to_string();
     let runtime = runtime_state_from_app(app);
     if !agent_created {
+        let activity_mutation = runtime.owned.begin_managed_activity_mutation();
         let current = runtime
             .owned
             .session_store
@@ -1341,7 +1342,7 @@ fn interrupt_fixture_with_creator(
             .durable_state_store
             .persist_workflow_runtime_transition_with_invocation(
                 &current,
-                "current_user_test_invocation",
+                "interrupt_failure_test_baseline",
                 Some(
                     crate::durable_state::workflow_invocation_provenance::WorkflowUserInvocation {
                         queue_item_id: run
@@ -1353,11 +1354,13 @@ fn interrupt_fixture_with_creator(
                 ),
             )
             .unwrap();
+        activity_mutation.record();
+    } else {
+        runtime
+            .owned
+            .persist_workflow_runtime_session(&session_id, "interrupt_failure_test_baseline")
+            .expect("running workflow baseline should persist");
     }
-    runtime
-        .owned
-        .persist_workflow_runtime_session(&session_id, "interrupt_failure_test_baseline")
-        .expect("running workflow baseline should persist");
     let claim_id =
         runtime
             .owned

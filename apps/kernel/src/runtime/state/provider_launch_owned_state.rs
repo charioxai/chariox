@@ -1568,6 +1568,8 @@ mod tests {
     async fn vaulted_claude_launch_waits_for_chariox_unlock_interaction() {
         crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
+        #[cfg(unix)]
+        let _claude = crate::test_support::TestClaudeExecutable::new();
         let root = std::env::temp_dir().join(format!(
             "chariox-owned-vaulted-claude-launch-{}-{}",
             std::process::id(),
@@ -2272,7 +2274,12 @@ mod tests {
             .unwrap();
         let backing_agent = app.agents().get_agent(&backing.backing_agent_id).unwrap();
         app.provider_account_profile_registry()
-            .require_agent_authenticated(&app.provider_account_authority_owner_for_agent(&backing_agent).unwrap(), &backing_agent, "leased prompt admission")
+            .require_agent_authenticated(
+                &app.provider_account_authority_owner_for_agent(&backing_agent)
+                    .unwrap(),
+                &backing_agent,
+                "leased prompt admission",
+            )
             .expect(
                 "leased prompt admission must validate the home replica, not the worker account",
             );

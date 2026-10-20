@@ -6,7 +6,11 @@ use crate::{DaemonApp, DaemonConfig, DaemonError};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(unix)]
+mod claude_executable;
 mod environment;
+#[cfg(unix)]
+pub(crate) use claude_executable::TestClaudeExecutable;
 #[cfg(unix)]
 mod pre_exec_child;
 mod room_turn;

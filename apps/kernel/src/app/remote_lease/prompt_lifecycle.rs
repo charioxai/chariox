@@ -60,11 +60,17 @@ fn leased_prompt_admission_receipt_projection(
     };
     LeasedPromptReceipt {
         home_prompt_id: receipt.receipt.home_prompt_id.clone(),
-        worker_provider_run_id: receipt
-            .receipt
-            .worker_provider_run_id
-            .clone()
-            .unwrap_or_default(),
+        // An assigned process is not an admitted prompt. Preserve its durable
+        // binding, but a definitive rejection exposes no admitted run to home.
+        worker_provider_run_id: if receipt.receipt.phase == WorkerPromptReceiptPhase::Rejected {
+            String::new()
+        } else {
+            receipt
+                .receipt
+                .worker_provider_run_id
+                .clone()
+                .unwrap_or_default()
+        },
         phase,
         target_home_prompt_id: None,
         execution_lease_id: Some(receipt.receipt.execution_lease_id.clone()),

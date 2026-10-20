@@ -35,6 +35,27 @@ impl KernelRuntimeOwnedState {
             .then(|| (agent_id.to_string(), prompt))
     }
 
+    pub(super) fn settled_native_abort_has_no_successor(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+    ) -> bool {
+        if run.state() != crate::provider::ProviderRunState::Running
+            || !crate::provider::provider_run_uses_claude_native_bridge(run)
+        {
+            return false;
+        }
+        let Some(agent_id) = run.agent_instance_id() else {
+            return false;
+        };
+        self.session_store
+            .get_session(run.session_id())
+            .is_ok_and(|session| {
+                self.prompt_state_owner
+                    .active_prompt_for_agent(&session, agent_id)
+                    .is_none()
+            })
+    }
+
     pub(super) fn prompt_completion_recorded(&self, provider_run_id: &str) -> bool {
         self.prompt_activity
             .read()

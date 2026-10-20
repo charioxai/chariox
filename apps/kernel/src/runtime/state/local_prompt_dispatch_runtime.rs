@@ -1347,6 +1347,7 @@ impl KernelRuntimeState {
                     &dispatch.prompt_id,
                 )
                 .is_none()
+                && !owned.settled_native_abort_has_no_successor(&provider_run)
             {
                 return Ok(());
             }
@@ -1927,6 +1928,8 @@ pub(in crate::runtime::state) mod tests {
     async fn workflow_launch_retains_vaulted_environment_until_detached_spawn() {
         crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
+        #[cfg(unix)]
+        let _claude = crate::test_support::TestClaudeExecutable::new();
         let root = std::env::temp_dir().join(format!(
             "chariox-workflow-provider-credentials-{}-{}",
             std::process::id(),
@@ -2029,6 +2032,8 @@ pub(in crate::runtime::state) mod tests {
     async fn retired_workflow_run_does_not_spawn_after_vault_unlock() {
         crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
+        #[cfg(unix)]
+        let _claude = crate::test_support::TestClaudeExecutable::new();
         let root = std::env::temp_dir().join(format!(
             "chariox-retired-workflow-vault-unlock-{}-{}",
             std::process::id(),

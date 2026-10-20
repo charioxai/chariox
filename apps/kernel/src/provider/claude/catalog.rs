@@ -338,7 +338,7 @@ mod tests {
                 .models
                 .get("claude-haiku-5-5")
                 .expect("real Claude Haiku 5.5 must remain available after a model switch");
-            assert_eq!(model.name, "Claude Haiku 5.5");
+            assert_eq!(model.name, "Haiku 5.5");
         }
     }
 

@@ -831,6 +831,9 @@ mod tests {
 
     #[test]
     fn a_resolved_claude_model_keeps_the_one_million_token_selection() {
+        crate::test_support::isolated_env_test!();
+        #[cfg(unix)]
+        let _claude = crate::test_support::TestClaudeExecutable::new();
         let mut providers = ProviderProcessService::new();
         let run_id = |providers: &mut ProviderProcessService, model: &str| {
             providers

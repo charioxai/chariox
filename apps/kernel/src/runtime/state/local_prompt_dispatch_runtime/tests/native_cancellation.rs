@@ -3,15 +3,20 @@ use super::*;
 
 #[tokio::test]
 async fn runtime_native_cancel_clears_only_its_unacknowledged_composer() {
-    native_cancel_composer_fixture(false).await;
+    native_cancel_composer_fixture(false, false).await;
 }
 
 #[tokio::test]
 async fn runtime_native_cancel_keeps_composer_ownership_after_settlement() {
-    native_cancel_composer_fixture(true).await;
+    native_cancel_composer_fixture(true, false).await;
 }
 
-async fn native_cancel_composer_fixture(settles_before_abort: bool) {
+#[tokio::test]
+async fn settled_native_abort_never_cancels_a_successor() {
+    native_cancel_composer_fixture(true, true).await;
+}
+
+async fn native_cancel_composer_fixture(settles_before_abort: bool, successor_before_abort: bool) {
     for (marker, expected_input) in [
         ("injected:cancel-native", b"\x03\x15".as_slice()),
         ("accepted:cancel-native", b"\x03".as_slice()),
@@ -127,6 +132,22 @@ async fn native_cancel_composer_fixture(settles_before_abort: bool) {
                 )
                 .unwrap();
         }
+        if successor_before_abort {
+            app.lock()
+                .await
+                .prompt_owner_submit_prepared_prompt(
+                    session.id(),
+                    crate::session::PromptQueueItem::new(
+                        "native-successor",
+                        attachment.id(),
+                        agent.id(),
+                        "successor audit prompt",
+                        crate::session::PromptStatus::Dispatching,
+                    ),
+                    false,
+                )
+                .unwrap();
+        }
         let result = runtime
             .enqueue_prompt_abort(&cancellation.dispatch.unwrap())
             .await;
@@ -136,6 +157,24 @@ async fn native_cancel_composer_fixture(settles_before_abort: bool) {
             .input_records()
             .last()
             .map(|record| record.bytes.clone());
+        if successor_before_abort {
+            assert_eq!(
+                runtime
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(
+                        &runtime
+                            .owned
+                            .session_store
+                            .get_session(session.id())
+                            .unwrap(),
+                        agent.id(),
+                    )
+                    .unwrap()
+                    .prompt(),
+                "successor audit prompt"
+            );
+        }
         {
             let mut app = app.lock().await;
             crate::app::ProviderProcessTracker::new(&mut app)
@@ -144,7 +183,15 @@ async fn native_cancel_composer_fixture(settles_before_abort: bool) {
         }
         std::fs::remove_dir_all(root).unwrap();
         result.unwrap();
-        assert_eq!(input.as_deref(), Some(expected_input), "marker={marker}");
+        assert_eq!(
+            input.as_deref(),
+            if successor_before_abort {
+                None
+            } else {
+                Some(expected_input)
+            },
+            "marker={marker}"
+        );
     }
 }
 

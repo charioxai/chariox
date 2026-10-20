@@ -3570,7 +3570,13 @@ mod projection_drain {
             1,
             "the worker completion callback must expose exactly one public completion"
         );
-        assert_eq!(completions[0].provider_run_id, provider_run_id);
+        assert_eq!(
+            completions[0].provider_run_id,
+            crate::provider::projected_leased_provider_run_id(
+                &binding.leased_agent_id,
+                &provider_run_id
+            )
+        );
         assert_eq!(
             completions[0].agent_id.as_deref(),
             Some(agent.id()),
