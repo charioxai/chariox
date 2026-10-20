@@ -1205,7 +1205,10 @@ fn incoming_frame_decode_error(payload: &[u8], error: &serde_json::Error) -> Ker
         Some(request_id) => (
             request_id,
             "invalid_request",
-            crate::transport::request_decode_error::message("invalid request", error),
+            crate::transport::request_decode_error::message(
+                crate::transport::request_decode_error::DECODE_PREFIX,
+                error,
+            ),
         ),
         None => (
             "unknown".to_string(),

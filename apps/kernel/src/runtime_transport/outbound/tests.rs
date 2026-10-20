@@ -239,3 +239,31 @@ fn outbound_preserves_kernel_error_codes_and_retries_without_error_payloads() {
         "error":{"code":"local_transport_error","message":message,"retryable":true}});
     assert_eq!(project_payload(frame.clone()).unwrap(), frame);
 }
+
+// EA2-19: only the decoder's own message about the agent's request is readable.
+#[test]
+fn outbound_lets_a_grant_holder_read_why_its_request_did_not_parse_and_nothing_else() {
+    let error = serde_json::from_str::<crate::local::LocalDaemonRequest>(r#"{"CreateSessoin":{}}"#)
+        .unwrap_err();
+    let decode = crate::transport::request_decode_error::message(
+        crate::transport::request_decode_error::DECODE_PREFIX,
+        &error,
+    );
+    let frame = |message: &str| {
+        serde_json::json!({"type":"response","request_id":"r","response":null,
+        "error":{"code":"invalid_request","message":message,"retryable":false}})
+    };
+    assert_eq!(
+        project_payload(frame(&decode)).unwrap()["error"]["message"],
+        decode
+    );
+    assert!(decode.contains("CreateSessoin"));
+    for other in [
+        CANARY.to_string(),
+        format!("provider said: {CANARY}"),
+        format!("invalid request payload {CANARY}"),
+    ] {
+        let projected = project_payload(frame(&other)).unwrap();
+        assert!(!projected.to_string().contains(CANARY), "{other}");
+    }
+}

@@ -162,11 +162,21 @@ fn project_error(value: &Value) -> KernelTransportError {
     if crate::runtime::external_response::public_error_message(message) {
         projected.message = message.into();
     }
+    // A request that does not parse says which variant or field it expected: serde's
+    // text about the agent's own request, and how an agent learns the vocabulary.
+    // Only the decoder's exact prefix qualifies; any other `invalid_request` text stays private.
+    if code == "invalid_request"
+        && message.starts_with(&format!(
+            "{}: ",
+            crate::transport::request_decode_error::DECODE_PREFIX
+        ))
+    {
+        projected.code = code.into();
+        projected.message = message.into();
+    }
     // The gateway writes these messages itself, from the machine name the agent
     // chose; they carry no provider or parser text.
-    // A request that does not parse says which variant or field it expected;
-    // that text describes the agent's own request, and it is how an agent learns the vocabulary.
-    if crate::runtime::machine_gateway::is_public_code(code) || code == "invalid_request" {
+    if crate::runtime::machine_gateway::is_public_code(code) {
         projected.code = code.into();
         projected.retryable = value["retryable"].as_bool().unwrap_or(false);
         projected.message = message.into();
