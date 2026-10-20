@@ -51,6 +51,7 @@ const activeViewport = async () => {
   return null;
 };
 globalThis.charioxTabs = {
+  revision: 2,
   async viewport(target) {
     if (target === undefined) return activeViewport();
     const id = (await targetTabs()).get(target);
@@ -94,20 +95,8 @@ export class ChromeTabGroups {
     const { id } = await this.connection.send("Extensions.loadUnpacked", { path: directory });
     if (id !== TAB_GROUPS_EXTENSION_ID) throw new Error("MP-11: unexpected kernel tab-groups extension id");
     this.directory = directory;
-    // MP-08/MP-10: Chrome can serve updated files while running a cached
-    // worker. Reload this owned component before binding its native state.
-    const worker = await this.worker(40);
-    if (!worker) throw new Error("MP-11: kernel tab-groups extension unavailable");
-    const {sessionId} = await this.connection.send("Target.attachToTarget",{targetId:worker.targetId,flatten:true});
-    await this.connection.send("Runtime.evaluate",{expression:"chrome.runtime.reload()"},sessionId).catch(()=>{});
-    await this.connection.send("Target.detachFromTarget",{sessionId}).catch(()=>{});
-    this.nativeState.detach(); this.signature="[]";
-    for(let attempt=0;attempt<40;attempt++){
-      if((await this.worker(1))?.targetId!==worker.targetId)return;
-      await delay(50);
-    }
-    throw new Error("MP-11: kernel tab-groups extension unavailable");
   }
+
   async worker(polls) {
     for (let n = 0; n < polls; n++) {
       const worker = (await this.connection.send("Target.getTargets")).targetInfos
@@ -128,8 +117,20 @@ export class ChromeTabGroups {
         await this.load(this.directory);this.signature="[]";worker=await this.worker(40);
       }
       if(!worker)throw Error("MP-11: kernel tab-groups extension unavailable");
-      const {sessionId}=await this.connection.send("Target.attachToTarget",{targetId:worker.targetId,flatten:true});
-      await this.nativeState.attach(sessionId);this.session=sessionId;return sessionId;
+      // MP-08/MP-10: an existing profile can run cached component code even
+      // after its files change. Bind first, reload only an older worker, and
+      // attach the replacement before exposing native state to callers.
+      for(let attempt=0;attempt<2;attempt++){
+        const {sessionId}=await this.connection.send("Target.attachToTarget",{targetId:worker.targetId,flatten:true});
+        await this.nativeState.attach(sessionId);
+        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 2",returnByValue:true},sessionId);
+        if(result?.value===true){this.session=sessionId;return sessionId;}
+        this.nativeState.detach();this.signature="[]";
+        if(attempt)throw Error("MP-11: kernel tab-groups extension unavailable");
+        await this.connection.send("Runtime.evaluate",{expression:"chrome.runtime.reload()"},sessionId).catch(()=>{});
+        await delay(500);worker=await this.worker(40);
+        if(!worker)throw Error("MP-11: kernel tab-groups extension unavailable");
+      }
     })().finally(()=>{this.connecting=null;});
   }
   async evaluate(expression,kind) {
