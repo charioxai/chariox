@@ -394,3 +394,41 @@ test("MP-08 / MP-11 account recovery updates rejected agent while another is foc
   await h.controller.applyAccountSelection("signed", {sessionId: "different", agentId: "agent-b"})
   assert.equal(h.profileUpdates().length, 1)
 })
+
+
+test("MP-08/MP-10/MP-11 model selection refreshes the focused account catalog", async () => {
+  const model = "deepseek-v4.1-flash"
+  const catalog = {
+    all: [{id: "opencode-go", name: "OpenCode Go", models: {
+      [model]: {id: model, name: "DeepSeek V4.1 Flash", status: "active", variants: {}},
+    }}],
+    default: {"opencode-go": model}, connected: ["opencode-go"],
+  }
+  const h = createHarness({attached: true,
+    currentSelection: {provider: "opencode", accountProfile: "linked-go", model: "opencode/gpt-5.4", effort: "medium"},
+    scopedCatalog: catalog,
+  })
+  await h.controller.applyModelSelection(`opencode-go/${model}`)
+  assert.deepEqual(h.catalogLoads(), [{provider: "opencode", accountProfile: "linked-go"}])
+  assert.equal(h.profileUpdates().at(-1)?.profile.model, `opencode-go/${model}`)
+  assert.equal(h.footerMessages().at(-1)?.tone, "info")
+})
+
+
+test("MP-08/MP-10/MP-11 model catalog lookup cannot cross an account switch", async () => {
+  const selection = {provider: "opencode", accountProfile: "first", model: "opencode/gpt-5.4", effort: "medium"}
+  const h = createHarness({attached: true, currentSelection: selection})
+  const pending = h.controller.applyModelSelection("opencode/gpt-5.4")
+  selection.accountProfile = "second"
+  await pending
+  assert.equal(h.profileUpdates().length, 0)
+  assert.equal(h.reconciledStates().length, 0)
+})
+
+test("MP-08/MP-10/MP-11 only the latest pending model selection applies", async () => {
+  const h = createHarness({attached: true})
+  const first = h.controller.applyModelSelection("opencode/gpt-5.4")
+  const second = h.controller.applyModelSelection("opencode/gpt-5.4")
+  await Promise.all([first, second])
+  assert.equal(h.profileUpdates().length, 1)
+})

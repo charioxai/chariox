@@ -3125,3 +3125,253 @@ fn a12_expired_message_or_unhandled_ack_never_revives_delivery() {
     });
     assert_eq!(f.task().obligations[0].status, "settling");
 }
+// MP-08 / MP-10 / MP-11: with every obligation resolved, an empty yield is told to
+// answer rather than to name live sources that cannot exist.
+#[test]
+fn yield_without_open_obligation_points_to_the_final_answer() {
+    let f = Fixture::new();
+    f.begin("p");
+    let error = f
+        .store
+        .agent_lifecycle(Operation::Yield {
+            task: "p".into(),
+            prompt: "p".into(),
+            registrations: vec![],
+            cursor: 0,
+            deadline: 60_000,
+            reason: "nothing".into(),
+            now: 2,
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("final answer"), "{error}");
+}
+
+// MP-08/MP-09/MP-10/MP-11 F03: an accepted finite wait cannot disappear
+// because native turn settlement arrives after its deadline.
+#[test]
+fn a02_late_native_settlement_delivers_the_original_deadline_once() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.yield_now();
+    let Outcome::Settled { task, correction } = f.apply(Operation::Settle {
+        room: "room".into(),
+        agent: "parent".into(),
+        prompt: "p".into(),
+        run: "run".into(),
+        has_answer: false,
+        cancelled: false,
+        now: 60_001,
+    }) else {
+        panic!()
+    };
+    assert_eq!(task.state, ExecutionState::Waiting);
+    assert!(!correction);
+    for now in [60_002, 60_003] {
+        f.apply(Operation::Sweep {
+            now,
+            busy_recipients: vec![],
+            held_work: vec![],
+        });
+    }
+    let inbox = f.store.agent_inbox("room", "parent", 0).unwrap();
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(inbox[0].kind, "deadline_reached");
+    assert_eq!(f.task().wait.unwrap().deadline_ms, 60_000);
+}
+
+// MP-08/MP-09/MP-10/MP-11 F03: continued native polling cannot replace a
+// previously accepted deadline with a new one before native settlement.
+#[test]
+fn a02_accepted_wait_rejects_repeated_yield_without_extending_deadline() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.yield_now();
+    assert!(f
+        .store
+        .agent_lifecycle(Operation::Yield {
+            task: "p".into(),
+            prompt: "p".into(),
+            registrations: vec!["reg".into()],
+            cursor: 0,
+            deadline: 120_000,
+            reason: "polling".into(),
+            now: 3,
+        })
+        .is_err());
+    assert_eq!(f.task().wait.unwrap().deadline_ms, 60_000);
+}
+
+// MP-08/MP-10/MP-11 F04: a delivered message remains satisfied while the
+// parent observes THIS child task, including completion-before-subscribe.
+#[test]
+fn a02_existing_child_subscription_uses_the_submitted_task_not_prior_agent_result() {
+    for fast in [false, true] {
+        let f = Fixture::new();
+        f.begin("p");
+        f.apply(Operation::RegisterObligation {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: "parent".into(),
+            prompt: "p".into(),
+            run: Some("run".into()),
+            id: "message".into(),
+            kind: "message".into(),
+            resource: Some("child-prompt".into()),
+            now: 1,
+        });
+        f.apply(Operation::DispatchReceipt {
+            id: "message".into(),
+            accepted: true,
+            resource: Some("child-prompt".into()),
+        });
+        f.apply(Operation::Begin {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: "child".into(),
+            prompt: "child-prompt".into(),
+            run: Some("child-run".into()),
+            now: 2,
+        });
+        f.apply(Operation::SourceOutcome {
+            room: "room".into(),
+            source: "child".into(),
+            occurrence: "old-task".into(),
+            success: true,
+            public_answer: None,
+            now: 3,
+        });
+        if fast {
+            f.apply(Operation::SourceOutcome {
+                room: "room".into(),
+                source: "child-prompt".into(),
+                occurrence: "this-task".into(),
+                success: true,
+                public_answer: None,
+                now: 4,
+            });
+        }
+        f.apply(Operation::Subscribe {
+            task: "p".into(),
+            prompt: "p".into(),
+            registration: Registration {
+                id: "this-task-subscription".into(),
+                task_id: "p".into(),
+                source_id: "child".into(),
+                obligation_id: Some("message".into()),
+                source_cursor: 0,
+                live: true,
+            },
+        });
+        let reg = f.store.agent_registrations("p").unwrap().remove(0);
+        assert_eq!(reg.source_id, "child-prompt");
+        assert_eq!(reg.obligation_id, None);
+        assert_eq!(reg.live, !fast);
+        let events = f.store.agent_inbox("room", "parent", 0).unwrap();
+        assert_eq!(events.len(), usize::from(fast));
+        if fast {
+            assert_eq!(events[0].occurrence_id, "this-task");
+        }
+        assert_eq!(f.task().obligations[0].status, "satisfied");
+        f.apply(Operation::Yield {
+            task: "p".into(),
+            prompt: "p".into(),
+            registrations: vec![reg.id],
+            cursor: 0,
+            deadline: 60_000,
+            reason: "child completion".into(),
+            now: 5,
+        });
+        let Outcome::Settled { task, correction } = f.settle("p", false) else {
+            panic!()
+        };
+        assert_eq!(task.state, ExecutionState::Waiting);
+        assert!(!correction);
+    }
+}
+
+// MP-08/MP-10/MP-11 F04: the same child task may have a pending
+// delegate completion and an already delivered message. Automatic binding
+// must cover the completion obligation instead of observing delivery alone.
+#[test]
+fn a02_child_subscription_prefers_unresolved_completion_to_delivered_message() {
+    for source in ["child", "child-prompt"] {
+        let f = Fixture::new();
+        f.begin("p");
+        for (id, kind, resource) in [
+            ("delegate", "delegate", "child"),
+            ("message", "message", "child-prompt"),
+        ] {
+            f.apply(Operation::RegisterObligation {
+                owner: "owner".into(),
+                room: "room".into(),
+                agent: "parent".into(),
+                prompt: "p".into(),
+                run: Some("run".into()),
+                id: id.into(),
+                kind: kind.into(),
+                resource: Some(resource.into()),
+                now: 1,
+            });
+            f.apply(Operation::DispatchReceipt {
+                id: id.into(),
+                accepted: true,
+                resource: Some(resource.into()),
+            });
+        }
+        f.apply(Operation::Begin {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: "child".into(),
+            prompt: "child-prompt".into(),
+            run: Some("child-run".into()),
+            now: 2,
+        });
+        f.apply(Operation::BindDelegate {
+            parent_task: "p".into(),
+            child_task: "child-prompt".into(),
+        });
+        f.apply(Operation::Subscribe {
+            task: "p".into(),
+            prompt: "p".into(),
+            registration: Registration {
+                id: "completion".into(),
+                task_id: "p".into(),
+                source_id: source.into(),
+                obligation_id: None,
+                source_cursor: 0,
+                live: true,
+            },
+        });
+        let reg = f
+            .store
+            .agent_registrations("p")
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == "completion")
+            .unwrap();
+        assert_eq!(reg.source_id, "child-prompt");
+        assert_eq!(reg.obligation_id.as_deref(), Some("delegate"));
+        assert_eq!(
+            f.task()
+                .obligations
+                .iter()
+                .find(|o| o.id == "message")
+                .unwrap()
+                .status,
+            "satisfied"
+        );
+        f.apply(Operation::Yield {
+            task: "p".into(),
+            prompt: "p".into(),
+            registrations: vec![reg.id],
+            cursor: 0,
+            deadline: 60_000,
+            reason: "actual child completion".into(),
+            now: 3,
+        });
+    }
+}

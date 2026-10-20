@@ -83,7 +83,13 @@ impl KernelRuntimeOwnedState {
         session.set_agents(agents);
         session.set_agent_tasks(
             self.durable_state_store
-                .agent_tasks(Some(session_id), None)?,
+                .agent_tasks(Some(session_id), None)?
+                .into_iter()
+                .map(|mut task| {
+                    task.reason = crate::terminal::public_task_failure_reason(&task.reason);
+                    task
+                })
+                .collect(),
         );
         session.set_agent_wakes(super::agent_wake_scheduler::visible_wakes(
             self.durable_state_store

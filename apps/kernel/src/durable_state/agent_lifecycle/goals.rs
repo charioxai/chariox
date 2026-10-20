@@ -57,6 +57,10 @@ pub(crate) enum Assessment {
     },
     Continue {
         reason: String,
+        // Public references are informational on a continuation. They cannot
+        // satisfy an obligation or authorize an achieved outcome.
+        #[serde(default, rename = "evidence")]
+        _evidence: Vec<String>,
     },
     Waiting {
         reason: String,
@@ -178,7 +182,10 @@ pub(super) fn work_end(t: &mut AgentTaskExecution, has_answer: bool, now: u64) -
         || t.completion_check.as_ref().unwrap().check_count,
         |g| g.check_count,
     ) + 1;
-    let prompt = format!("goal-check-{}-{}-{}", t.task_id, revision, count);
+    let prompt = format!(
+        "{COMPLETION_CHECK_PROMPT_PREFIX}{}-{}-{}",
+        t.task_id, revision, count
+    );
     let check = GoalEvaluation {
         origin: "completion_check".into(),
         prompt_id: prompt.clone(),
@@ -204,6 +211,22 @@ pub(super) fn work_end(t: &mut AgentTaskExecution, has_answer: bool, now: u64) -
     true
 }
 
+const COMPLETION_CHECK_PROMPT_PREFIX: &str = "goal-check-";
+pub(crate) fn is_completion_check_prompt_id(prompt_id: &str) -> bool {
+    prompt_id.starts_with(COMPLETION_CHECK_PROMPT_PREFIX)
+}
+pub(super) const CORRECTION_PROMPT_PREFIX: &str = "task-correction-";
+/// The kernel's single correction instruction is internal protocol text; the
+/// agent's answer to it stays visible, the instruction itself does not.
+pub(crate) fn is_correction_prompt_id(prompt_id: &str) -> bool {
+    prompt_id.starts_with(CORRECTION_PROMPT_PREFIX)
+}
+pub(super) const OWNER_RESUME_PROMPT_PREFIX: &str = "task-resume-";
+/// The owner's Resume is a UI action; the instruction the kernel sends the
+/// agent for it is internal protocol text and never a user prompt row.
+pub(crate) fn is_owner_resume_prompt_id(prompt_id: &str) -> bool {
+    prompt_id.starts_with(OWNER_RESUME_PROMPT_PREFIX)
+}
 pub(crate) fn is_check(t: &AgentTaskExecution, prompt: &str) -> bool {
     completion::evaluation(t).is_some_and(|e| e.prompt_id == prompt)
 }
@@ -213,6 +236,7 @@ pub(super) fn evaluate(
     task: String,
     prompt: String,
     mut result: String,
+    work_answer: Option<String>,
     now: u64,
 ) -> Result<Outcome, DaemonError> {
     let mut t = load(tx, &task)?;
@@ -250,7 +274,52 @@ pub(super) fn evaluate(
         None
     };
     let mut again = false;
-    match assessment {
+    // MP-08 / MP-10 / MP-11: a plain request gets one correction. Once
+    // that work has a public answer and zero unresolved obligations, further
+    // assessor notes are information, not an owner action or a goal loop.
+    let plain_correction_finished = t.goal.is_none()
+        && t.correction_used
+        && valid
+        && !t
+            .obligations
+            .iter()
+            .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
+    // A reply that is no JSON object at all (the assessor answered the request
+    // instead of assessing it) carries no verdict; the public answer stands.
+    let answered_instead = t.goal.is_none()
+        && valid
+        && !result.contains('{')
+        && work_answer.as_deref().is_some_and(|a| !a.trim().is_empty())
+        && !t
+            .obligations
+            .iter()
+            .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
+    if plain_correction_finished || answered_instead {
+        if let Some(answer) = work_answer.filter(|s| !s.trim().is_empty()) {
+            let evidence = format!(
+                "history:{}:prompt:{}",
+                t.room_id,
+                completion::evaluation(&t).unwrap().work_prompt_id
+            );
+            t.state = ExecutionState::Done;
+            t.wait = None;
+            t.pending_prompt_id = None;
+            t.reason.clear();
+            let check = t.completion_check.as_mut().unwrap();
+            check.final_answer =
+                Some(crate::secret_redaction::redact_secrets(&answer).into_owned());
+            check.evidence = vec![evidence];
+        } else {
+            blocked(&mut t, "The corrected public answer is unavailable; reconcile the work history before resuming");
+        }
+    } else {
+        match assessment {
+        None if valid && t.goal.is_none() && !t.correction_used
+            && work_answer.as_deref().is_some_and(|answer| !answer.trim().is_empty())
+            && !t.obligations.iter().any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
+            && serde_json::from_str::<serde_json::Value>(result).is_err() => {
+                again = continue_work(&mut t, "The completion check returned malformed JSON. Review the existing public answer and handled receipts, then report the result once. Do not rerun completed work merely to repair this check");
+        }
         None => blocked(&mut t, "Goal evaluation timed out, was malformed or stale; inspect the receipt and explicitly resume"),
         Some(Assessment::Blocked { reason }) if !reason.trim().is_empty() => blocked(&mut t, &reason),
         Some(Assessment::Achieved { final_answer, evidence }) if !final_answer.trim().is_empty() && !evidence.is_empty() && evidence.iter().all(|e| !e.trim().is_empty()) => {
@@ -269,7 +338,7 @@ pub(super) fn evaluate(
                 else { let c = t.completion_check.as_mut().unwrap(); c.final_answer = Some(final_answer); c.evidence = evidence; }
             }
         }
-        Some(Assessment::Continue { reason }) if !reason.trim().is_empty() => {
+        Some(Assessment::Continue { reason, .. }) if !reason.trim().is_empty() => {
             again = continue_work(&mut t, &reason);
         }
         Some(Assessment::Waiting { reason, registration_ids, deadline_ms }) if !reason.trim().is_empty() => {
@@ -283,7 +352,14 @@ pub(super) fn evaluate(
                 && t.obligations.iter().filter(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
                     .all(|o| regs.iter().any(|r| r.live && registration_ids.contains(&r.id) && r.obligation_id.as_deref() == Some(&o.id)));
             if !valid_sources {
-                blocked(&mut t, "Goal waiting needs live sources covering all obligations and a finite deadline");
+                // A source that already completed leaves its obligation settling until
+                // the agent acknowledges the receipt: send it there once, never the owner.
+                if !t.correction_used && t.obligations.iter().any(|o| o.status == "settling") {
+                    again = continue_work(&mut t, "Waiting was rejected: these sources already completed. Read the inbox and acknowledge each completion receipt, then answer");
+                    t.correction_used = true;
+                } else {
+                    blocked(&mut t, "Goal waiting needs live sources covering all obligations and a finite deadline");
+                }
             } else if t.no_progress_wakes >= NO_PROGRESS_LIMIT {
                 blocked(&mut t, "Goal check-ins made no progress; owner must inspect and explicitly resume");
             } else {
@@ -299,6 +375,7 @@ pub(super) fn evaluate(
             }
         }
         _ => blocked(&mut t, "Goal evaluation omitted its required answer/evidence or owner action; explicitly resume"),
+    }
     }
     let receipt = if result.len() > RESULT_LIMIT {
         serde_json::json!({"invalid":true,"reason":"completion_check result exceeds 8192 bytes"})
@@ -329,7 +406,7 @@ fn continue_work(t: &mut AgentTaskExecution, reason: &str) -> bool {
         t.correction_used = true;
         t.wait = None;
         t.reason = reason.into();
-        t.pending_prompt_id = Some(format!("task-correction-{}", t.task_id));
+        t.pending_prompt_id = Some(format!("{CORRECTION_PROMPT_PREFIX}{}", t.task_id));
         return true;
     }
     if t.no_progress_wakes >= NO_PROGRESS_LIMIT {

@@ -75,6 +75,11 @@ impl KernelRuntimeState {
             .into_iter()
             .find(|t| t.task_id == task_id && t.prompt_id == prompt.id())
             .ok_or_else(|| ledger::error("task unavailable in this room and turn"))?;
+        // MP-08/MP-09/MP-10/MP-11 F03: polling cannot keep an accepted wait
+        // inside a native turn or mutate its sources/deadline before settlement.
+        if task.wait.is_some() {
+            return Err(ledger::error("Wait already accepted. End this provider turn immediately without further tools, including inbox, wakes or subscriptions. The kernel will deliver a new turn for the source or deadline."));
+        }
         let now = crate::session::unix_epoch_ms();
         let payload = match name {
             "chariox.events.inbox" => {
@@ -193,7 +198,7 @@ impl KernelRuntimeState {
                         reason: args["reason"].as_str().unwrap_or_default().into(),
                         now,
                     })?;
-                serde_json::json!({"yield_requested":true,"waiting_commits_at_native_settlement":true})
+                serde_json::json!({"yield_requested":true,"waiting_commits_at_native_settlement":true,"next_action":"End this provider turn immediately without further tools. Do not check inbox, wakes or subscriptions: the kernel delivers a new turn for the source or deadline."})
             }
             "chariox.events.blocked" => {
                 let result = self

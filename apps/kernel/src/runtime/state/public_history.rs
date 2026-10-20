@@ -11,6 +11,9 @@ impl room_secret_observation::RoomSecretObservations {
         event: &HistoryEvent,
         owner: &str,
     ) -> Option<PublicHistoryDocument> {
+        if crate::history::public_history::is_internal_protocol_event(event) {
+            return None;
+        }
         if !matches!(
             event.kind,
             HistoryEventKind::UserPrompt

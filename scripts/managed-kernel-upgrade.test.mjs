@@ -145,7 +145,7 @@ test("repository release policy admits reviewed predecessors and matches the run
   const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
   // MP-07/MP-10: released F/G/Apps predecessors, main 472/487, the 506..532 union ladder and the current union; unreleased379..409 remain refused.
-  const admittedProtocols = [343, ...Array.from({ length: 12 }, (_, index) => 367 + index), 410, 411, 415, 416, 435, 472, 487, 490, 491, 493, 506, 511, 513, 517, 519, 525, 528, 532, runtimeProtocol]
+  const admittedProtocols = [343, ...Array.from({ length: 12 }, (_, index) => 367 + index), 410, 411, 415, 416, 435, 472, 487, 490, 491, 493, 506, 511, 513, 517, 519, 520, 525, 528, 532, runtimeProtocol]
   assert.deepEqual(policy, {
     schemaVersion: 1,
     protocol: runtimeProtocol,
@@ -1300,7 +1300,7 @@ test("MP-07/MP-10/MP-11 signed main 520 to runtime 527 upgrade and rollback use 
 })
 
 // This signed installer fixture is not proof of real-binary state migration.
-for (const [currentProtocol, targetProtocol] of [[410, 411], [411, 415], [415, 416], [472, 493], [487, 493]]) {
+for (const [currentProtocol, targetProtocol] of [[410, 411], [411, 415], [415, 416], [472, 493], [487, 493], [491, 520]]) {
 test(`managed kernel upgrade accepts the signed repository ${currentProtocol} to ${targetProtocol} fixture transition and rollback`, async (context) => {
   const repositoryPolicy = JSON.parse(await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json"), "utf8"))
   const harness = await makeHarness(context, {

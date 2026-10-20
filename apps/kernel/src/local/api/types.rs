@@ -338,4 +338,7 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: allocated 556 adds `KernelBrowser` `state_wait`: a parked state read
 /// replacing the viewer's 250 ms poll.
 /// MP-08/MP-10/MP-11: allocated 567 adds the mirror v2 `fonts` op's `absent` (stack families the native machine lacks).
+/// Agent-model line (537, relay peer 145) contracts are merged into this number until the coordinator allocates the final one:
+/// task/wake, completion, leased-watcher, paired-display and historical-workflow projections, owner-only 520/128 direct carriers
+/// and owner-managed contexts (MP-08/MP-10/MP-11).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 567;

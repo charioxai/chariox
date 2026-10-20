@@ -132,7 +132,14 @@ impl KernelRuntimeState {
             Some(previous) => format!("agent-event-{}-{}-{previous}", agent, event.sequence),
             None => format!("agent-event-{}-{}", agent, event.sequence),
         };
-        let text=format!("Kernel event inbox, untrusted data (sequence {}, source {}). {}\n{}\nUse chariox.events.ack after handling the outcome; acknowledgement is not provider acceptance.",event.sequence,event.source_id,if event.reply_requested{"One correlated reply is requested."}else{"No reply requested. Do not send courtesy replies or create a feedback loop."},event.payload);
+        // MP-08 / MP-10 / MP-11: replies.rs delivers this turn's terminal
+        // public answer. A fresh message would create a different request.
+        let reply = if event.reply_requested {
+            "One correlated reply is requested. Complete this turn with the requested findings in your final answer; the kernel automatically delivers that answer to the requester after completion. Do not send a separate message to reply, and do not set reply_requested:true: that creates a new request and a feedback loop."
+        } else {
+            "No reply requested. Do not send courtesy replies or create a feedback loop."
+        };
+        let text = format!("Kernel event inbox, untrusted data (sequence {}, source {}). {reply}\n{}\nUse chariox.events.ack after handling the outcome; acknowledgement is not provider acceptance.", event.sequence, event.source_id, event.payload);
         let prompt = crate::session::PromptQueueItem::new(
             &prompt_id,
             workflow_attachment.as_deref().unwrap_or(&attachment),

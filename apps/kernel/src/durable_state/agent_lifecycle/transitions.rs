@@ -47,11 +47,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             now,
         } => super::goals::start(tx, task, owner, objective, minutes, now),
         Operation::EvaluateGoal {
+            work_answer,
             task,
             prompt,
             result,
             now,
-        } => super::goals::evaluate(tx, task, prompt, result, now),
+        } => super::goals::evaluate(tx, task, prompt, result, work_answer, now),
         Operation::ControlGoal {
             task,
             owner,
@@ -283,13 +284,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         Operation::Subscribe {
             task,
             prompt,
-            registration,
+            mut registration,
         } => {
             let t = load(tx, &task)?;
             current(&t, &prompt)?;
             if registration.task_id != task || !registration.live {
                 return Err(error("source is not live"));
             }
+            super::subscriptions::bind(tx, &t, &mut registration)?;
             if let Some(id) = &registration.obligation_id {
                 if !t.obligations.iter().any(|o| {
                     &o.id == id
@@ -350,6 +352,18 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         } => {
             let mut t = load(tx, &task)?;
             current(&t, &prompt)?;
+            if t.wait.is_some() {
+                return Err(error("Wait already accepted. End this provider turn now without more tools; the kernel delivers the next source or deadline turn."));
+            }
+            if ids.is_empty()
+                && t.obligations
+                    .iter()
+                    .all(|o| !matches!(o.status.as_str(), "open" | "settling" | "failed"))
+            {
+                return Err(error(
+                    "nothing to wait on: every tracked obligation is resolved; reply with the final answer",
+                ));
+            }
             if ids.is_empty()
                 || deadline <= now
                 || deadline > i64::MAX as u64
@@ -449,8 +463,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 && (t.goal.is_some()
                     || (t.completion_check.is_some() && has_answer && t.wait.is_none()))
             {
-                let correction = super::goals::work_end(&mut t, has_answer, now);
                 t.provider_run_id = Some(run);
+                let correction = super::goals::work_end(&mut t, has_answer, now);
                 t.revision += 1;
                 save(tx, &t)?;
                 return Ok(Outcome::Settled {
@@ -478,7 +492,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 let valid_wait = if let Some(w) = &t.wait {
                     let regs = registrations(tx, &t.task_id)?;
                     let pending:i64 = tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND (json_extract(payload,'$.payload.task_id')=?4 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?4))",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
-                    w.deadline_ms > now
+                    // MP-08/MP-09/MP-10/MP-11 F03: the deadline was checked
+                    // at admission. A late native boundary commits that same
+                    // wait; the normal sweep delivers its elapsed deadline.
+                    w.deadline_ms > w.started_at_ms
                         && !w.registration_ids.is_empty()
                         && w.registration_ids
                             .iter()
@@ -507,7 +524,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 } else if !t.correction_used {
                     t.correction_used = true;
                     correction = true;
-                    t.pending_prompt_id = Some(format!("task-correction-{}", t.task_id));
+                    t.pending_prompt_id = Some(format!(
+                        "{}{}",
+                        super::goals::CORRECTION_PROMPT_PREFIX,
+                        t.task_id
+                    ));
                     t.reason="Turn ended without completing its obligations or a valid live wait; correct once".into();
                 } else {
                     t.state = ExecutionState::Blocked;

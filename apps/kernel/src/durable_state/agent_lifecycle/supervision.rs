@@ -396,7 +396,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     g.continuation_sequence += 1;
                     g.next_check_in_ms = None;
                 }
-                t.pending_prompt_id = Some(format!("task-resume-{}-{}", t.task_id, t.revision));
+                t.pending_prompt_id = Some(format!(
+                    "{}{}-{}",
+                    super::goals::OWNER_RESUME_PROMPT_PREFIX,
+                    t.task_id,
+                    t.revision
+                ));
                 t.last_progress_at_ms = now;
             }
             save(tx, &t)?;

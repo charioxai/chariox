@@ -550,6 +550,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     // outcome. Otherwise a successor cancels the clock while
                     // leaving the owning task asleep on its dead registration.
                     cancel_settle(tx, &mut wake, crate::session::unix_epoch_ms())?;
+                    // The owning turn asked for this cancellation, so its receipt
+                    // needs no handling (a successor turn's wake-up still does).
+                    if caller.task_id == t.task_id {
+                        tx.execute("UPDATE agent_inbox SET payload=json_set(payload,'$.state','handled') WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND occurrence_id=?4 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed')",params![wake.room_id,wake.agent_id,wake.id,format!("{}-cancelled",wake.id)]).map_err(sql)?;
+                    }
                 }
                 None => {
                     if t.state != ExecutionState::Cancelled {

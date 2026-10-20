@@ -6,6 +6,7 @@ use crate::local::{
 };
 
 mod agent_workflow;
+mod aggregate_agent_model;
 mod app_events;
 mod app_fetch;
 mod app_install;
@@ -110,3 +111,4 @@ mod relay_transport;
 mod ssh_machine;
 
 mod waiting_room_workspace;
+mod screenshot;

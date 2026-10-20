@@ -929,7 +929,7 @@ impl KernelRuntimeState {
                     &dispatch.agent_id,
                     &dispatch.prompt_id,
                     &dispatch.provider_run_id,
-                    &dispatch_failure,
+                    &crate::terminal::user_facing_dispatch_failure(&error),
                 ) {
                 Ok(Some(released_claim)) => (true, released_claim),
                 Ok(None) => (false, false),
@@ -1018,6 +1018,11 @@ impl KernelRuntimeState {
             if released_claim {
                 self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
             }
+        }
+        if dispatch_owns_active_prompt {
+            // MP-08/MP-10/MP-11: offer owner retry/cancel now, rather than
+            // waiting for the periodic lifecycle sweep after a failed request.
+            self.schedule_agent_lifecycle_sweep();
         }
         if let Some(next_dispatch) = next_dispatch {
             self.spawn_prompt_dispatch(next_dispatch, self.provider_runtime_lanes.clone());
@@ -3804,6 +3809,122 @@ pub(in crate::runtime::state) mod tests {
                 .state(),
             crate::agent::AgentState::Error,
         );
+    }
+
+    #[tokio::test]
+    async fn amfix_r19_dispatch_failure_blocks_exact_durable_task_immediately() {
+        use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+        let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
+            runtime_with_admitted_prompt().await;
+        let mut config = runtime.owned.config_projection.snapshot();
+        config.room_agent_tools = true;
+        runtime.owned.config_projection.update(config);
+        runtime
+            .owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Begin {
+                owner: runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap()
+                    .owner_user_id()
+                    .into(),
+                room: session_id.clone(),
+                agent: agent_id.clone(),
+                prompt: dispatch.prompt_id.clone(),
+                run: Some(provider_run_id.clone()),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+        runtime
+            .fail_prompt_dispatch(
+                dispatch.clone(),
+                DaemonError::ProviderProtocol {
+                    provider_run_id: provider_run_id.clone(),
+                    operation: "provider_catalog",
+                    message: "Resource temporarily unavailable (os error 11)".into(),
+                },
+            )
+            .await
+            .expect_err("failed dispatch must retain its error");
+        let tasks = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(&session_id), Some(&agent_id))
+            .unwrap();
+        let task = tasks
+            .iter()
+            .find(|t| t.task_id == dispatch.prompt_id)
+            .unwrap();
+        assert_eq!(
+            task.state,
+            ExecutionState::Blocked,
+            "failed dispatch must not wait for the lost-executor sweep"
+        );
+        assert!(task.reason.contains("model list"));
+        assert!(!task.reason.contains("provider_catalog"));
+        assert!(!task.reason.contains("provider protocol"));
+        assert!(task.reason.contains("Resume"));
+        assert!(!task.reason.contains("No live provider turn"));
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap()
+                    .active_interactions()
+                    .iter()
+                    .any(|i| i.id().starts_with("task-blocked-"))
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("failed dispatch must offer owner actions without the periodic sweep");
+        assert!(runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(
+                &runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap(),
+                &agent_id
+            )
+            .is_none());
+        assert!(
+            runtime
+                .owned
+                .terminal_stream
+                .drain_output_records(&session_id, &observer_id)
+                .into_iter()
+                .all(|record| record.kind != crate::terminal::TerminalOutputKind::ProviderError),
+            "kernel dispatch diagnostics must not become agent output"
+        );
+        let revision = task.revision;
+        runtime
+            .fail_prompt_dispatch(
+                dispatch,
+                DaemonError::ProviderProtocol {
+                    provider_run_id,
+                    operation: "session_prompt",
+                    message: "late duplicate".into(),
+                },
+            )
+            .await
+            .expect_err("duplicate failure still returns its error");
+        let tasks = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(&session_id), Some(&agent_id))
+            .unwrap();
+        assert_eq!(tasks[0].revision, revision);
+        assert!(!tasks[0].reason.contains("late duplicate"));
     }
 
     #[tokio::test]

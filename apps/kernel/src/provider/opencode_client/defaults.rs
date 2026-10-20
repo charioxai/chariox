@@ -52,7 +52,7 @@ impl OpenCodeClient {
         let config: OpenCodeConfig = match self.send_json_request("GET", "/config", None) {
             Ok(config) => config,
             Err(DaemonError::ProviderProtocol {
-                operation: "configured_defaults",
+                operation: "configuration_read",
                 message,
                 ..
             }) if message == "OpenCode returned HTTP 404" => {
@@ -63,7 +63,7 @@ impl OpenCodeClient {
         let agents = match self.send_json_request("GET", "/agent", None) {
             Ok::<serde_json::Value, _>(value) => parse_agent_infos(value),
             Err(DaemonError::ProviderProtocol {
-                operation: "opencode_http",
+                operation: "agent_catalog",
                 message,
                 ..
             }) if message == "OpenCode returned HTTP 404" => Vec::new(),
