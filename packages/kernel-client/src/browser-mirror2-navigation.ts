@@ -96,7 +96,8 @@ export class Mirror2Navigation {
     frame.setAttribute('sandbox', 'allow-same-origin')
     frame.setAttribute('referrerpolicy', 'no-referrer')
     frame.setAttribute('title', 'Mirrored kernel browser page')
-    frame.style.cssText = 'width:1280px;height:800px;border:0;display:block;visibility:hidden;background:white'
+    // The viewer's page area sets the layout size (protocol 560/168 layout_width/height); canonical when unset.
+    frame.style.cssText = 'width:var(--mirror-frame-width,1280px);height:var(--mirror-frame-height,800px);border:0;display:block;visibility:hidden;background:white'
     if (spare) { frame.inert = true; frame.style.display = 'none' }
     frame.srcdoc = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${mirror2SandboxCsp}"></head><body></body></html>`
     const loaded = new Promise<void>(resolve => {
