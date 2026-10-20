@@ -546,6 +546,18 @@ impl RuntimeProviderRun {
         }
     }
 
+    /// Only the isolated Claude assessment clone receives this private input file.
+    pub(in crate::provider) fn append_claude_utility_system_prompt_file(
+        &mut self,
+        path: &std::path::Path,
+    ) {
+        debug_assert!(self.metadata_only_discovery && self.adapter_key() == "claude");
+        self.pty_args.extend([
+            "--append-system-prompt-file".into(),
+            path.display().to_string(),
+        ]);
+    }
+
     pub(crate) fn read_only_discovery(&self) -> bool {
         self.read_only_discovery
     }
