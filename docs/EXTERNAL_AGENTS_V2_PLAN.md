@@ -1,6 +1,17 @@
 # External Agents v2 Plan
 
-**Status:** Draft for Miguel's approval, 2026-10-20. Plan only, no code. Protocol numbers below are placeholders (`NEXT`, `NEXT+1`); the coordinator allocates them.
+**Status:** Approved by Miguel, 2026-10-20 (all eight questions answered, none open). Plan only, no code. Protocol numbers below are placeholders (`NEXT`, `NEXT+1`); the coordinator allocates them.
+
+**Decisions taken on the open questions (Miguel, 2026-10-20):**
+
+1. One local passkey grant reaches all of the user's machines; no per-machine narrowing. The popup says so and revoke is immediate.
+2. The remote kernel also enforces the human-only set when a request carries `on_behalf_of` (section 5.3). One shared function; no Cloud and no link involved.
+3. Machine file requests (`Read/Write/StatMachineFile`) are added, chunked, resumable, sha256-checked, 2 GiB cap (section 9.1).
+4. b3 becomes a real signed kernel in Miguel's hosted account through a one-time ssh bootstrap. This is an interim step: it is replaced when b3 becomes a Path-1 Chariox-managed machine or a BYOM machine.
+5. Verify first, then decide: Cloud already lists kernels for **user** sessions (waiting room, remote TUI picker). Step 1 checks whether a **kernel** credential can call that list. A kernel-scoped read-only variant is added only if it cannot (section 3.3).
+6. Approval deep link (128-bit, single use, 10 min, account and kernel bound) ships as an extension after the core. Self-hosted uses a remote TUI until the native mobile client exists.
+7. `apps-external-agents` is closed out as in section 10.
+8. The popup default stays 8 h; "until the agent exits" is opt-in; a kernel restart still ends it.
 
 Builds on `docs/CHARIOX_KERNEL_ACCESS_PLAN.md` (D1–D16), `docs/KERNEL_SUDO.md` and `docs/KERNEL_ACCESS.md`. Where this plan changes a rule from those documents it says so (section 4).
 
@@ -66,7 +77,10 @@ The goal behind it: the coordinator (Claude Code on Miguel's Mac) works on the M
 
 ### 3.3 Discovery like terminals (decision 3)
 
-- **Hosted.** The local kernel asks Cloud for its owner's machines with its own durable kernel credential (the same credential that already renews terminal tokens), using the heartbeat-fresh list the waiting room and remote TUI use. Relay target selection stays Cloud's job (AGENTS.md rule 4). To verify in step 1: whether `ListRemoteMachines`/`ResolveKernelClientConnection` already cover the listing with the kernel credential. If not, one read-only, kernel-credential-authenticated directory endpoint is added to `chariox-cloud` (separate PR, listed under Coordinator asks).
+- **Hosted.** The local kernel fetches its owner's machine list from Cloud (heartbeat freshness), the same list the web waiting room and the remote TUI picker show. Relay target selection stays Cloud's job (AGENTS.md rule 4).
+  - Cloud already lists kernels, but for **user** sessions (a signed-in person). The open point is only whether a **kernel** credential, the durable one that already renews terminal tokens, may call that list. Step 1 checks this on the real hosted stack, with `ListRemoteMachines` / `ResolveKernelClientConnection` as the first suspects.
+  - If the kernel credential can already read the list: nothing is added. If it cannot: one kernel-scoped, read-only variant of the same list is added to `chariox-cloud` (owner's kernels only, same freshness data; separate PR, listed under Coordinator asks).
+- **One source interface.** The gateway's machine list sits behind a single inventory-source interface with one job: "give me the user's machines with name, status, last seen, protocol and how to reach them". Two sources implement it today, the hosted Cloud list and the paired kernels below. The gateway, the CLI and the agent guide only ever see the interface, so a future self-hosted registry or a kernel gossip mesh (Miguel's idea, a separate future area) can be added as a third source without changing the gateway or the CLI. No such source is built in v2.
 - **Self-hosted.** The machines are the kernels this kernel paired with through terminal pairing links. A person runs `/machine add <link>` (new, human-only) in a Chariox terminal on the local kernel; the kernel performs the terminal join (`JoinTerminalPairingLink` logic) with its gateway key and stores the machine in `gateway-machines.json` (0600). No Cloud involved.
 - **Agent-facing:** `chariox machines`, `--machine <name>` on CLI commands, `chariox guide`. Names are the user's local aliases (`/machine rename`); ambiguity is an error that lists the candidates, never a guess. Only machines the user's terminals could reach count; unapproved relay peers are not targets.
 
@@ -98,7 +112,7 @@ Not deleted: the denylist for credential-bearing and identity requests, response
 
 ### 5.1 Parts (all in the local kernel, new module `runtime/machine_gateway/`)
 
-- **Directory.** Resolves a machine name to `{kernel_id, machine_id, relay_url, target daemon id, protocol versions, freshness}` from the hosted or self-hosted source (3.3). Refreshed in the background (existing remote-inventory projection), never on the request path.
+- **Directory.** Resolves a machine name to `{kernel_id, machine_id, relay_url, target daemon id, protocol versions, freshness}` through the inventory-source interface (3.3): the hosted Cloud list or the paired kernels. Refreshed in the background (existing remote-inventory projection), never on the request path.
 - **Gateway identity.** One key pair per local kernel, generated by the kernel on first use, stored privately in kernel state, never returned by any request. Hosted: it is registered as a terminal client named "Agent gateway of <machine>" so it appears in the paired-client list of every machine it reaches and can be revoked there. Self-hosted: it is the key the pairing link pinned.
 - **Connections.** One relay client connection per target machine, opened lazily on first use, shared by all grants, closed after 5 minutes idle. End-to-end encryption uses the same `relay_crypto` as a remote TUI; the relay sees ciphertext only. Hosted settings that break the rules fail loudly: a non-`wss://` non-loopback relay is refused with a clear message (AGENTS.md rule 6).
 - **Forwarding.** The Unix socket handler (`unix_access.rs`) sees `machine` on a frame, runs `authorize_external_request` locally, then hands the request to the gateway. Responses and subscription events come back on the same agent connection, tagged with the machine. Subscriptions use the existing resumable event ids; the gateway cancels the remote subscription when the grant ends.
@@ -117,7 +131,7 @@ The agent holds nothing, so there is nothing to copy (D9 intact).
 
 The remote sees an owner terminal and handles requests exactly as for a remote TUI (ownership checks, session membership, D1 popups). Two additions:
 
-- The forwarded request carries `on_behalf_of: { origin_kernel, grant_id, harness }` inside the encrypted request context. The remote **applies the same human-only set** to requests that carry it (one shared function, `authorize_external_request`, called from both ends) and writes the attribution to its audit. A kernel that predates this field simply treats the gateway as a terminal; the local kernel still enforced the set, so the field is defence in depth and attribution, not the boundary.
+- The forwarded request carries `on_behalf_of: { origin_kernel, grant_id, harness }` inside the encrypted request context. **The remote kernel itself checks it:** when a request carries `on_behalf_of`, the remote runs the same human-only check (one shared function, `authorize_external_request`, called from both ends) and refuses passkey answers, grant requests, credential and relay requests and the rest of the set on its own, then writes the attribution to its audit. No Cloud and no link are involved in this check; it is a decision the remote kernel makes locally from the request it received. The link between the machines is only used afterwards, when the user wants the action done and answers in a client. A kernel that predates this field simply treats the gateway as a terminal; the local kernel already enforced the set, so the field is defence in depth and attribution, not the only boundary.
 - A popup for something that needs the **remote** kernel's passkey appears on the remote's connected clients (D1, per-kernel passkey). The agent gets the pointer (section 8) naming the machine.
 
 ### 5.4 Failure and offline behaviour (definitive outcomes)
@@ -205,11 +219,24 @@ The extension can ship after the core; the core's popups cover the Mac TUI, and 
 | Run commands, incl. long ones that outlive the agent's call | Room terminals (`chariox-terminal` #1054, term/r1: open/list/send/read/wait/close, Room-owned, survive client disconnect, background jobs count as work, protocol 562 / peer 170 pending) | #1054 must be on main; add the `terminal` verbs (7); `read --since <cursor>` and `wait --timeout` for detached jobs. A terminal on the machine's own kernel (not tied to an agent) must be openable; term lane confirms `host_agent: null` covers it. |
 | Start/steer sessions and agents on a machine | Existing `CreateSession`, `SpawnAgent`, prompt/steer requests via the gateway | `agent`/`sessions` verbs; machine tag on events. |
 | Read files, logs, run `git` | Terminal (`cat`, `tail`, `journalctl`) works with no new code | Convenience `files stat/get`. |
-| **Transfer files, incl. git bundles and artifacts** | Nothing general today (`DIRECTORY_WORKSPACE_TRANSFER` and managed context transfer only move provisioned contexts; `ReadFileCapabilityRequest` is session-scoped text) | New small family `Read/Write/StatMachineFile`: chunked, offset-resumable, sha256-verified, size-capped (default 2 GiB), under the user's authority (a terminal can already reach any file the OS user can), streamed with relay backpressure. A git bundle is then `files put` + `git fetch bundle` in a terminal. |
+| **Transfer files, incl. git bundles and artifacts** | Nothing general today (`DIRECTORY_WORKSPACE_TRANSFER` and managed context transfer only move provisioned contexts; `ReadFileCapabilityRequest` is session-scoped text) | New small family `Read/Write/StatMachineFile`, see 9.1. A git bundle is then `files put` + `git fetch bundle` in a terminal. |
 | Logs of the kernel itself | Terminal / `files get` | A dedicated logs request is not in v2. |
 | Build slots, drills, killing exact PIDs | Terminal | None. |
 | Slices | Home kernel's slice requests (`ListSlices`, Room/Environment requests) and their terminals via the home kernel | Verify a slice on a remote machine is driven through that machine's kernel with `--machine`. |
-| Machine is a real kernel in Miguel's account | b3 runs a signed product kernel as a per-user service, enrolled to his hosted account (owner-managed machine / Setup) | One-time ssh bootstrap, then ssh is break-glass. |
+| Machine is a real kernel in Miguel's account | b3 runs a signed product kernel as a per-user service, enrolled to his hosted account (owner-managed machine / Setup) | One-time ssh bootstrap, then ssh is break-glass. **Interim (Miguel, 2026-10-20):** this hand enrolment is replaced when b3 becomes a Path-1 Chariox-managed machine or a BYOM machine; nothing in the gateway depends on how the machine was enrolled. |
+
+### 9.1 Machine file requests: why and how
+
+**Why.** The coordinator's day on b3 moves files in both directions: git bundles from b3 to the Mac so the Mac can publish them (b3 has no GitHub credentials by design), lane results and `LANE_STATUS.md`, evidence (screenshots, recordings, logs), and briefs or prompts going the other way. Pushing these through a terminal as base64 is slow, breaks on large files, cannot resume, and fills the agent's context with bytes. A terminal is also the wrong tool: it is a live shell, not a transfer.
+
+**How.**
+- They are ordinary kernel API requests (`ReadMachineFile`, `WriteMachineFile`, `StatMachineFile`), not terminal traffic. The gateway routes them to the target kernel like any other request with `machine`; the target kernel does the file work and answers.
+- Chunked: each request moves one bounded chunk (offset, length). A large file is a sequence of chunks, streamed with relay backpressure.
+- Resumable: `Stat` returns size and sha256 of what is already there; the client continues at the offset after an interruption (drill EA2-07 interrupts at 40 %).
+- Verified: the final sha256 is compared by the receiving kernel; a mismatch is a typed error and the partial file is never presented as complete.
+- Capped: 2 GiB per file; a larger file is refused with a typed error naming the cap.
+- Authority: the user's, no wider. A terminal on that machine can already read and write any file the OS user can; the requests add convenience, not power. The bytes never reach the model unless the agent chooses to read them, and everything stays inside the relay's end-to-end encryption.
+- CLI: `chariox files get|put|stat --machine <name>`, JSON result with size, sha256 and elapsed time.
 
 Every break-glass ssh during the dogfooding day (EA2-16) is logged as a product issue with the missing capability.
 
@@ -231,7 +258,7 @@ Process: the `val910` lane and its "val910 r3 + Miguel attended session" next st
 ## 11. Build order
 
 1. **Core A, local only.** Access term + until-exit detection, popup choices, `--until-exit`, `--no-wait`, in-flight outcome and revoke-toast fixes, doc rewrites. (EA2-01..03)
-2. **Core B, gateway hosted.** Directory, gateway identity, connections, frame `machine`, error codes, `on_behalf_of`, shared policy, `machines`, `request`, `guide`, `--machine`. (EA2-04, 05, 09, 10, 11, 12)
+2. **Core B, gateway hosted.** First check whether a kernel credential can read the Cloud machine list (3.3). Inventory-source interface, directory, gateway identity, connections, frame `machine`, error codes, `on_behalf_of`, shared policy, `machines`, `request`, `guide`, `--machine`. (EA2-04, 05, 09, 10, 11, 12)
 3. **Core C, self-hosted.** `/machine add <link>`, `gateway-machines.json`, scoped-token path. (EA2-08)
 4. **Core D, work surface.** Terminal verbs on top of #1054; file family; slice check. (EA2-06, 07, 13, 15)
 5. **Dogfood.** EA2-14, 16, 19 on the real Mac + b3.
@@ -277,5 +304,5 @@ Supplementary regression (not acceptance): Rust tests for the typed term, frame 
 - **Blast radius.** One local passkey reaches all machines. This follows decision 2; the popup says so, the list shows it, the remote paired-client list shows the gateway, and revoke is immediate. Narrowing per machine is not in v2.
 - **Kernel restart ends grants.** By design (memory only). For the coordinator this means re-granting after a Mac kernel restart.
 - **Remote passkeys are per kernel.** Remote prompts need the user at some client of that kernel; the extension makes that practical.
-- **Dependency:** #1054 for terminals; a Cloud change only if the kernel-credential machine listing does not already exist.
+- **Dependency:** #1054 for terminals; a Cloud change only if step 1 finds that a kernel credential cannot read the owner's machine list (3.3).
 - **UX-first rule applied:** no new guard on what the agent reads or types; the only fences are the existing human-only set and the existing credential-literal response redaction.
