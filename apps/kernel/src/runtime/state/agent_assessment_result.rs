@@ -166,19 +166,25 @@ impl KernelRuntimeOwnedState {
                 recipient_attachment_ids: std::sync::Arc::from(recipients),
                 bytes: bytes.clone(),
             }]);
-        self.append_history_entries(
+        // Not attributed to the hidden check turn (its id would hide the entry),
+        // and not to the work turn (it would change that turn's public outputs).
+        let entry = crate::history::SessionHistoryEntry::provider_output(
             room,
-            vec![crate::history::SessionHistoryEntry::provider_output(
-                room,
-                run,
-                Some(agent),
-                crate::terminal::TerminalOutputKind::ProviderOutput,
-                None,
-                String::from_utf8_lossy(&bytes).into_owned(),
-            )
-            .with_prompt_origin(origin)
-            .with_source_attachment_id(source)],
-        );
+            run,
+            Some(agent),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            None,
+            String::from_utf8_lossy(&bytes).into_owned(),
+        )
+        .with_prompt_origin(origin)
+        .with_source_attachment_id(source);
+        let context = crate::history::HistoryEventTurnContext {
+            session_id: Some(room.into()),
+            agent_id: Some(agent.into()),
+            provider_run_id: Some(run.into()),
+            ..crate::history::HistoryEventTurnContext::default()
+        };
+        self.append_operational_history_entry_with_context(&entry, context);
     }
     pub(super) fn take_private_assessment(
         &self,

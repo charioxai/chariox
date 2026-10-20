@@ -2263,6 +2263,24 @@ async fn outline_hides_goal_completion_check_turn() {
                     "goal-check-task-1-1-1",
                     Some(crate::session::PromptOrigin::CompletionCheck),
                 ),
+                // The achieved check's final answer is ordinary agent text.
+                HistoryEvent::transcript(
+                    5,
+                    &SessionHistoryEntry::provider_output(
+                        "session-1",
+                        "run-1",
+                        Some("agent-1"),
+                        TerminalOutputKind::ProviderOutput,
+                        None,
+                        "published final answer",
+                    ),
+                    HistoryEventTurnContext {
+                        session_id: Some("session-1".into()),
+                        agent_id: Some("agent-1".into()),
+                        provider_run_id: Some("run-1".into()),
+                        ..HistoryEventTurnContext::default()
+                    },
+                ),
             ])
             .expect("persist turns");
     }
@@ -2288,11 +2306,6 @@ async fn outline_hides_goal_completion_check_turn() {
     assert_eq!(agents[0].turns.len(), 1, "{rendered}");
     assert!(!rendered.contains("completion_check"), "{rendered}");
     assert!(!rendered.contains("final_answer"), "{rendered}");
-    assert_eq!(
-        agents[0].turns[0]
-            .summary
-            .as_ref()
-            .map(|entry| entry.entry.text.as_str()),
-        Some("work answer")
-    );
+    assert!(rendered.contains("work answer"), "{rendered}");
+    assert!(rendered.contains("published final answer"), "{rendered}");
 }
