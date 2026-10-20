@@ -589,6 +589,66 @@ async fn mp11_protected_completion_reads_private_result_and_keeps_history_withhe
     }
 }
 
+// MP-08/MP-10/MP-11: the git observer reports an artifact change at every turn end. A change it
+// sees during a completion check (an unrelated edit in the workspace) is not progress of the
+// check; offering it to the ledger failed the output pump and lost the verdict (60 s bound).
+#[tokio::test]
+async fn artifact_progress_never_targets_a_completion_check_turn() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    use crate::runtime::state::agent_task_projection::artifact_progress_task;
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let (_app, runtime, room, agent) = agent_config_runtime_with_config(config).await;
+    let store = &runtime.owned.durable_state_store;
+    let begin = |prompt: &str| Operation::Begin {
+        owner: "local-user".into(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: prompt.into(),
+        run: Some("run".into()),
+        now: crate::session::unix_epoch_ms(),
+    };
+    store.agent_lifecycle(begin("work-turn")).unwrap();
+    store
+        .agent_lifecycle(Operation::EnableCompletionCheck {
+            task: "work-turn".into(),
+        })
+        .unwrap();
+    let tasks = || store.agent_tasks(Some(&room), Some(&agent)).unwrap();
+    assert!(
+        artifact_progress_task(tasks(), "work-turn", "run").is_some(),
+        "a live work turn still takes artifact progress"
+    );
+    store
+        .agent_lifecycle(Operation::Settle {
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: "work-turn".into(),
+            run: "run".into(),
+            has_answer: true,
+            cancelled: false,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    let check_prompt = tasks()
+        .into_iter()
+        .find_map(|task| task.pending_prompt_id)
+        .expect("the answered turn is waiting for its completion check");
+    store.agent_lifecycle(begin(&check_prompt)).unwrap();
+    let checking = tasks()
+        .into_iter()
+        .find(|task| task.prompt_id == check_prompt)
+        .expect("the check turn runs on the task");
+    assert!(crate::durable_state::agent_lifecycle::goals::is_check(
+        &checking,
+        &check_prompt
+    ));
+    assert!(
+        artifact_progress_task(tasks(), &check_prompt, "run").is_none(),
+        "the completion check turn takes no artifact progress"
+    );
+}
+
 // MP-08/MP-10/MP-11: real RED47 neutral utility had no work-thread context.
 #[tokio::test]
 async fn mp11_neutral_assessment_uses_private_work_result_without_public_or_durable_injection() {

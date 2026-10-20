@@ -1,6 +1,22 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: bounded public task answer projection.
 use super::*;
-use crate::durable_state::agent_lifecycle::{AgentTaskExecution, ExecutionState};
+use crate::durable_state::agent_lifecycle::{self as ledger, AgentTaskExecution, ExecutionState};
+/// The task whose live turn an artifact change counts as progress for. A completion check
+/// cannot mutate work, so the change it happens to observe is not progress for it (the ledger
+/// would refuse the receipt and the refusal would fail the whole output pump).
+pub(super) fn artifact_progress_task(
+    tasks: Vec<AgentTaskExecution>,
+    prompt: &str,
+    run: &str,
+) -> Option<AgentTaskExecution> {
+    tasks.into_iter().find(|t| {
+        t.prompt_id == prompt
+            && t.provider_run_id.as_deref() == Some(run)
+            && t.state == ExecutionState::Working
+            && t.pending_prompt_id.is_none()
+            && !ledger::goals::is_check(t, prompt)
+    })
+}
 impl KernelRuntimeOwnedState {
     pub(super) fn record_agent_artifact_progress(
         &self,
@@ -23,17 +39,12 @@ impl KernelRuntimeOwnedState {
         {
             return Ok(());
         }
-        let Some(task) = self
-            .durable_state_store
-            .agent_tasks(Some(room), Some(agent))?
-            .into_iter()
-            .find(|t| {
-                t.prompt_id == prompt.id()
-                    && t.provider_run_id.as_deref() == Some(run)
-                    && t.state == ExecutionState::Working
-                    && t.pending_prompt_id.is_none()
-            })
-        else {
+        let Some(task) = artifact_progress_task(
+            self.durable_state_store
+                .agent_tasks(Some(room), Some(agent))?,
+            prompt.id(),
+            run,
+        ) else {
             return Ok(());
         };
         use sha2::{Digest, Sha256};
