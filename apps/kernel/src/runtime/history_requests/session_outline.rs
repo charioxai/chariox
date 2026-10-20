@@ -164,6 +164,10 @@ fn load_blob_content_page(
         sequence_start,
         sequence_end,
     )?;
+    let events = events
+        .into_iter()
+        .filter(|event| !event_is_internal_prompt_turn(event))
+        .collect();
     let entries = outline_blob_content_events(events)
         .into_iter()
         .filter(|event| event_belongs_to_external_import(agent_import, event))
