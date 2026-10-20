@@ -201,6 +201,25 @@ fn describe(source: &NoteSource) -> Option<String> {
     Some(text)
 }
 
+/// The request as the completion check sees it: the typed text plus a line saying notes came with
+/// it. The check reads only public history, where notes are chips without their content, so it
+/// must not ask the user to attach them again.
+pub(crate) fn objective_with_notes(
+    text: &str,
+    attachments: &[crate::history::SessionHistoryPromptAttachment],
+) -> String {
+    let notes = attachments
+        .iter()
+        .filter(|attachment| attachment.mime == NOTE_ATTACHMENT_MIME)
+        .count();
+    if notes == 0 {
+        return text.to_string();
+    }
+    format!(
+        "{text}\n[The user also attached {notes} note(s): selected text with a comment, shown as chips in the transcript and given to the agent as hidden context. Their content is not repeated here; judge the answer against the request above and do not ask for the notes again.]"
+    )
+}
+
 /// Removes note attachments from the provider-bound list and renders them as hidden context.
 pub(crate) fn split_for_provider(
     attachments: Vec<PromptAttachment>,
@@ -327,6 +346,29 @@ mod tests {
         assert_eq!(admit("  ".into(), &notes).unwrap(), NOTE_ONLY_PROMPT);
         assert_eq!(admit("fix it".into(), &notes).unwrap(), "fix it");
         assert_eq!(admit(String::new(), &[]).unwrap(), "");
+    }
+
+    #[test]
+    fn the_completion_check_objective_mentions_attached_notes_only_when_there_are_some() {
+        let chip = |mime: &str| crate::history::SessionHistoryPromptAttachment {
+            url: "chariox-terminal://x".into(),
+            mime: mime.into(),
+            filename: None,
+            preview_url: None,
+        };
+        assert_eq!(
+            objective_with_notes("fix it", &[chip("image/png")]),
+            "fix it"
+        );
+        let objective = objective_with_notes(
+            "fix it",
+            &[chip(NOTE_ATTACHMENT_MIME), chip(NOTE_ATTACHMENT_MIME)],
+        );
+        assert!(
+            objective.starts_with("fix it\n[The user also attached 2 note(s)"),
+            "{objective}"
+        );
+        assert!(objective.contains("do not ask for the notes again"));
     }
 
     #[test]
