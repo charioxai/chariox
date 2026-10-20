@@ -115,7 +115,8 @@ export function hostErrorLabel(error) {
 // Keep kernel_browser_failed as the outer code; no serialized contract changes.
 // Existing Web clients match this sentence when retrying a read; append the cause.
 export function hostFailureMessage(error) {
- return 'MD-2: host browser operation failed; refresh state or check host browser readiness ('+hostErrorLabel(error).slice('host_error '.length)+')';
+ const label=hostErrorLabel(error);
+ return 'MD-2: host browser operation failed; refresh state or check host browser readiness ('+(label.startsWith('host_error ')?label.slice('host_error '.length):label)+')';
 }
 
 // MP-08/MP-10/MP-11: classify bounded startup stderr; never expose its text,

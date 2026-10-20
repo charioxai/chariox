@@ -2354,3 +2354,16 @@ test('MP-08/MP-10 concurrent recovery reads launch one browser and explicit stop
   await host.stop();await new Promise(r=>setTimeout(r,300));assert.equal(starts,2);assert.equal(host.recovery.enabled,false);
   await assert.rejects(host.request({op:'state'}),{code:'browser_unavailable'});
 }));
+
+test('MP-08/MP-10 a cancelled viewer does not cancel shared browser recovery', () => using(async ({host,chromium}) => {
+  const opened=await host.request({op:'open',url:'about:blank'});chromium.child.exitCode=139;
+  const start=chromium.start,began=Promise.withResolvers(),gate=Promise.withResolvers();
+  chromium.start=async()=>{began.resolve();await gate.promise;return start();};
+  const controller=new AbortController();
+  const cancelled=host.request({op:'state'},{signal:controller.signal});
+  const rejected=assert.rejects(cancelled,{code:'browser_action_cancelled'});
+  await began.promise;const other=host.request({op:'state'});controller.abort();gate.resolve();
+  await rejected;const state=await other;
+  assert.equal(state.generation,opened.generation+1);assert.equal(state.tabs[0].tab_id,opened.tab_id);
+  assert(host.browser);assert.equal(host.recovery.enabled,true);
+}));

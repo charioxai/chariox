@@ -182,13 +182,13 @@ test("MP-11 band input: active Tab rechecked before dispatch, refused or retired
   await assert.rejects(send({ kind: "click", x: 1, y: 1 }, { tab_id: "host-tab-a" }), { code: "user_domain_stale_reference" }, "another Tab became active after admission");
   // Live drill r4band1: a strip click while the active Tab loads was dropped. Band clicks,
   // wheel and browser shortcuts reach only Chrome's UI (the crop holds no page pixels);
-  // text and other keys may reach the page and keep the document fence.
+  // The owner's text also follows the native window; model observations keep their own document fences.
   document = "dc";
   assert.deepEqual(await send({ kind: "click", x: 1, y: 1 }), { dispatched: true }, "a strip click while the active Tab navigates");
   assert.deepEqual(await send({ kind: "scroll", x: 10, y: 10, delta_x: 0, delta_y: 120 }), { dispatched: true });
   assert.deepEqual(await send({ kind: "key", key: "t", modifiers: 2 }), { dispatched: true }, "Ctrl+T while the active Tab navigates");
-  await assert.rejects(send({ kind: "text", text: "x" }), { code: "stale_document_reference" }, "text may reach the page: the active Tab navigated after admission");
-  await assert.rejects(send({ kind: "key", key: "Enter" }), { code: "stale_document_reference" });
+  assert.deepEqual(await send({ kind: "text", text: "x" }), {dispatched:true}, "owner input survives the page commit after admission");
+  assert.deepEqual(await send({ kind: "key", key: "Enter" }), {dispatched:true});
   document = "db";
   await assert.rejects(send({ kind: "click", x: 1, y: 1 }, { _agent_input: true }), { code: "user_domain_not_granted" });
   const retired = { ...source, click: async () => false };
@@ -196,7 +196,7 @@ test("MP-11 band input: active Tab rechecked before dispatch, refused or retired
   const uncertain = { ...source, click: async () => { throw Object.assign(Error("x"), { code: "native_input_uncertain" }); } };
   assert.deepEqual(await arbiter.input({ stream: { regionSource: uncertain }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input: { kind: "click", x: 1, y: 1 } } }), { dispatched: true }, "uncertain native input counts as dispatched, never replayed");
   await assert.rejects(send({ kind: "text", text: "é" }), /unsupported text/);
-  assert.deepEqual(calls.map(c => c[0] === "chord" ? c[1] : c[0]), ["click", 0x6c, 0x73, 0x65, 0x63, 0x72, 0x65, 0x74, 0xff0d, 0x76, 0x77, 0x69, 0x6b, 0x69, 0xff0d, "wheel", "click", "wheel", 0x74]);
+  assert.deepEqual(calls.map(c => c[0] === "chord" ? c[1] : c[0]), ["click", 0x6c, 0x73, 0x65, 0x63, 0x72, 0x65, 0x74, 0xff0d, 0x76, 0x77, 0x69, 0x6b, 0x69, 0xff0d, "wheel", "click", "wheel", 0x74, 0x78, 0xff0d]);
 });
 
 test("MP-08 browser chords and refused chords", () => {
@@ -309,7 +309,7 @@ test("MP-08/MP-11 a window rebound at the same geometry keeps the list rect it p
 
 // MP-08/MP-10/MP-11: every attached mirror keeps focus emulation enabled.
 // A native omnibox check must observe physical focus, not that logical wake-up.
-test('MP-11 a held mirror does not make an unfocused page appear to own omnibox keys',async()=>{
+test('MP-08/MP-10 owner UI typing does not wait for or change held mirror focus',async()=>{
  const {BrowserInputCapture}=await import('./browser-controller-input.mjs');
  const capture=new BrowserInputCapture();let pageFocus=true,emulated=false;
  const connection={send:async(method,p)=>{
@@ -325,7 +325,7 @@ test('MP-11 a held mirror does not make an unfocused page appear to own omnibox 
  try{
   await send({kind:'key',key:'l',modifiers:2});assert.equal(emulated,true);
   assert.deepEqual(await send({kind:'text',text:'wiki'}),{dispatched:true});
-  assert.equal(emulated,false,'native Chrome keeps the page blurred until page input');
+  assert.equal(emulated,true,'native owner input does not read or mutate the mirror focus emulation');
   pageFocus=true;assert.deepEqual(await send({kind:'text',text:'x'}),{dispatched:true},'A-L23: page focus on any field is the person\'s typing');
  }finally{await release()}
 });
@@ -708,11 +708,12 @@ for(const focus of ['chrome','page','unavailable','other-tab','window','generati
  await send({kind:'key',key:'l',modifiers:2});sent.length=0;tab.document_id='home';
  if(focus==='page')physical=true;
  if(focus==='unavailable')delete host.browser.inputCapture.physicalFocus;
- if(focus==='window')regionWindow.window_generation=2;
+ if(focus==='window'){regionWindow.window_generation=2;source.isCurrent=()=>false;}
  if(focus==='generation')host.generation=4;
  if(focus==='retired')source.isCurrent=()=>false;
  if(focus==='other-tab'){host.tabs.set('other',{tab_id:'other',target_id:'other',document_id:'home'});host.tabGroups.active=async()=> 'other'}
- await assert.rejects(send({kind:'text',text:'h'}),{code:'user_domain_stale_reference'});assert.deepEqual(sent,[],'a stale ledger document never dispatches, even with native UI focus');
+ if(['other-tab','window','generation','retired'].includes(focus)){await assert.rejects(send({kind:'text',text:'h'}),{code:'user_domain_stale_reference'});assert.deepEqual(sent,[],'retired window, generation and active Tab bindings still refuse');}
+ else{await send({kind:'text',text:'h'});assert.deepEqual(sent,[104],'owner keys stay with the native window across page commits');}
 });
 
 test('MP-08/MP-10/MP-11 a fresh ledger observation preserves omnibox text after the home commit', async () => {
@@ -753,7 +754,7 @@ for (const hang of ['focus read', 'focus world']) test(`MP-11 omnibox typing is 
 });
 
 // MP-08/MP-10/MP-11: a physical focus proof belongs to one document, including its asynchronous read.
-for (const physical of [false,true]) test(`MP-11 a document retired during physical focus verification is refused (${physical})`,async()=>{
+for (const physical of [false,true]) test(`MP-08/MP-10 native owner typing never queries a retired page focus proof (${physical})`,async()=>{
  const tab={tab_id:'tab',target_id:'target',document_id:'before'};const sent=[];
  const connection={send:async(method,p)=>{
   if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'f',loaderId:tab.document_id}}};
@@ -764,8 +765,8 @@ for (const physical of [false,true]) test(`MP-11 a document retired during physi
  const arbiter=new InputArbiter(host,{}),source={surface:'browser_chrome',isCurrent:()=>true,chord:async k=>(sent.push(k),true)},regionWindow={window_generation:1};
  const send=input=>arbiter.input({stream:{regionSource:source,regionWindow},command:{tab_id:'tab',document_id:'before',generation:3,input}});
  await send({kind:'key',key:'l',modifiers:2});sent.length=0;
- await assert.rejects(send({kind:'text',text:'h'}),{code:'user_domain_stale_reference'});
- assert.deepEqual(sent,[],'no key uses a retired physical focus proof');
+ tab.document_id='later';await send({kind:'text',text:'h'});
+ assert.deepEqual(sent,[104],'a page navigation never consumes the native omnibox key');
 });
 
 // MP-08/MP-10/MP-11 review#1023: no steady-state CDP/auxiliary mutation per page frame.
@@ -1098,4 +1099,17 @@ test("L1 the backstop still reads without any report", async () => {
   await new Promise(r => setTimeout(r, 100));
   stop();
   assert(reads >= 3 && reads <= 6, `backstop cadence, got ${reads}`);
+});
+
+
+test('MP-08/MP-10 owner omnibox keys survive a home-document commit after admission', async()=>{
+ const tab={tab_id:'tab',target_id:'target',document_id:'before'},sent=[];
+ const host={generation:3,tabs:new Map([['tab',tab]]),tabGroups:{active:async()=>tab.target_id},browser:{resolvePageTarget:()=>assert.fail('Chrome UI input must not read the page renderer')}};
+ const arbiter=new InputArbiter(host,{}),source={surface:'browser_chrome',isCurrent:()=>true,chord:async key=>(sent.push(key),true)},stream={regionSource:source,regionWindow:{window_generation:1}};
+ const command=input=>({tab_id:'tab',document_id:'before',generation:3,input});
+ await arbiter.input({stream,command:command({kind:'key',key:'l',modifiers:2})});sent.length=0;
+ tab.document_id='consent';
+ await arbiter.input({stream,command:command({kind:'text',text:'https://www.wikipedia.org/'})});
+ await arbiter.input({stream,command:command({kind:'key',key:'Enter'})});
+ assert.equal(String.fromCharCode(...sent.slice(0,-1)),'https://www.wikipedia.org/');assert.equal(sent.at(-1),0xff0d);
 });

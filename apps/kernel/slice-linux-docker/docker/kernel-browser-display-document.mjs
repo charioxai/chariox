@@ -97,8 +97,8 @@ export async function resolveDisplayTarget(host, command, native = false) {
  const document_id=frame?.frame.loaderId??cachedDocument??(await connection.send('Page.getFrameTree',{},sessionId)).frameTree?.frame?.loaderId;
  if(typeof document_id!=='string'||!document_id)throw Error('MD-DISPLAY: document unavailable');
  const current=()=>{
-  if(host.browser!==browser||host.generation!==generation||host.tabs.get(command.tab_id)?.target_id!==target)throw new UserDomainRefusal('stale_reference');
-  if(cachedDocument&&(connection.isOpen?.()===false||'connection' in browser&&browser.connection!==connection||browser.sessionsByTarget&&browser.sessionsByTarget.get(target)!==sessionId||browser.documentIdsByTarget?.get(target)!==document_id))throw new UserDomainRefusal('stale_reference');
+  if(host.browser!==browser||host.generation!==generation||host.tabs.get(command.tab_id)?.target_id!==target)throw new UserDomainRefusal('stale_reference','display_retired');
+  if(cachedDocument&&(connection.isOpen?.()===false||'connection' in browser&&browser.connection!==connection||browser.sessionsByTarget&&browser.sessionsByTarget.get(target)!==sessionId||browser.documentIdsByTarget?.get(target)!==document_id))throw new UserDomainRefusal('stale_reference','display_retired');
   owner?.assertCurrent();
  };
  current();

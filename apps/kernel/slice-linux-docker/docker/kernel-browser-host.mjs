@@ -174,9 +174,12 @@ export class KernelBrowserHost {
     if (this.browser && this.chromium.child?.exitCode === null && this.chromium.child?.signalCode === null
       && this.chromium.connection?.isOpen() !== false) return;
     if (!allowStart && !this.recovery.enabled) throw new BrowserActionError("browser_unavailable", "MP-11: user browser is stopped or unavailable; explicitly start/open the browser");
+    const recovering = this.recovery.enabled;
     this.recovery.enabled = true;
     this.recovery.disarm();
-    this.starting = this.startNow({ signal });
+    // Recovery belongs to the shared browser, not the viewer whose read first
+    // notices the loss. Its caller still checks cancellation after this wait.
+    this.starting = this.startNow({ signal: recovering ? undefined : signal });
     try { return await this.starting; }
     catch (error) { this.recovery.schedule(); throw error; }
     finally { this.starting = null; }
@@ -634,21 +637,21 @@ export class KernelBrowserHost {
     assertNotCancelled(signal);
     if(stream.source_kind==='region'){
       const source=stream.regionSource;
-      if(!source||typeof stream.regionCurrent!=='function'||!await stream.regionCurrent()||!stream.regionLease?.isAlive()||!stream.regionWindow?.isCurrent()||!source.valid()||source.closed||source.allowed&&!source.allowed(this.protection))throw new UserDomainRefusal('stale_reference');
+      if(!source||typeof stream.regionCurrent!=='function'||!await stream.regionCurrent()||!stream.regionLease?.isAlive()||!stream.regionWindow?.isCurrent()||!source.valid()||source.closed||source.allowed&&!source.allowed(this.protection))throw new UserDomainRefusal('stale_reference','display_retired');
       assertNotCancelled(signal);
       return source;
     }
     if(stream.source_kind==='desktop'){
       const binding=this.chromium.desktop?.binding();
-      if(!binding||binding.surface_id!==stream.tab_id||binding.generation!==stream.desktop_generation)throw new UserDomainRefusal('stale_reference');
+      if(!binding||binding.surface_id!==stream.tab_id||binding.generation!==stream.desktop_generation)throw new UserDomainRefusal('stale_reference','display_retired');
       return binding;
     }
     const tab=await this.displayTarget({tab_id:stream.tab_id,generation:this.generation});
     assertNotCancelled(signal);
-    if(tab.document_id!==stream.document_id)throw new UserDomainRefusal('stale_reference');
+    if(tab.document_id!==stream.document_id)throw new UserDomainRefusal('stale_reference','display_retired');
     const viewport=this.viewport();
     const source=this.compositors.get(tab.tab_id)?.source;
-    if(source?.closed||source?.allowed&&!source.allowed(this.protection))throw new UserDomainRefusal('stale_reference');
+    if(source?.closed||source?.allowed&&!source.allowed(this.protection))throw new UserDomainRefusal('stale_reference','display_retired');
     const key=JSON.stringify([tab.target_id,tab.document_id,viewport.width,viewport.height,viewport.device_scale_factor,source?.regionRevision]);
     if(stream.resumeSourceIdentity?.key!==key||stream.resumeSourceIdentity?.source!==source)stream.resumeSourceIdentity={key,source};
     return stream.resumeSourceIdentity;
@@ -762,7 +765,7 @@ export class KernelBrowserHost {
       return command.push ? displayPushCredit(this, stream, command, signal) : displayCredit(this, stream, command, signal);
     }
     if (["poll", "unsubscribe"].includes(command.op)) {
-      if (command.generation !== this.generation || !this.streams.has(command.subscription_id)) throw new UserDomainRefusal("stale_reference");
+      if (command.generation !== this.generation || !this.streams.has(command.subscription_id)) throw new UserDomainRefusal("stale_reference", "display_retired");
       const stream = this.streams.get(command.subscription_id);
       stream.expires = Date.now() + 60_000;
       this.armExpiry(command.subscription_id, stream);

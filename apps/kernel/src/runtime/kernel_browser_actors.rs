@@ -185,6 +185,26 @@ impl KernelBrowserActors {
                 params["document_id"].as_str() == Some(binding.document_id.as_str())
             })
     }
+    // MP-08/MP-10: the private host already admitted the person's Chrome UI
+    // window and active Tab. A home-page commit between that read and this
+    // ledger admission must not lose omnibox keys. Attribute them to the
+    // current document without replaying an action or changing its Tab/actor.
+    pub(crate) fn refresh_chrome_input_document(&self, params: &mut Value) -> Result<(), String> {
+        if params["op"] != "input" || params["generation"].as_u64() != Some(self.generation) {
+            return Err("MD-3: stale Chrome input generation".into());
+        }
+        let tab = self.tab(
+            params["tab_id"]
+                .as_str()
+                .ok_or("MD-3: missing Chrome input Tab")?,
+        )?;
+        let binding = self
+            .tabs
+            .controller_binding(&tab)
+            .map_err(|_| "MD-3: missing Chrome input document")?;
+        params["document_id"] = binding.document_id.clone().into();
+        Ok(())
+    }
     fn tab(&self, host_tab: &str) -> Result<String, String> {
         self.tabs
             .tab_id_for_controller_target(host_tab)
@@ -635,6 +655,19 @@ mod tests {
     }
     fn input(tab: &str) -> Value {
         json!({"op":"input","tab_id":tab,"generation":1,"input":{"kind":"text","text":"synthetic-private-value"}})
+    }
+    #[test]
+    fn mp08_chrome_input_tracks_home_commit_without_retargeting_or_replay() {
+        let model = ready();
+        let mut params = json!({"op":"input","generation":1,"tab_id":"host-tab-a","document_id":"old"});
+        model.refresh_chrome_input_document(&mut params).unwrap();
+        assert_eq!(params["document_id"], "d");
+        assert_eq!(params["tab_id"], "host-tab-a");
+        params["generation"] = 0.into();
+        assert!(model.refresh_chrome_input_document(&mut params).is_err());
+        params["generation"] = 1.into();
+        params["tab_id"] = "unknown".into();
+        assert!(model.refresh_chrome_input_document(&mut params).is_err());
     }
     #[test]
     fn mp11_input_cache_requires_exact_observed_generation_target_and_document() {

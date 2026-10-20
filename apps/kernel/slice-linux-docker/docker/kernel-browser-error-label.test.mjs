@@ -146,3 +146,10 @@ test('MIRROR-ROBUST-STALE-REF navigation races are labelled apart from host erro
  assert.match(hostErrorLabel(new UserDomainRefusal('stale_reference')),/^host_error Error user_domain_stale_reference/);
  assert.equal(hostErrorLabel(Object.assign(new UserDomainRefusal('stale_reference'),{race:'protectedcanary'})).includes('protectedcanary'),false);
 });
+
+
+test('MP-08/MP-10 retired display diagnostics keep their navigation race label in replies',()=>{
+ const error=new UserDomainRefusal('stale_reference','display_retired');
+ assert.equal(hostErrorLabel(error),'navigation_race display_retired');
+ assert.match(hostFailureMessage(error),/\(navigation_race display_retired\)$/);
+});

@@ -584,6 +584,7 @@ impl KernelBrowserHost {
                 }
             }
         }
+        let mut native_chrome_input = false;
         if method == "host.browser" && params["op"] == "input" && params["binding_id"].is_string() {
             // MP-11: resolve the owner-issued crop before the SAME actor ledger.
             // Chrome's owner arbiter observes the active page; no client Tab
@@ -609,6 +610,7 @@ impl KernelBrowserHost {
                     return Err("MP-11: invalid region input epoch".into());
                 }
                 params["region_document_id"] = document.into();
+                native_chrome_input = true;
             }
             self.check_admission(admission)?;
         }
@@ -664,6 +666,9 @@ impl KernelBrowserHost {
                 let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
                 if admission.is_some_and(|admission| admission.revoked_in_actor_lock()) {
                     return Err("MP-11: not_granted: browser authority revoked".into());
+                }
+                if native_chrome_input {
+                    ledger.refresh_chrome_input_document(&mut params)?;
                 }
                 ledger.begin(actor, &params)?
             };
