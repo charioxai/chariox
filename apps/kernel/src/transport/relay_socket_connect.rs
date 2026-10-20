@@ -19,7 +19,7 @@ pub(super) fn connect(relay_url: &str) -> ConnectFuture<'_> {
     Box::pin(connect_async_with_config(
         chariox_relay::frame_transport::transport_url(relay_url),
         None,
-        std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() == Ok("1"),
+        true,
     ))
 }
 
@@ -30,11 +30,7 @@ pub(super) fn connect_binary_events(relay_url: &str) -> ConnectFuture<'_> {
     match chariox_relay::binary_event::connection_request(
         &chariox_relay::frame_transport::transport_url(relay_url),
     ) {
-        Ok(request) => Box::pin(connect_async_with_config(
-            request,
-            None,
-            std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() == Ok("1"),
-        )),
+        Ok(request) => Box::pin(connect_async_with_config(request, None, true)),
         Err(error) => Box::pin(async move { Err(error) }),
     }
 }
@@ -64,9 +60,15 @@ mod tests {
                     },
                 ).await.unwrap()
             });
-            let connecting = if binary_events { connect_binary_events(&url) } else { connect(&url) };
+            let connecting = if binary_events {
+                connect_binary_events(&url)
+            } else {
+                connect(&url)
+            };
             let (socket, _) = tokio::time::timeout(std::time::Duration::from_secs(5), connecting)
-                .await.unwrap().unwrap();
+                .await
+                .unwrap()
+                .unwrap();
             let immediate = match socket.get_ref() {
                 tokio_tungstenite::MaybeTlsStream::Plain(stream) => stream.nodelay().unwrap(),
                 _ => panic!("loopback fixture must use plain TCP"),
