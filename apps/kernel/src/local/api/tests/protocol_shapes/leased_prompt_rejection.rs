@@ -11,7 +11,10 @@ fn leased_prompt_rejection_reason_is_versioned_hashed_and_optional() {
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
     );
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 157);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
     let snapshot = serde_json::json!({
         "local_protocol": LOCAL_DAEMON_PROTOCOL_VERSION,
         "peer_protocol": RELAY_PEER_PROTOCOL_VERSION,
@@ -49,6 +52,6 @@ fn leased_prompt_rejection_reason_is_versioned_hashed_and_optional() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "3619a343701c618bb21b13c1f9dbedbb64d5599ea035d56b020c76c4890009de"
+        "f9882b632d89538bd1893326b2ca8f0a897491f2ccfbca3bf851286d3acb7e3c"
     );
 }

@@ -26,8 +26,7 @@ use crate::runtime_transport::{
     WAITING_ROOM_ROW_COALESCE_MS, WATCH_INTERVAL_MS,
 };
 use crate::transport::kernel_protocol::{
-    can_skip_session_snapshot, event_is_relevant_to_attachment, subscription_event_stream_id,
-    terminal_output_event_batches, workflow_run_only_changed, workflow_run_updated_events,
+    event_is_relevant_to_attachment, subscription_event_stream_id, terminal_output_event_batches,
     KernelEvent, WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 use crate::transport::relay_crypto;

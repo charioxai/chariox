@@ -2,8 +2,6 @@
 
 use std::future::Future;
 
-use futures_util::SinkExt;
-
 use super::*;
 
 mod managed_slice_activation;
@@ -729,8 +727,8 @@ async fn run_daemon_relay_connector_inner(
                 let (outgoing_tx, priority_outgoing_rx, event_outgoing_rx) =
                     RelayOutgoingSender::channel(RELAY_OUTGOING_QUEUE_LIMIT);
                 let reconnect_gate = Arc::new(RelayReconnectGate::default());
-                let (pong_tx, mut pong_rx) = mpsc::channel::<Vec<u8>>(RELAY_OUTGOING_QUEUE_LIMIT);
-                let (transport_receipt_tx, mut transport_receipt_rx) =
+                let (pong_tx, pong_rx) = mpsc::channel::<Vec<u8>>(RELAY_OUTGOING_QUEUE_LIMIT);
+                let (transport_receipt_tx, transport_receipt_rx) =
                     mpsc::channel::<String>(chariox_relay::frame_transport::MAX_UNACKED_FRAMES);
                 let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
                 let (writer_done_tx, mut writer_done_rx) = oneshot::channel::<()>();

@@ -1,9 +1,8 @@
 //! MP-08 / MP-10 / MP-11: publish small session projections before bulk output.
 use crate::runtime::projection::SessionSnapshotProjection;
 use crate::transport::kernel_protocol::{
-    agent_activity_changed_event, provider_run_changed_event, room_workflows_changed_event,
-    runtime_interactions_changed_event, session_metadata_changed_event, workflow_run_only_changed,
-    workflow_run_updated_events, KernelEvent,
+    can_skip_session_snapshot, room_workflows_changed_event, session_projection_changed_events,
+    workflow_run_only_changed, workflow_run_updated_events, KernelEvent,
 };
 
 pub(crate) fn session_projection_events(
@@ -11,15 +10,7 @@ pub(crate) fn session_projection_events(
     previous: Option<&SessionSnapshotProjection>,
     has_terminal_workflow_update: bool,
 ) -> Vec<KernelEvent> {
-    let mut events = [
-        agent_activity_changed_event(snapshot, previous),
-        provider_run_changed_event(snapshot, previous),
-        session_metadata_changed_event(snapshot, previous),
-        runtime_interactions_changed_event(snapshot, previous),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>();
+    let mut events = session_projection_changed_events(snapshot, previous);
     let workflow_events = workflow_run_updated_events(snapshot, previous)
         .into_iter()
         .chain(room_workflows_changed_event(snapshot, previous))
@@ -36,7 +27,7 @@ pub(crate) fn session_projection_events(
             .any(|event| !matches!(event, KernelEvent::RoomWorkflowsChanged { .. }))
         || workflow_run_only;
     events.extend(workflow_events);
-    if !replaces_snapshot {
+    if !can_skip_session_snapshot(snapshot, previous, replaces_snapshot) {
         events.push(KernelEvent::SessionSnapshot {
             room_workflows: snapshot.room_workflows.clone(),
             session: Box::new(snapshot.session.clone()),
@@ -126,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn sudo_window_change_keeps_a_full_snapshot_beside_metadata() {
+    fn sudo_window_change_keeps_a_full_snapshot_beside_an_interaction() {
         let before = snapshot();
         let mut after = before.clone();
         after.session.set_alias(Some("after".into()));
@@ -138,15 +129,31 @@ mod tests {
         }))
         .unwrap();
         after.session.set_sudo_windows(vec![window]);
+        after
+            .session
+            .add_active_interaction(crate::session::RuntimeInteraction::new(
+                "owner-decision",
+                "agent",
+                crate::session::RuntimeInteractionKind::Permission,
+                crate::session::RuntimeInteractionLevel::Warning,
+                None,
+                "Owner decision",
+                vec![crate::session::RuntimeInteractionChoice::new(
+                    "cancel", "Cancel", "cancel", None,
+                )],
+                None,
+                None,
+                None,
+            ));
         let events = session_projection_events(&after, Some(&before), false);
         assert!(events
             .iter()
-            .any(|event| matches!(event, KernelEvent::SessionMetadataChanged { .. })));
+            .any(|event| matches!(event, KernelEvent::RuntimeInteractionsChanged { .. })));
         assert!(
             events
                 .iter()
                 .any(|event| matches!(event, KernelEvent::SessionSnapshot { .. })),
-            "metadata cannot hide the newly opened sudo window"
+            "an interaction delta cannot hide the newly opened sudo window"
         );
     }
 }

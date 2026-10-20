@@ -1,6 +1,5 @@
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use chariox_relay::protocol::RelayEnvelope;
 use futures_util::{Sink, SinkExt};

@@ -37,7 +37,7 @@ test("every brokered Docker start and unpause requires allocator admission befor
     read("./slice-disk-quota-admission.mjs"),
   ])
   assert.match(source, /runWithSliceDiskQuotaAdmission,[\s\S]*from "\.\/slice-disk-quota-admission\.mjs"/)
-  const execute = source.slice(source.indexOf("async function execute(request)"), source.indexOf("function errorResponse"))
+  const execute = source.slice(source.indexOf("async function execute(request"), source.indexOf("function errorResponse"))
   const runPrepared = execute.indexOf("const runPrepared = async (admission) =>")
   const prepare = execute.indexOf("prepared = request.kind === \"docker\" ? prepareDocker(request.args)", runPrepared)
   const spawn = execute.indexOf("return spawnBounded(command, args", prepare)

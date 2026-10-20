@@ -367,7 +367,10 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
     );
     // MP-08 / MP-10 (panes R5): live records carry their history sequence
     // since local protocol 508; records without a history row omit it.
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 534);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     assert_eq!(
         snapshot.pointer("/TerminalOutput/records/0/sequence"),
         Some(&serde_json::json!(41))

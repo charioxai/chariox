@@ -717,9 +717,31 @@ async fn wake_reaches_a_leased_agent_after_its_worker_restarts() {
         .runtime_state
         .record_leased_answer_for_test(&room, &leased, "MP-10 A10 answer before restart")
         .unwrap();
-    dispatch_json(&fixture.home, json!({"CompletePrompt":{"session_id":room}}))
-        .await
-        .expect("the first leased turn completes");
+    if let Err(error) =
+        dispatch_json(&fixture.home, json!({"CompletePrompt":{"session_id":room}})).await
+    {
+        assert!(
+            matches!(&error, DaemonError::LocalTransport { operation: "complete remote prompt", message } if message == "completion receipt was superseded"),
+            "unexpected completion failure: {error:?}"
+        );
+        // The independent output pump may settle the same receipt before this
+        // explicit completion returns. Require its durable result, not just an error.
+        let ledger = store(&fixture).await;
+        eventually("the first leased turn settled by the output pump", || {
+            ledger
+                .agent_tasks(Some(&room), Some(&leased))
+                .unwrap()
+                .into_iter()
+                .find(|task| task.state == ledger::ExecutionState::Done)
+        })
+        .await;
+        let app = fixture.home.app.lock().await;
+        let session = app.sessions().get_session(&room).unwrap();
+        assert!(app
+            .prompt_state_owner()
+            .active_prompt_for_agent(&session, &leased)
+            .is_none());
+    }
     let worker = worker.restart(&fixture).await;
     let store = store(&fixture).await;
     let Outcome::Event(event) = store

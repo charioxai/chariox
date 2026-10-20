@@ -1,5 +1,4 @@
 use super::*;
-use tokio::time::Instant as TokioInstant;
 
 #[test]
 fn missing_relay_config_without_cloud_profile_is_local_idle() {

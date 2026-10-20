@@ -152,6 +152,8 @@ test("slice images copy and fingerprint every repository path the kernel embeds 
   const walk = async (directory) => {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name)
+      // lib.rs declares this module only under cfg(test).
+      if (["test_support", "test_support.rs"].includes(relative(kernelSource, path))) continue
       if (entry.isDirectory()) await walk(path)
       else if (entry.name.endsWith(".rs") && !/(^|[\\/])tests?(\.rs|[\\/])/.test(relative(kernelSource, path))) {
         // Inline `#[cfg(test)] mod` code is not part of the runtime image build.

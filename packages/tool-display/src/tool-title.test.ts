@@ -44,7 +44,7 @@ test("tool titles use a verb and an object for each provider's tool shapes", () 
   for (const [update, expected] of cases) {
     const title = toolDisplayTitle(update)
     assert.equal(title, expected, JSON.stringify(update))
-    assert.equal(formatToolDisplay(update).title, expected)
+    assert.equal(formatToolDisplay(update).title, formattedTitles[update.id] ?? expected)
     assert.doesNotMatch(title, /_/)
   }
 })

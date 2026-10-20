@@ -325,7 +325,10 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
     ]);
     // MP-08 / MP-10 (panes R7): outline blobs carry display previews and blobs
     // load in one batch since local protocol 508.
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 534);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     assert_eq!(
         snapshot.pointer("/2/SessionHistoryOutline/agents/0/turns/0/blobs/0/preview"),
         Some(&serde_json::json!(
