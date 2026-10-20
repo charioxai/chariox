@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -35,6 +35,10 @@ const MAX_TERMINALS_PER_ROOM: usize = 16;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_PAGE_BYTES: usize = 256 * 1024;
 const PUMP_INTERVAL: Duration = Duration::from_millis(100);
+/// While a person types or output flows, look at the PTY this often so an
+/// echo does not wait for a tick that only exists to notice quiet changes.
+const ACTIVE_PUMP_INTERVAL: Duration = Duration::from_millis(5);
+const ACTIVE_PUMP_WINDOW: Duration = Duration::from_millis(500);
 const PERSIST_INTERVAL: Duration = Duration::from_secs(1);
 /// Below the provider tool limit (Codex gives a tool call 300 s).
 pub const MAX_WAIT: Duration = Duration::from_secs(240);
@@ -72,6 +76,10 @@ struct Inner {
     managed: ManagedWork,
     output_changed: Notify,
     pump_started: AtomicBool,
+    /// Wakes the pump now; input and a resize have an answer coming.
+    pump_wake: Notify,
+    /// The pump runs at `ACTIVE_PUMP_INTERVAL` until then.
+    pump_active_until: Mutex<Instant>,
 }
 
 pub(super) struct State {
@@ -117,6 +125,8 @@ impl RoomTerminalService {
                 managed: ManagedWork::default(),
                 output_changed: Notify::new(),
                 pump_started: AtomicBool::new(false),
+                pump_wake: Notify::new(),
+                pump_active_until: Mutex::new(Instant::now()),
             }),
         }
     }
@@ -311,6 +321,7 @@ impl RoomTerminalService {
                             .record_write(actor, shell_foreground, input, now);
                         let driver = terminal.driver.observe(shell_foreground);
                         drop(state);
+                        self.pump_soon();
                         self.report_work();
                         return Ok(RoomTerminalInputResult {
                             accepted: true,
@@ -359,6 +370,7 @@ impl RoomTerminalService {
             terminal.mark_user_interacted();
         }
         let driver = terminal.current_driver(pty);
+        self.pump_soon();
         Ok(terminal.summary(driver))
     }
 
@@ -615,9 +627,41 @@ impl RoomTerminalService {
         tokio::spawn(async move {
             loop {
                 service.pump_once();
-                tokio::time::sleep(PUMP_INTERVAL).await;
+                let interval = if service.pump_is_active() {
+                    ACTIVE_PUMP_INTERVAL
+                } else {
+                    PUMP_INTERVAL
+                };
+                tokio::select! {
+                    () = tokio::time::sleep(interval) => {}
+                    () = service.inner.pump_wake.notified() => {}
+                }
             }
         });
+    }
+
+    /// Something was just typed or resized: pump now and keep pumping fast
+    /// while the answer arrives.
+    fn pump_soon(&self) {
+        self.extend_active_pump();
+        self.inner.pump_wake.notify_one();
+    }
+
+    fn extend_active_pump(&self) {
+        *self
+            .inner
+            .pump_active_until
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Instant::now() + ACTIVE_PUMP_WINDOW;
+    }
+
+    fn pump_is_active(&self) -> bool {
+        Instant::now()
+            < *self
+                .inner
+                .pump_active_until
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Move PTY output into screens, end terminals whose shell exited, track
@@ -653,6 +697,7 @@ impl RoomTerminalService {
         }
         self.report_work();
         if output_changed {
+            self.extend_active_pump();
             self.inner.output_changed.notify_waiters();
         }
         for (waiter, fired) in wakes {

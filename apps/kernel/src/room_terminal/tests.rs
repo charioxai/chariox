@@ -244,6 +244,50 @@ async fn output_continues_from_an_offset_without_a_gap() {
 }
 
 #[tokio::test]
+async fn a_typed_key_is_echoed_without_waiting_for_a_slow_tick() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = service
+        .open(OpenRoomTerminal {
+            session_id: "room-1".to_string(),
+            working_directory: root.path().to_path_buf(),
+            cols: 100,
+            rows: 30,
+            title: None,
+            opened_by: TerminalActor::User,
+            command: Some(vec!["cat".to_string()]),
+        })
+        .expect("terminal opens")
+        .terminal_id;
+    let mut offset = service
+        .read_output("room-1", &id, 0, Duration::from_millis(500))
+        .await
+        .unwrap()
+        .next_offset;
+    let mut echo_ms = Vec::new();
+    for round in 0..20u64 {
+        // Land at every phase of the pump interval.
+        tokio::time::sleep(Duration::from_millis(7 + (round * 13) % 97)).await;
+        let typed = Instant::now();
+        type_as(&service, &id, &TerminalActor::User, "k").await;
+        let page = service
+            .read_output("room-1", &id, offset, Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert!(page.next_offset > offset, "the echo arrives");
+        offset = page.next_offset;
+        echo_ms.push(typed.elapsed().as_millis());
+    }
+    echo_ms.sort_unstable();
+    let median = echo_ms[echo_ms.len() / 2];
+    assert!(
+        median < 30,
+        "typing waited for the 100 ms pump tick: echo times {echo_ms:?}"
+    );
+    service.end_session("room-1");
+}
+
+#[tokio::test]
 async fn shell_exit_ends_the_terminal_and_keeps_its_screen() {
     let root = TempDir::new();
     let service = service(root.path());
