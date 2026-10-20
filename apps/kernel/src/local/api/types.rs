@@ -343,4 +343,4 @@ pub use workspace::*;
 /// and owner-managed contexts (MP-08/MP-10/MP-11).
 /// The event-core line (561, relay peer 169) is merged too: task/wake driver sources (`AgentWake.summary`/`detail`) and the
 /// `agent_task_updated` delta event (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 567;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 570;

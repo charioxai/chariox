@@ -740,8 +740,8 @@ Those lifecycle semantics belong to PR2.
 ## 3.3.5 Durable Agent Tasks and Events (MP-08 / MP-09 / MP-10 / MP-11, A02)
 
 MP-08 / MP-09 / MP-10 / MP-11: the integrated acceptance contract uses local
-protocol **567** and relay peer protocol **175** (the agent-model line's 537/145
-allocation is merged into this number; the coordinator allocates the final one). It combines main 520/128 direct browser/terminal carriers and
+protocol **570** and relay peer protocol **178** (the agent-model line's 537/145
+allocation and the landing's 567/175 are merged into this number). It combines main 520/128 direct browser/terminal carriers and
 owner-managed machine/context admission with the agent-model 513/121 union:
 it retains the agent-model
 493/102 task, wake, Goal and leased-watcher contracts; main's local 490 bounded
@@ -751,10 +751,11 @@ at local 491. The display history includes bounded stripes (447), binary frames
 with WebP tiles and scroll rectangles (466), and relay display push/ACKs (475).
 Binary transport downgrade does not admit an obsolete worker runtime: remote
 lease creation, restored bindings, Room browser forwarding, context transfer and
-hosted slice receipts require peer 175 or newer. The aggregate also includes main's
+hosted slice receipts require peer 178 or newer. The aggregate also includes main's
 local 491 / relay peer 101 (#974) kernel ownership, waiting-room and Room
 workflow contracts. Client feature floors are listed separately below; the
-merged 567/175 allocation identifies the integrated runtime contract.
+merged 570/178 allocation identifies the integrated runtime contract; the landing's
+567/175 `fonts` op `absent` list is part of it.
 
 MP-08 / MP-10 / MP-11: coordinator-allocated 513/121 adds the paired terminal
 actor normalization for display metadata/credits and the historical workflow
