@@ -732,3 +732,52 @@ async fn mp11_neutral_assessment_uses_private_work_result_without_public_or_dura
         .unwrap()
         .contains("PRIVATE_WORK_OUTCOME"));
 }
+
+// MP-08/MP-10: an achieved check publishes only its final answer as ordinary
+// agent text; other receipts and protected rooms publish nothing.
+#[tokio::test]
+async fn achieved_check_publishes_only_the_final_answer() {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let (_app, runtime, room, agent) = agent_config_runtime_with_config(config).await;
+    let owned = &runtime.owned;
+    let history = || {
+        owned
+            .operational_history_store
+            .load_session_history_entries(&room, Some(&agent))
+            .unwrap()
+    };
+    for receipt in [
+        r#"{"status":"continue","reason":"more work"}"#,
+        r#"{"status":"blocked","reason":"needs owner"}"#,
+        r#"{"status":"achieved","final_answer":"  ","evidence":["e"]}"#,
+        "",
+    ] {
+        owned.publish_check_answer(&room, &agent, "run", receipt);
+    }
+    assert!(history().is_empty());
+    owned.prompt_state_owner.sync_external_active_prompt(
+        &owned.session_store.get_session(&room).unwrap(),
+        &agent,
+        Some(crate::session::PromptQueueItem::new(
+            "goal-check-task-1-1-1",
+            "attachment-1",
+            &agent,
+            "check",
+            crate::session::PromptStatus::Running,
+        )),
+    );
+    owned.publish_check_answer(
+        &room,
+        &agent,
+        "run",
+        r#"{"status":"achieved","final_answer":"Opened two tabs","evidence":["history:x"]}"#,
+    );
+    let entries = history();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].text, "Opened two tabs");
+    assert_eq!(
+        entries[0].prompt_origin,
+        Some(crate::session::PromptOrigin::Chariox)
+    );
+}

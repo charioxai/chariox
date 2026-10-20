@@ -486,6 +486,12 @@ impl PromptQueueItem {
         self
     }
 
+    /// Drops what the prompt told the agent; the identity and status remain.
+    pub(crate) fn clear_instruction(&mut self) {
+        self.prompt.clear();
+        self.attachments.clear();
+    }
+
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = id.into();
         self.pending_prompt_id = None;

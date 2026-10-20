@@ -85,6 +85,9 @@ pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> R
         .prompt_runtime
         .retain_agent_ids(&visible_agent_ids, session.focused_agent_id.as_deref());
     session
+        .prompt_runtime
+        .hide_internal_prompts(session.focused_agent_id.as_deref());
+    session
         .metaagent_tasks
         .retain(|task| visible_agent_ids.contains(task.metaagent_id()));
     // MP-08/MP-09/MP-10/MP-11: lifecycle reasons and process argv follow trace visibility.
