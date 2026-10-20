@@ -61,7 +61,6 @@ test("fault-drill failed child preserves status and an early diagnostic after lo
       "  echo 'warning: intentionally long compiler warning output for bounded evidence' >&2",
       "  i=$((i + 1))",
       "done",
-      "sleep 0.2",
       "exit 7",
       "",
     ].join("\n"))
