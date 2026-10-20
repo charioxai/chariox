@@ -800,12 +800,14 @@ async fn achieved_check_publishes_only_the_final_answer() {
 async fn goal_continuation_keeps_the_original_notes_in_hidden_context_not_visible_text() {
     use crate::durable_state::agent_lifecycle::Operation;
     use base64::Engine;
+    let worktree = crate::test_support::TestWorktree::new("goal-continuation-notes");
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
     let (_app, runtime, room, agent) = agent_config_runtime_in_worktree(
         config,
         crate::session::DEFAULT_LOCAL_USER_ID,
-        crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")
+        worktree
+            .session_request()
             .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
     )
     .await;
