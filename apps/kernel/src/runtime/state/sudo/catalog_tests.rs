@@ -317,16 +317,16 @@ async fn sudo_catalog_readiness_budget_counts_only_the_refresh() {
             None,
         ),
         (
-            "vault popup answered after 2 min",
+            "vault popup answered after 45 seconds",
             Kind::VaultClaude,
-            &[Busy, Approve, LockVault, Idle, Sleep(120), AnswerVault, AckCatalog],
+            &[Busy, Approve, LockVault, Idle, Sleep(45), AnswerVault, AckCatalog],
             None,
         ),
         (
             "vault popup ignored until it expires",
             Kind::VaultClaude,
-            &[Busy, Approve, LockVault, Idle, Sleep(301)],
-            Some("provider catalog refresh failed: Chariox vault unlock was cancelled"),
+            &[Busy, Approve, LockVault, Idle, Sleep(61)],
+            Some("provider catalog refresh failed: Chariox vault unlock timed out"),
         ),
         (
             "vault relocks between retries",
@@ -337,13 +337,13 @@ async fn sudo_catalog_readiness_budget_counts_only_the_refresh() {
         (
             "vault relock answered after the remaining budget",
             Kind::VaultClaude,
-            &[HoldLane, Approve, Sleep(1), LockVault, Sleep(61), AnswerVault, ReleaseLane, AckCatalog],
+            &[HoldLane, Approve, Sleep(1), LockVault, Sleep(59), AnswerVault, ReleaseLane, AckCatalog],
             None,
         ),
         (
             "window revoked while the vault popup is open",
             Kind::VaultClaude,
-            &[Busy, Approve, LockVault, Idle, Sleep(120), Revoke, Sleep(1)],
+            &[Busy, Approve, LockVault, Idle, Sleep(45), Revoke, Sleep(1)],
             Some("queued sudo was revoked"),
         ),
         (

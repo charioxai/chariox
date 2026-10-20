@@ -546,10 +546,7 @@ async fn proxied_session_subscriptions_share_one_attachment_without_replacement(
 
     // Protocol 403: a terminal's subscription starts with its passkey prompts.
     let prompts = expect_client_event(&mut client_socket, &subscription_private_key).await;
-    assert_eq!(
-        prompts,
-        serde_json::json!({"event": "passkey_prompts_changed", "prompts": []})
-    );
+    assert_empty_passkey_event(&prompts);
     let event = expect_client_event(&mut client_socket, &subscription_private_key).await;
     assert_eq!(event["event"], serde_json::json!("session_snapshot"));
     assert_eq!(
@@ -605,10 +602,7 @@ async fn proxied_session_subscriptions_share_one_attachment_without_replacement(
     assert_eq!(second_subscribe_response["ok"], serde_json::json!(true));
     let second_prompts =
         expect_client_event(&mut second_client_socket, &second_subscription_private_key).await;
-    assert_eq!(
-        second_prompts,
-        serde_json::json!({"event": "passkey_prompts_changed", "prompts": []})
-    );
+    assert_empty_passkey_event(&second_prompts);
     let second_event =
         expect_client_event(&mut second_client_socket, &second_subscription_private_key).await;
     assert_eq!(second_event["event"], serde_json::json!("session_snapshot"));
@@ -749,10 +743,7 @@ async fn relay_subscription_replays_recent_events_after_resume_cursor() {
         expect_json_client_response(&mut client_socket, "sub-1", &subscription_private_key).await;
     // Protocol 403: the passkey prompts come first and are never replayed.
     let prompts = expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
-    assert_eq!(
-        prompts.1,
-        serde_json::json!({"event": "passkey_prompts_changed", "prompts": []})
-    );
+    assert_empty_passkey_event(&prompts.1);
     let first_event =
         expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
     assert_eq!(
@@ -1095,10 +1086,7 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
     )
     .await
     .expect("the current passkey prompts should arrive first");
-    assert_eq!(
-        prompts.1,
-        serde_json::json!({"event": "passkey_prompts_changed", "prompts": []})
-    );
+    assert_empty_passkey_event(&prompts.1);
     let current_snapshot = tokio::time::timeout(
         Duration::from_secs(5),
         decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key),
@@ -1231,10 +1219,7 @@ async fn room_workflows_encrypted_relay_drill_inventory_updates_replay_and_last_
         expect_json_client_response(&mut client_socket, "sub-1", &subscription_private_key).await;
     // Protocol 403: the passkey prompts come first and are never replayed.
     let prompts = expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
-    assert_eq!(
-        prompts.1,
-        serde_json::json!({"event": "passkey_prompts_changed", "prompts": []})
-    );
+    assert_empty_passkey_event(&prompts.1);
     let first_event =
         expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
     assert_eq!(
@@ -1356,4 +1341,15 @@ async fn room_workflows_encrypted_relay_drill_inventory_updates_replay_and_last_
     connector_task.await.expect("connector task should join");
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("server task should join");
+}
+
+fn assert_empty_passkey_event(event: &serde_json::Value) {
+    assert!(event["kernel_now_ms"].as_u64().is_some_and(|now| now > 0));
+    assert_eq!(
+        event,
+        &serde_json::json!({
+            "event": "passkey_prompts_changed", "prompts": [], "closed": [],
+            "kernel_now_ms": event["kernel_now_ms"],
+        })
+    );
 }

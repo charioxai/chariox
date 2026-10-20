@@ -141,7 +141,7 @@ async fn refused_physical_viewport_does_not_publish_a_new_canonical_revision() {
                         crate::session::DEFAULT_LOCAL_USER_ID
                     )
         ));
-    // The controller fixture keeps reporting 1280x800. A 1024x768 request
+    // The controller fixture keeps reporting 1280x800. A supported 1920x1080 request
     // therefore fails the real reconciliation dimension check.
     let store = crate::runtime::session_actor::store::SessionRuntimeStore::new(state.clone());
     let (result, _) = store
@@ -150,11 +150,11 @@ async fn refused_physical_viewport_does_not_publish_a_new_canonical_revision() {
                 session_id: session_id.clone(),
                 expected_revision: before.viewport.revision,
                 viewport: crate::local::RoomEnvironmentViewportRequest {
-                    css_width: 1024,
-                    css_height: 768,
+                    css_width: 1920,
+                    css_height: 1080,
                     device_scale_factor: 1,
-                    desktop_pixel_width: 1024,
-                    desktop_pixel_height: 768,
+                    desktop_pixel_width: 1920,
+                    desktop_pixel_height: 1080,
                 },
             },
             crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
