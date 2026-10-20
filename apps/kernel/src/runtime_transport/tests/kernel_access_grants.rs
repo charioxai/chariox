@@ -1329,3 +1329,23 @@ async fn machine_requests_are_decided_locally_before_any_machine_is_reached() {
     );
     assert_eq!(refused["error"]["code"], "kernel_access_not_covered", "{refused}");
 }
+
+// EA2-10: a grant request that names a machine is a gateway request, never a
+// local grant request: it raises no popup here and is human-only for a holder.
+#[tokio::test]
+async fn a_grant_request_naming_a_machine_is_not_a_local_grant_request() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let again = holder.request_on(
+        "b3",
+        serde_json::json!({"RequestKernelAccess":{"holder_pid":0}}),
+    );
+    assert_eq!(again["error"]["code"], "kernel_access_human_only", "{again}");
+    let mut stranger = Client::start(&kernel.root);
+    let asked = stranger.request_on(
+        "b3",
+        serde_json::json!({"RequestKernelAccess":{"holder_pid":0}}),
+    );
+    assert_eq!(asked["error"]["code"], "kernel_access_not_covered", "{asked}");
+}

@@ -101,9 +101,12 @@ pub(super) async fn admit_frame(
         );
         return Err(());
     }
+    // A grant request that names a machine is a gateway request: the gateway
+    // policy below refuses it, so it never raises a popup on this kernel.
     if let KernelIncomingFrame::Request {
         request_id,
         request: crate::local::LocalDaemonRequest::RequestKernelAccess(request),
+        machine: None,
         ..
     } = frame
     {
