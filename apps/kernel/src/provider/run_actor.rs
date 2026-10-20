@@ -1,3 +1,4 @@
+mod utility_cancellation;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -49,6 +50,7 @@ pub(crate) struct ProviderRunActorMailbox {
     workers: Arc<Mutex<BTreeMap<String, tokio_mpsc::Sender<ProviderRunActorCommand>>>>,
     runtime_registry: ProviderRunRuntimeRegistry,
     in_flight: ProviderRunInFlightState,
+    utility_cancellations: utility_cancellation::MetadataUtilityCancellations,
     finished_submits: Arc<Mutex<Vec<FinishedProviderPromptSubmitJob>>>,
     finished_aborts: Arc<Mutex<Vec<FinishedProviderPromptAbortJob>>>,
     finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
@@ -69,6 +71,7 @@ impl Default for ProviderRunActorMailbox {
             workers: Arc::new(Mutex::new(BTreeMap::new())),
             runtime_registry: ProviderRunRuntimeRegistry::default(),
             in_flight: ProviderRunInFlightState::default(),
+            utility_cancellations: utility_cancellation::MetadataUtilityCancellations::default(),
             finished_submits: Arc::new(Mutex::new(Vec::new())),
             finished_aborts: Arc::new(Mutex::new(Vec::new())),
             finished_selection_syncs: Arc::new(Mutex::new(Vec::new())),

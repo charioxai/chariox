@@ -278,6 +278,10 @@ export type CharioxUserConfig = {
     workspace_live_sync?: "off" | "managed" | "tracked" | "unrestricted"
   }
   history?: {
+    handoff?: {
+      codex_brief_model?: string
+      claude_brief_model?: string
+    }
     operational?: {
       backend?: "sqlite"
       path?: string

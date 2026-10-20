@@ -43,6 +43,8 @@ pub struct ClaudeRuntimeState {
     pub(super) active_execution_mode: AgentExecutionMode,
     pub(super) active_permission_level: AgentPermissionLevel,
     pub(super) session_id: Option<String>,
+    // Most recent API call input, independent of turn-wide billed usage.
+    pub(super) last_context_tokens: Option<u64>,
     pub(super) active_stream_message_id: Option<String>,
     pub(super) active_turn_id: Option<String>,
     pub(super) active_prompt_message: Option<Value>,

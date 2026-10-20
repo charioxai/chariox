@@ -542,10 +542,11 @@ impl KernelRuntimeOwnedState {
             let prompt_with_handoff = self.prompt_with_pending_context_handoff(
                 session_id,
                 agent_id,
-                &source_attachment_id,
                 &provider_run,
+                started_next.id(),
                 started_next.prompt(),
-            );
+                false,
+            )?;
             let granted_skill_context =
                 self.granted_skill_hidden_context(session_id, agent_id, &prompt_with_handoff)?;
             let hidden_system_context = join_hidden_context(
@@ -674,6 +675,12 @@ impl KernelRuntimeOwnedState {
         settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
     ) {
+        if let Some(run) = provider_run_id.and_then(|id| self.provider_store.get_run(id).ok()) {
+            crate::app::clear_claude_context_delivery_for_settled_prompt(
+                &run,
+                completed_prompt.id(),
+            );
+        }
         let started_at_ms = provider_run_id
             .and_then(|provider_run_id| {
                 self.active_turns

@@ -134,6 +134,8 @@ pub(super) fn execute_utility_command(
     envelope: PromptEnvelope,
     timeout: Duration,
     policy: ProviderUtilityExecutionPolicy,
+    cancellation: Option<super::utility_cancellation::MetadataUtilityCancellation>,
+    admission: Option<crate::provider::ProviderUtilityAdmission>,
 ) -> Result<String, DaemonError> {
     if policy.is_read_only_discovery()
         && (run.execution_mode() != crate::provider::AgentExecutionMode::Plan
@@ -166,15 +168,31 @@ pub(super) fn execute_utility_command(
                     &credentials,
                 )?
                 .state;
-            let result =
-                run_claude_utility_prompt_on_runtime(&run, &mut utility, &envelope, timeout);
+            let result = run_claude_utility_prompt_on_runtime(
+                &run,
+                &mut utility,
+                &envelope,
+                timeout,
+                true,
+                cancellation.as_ref(),
+                admission.as_ref(),
+            );
             drop(utility);
             result
         })();
         runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
         return result;
     }
-    let result = run_claude_utility_prompt_on_runtime(&run, &mut state, &envelope, timeout);
+    let expects_text = policy != ProviderUtilityExecutionPolicy::SessionCommand;
+    let result = run_claude_utility_prompt_on_runtime(
+        &run,
+        &mut state,
+        &envelope,
+        timeout,
+        expects_text,
+        None,
+        admission.as_ref(),
+    );
     runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
     result
 }
@@ -184,12 +202,23 @@ fn run_claude_utility_prompt_on_runtime(
     state: &mut super::super::ClaudeRuntimeState,
     envelope: &PromptEnvelope,
     timeout: Duration,
+    expects_text: bool,
+    cancellation: Option<&super::utility_cancellation::MetadataUtilityCancellation>,
+    admission: Option<&crate::provider::ProviderUtilityAdmission>,
 ) -> Result<String, DaemonError> {
+    if cancellation.is_some_and(|c| c.is_cancelled()) {
+        return Err(cancelled_metadata_utility(run));
+    }
+    let guard = admission.map(|check| check.acquire()).transpose()?;
     submit_claude_prompt(run, state, envelope)?;
+    drop(guard);
     let deadline = std::time::Instant::now() + timeout;
     let mut output = String::new();
     while std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(100));
+        if cancellation.is_some_and(|c| c.is_cancelled()) {
+            return Err(cancelled_metadata_utility(run));
+        }
         let batch = drain_claude_events(run, state)?;
         for chunk in batch.chunks {
             if chunk.kind == crate::terminal::TerminalOutputKind::ProviderOutput {
@@ -205,7 +234,7 @@ fn run_claude_utility_prompt_on_runtime(
         }
         if batch.prompt_completed {
             let output = output.trim().to_string();
-            if output.is_empty() {
+            if output.is_empty() && expects_text {
                 return Err(DaemonError::ProviderProtocol {
                     provider_run_id: run.id().to_string(),
                     operation: "claude_utility_empty_output",
@@ -223,6 +252,14 @@ fn run_claude_utility_prompt_on_runtime(
             timeout.as_millis()
         ),
     })
+}
+
+fn cancelled_metadata_utility(run: &RuntimeProviderRun) -> DaemonError {
+    DaemonError::ProviderProtocol {
+        provider_run_id: run.id().to_string(),
+        operation: "claude_utility_cancelled",
+        message: "the fresh metadata utility was cancelled before completing".to_string(),
+    }
 }
 
 pub(super) fn execute_terminate_command(

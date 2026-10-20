@@ -129,7 +129,7 @@ independent sibling OS shell run:
 node "$KA_CHECKOUT/scripts/sudo-kit.mjs" probe --checkout "$KA_CHECKOUT" --socket "$KA_SOCKET" --session "$KA_SESSION" > "$KA_EVIDENCE/sibling.jsonl"
 ```
 
-Expect a nonzero exit and `kernel_access_denied`. Public grant ID knowledge
+Expect a nonzero exit and `kernel_access_not_covered`. Public grant ID knowledge
 does not authorize the sibling. Holder cannot answer a pending critical:
 type `critical <actual-interaction-id>` while H6's harmless critical is pending;
 expect refusal, approval stays pending. No passkey is offered to the holder.
@@ -187,7 +187,7 @@ node /absolute/reviewed/chariox/scripts/sudo-kit.mjs probe --checkout /absolute/
 Both must succeed **during this exact turn**, with normal provider shell tools.
 No bearer or token env/file may be supplied. Let the turn yield completely;
 ask the next ordinary turn to repeat the identical commands. Both must refuse
-with no live authority (CLI nonzero). Record exact provider/run/prompt IDs and
+with `kernel_access_not_covered` (CLI nonzero). Record exact provider/run/prompt IDs and
 completion time. Provider tools and transcript remain usable. Repeat the
 official harness leg for Codex, OpenCode and Claude selected through product
 accounts; record failures individually and macOS Seatbelt launch result.

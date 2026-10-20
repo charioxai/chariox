@@ -373,13 +373,41 @@ impl CodexClient {
         thread_id: &str,
         buffered_notifications: &mut Vec<CodexNotification>,
     ) -> Result<Value, DaemonError> {
-        self.send_request_buffering_notifications(
+        let response = self.send_request_buffering_notifications(
             socket,
             next_request_id,
             "thread/turns/list",
             json!({ "threadId": thread_id }),
             buffered_notifications,
-        )
+        );
+        match response {
+            Err(DaemonError::ProviderProtocol {
+                operation: "thread/turns/list",
+                ref message,
+                ..
+            }) if message.contains("list_turns is not supported yet") => {
+                // Legacy Codex thread stores expose rollout history through
+                // thread/read, even when the paginated API is advertised.
+                let legacy: Value = self.send_request_buffering_notifications(
+                    socket,
+                    next_request_id,
+                    "thread/read",
+                    json!({ "threadId": thread_id, "includeTurns": true }),
+                    buffered_notifications,
+                )?;
+                let turns = legacy
+                    .pointer("/thread/turns")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        self.protocol_error(
+                            "thread/read",
+                            "Codex returned no turn history".to_string(),
+                        )
+                    })?;
+                Ok(json!({ "data": turns, "nextCursor": null }))
+            }
+            other => other,
+        }
     }
 
     pub(super) fn thread_config_overrides(

@@ -14,8 +14,8 @@ import { filterCommandCenterItems } from "./command-center-search.js"
 import { mapNodeToItem, type CommandNode } from "./command-center-tree-projection.js"
 import type { CommandCenterDynamicContext } from "./command-center-context.js"
 import type { CommandCenterItem } from "./command-center-types.js"
+import { providerAccountCapacity } from "@chariox/kernel-client"
 import {
-  providerAccountCapacity,
   providerAccountDisplayLabel,
   providerAccountsForProvider,
 } from "./waiting-room-provider-accounts.js"

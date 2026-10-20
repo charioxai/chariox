@@ -375,3 +375,25 @@ test("kernel debug-bundle rejects detached and invalid usage", async () => {
     { message: "usage: /kernel debug-bundle [label]", tone: "error" },
   ])
 })
+
+test("MP-08/MP-11 BY-05 TUI copy status shows the authoritative refusal and action", async () => {
+  for (const [code, message] of [
+    ["owner_context_authorization_revoked", "This copy approval was revoked by the owner. Ask for a new approval."],
+    ["owner_context_authorization_expired", "This copy approval expired. Start a new copy to request approval."],
+    ["owner_context_authorization_already_used", "This copy approval was already used. Start a new copy to request approval."],
+  ] as const) {
+    const notices: string[] = [], flashes: Array<{message: string; tone: string}> = []
+    await handleKernelSlashCommand({
+      isAttached: () => true, sessionState: () => makeSession(),
+      appendNotice: text => { notices.push(text) },
+      flashFooter: (message, tone) => { flashes.push({ message, tone }) },
+      transitionToNoSession: () => {},
+      getContextTransferStatus: async id => ({ contextId: id, phase: "failed",
+        failureCode: code, failureMessage: message, retryable: false,
+        planDigest: "sha256:plan", environmentId: "", acceptedBytes: 0, packageSizeBytes: 0,
+        createdAtMs: 1, updatedAtMs: 1, receipt: null }),
+    }, { kind: "kernel", raw: "/kernel copy-status context-1", args: ["copy-status", "context-1"] })
+    assert.equal(notices.at(-1), message)
+    assert.deepEqual(flashes.at(-1), { message, tone: "error" })
+  }
+})

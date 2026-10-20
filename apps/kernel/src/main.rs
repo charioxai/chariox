@@ -58,6 +58,7 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
         }
         return Ok(());
     }
+    let _process_logs = chariox_kernel::logging::ProcessLogGuard;
     let command =
         kernel_arguments::parse(std::env::args_os().skip(1).collect()).unwrap_or_else(|message| {
             eprintln!("error: {message}\nRun chariox-kernel --help for usage.");
@@ -81,6 +82,35 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
                 chariox_kernel::config::prepare_protected_slice_identity("127.0.0.1", port)?;
             println!("{proof}");
             return Ok(());
+        }
+        mode @ (kernel_arguments::Command::OwnerManagedEnroll
+        | kernel_arguments::Command::OwnerManagedReady
+        | kernel_arguments::Command::OwnerManagedSelfEnroll
+        | kernel_arguments::Command::OwnerManagedDeviceEnroll) => {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|_| chariox_kernel::DaemonError::LocalTransport {
+                    operation: "owner-managed bootstrap",
+                    message: "runtime unavailable".into(),
+                })?;
+            return runtime.block_on(async {
+                match mode {
+                    kernel_arguments::Command::OwnerManagedEnroll => {
+                        chariox_kernel::owner_managed_bootstrap::enroll_from_stdin(true).await
+                    }
+                    kernel_arguments::Command::OwnerManagedSelfEnroll => {
+                        chariox_kernel::owner_managed_bootstrap::enroll_from_stdin(false).await
+                    }
+                    kernel_arguments::Command::OwnerManagedDeviceEnroll => {
+                        chariox_kernel::owner_managed_bootstrap::enroll_device_from_stdin().await
+                    }
+                    kernel_arguments::Command::OwnerManagedReady => {
+                        chariox_kernel::owner_managed_bootstrap::wait_ready().await
+                    }
+                    _ => unreachable!(),
+                }
+            });
         }
         kernel_arguments::Command::Run => {}
     }

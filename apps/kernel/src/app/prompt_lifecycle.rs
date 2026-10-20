@@ -200,11 +200,6 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 attachment_id,
                 provider_prompt.as_bytes(),
             );
-            self.app.process_claude_native_bridge_for_runtime(
-                session_id,
-                provider_run_id,
-                &provider_run,
-            )?;
             self.app.mark_active_prompt_delivery(
                 session_id,
                 &agent_id,
@@ -419,6 +414,8 @@ pub(crate) struct KernelPromptAbortDispatch {
     pub(crate) provider_run_id: String,
     pub(crate) prompt_id: String,
     pub(crate) source_attachment_id: String,
+    // Capture pending composer ownership before cancellation can settle.
+    pub(crate) pty_input: &'static [u8],
 }
 
 impl DaemonApp {

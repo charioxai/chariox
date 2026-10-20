@@ -47,6 +47,7 @@ mod display_tunnel;
 mod envelope_io;
 mod events;
 mod incoming_envelopes;
+mod local_browser;
 mod peer_client;
 mod peer_events;
 mod peer_requests;
@@ -58,7 +59,7 @@ use connection_config::{relay_config_continuity, RelayConfigContinuity};
 use connection_state::{
     publish_offline_and_set_disconnected, set_connected, spawn_cloud_presence_publish,
 };
-use daemon_requests::{handle_prepared_daemon_request, prepare_daemon_request};
+use daemon_requests::{handle_daemon_request, handle_prepared_daemon_request, prepare_daemon_request};
 use display_tunnel::handle_display_tunnel_open;
 use envelope_io::{
     encrypt_json_response, encrypt_peer_payload, send_outgoing_envelope,
@@ -66,6 +67,7 @@ use envelope_io::{
 };
 use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
 use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext, RelayReconnectGate};
+use local_browser::LocalBrowserDirect;
 #[cfg(test)]
 pub use peer_client::send_peer_request_via_relay;
 pub(crate) use peer_client::send_peer_request_via_temporary_connection_with_optional_timeout;

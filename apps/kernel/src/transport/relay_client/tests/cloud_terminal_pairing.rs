@@ -246,6 +246,7 @@ fn cloud_enrolled_kernel_pairing_creates_safe_links_and_redeems_over_scoped_rela
                             encrypted_request,
                             &cache,
                             &Default::default(),
+                            None,
                         )
                         .await;
                         send_client_envelope(

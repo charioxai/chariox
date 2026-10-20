@@ -176,6 +176,7 @@ impl KernelRuntimeState {
                 &task.agent_id,
                 prompt.source_attachment_id(),
                 None,
+                None,
             )
             .await?
         {

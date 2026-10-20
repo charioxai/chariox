@@ -274,7 +274,7 @@ impl<'a> KernelAgentService<'a> {
                 .app
                 .provider_account_authority_owner_for_agent(&target_agent)?;
             self.app
-                .provider_account_profile_registry()
+                .provider_account_profiles
                 .require_agent_authenticated(&account_owner, &target_agent, "submit prompt")?;
         }
         let (provider_run_id, provider_run_is_starting) = if remote_execution.is_some() {

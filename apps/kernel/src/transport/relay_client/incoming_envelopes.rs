@@ -11,6 +11,7 @@ pub(super) struct IncomingEnvelopeContext<'a> {
     pub event_runtime: &'a Arc<RelayEventRuntime>,
     pub command_result_cache: &'a RelayCommandResultCache,
     pub reconnect_gate: &'a Arc<RelayReconnectGate>,
+    pub local_browser: &'a Arc<LocalBrowserDirect>,
 }
 
 #[derive(Debug, Default)]
@@ -97,6 +98,7 @@ pub(super) async fn handle_incoming_envelope(
         event_runtime,
         command_result_cache,
         reconnect_gate,
+        local_browser,
     } = context;
     let envelope = serde_json::from_str::<RelayEnvelope>(payload).map_err(|error| {
         DaemonError::LocalTransport {
@@ -162,6 +164,7 @@ pub(super) async fn handle_incoming_envelope(
             if timing_input {
                 chariox_relay::transport_timing::record("kernel_input_queued", timing_packet);
             }
+            let local_browser = Arc::clone(local_browser);
             tokio::spawn(async move {
                 let turn = match turn {
                     Some(turn) => turn.enter(read).await,
@@ -175,6 +178,7 @@ pub(super) async fn handle_incoming_envelope(
                             prepared,
                             &command_result_cache,
                             &display_subscriptions,
+                            Some(&local_browser),
                         )
                         .await
                     }
@@ -432,15 +436,23 @@ pub(super) async fn handle_incoming_envelope(
         } => {
             if chariox_relay::frame_transport::is_display_scope(subscription_scope.as_deref()) {
                 return super::browser_display::enqueue_subscribe(
-                    router, outgoing_tx, subscription_tasks, event_runtime,
+                    router,
+                    outgoing_tx,
+                    subscription_tasks,
+                    event_runtime,
                     super::browser_display::DisplaySubscription {
-                        request_id: relay_request_id, relay_id: relay_subscription_id,
-                        display_id: session_id, generation: attachment_id,
-                        identity: caller_identity, public_key: client_public_key,
+                        request_id: relay_request_id,
+                        relay_id: relay_subscription_id,
+                        display_id: session_id,
+                        generation: attachment_id,
+                        identity: caller_identity,
+                        public_key: client_public_key,
                         resume: resume_from_event_id,
-                        recover: subscription_scope.as_deref()==Some(chariox_relay::frame_transport::DISPLAY_RESUME_SCOPE),
+                        recover: subscription_scope.as_deref()
+                            == Some(chariox_relay::frame_transport::DISPLAY_RESUME_SCOPE),
                     },
-                ).await;
+                )
+                .await;
             }
             handle_relay_subscribe(
                 router,
@@ -718,6 +730,8 @@ mod tests {
         let events = Arc::new(RelayEventRuntime::for_tests(1));
         let cache = Arc::new(CommandResultCache::default());
         let gate = Arc::new(RelayReconnectGate::default());
+        let (_shutdown, shutdown) = watch::channel(false);
+        let local_browser = LocalBrowserDirect::new(router.clone(), sequence.clone(), events.clone(), cache.clone(), shutdown);
         let (outgoing, mut priority, mut event_lane) = RelayOutgoingSender::channel(4);
         if draining {
             assert!(gate.begin_daemon_request());
@@ -751,6 +765,7 @@ mod tests {
                     event_runtime: &events,
                     command_result_cache: &cache,
                     reconnect_gate: &gate,
+                    local_browser: &local_browser,
                 },
                 None,
                 &serde_json::to_string(&request).unwrap(),
@@ -844,6 +859,47 @@ mod tests {
         assert_eq!(decision, RelayReconnectDecision::Unchanged);
         assert!(priority_rx.try_recv().is_err());
         assert!(reconnect_gate.begin_daemon_request());
+    }
+
+    // MP-08 / MP-10 / MP-11: token renewal must reuse existing heartbeat reauthentication.
+    #[test]
+    fn token_rollover_after_peer_response_preserves_live_socket_and_admission() {
+        // MP-08/MP-10/MP-11: a peer reply may finish with a token snapshot
+        // captured before renewal. Neither idle nor busy clients may be closed.
+        for active_requests in 0..=2 {
+            let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(2);
+            let gate = RelayReconnectGate::default();
+            for _ in 0..active_requests {
+                assert!(gate.begin_daemon_request());
+            }
+            let mut config = crate::config::DaemonConfig::for_tests();
+            config.relay_url = Some("wss://relay.example.test".into());
+            config.relay_token = Some("renewed-token".into());
+            assert_eq!(
+                enqueue_dynamic_relay_reconnect_if_changed(
+                    &outgoing_tx,
+                    &gate,
+                    "wss://relay.example.test",
+                    "old-token",
+                    &config,
+                )
+                .unwrap(),
+                RelayReconnectDecision::Unchanged,
+                "token renewal must use the existing heartbeat reauthentication path",
+            );
+            for _ in 0..active_requests {
+                assert_eq!(gate.finish_daemon_request(&outgoing_tx).unwrap(), None);
+            }
+            assert!(
+                priority_rx.try_recv().is_err(),
+                "renewal must not queue Close"
+            );
+            assert!(
+                gate.begin_daemon_request(),
+                "new requests must remain admitted"
+            );
+            assert_eq!(gate.finish_daemon_request(&outgoing_tx).unwrap(), None);
+        }
     }
 
     #[test]

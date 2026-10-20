@@ -645,6 +645,16 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         provider_run_id: &str,
     ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
+        self.advance_queued_prompt_dispatch_for_head(session_id, agent_id, provider_run_id, None)
+    }
+
+    pub(super) fn advance_queued_prompt_dispatch_for_head(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        expected_queue_id: Option<&str>,
+    ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
         let idle_check_session = self.session_store.get_session(session_id)?;
         if self
             .prompt_state_owner
@@ -661,7 +671,9 @@ impl KernelRuntimeOwnedState {
             else {
                 return Ok(None);
             };
-            if next_prompt.remote_steer_reserved() {
+            if next_prompt.remote_steer_reserved()
+                || expected_queue_id.is_some_and(|id| id != next_prompt.id())
+            {
                 return Ok(None);
             }
             let workflow_is_runnable =

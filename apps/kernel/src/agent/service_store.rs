@@ -278,6 +278,29 @@ impl AgentServiceStore {
         Ok(updated)
     }
 
+    /// MP-08 / MP-10 / MP-11: native identity confirmation does not change
+    /// the selected provider, model, effort or account, including on workers.
+    pub(crate) fn set_agent_provider_resume_state_durably(
+        &self,
+        durable_state_store: &DurableKernelStateStore,
+        agent_id: &str,
+        resume_state: ProviderResumeState,
+        provider_run_id: &str,
+    ) -> Result<AgentInstance, DaemonError> {
+        let mut agents = self.write();
+        let previous = agents.get_agent(agent_id)?;
+        let updated = agents.set_agent_provider_resume_state(agent_id, resume_state)?;
+        if let Err(error) = durable_state_store.append_event(
+            "agent.runtime_profile_updated",
+            Some(updated.id().to_string()),
+            serde_json::json!({ "agent": &updated, "provider_run_id": provider_run_id }),
+        ) {
+            agents.restore_agent(previous);
+            return Err(error);
+        }
+        Ok(updated)
+    }
+
     pub(crate) fn clear_provider_resume_state_durably_if_matches(
         &self,
         durable_state_store: &DurableKernelStateStore,

@@ -11,7 +11,9 @@ codesigned runtime inventory (#681).
 - **One release bundle per platform**, built and signed by CI from one tagged
   commit. Phase 1 platforms: **macOS arm64** (`darwin-arm64`) and **Linux x86_64**
   (`linux-x64`).
-- **Everything prebuilt.** Users need no Rust, Node, Bun or pnpm.
+- **Prebuilt CLI and kernel (MP-07 / MP-08 / MP-11).** Users need no Rust, Bun
+  or pnpm. Claude native-TUI hooks require Node on the provider execution
+  machine; the kernel owns those hooks.
 - **One version number** for the whole bundle and everything in it.
 - **Keys stay with the owner.** CI signs with keys held in a protected GitHub
   environment. No agent or script creates, stores or prints a release key.
@@ -28,6 +30,7 @@ codesigned runtime inventory (#681).
 | App storage helper (Linux only) | `packages/app-runtime` (`chariox-app-storage`) | `libexec/chariox-app-storage` |
 | Signed App runtime | native artifact, launcher, sandbox, SDK bundle | `runtime/` |
 | Linux installer | `deploy/local-linux`, `deploy/release-bundle/install.sh` | `deploy/`, `install.sh` |
+| Slice build context | Committed runtime source roots and Dockerfile inputs | `share/chariox/slice-build-context/` |
 
 **The CLI/TUI executable.** `compile.mjs` embeds:
 - the Bun runtime;
@@ -55,6 +58,7 @@ chariox-<version>-<platform>/
   bin/                 chariox, chariox-kernel, chariox-relay, chariox-app-package
   libexec/             chariox-app-runtime-install, chariox-app-storage (Linux)
   runtime/             the signed App runtime release, unchanged
+  share/chariox/slice-build-context/  committed inputs used to build slice images
   deploy/              Linux only: local-linux/ installer and the units it installs
   install.sh           Linux only: checked root install step
   LICENSE
@@ -80,6 +84,27 @@ Each check accepts a bundle only if all of these hold:
 
 During root enrollment, `chariox-app-runtime-install` verifies the runtime again
 against that key and digest.
+
+### Packaged slice context preflight — MP-07 / MP-08 / MP-10 / MP-11
+
+`release-bundle.mjs slice-context` derives local `COPY` and `ADD` inputs, and
+local `RUN` bind mounts, from the Dockerfile at the requested source commit.
+It exports them alongside the provisioner's runtime source roots. Public
+provider version pins are build inputs and must be included.
+
+Export, assembly, signing and Node bundle verification resolve those inputs
+from the packaged context. Assembly checks the copied distribution directory
+before writing its manifest. A checksum-consistent bundle missing a Dockerfile
+input must fail preflight. The check supports static local paths, directories,
+simple source globs, quoted and JSON forms, and ignores inputs from other build
+stages. Unsupported dynamic/remote inputs and ignore files fail explicitly;
+extend the resolver or validate with a real image build before adopting them.
+
+The supplementary regression command is
+`node --test scripts/release-bundle.test.mjs scripts/slice-build-context.test.mjs`.
+This proves packaged input closure, not successful image execution or live
+slice acceptance. The real released TUI/kernel `/slice create … --headed` and
+`/slice start` drill remains required on the signed candidate.
 
 ## Channels
 

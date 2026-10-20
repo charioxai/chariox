@@ -117,6 +117,8 @@ impl AgentPromptCommandService {
         attachment_id: &str,
         expected_prompt_id: Option<&str>,
     ) -> Result<KernelPromptCancellation, DaemonError> {
+        self.ensure_attachment_in_session(session_id, attachment_id)
+            .await?;
         self.state
             .cancel_agent_prompt_if_matches_with_external_authority(
                 session_id,

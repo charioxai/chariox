@@ -18,11 +18,12 @@ mod cloud_relay;
 mod computer_hold;
 mod core;
 mod credential_enrollment;
-mod disposable_worker;
 mod display_resumption;
+mod disposable_worker;
 mod event_publication;
 mod extension_apps;
 mod fresh_remote_relay_inventory;
+mod handoff_config;
 mod kernel_access;
 mod kernel_browser;
 mod kernel_computer;
@@ -98,3 +99,4 @@ mod room_workflows;
 mod screenshot;
 
 mod relay_transport;
+mod ssh_machine;

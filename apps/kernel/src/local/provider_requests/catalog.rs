@@ -1,9 +1,9 @@
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::provider::{
-    claude_provider_catalog, default_provider_command_catalogs, resolve_claude_executable,
-    resolve_opencode_executable, CodexClient, OpenCodeClient, OpenCodeProviderCatalog,
-    OpenCodeProviderInfo, ProviderAuthStatus,
+    claude_provider_catalog_with_environment, default_provider_command_catalogs,
+    resolve_claude_executable, resolve_opencode_executable, CodexClient, OpenCodeClient,
+    OpenCodeProviderCatalog, OpenCodeProviderInfo, ProviderAuthStatus,
 };
 use chariox_relay::protocol::RelayMachinePresence;
 use std::collections::BTreeMap;
@@ -17,7 +17,11 @@ use super::super::api::{
 };
 use super::blocking::block_on_relay_query;
 
+#[cfg(test)]
+mod codex_refresh_tests;
+mod opencode_model_cache;
 mod probe_capture;
+pub(crate) use opencode_model_cache::prepare_opencode_model_cache;
 
 pub(crate) const PROVIDER_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5);
 
@@ -37,13 +41,20 @@ pub(crate) fn load_provider_catalog(
         thread::sleep(Duration::from_millis(config.provider_catalog_read_delay_ms));
     }
 
-    let mut catalogs = vec![claude_provider_catalog()];
+    let selected_profiles = resolve_catalog_profiles(&registry, &owner_user_id, &request)?;
+    let claude_environment = registry.resolve_environment(
+        &owner_user_id,
+        "claude",
+        &selected_profiles["claude"].profile_id,
+    )?;
+    let mut catalogs = vec![claude_provider_catalog_with_environment(
+        &claude_environment,
+    )];
     if crate::provider::dev_stub_public_inventory_enabled() {
         catalogs.push(dev_stub_provider_catalog());
     }
     let mut source_errors = Vec::new();
 
-    let selected_profiles = resolve_catalog_profiles(&registry, &owner_user_id, &request)?;
     if let Some(opencode_profile) = selected_profiles.get("opencode") {
         let opencode_environment = registry.resolve_environment(
             &owner_user_id,
@@ -147,17 +158,18 @@ fn resolve_catalog_profiles(
     owner_user_id: &str,
     request: &GetProviderCatalogRequest,
 ) -> Result<BTreeMap<String, crate::account_profile::ProviderAccountProfile>, DaemonError> {
-    let focus_provider = match request.provider.as_deref() {
-        Some(provider) => Some(
-            crate::provider::canonical_provider_family(provider).ok_or_else(|| {
-                DaemonError::LocalTransport {
-                    operation: "get_provider_catalog",
-                    message: format!("unsupported provider `{provider}` in catalog request"),
-                }
-            })?,
-        ),
-        None => None,
-    };
+    let focus_provider = request
+        .provider
+        .as_deref()
+        .and_then(crate::provider::canonical_provider_family);
+    if let Some(provider) = request.provider.as_deref() {
+        crate::provider::canonical_provider_family(provider).ok_or_else(|| {
+            DaemonError::LocalTransport {
+                operation: "get_provider_catalog",
+                message: format!("unsupported provider `{provider}` in catalog request"),
+            }
+        })?;
+    }
     let mut overrides = BTreeMap::new();
     for (provider, profile_id) in &request.account_profiles {
         let provider = crate::provider::canonical_provider_family(provider).ok_or_else(|| {
@@ -202,51 +214,23 @@ fn resolve_catalog_profiles(
             // Unconfigured providers cannot hide the configured providers or borrow owner accounts.
             continue;
         };
-        if focus_provider == Some(provider) {
-            validate_catalog_materialization(&profile, &request.execution_location)?;
-        }
         selected.insert(provider.to_string(), profile);
     }
     Ok(selected)
-}
-
-fn validate_catalog_materialization(
-    profile: &crate::account_profile::ProviderAccountProfile,
-    location: &ProviderCatalogExecutionLocation,
-) -> Result<(), DaemonError> {
-    let target = match location {
-        ProviderCatalogExecutionLocation::Local => return Ok(()),
-        ProviderCatalogExecutionLocation::Worker { kernel_ref } => (
-            crate::account_profile::ProviderAccountMaterializationTargetKind::Worker,
-            kernel_ref.as_str(),
-        ),
-        ProviderCatalogExecutionLocation::Slice { slice_ref } => (
-            crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
-            slice_ref.as_str(),
-        ),
-    };
-    if profile.is_installed_at(target.0, target.1) {
-        return Ok(());
-    }
-    Err(DaemonError::LocalTransport {
-        operation: "get_provider_catalog",
-        message: format!(
-            "account profile `{}` is not materialized at the selected execution location",
-            profile.profile_id
-        ),
-    })
 }
 
 pub(crate) fn provider_auth_status_response(
     registry: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
     request: GetProviderAuthStatusRequest,
+    config: &DaemonConfig,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let status = observe_provider_auth_status(
         registry,
         owner_user_id,
         &request.provider,
         &request.account_profile,
+        config,
     )?;
     Ok(LocalDaemonResponse::ProviderAuthStatus { status })
 }
@@ -256,6 +240,7 @@ pub(crate) fn observe_provider_auth_status(
     owner_user_id: &str,
     provider: &str,
     account_profile: &str,
+    config: &DaemonConfig,
 ) -> Result<ProviderAuthStatus, DaemonError> {
     let profile = registry.get(owner_user_id, provider, account_profile)?;
     let environment = registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?;
@@ -272,10 +257,14 @@ pub(crate) fn observe_provider_auth_status(
             Ok(status)
         }
         Some("claude") => {
-            let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
-            if let Some(kept) = claude_vault_token_status(owner_user_id, &profile, &status)? {
-                return Ok(kept);
-            }
+            let status = claude_profile_auth_status(
+                registry,
+                owner_user_id,
+                provider,
+                &profile,
+                &environment,
+                config,
+            )?;
             update_profile_auth_observation(registry, owner_user_id, &status)?;
             Ok(status)
         }
@@ -297,11 +286,90 @@ pub(crate) fn observe_provider_auth_status(
     }
 }
 
-pub(crate) fn refresh_provider_account_profile_response(
+/// Automatic refreshes cannot fetch setup-token usage and must not turn an
+/// already enrolled account into Error because an optional probe failed.
+pub(crate) fn refresh_provider_account_profile_with_config(
     registry: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
     provider: &str,
     account_profile: &str,
+    config: &DaemonConfig,
+) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+    if let Some(profile) =
+        saved_claude_token_observation(registry, owner_user_id, provider, account_profile)?
+    {
+        return Ok(profile);
+    }
+    refresh_provider_account_profile_observation(
+        registry,
+        owner_user_id,
+        provider,
+        account_profile,
+        config,
+        false,
+    )
+}
+
+fn saved_claude_token_observation(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+) -> Result<Option<crate::account_profile::ProviderAccountProfile>, DaemonError> {
+    let profile = registry.get(owner_user_id, provider, account_profile)?;
+    if crate::provider::canonical_provider_family(provider) == Some("claude")
+        && crate::provider::provider_account_credential_registered(
+            owner_user_id,
+            provider,
+            &profile.profile_id,
+        )?
+    {
+        return Ok(Some(profile));
+    }
+    Ok(None)
+}
+
+/// MP-08 / MP-11: publication startup observes native auth without an optional
+/// usage probe. Enrolled tokens share the automatic refresh's saved-state gate.
+pub(crate) fn refresh_provider_account_auth_with_config(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+    config: &DaemonConfig,
+) -> Result<(), DaemonError> {
+    if saved_claude_token_observation(registry, owner_user_id, provider, account_profile)?.is_some()
+    {
+        return Ok(());
+    }
+    observe_provider_auth_status(registry, owner_user_id, provider, account_profile, config)
+        .map(|_| ())
+}
+
+pub(crate) fn refresh_provider_account_profile_explicitly(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+    config: &DaemonConfig,
+) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+    refresh_provider_account_profile_observation(
+        registry,
+        owner_user_id,
+        provider,
+        account_profile,
+        config,
+        true,
+    )
+}
+
+fn refresh_provider_account_profile_observation(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+    config: &DaemonConfig,
+    reload_codex_endpoint: bool,
 ) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
     let profile = registry.get(owner_user_id, provider, account_profile)?;
     let environment = registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?;
@@ -310,6 +378,17 @@ pub(crate) fn refresh_provider_account_profile_response(
         (provider_family == Some("opencode")).then(|| inspect_opencode_services(&environment));
     let (status, usage) = match provider_family {
         Some("codex") => {
+            // The official app-server caches its login at startup. An explicit
+            // account refresh must observe a native login imported since the
+            // catalog last started this profile's utility server.
+            // MP-08 / MP-10 / MP-11: automatic login observations must retain
+            // the native server that owns the pending device challenge.
+            if reload_codex_endpoint {
+                crate::provider::invalidate_codex_account_endpoint(
+                    owner_user_id,
+                    &profile.profile_id,
+                );
+            }
             let endpoint = crate::provider::ensure_codex_account_endpoint(
                 owner_user_id,
                 &profile.profile_id,
@@ -322,15 +401,20 @@ pub(crate) fn refresh_provider_account_profile_response(
             )
         }
         Some("claude") => {
-            let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
-            if let Some(kept) = claude_vault_token_status(owner_user_id, &profile, &status)? {
-                if auth_state_from_status(&kept.auth_state) != profile.auth_state {
-                    update_profile_auth_observation(registry, owner_user_id, &kept)?;
-                    return registry.get(owner_user_id, provider, &profile.profile_id);
-                }
-                return Ok(profile);
-            }
-            let usage = if status.auth_state == "authenticated" {
+            let status = claude_profile_auth_status(
+                registry,
+                owner_user_id,
+                provider,
+                &profile,
+                &environment,
+                config,
+            )?;
+            let usage = if status.auth_state == "authenticated"
+                && !crate::provider::provider_account_credential_registered(
+                    owner_user_id,
+                    provider,
+                    &profile.profile_id,
+                )? {
                 let executable = resolve_claude_executable()?;
                 crate::provider::probe_claude_account_usage(
                     &executable,
@@ -373,45 +457,97 @@ pub(crate) fn refresh_provider_account_profile_response(
     }
 }
 
-/// Launches use the profile's Chariox Vault setup token, which was verified
-/// with Claude when it was stored. `claude auth status` cannot see it, and
-/// reading it back needs the vault, so when Claude reports no native login
-/// the observation recorded at storage is kept rather than downgraded.
-fn claude_vault_token_status(
+// MP-08 / MP-11: verify the exact currently selected token on explicit status
+// and refresh requests. Native-login timestamps and handles are not token proof.
+fn claude_profile_auth_status(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
+    provider: &str,
     profile: &crate::account_profile::ProviderAccountProfile,
-    native: &ProviderAuthStatus,
-) -> Result<Option<ProviderAuthStatus>, DaemonError> {
-    if native.auth_state == "authenticated"
-        || !crate::provider::provider_account_credential_registered(
-            owner_user_id,
-            "claude",
-            &profile.profile_id,
-        )?
-    {
-        return Ok(None);
+    profile_environment: &BTreeMap<String, String>,
+    config: &DaemonConfig,
+) -> Result<ProviderAuthStatus, DaemonError> {
+    if !crate::provider::provider_account_credential_registered(
+        owner_user_id,
+        provider,
+        &profile.profile_id,
+    )? {
+        return claude_auth_status(provider, &profile.profile_id, profile_environment);
     }
-    use crate::account_profile::ProviderAccountAuthState;
-    Ok(Some(ProviderAuthStatus {
-        auth_state: match profile.auth_state {
-            ProviderAccountAuthState::Authenticated => "authenticated",
-            ProviderAccountAuthState::Expired => "expired",
-            ProviderAccountAuthState::Error => "error",
-            ProviderAccountAuthState::NotConfigured => "unknown",
-            ProviderAccountAuthState::Unknown => "unknown",
+    // Local availability says nothing about the enrolled token. In particular,
+    // an idle locked Vault must not erase the previous authentication proof.
+    let secrets = crate::provider::resolve_provider_account_credentials(
+        config,
+        owner_user_id,
+        provider,
+        &profile.profile_id,
+    )?;
+    let executable = resolve_claude_executable()?;
+    let mut environment = profile_environment.clone();
+    for (name, value) in secrets.iter() {
+        environment.insert(name.to_string(), value.to_string());
+    }
+    let checked = crate::provider::verify_claude_setup_token(&executable, &environment);
+    if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
+        zeroize::Zeroize::zeroize(value);
+    }
+    let mut rejected = matches!(
+        &checked,
+        Err(crate::provider::ClaudeCredentialCheckError::Rejected)
+    );
+    let verified = match checked {
+        Err(error @ crate::provider::ClaudeCredentialCheckError::Inconclusive(_)) => {
+            return Err(error.into_daemon_error())
         }
-        .to_string(),
-        identity_summary: profile.identity_summary.clone(),
-        plan: profile.plan.clone(),
-        login_hint: Some(
-            if profile.auth_state == ProviderAccountAuthState::Authenticated {
-                "This account runs agents with its verified Chariox Vault setup token. Choose Log in to authorize a replacement.".to_string()
+        checked => {
+            // Local unavailability on reread still says nothing about the token.
+            let current = crate::provider::resolve_provider_account_credentials(
+                config,
+                owner_user_id,
+                provider,
+                &profile.profile_id,
+            )?;
+            if current.iter().eq(secrets.iter()) {
+                checked.map_err(|error| error.into_daemon_error())
             } else {
-                "This account has a Chariox Vault setup token. It will be checked automatically when first used. If Claude rejects it, an authorization link will appear.".to_string()
+                rejected = false;
+                Err(DaemonError::LocalTransport {
+                    operation: "verify Claude setup token",
+                    message:
+                        "Claude setup token changed during verification; refresh the account again"
+                            .into(),
+                })
+            }
+        }
+    };
+    if let Err(error) = verified {
+        // Definitive rejection skips another check; a replacement needs verification.
+        // Local and transient failures above preserve the saved observation.
+        registry.update_observation(
+            owner_user_id,
+            provider,
+            &profile.profile_id,
+            if rejected {
+                crate::account_profile::ProviderAccountAuthState::Expired
+            } else {
+                crate::account_profile::ProviderAccountAuthState::Error
             },
-        ),
-        ..native.clone()
-    }))
+            None,
+            None,
+            None,
+            None,
+        )?;
+        return Err(error);
+    }
+    Ok(ProviderAuthStatus {
+        provider: provider.to_string(),
+        account_profile: profile.profile_id.clone(),
+        auth_state: "authenticated".into(),
+        identity_summary: None,
+        plan: None,
+        detected_version: claude_version().ok(),
+        login_hint: None,
+    })
 }
 
 fn claude_auth_status(
@@ -506,10 +642,14 @@ fn opencode_auth_status(
     environment: &BTreeMap<String, String>,
 ) -> Result<ProviderAuthStatus, DaemonError> {
     let executable = resolve_opencode_executable()?;
+    // MP-08 / MP-10 / MP-11: auth list exits before background model refresh
+    // settles, which can strand its native lock ahead of explicit provisioning.
+    let mut auth_environment = environment.clone();
+    auth_environment.insert("OPENCODE_DISABLE_MODELS_FETCH".into(), "1".into());
     let mut command = crate::provider::managed_isolated_utility_command(
         executable.display().to_string(),
         vec!["auth".to_string(), "list".to_string()],
-        environment.clone(),
+        auth_environment,
         None,
         "opencode:auth-status",
     )?;
@@ -1385,7 +1525,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_profile_resolution_uses_override_and_requires_target_materialization() {
+    fn catalog_profile_resolution_selects_an_account_the_target_has_not_received_yet() {
         let root = std::env::temp_dir().join(format!(
             "chariox-catalog-profile-selection-{}-{}",
             std::process::id(),
@@ -1401,54 +1541,25 @@ mod tests {
         let work = registry
             .create_managed("owner-a", "codex", "Work")
             .expect("work profile should be created");
-        let request = GetProviderCatalogRequest {
-            provider: Some("codex".to_string()),
-            account_profiles: BTreeMap::from([("codex".to_string(), work.profile_id.clone())]),
-            execution_location: ProviderCatalogExecutionLocation::Slice {
+        for execution_location in [
+            ProviderCatalogExecutionLocation::Slice {
                 slice_ref: "slice-a".to_string(),
             },
-        };
-
-        let error = resolve_catalog_profiles(&registry, "owner-a", &request)
-            .expect_err("unmaterialized profile should be rejected");
-        assert!(error.to_string().contains("not materialized"));
-        registry
-            .update_materialization_status(
-                "owner-a",
-                "codex",
-                &work.profile_id,
-                crate::account_profile::ProviderAccountMaterializationStatus {
-                    target_kind:
-                        crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
-                    target_ref: "slice-a".to_string(),
-                    state:
-                        crate::account_profile::ProviderAccountMaterializationState::Materialized,
-                    observed_at_ms: 1,
-                    last_error: None,
-                },
-            )
-            .expect("materialization should be recorded");
-        let selected = resolve_catalog_profiles(&registry, "owner-a", &request)
-            .expect("materialized selection should resolve");
-        assert_eq!(selected["codex"].profile_id, work.profile_id);
-
-        registry
-            .update_materialization_status(
-                "owner-a",
-                "codex",
-                &work.profile_id,
-                crate::account_profile::ProviderAccountMaterializationStatus {
-                    target_kind:
-                        crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
-                    target_ref: "slice-a".to_string(),
-                    state: crate::account_profile::ProviderAccountMaterializationState::Stale,
-                    observed_at_ms: 2,
-                    last_error: None,
-                },
-            )
-            .expect("legacy stale installation should be recorded");
-        resolve_catalog_profiles(&registry, "owner-a", &request)
-            .expect("a previously installed independent profile remains selectable");
+            ProviderCatalogExecutionLocation::Worker {
+                kernel_ref: "worker-a".to_string(),
+            },
+        ] {
+            let request = GetProviderCatalogRequest {
+                provider: Some("codex".to_string()),
+                account_profiles: BTreeMap::from([("codex".to_string(), work.profile_id.clone())]),
+                execution_location,
+            };
+            // The profile change transfers the selected account to the worker,
+            // so choosing it must not require an earlier transfer.
+            let selected = resolve_catalog_profiles(&registry, "owner-a", &request)
+                .expect("an account not yet installed at the target stays selectable");
+            assert_eq!(selected["codex"].profile_id, work.profile_id);
+        }
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1497,6 +1608,7 @@ mod tests {
                 provider: "claude-headless".to_string(),
                 account_profile: "default".to_string(),
             },
+            &DaemonConfig::for_tests(),
         );
         let error = result.expect_err("launcher failure must not become a logged-out status");
         let message = error.to_string();
@@ -1523,6 +1635,7 @@ mod tests {
                     provider: "claude-headless".to_string(),
                     account_profile: "default".to_string(),
                 },
+                &DaemonConfig::for_tests(),
             );
             let message = result
                 .expect_err("invalid status must not assert the user's authentication state")
@@ -1545,6 +1658,7 @@ mod tests {
                 provider: "claude-headless".to_string(),
                 account_profile: "default".to_string(),
             },
+            &DaemonConfig::for_tests(),
         )
         .expect("documented logout must remain a valid status");
         let LocalDaemonResponse::ProviderAuthStatus { status } = response else {
@@ -1639,7 +1753,7 @@ mod tests {
         )
         .unwrap());
         let status =
-            observe_provider_auth_status(&registry, "local", "claude-p", "default").unwrap();
+            observe_provider_auth_status(&registry, "local", "claude-p", "default", &DaemonConfig::for_tests()).unwrap();
         assert_eq!(status.auth_state, "authenticated");
         registry
             .require_authenticated(
@@ -1654,7 +1768,7 @@ mod tests {
             .mark_logged_out("local", "claude", "default")
             .unwrap();
         assert_ne!(
-            observe_provider_auth_status(&registry, "local", "claude-p", "default")
+            observe_provider_auth_status(&registry, "local", "claude-p", "default", &DaemonConfig::for_tests())
                 .unwrap()
                 .auth_state,
             "authenticated"
@@ -1681,7 +1795,7 @@ mod tests {
                 .update_observation("local", "claude", "default", state, None, None, None, None)
                 .unwrap();
             assert_ne!(
-                observe_provider_auth_status(&registry, "local", "claude-p", "default")
+                observe_provider_auth_status(&registry, "local", "claude-p", "default", &DaemonConfig::for_tests())
                     .unwrap()
                     .auth_state,
                 "authenticated"
@@ -1743,6 +1857,7 @@ exit 2
                 provider: "claude-headless".to_string(),
                 account_profile: "default".to_string(),
             },
+            &DaemonConfig::for_tests(),
         )
         .expect("claude mode auth status should resolve");
 

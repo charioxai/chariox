@@ -42,6 +42,7 @@ export type SessionChromeRenderControllerDeps<TState, TBox = unknown> = {
   getWorkspaceLiveSyncStatus: () => WorkspaceLiveSyncStatus | null
   getHotkeyToggleLabel: () => string
   getTerminalWidth?: () => number
+  getConnectionLabel?: () => string | null
   getFooterFlash: () => FooterFlash | null
   getPromptMetaParts: () => PromptMetaPart[]
   setPromptMetaRenderables: (parts: PromptMetaPart[]) => void
@@ -63,6 +64,7 @@ export function createSessionChromeRenderController<TState, TBox = unknown>(
 
   const apply = () => {
     const footerFlash = deps.getFooterFlash()
+    const connectionLabel = deps.getConnectionLabel?.()
     const footerSummary = deps.isAttached()
       ? sessionAttachedFooterSummary({
         session: deps.getSession(),
@@ -73,7 +75,7 @@ export function createSessionChromeRenderController<TState, TBox = unknown>(
         workspaceLiveSyncStatus: deps.getWorkspaceLiveSyncStatus(),
       })
       : SESSION_NEW_FOOTER_HINT
-    const footerFlashWidth = footerFlash ? ` • ${footerFlash.message}`.length : 0
+    const footerFlashWidth = footerFlash && footerFlash.display !== "toast" ? ` • ${footerFlash.message}`.length : 0
     const compactFooterWidth = deps.getTerminalWidth
       ? Math.max(0, deps.getTerminalWidth() - footerFlashWidth)
       : null
@@ -93,7 +95,7 @@ export function createSessionChromeRenderController<TState, TBox = unknown>(
         : deps.getSubmitting()
           ? "thinking"
           : "muted",
-      footerSummary: compactFooterSummary(footerSummary, compactFooterWidth),
+      footerSummary: compactFooterSummary(connectionLabel ? `${footerSummary} • ${connectionLabel}` : footerSummary, compactFooterWidth),
       footerFlash,
     })
     deps.setPromptMetaRenderables(deps.isAttached() ? deps.getPromptMetaParts() : [])

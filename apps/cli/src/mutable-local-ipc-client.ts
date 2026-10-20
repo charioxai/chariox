@@ -88,11 +88,16 @@ export function createMutableLocalIpcClient(initialClient: LocalIpcClient): Muta
     retainForRelayRenewal() { return currentClient.retainForRelayRenewal() },
     startRelayAuthRenewal(...args: Parameters<LocalIpcClient["startRelayAuthRenewal"]>) { return currentClient.startRelayAuthRenewal(...args) },
     invalidateRelayAuthorization(error: unknown) { currentClient.invalidateRelayAuthorization(error) },
+    prioritizeInteractiveDisplay() { return currentClient.prioritizeInteractiveDisplay() },
+    isReceivingKernelResponse() { return currentClient.isReceivingKernelResponse() },
     supportsKernelEvents() {
       return currentClient.supportsKernelEvents()
     },
     getRelayClientIdentity() {
       return currentClient.getRelayClientIdentity()
+    },
+    isLocalDirectTransport() {
+      return currentClient.isLocalDirectTransport()
     },
     isRelayTransport() {
       return currentClient.isRelayTransport()

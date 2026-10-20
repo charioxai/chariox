@@ -306,16 +306,29 @@ export async function resolveKernelClientConnection(
     machineRef?: string | null
     clientId?: string | null
     sessionId?: string | null
+    publicKeyThumbprint?: string | null
   },
 ): Promise<KernelClientConnectionView> {
-  const thumbprint = createCliRelayIdentityStore().getOrCreate().publicKeyThumbprint
+  const thumbprint = input.publicKeyThumbprint ?? createCliRelayIdentityStore().getOrCreate().publicKeyThumbprint
   const response = await client.send<Record<string, unknown>>(
     resolveKernelClientConnectionRequest({ ...input, publicKeyThumbprint: thumbprint }),
   )
   const payload = expectVariant<{
     connection: KernelClientConnectionPayload
   }>(response, "KernelClientConnectionResolved").connection
-  if (payload.token_expires_at) requireRelayTokenKeyBinding(payload.relay_token, thumbprint, "kernel terminal pivot")
+  if (thumbprint) {
+    // MP-08/MP-11: only the resolving kernel's explicit absence of a Cloud
+    // profile permits an opaque, non-expiring shared token. Missing expiry alone
+    // is not self-hosted proof. Direct admission still needs a key-bound grant.
+    let selfHostedSharedToken = false
+    if (payload.token_expires_at == null && !relayTokenPayload(payload.relay_token)) {
+      const status = await client.send<Record<string, unknown>>({ CloudRelayStatus: null })
+      selfHostedSharedToken = expectVariant<{ profile?: KernelCloudRelayProfile | null }>(status, "CloudRelayStatus").profile === null
+    }
+    if (!selfHostedSharedToken) {
+      requireRelayTokenKeyBinding(payload.relay_token, thumbprint, "resolved CLI kernel connection")
+    }
+  }
   return {
     relayUrl: payload.relay_url,
     relayToken: payload.relay_token,

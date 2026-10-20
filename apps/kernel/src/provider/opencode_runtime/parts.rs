@@ -23,7 +23,14 @@ pub(super) fn handle_message_part_delta(
     delta: String,
     chunks: &mut Vec<OpenCodeOutputChunk>,
 ) -> Result<(), DaemonError> {
-    if session_id != state.session_id || field != "text" || delta.is_empty() {
+    // A completed HTTP snapshot already includes every byte of this part.
+    // SSE delivery may lag behind that snapshot; appending those deltas replays
+    // the answer. Unfinished parts still accept identical, legitimate deltas.
+    if session_id != state.session_id
+        || field != "text"
+        || delta.is_empty()
+        || state.finalized_text_part_ids.contains(&part_id)
+    {
         return Ok(());
     }
     state

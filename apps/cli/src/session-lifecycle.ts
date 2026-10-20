@@ -211,10 +211,12 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     try {
       await deps.detachAttachment(attachment.id)
     } catch (error) {
-      if (!deps.attachmentState() && deps.sessionState().id === attachment.session_id) {
-        deps.setAttachmentState(attachment)
+      if (!formatError(error).includes("attachment `" + attachment.id + "` was not found")) {
+        if (!deps.attachmentState() && deps.sessionState().id === attachment.session_id) {
+          deps.setAttachmentState(attachment)
+        }
+        throw error
       }
-      throw error
     }
   }
 

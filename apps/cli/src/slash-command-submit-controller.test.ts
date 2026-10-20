@@ -23,9 +23,10 @@ test("MP-08/MP-10/MP-11 a delayed slice command preserves the next agent spawn d
   finish()
   assert.equal((await submitted)?.kind, "slice")
   assert.equal(draft, "/agent spawn leased-editor opencode-go/gpt-5.6-luna --slice own-slice")
-  assert.equal(harness.clearPromptCount(), 0)
-  assert.equal(harness.commandCenterClearCount(), 0)
-  assert.deepEqual(harness.promptHistoryIndexes(), [])
+  // The submitted command is consumed before awaiting its handler; the new draft survives.
+  assert.equal(harness.clearPromptCount(), 1)
+  assert.equal(harness.commandCenterClearCount(), 1)
+  assert.deepEqual(harness.promptHistoryIndexes(), [null])
 })
 
 test("slash command submit records attached history and clears selector-backed command UI", async () => {
@@ -220,6 +221,55 @@ test("slash command submit logs attachment command failures", async () => {
   assert.equal(harness.logErrors().at(-1)?.message, "attachment command failed")
   assert.equal(harness.logErrors().at(-1)?.fields.command, "/attach missing.txt")
   assert.equal(harness.clearPromptCount(), 1)
+})
+
+for (const outcome of ["success", "error", "shared shell"] as const) {
+  test(`a delayed ${outcome} command preserves the next prompt draft and selector`, async () => {
+    const submitted = "/agent account ctx kaissandra.ai"
+    let text = submitted
+    let complete!: () => void
+    let started!: () => void
+    const pending = new Promise<void>(resolve => { complete = resolve })
+    const entered = new Promise<void>(resolve => { started = resolve })
+    const harness = createHarness({ clearPromptText: () => { text = "" } })
+    const handler = async () => {
+      started()
+      await pending
+      if (outcome === "error") throw new Error("account failed")
+    }
+    if (outcome === "shared shell") {
+      harness.deps.handleSharedShellCommand = async () => { await handler(); return true }
+    } else {
+      harness.deps.handleAgentCommand = handler
+    }
+    const controller = createSlashCommandSubmitController(harness.deps)
+    const result = controller.submit(submitted, { allowSlashCommandSubmission: true })
+    await entered
+    // MP-08 / MP-10 / MP-11: main consumes the submitted command before
+    // awaiting the handler. Completion must not clear the later draft again.
+    assert.equal(harness.clearPromptCount(), 1)
+    assert.equal(harness.commandCenterClearCount(), 1)
+    text = "/agent model ctx gpt-6-luna"
+    complete()
+    assert.equal((await result)?.kind, "agent")
+    assert.equal(text, "/agent model ctx gpt-6-luna")
+    assert.equal(harness.clearPromptCount(), 1)
+    assert.equal(harness.commandCenterClearCount(), 1)
+    assert.deepEqual(harness.promptHistoryIndexes(), [null])
+    assert.deepEqual(harness.promptHistoryDrafts(), [null])
+    if (outcome === "error") assert.equal(harness.footerMessages().at(-1)?.message, "account failed")
+  })
+}
+
+test("a completed command clears its unchanged submitted draft", async () => {
+  let text = "/agent account ctx kaissandra.ai"
+  const harness = createHarness({ clearPromptText: () => { text = "" } })
+  await createSlashCommandSubmitController(harness.deps).submit(text, { allowSlashCommandSubmission: true })
+  assert.equal(text, "")
+  assert.equal(harness.clearPromptCount(), 1)
+  assert.equal(harness.commandCenterClearCount(), 1)
+  assert.deepEqual(harness.promptHistoryIndexes(), [null])
+  assert.deepEqual(harness.promptHistoryDrafts(), [null])
 })
 
 function createHarness(options: {

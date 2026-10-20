@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, BufWriter, Write};
 use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
@@ -284,6 +284,8 @@ pub(crate) struct CommandResultCache {
     persistence: Option<CommandResultPersistence>,
     #[cfg(test)]
     fail_settlement_sync: AtomicBool,
+    #[cfg(test)]
+    dispatch_pause: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
 }
 
 impl Default for CommandResultCache {
@@ -297,11 +299,32 @@ impl Default for CommandResultCache {
             persistence: None,
             #[cfg(test)]
             fail_settlement_sync: AtomicBool::new(false),
+            #[cfg(test)]
+            dispatch_pause: Mutex::new(None),
         }
     }
 }
 
 impl CommandResultCache {
+    #[cfg(test)]
+    pub(crate) async fn pause_next_dispatch_for_test(
+        &self,
+    ) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (entered, reserved) = oneshot::channel();
+        let (release, resume) = oneshot::channel();
+        *self.dispatch_pause.lock().await = Some((entered, resume));
+        (reserved, release)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn await_dispatch_for_test(&self) {
+        let pause = self.dispatch_pause.lock().await.take();
+        if let Some((entered, resume)) = pause {
+            let _ = entered.send(());
+            let _ = resume.await;
+        }
+    }
+
     pub(crate) fn new_with_persistent_path(path: impl Into<PathBuf>) -> io::Result<Self> {
         Self::new_with_persistent_path_and_retention(
             path,
@@ -343,6 +366,8 @@ impl CommandResultCache {
             receipt_retention: Mutex::new(ReceiptRetention::default()),
             #[cfg(test)]
             fail_settlement_sync: AtomicBool::new(false),
+            #[cfg(test)]
+            dispatch_pause: Mutex::new(None),
             persistence: Some(CommandResultPersistence {
                 path: path.clone(),
                 io_lock: Mutex::new(()),
@@ -1017,12 +1042,15 @@ fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
 }
 
 fn append_persistent_result(path: &PathBuf, entry: &PersistentCommandResult) -> io::Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut file = BufWriter::new(
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?,
+    );
     serde_json::to_writer(&mut file, entry).map_err(io::Error::other)?;
-    file.write_all(b"\n")
+    file.write_all(b"\n")?;
+    file.flush()
 }
 
 fn rewrite_persistent_results(
@@ -1033,7 +1061,7 @@ fn rewrite_persistent_results(
         fs::create_dir_all(parent)?;
     }
     let tmp_path = path.with_extension("jsonl.tmp");
-    let mut file = fs::File::create(&tmp_path)?;
+    let mut file = BufWriter::new(fs::File::create(&tmp_path)?);
     // A downgraded kernel must not treat a missing expired identity as new.
     // Preserve this fail-closed fence through every payload compaction.
     match fs::metadata(ReceiptRetention::marker_path(path)) {
@@ -1046,7 +1074,8 @@ fn rewrite_persistent_results(
         serde_json::to_writer(&mut file, entry).map_err(io::Error::other)?;
         file.write_all(b"\n")?;
     }
-    file.sync_all()?;
+    file.flush()?;
+    file.get_ref().sync_all()?;
     fs::rename(tmp_path, path)?;
     if let Some(parent) = path.parent() {
         fs::File::open(parent)?.sync_all()?;

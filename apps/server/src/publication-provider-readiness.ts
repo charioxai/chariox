@@ -5,7 +5,7 @@ import { promisify } from "node:util"
 import process from "node:process"
 
 import { LocalIpcClient } from "@chariox/kernel-client/ipc"
-import { getProviderAuthStatusRequest } from "@chariox/kernel-client/ipc-requests"
+import { getProviderAccountProfileRequest } from "@chariox/kernel-client/ipc-requests"
 
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
 import type {
@@ -199,16 +199,18 @@ async function providerAuthStatus(
   client: KernelLookupClient,
 ): Promise<PublicationProviderReadiness["auth"]> {
   try {
-    const response = await client.send(getProviderAuthStatusRequest(provider, accountProfile))
-    const status = (response.ProviderAuthStatus as { status?: Record<string, unknown> } | undefined)?.status
+    // MP-08 / MP-11: unauthenticated health checks read the saved observation.
+    // They must never start a paid authentication turn.
+    const response = await client.send(getProviderAccountProfileRequest(provider, accountProfile))
+    const status = (response.ProviderAccountProfile as { profile?: Record<string, unknown> } | undefined)?.profile
     const authState = typeof status?.auth_state === "string" ? status.auth_state : "unknown"
     if (authState === "authenticated") {
       return {
         status: "provider_ready",
-        account_profile: typeof status?.account_profile === "string" ? status.account_profile : null,
+        account_profile: typeof status?.profile_id === "string" ? status.profile_id : null,
       }
     }
-    if (authState === "not_logged_in" || authState === "expired") {
+    if (authState === "not_configured" || authState === "error" || authState === "expired") {
       return { status: "provider_auth_expired" }
     }
     return { status: "provider_auth_unknown" }

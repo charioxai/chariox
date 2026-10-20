@@ -174,3 +174,5 @@ pub(crate) mod room_tool_admission;
 
 pub(crate) mod room_dispatch_registration;
 mod user_app_views;
+
+pub(crate) mod ssh_machine_control;

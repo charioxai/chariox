@@ -32,7 +32,8 @@ pub(super) async fn provision_and_prepare_worker_discovery(
         let discovery_token =
             issue_cloud_slice_discovery_token(profile, &config.daemon_id, worker_kernel_ref)
                 .await?;
-        config.relay_token = Some(discovery_token.token);
+        config =
+            crate::transport::relay_discovery::with_metadata_token(&config, discovery_token.token);
     }
     Ok(config)
 }

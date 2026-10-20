@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Read, Seek};
+use std::io::{Read, Seek, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 
 use wait_timeout::ChildExt;
@@ -69,6 +69,19 @@ pub(crate) enum ClaudeCredentialCheckError {
     Inconclusive(String),
 }
 
+impl ClaudeCredentialCheckError {
+    pub(crate) fn into_daemon_error(self) -> DaemonError {
+        let message = match self {
+            ClaudeCredentialCheckError::Rejected => "Claude rejected the setup token: invalid, expired or revoked. Choose Log in in Provider Accounts to authorize a replacement.".into(),
+            ClaudeCredentialCheckError::Inconclusive(reason) => format!("Claude verification was inconclusive: {reason}. Check the network and Claude CLI, then retry Status or Refresh."),
+        };
+        DaemonError::LocalTransport {
+            operation: "verify Claude setup token",
+            message,
+        }
+    }
+}
+
 /// Verifies a Claude credential with one minimal model turn. Claude only
 /// checks a `CLAUDE_CODE_OAUTH_TOKEN` when it calls the API: `auth status`
 /// and local commands such as `/usage` report success for any token.
@@ -83,7 +96,7 @@ pub(crate) fn verify_claude_account_credential(
     )
 }
 
-fn verify_claude_account_credential_with_timeout(
+pub(super) fn verify_claude_account_credential_with_timeout(
     executable: &Path,
     environment: &BTreeMap<String, String>,
     timeout: Duration,
@@ -91,7 +104,15 @@ fn verify_claude_account_credential_with_timeout(
     let (status, result) = run_claude_print(
         executable,
         environment,
-        &["Reply with OK.", "--model", "haiku"],
+        &[
+            "Reply with exactly CHARIOX_AUTH_OK.",
+            "--model",
+            "haiku",
+            "--max-turns",
+            "1",
+            "--system-prompt",
+            "Reply only with the requested authentication marker.",
+        ],
         timeout,
         "Claude credential check",
     )
@@ -137,13 +158,25 @@ fn verify_claude_account_credential_with_timeout(
     {
         return Err(ClaudeCredentialCheckError::Rejected);
     }
-    let succeeded = result.get("type").and_then(serde_json::Value::as_str) == Some("result")
-        && result.get("is_error").and_then(serde_json::Value::as_bool) == Some(false);
-    if status.success() && succeeded {
+    let single_turn = super::auth_probe::validate_auth_result(&result).is_ok();
+    if status.success() && single_turn {
         Ok(())
     } else {
+        // Only harness metadata is projected. Provider result/error text may
+        // contain account details or secrets and never belongs in a diagnostic.
+        let http = result
+            .get("api_error_status")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|code| (100..600).contains(code))
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "unreported".into());
+        let turns = result
+            .get("num_turns")
+            .and_then(serde_json::Value::as_u64)
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| "unreported".into());
         Err(ClaudeCredentialCheckError::Inconclusive(format!(
-            "Claude did not complete the check ({status})"
+            "Claude did not complete verification ({status}; HTTP={http}; turns={turns}; valid_single_turn={single_turn})"
         )))
     }
 }
@@ -157,6 +190,78 @@ fn run_claude_print(
     timeout: Duration,
     label: &'static str,
 ) -> Result<(std::process::ExitStatus, Option<serde_json::Value>), DaemonError> {
+    let mut command_args = vec![
+        "-p",
+        args[0],
+        "--output-format",
+        "json",
+        "--no-session-persistence",
+        "--no-chrome",
+        "--tools",
+        "",
+    ];
+    command_args.extend_from_slice(&args[1..]);
+    let (status, output) =
+        run_claude_capture(executable, environment, &command_args, None, timeout, label)?;
+    Ok((status, serde_json::from_slice(&output).ok()))
+}
+
+/// Official stream-json initialization reports the native picker without a model turn.
+pub(super) fn probe_claude_models(
+    executable: &Path,
+    environment: &BTreeMap<String, String>,
+) -> Result<serde_json::Value, DaemonError> {
+    let input = b"{\"type\":\"control_request\",\"request_id\":\"chariox-catalog\",\"request\":{\"subtype\":\"initialize\"}}\n";
+    let (status, output) = run_claude_capture(
+        executable,
+        environment,
+        &[
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--no-session-persistence",
+            "--no-chrome",
+            "--tools",
+            "",
+            "--strict-mcp-config",
+            "--mcp-config",
+            "{\"mcpServers\":{}}",
+        ],
+        Some(input),
+        Duration::from_secs(10),
+        "Claude model catalog",
+    )?;
+    if status.success() {
+        for line in output.split(|byte| *byte == b'\n') {
+            let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
+                continue;
+            };
+            if value["type"] == "control_response"
+                && value["response"]["request_id"] == "chariox-catalog"
+                && value["response"]["subtype"] == "success"
+            {
+                if let Some(models) = value["response"]["response"]["models"].as_array() {
+                    return Ok(serde_json::Value::Array(models.clone()));
+                }
+            }
+        }
+    }
+    Err(probe_error(
+        "Claude did not return native model metadata".into(),
+    ))
+}
+
+fn run_claude_capture(
+    executable: &Path,
+    environment: &BTreeMap<String, String>,
+    args: &[&str],
+    input: Option<&[u8]>,
+    timeout: Duration,
+    label: &'static str,
+) -> Result<(std::process::ExitStatus, Vec<u8>), DaemonError> {
     let print_error = |message: String| DaemonError::LocalTransport {
         operation: label,
         message,
@@ -176,20 +281,15 @@ fn run_claude_print(
     let stderr_metadata = stderr
         .try_clone()
         .map_err(|_| print_error("failed to pin Claude stderr".into()))?;
-    let mut command = Command::new(executable);
-    command.arg("-p").arg(args[0]).args([
-        "--output-format",
-        "json",
-        "--no-session-persistence",
-        "--no-chrome",
-        "--tools",
-        "",
-    ]);
-    command.args(&args[1..]);
+    // Same managed boundary and ambient-credential scrub as the auth-status probe.
+    let mut command = crate::provider::managed_isolated_utility_command(
+        executable.display().to_string(),
+        args.iter().map(|arg| (*arg).to_string()).collect(),
+        environment.clone(),
+        None,
+        label,
+    )?;
     command.current_dir(root.path());
-    for (name, value) in environment {
-        command.env(name, value);
-    }
     for name in [
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
@@ -205,7 +305,11 @@ fn run_claude_print(
     }
     command.env("DISABLE_AUTOUPDATER", "1");
     command
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
 
@@ -231,6 +335,17 @@ fn run_claude_print(
     let mut child = command
         .spawn()
         .map_err(|error| print_error(format!("failed to start Claude: {error}")))?;
+    if let Some(input) = input {
+        let result = child
+            .stdin
+            .take()
+            .expect("piped catalog input")
+            .write_all(input);
+        if result.is_err() {
+            stop_claude_probe(&mut child);
+            return Err(print_error(format!("failed to initialize {label}")));
+        }
+    }
     let deadline = std::time::Instant::now() + timeout;
     let status = loop {
         let overflow = [&stdout_metadata, &stderr_metadata]
@@ -279,7 +394,7 @@ fn run_claude_print(
     if output.len() as u64 > CLAUDE_USAGE_PROBE_OUTPUT_BYTES {
         return Err(print_error(format!("{label} output limit exceeded")));
     }
-    Ok((status, serde_json::from_slice(&output).ok()))
+    Ok((status, output))
 }
 
 fn stop_claude_probe(child: &mut std::process::Child) {
@@ -417,8 +532,115 @@ fn probe_error(message: String) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     #[cfg(unix)]
+    #[test]
+    fn model_probe_initializes_without_sending_a_user_turn() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile_fixture_root();
+        let executable = root.join("claude");
+        let request = root.join("request.json");
+        let response = serde_json::json!({
+            "type":"control_response", "response":{"subtype":"success", "request_id":"chariox-catalog",
+                "response":{"models":[{"value":"haiku", "resolvedModel":"claude-haiku-5-5", "displayName":"Haiku"}]}}
+        });
+        fs::write(&executable, format!("#!/bin/sh\nread -r input\nprintf '%s' \"$input\" > '{}'\ncat >/dev/null\nprintf '%s\\n' '{}'\n", request.display(), response)).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let environment = BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            root.join("profile").display().to_string(),
+        )]);
+        let models = probe_claude_models(&executable, &environment).unwrap();
+        assert_eq!(models[0]["resolvedModel"], "claude-haiku-5-5");
+        let input: serde_json::Value = serde_json::from_slice(&fs::read(request).unwrap()).unwrap();
+        assert_eq!(input["type"], "control_request");
+        assert_eq!(input["request"]["subtype"], "initialize");
+        assert!(input.get("message").is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn catalog_probe_fixture(root: &Path, marker: &Path) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = root.join("claude");
+        let response = serde_json::json!({
+            "type":"control_response", "response":{"subtype":"success", "request_id":"chariox-catalog",
+                "response":{"models":[{"value":"haiku", "resolvedModel":"claude-haiku-5-5", "displayName":"Haiku"}]}}
+        });
+        fs::write(&executable, format!("#!/bin/sh\nprintf '%s' \"${{CLAUDE_CODE_OAUTH_TOKEN:-unset}}\" > '{}'\ncat >/dev/null\nprintf '%s\\n' '{}'\n", marker.display(), response)).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        executable
+    }
+
+    // MP-11 reviewer P1: the catalog probe uses the selected credential, never an inherited one.
+    #[cfg(unix)]
+    #[test]
+    fn model_probe_drops_ambient_claude_credentials_unless_selected() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let previous = std::env::var_os("CLAUDE_CODE_OAUTH_TOKEN");
+        let isolation = std::env::var_os(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
+        std::env::remove_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
+        std::env::set_var("CLAUDE_CODE_OAUTH_TOKEN", "ambient");
+        let root = tempfile_fixture_root();
+        let marker = root.join("token");
+        let executable = catalog_probe_fixture(&root, &marker);
+        let mut environment = BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            root.join("profile").display().to_string(),
+        )]);
+        let ambient =
+            probe_claude_models(&executable, &environment).map(|_| fs::read_to_string(&marker));
+        environment.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), "selected".into());
+        let selected =
+            probe_claude_models(&executable, &environment).map(|_| fs::read_to_string(&marker));
+        match previous {
+            Some(value) => std::env::set_var("CLAUDE_CODE_OAUTH_TOKEN", value),
+            None => std::env::remove_var("CLAUDE_CODE_OAUTH_TOKEN"),
+        }
+        if let Some(value) = isolation {
+            std::env::set_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV, value);
+        }
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(ambient.unwrap().unwrap(), "unset");
+        assert_eq!(selected.unwrap().unwrap(), "selected");
+    }
+
+    // MP-11 reviewer P1: a managed kernel never starts the catalog probe outside its provider boundary.
+    #[cfg(unix)]
+    #[test]
+    fn model_probe_does_not_bypass_managed_isolation() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let isolation = std::env::var_os(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
+        std::env::set_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV, "1");
+        let root = tempfile_fixture_root();
+        let marker = root.join("token");
+        let executable = catalog_probe_fixture(&root, &marker);
+        let environment = BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            root.join("profile").display().to_string(),
+        )]);
+        let result = probe_claude_models(&executable, &environment);
+        let ran_unconfined = marker.exists();
+        match isolation {
+            Some(value) => {
+                std::env::set_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV, value)
+            }
+            None => std::env::remove_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV),
+        }
+        fs::remove_dir_all(root).unwrap();
+        assert!(
+            !ran_unconfined,
+            "catalog probe ran the provider outside managed isolation"
+        );
+        assert!(
+            result.is_err(),
+            "unconfigured managed isolation must fail closed"
+        );
+    }
+
     #[test]
     fn probes_both_usage_windows_without_replacing_home() {
         if Command::new("node").arg("--version").output().is_err() {
@@ -610,7 +832,43 @@ process.stdout.write(JSON.stringify({
                 "{result}: {checked:?}"
             );
             if exit == 0 {
-                assert_eq!(checked, Ok(()));
+                assert!(matches!(checked, Err(ClaudeCredentialCheckError::Inconclusive(_))),
+                    "MP-08/MP-11: a quoted 401 is not rejection, and a non-marker reply is not verification");
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn credential_check_requires_verified_single_turn_and_redacts_failures() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile_fixture_root();
+        let executable = root.join("claude");
+        let environment = BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            root.join("profile").display().to_string(),
+        )]);
+        for valid in [true, false] {
+            let result = serde_json::json!({"type":"result", "subtype":"success", "is_error":false,
+                "num_turns":1, "result": if valid { "CHARIOX_AUTH_OK" } else { "synthetic-private-provider-detail" },
+                "usage":{"output_tokens":7}});
+            fs::write(
+                &executable,
+                format!("#!/bin/sh\nprintf '%s\\n' '{result}'\n"),
+            )
+            .unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+            let checked = verify_claude_account_credential_with_timeout(
+                &executable,
+                &environment,
+                Duration::from_secs(2),
+            );
+            assert_eq!(checked.is_ok(), valid);
+            if let Err(error) = checked {
+                let message = error.into_daemon_error().to_string();
+                assert!(message.contains("turns=1; valid_single_turn=false"));
+                assert!(!message.contains("synthetic-private-provider-detail"));
             }
         }
         fs::remove_dir_all(root).unwrap();

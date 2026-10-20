@@ -1,3 +1,8 @@
+mod account_usage;
+mod context_failure;
+mod native_permission_race;
+mod prepared_context;
+
 use super::transcript::ClaudeTranscriptCursor;
 use super::*;
 
@@ -30,7 +35,7 @@ impl ProviderNativeInteractionBridge for RecordingPermissionBridge {
 }
 
 #[derive(Clone)]
-struct StartupTrustBridge {
+pub(crate) struct StartupTrustBridge {
     interactions: std::sync::Arc<std::sync::Mutex<Vec<RuntimeInteraction>>>,
     resolution: std::sync::Arc<(
         std::sync::Mutex<Option<crate::provider::ProviderNativeInteractionResolution>>,
@@ -55,7 +60,10 @@ impl StartupTrustBridge {
         self.wait_for_interaction_with_pump(|| {})
     }
 
-    fn wait_for_interaction_with_pump(&self, mut pump: impl FnMut()) -> RuntimeInteraction {
+    pub(crate) fn wait_for_interaction_with_pump(
+        &self,
+        mut pump: impl FnMut(),
+    ) -> RuntimeInteraction {
         for _ in 0..500 {
             pump();
             if let Some(interaction) = self
@@ -85,7 +93,7 @@ impl StartupTrustBridge {
         wake.notify_all();
     }
 
-    fn resolve_default_no(&self) {
+    pub(crate) fn resolve_default_no(&self) {
         let (lock, wake) = &*self.resolution;
         *lock
             .lock()
@@ -124,7 +132,7 @@ impl ProviderNativeInteractionBridge for StartupTrustBridge {
     }
 }
 
-fn startup_readiness_run(
+pub(crate) fn startup_readiness_run(
     session_id: &str,
     agent_id: &str,
     provider_run_id: &str,
@@ -677,6 +685,7 @@ fn hook_permission_suppresses_post_stop_stale_rendered_permission_fallback() {
                 prompt: "do the work",
                 hidden_system_context: "",
                 attachments: &attachments,
+                context_handoff: &no_context_handoff,
             },
         )
         .expect("pending permission must not reinject the active prompt");
@@ -1196,10 +1205,19 @@ fn submit_wait_state_defers_enter_until_delay_elapses() {
 
 #[test]
 fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
+    assert_claude_dispatch_waits_for_user_prompt_submit("claude-headless");
+}
+
+#[test]
+fn claude_native_dispatch_waits_for_user_prompt_submit_acknowledgement() {
+    assert_claude_dispatch_waits_for_user_prompt_submit("claude");
+}
+
+fn assert_claude_dispatch_waits_for_user_prompt_submit(provider: &str) {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let root = std::env::temp_dir().join(format!(
-        "chariox-claude-headless-ack-test-{}-{}",
+        "chariox-{provider}-ack-test-{}-{}",
         std::process::id(),
         timestamp_millis()
     ));
@@ -1212,7 +1230,7 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
     let request = crate::provider::LaunchProviderRequest::new(
         "session-1",
         "claude",
-        "claude-headless",
+        provider,
         "default",
         "claude-sonnet",
     )
@@ -1269,9 +1287,38 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
     };
 
     let injected = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt("session-1", run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            "session-1",
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("injected prompt should remain pending");
     assert_eq!(injected, ClaudeNativeDispatchAttempt::AwaitingInjection);
+
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "An unrelated native user draft.",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .process_prompt_dispatch_attempt(
+                "session-1",
+                run.id(),
+                &run,
+                &dispatch,
+                &no_context_handoff
+            )
+            .unwrap(),
+        ClaudeNativeDispatchAttempt::AwaitingInjection,
+        "an unrelated hook must not acknowledge the managed prompt",
+    );
 
     fs::write(
         &events_file,
@@ -1290,7 +1337,13 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
     )
     .expect("hook events should be written");
     let accepted = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt("session-1", run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            "session-1",
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("hook-acknowledged prompt should complete dispatch");
     assert_eq!(accepted, ClaudeNativeDispatchAttempt::Completed);
     assert!(
@@ -1363,7 +1416,13 @@ fn claude_headless_steering_dispatch_waits_for_provider_acknowledgement() {
         "injected:pending-steering-1",
     );
     let injected = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt("session-1", run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            "session-1",
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("injected steering should remain pending");
 
     assert_eq!(injected, ClaudeNativeDispatchAttempt::AwaitingInjection);
@@ -1373,7 +1432,13 @@ fn claude_headless_steering_dispatch_waits_for_provider_acknowledgement() {
         "accepted:pending-steering-1",
     );
     let accepted = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt("session-1", run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            "session-1",
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("acknowledged steering should complete dispatch");
 
     assert_eq!(accepted, ClaudeNativeDispatchAttempt::Completed);
@@ -1591,7 +1656,21 @@ fn claude_workspace_trust_selects_yes_above_highlighted_no() {
     workspace_trust_approval_fixture("1. Yes, I trust this folder\n❯ 2. No, exit", "\x1b[A\n");
 }
 
+#[test]
+fn claude_workspace_trust_approval_reads_the_completed_frame() {
+    workspace_trust_approval_frame("Yes, I trust this folder\nNo, exit", "\x1b[A\n", 1);
+}
+
+#[test]
+fn claude_workspace_trust_unparseable_approval_is_not_denial() {
+    workspace_trust_approval_frame("Yes, I trust this folder\nNo, exit", "", 2);
+}
+
 fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
+    workspace_trust_approval_frame(choices, expected_input, 0);
+}
+
+fn workspace_trust_approval_frame(choices: &str, expected_input: &str, frame_mode: u8) {
     let worktree = crate::test_support::TestWorktree::new("claude-native-trust-approval");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
@@ -1694,7 +1773,13 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
         .is_empty());
 
     let pending = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            session.id(),
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("unapproved startup trust should remain pending");
     assert_eq!(pending, ClaudeNativeDispatchAttempt::AwaitingInjection);
     assert!(claude_native_marker(&context_file)
@@ -1708,11 +1793,62 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
         "no PTY bytes may be sent before trust approval"
     );
 
+    if frame_mode == 1 {
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .process_terminal_output(
+                session.id(),
+                run.id(),
+                &run,
+                Some(std::sync::Arc::new(bridge.clone())),
+                "\n❯ No, exit",
+            )
+            .unwrap();
+    }
+    if frame_mode == 2 {
+        fs::write(
+            claude_permission_recent_file(&context_file).unwrap(),
+            "Quick safety check: choices unavailable",
+        )
+        .unwrap();
+    }
     bridge.resolve("allow_once", "allow");
+    if frame_mode == 2 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let result = ProviderOutputClaudeNativeBridge::new(&mut app)
+                .process_prompt_dispatch_attempt(
+                    session.id(),
+                    run.id(),
+                    &run,
+                    &dispatch,
+                    &no_context_handoff,
+                );
+            if let Err(error) = result {
+                let message = error.to_string();
+                assert!(
+                    message.contains("could not select"),
+                    "MP-08/MP-11: explicit approval is not denial: {message}"
+                );
+                assert!(!message.contains("trust was denied"));
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        app.pty.remove_process(run.id()).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        return;
+    }
     let mut approved = false;
     for _ in 0..500 {
         let _ = ProviderOutputClaudeNativeBridge::new(&mut app)
-            .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+            .process_prompt_dispatch_attempt(
+                session.id(),
+                run.id(),
+                &run,
+                &dispatch,
+                &no_context_handoff,
+            )
             .expect("approval should be consumed through dispatch");
         if claude_native_marker(&context_file)
             .as_deref()
@@ -1755,7 +1891,13 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
     )
     .expect("composer fixture should be written");
     let typed = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            session.id(),
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("approved task should be typed through dispatch");
     assert_eq!(typed, ClaudeNativeDispatchAttempt::AwaitingInjection);
     assert!(claude_native_marker(&context_file)
@@ -1764,7 +1906,13 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
 
     std::thread::sleep(std::time::Duration::from_millis(300));
     let submitted = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            session.id(),
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("approved task should submit exactly once");
     assert_eq!(submitted, ClaudeNativeDispatchAttempt::AwaitingInjection);
     assert_eq!(
@@ -1784,7 +1932,13 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
     )
     .expect("provider acknowledgement should be written");
     let completed = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            session.id(),
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("provider acknowledgement should complete dispatch");
     assert_eq!(completed, ClaudeNativeDispatchAttempt::Completed);
     assert_eq!(
@@ -1792,7 +1946,13 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
         Some(format!("accepted:{}", prompt.id()).as_str())
     );
     let repeated = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            session.id(),
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("completed dispatch should remain idempotent");
     assert_eq!(repeated, ClaudeNativeDispatchAttempt::Completed);
 
@@ -1810,6 +1970,107 @@ fn workspace_trust_approval_fixture(choices: &str, expected_input: &str) {
         1,
         "the real PTY dispatch must contain the task exactly once: {captured:?}"
     );
+    app.pty
+        .remove_process(run.id())
+        .expect("test provider PTY should stop");
+    let _ = fs::remove_dir_all(root);
+}
+
+fn no_context_handoff(_room: usize) -> String {
+    String::new()
+}
+
+#[test]
+fn claude_native_handoff_takes_only_the_room_its_turn_leaves() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-native-handoff-room-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    let capture_file = root.join("pty-input.log");
+    fs::write(&context_file, "").expect("context file should be created");
+    fs::write(&events_file, "").expect("events file should be created");
+    let request = crate::provider::LaunchProviderRequest::new(
+        "session-1",
+        "claude",
+        "claude",
+        "default",
+        "claude-opus",
+    )
+    .with_agent_id("agent-1")
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = RuntimeProviderRun::new(
+        "provider-run-handoff-room",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "provider-run-handoff-room-process".to_string(),
+            pty_target: Some("provider-run-handoff-room".to_string()),
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: vec![
+                "-lc".to_string(),
+                format!("tee {} >/dev/null", capture_file.display()),
+            ],
+            pty_env: std::collections::BTreeMap::from([
+                (
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    context_file.display().to_string(),
+                ),
+                (
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
+                    events_file.display().to_string(),
+                ),
+            ]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.pty
+        .spawn_for_run(&run)
+        .expect("test provider PTY should start");
+    app.providers_mut().insert_run_for_test(run.clone());
+    let context_file = context_file.display().to_string();
+    let workflow_context = "w".repeat(30_000);
+    let rooms = std::cell::RefCell::new(Vec::new());
+    // The worst case: a handoff that fills the room with two-byte scalars.
+    let handoff = |room: usize| {
+        rooms.borrow_mut().push(room);
+        "é".repeat(room / 2)
+    };
+    let attachments = Vec::new();
+
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .inject_prompt(
+            "session-1",
+            run.id(),
+            "agent-1",
+            &context_file,
+            &run,
+            &ClaudeNativePromptInjection {
+                id: "prompt-1",
+                origin_prompt_id: "prompt-1",
+                prompt: "continue",
+                hidden_system_context: &workflow_context,
+                attachments: &attachments,
+                context_handoff: &handoff,
+            },
+        )
+        .expect("a handoff within the remaining room should dispatch");
+
+    let room = rooms.borrow()[0];
+    assert!(room > 10_000 && room < 18_000, "{room}");
+    let hidden = fs::read_to_string(&context_file).expect("hidden context should be written");
+    assert!(hidden.starts_with(&workflow_context));
+    assert!(hidden.ends_with(&"é".repeat(room / 2)));
+    crate::provider::ensure_claude_native_hidden_context_fits(run.id(), &hidden)
+        .expect("the written context should fit the hook delivery");
     app.pty
         .remove_process(run.id())
         .expect("test provider PTY should stop");
@@ -1873,7 +2134,13 @@ fn claude_headless_early_exit_before_ack_has_bounded_diagnostic() {
         steering: false,
     };
     let error = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            session.id(),
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect_err("an exited provider must fail before native dispatch");
     assert!(error
         .to_string()
@@ -1882,160 +2149,6 @@ fn claude_headless_early_exit_before_ack_has_bounded_diagnostic() {
     assert!(fs::read_to_string(&context_file)
         .expect("context file should remain readable")
         .is_empty());
-    let _ = app.pty.remove_process(run.id());
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
-    let worktree = crate::test_support::TestWorktree::new("claude-native-trust-rejection");
-    let root = crate::test_support::test_workspace_root().join(format!(
-        "chariox-claude-startup-trust-rejection-{}-{}",
-        std::process::id(),
-        timestamp_millis()
-    ));
-    fs::create_dir_all(&root).expect("test root should be created");
-    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
-        .expect("daemon should bootstrap");
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(worktree.session_request())
-        .expect("session should be created");
-    let attachment = crate::app::KernelSessionService::new(&mut app)
-        .attach(crate::attachment::AttachRequest::new(
-            session.id(),
-            "client-startup-trust-rejection",
-            crate::attachment::ClientCapabilityLevel::FullTerminal,
-        ))
-        .expect("attachment should attach");
-    let (other_session, _other_default_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-unrelated-agent",
-            root.display().to_string(),
-        ))
-        .expect("unrelated session should be created");
-    let other_agent = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            crate::agent::CreateAgentRequest::new(other_session.id(), "dev-stub")
-                .with_alias("unrelated-test-agent")
-                .with_model("test-model"),
-        )
-        .expect("self-contained unrelated test agent should be created");
-    let other_attachment = crate::app::KernelSessionService::new(&mut app)
-        .attach(crate::attachment::AttachRequest::new(
-            other_session.id(),
-            "client-unrelated-agent",
-            crate::attachment::ClientCapabilityLevel::FullTerminal,
-        ))
-        .expect("unrelated attachment should attach");
-    app.record_native_prompt_started_with_attachments(
-        other_session.id(),
-        other_attachment.id(),
-        other_attachment.id(),
-        other_agent.id(),
-        "unrelated-agent-task",
-        Vec::new(),
-    )
-    .expect("unrelated agent prompt should remain active");
-    let context_file = root.join("hidden-context.txt");
-    let events_file = root.join("events.jsonl");
-    fs::write(&context_file, "").expect("context file should be created");
-    fs::write(&events_file, "").expect("events file should be created");
-    let capture_file = root.join("pty-input.log");
-    let trust_frame =
-        "Quick safety check\nDo you trust this folder?\n1. No, exit\n2. Yes, I trust this folder";
-    let mut run = startup_readiness_run(
-        session.id(),
-        agent.id(),
-        "provider-run-startup-trust-rejection",
-        &context_file,
-        &events_file,
-        format!(
-            "printf '%s' '{}'; tee {} >/dev/null",
-            trust_frame,
-            capture_file.display()
-        ),
-    );
-    run.mark_running();
-    app.pty
-        .spawn_for_run(&run)
-        .expect("test provider PTY should start");
-    app.providers_mut().insert_run_for_test(run.clone());
-    app.sessions
-        .set_active_provider_run(session.id(), Some(run.id().to_string()))
-        .expect("active provider run should be set");
-    let _prompt = match app
-        .record_native_prompt_started_with_attachments(
-            session.id(),
-            attachment.id(),
-            attachment.id(),
-            agent.id(),
-            "rejected-startup-trust-task",
-            Vec::new(),
-        )
-        .expect("rejected task should become active")
-    {
-        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
-        other => panic!("unexpected prompt outcome: {other:?}"),
-    };
-    let bridge = StartupTrustBridge::default();
-    let bridge_ref: std::sync::Arc<dyn ProviderNativeInteractionBridge> =
-        std::sync::Arc::new(bridge.clone());
-    app.providers()
-        .set_native_interaction_bridge(bridge_ref.clone());
-    let interaction = bridge.wait_for_interaction_with_pump(|| {
-        crate::app::provider_output::ProviderOutputPump::new(&mut app)
-            .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
-                session_id: session.id(),
-                provider_run_id: run.id(),
-                recipient_attachment_ids: vec![attachment.id().to_string()],
-                initial_liveness_already_checked: false,
-            })
-            .expect("trust prompt should be projected by the normal output pump");
-    });
-    assert_eq!(interaction.default_on_timeout(), Some("deny"));
-    bridge.resolve_default_no();
-    let mut settled = false;
-    for _ in 0..500 {
-        crate::app::provider_output::ProviderOutputPump::new(&mut app)
-            .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
-                session_id: session.id(),
-                provider_run_id: run.id(),
-                recipient_attachment_ids: vec![attachment.id().to_string()],
-                initial_liveness_already_checked: false,
-            })
-            .expect("trust rejection should use the normal failure path");
-        let primary_active = app
-            .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
-            .expect("primary prompt should remain queryable");
-        if primary_active.is_none() {
-            settled = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert!(
-        settled,
-        "rejected startup trust should settle its own prompt"
-    );
-    assert!(app
-        .prompt_owner_active_prompt_for_agent(other_session.id(), other_agent.id())
-        .expect("unrelated agent should remain queryable")
-        .is_some());
-    let rejected_run = app
-        .providers()
-        .get_run(run.id())
-        .expect("rejected provider run should remain inspectable");
-    let diagnostic = rejected_run
-        .terminal_diagnostic()
-        .expect("rejection should preserve a terminal diagnostic");
-    assert!(
-        diagnostic.contains("workspace trust was denied"),
-        "{diagnostic}"
-    );
-    assert!(!diagnostic.contains(root.to_string_lossy().as_ref()));
-    assert!(!fs::read_to_string(&capture_file)
-        .unwrap_or_default()
-        .contains("rejected-startup-trust-task"));
     let _ = app.pty.remove_process(run.id());
     let _ = fs::remove_dir_all(root);
 }
@@ -2203,7 +2316,13 @@ fn claude_headless_dispatch_observes_ask_user_question_queue_acknowledgement() {
     };
 
     let outcome = ProviderOutputClaudeNativeBridge::new(&mut app)
-        .process_prompt_dispatch_attempt(session.id(), run.id(), &run, &dispatch)
+        .process_prompt_dispatch_attempt(
+            session.id(),
+            run.id(),
+            &run,
+            &dispatch,
+            &no_context_handoff,
+        )
         .expect("AskUserQuestion queue acknowledgement should be processed");
 
     assert_eq!(outcome, ClaudeNativeDispatchAttempt::Completed);
@@ -2875,6 +2994,20 @@ fn claude_headless_bypass_selection_marker_is_distinct_from_prompt_state() {
 
 #[test]
 fn queued_claude_failed_request_note_reaches_hook_context_and_waits_for_acceptance() {
+    queued_claude_failed_request_note_impl(false, false);
+}
+
+#[test]
+fn managed_hook_delivery_receipt_fences_headless_acknowledgement() {
+    queued_claude_failed_request_note_impl(true, false);
+}
+
+#[test]
+fn managed_steering_delivery_receipt_follows_target_active_prompt() {
+    queued_claude_failed_request_note_impl(true, true);
+}
+
+fn queued_claude_failed_request_note_impl(receipts: bool, steering: bool) {
     let worktree = crate::test_support::TestWorktree::new("claude-queued-failed-note");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -2908,6 +3041,9 @@ fn queued_claude_failed_request_note_reaches_hook_context_and_waits_for_acceptan
     run.mark_running();
     let mut ready_run = serde_json::to_value(&run).unwrap();
     ready_run["started_at_ms"] = serde_json::json!(unix_epoch_ms().saturating_sub(5_000));
+    if receipts {
+        ready_run["pty_env"]["CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS"] = serde_json::json!("1");
+    }
     run = serde_json::from_value(ready_run).unwrap();
     app.pty.spawn_for_run(&run).unwrap();
     app.providers_mut().insert_run_for_test(run.clone());
@@ -2940,6 +3076,57 @@ fn queued_claude_failed_request_note_reaches_hook_context_and_waits_for_acceptan
         )
         .unwrap();
     let context_path = context_file.display().to_string();
+    if steering {
+        // MP-08 / MP-10 / MP-11: dispatch identity differs from its still-active target.
+        let steering_id = "native-steering-request";
+        write_claude_native_marker(&context_path, &format!("injected:{steering_id}"));
+        fs::write(
+            format!("{context_path}.context-delivery"),
+            serde_json::json!({
+                "request_id":"steering-receipt", "run_id":run.id(), "prompt_id":steering_id,
+                "active_prompt_id":prompt.id(), "managed":true,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .accept_context_delivery(
+                session.id(),
+                agent.id(),
+                run.id(),
+                &context_path,
+                &serde_json::json!({"hook_context_request_id":"steering-receipt"}),
+            )
+            .unwrap();
+        let marker = claude_native_marker(&context_path);
+        let active = app
+            .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+            .unwrap()
+            .unwrap();
+        let failed = app
+            .agents
+            .get_agent(agent.id())
+            .unwrap()
+            .failed_requests()
+            .len();
+        app.pty.remove_process(run.id()).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            marker.as_deref(),
+            Some("accepted:native-steering-request"),
+            "steering receipt could not acknowledge its current active target"
+        );
+        assert_eq!(
+            active.id(),
+            prompt.id(),
+            "steering must not replace the active turn"
+        );
+        assert_eq!(
+            failed, 1,
+            "steering delivery must retain active-turn failure context"
+        );
+        return;
+    }
     write_claude_native_marker(&context_path, &format!("post-stop-ready:{}", prompt.id()));
     ProviderOutputClaudeNativeBridge::new(&mut app)
         .process(session.id(), run.id(), &run, None)
@@ -2983,13 +3170,47 @@ fn queued_claude_failed_request_note_reaches_hook_context_and_waits_for_acceptan
         &events_file,
         serde_json::json!({
             "hook_event_name": "UserPromptSubmit", "prompt": prompt.prompt(),
+            "hook_context_request_id": if receipts { Some("managed-current") } else { None },
         })
         .to_string(),
     )
     .unwrap();
+    if receipts {
+        acknowledge_claude_headless_dispatch_from_hook_events(
+            &context_path,
+            events_file.to_str().unwrap(),
+            prompt.id(),
+            true,
+        );
+        assert_eq!(
+            claude_native_marker(&context_path).as_deref(),
+            Some(format!("injected:{}", prompt.id()).as_str()),
+            "headless shortcut consumed context before hook delivery"
+        );
+    }
     ProviderOutputClaudeNativeBridge::new(&mut app)
         .process(session.id(), run.id(), &run, None)
         .unwrap();
+    if receipts {
+        assert_eq!(
+            app.agents
+                .get_agent(agent.id())
+                .unwrap()
+                .failed_requests()
+                .len(),
+            1,
+            "managed response creation must not acknowledge delivery"
+        );
+        assert!(root
+            .join("hook-context-responses/managed-current.txt")
+            .exists());
+        fs::write(&events_file, serde_json::json!({
+            "hook_event_name":"CharioxContextDelivered", "hook_context_request_id":"managed-current",
+        }).to_string()).unwrap();
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .process(session.id(), run.id(), &run, None)
+            .unwrap();
+    }
     assert!(app
         .agents
         .get_agent(agent.id())
@@ -3107,4 +3328,342 @@ fn approval_lifetime_refused_claude_dialog_receives_deny_while_displayed() {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
+}
+
+#[test]
+fn native_claude_cancellation_clears_only_its_unacknowledged_composer() {
+    for (marker, expected_input) in [
+        ("injected:cancel-native", b"\x03\x15".as_slice()),
+        ("accepted:cancel-native", b"\x03".as_slice()),
+        ("injected:another-prompt", b"\x03".as_slice()),
+    ] {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "native-cancel-workspace",
+                "native-cancel-worktree",
+            ))
+            .unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "native-cancel-client",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-native-cancel-{}-{}",
+            std::process::id(),
+            timestamp_millis()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let context_file = root.join("hidden-context.txt");
+        fs::write(&context_file, "").unwrap();
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude",
+            "default",
+            "sonnet",
+        )
+        .with_agent_id(agent.id())
+        .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+        let mut run = RuntimeProviderRun::new(
+            "native-cancel-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "native-cancel-test".to_string(),
+                pty_target: Some("native-cancel-pty".to_string()),
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: vec!["-c".to_string(), "trap '' INT; exec cat".to_string()],
+                pty_env: std::collections::BTreeMap::from([(
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    context_file.display().to_string(),
+                )]),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions
+            .set_active_provider_run(session.id(), Some(run.id().to_string()))
+            .unwrap();
+        app.pty.spawn_for_run(&run).unwrap();
+        crate::app::provider_runtime::ProviderProcessTracker::new(&mut app)
+            .register_managed_run(&run)
+            .unwrap();
+        let context = context_file.to_str().unwrap();
+        let mut prompt = crate::session::PromptQueueItem::new(
+            "cancel-native",
+            attachment.id(),
+            agent.id(),
+            "managed audit prompt",
+            crate::session::PromptStatus::Dispatching,
+        );
+        prompt.set_durable_delivery(
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            Some(run.id().to_string()),
+            None,
+        );
+        app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .unwrap();
+        let prompt_id = app
+            .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+            .unwrap()
+            .unwrap()
+            .id()
+            .to_string();
+        let marker = match marker {
+            "injected:cancel-native" => format!("injected:{prompt_id}"),
+            "accepted:cancel-native" => format!("accepted:{prompt_id}"),
+            foreign => foreign.to_string(),
+        };
+        write_claude_native_marker(context, &marker);
+        write_claude_headless_submit_retry(
+            context,
+            &prompt_id,
+            0,
+            unix_epoch_ms(),
+            "managed audit prompt",
+        );
+        app.cancel_active_prompt(session.id(), attachment.id())
+            .unwrap();
+        assert_eq!(
+            app.terminal().input_records().last().unwrap().bytes,
+            expected_input,
+            "marker={marker}"
+        );
+        assert!(
+            app.pty.has_process(run.id()),
+            "native cancellation must preserve the user's provider TUI"
+        );
+        crate::app::provider_runtime::ProviderProcessTracker::new(&mut app)
+            .remove_run(run.id())
+            .unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn native_auto_compaction_hook_keeps_current_user_turn() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-auto-compact");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "compact-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-native-auto-compact-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    fs::write(&context_file, "").unwrap();
+    fs::write(&events_file, serde_json::json!({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation. Summary: Preserve the audit and answer the current memory probe."
+    }).to_string()).unwrap();
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "run-auto-compact",
+        &context_file,
+        &events_file,
+        "cat >/dev/null".to_string(),
+    );
+    run.mark_running();
+    app.pty.spawn_for_run(&run).unwrap();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .unwrap();
+    let prompt = match app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "Recall the ten accepted audit facts without tools.",
+            Vec::new(),
+        )
+        .unwrap()
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        outcome => panic!("unexpected prompt outcome: {outcome:?}"),
+    };
+    write_claude_native_marker(
+        &context_file.display().to_string(),
+        &format!("native:{}", prompt.id()),
+    );
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    let active_id = app
+        .sessions()
+        .get_session(session.id())
+        .unwrap()
+        .active_prompt_for_agent(agent.id())
+        .map(|prompt| prompt.id().to_string());
+    let (_, queued) = app.prompt_state_owner().state_parts(
+        &app.sessions().get_session(session.id()).unwrap(),
+        agent.id(),
+    );
+    app.pty.remove_process(run.id()).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    assert_eq!(
+        active_id.as_deref(),
+        Some(prompt.id()),
+        "provider compaction must not replace the user's active turn with a generated summary"
+    );
+    assert!(
+        queued.is_empty(),
+        "provider compaction must not enqueue a generated user prompt"
+    );
+}
+
+// MP-08 / MP-10 / MP-11: fit after the worker adds its normal origin context.
+#[test]
+fn review976_recreated_replay_fits_complete_claude_worker_context() {
+    assert_recreated_replay_fits_worker("claude");
+    assert_recreated_replay_fits_worker("claude-headless");
+}
+
+fn assert_recreated_replay_fits_worker(provider: &str) {
+    let worktree = crate::test_support::TestWorktree::new("claude-replay-fit");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-replay-fit-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context_file = root.join("hidden-context.txt");
+    fs::write(&context_file, "").unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        provider,
+        "default",
+        "sonnet",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let run = RuntimeProviderRun::new(
+        "claude-replay-fit",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "fixture".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    if provider == "claude-headless" {
+        // Let the native composer startup grace expire; no provider process is started here.
+        std::thread::sleep(std::time::Duration::from_millis(4_100));
+    }
+    let required = "x".repeat(if provider == "claude-headless" {
+        21_000
+    } else {
+        45_000
+    });
+    let open = "<chariox_context_handoff>\nChariox reconstructed this bounded background from home history after worker lease recreation. The active user request is supplied separately.\n\n";
+    let close = "\n</chariox_context_handoff>";
+    let body_room = crate::provider::claude_native_hidden_context_room(&required).min(24_000)
+        - open.len()
+        - close.len();
+    let latest = "Latest turn:\nInterrupted attempt: preserve the pending tool and next step";
+    let body = format!(
+        "Prior turns:\n{}\n\n{latest}",
+        "🦀".repeat((body_room - latest.len() - 17) / 4)
+    );
+    let hidden = format!("{required}\n\n{open}{body}{close}");
+    crate::provider::ensure_claude_native_hidden_context_fits(run.id(), &hidden).unwrap();
+    let injected = ProviderOutputClaudeNativeBridge::new(&mut app).inject_prompt(
+        session.id(),
+        run.id(),
+        agent.id(),
+        context_file.to_str().unwrap(),
+        &run,
+        &ClaudeNativePromptInjection {
+            id: "recreated-prompt",
+            origin_prompt_id: "normal-origin-prompt",
+            prompt: "",
+            hidden_system_context: &hidden,
+            context_handoff: &no_context_handoff,
+            attachments: &[],
+        },
+    );
+    // MP-08 / MP-10 / MP-11: #919 reconstructs staged inputs again at hook ACK.
+    // It must preserve #976's complete-worker-context fitting at that boundary.
+    let rebuilt = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .managed_base_context(
+            session.id(),
+            agent.id(),
+            context_file.to_str().unwrap(),
+            &run,
+            &ClaudeNativePromptInjection {
+                id: "recreated-prompt",
+                origin_prompt_id: "normal-origin-prompt",
+                prompt: "",
+                hidden_system_context: &hidden,
+                context_handoff: &no_context_handoff,
+                attachments: &[],
+            },
+        )
+        .unwrap();
+    crate::provider::ensure_claude_native_hidden_context_fits(run.id(), &rebuilt)
+        .expect("hook reconstruction must fit the complete worker context too");
+    assert!(rebuilt.contains(&required));
+    assert!(rebuilt.contains(latest));
+    let delivered = fs::read_to_string(&context_file).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    injected.expect("optional replay must fit after normal worker context is added");
+    assert!(delivered.contains(&required));
+    assert!(delivered.contains("normal-origin-prompt"));
+    assert!(
+        delivered.contains(latest),
+        "worker trimming must retain the latest interrupted attempt"
+    );
+    assert!(
+        delivered.contains("[truncated]"),
+        "worker trimming must disclose omitted prior turns"
+    );
+    crate::provider::ensure_claude_native_hidden_context_fits(run.id(), &delivered).unwrap();
+    assert!(
+        delivered.contains("<chariox_context_handoff>")
+            == delivered.contains("</chariox_context_handoff>")
+    );
+}
+
+// MP-08 / MP-10 / MP-11: mandatory worker context cannot consume a replay with no latest body.
+#[test]
+fn review976r2_claude_rejects_replay_with_only_a_partial_latest_header() {
+    let open = crate::prompt_assembly::RECREATED_LEASE_CONTEXT_OPEN;
+    let close = crate::prompt_assembly::RECREATED_LEASE_CONTEXT_CLOSE;
+    let capacity = 8 * (6_000 - 3);
+    let required = "x".repeat(capacity - open.len() - close.len() - 16);
+    let context = format!("{required}{open}Latest turn:\n{}{close}", "🦀".repeat(100));
+    assert!(
+        crate::provider::fit_claude_native_hidden_context("tiny-replay-budget", context).is_err()
+    );
 }

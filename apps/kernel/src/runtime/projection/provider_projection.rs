@@ -150,6 +150,37 @@ impl ProviderRunProjectionStore {
         }
     }
 
+    pub(crate) fn retire_leased_agent_runs(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        leased_agent_id: &str,
+    ) {
+        let mut runs = self
+            .runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut retired = Vec::new();
+        for run in runs.values_mut() {
+            if run.session_id() == session_id
+                && run.agent_instance_id() == Some(agent_id)
+                && run.state() != ProviderRunState::Ended
+                && crate::provider::worker_provider_run_id_from_projected_leased_id(
+                    leased_agent_id,
+                    run.id(),
+                )
+                .is_some()
+            {
+                run.mark_ended();
+                retired.push(run.id().to_string());
+            }
+        }
+        drop(runs);
+        for run_id in retired {
+            self.catalog_changes.close(&run_id);
+        }
+    }
+
     pub(crate) fn update_remote_snapshot(&self, run: RuntimeProviderRun) -> RuntimeProviderRun {
         let mut runs = self
             .runs

@@ -11,13 +11,14 @@ impl KernelRuntimeState {
         session_id: &str,
         target_agent_id: &str,
         attachment_id: &str,
+        expected_prompt_id: Option<&str>,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
         self.cancel_remote_agent_prompt_if_matches(
             session_id,
             target_agent_id,
             attachment_id,
-            None,
+            expected_prompt_id,
             authority,
         )
         .await
@@ -50,6 +51,10 @@ impl KernelRuntimeState {
         let mut active_prompt = owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, target_agent_id)
+            .filter(|prompt| {
+                expected_prompt_id
+                    .is_none_or(|id| prompt.id() == id || prompt.pending_prompt_id() == Some(id))
+            })
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
@@ -206,11 +211,12 @@ impl KernelRuntimeState {
             }
             Some(crate::session::DurablePromptDeliveryPhase::Delivered) => {
                 let attachment_id = active_prompt.source_attachment_id().to_string();
-                let cancellation_intent = self.owned.begin_remote_prompt_cancellation(
+                let Some(cancellation_intent) = self.owned.begin_remote_prompt_cancellation_if_matches(
                     session_id,
                     target_agent_id,
                     &attachment_id,
-                )?;
+                    Some(active_prompt.id()),
+                )? else { return Ok(false); };
                 if let Err(error) = self
                     .send_remote_agent_prompt_cancellation_with_claim(
                         session_id,
@@ -412,10 +418,7 @@ impl KernelRuntimeState {
         else {
             return Ok(None);
         };
-        if let Err(error) = self
-            .finish_owned_prompt_submission_workflow_start(&mut submission)
-            .await
-        {
+        if let Err(error) = self.finish_owned_prompt_submission(&mut submission).await {
             // The prompt is already active; settle it as a failed dispatch so
             // the agent is not left holding a prompt the worker never got.
             let Some(dispatch) = submission.remote_dispatch.take() else {

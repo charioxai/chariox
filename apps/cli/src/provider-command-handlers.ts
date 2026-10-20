@@ -11,7 +11,7 @@ import type { ParsedSlashCommand } from "./commands.js"
 import { isBackendProviderId } from "./provider-catalog.js"
 import {
   providerAccountDisplayLabel,
-  providerAccountsForProvider,
+  resolveProviderAccountSelection,
   selectedProviderAccount,
 } from "./waiting-room-provider-accounts.js"
 
@@ -448,7 +448,7 @@ export async function resolveProviderAccountAlias(
     deps.flashFooter("provider account management is unavailable", "error")
     return null
   }
-  const profile = findProviderAccountByAlias(
+  const profile = findProviderAccountByReference(
     await deps.listProviderAccountProfiles(provider),
     provider,
     alias,
@@ -577,19 +577,13 @@ function credentialKindLabel(profile: {
   }
 }
 
-function findProviderAccountByAlias(
+function findProviderAccountByReference(
   profiles: Awaited<ReturnType<NonNullable<ProviderCommandHandlerDeps["listProviderAccountProfiles"]>>>,
   provider: string,
   alias: string,
 ) {
-  const normalizedAlias = alias.trim()
-  const candidates = providerAccountsForProvider(profiles, provider)
-  const exactMatch = candidates.find((candidate) => candidate.label === normalizedAlias)
-  if (exactMatch) return exactMatch
-  const foldedMatches = candidates.filter(
-    (candidate) => candidate.label.localeCompare(normalizedAlias, undefined, { sensitivity: "accent" }) === 0,
-  )
-  return foldedMatches.length === 1 ? foldedMatches[0] : undefined
+  const selection = resolveProviderAccountSelection(profiles, provider, alias)
+  return selection.kind === "resolved" ? selection.profile : undefined
 }
 
 async function resolveProviderAccountReference(
@@ -603,7 +597,7 @@ async function resolveProviderAccountReference(
     deps.flashFooter("provider account selection is unavailable", "error")
     return null
   }
-  const profile = findProviderAccountByAlias(await deps.listProviderAccountProfiles(provider), provider, normalizedAlias)
+  const profile = findProviderAccountByReference(await deps.listProviderAccountProfiles(provider), provider, normalizedAlias)
   if (profile) return profile.profile_id
   deps.flashFooter(`provider account alias ${normalizedAlias} was not found for ${provider}`, "error")
   return null

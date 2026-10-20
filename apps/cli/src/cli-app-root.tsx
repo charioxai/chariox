@@ -1,6 +1,7 @@
 import { createCliUserAppViewsComposition } from "./cli-user-app-views-composition.js"
 import { sessionActivePromptForAgent } from "@chariox/kernel-client/session-prompt-identity"
 import type { MutableLocalIpcClient } from "./mutable-local-ipc-client.js"
+import { localKernelConnectionLabel } from "./local-connection-indicator.js"
 import { createProviderLoginLinkOpener, localDesktopAvailable } from "./provider-login-link.js"
 import { createProviderLoginInteractionController } from "./provider-login-interaction-controller.js"
 import { getRelayStatus } from "./relay-api.js"
@@ -14,6 +15,7 @@ import { RoomWorkflowsPane } from "./room-workflows-pane.js"
 import { createAppHostTerminal } from "./app-host-action.js"
 import process from "node:process"
 import { CloudClient } from "./cloud-client.js"
+import { presentCloudSignedOut } from "./cloud-signed-out.js"
 import { mergeRelayCloudProfile, saveRelayCloudProfile } from "./preferences.js"
 import { AppDevLoop } from "./app-dev-loop.js"
 import { AppFileInstaller, formatInstallProgress } from "./app-install-file.js"
@@ -73,7 +75,7 @@ import { createAgentPaneRuntimeResetController } from "./agent-pane-runtime-rese
 import { createAgentPaneRuntimeStoreController } from "./agent-pane-runtime-store-controller.js"
 import { createFooterFlashController } from "./footer-flash-controller.js"
 import { createProviderAccountRecoveryController } from "./provider-account-recovery-controller.js"
-import { providerAccountCapacity, providerAccountsForProvider } from "./waiting-room-provider-accounts.js"
+import { providerAccountAdmissionBlocked, providerAccountsForProvider } from "./waiting-room-provider-accounts.js"
 import { createHistoryLoadingRenderController } from "./history-loading-render-controller.js"
 import { createHistoryScrollRestoreController } from "./history-scroll-restore-controller.js"
 import { renderHistoryLoadingIndicator as renderHistoryLoadingIndicatorView } from "./history-loading-renderer.js"
@@ -105,7 +107,7 @@ import {
   normalizeBackendProviderId,
 } from "./provider-catalog.js"
 import {
-  getProviderAuthStatus,
+  getProviderAccountProfile,
   getProviderCatalog,
   getProviderLoginStatus,
   getProviderRun,
@@ -261,7 +263,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   const providerLoginInteractions = createProviderLoginInteractionController({
     getKernelId: async () => relayStatusState()?.daemon_id ?? (await getRelayStatus(client)).daemon_id,
     getLoginStatus: (loginId) => getProviderLoginStatus(client, loginId),
-    getAuthStatus: (provider, accountProfile) => getProviderAuthStatus(client, provider, accountProfile),
+    getAccountProfile: (provider, accountProfile) => getProviderAccountProfile(client, provider, accountProfile),
     accountLabel: (provider, accountProfile) => {
       const profile = selectedProviderAccount(providerAccountsState(), provider, accountProfile)
       return profile ? providerAccountDisplayLabel(profile) : accountProfile
@@ -683,7 +685,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       const currentProfile = agent?.account_profile ?? waitingRoomState().accountProfileId
       const alternative = providerAccountsForProvider(providerAccountsState(), provider)
         .find(profile => profile.auth_state === "authenticated" && profile.profile_id !== currentProfile
-          && providerAccountCapacity(profile, Date.now(), agent?.model ?? waitingRoomState().modelId).state !== "exhausted")
+          && !providerAccountAdmissionBlocked(profile, Date.now(), agent?.model ?? waitingRoomState().modelId))
       return [
         { label: "Open Provider Accounts", run: () => { setFatalError(null); void executeCommandCenterCommand("/provider accounts"); promptInputRefController.focus() } },
         { label: alternative ? `Switch account to ${alternative.label}` : "Switch account", run: () => {
@@ -718,11 +720,14 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     blockedAccountTarget = undefined
   }
   onCleanup(providerAccountRecovery.close)
-  void cloudClient.resume(() => {
-    setPreferencesState(current => mergeRelayCloudProfile(current, null))
-    void saveRelayCloudProfile(null).catch(() => {})
-    flashFooter("Terminal sign-in was revoked. Run /cloud login.", "error")
-  })
+  void cloudClient.resume(() => presentCloudSignedOut({
+    clearProfile: () => {
+      setPreferencesState(current => mergeRelayCloudProfile(current, null))
+      void saveRelayCloudProfile(null).catch(() => {})
+    },
+    clearDirectory: () => { setRemoteMachinesState([]); setRemoteKernelsState([]); setWaitingRoomInventoryStatus("ready") },
+    notify: appendCloudNotice,
+  }))
     .catch(() => flashFooter("Unable to read this terminal's Cloud profile", "error"))
 
   const promptAttachmentIntakeController = createPromptAttachmentIntakeController({
@@ -797,6 +802,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     sessionChromeUpdateController: responseShellSessionChromeUpdateController,
     assignStatusIndicatorBox, assignFooterSummaryBox,
   } = createCliResponseShellComposition({
+    connectionLabel: () => localKernelConnectionLabel(client, sessionState().host_daemon_id ?? relayStatusState()?.daemon_id),
     renderer,
     scheduleTimer: startTimeout,
     clearTimer: clearTimeout,
@@ -877,7 +883,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     setSelectedWorkflowNodeId, selectedWorkflowComponent, setSelectedWorkflowComponent, setWorkflowInspectorMode,
     workflowScreenActive: () => workflowActions.workflowScreenActive(),
     workflowInspector, workspaceShellEntries, workspaceShellContext, waitingRoomState,
-    availableSessions, waitingRoomProjects, providerCatalogState, waitingRoomCloudNotice, waitingRoomInventoryStatus,
+    availableSessions, waitingRoomProjects, providerCatalogState, waitingRoomCloudNotice, waitingRoomInventoryStatus, preferencesState,
     relayStatusState, remoteMachinesState, remoteKernelsState, providerAccountsState, terminalsState,
     externalProviderSessionsState, externalProviderSessionsPageState, slicesState, waitingRoomTargets,
     themeRegistryState, transcriptScrollboxRefController, primaryTranscriptRuntimeStore, transcriptEntryProjectionController,
@@ -936,12 +942,19 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     currentSession: () => isAttached() ? sessionState().id : undefined,
   })
   let recordDaemonActivity: (activityType: string) => void = () => {}
+  let settleKernelConnectionDisplay: () => void = () => {}
+  let markKernelConnectionClosed: (message: string) => void = () => {}
   const {
-    hydrateCurrentAttachedSession, kernelEventSubscriptionController, syncKernelEventSubscription, recoverAttachedSessionAfterKernelRestart,
+    hydrateCurrentAttachedSession, kernelEventSubscriptionController, syncKernelEventSubscription, recoverAttachedSessionAfterKernelRestart, sessionBindingRepairInFlight, currentSessionEventBindingReady, syncValidatedKernelEventSubscription,
     transitionToNoSession, detachCurrentAttachment, rollbackAttachedSession, attachBinding, recoverProviderRun,
     requestExit, requestWaitingRoom,
   } = createCliSessionLifecycleComposition({
     client, options, appLogger, renderer,
+    onKernelTransportRecovered: () => settleKernelConnectionDisplay(),
+    onKernelTransportClosed: (message) => {
+      markKernelConnectionClosed(message)
+      void recoverAttachedSessionAfterKernelRestart()
+    },
     drainAppInstall: async () => { await Promise.all([appDevLoop.dispose(), appFileInstaller.dispose(), appPublisherEnrollment.dispose()]) },
     sleep, formatError, supportsKernelEventStream, kernelConnected, closingStateController,
     isAttached, daemonDisconnected, attachmentState, sessionState,
@@ -1069,6 +1082,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
 
   const {
     recordDaemonActivity: runtimeRecordDaemonActivity,
+    applyKernelTransportClosed: runtimeApplyKernelTransportClosed,
+    applyKernelTransportResumed: runtimeApplyKernelTransportResumed,
     ensureBackgroundPollersStarted,
     processKernelTerminalOutputRecord: runtimeProcessKernelTerminalOutputRecord,
   } = createCliAppProcessRuntimeComposition({
@@ -1130,7 +1145,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     queueTerminalOutputRecords, drainTerminalOutputRecords, scheduleSharedPromptInputHistoryRefresh,
     handleWaitingRoomRefresh: refreshWaitingRoomData,
     applyWaitingRoomTransportClosed, applyWaitingRoomRowsChanged, applyRelayStatusChanged, applyRemoteMachinesChanged, applyProviderCatalogChanged,
-    applySlicesChanged, recoverAttachedSessionAfterKernelRestart, setFatalError,
+    applySlicesChanged, recoverAttachedSessionAfterKernelRestart, sessionBindingRepairInFlight, currentSessionEventBindingReady, syncValidatedKernelEventSubscription, setFatalError,
     pumpTerminalOutput: (sessionId: string, attachmentId: string) => pumpTerminalOutput(client, sessionId, attachmentId),
     pollRuntimeNotices: (sessionId: string, attachmentId: string) => pollRuntimeNotices(client, sessionId, attachmentId),
     promptInputRefController, transcriptScrollboxRefController, primaryTranscriptRuntimeStore, syncPromptPlaceholder,
@@ -1138,6 +1153,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     sessionChromeUpdateController, promptInputHistoryRefreshController, transcriptHistoryAutoloadController, setWorkingAnimationFrame,
     sessionStatusMode, workspaceLiveSyncStatus, renderSplitPaneFooters, hydrateCurrentAttachedSession,
   })
+  settleKernelConnectionDisplay = () => runtimeApplyKernelTransportResumed(true)
+  markKernelConnectionClosed = runtimeApplyKernelTransportClosed
   recordDaemonActivity = runtimeRecordDaemonActivity
   setKernelTerminalOutputRecordProcessor(runtimeProcessKernelTerminalOutputRecord)
 

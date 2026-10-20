@@ -26,6 +26,7 @@ export type KernelCommandHandlerDeps = {
   flashFooter: (message: string, tone: FooterTone) => void
   deleteKernel?: () => Promise<{ kernelId: string; deletedSessions: RuntimeSession[] }>
   getDaemonHealth?: () => Promise<DaemonHealthProjection>
+  getContextTransferStatus?: (contextId: string) => Promise<import("@chariox/kernel-client/ipc-managed-context-requests").ManagedContextTransferStatus>
   listKernelAccessGrants?: () => Promise<{ grants: import("@chariox/kernel-client/kernel-types").KernelAccessGrant[]; sudo_turns?: import("@chariox/kernel-client/kernel-types").KernelSudoTurn[] }>
   revokeKernelAccessGrant?: (grantId: string | null) => Promise<number>
   /** The attached session's live sudo windows (kernel snapshot). */
@@ -47,6 +48,18 @@ export async function handleKernelSlashCommand(
   const [subcommand, ...args] = command.args
   if (subcommand === "sudo") {
     await handleSudoWindowCommand(deps, args)
+    return
+  }
+  // MP-08/MP-11 BY-05: project the same kernel-owned outcome as Web.
+  if (subcommand === "copy-status") {
+    if (args.length !== 1 || !deps.getContextTransferStatus) {
+      deps.flashFooter("usage: /kernel copy-status <context-id>", "error")
+      return
+    }
+    const status = await deps.getContextTransferStatus(args[0]!)
+    const message = status.failureMessage || `Copy ${status.contextId}: ${status.phase}`
+    deps.appendNotice(message)
+    deps.flashFooter(message, status.phase === "failed" ? "error" : "info")
     return
   }
   if (subcommand === "access") {
@@ -136,7 +149,7 @@ export async function handleKernelSlashCommand(
     deps.flashFooter(`deleted kernel ${deleted.kernelId} (${deleted.deletedSessions.length} session${deleted.deletedSessions.length === 1 ? "" : "s"})`, "info")
     return
   }
-  deps.flashFooter("usage: /kernel access list | /kernel access revoke <id|all> | /kernel health | /kernel remote-runtime | /kernel debug-bundle [label] | /kernel delete", "error")
+  deps.flashFooter("usage: /kernel copy-status <context-id> | /kernel access list | /kernel access revoke <id|all> | /kernel health | /kernel remote-runtime | /kernel debug-bundle [label] | /kernel delete", "error")
 }
 
 /** `/sudo status|extend|revoke [sudo:<id>]`: the same controls as the band. */

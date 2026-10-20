@@ -50,14 +50,15 @@ impl ProviderRunActorMailbox {
         }
     }
 
-    pub(crate) fn run_utility(
+    pub(crate) fn enqueue_utility(
         &self,
         provider_run_id: String,
         run: RuntimeProviderRun,
         envelope: PromptEnvelope,
         timeout: std::time::Duration,
         policy: ProviderUtilityExecutionPolicy,
-    ) -> Result<String, DaemonError> {
+        admission: Option<crate::provider::ProviderUtilityAdmission>,
+    ) -> Result<std::sync::mpsc::Receiver<Result<String, DaemonError>>, DaemonError> {
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
         let sender = self.worker_for_run(&provider_run_id);
         let (response_tx, response_rx) = std::sync::mpsc::channel();
@@ -67,6 +68,10 @@ impl ProviderRunActorMailbox {
             envelope,
             timeout,
             policy,
+            admission,
+            cancellation: policy
+                .is_metadata_only()
+                .then(|| self.utility_cancellations.for_run(&provider_run_id)),
             response: response_tx,
         }) {
             Ok(()) => self.operation_lanes.record_command_enqueued(),
@@ -80,12 +85,7 @@ impl ProviderRunActorMailbox {
                 ));
             }
         }
-        response_rx
-            .recv()
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "run structured utility prompt",
-                message: format!("provider run actor utility response failed: {error}"),
-            })?
+        Ok(response_rx)
     }
 
     pub(crate) fn spawn_abort(
@@ -95,6 +95,7 @@ impl ProviderRunActorMailbox {
         prompt_id: String,
         run: RuntimeProviderRun,
     ) -> Result<(), DaemonError> {
+        self.utility_cancellations.cancel(&provider_run_id);
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
         let sender = self.worker_for_run(&provider_run_id);
         match sender.try_send(ProviderRunActorCommand::Abort {
@@ -270,6 +271,8 @@ impl ProviderRunActorMailbox {
     }
 
     pub(crate) fn stop_run(&self, provider_run_id: &str) {
+        self.utility_cancellations
+            .cancel_and_forget(provider_run_id);
         self.operation_lanes.forget(provider_run_id);
         self.output_poll_delays
             .lock()

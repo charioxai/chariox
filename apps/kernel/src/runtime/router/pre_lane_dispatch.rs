@@ -112,6 +112,18 @@ impl CommandRouter {
             )
             .map(Some);
         }
+        if matches!(
+            request,
+            LocalDaemonRequest::AddSshMachine(_) | LocalDaemonRequest::RemoveSshMachine(_)
+        ) {
+            return crate::runtime::ssh_machine_control::execute(
+                self.config_projection.snapshot(),
+                command,
+                request.clone(),
+            )
+            .await
+            .map(Some);
+        }
         // MP-08 / MP-10 / MP-11: poll only the selected request handler.
         // A missing provider projection still falls through to ordinary dispatch.
         if let Some(handler) = self.select_pre_lane_request(request, caller_user_id) {

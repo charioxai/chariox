@@ -157,6 +157,39 @@ async fn dynamic_relay_token_rotation_returns_one_registration_heartbeat() {
 }
 
 #[tokio::test]
+async fn token_rollover_during_registration_authenticates_snapshot_without_disconnect() {
+    // MP-08/MP-10/MP-11: refreshing the config between the snapshot and
+    // registration must not turn a harmless renewal race into a reconnect.
+    let url = "wss://relay.example.test";
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.relay_url = Some(url.into());
+    config.relay_token = Some("first-renewal".into());
+    let mut next_config = config.clone();
+    next_config.relay_token = Some("second-renewal".into());
+    let mut app = DaemonApp::bootstrap(next_config.clone()).unwrap();
+    let registration = app.relay_registration();
+    let mut active = "old".to_string();
+    let result = dynamic_relay_heartbeat_registration(url, &mut active, &config, || {
+        std::future::ready(registration.clone())
+    })
+    .await;
+    assert!(
+        matches!(result, Ok(Some(ref r)) if r.auth_token == "first-renewal"),
+        "renewal race must authenticate the snapshot on the same socket"
+    );
+    assert_eq!(
+        active, "first-renewal",
+        "track the registration actually queued"
+    );
+    let result = dynamic_relay_heartbeat_registration(url, &mut active, &next_config, || {
+        std::future::ready(registration)
+    })
+    .await;
+    assert!(matches!(result, Ok(Some(_))));
+    assert_eq!(active, "second-renewal");
+}
+
+#[tokio::test]
 async fn cloud_presence_publish_gate_skips_running_task() {
     let (_tx, rx) = oneshot::channel::<()>();
     let task = tokio::spawn(async move {
@@ -585,7 +618,7 @@ async fn exercise_post_connect_confirmation(
 }
 
 #[test]
-fn mp08_mp10_mp11_browser_artifact_peer_101_hosted_confirmation_gate() {
+fn mp08_mp10_mp11_browser_artifact_peer_current_hosted_confirmation_gate() {
     let home = crate::config::DaemonConfig::for_tests();
     let worker = crate::config::DaemonConfig::for_tests();
     let minimum = crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION;
@@ -637,4 +670,36 @@ fn mp08_mp10_mp11_browser_artifact_peer_101_hosted_confirmation_gate() {
             );
         }
     }
+}
+
+// MP-08 / MP-10 / MP-11: a burst of inbound transfer chunks may briefly outrun the
+// writer. The reader waits for it; it never drops a socket carrying a transfer.
+#[tokio::test]
+async fn transport_receipts_wait_for_a_busy_writer_instead_of_dropping_the_socket() {
+    let (tx, mut rx) = mpsc::channel::<String>(8);
+    for index in 0..8 {
+        assert!(queue_transport_receipt(&tx, index.to_string()).await);
+    }
+    let drain = tokio::spawn(async move {
+        sleep(Duration::from_millis(50)).await;
+        let mut received = Vec::new();
+        while received.len() < 9 {
+            received.push(rx.recv().await.unwrap());
+        }
+        received
+    });
+    assert!(queue_transport_receipt(&tx, "8".into()).await);
+    assert_eq!(
+        drain.await.unwrap(),
+        (0..9).map(|index| index.to_string()).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn transport_receipts_give_up_only_when_the_writer_is_stuck() {
+    let (tx, _rx) = mpsc::channel::<String>(8);
+    for index in 0..8 {
+        assert!(queue_transport_receipt(&tx, index.to_string()).await);
+    }
+    assert!(!queue_transport_receipt(&tx, "stuck".into()).await);
 }

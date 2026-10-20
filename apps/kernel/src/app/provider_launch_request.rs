@@ -129,11 +129,12 @@ impl DaemonApp {
                     &request.account_profile,
                     crate::session::unix_epoch_ms(),
                     || {
-                        crate::local::provider_requests::refresh_provider_account_profile_response(
+                        crate::local::provider_requests::refresh_provider_account_profile_with_config(
                             &self.provider_account_profiles,
                             &account_owner_user_id,
                             &request.provider,
                             &request.account_profile,
+                            &self.config,
                         )
                     },
                 )?;
@@ -324,6 +325,58 @@ mod tests {
     }
 
     #[test]
+    fn token_launch_automatic_refresh_preserves_observation() {
+        crate::test_support::isolated_env_test!();
+        let root =
+            std::env::temp_dir().join(format!("claudesetup-usage-{:016x}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::env::set_var("CHARIOX_HOME", root.join("home"));
+        let registry = ProviderAccountProfileRegistry::open(root.join("profiles.json")).unwrap();
+        let profile = registry
+            .create_managed("local", "claude", "MP-08-token")
+            .unwrap();
+        let credential_id =
+            crate::provider::provider_account_credential_id("local", "claude", &profile.profile_id);
+        crate::credential::CharioxCredentialRegistry::user()
+            .unwrap()
+            .upsert(crate::config::UserCredentialConfig {
+                id: credential_id.clone(),
+                description: None,
+                source: crate::config::UserCredentialSourceConfig::Vault { key: credential_id },
+                allowed_hosts: vec![],
+                allowed_uses: vec![crate::config::UserCredentialUse::Provider],
+                injection: crate::config::UserCredentialInjectionConfig::Provider,
+                metadata: None,
+            })
+            .unwrap();
+        for alias in ["claude", "claude-p", "claude-headless"] {
+            refresh_provider_usage_before_launch(
+                &registry,
+                "local",
+                alias,
+                &profile.profile_id,
+                crate::session::unix_epoch_ms(),
+                || {
+                    crate::local::provider_requests::refresh_provider_account_profile_with_config(
+                        &registry,
+                        "local",
+                        alias,
+                        &profile.profile_id,
+                        &crate::config::DaemonConfig::for_tests(),
+                    )
+                },
+            )
+            .unwrap();
+            assert_eq!(registry.get("local", alias, &profile.profile_id).unwrap(), profile,
+                "MP-08/MP-11: the shared automatic refresh must preserve token state without a Vault read");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // MP-08/MP-11: OpenCode usage never gates admission (#1002: OpenCode owns its Go/Zen
+    // fallback), so the shared refresh-before-gate path is exercised with exhausted Codex
+    // usage and credits.
+    #[test]
     fn launch_refreshes_unobserved_usage_before_applying_the_capacity_gate() {
         let root = std::env::temp_dir().join(format!(
             "chariox-provider-launch-usage-refresh-{}-{}",
@@ -337,12 +390,12 @@ mod tests {
             .expect("default profiles should migrate");
         let profile = profiles
             .into_iter()
-            .find(|profile| profile.provider == "opencode")
-            .expect("OpenCode default should exist");
+            .find(|profile| profile.provider == "codex")
+            .expect("Codex default should exist");
         registry
             .update_observation(
                 "owner-a",
-                "opencode",
+                "codex",
                 &profile.profile_id,
                 ProviderAccountAuthState::Authenticated,
                 None,
@@ -357,38 +410,57 @@ mod tests {
         refresh_provider_usage_before_launch(
             &registry,
             "owner-a",
-            "opencode",
+            "codex",
             &profile.profile_id,
             now_ms,
             || {
                 refresh_count += 1;
                 registry.update_usage(
                     "owner-a",
-                    "opencode",
+                    "codex",
                     &profile.profile_id,
                     ProviderAccountUsageSnapshot {
                         profile_id: profile.profile_id.clone(),
-                        provider: "opencode".to_string(),
+                        provider: "codex".to_string(),
                         availability: ProviderAccountUsageAvailability::Available,
-                        meters: vec![ProviderAccountUsageMeter {
-                            meter_id: "go/monthly".to_string(),
-                            label: "OpenCode Go monthly".to_string(),
-                            service_id: Some("opencode-go".to_string()),
-                            kind: ProviderAccountUsageMeterKind::RollingLimit,
-                            scope: ProviderAccountUsageMeterScope::Plan,
-                            used_percent: Some(100.0),
-                            used: None,
-                            remaining: None,
-                            total: None,
-                            unit: None,
-                            window_duration_minutes: None,
-                            resets_at_ms: Some(now_ms + 60_000),
-                            state: ProviderAccountUsageMeterState::Exhausted,
-                            source: "test.go_usage".to_string(),
-                            observed_at_ms: now_ms,
-                        }],
+                        meters: vec![
+                            ProviderAccountUsageMeter {
+                                meter_id: "weekly".to_string(),
+                                label: "Codex weekly".to_string(),
+                                service_id: None,
+                                kind: ProviderAccountUsageMeterKind::RollingLimit,
+                                scope: ProviderAccountUsageMeterScope::Plan,
+                                used_percent: Some(100.0),
+                                used: None,
+                                remaining: None,
+                                total: None,
+                                unit: None,
+                                window_duration_minutes: None,
+                                resets_at_ms: Some(now_ms + 60_000),
+                                state: ProviderAccountUsageMeterState::Exhausted,
+                                source: "test.usage".to_string(),
+                                observed_at_ms: now_ms,
+                            },
+                            ProviderAccountUsageMeter {
+                                meter_id: "credits".to_string(),
+                                label: "Credits".to_string(),
+                                service_id: None,
+                                kind: ProviderAccountUsageMeterKind::CreditBalance,
+                                scope: ProviderAccountUsageMeterScope::Plan,
+                                used_percent: Some(100.0),
+                                used: None,
+                                remaining: None,
+                                total: None,
+                                unit: None,
+                                window_duration_minutes: None,
+                                resets_at_ms: Some(now_ms + 60_000),
+                                state: ProviderAccountUsageMeterState::Exhausted,
+                                source: "test.usage".to_string(),
+                                observed_at_ms: now_ms,
+                            },
+                        ],
                         observed_at_ms: Some(now_ms),
-                        source: "test.go_usage".to_string(),
+                        source: "test.usage".to_string(),
                         management_url: None,
                     },
                 )
@@ -400,13 +472,15 @@ mod tests {
         let blocked = registry
             .require_authenticated(
                 "owner-a",
-                "opencode",
+                "codex",
                 &profile.profile_id,
-                Some("opencode-go/deepseek-v4"),
+                Some("gpt-6-luna"),
                 "test.launch",
             )
-            .expect_err("fresh exhausted Go usage should block the launch");
-        assert!(blocked.to_string().contains("usage is exhausted"));
+            .expect_err("fresh exhausted usage should block the launch");
+        assert!(blocked
+            .to_string()
+            .contains("usage allowance and credits are exhausted"));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -426,12 +500,12 @@ mod tests {
             .migrate_effective_defaults("owner-a", &root.join("home"))
             .expect("default profiles should migrate")
             .into_iter()
-            .find(|profile| profile.provider == "opencode")
-            .expect("OpenCode default should exist");
+            .find(|profile| profile.provider == "codex")
+            .expect("Codex default should exist");
         registry
             .update_observation(
                 "owner-a",
-                "opencode",
+                "codex",
                 &profile.profile_id,
                 ProviderAccountAuthState::Authenticated,
                 None,
@@ -451,7 +525,7 @@ mod tests {
             refresh_provider_usage_before_launch(
                 &first_registry,
                 "owner-a",
-                "opencode",
+                "codex",
                 &first_profile_id,
                 now_ms,
                 || {
@@ -463,31 +537,50 @@ mod tests {
                         .expect("test should release the in-flight refresh");
                     first_registry.update_usage(
                         "owner-a",
-                        "opencode",
+                        "codex",
                         &first_profile_id,
                         ProviderAccountUsageSnapshot {
                             profile_id: first_profile_id.clone(),
-                            provider: "opencode".to_string(),
+                            provider: "codex".to_string(),
                             availability: ProviderAccountUsageAvailability::Available,
-                            meters: vec![ProviderAccountUsageMeter {
-                                meter_id: "go/monthly".to_string(),
-                                label: "OpenCode Go monthly".to_string(),
-                                service_id: Some("opencode-go".to_string()),
-                                kind: ProviderAccountUsageMeterKind::RollingLimit,
-                                scope: ProviderAccountUsageMeterScope::Plan,
-                                used_percent: Some(100.0),
-                                used: None,
-                                remaining: None,
-                                total: None,
-                                unit: None,
-                                window_duration_minutes: None,
-                                resets_at_ms: Some(now_ms + 60_000),
-                                state: ProviderAccountUsageMeterState::Exhausted,
-                                source: "test.go_usage".to_string(),
-                                observed_at_ms: now_ms,
-                            }],
+                            meters: vec![
+                                ProviderAccountUsageMeter {
+                                    meter_id: "weekly".to_string(),
+                                    label: "Codex weekly".to_string(),
+                                    service_id: None,
+                                    kind: ProviderAccountUsageMeterKind::RollingLimit,
+                                    scope: ProviderAccountUsageMeterScope::Plan,
+                                    used_percent: Some(100.0),
+                                    used: None,
+                                    remaining: None,
+                                    total: None,
+                                    unit: None,
+                                    window_duration_minutes: None,
+                                    resets_at_ms: Some(now_ms + 60_000),
+                                    state: ProviderAccountUsageMeterState::Exhausted,
+                                    source: "test.usage".to_string(),
+                                    observed_at_ms: now_ms,
+                                },
+                                ProviderAccountUsageMeter {
+                                    meter_id: "credits".to_string(),
+                                    label: "Credits".to_string(),
+                                    service_id: None,
+                                    kind: ProviderAccountUsageMeterKind::CreditBalance,
+                                    scope: ProviderAccountUsageMeterScope::Plan,
+                                    used_percent: Some(100.0),
+                                    used: None,
+                                    remaining: None,
+                                    total: None,
+                                    unit: None,
+                                    window_duration_minutes: None,
+                                    resets_at_ms: Some(now_ms + 60_000),
+                                    state: ProviderAccountUsageMeterState::Exhausted,
+                                    source: "test.usage".to_string(),
+                                    observed_at_ms: now_ms,
+                                },
+                            ],
                             observed_at_ms: Some(now_ms),
-                            source: "test.go_usage".to_string(),
+                            source: "test.usage".to_string(),
                             management_url: None,
                         },
                     )
@@ -510,7 +603,7 @@ mod tests {
             refresh_provider_usage_before_launch(
                 &second_registry,
                 "owner-a",
-                "opencode",
+                "codex",
                 &second_profile_id,
                 now_ms + 1,
                 || panic!("the concurrent launch must share the in-flight refresh"),
@@ -519,9 +612,9 @@ mod tests {
             let blocked = second_registry
                 .require_authenticated(
                     "owner-a",
-                    "opencode",
+                    "codex",
                     &second_profile_id,
-                    Some("opencode-go/deepseek-v4"),
+                    Some("gpt-6-luna"),
                     "test.concurrent_launch",
                 )
                 .is_err();

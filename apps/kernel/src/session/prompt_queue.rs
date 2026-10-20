@@ -71,6 +71,30 @@ impl PromptAttachment {
     pub fn contents_base64(&self) -> Option<&str> {
         self.contents_base64.as_deref()
     }
+
+    /// Text decoding shared by provider input and Room observation protection.
+    pub(crate) fn text_contents(&self) -> Option<String> {
+        use base64::Engine as _;
+        let textual = self.mime.starts_with("text/")
+            || matches!(
+                self.mime.as_str(),
+                "application/json"
+                    | "application/javascript"
+                    | "application/typescript"
+                    | "application/xml"
+                    | "application/yaml"
+                    | "application/x-yaml"
+            )
+            || self.mime.ends_with("+json")
+            || self.mime.ends_with("+xml");
+        if !textual {
+            return None;
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(self.contents_base64()?)
+            .ok()?;
+        String::from_utf8(bytes).ok()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -134,6 +134,10 @@ pub(super) fn spawn_claude_child(
 }
 
 pub(super) fn stop_child(child: &mut Child) {
+    // Signal only the exact child created by this runtime.
+    if child.id() <= 1 {
+        return;
+    }
     match child.try_wait() {
         Ok(Some(_)) => {}
         Ok(None) => {

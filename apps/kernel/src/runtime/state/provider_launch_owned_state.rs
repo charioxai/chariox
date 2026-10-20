@@ -93,6 +93,48 @@ impl KernelRuntimeOwnedState {
         self.attach_project_environment(request)
     }
 
+    // MP-08 / MP-10 / MP-11: a lease selects the transferred replica explicitly,
+    // before the common account authority resolves home aliases.
+    pub(super) fn prepare_leased_provider_launch_account(
+        &self,
+        mut request: crate::provider::LaunchProviderRequest,
+    ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+        if crate::provider::canonical_provider_family(&request.provider).is_none() {
+            return Ok(request);
+        }
+        let session = self.session_store.get_session(&request.session_id)?;
+        request.owner_user_id = request
+            .agent_id
+            .as_deref()
+            .map(|id| {
+                self.agent_store
+                    .get_agent(id)
+                    .map(|agent| agent.owner_user_id().to_string())
+            })
+            .transpose()?
+            .unwrap_or_else(|| session.owner_user_id().to_string());
+        let profile = self.provider_account_profiles.get(
+            &request.owner_user_id,
+            &request.provider,
+            &request.account_profile,
+        )?;
+        let selection = request.account_profile.clone();
+        request.account_profile = profile.profile_id;
+        let owner = request.owner_user_id.clone();
+        crate::account_profile::bind_provider_account_authority(&mut request, owner, selection);
+        Ok(request)
+    }
+
+    #[cfg(test)]
+    pub(super) fn prepare_leased_provider_launch_request(
+        &self,
+        request: crate::provider::LaunchProviderRequest,
+        runtime_mcp_url: String,
+    ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+        let request = self.prepare_leased_provider_launch_account(request)?;
+        self.prepare_provider_launch_request(request, runtime_mcp_url)
+    }
+
     pub(super) fn prepare_workflow_provider_launch_request(
         &self,
         request: crate::provider::LaunchProviderRequest,
@@ -1155,8 +1197,8 @@ mod tests {
             launch.provider_credential_env.is_empty(),
             "no Chariox-vault token is needed"
         );
-        // A setup token left in the vault from before is not read either, so
-        // the launch asks for no vault unlock; the native Claude TUI still may.
+        // MP-08 / MP-11: explicit token enrollment selects the Vault credential
+        // for every mode, even when a previous native login remains available.
         let credential_id = crate::provider::provider_account_credential_id(
             crate::session::DEFAULT_LOCAL_USER_ID,
             "claude",
@@ -1174,23 +1216,12 @@ mod tests {
                 metadata: None,
             })
             .expect("vault credential should register");
-        let profiles = app.lock().await.provider_account_profile_registry();
-        let uses_vault = |client_interface| {
-            crate::provider::launch_uses_vault_credential(
-                &profiles,
-                crate::session::DEFAULT_LOCAL_USER_ID,
-                "claude",
-                &profile.profile_id,
-                client_interface,
-            )
-            .expect("vault use should resolve")
-        };
-        assert!(!uses_vault(
-            crate::provider::ProviderClientInterface::Chariox
-        ));
-        assert!(uses_vault(
-            crate::provider::ProviderClientInterface::NativeTui
-        ));
+        assert!(crate::provider::provider_account_credential_uses_vault(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+        )
+        .expect("MP-08/MP-11: a registered credential requires Vault admission for every mode"));
         drop(app);
 
         std::env::remove_var("CHARIOX_HOME");
@@ -2162,5 +2193,254 @@ mod tests {
             metaagent_events,
             workspace_coordinator,
         )
+    }
+    #[tokio::test]
+    async fn leased_launch_keeps_the_home_replica_namespace_on_a_same_owner_worker() {
+        crate::test_support::isolated_env_test!();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-leased-account-launch-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let worktree = root.join("workspace");
+        std::fs::create_dir_all(&worktree).unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "shared-cloud-owner".into(),
+            ..Default::default()
+        });
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let registry = app.provider_account_profile_registry();
+        let profile = registry
+            .create_managed("shared-cloud-owner", "codex", "Home replica fixture")
+            .unwrap();
+        let environment = registry
+            .resolve_environment("shared-cloud-owner", "codex", &profile.profile_id)
+            .unwrap();
+        std::fs::write(
+            Path::new(&environment["CODEX_HOME"]).join("auth.json"),
+            br#"{"tokens":{"access_token":"test"}}"#,
+        )
+        .unwrap();
+        let local_profile = registry
+            .create_managed("local", "codex", "Worker account fixture")
+            .unwrap();
+        let local_environment = registry
+            .resolve_environment("local", "codex", &local_profile.profile_id)
+            .unwrap();
+        std::fs::write(
+            Path::new(&local_environment["CODEX_HOME"]).join("auth.json"),
+            br#"{"tokens":{"access_token":"test"}}"#,
+        )
+        .unwrap();
+        registry
+            .update_observation(
+                "shared-cloud-owner",
+                "codex",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let mut worker = crate::app::RemoteLeaseRuntime::new(&mut app);
+        let lease = worker
+            .create_execution_lease(
+                "home-kernel",
+                "home-session",
+                "home-agent",
+                false,
+                "shared-cloud-owner",
+            )
+            .unwrap();
+        let backing = worker
+            .create_leased_agent(
+                &lease.id,
+                "codex",
+                &profile.profile_id,
+                Some("gpt-6.1-sol".into()),
+                None,
+                None,
+                None,
+                None,
+                Some(worktree.to_string_lossy().into_owned()),
+                None,
+            )
+            .unwrap();
+        let backing_agent = app.agents().get_agent(&backing.backing_agent_id).unwrap();
+        app.provider_account_profile_registry()
+            .require_agent_authenticated(&app.provider_account_authority_owner_for_agent(&backing_agent).unwrap(), &backing_agent, "leased prompt admission")
+            .expect(
+                "leased prompt admission must validate the home replica, not the worker account",
+            );
+        let activated = app
+            .prepare_app_provider_launch_request(
+                crate::provider::LaunchProviderRequest::new(
+                    &backing.backing_session_id,
+                    "codex",
+                    "codex",
+                    &profile.profile_id,
+                    "gpt-6.1-sol",
+                )
+                .with_agent_id(&backing.backing_agent_id)
+                .with_client_interface(crate::provider::ProviderClientInterface::NativeTui),
+                "leased compatibility activation",
+            )
+            .expect("compatibility activation also retains the replica namespace");
+        assert_eq!(activated.provider_account_env, environment);
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let request = crate::provider::LaunchProviderRequest::new(
+            &backing.backing_session_id,
+            "codex",
+            "codex",
+            &profile.profile_id,
+            "gpt-6.1-sol",
+        )
+        .with_agent_id(&backing.backing_agent_id);
+        let mut local_request = request.clone();
+        local_request.account_profile = local_profile.profile_id;
+        let home_prepared = runtime
+            .owned
+            .prepare_provider_launch_request(
+                local_request.clone(),
+                "http://127.0.0.1:43120/mcp".into(),
+            )
+            .expect("home launches still alias the Cloud owner to local accounts");
+        assert_eq!(home_prepared.provider_account_env, local_environment);
+        assert!(
+            runtime
+                .owned
+                .prepare_leased_provider_launch_request(
+                    local_request,
+                    "http://127.0.0.1:43120/mcp".into()
+                )
+                .is_err(),
+            "a missing replica must never fall back to the worker's own account"
+        );
+        let prepared = runtime.owned.prepare_leased_provider_launch_request(
+            request, "http://127.0.0.1:43120/mcp".into()
+        ).expect("the leased launch must resolve the home-owned replica, not the worker local namespace");
+        assert_eq!(prepared.owner_user_id, "shared-cloud-owner");
+        assert_eq!(prepared.provider_account_env, environment);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "leased-account-fixture",
+            &prepared,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "account scope fixture".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        runtime.owned.provider_run_projection.update(run.clone());
+        runtime
+            .owned
+            .provider_run_projection
+            .mark_leased_provider_run(run.id());
+        assert!(
+            runtime.owned.provider_account_allows_queued_prompt_advance(
+                &backing.backing_session_id,
+                &backing_agent,
+                "promote leased startup prompt",
+            ),
+            "a prompt queued during leased startup must retain the replica account scope"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn session_snapshot_remains_responsive_during_provider_launch_authority_lock() {
+        crate::test_support::isolated_env_test!();
+        let workspace =
+            std::env::temp_dir().join(format!("snapshot-launch-lock-{}", rand::random::<u64>()));
+        std::fs::create_dir(&workspace).expect("workspace");
+        let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                workspace.to_string_lossy(),
+                workspace.to_string_lossy(),
+            ))
+            .expect("session");
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "codex",
+            "codex",
+            "default",
+            "codex/gpt-6.1-sol",
+        )
+        .with_agent_id(agent.id());
+        let run = crate::provider::RuntimeProviderRun::new(
+            "launching-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "snapshot-launch-regression".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        runtime.owned.provider_run_projection.update(run.clone());
+        let store = runtime.owned.provider_store.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _authority = store.write();
+            ready_tx.send(()).expect("announce held launch authority");
+            let _ = release_rx.recv_timeout(std::time::Duration::from_secs(1));
+        });
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("authority held");
+        let started = std::time::Instant::now();
+        let snapshot = runtime
+            .owned
+            .session_snapshot(session.id())
+            .expect("snapshot");
+        let elapsed = started.elapsed();
+        let _ = release_tx.send(());
+        holder.join().expect("authority released");
+        std::fs::remove_dir(&workspace).expect("remove test workspace");
+        assert_eq!(snapshot.active_provider_run_id(), Some("launching-run"));
+        assert!(elapsed < std::time::Duration::from_millis(150),
+            "presentation must use the existing projection while launch authority is held: {elapsed:?}");
+        // Once authority is available, its newer lifecycle state wins over the
+        // cached Starting projection.
+        let mut current = run;
+        current.mark_parked();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(current);
+        assert_eq!(
+            runtime
+                .owned
+                .session_snapshot(session.id())
+                .unwrap()
+                .active_provider_run_id(),
+            None
+        );
     }
 }

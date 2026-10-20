@@ -82,6 +82,7 @@ const CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 const MANAGED_SLICE_ACTIVATION_CONFIRMATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const MANAGED_SLICE_ACTIVATION_CONFIRMATION_RETRY_DELAY: Duration = Duration::from_millis(250);
 const CLOUD_RELAY_PRESENCE_JITTER_SPREAD_MS: u64 = 5_000;
+const RELAY_RECEIPT_STALL_LIMIT: Duration = Duration::from_secs(30);
 const RELAY_RECONNECT_BASE_DELAY_MS: u64 = 500;
 const RELAY_RECONNECT_MAX_DELAY_MS: u64 = 5_000;
 const RELAY_RECONNECT_JITTER_SPREAD_MS: u64 = 500;
@@ -219,14 +220,33 @@ where
         RelayConfigContinuity::Continue => Ok(None),
         RelayConfigContinuity::Reconnect(reason) => Err(reason),
         RelayConfigContinuity::Reauthenticate => {
-            let registration = registration().await;
-            if config.relay_token.as_deref() != Some(registration.auth_token.as_str()) {
-                return Err("relay token changed while building registration");
-            }
+            let mut registration = registration().await;
+            // MP-08/MP-10/MP-11: registration may read a newer config while
+            // awaiting runtime metadata. Authenticate the credential belonging
+            // to this continuity snapshot, then pick up further renewal on the
+            // next heartbeat. Never close a live socket for that harmless race.
+            registration.auth_token = config.relay_token.clone().ok_or("relay token missing")?;
             *active_relay_token = registration.auth_token.clone();
             Ok(Some(registration))
         }
     }
+}
+
+/// A burst of inbound chunks may briefly outrun the writer; wait for it rather
+/// than dropping a socket that is carrying a long transfer.
+async fn queue_transport_receipt(tx: &mpsc::Sender<String>, receipt: String) -> bool {
+    let Err(mpsc::error::TrySendError::Full(receipt)) = tx.try_send(receipt) else {
+        return true;
+    };
+    crate::logging::warn_with_fields(
+        "daemon.relay_client",
+        "relay receipt queue full; waiting for the writer",
+        serde_json::json!({ "capacity": tx.max_capacity() }),
+    );
+    matches!(
+        timeout(RELAY_RECEIPT_STALL_LIMIT, tx.send(receipt)).await,
+        Ok(Ok(()))
+    )
 }
 
 fn abort_leased_projection_pump_task(task: &mut Option<JoinHandle<()>>) {
@@ -647,6 +667,13 @@ async fn run_daemon_relay_connector_inner(
             }
         };
     let command_sequence = Arc::new(AtomicU64::new(1));
+    let local_browser = LocalBrowserDirect::new(
+        Arc::clone(&router),
+        Arc::clone(&command_sequence),
+        Arc::clone(&event_runtime),
+        Arc::clone(&command_result_cache),
+        shutdown.clone(),
+    );
     let mut missing_relay_config_reported = false;
     let mut reconnect_attempt = 0_u32;
 
@@ -1092,7 +1119,17 @@ async fn run_daemon_relay_connector_inner(
                                     let (payload, receipt) = relay_frames.receive(&payload).unwrap_or_else(|_| (
                                         Some("{\"kind\":\"close\",\"reason\":\"invalid relay transport frame\"}".to_string()), None));
                                     if let Some(receipt) = receipt {
-                                        if transport_receipt_tx.try_send(receipt).is_err() { break "relay receipt queue saturated"; }
+                                        if !queue_transport_receipt(&transport_receipt_tx, receipt).await {
+                                            abort_leased_projection_pump_task(
+                                                &mut leased_projection_pump_task,
+                                            );
+                                            abort_inventory_refresh_task(&mut inventory_refresh_task);
+                                            abort_subscription_tasks(&router, &subscription_tasks).await;
+                                            writer_task.abort();
+                                            clear_remote_inventory_projection(&router);
+                                            disconnect_relay(&router, &state, "relay receipt writer stalled", static_relay.is_none()).await;
+                                            break "relay receipt writer stalled";
+                                        }
                                     }
                                     let Some(payload) = payload else { continue; };
 
@@ -1106,6 +1143,7 @@ async fn run_daemon_relay_connector_inner(
                                             event_runtime: &event_runtime,
                                             command_result_cache: &command_result_cache,
                                             reconnect_gate: &reconnect_gate,
+                                            local_browser: &local_browser,
                                         },
                                         static_relay.is_none().then_some((
                                             relay_url.as_str(),

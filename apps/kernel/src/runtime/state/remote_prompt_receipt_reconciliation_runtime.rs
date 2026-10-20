@@ -287,6 +287,7 @@ impl KernelRuntimeState {
                     &dispatch.session_id,
                     &dispatch.agent_id,
                     &dispatch.source_attachment_id,
+                    Some(&dispatch.prompt_id),
                     None,
                 )
                 .await?;

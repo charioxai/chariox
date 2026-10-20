@@ -70,10 +70,10 @@ async fn a02_r8_structured_receipt_follows_actual_replacement_run() {
             .write()
             .insert_run_for_test(replacement.clone());
         dispatch.provider_run_id = replacement.id().into();
-        assert!(runtime
+        assert_eq!(runtime
             .enqueue_prompt_dispatch_after_liveness_with_acceptance(&dispatch, &runtime.owned)
             .await
-            .unwrap());
+            .unwrap(), super::super::PromptDispatchAcceptance::Submitted);
         let finished = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if let Some(job) = runtime

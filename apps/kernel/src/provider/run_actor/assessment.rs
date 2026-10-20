@@ -33,7 +33,7 @@ pub(super) fn execute_assessment(
         .map_or(envelope.visible_user_prompt.as_str(), |p| p.as_str());
     let output = if assessment.adapter_key() == "claude" {
         super::command_execution::execute_utility_command(
-            registry, assessment, envelope, timeout, policy,
+            registry, assessment, envelope, timeout, policy, None, None,
         )?
     } else {
         crate::provider::run_blocking_provider_utility_prompt(

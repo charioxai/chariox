@@ -178,6 +178,29 @@ impl ProviderProcessServiceStore {
         self.read().get_run(run_id)
     }
 
+    /// Presentation may use its last published projection while credential-bearing
+    /// launch holds the authority mutex. Admission and run mutation must keep using
+    /// the blocking authority reads.
+    pub(crate) fn try_get_run_for_projection(&self, run_id: &str) -> Option<RuntimeProviderRun> {
+        match self.inner.try_lock() {
+            Ok(service) => service.get_run(run_id).ok(),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+            Err(std::sync::TryLockError::Poisoned(_)) => panic!("provider service mutex poisoned"),
+        }
+    }
+
+    pub(crate) fn try_get_agent_run_for_projection(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<RuntimeProviderRun> {
+        match self.inner.try_lock() {
+            Ok(service) => service.get_run_for_agent(session_id, agent_id),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+            Err(std::sync::TryLockError::Poisoned(_)) => panic!("provider service mutex poisoned"),
+        }
+    }
+
     #[doc(hidden)]
     pub fn structured_runtime_state_bound_for_tests(&self, provider_run_id: &str) -> bool {
         self.read()
@@ -505,13 +528,39 @@ impl ProviderProcessServiceStore {
         timeout: std::time::Duration,
         policy: super::super::ProviderUtilityExecutionPolicy,
     ) -> Result<String, DaemonError> {
-        self.write().run_structured_utility_prompt(
+        self.run_structured_utility_prompt_with_admission(
             run,
             visible_user_prompt,
             hidden_system_context,
             timeout,
             policy,
+            None,
         )
+    }
+
+    pub(crate) fn run_structured_utility_prompt_with_admission(
+        &self,
+        run: &RuntimeProviderRun,
+        visible_user_prompt: &str,
+        hidden_system_context: &str,
+        timeout: std::time::Duration,
+        policy: super::super::ProviderUtilityExecutionPolicy,
+        admission: Option<crate::provider::ProviderUtilityAdmission>,
+    ) -> Result<String, DaemonError> {
+        let response_rx = self.write().enqueue_structured_utility_prompt(
+            run,
+            visible_user_prompt,
+            hidden_system_context,
+            timeout,
+            policy,
+            admission,
+        )?;
+        response_rx
+            .recv()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "run structured utility prompt",
+                message: format!("provider run actor utility response failed: {error}"),
+            })?
     }
 
     pub(crate) fn enqueue_structured_prompt_abort(

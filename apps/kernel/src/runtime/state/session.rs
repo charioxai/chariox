@@ -107,13 +107,12 @@ impl KernelRuntimeOwnedState {
             session,
             |provider_run_id| {
                 self.provider_store
-                    .get_run(provider_run_id)
-                    .ok()
+                    .try_get_run_for_projection(provider_run_id)
                     .or_else(|| self.provider_run_projection.get(provider_run_id))
             },
             |agent_id| {
                 self.provider_store
-                    .get_run_for_agent(session.id(), agent_id)
+                    .try_get_agent_run_for_projection(session.id(), agent_id)
                     .or_else(|| {
                         self.provider_run_projection
                             .get_for_agent(session.id(), agent_id)

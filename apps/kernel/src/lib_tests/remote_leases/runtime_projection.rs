@@ -160,6 +160,17 @@ fn native_worker_snapshot_can_establish_run_binding_without_home_dispatch() {
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .unwrap();
+    // `chariox codex` on the worker belongs to a home Codex agent.
+    app.agents()
+        .set_agent_runtime_profile_with_account_profile(
+            agent.id(),
+            "codex",
+            None,
+            None,
+            Some("default".into()),
+            Default::default(),
+        )
+        .unwrap();
     app.agents()
         .bind_remote_execution(
             agent.id(),

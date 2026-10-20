@@ -226,3 +226,31 @@ test("MP-08 MP-10 kernel settlement is prompt scoped, exact once, and preserves 
   assert.equal(broadcasts.filter(m => messageMethod(m) === "turn/started").length, 1)
   assert.equal(broadcasts.filter(m => messageMethod(m) === "item/completed").length, 1)
 })
+
+for (const delayedDrain of [false, true]) {
+  test(`MP-08/MP-11 recovers skipped predecessor settlement with ${delayedDrain ? "delayed" : "same-batch"} output`, async () => {
+    const broadcasts: any[] = []
+    const lookups: string[][] = []
+    const projection = createCodexKernelOutputProjection({
+      agentId: "agent-1", broadcast: message => broadcasts.push(message), debug: () => {},
+      resolveSettledPrompts: async ids => {
+        lookups.push(ids)
+        return new Map([["A", { completedAtMs: 2000, status: "cancelled" as const }]])
+      },
+    })
+    projection.setThreadId("display")
+    const output = (promptId: string, timestamp: number) => ({ agent_id: "agent-1", prompt_id: promptId,
+      timestamp_ms: timestamp, kind: "provider_output" as const, bytes: [...Buffer.from(promptId)] })
+    if (delayedDrain) projection.project([output("A", 1000)])
+    projection.project([...(delayedDrain ? [] : [output("A", 1000)]), output("B", 3000), output("newer", 1000)])
+    const activity = { last_completed_turn: { agent_id: "agent-1", prompt_id: "B", completed_at_ms: 4000, settlement_status: "completed" } } as never
+    await projection.projectAgentActivity(activity)
+    await projection.projectAgentActivity(activity)
+    const completed = broadcasts.filter(message => message.method === "turn/completed")
+    assert.equal(completed.length, 2)
+    assert.deepEqual(completed.map(message => message.params.turn.status).sort(), ["completed", "interrupted"])
+    assert.deepEqual(lookups, [["A"]])
+    projection.project([output("newer", 5000)])
+    assert.equal(broadcasts.filter(message => message.method === "turn/started").length, 3)
+  })
+}

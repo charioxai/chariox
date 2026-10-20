@@ -1,10 +1,12 @@
-use crate::account_profile::{
-    ProviderAccountAuthState, ProviderAccountMaterialization, ProviderAccountProfile,
-};
+#[cfg(test)]
+use crate::account_profile::{ProviderAccountMaterialization, ProviderAccountProfile};
 use crate::error::DaemonError;
 use crate::transport::relay_peer::RemoteProviderAccountSyncContext;
 
 use super::RemoteLeaseRuntime;
+
+mod provisioning;
+use provisioning::RemoteProviderAccountProvisioning;
 
 impl RemoteLeaseRuntime<'_> {
     pub(super) fn resolve_leased_profile_account(
@@ -34,11 +36,36 @@ impl RemoteLeaseRuntime<'_> {
             })
     }
 
+    #[cfg(test)]
     pub(crate) fn ensure_remote_provider_account(
         &mut self,
         context: RemoteProviderAccountSyncContext,
-        mut materialization: ProviderAccountMaterialization,
+        materialization: ProviderAccountMaterialization,
     ) -> Result<ProviderAccountProfile, DaemonError> {
+        self.prepare_remote_provider_account(context, &materialization.profile.owner_user_id)?
+            .run(materialization)
+    }
+
+    pub(crate) fn prepare_remote_provider_account(
+        &self,
+        context: RemoteProviderAccountSyncContext,
+        owner_user_id: &str,
+    ) -> Result<RemoteProviderAccountProvisioning, DaemonError> {
+        let lease = self.validate_remote_provider_account_context(&context, owner_user_id)?;
+        Ok(RemoteProviderAccountProvisioning {
+            registry: self.app.provider_account_profile_registry(),
+            durable_state: self.app.durable_state_store(),
+            config: self.app.config().clone(),
+            lease,
+            context,
+        })
+    }
+
+    pub(crate) fn validate_remote_provider_account_context(
+        &self,
+        context: &RemoteProviderAccountSyncContext,
+        owner_user_id: &str,
+    ) -> Result<crate::execution_lease::ExecutionLease, DaemonError> {
         let lease = self
             .app
             .execution_leases
@@ -58,7 +85,7 @@ impl RemoteLeaseRuntime<'_> {
                         .to_string(),
             });
         }
-        if lease.owner_user_id != materialization.profile.owner_user_id {
+        if lease.owner_user_id != owner_user_id {
             return Err(DaemonError::LocalTransport {
                 operation: "ensure remote provider account",
                 message:
@@ -66,191 +93,15 @@ impl RemoteLeaseRuntime<'_> {
                         .to_string(),
             });
         }
-        if crate::provider::canonical_provider_family(&materialization.profile.provider)
-            == Some("claude")
-            && materialization
-                .files
-                .iter()
-                .any(|file| file.relative_path == ".credentials.json")
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "ensure remote provider account",
-                message: "Claude provider credentials cannot be materialized on a remote worker; use the kernel-managed Chariox-vault setup-token launch path".to_string(),
-            });
-        }
-
-        self.app
-            .provider_account_profile_registry()
-            .reconcile_materialized_replica_rollback(
-                &lease.owner_user_id,
-                &materialization.profile.provider,
-                &materialization.profile.profile_id,
-            )?;
-
-        let existing_profiles = self.app.provider_account_profile_registry().list(
-            &lease.owner_user_id,
-            Some(&materialization.profile.provider),
-        )?;
-        if let Some(profile) = existing_profiles
-            .iter()
-            .find(|profile| profile.profile_id == materialization.profile.profile_id)
-            .cloned()
-        {
-            let legacy_unpinned = self
-                .app
-                .provider_account_profile_registry()
-                .is_legacy_unpinned_replica(
-                    &lease.owner_user_id,
-                    &profile.provider,
-                    &profile.profile_id,
-                )?;
-            if !legacy_unpinned {
-                return self.validate_remote_provider_account(profile);
-            }
-            let registry = self.app.provider_account_profile_registry();
-            let observed_identity = registry.legacy_replica_root_identity(
-                &lease.owner_user_id,
-                &profile.provider,
-                &profile.profile_id,
-            )?;
-            // An old persisted auth state cannot validate the current worker root.
-            // Only a fresh native observation may retain or replace that root.
-            crate::local::provider_requests::observe_provider_auth_status(
-                &registry,
-                &lease.owner_user_id,
-                &profile.provider,
-                &profile.profile_id,
-            )?;
-            let observed =
-                registry.get(&lease.owner_user_id, &profile.provider, &profile.profile_id)?;
-            if observed.auth_state == ProviderAccountAuthState::Authenticated {
-                let validated = registry.require_authenticated(
-                    &lease.owner_user_id,
-                    &profile.provider,
-                    &profile.profile_id,
-                    None,
-                    "ensure remote provider account",
-                )?;
-                let observed_identity = observed_identity.ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "ensure remote provider account",
-                    message: "authenticated legacy account root was absent before provider observation".to_string(),
-                })?;
-                registry.pin_validated_legacy_replica(
-                    &lease.owner_user_id,
-                    &profile.provider,
-                    &profile.profile_id,
-                    observed_identity,
-                )?;
-                return Ok(validated);
-            }
-            let retained = registry.retain_failed_legacy_replica(
-                &lease.owner_user_id,
-                &profile.provider,
-                &profile.profile_id,
-                observed_identity,
-            )?;
-            if let Some(path) = retained {
-                tracing::warn!(
-                    path = %path.display(),
-                    "failed legacy provider account retained before fresh materialization"
-                );
-            }
-        }
-        materialization.profile.origin =
-            crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated;
-        let (profile, previous_default_profile_id) =
-            self.app
-                .provider_account_profile_registry()
-                .materialize_replica_with_rollback_state(&lease.owner_user_id, &materialization)?;
-        let profile = match self.validate_remote_provider_account(profile) {
-            Ok(profile) => profile,
-            Err(error) => {
-                if let Err(rollback_error) = self
-                    .app
-                    .provider_account_profile_registry()
-                    .rollback_materialized_replica_restoring_default(
-                        &lease.owner_user_id,
-                        &materialization.profile.provider,
-                        &materialization.profile.profile_id,
-                        previous_default_profile_id.as_deref(),
-                    )
-                {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "ensure remote provider account",
-                        message: format!(
-                            "{error}; additionally failed to roll back the new provider-account replica: {rollback_error}"
-                        ),
-                    });
-                }
-                return Err(error);
-            }
-        };
-        self.app
-            .provider_account_profile_registry()
-            .mark_materialized_replica_validated(
-                &lease.owner_user_id,
-                &materialization.profile.provider,
-                &materialization.profile.profile_id,
-            )?;
-        self.app
-            .provider_account_profile_registry()
-            .record_credential_copy(
-                &lease.owner_user_id,
-                &materialization,
-                &context.home_kernel_id,
-            )?;
-        self.app.durable_state_store().append_event(
-            "provider_account.materialized",
-            Some(lease.id),
-            serde_json::json!({
-                "owner_user_id": profile.owner_user_id,
-                "provider": profile.provider,
-                "profile_id": profile.profile_id,
-                "source_home_kernel_id": context.home_kernel_id,
-            }),
-        )?;
-        Ok(profile)
+        Ok(lease)
     }
-
-    fn validate_remote_provider_account(
-        &self,
-        profile: ProviderAccountProfile,
-    ) -> Result<ProviderAccountProfile, DaemonError> {
-        if !remote_provider_account_requires_auth_validation(&profile.provider, profile.auth_state)
-        {
-            return Ok(profile);
-        }
-        let registry = self.app.provider_account_profile_registry();
-        crate::local::provider_requests::observe_provider_auth_status(
-            &registry,
-            &profile.owner_user_id,
-            &profile.provider,
-            &profile.profile_id,
-        )?;
-        registry.require_authenticated(
-            &profile.owner_user_id,
-            &profile.provider,
-            &profile.profile_id,
-            None,
-            "ensure remote provider account",
-        )
-    }
-}
-
-fn remote_provider_account_requires_auth_validation(
-    provider: &str,
-    auth_state: ProviderAccountAuthState,
-) -> bool {
-    // Claude refresh credentials never cross this boundary. Its official CLI
-    // is authenticated at launch through the existing vaulted setup-token
-    // path, so preserve that separate handoff contract.
-    crate::provider::canonical_provider_family(provider) != Some("claude")
-        && auth_state != ProviderAccountAuthState::Authenticated
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::account_profile::ProviderAccountAuthState;
+    use provisioning::remote_provider_account_requires_auth_validation;
 
     #[cfg(unix)]
     fn install_opencode_auth_fixture(root: &std::path::Path) -> impl Drop {
@@ -284,11 +135,24 @@ mod tests {
             r#"#!/bin/sh
 set -eu
 if [ "$#" -ge 2 ] && [ "$1" = "auth" ] && [ "$2" = "list" ]; then
+  if [ -f "$(dirname "$0")/require-quiescent-auth-probe" ] && [ "${OPENCODE_DISABLE_MODELS_FETCH-}" != "1" ]; then
+    mkdir -p "$XDG_STATE_HOME/opencode"
+    : > "$XDG_STATE_HOME/opencode/abandoned-model-refresh"
+  fi
   if [ -f "$XDG_DATA_HOME/opencode/auth.json" ]; then
     printf '%s\n' '1 credential'
   else
     printf '%s\n' 'No credentials'
   fi
+  exit 0
+fi
+if [ "$#" -eq 2 ] && [ "$1" = "models" ] && [ "$2" = "--refresh" ]; then
+  if [ -f "$(dirname "$0")/require-quiescent-auth-probe" ]; then
+    [ ! -f "$XDG_STATE_HOME/opencode/abandoned-model-refresh" ] || exit 3
+    [ "${OPENCODE_DISABLE_MODELS_FETCH-}" != "1" ] || exit 4
+    : > "$(dirname "$0")/explicit-refresh-observed"
+  fi
+  printf '%s\n' 'openai/gpt-6.1-sol' 'opencode-go/claude-haiku-5-5' 'opencode/claude-haiku-5-5'
   exit 0
 fi
 if [ "$#" -ge 1 ] && [ "$1" = "--version" ]; then
@@ -587,6 +451,46 @@ exit 2
         assert!(profiles
             .iter()
             .all(|profile| profile.profile_id != "failed-c"));
+    }
+
+    // MP-08 / MP-10 / MP-11: a short auth probe must not strand native
+    // background refresh ownership ahead of the explicit worker catalog warmup.
+    #[cfg(unix)]
+    #[test]
+    fn opencode_auth_probe_does_not_strand_the_next_explicit_catalog_refresh() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-remote-opencode-quiescent-probe-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let _cleanup = install_opencode_auth_fixture(&root);
+        std::fs::write(root.join("require-quiescent-auth-probe"), "").unwrap();
+        let (mut app, context) = remote_account_fixture(&root);
+        let materialization = ProviderAccountMaterialization {
+            profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                owner_user_id: "owner-a".into(),
+                provider: "opencode".into(),
+                profile_id: "quiescent-probe".into(),
+                label: "OpenCode Zen".into(),
+                origin: crate::account_profile::ProviderAccountProfileOrigin::Linked,
+                is_default: false,
+            },
+            files: vec![crate::account_profile::ProviderAccountMaterializationFile {
+                relative_path: "data/opencode/auth.json".into(),
+                contents_base64: "eyJvcGVuY29kZSI6eyJ0eXBlIjoiYXBpIiwia2V5IjoiemVuLXNlY3JldCJ9fQ=="
+                    .into(),
+            }],
+            generated_at_ms: 1,
+        };
+        let profile = RemoteLeaseRuntime::new(&mut app)
+            .ensure_remote_provider_account(context, materialization)
+            .expect("the auth probe must leave explicit native catalog refresh runnable");
+        assert_eq!(profile.auth_state, ProviderAccountAuthState::Authenticated);
+        assert!(profile.last_validated_at_ms.is_some());
+        assert!(root.join("explicit-refresh-observed").exists());
     }
 
     #[cfg(unix)]

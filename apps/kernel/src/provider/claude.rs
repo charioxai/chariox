@@ -11,6 +11,7 @@ use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchRe
 
 use super::executable_resolution::ExecutableResolutionState;
 
+mod auth_probe;
 mod catalog;
 mod launch_args;
 mod mcp_config;
@@ -18,18 +19,21 @@ mod native_tui;
 mod usage_capture;
 mod usage_probe;
 
+pub(crate) use auth_probe::verify_claude_setup_token;
 pub use catalog::claude_provider_catalog;
+pub(crate) use catalog::claude_provider_catalog_with_environment;
 use catalog::CLAUDE_HEADLESS_PROVIDER_ID;
 pub(crate) use launch_args::claude_args_with_execution_config;
 use launch_args::claude_launch_args;
 #[cfg(test)]
 pub(crate) use mcp_config::CLAUDE_MCP_CONFIG_PLACEHOLDER;
 pub(crate) use mcp_config::{materialize_runtime_claude_mcp_config, ClaudeMcpConfigFile};
-use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
 pub(crate) use native_tui::{
-    ensure_claude_native_hidden_context_fits, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
+    claude_native_hidden_context_room, ensure_claude_native_hidden_context_fits,
+    fit_claude_native_hidden_context, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
     CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
 };
+use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
 pub(crate) use usage_probe::{
     probe_claude_account_usage, verify_claude_account_credential, ClaudeCredentialCheckError,
 };
@@ -143,6 +147,7 @@ fn plan_claude_launch_unlocked(
             "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
             native.context_file.display().to_string(),
         );
+        pty_env.insert("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS".into(), "1".into());
         pty_env.insert(
             "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
             native.context_response_dir.display().to_string(),
@@ -194,6 +199,7 @@ fn plan_claude_launch_unlocked(
             "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
             native.context_file.display().to_string(),
         );
+        pty_env.insert("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS".into(), "1".into());
         pty_env.insert(
             "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
             native.context_response_dir.display().to_string(),
@@ -243,6 +249,10 @@ fn plan_claude_launch_unlocked(
     let mut pty_env = claude_process_env();
     pty_env.extend(request.provider_account_env.clone());
     pty_env.insert(
+        "CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE".into(),
+        "dispatched".into(),
+    );
+    pty_env.insert(
         "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
         native.events_file.display().to_string(),
     );
@@ -250,6 +260,7 @@ fn plan_claude_launch_unlocked(
         "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
         native.context_file.display().to_string(),
     );
+    pty_env.insert("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS".into(), "1".into());
     pty_env.insert(
         "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
         native.context_response_dir.display().to_string(),
@@ -750,16 +761,16 @@ mod tests {
         );
         assert_eq!(
             catalog.default.get("claude-headless").map(String::as_str),
-            Some("sonnet")
+            Some("claude-sonnet-5-5")
         );
         assert_eq!(
             catalog.default.get("claude-p").map(String::as_str),
-            Some("sonnet")
+            Some("claude-sonnet-5-5")
         );
         let models = &catalog.all[0].models;
-        assert!(models.contains_key("haiku"));
-        assert!(models.contains_key("sonnet"));
-        assert!(models.contains_key("opus"));
+        assert!(!models.contains_key("haiku"));
+        assert!(!models.contains_key("sonnet"));
+        assert!(!models.contains_key("opus"));
         assert!(models.contains_key("claude-sonnet-4-6"));
         assert_eq!(
             models
@@ -868,6 +879,13 @@ mod tests {
         assert_eq!(
             launch
                 .pty_env
+                .get("CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE")
+                .map(String::as_str),
+            Some("dispatched")
+        );
+        assert_eq!(
+            launch
+                .pty_env
                 .get("DISABLE_AUTOUPDATER")
                 .map(String::as_str),
             Some("1")
@@ -913,6 +931,9 @@ mod tests {
         assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
         assert_eq!(launch.process_label, "claude:headless");
         assert_eq!(launch.structured_endpoint, None);
+        assert!(!launch
+            .pty_env
+            .contains_key("CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE"));
         assert!(!launch.pty_args.iter().any(|arg| arg == "-p"));
         assert!(!launch.pty_args.iter().any(|arg| arg == "stream-json"));
         assert!(launch

@@ -1,4 +1,3 @@
-import process from "node:process"
 import { setTimeout as sleep } from "node:timers/promises"
 
 import type { RuntimeProviderRun } from "../cli-types.js"
@@ -7,25 +6,6 @@ import {
   getNativeProviderRun,
   requestNativeProviderRunLaunch,
 } from "./provider-run-control.js"
-
-export async function launchClaudeNativeRun(
-  client: LocalIpcClient,
-  sessionId: string,
-  agentId: string,
-  model: string,
-  effort: string,
-): Promise<RuntimeProviderRun> {
-  return requestNativeProviderRunLaunch(client, {
-    sessionId,
-    provider: "claude",
-    model,
-    effort,
-    agentId,
-    native: {
-      structuredEndpoint: `native://claude/${process.pid}`,
-    },
-  })
-}
 
 export async function launchClaudeRemoteRenderedRun(
   client: LocalIpcClient,
@@ -65,20 +45,22 @@ export async function waitForClaudeProviderRunReady(
 export async function waitForClaudeRemoteRenderedRunExit(
   client: LocalIpcClient,
   providerRunId: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   let sawProviderRun = false
   while (true) {
+    signal?.throwIfAborted()
     const run = await getProviderRunIfAvailable(client, providerRunId).catch((error) => {
-      if (sawProviderRun) throw error
+      if (sawProviderRun || signal?.aborted) throw error
       return null
     })
     if (!run) {
-      await sleep(500)
+      await sleep(500, undefined, { signal })
       continue
     }
     sawProviderRun = true
     if (run.state === "Ended") return
-    await sleep(1_000)
+    await sleep(1_000, undefined, { signal })
   }
 }
 

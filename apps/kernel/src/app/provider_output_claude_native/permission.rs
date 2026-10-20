@@ -308,20 +308,44 @@ fn compact_claude_permission_text(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
+pub(super) fn validate_context_request_id(
+    request_id: &str,
+) -> Result<(), crate::error::DaemonError> {
+    if request_id.is_empty()
+        || !request_id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
+        return Err(crate::error::DaemonError::LocalTransport {
+            operation: "claude_hook_context_response",
+            message: "Invalid native context response request id".into(),
+        });
+    }
+    Ok(())
+}
+
 pub(super) fn write_claude_hook_context_response(
     context_file: &str,
     request_id: &str,
     context: &str,
-) {
-    if request_id.trim().is_empty() {
-        return;
-    }
-    let Some(root) = std::path::Path::new(context_file).parent() else {
-        return;
+) -> Result<(), crate::error::DaemonError> {
+    let error = |message: String| crate::error::DaemonError::LocalTransport {
+        operation: "claude_hook_context_response",
+        message,
     };
+    validate_context_request_id(request_id)?;
+    let root = std::path::Path::new(context_file)
+        .parent()
+        .ok_or_else(|| error("Missing native context response directory".into()))?;
     let dir = root.join("hook-context-responses");
-    let _ = fs::create_dir_all(&dir);
-    let _ = fs::write(dir.join(format!("{request_id}.txt")), context);
+    fs::create_dir_all(&dir).map_err(|e| error(e.to_string()))?;
+    let pending = dir.join(format!("{request_id}.tmp"));
+    let response = dir.join(format!("{request_id}.txt"));
+    let result = fs::write(&pending, context).and_then(|()| fs::rename(&pending, &response));
+    if result.is_err() {
+        let _ = fs::remove_file(&pending);
+    }
+    result.map_err(|e| error(e.to_string()))
 }
 
 pub(super) fn write_claude_permission_response(
@@ -514,6 +538,9 @@ pub(super) fn claude_rendered_permission_details(text: &str) -> String {
 /// Select Yes using the rendered selector, including an explicit highlighted
 /// row. Without a highlight, Claude starts on the first displayed choice.
 pub(super) fn claude_workspace_trust_approval_input(text: &str) -> Option<&'static [u8]> {
+    if !claude_headless_workspace_trust_visible(text) {
+        return None;
+    }
     let compact = normalize_claude_rendered_permission_text(text)
         .to_ascii_lowercase()
         .replace(' ', "");
@@ -752,5 +779,42 @@ mod approval_lifetime_tests {
             take_claude_permission_inputs(&context_file),
             vec![b"\r".to_vec()]
         );
+    }
+}
+
+#[cfg(test)]
+mod workspace_trust_selection_tests {
+    use super::claude_workspace_trust_approval_input;
+    #[test]
+    fn approval_selects_affirmative_choice_for_current_and_legacy_dialogs() {
+        for (choices, input) in [
+            (
+                "❯ No, exit\n  Yes, I trust this folder",
+                b"\x1b[B".as_slice(),
+            ),
+            (
+                "  Yes, I trust this folder\n❯ No, exit",
+                b"\x1b[A".as_slice(),
+            ),
+            (
+                "❯ 1. Yes, I trust this folder\n  2. No, exit",
+                b"\r".as_slice(),
+            ),
+            ("❯ Yes, I trust this folder\n  No, exit", b"\r".as_slice()),
+        ] {
+            let frame = format!("Quick safety check\nDo you trust this folder?\n{choices}");
+            assert_eq!(claude_workspace_trust_approval_input(&frame), Some(input));
+        }
+    }
+    #[test]
+    fn unknown_or_incomplete_choice_never_accepts_a_default() {
+        for frame in [
+            "Quick safety check Do you trust this folder? Yes, I trust this folder",
+            "Quick safety check ❯ No, exit",
+            "Quick safety check Do you trust this folder? ❯ Different choice Yes, I trust this folder",
+            "❯ No, exit Yes, I trust this folder",
+        ] {
+            assert!(claude_workspace_trust_approval_input(frame).is_none());
+        }
     }
 }

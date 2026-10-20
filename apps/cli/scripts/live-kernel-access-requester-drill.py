@@ -14,6 +14,7 @@ from pathlib import Path
 import pty
 import select
 import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -181,7 +182,7 @@ process.exitCode = result.status ?? 1;
         import shlex
         command = " ".join(shlex.quote(x) for x in [bun, str(helper), args.cli, str(state / "kernel.sock"), str(state / "requester.json")])
         prompt = "MP-08 / MP-10 / MP-11 real outside Codex requester drill. Run exactly " + command + ". Poll until it completes. The human will REFUSE the grant in the real TUI; this expected refusal is successful validation. Use only that command. Do not read credentials/config/token/vault files, approve anything, signal processes, or change logins. Exit after the refusal."
-        command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "--json", "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="low"', "-C", str(work), prompt]
+        command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "--json", "-m", "gpt-6-luna", "-c", 'model_reasoning_effort="low"', "-C", str(work), prompt]
         # Read only non-secret MCP server names; disable them for this invocation.
         config = Path(outside["CODEX_HOME"]) / "config.toml"
         servers = tomllib.loads(config.read_text()).get("mcp_servers", {}) if config.exists() else {}
@@ -192,7 +193,7 @@ process.exitCode = result.status ?? 1;
             command[1:1] = ["-c", "mcp_servers." + name + ".enabled=false"]
         requester = start(command, outside, "outside")
     end = time.monotonic() + 120
-    while "passkey request" not in frame() and "Grant external agent access" not in frame():
+    while "passkey request" not in frame() and "External agent access" not in frame():
         pump(.2)
         sample()
         if requester.poll() is not None:
@@ -205,23 +206,24 @@ process.exitCode = result.status ?? 1;
         if time.monotonic() > end:
             raise RuntimeError("MP-10 outside requester did not request grant")
     os.write(master, b"\x1b[19~")
-    await_text("Grant external agent access")
+    await_text("External agent access")
     capture("02-structured-requester-popup")
     labels = frame()
     if not args.local_cli:
         result["requester"] = json.loads((state / "requester.json").read_text())
-    if "Requester:" not in labels or "Executable:" not in labels or "Process start:" not in labels:
-        raise RuntimeError("MP-11 structured requester label absent")
-    if not args.local_cli:
-        identity = result["requester"]
-        if "Requester: Codex" not in labels or "PID " + str(identity["pid"]) not in labels or identity["process_start_id"] not in labels:
-            raise RuntimeError("MP-11 TUI requester differs from real Codex OS identity")
-        result["requester"] = identity
+    # EXT-UX-01: the owner sees one short question, never pid, path or process start.
+    # The supplementary local-CLI requester is the drill process itself: no harness name.
+    question = "An external agent wants access to Chariox. Allow?" if args.local_cli else "Codex (an external agent) wants access to Chariox. Allow?"
+    if question not in labels:
+        raise RuntimeError("EXT-UX-01 short grant question absent")
+    for hidden in ("Requester:", "Executable:", "Process start", "PID ", "Local kernel", "expires"):
+        if hidden in labels:
+            raise RuntimeError("EXT-UX-01 popup shows " + hidden)
     # Ctrl+R is the real refusal hotkey. No passkey is typed, and no login changes.
     os.write(master, b"\x12")
     pump(1)
     capture("03-refused-popup")
-    if "Grant external agent access" in frame():
+    if "External agent access" in frame():
         raise RuntimeError("MP-11 refused popup stayed open")
     requester.wait(timeout=45)
     diagnostics = (state / "outside.stderr").read_text() if args.local_cli else ""
@@ -260,18 +262,38 @@ finally:
         os.close(master)
     # Stop only descendants tagged with this exact lane-owned state; inspect only
     # public HOME/state paths, never credentials or arbitrary process environment.
-    remaining = []
-    for proc in Path("/proc").iterdir():
-        if not proc.name.isdigit() or int(proc.name) <= 1:
-            continue
-        try:
-            for item in (proc / "environ").read_bytes().split(b"\0"):
-                key, _, value = item.partition(b"=")
-                if key in (b"HOME", b"CHARIOX_HOME", b"TMPDIR") and value.decode("utf8", "replace").startswith(str(state) + "/"):
-                    remaining.append(int(proc.name))
-                    break
-        except (FileNotFoundError, PermissionError, ProcessLookupError):
-            pass
+    def owned_remaining():
+        found = []
+        for proc in Path("/proc").iterdir():
+            if not proc.name.isdigit() or int(proc.name) <= 1:
+                continue
+            try:
+                for item in (proc / "environ").read_bytes().split(b"\0"):
+                    key, _, value = item.partition(b"=")
+                    if key in (b"HOME", b"CHARIOX_HOME", b"TMPDIR") and value.decode("utf8", "replace").startswith(str(state) + "/"):
+                        found.append(int(proc.name))
+                        break
+            except (FileNotFoundError, PermissionError, ProcessLookupError):
+                pass
+        return found
+
+    # The launcher's own children (TUI, provider app-server) can outlive it. Stop only processes
+    # tagged with this exact lane-owned state: TERM first, then KILL if they linger.
+    remaining = owned_remaining()
+    for sig, rounds in ((signal.SIGTERM, 25), (signal.SIGKILL, 25)):
+        if not remaining:
+            break
+        for pid in remaining:
+            if pid > 1:
+                try:
+                    os.kill(pid, sig)
+                except ProcessLookupError:
+                    pass
+        for _ in range(rounds):
+            time.sleep(0.2)
+            remaining = owned_remaining()
+            if not remaining:
+                break
     if remaining:
         result["cleanup"] = {"ownedRemainingPids": remaining, "statePreserved": str(state)}
         result["status"] = "FAIL"

@@ -650,7 +650,10 @@ fn rejects_in_repository_outputs_shallow_sources_and_oversized_index_blobs() {
     );
     let shallow_error =
         one_repo_export(&root, &shallow, "shallow").expect_err("shallow source should fail");
-    assert!(shallow_error.to_string().contains("is shallow"));
+    // MP-08 / MP-11 BY-03: Copy shows this refusal; it must say how to recover.
+    assert!(shallow_error.to_string().contains(
+        "is a shallow clone; fetch its full history with `git fetch --unshallow`, then copy again"
+    ));
 
     let oversized = vec![b'x'; MAX_OVERLAY_FILE_BYTES as usize + 1];
     fs::write(repository.join("oversized.bin"), oversized).expect("write oversized file");
@@ -717,43 +720,53 @@ fn preserves_source_repository_basename_as_the_target_directory() {
 }
 
 #[test]
-fn ordinary_source_repository_basename_collision_keeps_compatible_disambiguation() {
-    let root = test_root("target-directory-collision");
-    let first = root.join("first").join("same-name");
-    let second = root.join("second").join("same-name");
-    init_repository(&first, "first.txt", "first\n");
-    init_repository(&second, "second.txt", "second\n");
-    let exported = export_development_context(DevelopmentContextExportRequest {
-        project_id: "collision-project".to_string(),
-        repositories: vec![
-            DevelopmentRepositorySelection {
-                workspace_id: "first".to_string(),
-                worktree_id: None,
-                worktree_path: first,
-                role: DevelopmentRepositoryRole::Primary,
-            },
-            DevelopmentRepositorySelection {
-                workspace_id: "second".to_string(),
-                worktree_id: None,
-                worktree_path: second,
-                role: DevelopmentRepositoryRole::Supporting,
-            },
-        ],
-        archive_path: root.join("collision.tar.gz"),
-    })
-    .expect("ordinary duplicate basenames remain exportable");
-    let targets = exported
-        .manifest
-        .repositories
-        .iter()
-        .map(|repository| repository.target_directory.as_str())
-        .collect::<BTreeSet<_>>();
-    assert!(targets.contains("same-name"));
-    assert_eq!(targets.len(), 2);
-    assert!(targets
-        .iter()
-        .any(|target| target.starts_with("same-name-")));
-    fs::remove_dir_all(root).expect("remove test root");
+fn ordinary_export_refuses_basename_collisions_without_renaming() {
+    for supporting_name in ["Same-Name", "same-name"] {
+        for supporting_git in [true, false] {
+            let root = test_root("ordinary-basename-collision");
+            let _cleanup = PlainWorkspaceCleanup(root.clone());
+            let first = root.join("first/Same-Name");
+            let second = root.join("second").join(supporting_name);
+            init_repository(&first, "first.txt", "first\n");
+            if supporting_git {
+                init_repository(&second, "second.txt", "second\n");
+            } else {
+                fs::create_dir_all(&second).unwrap();
+                fs::write(second.join("second.txt"), "second\n").unwrap();
+            }
+            let archive = root.join("collision.tar.gz");
+            let error = export_development_context(DevelopmentContextExportRequest {
+                project_id: "collision-project".to_string(),
+                repositories: vec![
+                    DevelopmentRepositorySelection {
+                        workspace_id: "first".to_string(),
+                        worktree_id: None,
+                        worktree_path: first.clone(),
+                        role: DevelopmentRepositoryRole::Primary,
+                    },
+                    DevelopmentRepositorySelection {
+                        workspace_id: "second".to_string(),
+                        worktree_id: None,
+                        worktree_path: second.clone(),
+                        role: DevelopmentRepositoryRole::Supporting,
+                    },
+                ],
+                archive_path: archive.clone(),
+            })
+            .expect_err("Copy must refuse colliding basenames rather than rename");
+            assert!(error.to_string().contains("collides with another selected"));
+            assert!(!archive.exists());
+            assert_no_export_temporaries(&root);
+            assert_eq!(
+                fs::read_to_string(first.join("first.txt")).unwrap(),
+                "first\n"
+            );
+            assert_eq!(
+                fs::read_to_string(second.join("second.txt")).unwrap(),
+                "second\n"
+            );
+        }
+    }
 }
 
 #[test]
@@ -781,8 +794,8 @@ fn managed_destination_names_use_common_component_safety() {
         assert!(export::validate_repository_basename(name).is_err());
     }
     let mut occupied = BTreeSet::new();
-    export::unique_managed_target_directory("same-name", &mut occupied).unwrap();
-    assert!(export::unique_managed_target_directory("SAME-NAME", &mut occupied).is_err());
+    export::target_directory_for_export("same-name", &mut occupied).unwrap();
+    assert!(export::target_directory_for_export("SAME-NAME", &mut occupied).is_err());
 }
 
 #[test]
@@ -1170,16 +1183,18 @@ fn fails_closed_on_invalid_ignore_files_and_bounded_path_enumeration() {
     fs::remove_file(repository.join(".charioxignore")).expect("remove ignore file");
     fs::write(repository.join("one.txt"), "one\n").expect("write first untracked file");
     fs::write(repository.join("two.txt"), "two\n").expect("write second untracked file");
-    let enumeration = stream_git_nul_records(
+    let mut enumerated = 0;
+    stream_git_nul_records(
         &repository,
         &["ls-files", "--others", "--exclude-standard", "-z", "--"],
-        1,
-        |_| Ok(()),
+        1, // The legacy count argument no longer limits Copy.
+        |_| {
+            enumerated += 1;
+            Ok(())
+        },
     )
-    .expect_err("path enumeration should stop at its record limit");
-    assert!(enumeration
-        .to_string()
-        .contains("returned more than 1 records"));
+    .expect("ordinary files are admitted by byte/time budgets, not counts");
+    assert_eq!(enumerated, 2);
 
     fs::remove_dir_all(root).expect("remove test root");
 }
@@ -1772,16 +1787,18 @@ fn materialization_rejects_large_current_tree_before_checkout() {
         &unpacked,
         &destination,
         512 * 1024,
-        MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY,
+        u64::MAX,
     )
     .expect_err("checkout budget must reject the current tree");
-    assert!(error.to_string().contains("checkout budget"));
+    assert!(error
+        .to_string()
+        .contains("free disk available for checkout"));
     assert!(!destination.join("compressible.bin").exists());
     fs::remove_dir_all(root).expect("remove test root");
 }
 
 #[test]
-fn multi_repository_entry_budget_rejects_before_any_checkout() {
+fn multi_repository_byte_budget_rejects_before_any_checkout() {
     let root = test_root("project-entry-budget");
     let primary = root.join("primary");
     let supporting = root.join("supporting");
@@ -1816,18 +1833,20 @@ fn multi_repository_entry_budget_rejects_before_any_checkout() {
             expected_source_repositories: None,
             destination_root: destination.clone(),
         },
-        MAX_CHECKOUT_BYTES_PER_PROJECT,
-        3,
+        12_000,
+        u64::MAX,
     )
-    .expect_err("project-wide entry budget must reject two repositories");
-    assert!(error.to_string().contains("entry materialization budget"));
+    .expect_err("project-wide byte budget must reject two repositories");
+    assert!(error
+        .to_string()
+        .contains("free disk available for checkout"));
     assert!(!destination.exists());
     assert_no_import_temporaries(&root.join("managed"));
     fs::remove_dir_all(root).expect("remove test root");
 }
 
 #[test]
-fn overlay_entries_count_toward_prepare_budget() {
+fn overlay_allocation_bytes_count_toward_prepare_budget() {
     let root = test_root("overlay-entry-budget");
     let repository = root.join("repository");
     init_repository(&repository, "tracked.txt", "base\n");
@@ -1844,8 +1863,8 @@ fn overlay_entries_count_toward_prepare_budget() {
             expected_source_repositories: None,
             destination_root: destination.clone(),
         },
-        MAX_CHECKOUT_BYTES_PER_PROJECT,
-        3,
+        12_000,
+        u64::MAX,
     )
     .expect_err("nested overlay must count toward the prepare budget");
     assert!(error.to_string().contains("repository overlay"));
@@ -2451,5 +2470,239 @@ fn publication_cleanup_rejects_a_replaced_symlink_ancestor() {
     ));
     assert!(outside_staging.exists());
     fs::remove_file(&bound_parent).expect("remove parent symlink");
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+fn many_repository_selections(root: &Path, count: usize) -> Vec<DevelopmentRepositorySelection> {
+    (0..count)
+        .map(|index| {
+            let path = root.join(format!("repo-{index}"));
+            init_repository(&path, "tracked.txt", "base\n");
+            DevelopmentRepositorySelection {
+                workspace_id: format!("repo-{index}"),
+                worktree_id: None,
+                worktree_path: path,
+                role: if index == 0 {
+                    DevelopmentRepositoryRole::Primary
+                } else {
+                    DevelopmentRepositoryRole::Supporting
+                },
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn development_context_round_trips_more_repositories_than_the_old_total() {
+    // Old total: 32 repositories.
+    let root = test_root("many-repositories");
+    let archive = root.join("many.tar.gz");
+    let exported = export_development_context(DevelopmentContextExportRequest {
+        project_id: "many-repositories".to_string(),
+        repositories: many_repository_selections(&root, 40),
+        archive_path: archive.clone(),
+    })
+    .expect("a larger repository set must export while the machine has room");
+    assert_eq!(exported.manifest.repositories.len(), 40);
+    let imported = import_development_context(DevelopmentContextImportRequest {
+        archive_path: archive,
+        expected_archive_sha256: exported.archive_sha256,
+        expected_project_id: exported.manifest.project_id,
+        expected_source_repositories: None,
+        destination_root: root.join("managed/many-repositories"),
+    })
+    .expect("the receiver verifies the digest and imports every repository");
+    assert_eq!(imported.repositories.len(), 40);
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn development_import_refuses_only_when_the_destination_lacks_room() {
+    let root = test_root("destination-without-room");
+    let archive = root.join("room.tar.gz");
+    let exported = export_development_context(DevelopmentContextExportRequest {
+        project_id: "destination-without-room".to_string(),
+        repositories: many_repository_selections(&root, 1),
+        archive_path: archive.clone(),
+    })
+    .expect("export");
+    let destination = root.join("managed/destination-without-room");
+    let request = |archive: PathBuf| DevelopmentContextImportRequest {
+        archive_path: archive,
+        expected_archive_sha256: exported.archive_sha256.clone(),
+        expected_project_id: exported.manifest.project_id.clone(),
+        expected_source_repositories: None,
+        destination_root: destination.clone(),
+    };
+    let error = crate::managed_context::limits::with_free_disk(0, || {
+        import_development_context(request(archive.clone()))
+    })
+    .expect_err("a full destination volume must refuse the import");
+    assert!(error.to_string().contains("free space on that volume"));
+    assert!(!destination.exists());
+    assert_no_import_temporaries(&root.join("managed"));
+    import_development_context(request(archive))
+        .expect("the same import succeeds once there is room");
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+/// Exports a repository holding one incompressible file and returns the import request for it.
+fn noise_import_request(
+    name: &str,
+    file_bytes: usize,
+) -> (PathBuf, DevelopmentContextImportRequest, PathBuf) {
+    let root = test_root(name);
+    let repository = root.join("repo");
+    init_repository(&repository, "tracked.txt", "base\n");
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    let noise: Vec<u8> = (0..file_bytes)
+        .map(|_| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 33) as u8
+        })
+        .collect();
+    fs::write(repository.join("noise.bin"), noise).expect("write incompressible file");
+    git(&repository, &["add", "noise.bin"]);
+    git(&repository, &["commit", "-m", "noise"]);
+    let archive = root.join("noise.tar.gz");
+    let exported = export_development_context(DevelopmentContextExportRequest {
+        project_id: name.to_string(),
+        repositories: vec![DevelopmentRepositorySelection {
+            workspace_id: "repo".to_string(),
+            worktree_id: None,
+            worktree_path: repository,
+            role: DevelopmentRepositoryRole::Primary,
+        }],
+        archive_path: archive.clone(),
+    })
+    .expect("export");
+    let destination = root.join(format!("managed/{name}"));
+    let request = DevelopmentContextImportRequest {
+        archive_path: archive,
+        expected_archive_sha256: exported.archive_sha256,
+        expected_project_id: exported.manifest.project_id,
+        expected_source_repositories: None,
+        destination_root: destination.clone(),
+    };
+    (root, request, destination)
+}
+
+#[test]
+fn development_import_rechecks_checkout_room_after_staging_and_cloning() {
+    use crate::managed_context::limits::{with_volume, DISK_RESERVE_BYTES};
+    const FILE_BYTES: usize = 2 << 20;
+    let (root, request, destination) = noise_import_request("checkout-after-staging", FILE_BYTES);
+    // Room for the extracted artifacts and the clone, but not for the checkout that follows them:
+    // admission measured before staging would let the checkout fill the volume.
+    let capacity = DISK_RESERVE_BYTES + (FILE_BYTES as u64) * 13 / 4;
+    let error = with_volume(&root.join("managed"), capacity, || {
+        import_development_context(request)
+    })
+    .expect_err("the checkout must be refused once staging has consumed the room");
+    assert!(error.to_string().contains("free space on"), "{error}");
+    assert!(!destination.exists());
+    assert_no_import_temporaries(&root.join("managed"));
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn development_import_refuses_a_clone_that_does_not_fit_before_launching_git() {
+    use crate::managed_context::limits::{with_volume, DISK_RESERVE_BYTES};
+    const FILE_BYTES: usize = 2 << 20;
+    let (root, request, destination) = noise_import_request("clone-without-room", FILE_BYTES);
+    // Room for the archive snapshot and extracted artifacts, not for Git to duplicate the pack.
+    let capacity = DISK_RESERVE_BYTES + (FILE_BYTES as u64) * 11 / 4;
+    let error = with_volume(&root.join("managed"), capacity, || {
+        import_development_context(request)
+    })
+    .expect_err("the clone must be refused before Git fills the volume");
+    assert!(
+        error
+            .to_string()
+            .contains("development context repository clone"),
+        "{error}"
+    );
+    assert!(!destination.exists());
+    assert_no_import_temporaries(&root.join("managed"));
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+// Dirty files larger than the room left refuse cleanly before the volume fills: every staged
+// object is admitted against its own volume with the reserve, including a second verification pass.
+#[test]
+fn development_export_refuses_dirty_files_that_do_not_fit_before_filling_the_volume() {
+    use crate::managed_context::limits::{tree_size, with_volume, DISK_RESERVE_BYTES};
+    const FILE_BYTES: usize = 1 << 20;
+    let root = test_root("overlay-staging-room");
+    let repository = root.join("repo");
+    init_repository(&repository, "tracked.txt", "base\n");
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    for index in 0..4 {
+        let noise: Vec<u8> = (0..FILE_BYTES)
+            .map(|_| {
+                seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                (seed >> 33) as u8
+            })
+            .collect();
+        fs::write(repository.join(format!("dirty-{index}.bin")), noise).expect("write dirty file");
+    }
+    let archive_dir = root.join("out");
+    fs::create_dir_all(&archive_dir).expect("archive dir");
+    let capacity = DISK_RESERVE_BYTES + (FILE_BYTES as u64) * 5 / 2;
+    let error = with_volume(&archive_dir, capacity, || {
+        export_development_context(DevelopmentContextExportRequest {
+            project_id: "overlay-staging-room".to_string(),
+            repositories: vec![DevelopmentRepositorySelection {
+                workspace_id: "repo".to_string(),
+                worktree_id: None,
+                worktree_path: repository.clone(),
+                role: DevelopmentRepositoryRole::Primary,
+            }],
+            archive_path: archive_dir.join("context.tar.gz"),
+        })
+    })
+    .expect_err("four 1 MiB dirty files do not fit 2.5 MiB of room");
+    // The refusal names the staging step, not the archive written after it.
+    assert!(
+        error
+            .to_string()
+            .contains("repository dirty overlay needs more than"),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains("free space on that volume"),
+        "{error}"
+    );
+    assert!(tree_size(&archive_dir) <= (FILE_BYTES as u64) * 5 / 2);
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn development_export_admits_the_compressed_archive_not_a_second_raw_copy() {
+    use crate::managed_context::limits::{tree_size, with_volume, DISK_RESERVE_BYTES};
+    const FILE_BYTES: usize = 4 << 20;
+    let root = test_root("compressible-export");
+    let repository = root.join("repo");
+    init_repository(&repository, "tracked.txt", "base\n");
+    // Dirty and highly compressible: the overlay is large raw but tiny once gzipped.
+    fs::write(repository.join("dirty.txt"), vec![b'a'; FILE_BYTES]).expect("write dirty file");
+    let archive_dir = root.join("out");
+    fs::create_dir_all(&archive_dir).expect("archive dir");
+    let export = |archive: &str| {
+        export_development_context(DevelopmentContextExportRequest {
+            project_id: "compressible-export".to_string(),
+            repositories: vec![DevelopmentRepositorySelection {
+                workspace_id: "repo".to_string(),
+                worktree_id: None,
+                worktree_path: repository.clone(),
+                role: DevelopmentRepositoryRole::Primary,
+            }],
+            archive_path: archive_dir.join(archive),
+        })
+    };
+    // Room for the staged raw artifacts and the small archive, not for another raw copy.
+    let capacity = DISK_RESERVE_BYTES + tree_size(&archive_dir) + (FILE_BYTES as u64) * 3 / 2;
+    with_volume(&archive_dir, capacity, || export("compressed.tar.gz"))
+        .expect("a compressible export fits when only the archive's bytes are needed");
     fs::remove_dir_all(root).expect("remove test root");
 }
