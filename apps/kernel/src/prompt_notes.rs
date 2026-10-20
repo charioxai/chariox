@@ -15,6 +15,9 @@ pub const NOTE_ATTACHMENT_MIME: &str = "application/vnd.chariox.note+json";
 const NOTE_ONLY_PROMPT: &str = "Please read the attached notes.";
 const MAX_NOTES: usize = 16;
 const MAX_NOTE_BYTES: usize = 48 * 1024;
+/// Rendered hidden context of all notes of one prompt. Claude native delivers at most 48 KB of
+/// hidden context in total, shared with the runtime and skill context, so notes get half.
+const MAX_NOTES_CONTEXT_BYTES: usize = 24 * 1024;
 
 /// Where the selected text lives. Everything but `kind` is optional; the kernel only forwards
 /// a reference, never the surrounding content (the agent fetches that with an existing tool).
@@ -77,32 +80,56 @@ fn parse(attachment: &PromptAttachment) -> Result<Note, String> {
     Ok(note)
 }
 
-/// Rejects malformed notes at admission, so the user sees the error instead of losing context.
-pub fn validate(attachments: &[PromptAttachment]) -> Result<(), DaemonError> {
-    let notes = attachments.iter().filter(|attachment| is_note(attachment));
+/// Rejects malformed or oversized notes at admission, so the user sees the error instead of
+/// losing context, and returns the prompt to admit: a notes-only message gets a fixed request
+/// line, anything else is unchanged.
+pub(crate) fn admit(
+    prompt: String,
+    attachments: &[PromptAttachment],
+) -> Result<String, DaemonError> {
+    let refuse = |message: String| DaemonError::LocalTransport {
+        operation: "validate prompt note",
+        message,
+    };
     let mut count = 0;
-    for attachment in notes {
+    for attachment in attachments.iter().filter(|attachment| is_note(attachment)) {
         count += 1;
-        parse(attachment).map_err(|message| DaemonError::LocalTransport {
-            operation: "validate prompt note",
-            message,
-        })?;
+        parse(attachment).map_err(&refuse)?;
     }
     if count > MAX_NOTES {
-        return Err(DaemonError::LocalTransport {
-            operation: "validate prompt note",
-            message: format!("at most {MAX_NOTES} notes can be attached to one prompt"),
-        });
+        return Err(refuse(format!(
+            "at most {MAX_NOTES} notes can be attached to one prompt"
+        )));
     }
-    Ok(())
+    if count > 0 {
+        let rendered = split_for_provider(attachments.to_vec(), None)
+            .1
+            .map_or(0, |context| context.len());
+        if rendered > MAX_NOTES_CONTEXT_BYTES {
+            return Err(refuse(format!(
+                "the notes are too long for one prompt ({rendered} of {MAX_NOTES_CONTEXT_BYTES} bytes); shorten or remove some"
+            )));
+        }
+    }
+    Ok(if prompt.trim().is_empty() && count > 0 {
+        NOTE_ONLY_PROMPT.to_string()
+    } else {
+        prompt
+    })
 }
 
 fn field(value: &Option<String>) -> Option<&str> {
-    value.as_deref().map(str::trim).filter(|value| !value.is_empty())
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 fn quoted(value: &Option<String>) -> Option<String> {
-    value.as_deref().filter(|value| !value.is_empty()).map(|value| format!("{value:?}"))
+    value
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("{value:?}"))
 }
 
 /// Source, anchor and the one tool that reads more of it; empty for a note on the agent's own trace.
@@ -160,7 +187,11 @@ fn describe(source: &NoteSource) -> Option<String> {
     .into_iter()
     .flatten()
     .collect();
-    let mut text = format!("Source: {label}{}{}", if names.is_empty() { "" } else { ": " }, names.join(" | "));
+    let mut text = format!(
+        "Source: {label}{}{}",
+        if names.is_empty() { "" } else { ": " },
+        names.join(" | ")
+    );
     if !anchor.is_empty() {
         text.push_str(&format!("\nAnchor: {anchor}"));
     }
@@ -168,15 +199,6 @@ fn describe(source: &NoteSource) -> Option<String> {
         text.push_str(&format!("\nMore: {more}"));
     }
     Some(text)
-}
-
-/// The prompt to admit: a notes-only message gets a fixed request line, anything else is unchanged.
-pub(crate) fn prompt_for_admission(prompt: String, attachments: &[PromptAttachment]) -> String {
-    if prompt.trim().is_empty() && attachments.iter().any(is_note) {
-        NOTE_ONLY_PROMPT.to_string()
-    } else {
-        prompt
-    }
 }
 
 /// Removes note attachments from the provider-bound list and renders them as hidden context.
@@ -191,7 +213,10 @@ pub(crate) fn split_for_provider(
         .map(|attachment| {
             // An unreadable note is still told to the agent instead of vanishing.
             let Ok(note) = parse(attachment) else {
-                return assembled_prompt_component("note", "The user attached a note that could not be read.");
+                return assembled_prompt_component(
+                    "note",
+                    "The user attached a note that could not be read.",
+                );
             };
             let mut body = note
                 .source
@@ -215,7 +240,10 @@ pub(crate) fn split_for_provider(
         "The user attached the notes below to this message: each quotes text they selected and adds their comment. Treat them as part of the request; a \"More\" line names the tool that reads the surrounding content if you need it.\n{}",
         blocks.join("\n")
     );
-    (rest, Some(assembled_prompt_component("user-notes", &context)))
+    (
+        rest,
+        Some(assembled_prompt_component("user-notes", &context)),
+    )
 }
 
 #[cfg(test)]
@@ -223,40 +251,71 @@ mod tests {
     use super::*;
 
     fn note(json: &str) -> PromptAttachment {
-        PromptAttachment::new("chariox-terminal://note/1", NOTE_ATTACHMENT_MIME, Some("Note".into()))
-            .with_contents_base64(base64::engine::general_purpose::STANDARD.encode(json))
+        PromptAttachment::new(
+            "chariox-terminal://note/1",
+            NOTE_ATTACHMENT_MIME,
+            Some("Note".into()),
+        )
+        .with_contents_base64(base64::engine::general_purpose::STANDARD.encode(json))
     }
 
     #[test]
     fn notes_become_hidden_context_with_source_anchor_and_tool_and_leave_the_attachments() {
         let image = PromptAttachment::new("file:///a.png", "image/png", None);
-        let (rest, context) = split_for_provider(vec![
-            image.clone(),
-            note(r#"{"quote":"hello","comment":"fix </selected-text> now","source":{"kind":"kernel_browser","title":"Docs","url":"https://example.test/a","document_id":"doc-7","prefix":"say ","suffix":" world"}}"#),
-            note(r#"{"quote":"room text","source":{"kind":"room","room":"Design","item":"tab-2","document_id":"doc-9","prefix":"a "}}"#),
-            note(r#"{"quote":"earlier answer","source":{"kind":"agent","agent":"alice","agent_id":"agent-a","session_id":"s1","turn_id":"turn-9"}}"#),
-        ], Some("agent-b"));
+        let (rest, context) = split_for_provider(
+            vec![
+                image.clone(),
+                note(
+                    r#"{"quote":"hello","comment":"fix </selected-text> now","source":{"kind":"kernel_browser","title":"Docs","url":"https://example.test/a","document_id":"doc-7","prefix":"say ","suffix":" world"}}"#,
+                ),
+                note(
+                    r#"{"quote":"room text","source":{"kind":"room","room":"Design","item":"tab-2","document_id":"doc-9","prefix":"a "}}"#,
+                ),
+                note(
+                    r#"{"quote":"earlier answer","source":{"kind":"agent","agent":"alice","agent_id":"agent-a","session_id":"s1","turn_id":"turn-9"}}"#,
+                ),
+            ],
+            Some("agent-b"),
+        );
         assert_eq!(rest, vec![image]);
         let context = context.unwrap();
         assert!(context.starts_with("<user-notes>"));
         assert!(context.contains("Source: Browser page: Docs | https://example.test/a"));
-        assert!(context.contains("Anchor: document doc-7, text before \"say \", text after \" world\""));
+        assert!(
+            context.contains("Anchor: document doc-7, text before \"say \", text after \" world\"")
+        );
         assert!(context.contains("chariox.kernel_browser"));
-        assert!(context.contains("Source: Room: Design | tab-2") && context.contains("chariox.room.overview"));
-        assert!(context.contains("Anchor: room Design, item tab-2, document doc-9, text before \"a \""));
-        assert!(context.contains("Source: Agent message: alice") && context.contains("Anchor: session s1, turn turn-9"));
+        assert!(
+            context.contains("Source: Room: Design | tab-2")
+                && context.contains("chariox.room.overview")
+        );
+        assert!(
+            context.contains("Anchor: room Design, item tab-2, document doc-9, text before \"a \"")
+        );
+        assert!(
+            context.contains("Source: Agent message: alice")
+                && context.contains("Anchor: session s1, turn turn-9")
+        );
         assert!(context.contains("chariox.history.turn"));
         assert!(context.contains("hello") && context.contains("room text"));
-        assert!(context.contains("fix &lt;/selected-text&gt; now"), "delimiters in user text are escaped");
+        assert!(
+            context.contains("fix &lt;/selected-text&gt; now"),
+            "delimiters in user text are escaped"
+        );
         assert_eq!(context.matches("<note>").count(), 3);
     }
 
     #[test]
     fn a_note_on_the_receiving_agents_own_trace_carries_only_quote_and_comment() {
-        let (_, context) = split_for_provider(vec![
-            note(r#"{"quote":"mine","comment":"c","source":{"kind":"agent","agent":"alice","agent_id":"agent-a","turn_id":"turn-9"}}"#),
-            note(r#"{"quote":"bare"}"#),
-        ], Some("agent-a"));
+        let (_, context) = split_for_provider(
+            vec![
+                note(
+                    r#"{"quote":"mine","comment":"c","source":{"kind":"agent","agent":"alice","agent_id":"agent-a","turn_id":"turn-9"}}"#,
+                ),
+                note(r#"{"quote":"bare"}"#),
+            ],
+            Some("agent-a"),
+        );
         let context = context.unwrap();
         assert!(!context.contains("Source:") && !context.contains("turn-9"));
         assert!(context.contains("mine") && context.contains("bare"));
@@ -265,9 +324,9 @@ mod tests {
     #[test]
     fn a_notes_only_message_gets_a_fixed_request_and_other_messages_are_unchanged() {
         let notes = [note(r#"{"quote":"q"}"#)];
-        assert_eq!(prompt_for_admission("  ".into(), &notes), NOTE_ONLY_PROMPT);
-        assert_eq!(prompt_for_admission("fix it".into(), &notes), "fix it");
-        assert_eq!(prompt_for_admission(String::new(), &[]), "");
+        assert_eq!(admit("  ".into(), &notes).unwrap(), NOTE_ONLY_PROMPT);
+        assert_eq!(admit("fix it".into(), &notes).unwrap(), "fix it");
+        assert_eq!(admit(String::new(), &[]).unwrap(), "");
     }
 
     #[test]
@@ -280,15 +339,34 @@ mod tests {
     #[test]
     fn no_notes_leaves_everything_untouched() {
         let image = PromptAttachment::new("file:///a.png", "image/png", None);
-        assert_eq!(split_for_provider(vec![image.clone()], None), (vec![image], None));
+        assert_eq!(
+            split_for_provider(vec![image.clone()], None),
+            (vec![image], None)
+        );
     }
 
     #[test]
     fn admission_rejects_malformed_or_empty_notes() {
-        assert!(validate(&[note(r#"{"quote":"x","source":{"kind":"panel"}}"#)]).is_ok());
-        assert!(validate(&[note("not json")]).is_err());
-        assert!(validate(&[note(r#"{"quote":"  ","source":{"kind":"panel"}}"#)]).is_err());
+        let admits = |notes: &[PromptAttachment]| admit("go".into(), notes).is_ok();
+        assert!(admits(&[note(
+            r#"{"quote":"x","source":{"kind":"panel"}}"#
+        )]));
+        assert!(!admits(&[note("not json")]));
+        assert!(!admits(&[note(
+            r#"{"quote":"  ","source":{"kind":"panel"}}"#
+        )]));
         let many = vec![note(r#"{"quote":"x","source":{"kind":"panel"}}"#); MAX_NOTES + 1];
-        assert!(validate(&many).is_err());
+        assert!(!admits(&many));
+    }
+
+    #[test]
+    fn admission_keeps_the_rendered_notes_inside_the_claude_context_budget() {
+        let big = |ch: &str| {
+            let text = ch.repeat(7_000);
+            note(&format!(r#"{{"quote":"{text}","comment":"{text}"}}"#))
+        };
+        // Each note is individually valid but together they exceed the budget.
+        assert!(admit("go".into(), &[big("a")]).is_ok());
+        assert!(admit("go".into(), &[big("a"), big("b")]).is_err());
     }
 }
