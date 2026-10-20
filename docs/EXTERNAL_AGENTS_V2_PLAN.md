@@ -58,11 +58,11 @@ The goal behind it: the coordinator (Claude Code on Miguel's Mac) works on the M
 - A grant has a **term**: `Minutes(n)` or `UntilHolderExits`. One enum replaces `lifetime_minutes` on the request, on `KernelAccessGrant`, and in `Grant`; `deadline` and `expires_at_ms` exist only for `Minutes`. Asking for both is an error.
 - The popup offers three choices: "until the agent exits", "8 hours" (default), "24 hours". The 8 h default and 24 h cap stay.
 - `UntilHolderExits` grants have no extension popup. They end on holder exit, explicit revoke, passkey rotation or kernel restart (grants stay in kernel memory, so a kernel restart still means a new grant; this is the cost of "nothing on disk").
-- Exit is detected by the OS (pidfd on Linux, kqueue `EVFILT_PROC` on macOS), with the existing sweep as the backstop, so the grant and its subscriptions end within about a second, not at the next sweep.
+- **Exit detection (built in step 1, no new watcher).** Liveness is the existing identity check (PID + path + start time) in `sweep_kernel_access`. It already runs on every list, on every request admission, on the 100 ms tick of each open holder connection and on the kernel pump, so the grant and its subscriptions end as soon as anyone looks, without a pidfd/kqueue watcher. Measured on b3 with a real Claude Code harness killed by exact PID: grant list empty after 30 ms, orphaned former descendant refused after 32 ms (EA2-01/02, evidence `extagent/r3/green-impl-1`). macOS uses the same check; its drill is a Mac cell.
 - Binding is unchanged: ProcessIdentity compare, descendants admitted, no inheritance by a new process.
 - Grants stay listed (`ListKernelAccessGrants`) and revocable (`RevokeKernelAccessGrant`) from every Chariox client. The list shows the term.
 
-**Deleted.** `lifetime_minutes` on the wire; the `custom_reply`-minutes parsing path in `access_decision` becomes a typed choice.
+**Deleted.** `lifetime_minutes` on the request and on the grant summary; `lifetime_minutes` stays on the popup shape (`PasskeyPrompt`) only as the minutes copy of a minutes term, for clients that predate the typed `term` (the hosted web popup in `chariox-cloud` reads it until it is updated), and for sudo windows. The `custom_reply` answer is one parser, `KernelAccessTerm::from_reply` (`until_exit` or minutes), checked once at the answer boundary.
 
 ### 3.2 Everything, but only through the local kernel (decision 2)
 
