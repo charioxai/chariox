@@ -1948,7 +1948,10 @@ fn room_environment_viewport_update_uses_authenticated_actor_and_revision() {
     };
     let expected_actor_id =
         crate::session::human_environment_actor_id(crate::session::DEFAULT_LOCAL_USER_ID);
-    assert_eq!(environment.viewport.css_width, 1440);
+    // 2880x1800 is not a size the native desktop worker admits: it snaps to 2560x1600.
+    assert_eq!(environment.viewport.desktop_pixel_width, 2560);
+    assert_eq!(environment.viewport.desktop_pixel_height, 1600);
+    assert_eq!(environment.viewport.css_width, 1280);
     assert_eq!(environment.viewport.revision, 2);
     assert_eq!(
         environment.viewport.last_actor_id.as_deref(),

@@ -137,6 +137,7 @@ impl SessionRuntimeStore {
                     request.viewport.desktop_pixel_width,
                     request.viewport.desktop_pixel_height,
                 )
+                .map(crate::session::CanonicalViewport::snapped_to_native_desktop)
             }
             Err(error) => Err(error),
         }
@@ -268,6 +269,7 @@ impl SessionRuntimeStore {
             request.viewport.desktop_pixel_width,
             request.viewport.desktop_pixel_height,
         )
+        .map(crate::session::CanonicalViewport::snapped_to_native_desktop)
         .map_err(|error| room_environment_control_error("environment.viewport.update", error));
         let result = async {
             let viewport = viewport?;
