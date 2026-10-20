@@ -112,6 +112,7 @@ export class KernelBrowserHost {
     this.displays = new Map();
     this.displaySessions = new DisplaySessions(this);
     this.scales = new Map();
+    this.layouts = new Map();
     this.inputEpochs = new Map();this.inputChangedAt=new Map();
     this.scrolling = new Map();
     this.sampleLanes = new Map();
@@ -339,6 +340,19 @@ export class KernelBrowserHost {
   // MP-08/MP-10/MP-11: native page density applies to the private display
   // only; the owned Computer desktop stays at its 1x X11 density.
   viewport() { return hostViewport(!this.chromium.desktop && (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY === '1' || process.env.CHARIOX_KERNEL_BROWSER_MIRROR === '1')); }
+  // Protocol 560/168: a viewer narrower than the canonical desktop gets the Tab laid out at its own size.
+  // The newest subscription owns the layout; null restores the canonical page.
+  pageSize(tabId) { const l = this.layouts.get(tabId); return l ? { width: l.width, height: l.height } : { width: 1280, height: 800 }; }
+  async setLayout(tab, subscriptionId, layout) {
+    if (layout) this.layouts.set(tab.tab_id, { ...layout, subscriptionId }); else this.layouts.delete(tab.tab_id);
+    await this.browser.setLayout?.(tab.target_id, layout);
+  }
+  releaseLayout(tabId, subscriptionId) {
+    if (this.layouts.get(tabId)?.subscriptionId !== subscriptionId) return;
+    this.layouts.delete(tabId);
+    const tab = this.tabs.get(tabId);
+    if (tab) this.browser.setLayout?.(tab.target_id, null).catch(() => {});
+  }
   // MP-08/MP-11: on the owned Computer desktop the Browser window is the
   // visible one, and an emulated density leaves it unbindable (withheld):
   // drop a tab's viewer emulation with its last Browser viewer or mirror.

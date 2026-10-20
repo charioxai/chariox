@@ -53,6 +53,11 @@ pub enum KernelBrowserCommand {
         /// MP-08/MP-10/MP-11: protocol 567/175 asks for the `fonts` op's `absent` list (needs `font_requirements`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         font_absent: Option<bool>,
+        /// Protocol 560/168: the person's display in CSS px; the Tab lays out at this size.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        layout_width: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        layout_height: Option<u32>,
     },
     /// MP-08/MP-10: protocol 482 `wait_ms` (<= 2000) makes a v2 credit a long
     /// poll answered by the next page change; credits apply in sequence.

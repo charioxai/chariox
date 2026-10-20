@@ -330,7 +330,7 @@ export class Mirror2 {
     stream.resetAt = sequence + 1; // old page epochs can no longer dispatch
     const packet = { wire: 2, subscription_id: command.subscription_id, tab_id: tabId, generation: command.generation,
       document_id: documentId, sequence, base_sequence: null, reset: true, fallback: 'navigation_preview',
-      snapshot_complete: false, css_width: 1280, css_height: 800, device_scale_factor: this.host.scales.get(tabId) ?? 1,
+      snapshot_complete: false, css_width: this.host.pageSize(tabId).width, css_height: this.host.pageSize(tabId).height, device_scale_factor: this.host.scales.get(tabId) ?? 1,
       scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [] };
     this.remember(stream, sequence, packet, true);
     this.host.timing?.('mirror2_navigation_preview', started);
@@ -562,7 +562,7 @@ export class Mirror2 {
     // header field equal to the base packet's are implied; empty lists omitted.
     const header = { snapshot_complete: source?.snapshot_complete === true, font_failures: source?.font_failures ?? [], scroll: source?.scroll ?? [0, 0], focused: source?.focused ?? null, selection: source?.selection ?? null, fragment: source?.fragment ?? null }, sent = Object.fromEntries(Object.entries(header).map(([name, value]) => [name, JSON.stringify(value)]));
     const packet = reset ? { wire: 2, subscription_id: command.subscription_id, tab_id: tab.tab_id, generation: command.generation, document_id: tab.document_id,
-      sequence, base_sequence: null, reset, css_width: 1280, css_height: 800, device_scale_factor: this.host.scales.get(tab.tab_id) ?? 1, ...header }
+      sequence, base_sequence: null, reset, css_width: this.host.pageSize(tab.tab_id).width, css_height: this.host.pageSize(tab.tab_id).height, device_scale_factor: this.host.scales.get(tab.tab_id) ?? 1, ...header }
       : { wire: 2, sequence, ...Object.fromEntries(Object.entries(header).filter(([name]) => sent[name] !== stream.header?.[name])) };
     if (resources.length) packet.resources = resources;
     this.host.timing?.event?.('mirror2_resource_batch', { reset: Number(reset), font_base64_bytes: resources.filter(r => r.mime_type.startsWith('font/')).reduce((n, r) => n + r.data_base64.length, 0), other_base64_bytes: resources.filter(r => !r.mime_type.startsWith('font/')).reduce((n, r) => n + r.data_base64.length, 0) });

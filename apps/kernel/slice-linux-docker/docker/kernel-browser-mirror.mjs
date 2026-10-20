@@ -19,11 +19,17 @@ const lifetime=60000,maxWire=4*1024*1024,refineQuietMs=1000;
 const observerReasons=[['mirror snapshot bounds','wire_bound'],['mirror node bounds','records_bound'],['mirror text bounds','text_bound'],['mirror stylesheet bounds','rules_bound'],['mirror form bounds','form_bound'],['mirror bounds','visited_bound']];
 const observerReason=description=>observerReasons.find(([text])=>typeof description==='string'&&description.includes(text))?.[1]??'observer_exception';
 const videoSnapshot=()=>({root:'n9007199254740991',nodes:[{id:'n9007199254740991',parent:null,children:['n9007199254740988','n9007199254740990'],kind:'element',tag:'html',style:{margin:'0px'}},{id:'n9007199254740988',parent:'n9007199254740991',children:[],kind:'element',tag:'head'},{id:'n9007199254740990',parent:'n9007199254740991',children:['n9007199254740989'],kind:'element',tag:'body',style:{margin:'0px'}},{id:'n9007199254740989',parent:'n9007199254740990',children:[],kind:'tile',tag:'div',box:{x:0,y:0,width:geometry.width,height:geometry.height},reason:'observer_bounds_or_unavailable'}],resources:[],fonts:[],scroll:{x:0,y:0},focused:null,selection:null});
+// Protocol 560/168: the person's display size in CSS px; at or above the canonical size the page is canonical.
+function layoutFor({layout_width:width,layout_height:height},viewport) {
+  if(width===undefined&&height===undefined)return null;
+  if(!Number.isSafeInteger(width)||!Number.isSafeInteger(height)||width<320||height<200||width>8192||height>8192)throw new Error('MP-11: mirror layout bounds');
+  return width>=viewport.css_width?null:{width,height:Math.min(height,viewport.css_height)};
+}
 export class MirrorService {
   constructor(host) {this.host=host;this.v2=new Mirror2(this);this.now=()=>performance.now();this.streams=new Map();this.expiry=setInterval(()=>this.expire(),5000);this.expiry.unref?.();}
   invalidate() {for(const stream of this.streams.values()){if(stream.wire===2){this.v2.invalidate(stream);continue;}stream.previous=null;stream.observed=null;stream.resources.clear();stream.cache.clear();stream.policy=null;stream.epochs=[];stream.refinePending=false;}}
   clear() {for(const id of [...this.streams.keys()])this.drop(id);}
-  drop(id) {const stream=this.streams.get(id);this.streams.delete(id);if(stream?.wire===2){stream.releaseRender?.().catch(()=>{});this.v2.dispose(stream);}else stream?.deflate?.close();}
+  drop(id) {const stream=this.streams.get(id);this.streams.delete(id);if(stream)this.host.releaseLayout?.(stream.tab_id,id);if(stream?.wire===2){stream.releaseRender?.().catch(()=>{});this.v2.dispose(stream);}else stream?.deflate?.close();}
   removeTab(tabId) {for(const [id,s] of this.streams)if(s.tab_id===tabId)this.drop(id);}
   expire() {for(const [id,s] of this.streams)if(Date.now()>s.expires)this.drop(id);}
   require(id,scope,generation) {
@@ -64,6 +70,7 @@ export class MirrorService {
     // attached mirror is an observer and must never resize the shared page.
     this.host.scales.set(tab.tab_id,scale);
     const subscription_id=`host-mirror-${randomUUID()}`;
+    await this.host.setLayout?.(tab,subscription_id,layoutFor(command,this.host.viewport()));
     if(command.wire===2){
       // MP-08/MP-10: like an attached video view, a live DOM view keeps its
       // hidden RenderWidget awake. No OS activation or shared-page resize.

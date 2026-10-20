@@ -4626,6 +4626,17 @@ clears the list. `browser-mirror2-font-absent-567.json` pins the shape (Rust has
 `browser_mirror2_font_absent_567_shape_is_pinned`). Older kernels never send the field; older
 viewers refuse it, so they must stay below 567 or negotiate the same wire.
 
+MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
+`layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.
+A viewer narrower than the canonical desktop (a phone) sends its page area; the kernel lays that
+Tab out at the size through per-target device metrics (width 320-8192, at or above the canonical
+width means canonical, height clamped to the canonical height) and the mirror packets carry the
+laid-out size as `css_width`/`css_height`. The newest subscription owns the layout; a subscribe
+without the fields, or closing the owning subscription, restores the canonical page. Older
+kernels ignore nothing: they refuse unknown fields, so viewers send them only on 560+.
+`browser-mirror2-layout-560.json` pins the shape (Rust hash test
+`browser_mirror2_layout_560_shape_is_pinned`).
+
 MP-08 / MP-10 / MP-11: the 535 browser delivery client also negotiates the
 existing relay-96 `chariox-relay-binary-v96` capability. Bounded CXR1 routing
 metadata enters the same sender-authenticated display decrypt/binding path;
