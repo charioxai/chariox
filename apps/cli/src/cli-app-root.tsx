@@ -977,7 +977,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   let handleKernelSessionUnavailable: (message: string) => Promise<void> | void = () => {}
   const {
     hydrateCurrentAttachedSession, kernelEventSubscriptionController, syncKernelEventSubscription, recoverAttachedSessionAfterKernelRestart, sessionBindingRepairInFlight, currentSessionEventBindingReady, syncValidatedKernelEventSubscription,
-    transitionToNoSession, detachCurrentAttachment, rollbackAttachedSession, attachBinding, recoverProviderRun,
+    transitionToNoSession, detachCurrentAttachment, rollbackAttachedSession, beginSessionSelection, isSessionSelecting, attachBinding, recoverProviderRun,
     requestExit, requestWaitingRoom,
   } = createCliSessionLifecycleComposition({
     client, options, appLogger, renderer,
@@ -1058,14 +1058,14 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     client, cloudClient, kernelConnected, options, appLogger, formatError, appFileInstaller, appDevLoop, appPublisherEnrollment,
     preferencesState, setPreferencesState, initialWorkspaceTarget, initialWorktreeTarget,
     pendingWorkspaceTarget, pendingWorktreeTarget, setPendingWorkspaceTarget, setPendingWorktreeTarget,
-    isAttached, anyTurnWork, sessionState, attachmentState, providerRunState,
+    isAttached, sessionHydrating, anyTurnWork, sessionState, attachmentState, providerRunState,
     currentModelId, currentVariantId, focusedAgentId, multiAgentResponseLayout,
     currentAccountProfileId: () => waitingRoomState().accountProfileId || options.accountProfile || "default",
     maxAgentsPerScreen, flashFooter, appendNotice, appendCloudNotice,
     readSecret: secretInput.readSecret,
     clearTextSelection: () => { renderer.clearSelection(); flushDeferredRebuild() },
     showProviderLoginLink: providerLoginLink, providerLoginInteractions,
-    attachBinding, transitionToNoSession, applyProviderSelection, applyAccountSelection, applyModelSelection,
+    attachBinding, beginSessionSelection, isSessionSelecting, transitionToNoSession, applyProviderSelection, applyAccountSelection, applyModelSelection,
     applyVariantSelection, applyModeSelection, applyPermissionSelection,
     currentExecutionMode: () => waitingRoomState().executionMode ?? "build",
     currentPermissionLevel: () => waitingRoomState().permissionLevel ?? "yolo",

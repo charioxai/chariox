@@ -13,6 +13,7 @@ import {
   type RemoteGitWorktreePlacement,
 } from "./command-worktree-placement.js"
 import type { SessionListEntry } from "./sessions.js"
+import type { SessionSelection } from "./session-lifecycle.js"
 import {
   formatSessionRuntimeStatus,
   type RuntimeSession as SharedRuntimeSession,
@@ -55,6 +56,7 @@ export type SessionCommandHandlerDeps = {
     createdSession: boolean,
   ) => Promise<void>
   resolveSession: (reference: string, workspace: string) => Promise<ResolveSessionResult>
+  beginSessionSelection?: (reference: string) => SessionSelection | null
   listSessions: () => Promise<RuntimeSession[]>
   listSlices?: () => Promise<SliceRecord[]>
   deleteSessionByRef: (reference: string, workspace: string) => Promise<DeleteSessionResult>
@@ -154,10 +156,20 @@ async function attachSession(
     deps.flashFooter("usage: /session attach <ref>", "error")
     return true
   }
-  const session = await deps.resolveSession(value, deps.currentWorkspaceTarget())
-  await deps.attachBinding(session, false)
-  deps.flashFooter(`attached to session ${session.alias ?? session.id}`, "info")
-  return true
+  const workspace = deps.currentWorkspaceTarget()
+  // The lookup runs inside the selection, so a newer selection supersedes it.
+  const selection = deps.beginSessionSelection?.(value)
+  try {
+    const session = await deps.resolveSession(value, workspace)
+    await (selection ? selection.attach(session) : deps.attachBinding(session, false))
+    if (selection?.current() ?? true) deps.flashFooter(`attached to session ${session.alias ?? session.id}`, "info")
+    return true
+  } catch (error) {
+    if (selection && !selection.current()) return true
+    throw error
+  } finally {
+    await selection?.settle()
+  }
 }
 
 async function listSessions(deps: SessionCommandHandlerDeps): Promise<boolean> {

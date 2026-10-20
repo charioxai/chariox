@@ -375,3 +375,30 @@ test("MP-08 / MP-10 waiting-room attachment keeps delayed older-room prompt navi
   assert.deepEqual(entries, ["older B input"], "Up must recover B's existing input after its late response")
   assert.equal(sequence, 5, "B resets A's newer incremental-history cursor")
 })
+
+test("MP-08 / MP-10 OWNER-24 a superseded prime writes nothing after its history arrives", async () => {
+  let release!: () => void
+  const writes: string[] = []
+  let owned = true
+  const controller = createAttachedSessionPrimeController({
+    splitAgentResponseMode: () => false,
+    maxAgentsPerScreen: () => 1,
+    loadSessionHistoryOutline: async () => {
+      await new Promise<void>(resolve => { release = resolve })
+      return { agents: [{ agent_id: "agent-1", turns: [] }] } as never
+    },
+    setAgentPaneEntries: () => { writes.push("pane") },
+    setAgentPanePreview: () => { writes.push("preview") },
+    replaceTranscriptEntries: () => { writes.push("transcript") },
+    setNextHistoryCursor: () => { writes.push("cursor") },
+  })
+  const priming = controller.prime({
+    id: "session-b",
+    agents: [{ id: "agent-1" }],
+    focused_agent_id: "agent-1",
+  } as never, () => owned)
+  owned = false
+  release()
+  await priming
+  assert.deepEqual(writes, [])
+})

@@ -27,7 +27,7 @@ export type AttachedSessionPrimeControllerDeps = {
 export function createAttachedSessionPrimeController(
   deps: AttachedSessionPrimeControllerDeps,
 ) {
-  const prime = async (session: RuntimeSession) => {
+  const prime = async (session: RuntimeSession, owned: () => boolean = () => true) => {
     // The attachment controller owns prompt-history generations. Transcript
     // priming must not invalidate its in-flight read after a room switch.
     const visibleAgentId = selectResponsePaneAgents(
@@ -38,6 +38,7 @@ export function createAttachedSessionPrimeController(
     ).visibleTranscriptAgentId
 
     if (!visibleAgentId) {
+      if (!owned()) return
       deps.replaceTranscriptEntries([], null)
       deps.setNextHistoryCursor(null)
       return
@@ -47,6 +48,7 @@ export function createAttachedSessionPrimeController(
       session.id,
       session.agents.map((agent) => agent.id),
     )
+    if (!owned()) return
     const entriesByAgent = new Map(outline.agents.map((agent) => {
       return [
         agent.agent_id,

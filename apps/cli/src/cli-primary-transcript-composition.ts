@@ -188,11 +188,11 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
         surfaceTone: deps.primaryTranscriptSurfaceTone(),
       },
     }),
-    buildEmptyRenderable: () => deps.isAttached()
-      ? (deps.sessionHydrating()
-          ? buildLoadingTranscriptRenderable(deps.renderer)
-          : buildEmptyTranscriptRenderable(deps.renderer))
-      : buildNoSessionRenderable(deps.renderer, deps.waitingRoomState(), deps.availableSessions(), deps.providerCatalogState(), {
+    buildEmptyRenderable: () => deps.sessionHydrating()
+      ? buildLoadingTranscriptRenderable(deps.renderer, deps.sessionState().alias?.trim() || deps.sessionState().id)
+      : deps.isAttached()
+        ? buildEmptyTranscriptRenderable(deps.renderer)
+        : buildNoSessionRenderable(deps.renderer, deps.waitingRoomState(), deps.availableSessions(), deps.providerCatalogState(), {
         ...waitingRoomRemoteTargets(),
         collaborationBackend: relayCloudProfile(deps.preferencesState()) ? "cloud" : deps.relayStatusState()?.configured ? "relay" : "local",
         cloudNotice: deps.waitingRoomCloudNotice(),
