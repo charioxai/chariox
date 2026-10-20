@@ -7,7 +7,10 @@ use crate::transport::relay_peer::{
 #[test]
 fn leased_prompt_rejection_reason_is_versioned_hashed_and_optional() {
     use sha2::{Digest, Sha256};
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 549);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 157);
     let snapshot = serde_json::json!({
         "local_protocol": LOCAL_DAEMON_PROTOCOL_VERSION,

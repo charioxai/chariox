@@ -2,10 +2,13 @@
 use super::*;
 #[test]
 fn client_catalog_revisions_534_142_are_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 534);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        142
+        crate::test_support::expected_relay_peer_protocol_version()
     );
     assert_eq!(
         format!(
@@ -41,10 +44,13 @@ fn client_catalog_revisions_534_142_are_versioned_and_hashed() {
 
 #[test]
 fn client_catalog_snapshot_and_change_event_534_142_are_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 534);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        142
+        crate::test_support::expected_relay_peer_protocol_version()
     );
     let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({"GetClientCatalogSnapshot": {"scope": {"provider": null, "account_profiles": {}, "execution_location": {"kind": "local"}}, "known": null}})).unwrap();
     let response = LocalDaemonResponse::ClientCatalogSnapshot {

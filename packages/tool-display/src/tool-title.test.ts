@@ -38,6 +38,9 @@ test("tool titles use a verb and an object for each provider's tool shapes", () 
     [{ id: "o5", tool: "todowrite", status: "completed", input: { todos: [] } }, "Updated plan"],
     [{ id: "o6", tool: "some_custom_tool", status: "completed" }, "Called some custom tool"],
   ]
+  const formattedTitles: Record<string, string> = {
+    c3: "Edited src/app.ts (+1 −1)", c4: "Edited notes.md (+1 −0)", o2: "Editing a.ts (+1 −1)",
+  }
   for (const [update, expected] of cases) {
     const title = toolDisplayTitle(update)
     assert.equal(title, expected, JSON.stringify(update))
@@ -99,7 +102,7 @@ test("file tool summaries skip the provider's relative copy of the path", () => 
     input: { filePath: "/tmp/a.txt", content: "x" },
     output: "Wrote file successfully.",
   })
-  assert.equal(display.title, "Wrote /tmp/a.txt")
+  assert.equal(display.title, "Edited /tmp/a.txt (+1 −0)")
   assert.doesNotMatch(display.summary, /\.\.\//)
   assert.equal(formatToolDisplay({ id: "m1", tool: "search_docs", title: "context7", input: { q: "x" } }).summary, "context7")
 })

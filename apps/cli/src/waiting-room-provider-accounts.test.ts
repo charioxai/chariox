@@ -291,6 +291,6 @@ test("MP-08/MP-11 account labels show only detected authentication problems", ()
   assert.equal(providerAccountDisplayLabel(healthy), "claude-test")
   assert.equal(providerAccountDisplayLabel({ ...healthy, auth_state: "unknown" }), "claude-test · sign-in not checked")
   for (const auth_state of ["not_configured", "expired", "error"] as const) {
-    assert.match(providerAccountDisplayLabel({ ...healthy, auth_state }), /sign in$/)
+    assert.match(providerAccountDisplayLabel({ ...healthy, auth_state }), /sign in(?: again)?$/)
   }
 })

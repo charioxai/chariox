@@ -373,10 +373,13 @@ fn workflow_turn_context_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_received_event_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 551);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        159
+        crate::test_support::expected_relay_peer_protocol_version()
     );
     let event = serde_json::json!({
         "delivery_id": "delivery-1",

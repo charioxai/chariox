@@ -458,10 +458,13 @@ fn access_requester_protocol_470_shape_and_hash() {
 // MP-08 / MP-10 / MP-11: coordinator-allocated lifecycle and sudo presentation contract.
 #[test]
 fn sudo_presentation_and_authoritative_closure_protocol_538_shape_and_hash() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 538);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        146
+        crate::test_support::expected_relay_peer_protocol_version()
     );
     let snapshot = serde_json::json!({"sudo_request":{"requester_name":"Claude Code","agent_name":"Reviewer","session_name":"Payments","task_summary":"Review the release","task":"Review the release\nFull task","grant_id":"g","terminal_id":"t"},"kernel_now_ms":4001,"closed":[{"session_id":"s","interaction_id":"i","kind":"sudo","expires_at_ms":4000,"reason":"expired"},{"session_id":"s","interaction_id":"i","kind":"sudo","expires_at_ms":4000,"reason":"answered"},{"session_id":"s","interaction_id":"i","kind":"sudo","expires_at_ms":4000,"reason":"revoked"}]});
     let presentation: crate::local::SudoRequestPresentation =

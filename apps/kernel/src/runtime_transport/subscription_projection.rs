@@ -102,4 +102,51 @@ mod tests {
         let snapshot = snapshot();
         assert!(session_projection_events(&snapshot, Some(&snapshot), true).is_empty());
     }
+    // MP-08 / MP-10 / MP-11: pre-backlog publication keeps canonical task/window deltas.
+    #[test]
+    fn task_updates_reach_the_pre_backlog_projection() {
+        let before = snapshot();
+        let mut after = before.clone();
+        let task = serde_json::from_value(serde_json::json!({
+            "task_id":"task", "room_id":after.session.id(), "owner_user_id":"local",
+            "agent_id":"agent", "prompt_id":"prompt", "provider_run_id":null,
+            "revision":2, "blocked_revision":0, "state":"working", "reason":"work",
+            "obligations":[], "wait":null, "last_progress_at_ms":1, "progress_sequence":0,
+            "no_progress_wakes":0, "correction_used":false, "pending_prompt_id":null
+        }))
+        .unwrap();
+        after.session.set_agent_tasks(vec![task]);
+        let events = session_projection_events(&after, Some(&before), false);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, KernelEvent::AgentTaskUpdated { .. })),
+            "pre-backlog delivery must keep the canonical task delta"
+        );
+    }
+
+    #[test]
+    fn sudo_window_change_keeps_a_full_snapshot_beside_metadata() {
+        let before = snapshot();
+        let mut after = before.clone();
+        after.session.set_alias(Some("after".into()));
+        let window = serde_json::from_value(serde_json::json!({
+            "entry_id":"sudo:window", "session_id":after.session.id(), "agent_id":"agent",
+            "owner_user_id":"local", "terminal_id":"terminal", "requester":null,
+            "prompt_id":"prompt", "provider_run_id":"run", "task_id":"task",
+            "duration_minutes":60, "expires_at_ms":3600000, "revision":1, "warning_sent":false
+        }))
+        .unwrap();
+        after.session.set_sudo_windows(vec![window]);
+        let events = session_projection_events(&after, Some(&before), false);
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, KernelEvent::SessionMetadataChanged { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, KernelEvent::SessionSnapshot { .. })),
+            "metadata cannot hide the newly opened sudo window"
+        );
+    }
 }

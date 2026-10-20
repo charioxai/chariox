@@ -3,11 +3,9 @@ use super::*;
 // MP-08 / MP-10: all additions remain in the allocated, unreleased 508/116 bump.
 #[test]
 fn panes_history_508_range_steering_and_initial_content_snapshot() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 534);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, crate::test_support::expected_local_protocol_version());
     assert_eq!(
-        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        142
-    );
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, crate::test_support::expected_relay_peer_protocol_version());
     for (source, expected_hash) in [
         (
             include_str!("../../../../session_history_page.rs"),

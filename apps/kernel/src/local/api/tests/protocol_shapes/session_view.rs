@@ -3,7 +3,10 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_initial_session_view_shape_is_versioned_and_hashed() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 534);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let request = LocalDaemonRequest::AttachSessionView(crate::local::AttachSessionViewRequest {
         session_id: "session-1".into(),
         client_id: "client-1".into(),
