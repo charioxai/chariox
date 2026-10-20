@@ -168,6 +168,7 @@ async fn pending_interaction_replay_waits_for_one_volatile_result() {
         }
     });
     let frame = KernelOutgoingFrame::Response {
+        machine: None,
         request_id: "interaction-attempt-1".to_string(),
         response: Box::new(Some(response.clone())),
         error: None,
@@ -773,6 +774,7 @@ async fn at_most_once_receipts_never_evict_and_refuse_new_identity_at_capacity()
             "one".into(),
             fingerprint.clone(),
             &KernelOutgoingFrame::Response {
+                machine: None,
                 request_id: "one".into(),
                 response: Box::new(Some(response.clone())),
                 error: None,

@@ -146,6 +146,7 @@ pub(super) async fn admit_frame(
                     &close_requested,
                     &health,
                     KernelOutgoingFrame::Response {
+                        machine: None,
                         request_id,
                         response: Box::new(None),
                         error: Some(KernelTransportError {
@@ -195,6 +196,7 @@ pub(super) async fn admit_frame(
                 &close_requested,
                 &health,
                 KernelOutgoingFrame::Response {
+                    machine: None,
                     request_id,
                     response: Box::new(response),
                     error,
@@ -298,6 +300,7 @@ fn deny_frame(
         close_requested,
         &runtime.transport_health,
         KernelOutgoingFrame::Response {
+            machine: None,
             request_id,
             response: Box::new(None),
             error: Some(KernelTransportError {
@@ -430,6 +433,7 @@ pub(super) fn serve_gateway(
                 close_requested,
                 &runtime.transport_health,
                 KernelOutgoingFrame::Response {
+                    machine: None,
                     request_id,
                     response: Box::new(None),
                     error: Some(KernelTransportError {
@@ -468,6 +472,10 @@ pub(super) fn serve_gateway(
         let _permit = permit;
         let command_id = command_id.unwrap_or_else(|| request_id.clone());
         let origin = crate::runtime::machine_gateway::Origin { grant_id, harness };
+        let echoed = match &route {
+            GatewayRoute::Forward { machine, .. } => Some(machine.clone()),
+            GatewayRoute::List => None,
+        };
         let outcome = match route {
             GatewayRoute::Forward { machine, request } => {
                 router
@@ -498,6 +506,7 @@ pub(super) fn serve_gateway(
             &close_requested,
             &health,
             KernelOutgoingFrame::Response {
+                machine: echoed,
                 request_id,
                 response: Box::new(response),
                 error,

@@ -55,6 +55,7 @@ impl OutboundBoundary {
                         Err(_) => match frame {
                             KernelOutgoingFrame::Response { request_id, .. } => {
                                 let refusal = KernelOutgoingFrame::Response {
+                                    machine: None,
                                     request_id,
                                     response: Box::new(None),
                                     error: Some(withheld_error()),

@@ -996,12 +996,14 @@ async fn dispatch_relay_client_request(
             let mut response = serde_json::to_value(response).unwrap_or(Value::Null);
             crate::local::redact_client_response_value(&mut response);
             KernelOutgoingFrame::Response {
+                machine: None,
                 request_id: command_id.clone(),
                 response: Box::new(Some(response)),
                 error: None,
             }
         }
         Err(error) => KernelOutgoingFrame::Response {
+            machine: None,
             request_id: command_id.clone(),
             response: Box::new(None),
             error: Some(map_kernel_error(&error)),

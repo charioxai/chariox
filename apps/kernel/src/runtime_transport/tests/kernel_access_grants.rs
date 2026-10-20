@@ -1298,6 +1298,7 @@ async fn machine_requests_are_decided_locally_before_any_machine_is_reached() {
     grant(&mut kernel, &mut holder).await;
     let listed = holder.request(serde_json::json!({"ListGatewayMachines":{}}));
     assert!(listed["error"].is_null(), "{listed}");
+    assert!(listed["machine"].is_null(), "{listed}");
     assert_eq!(
         listed["response"]["GatewayMachinesListed"]["machines"],
         serde_json::json!([]),
@@ -1308,6 +1309,7 @@ async fn machine_requests_are_decided_locally_before_any_machine_is_reached() {
         serde_json::json!({"GetSessionState":{"session_id":SESSION}}),
     );
     assert_eq!(unknown["error"]["code"], "machine_unknown", "{unknown}");
+    assert_eq!(unknown["machine"], "b3", "the answer names the machine it concerns: {unknown}");
     assert!(unknown["response"].is_null(), "never answered locally: {unknown}");
     let passkey = holder.request_on(
         "b3",

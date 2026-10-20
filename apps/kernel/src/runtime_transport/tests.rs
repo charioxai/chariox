@@ -173,6 +173,7 @@ async fn fd_exhaustion_transport_child() {
                 Some(Ok(Message::Text(text))) => {
                     let frame: KernelOutgoingFrame = serde_json::from_str(&text).unwrap();
                     if let KernelOutgoingFrame::Response {
+                        machine: None,
                         request_id,
                         response,
                         error,
@@ -2425,6 +2426,7 @@ fn decode_error_reply(payload: serde_json::Value) -> (String, KernelTransportErr
         .expect_err("payload should fail typed decoding");
     match incoming_frame_decode_error(&payload, &error) {
         KernelOutgoingFrame::Response {
+            machine: None,
             request_id,
             response,
             error,
@@ -2494,6 +2496,7 @@ fn undecodable_frame_without_request_id_replies_as_invalid_frame() {
     let error = serde_json::from_slice::<KernelIncomingFrame>(payload).expect_err("not json");
     match incoming_frame_decode_error(payload, &error) {
         KernelOutgoingFrame::Response {
+            machine: None,
             request_id, error, ..
         } => {
             assert_eq!(request_id, "unknown");

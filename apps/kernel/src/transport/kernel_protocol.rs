@@ -77,6 +77,10 @@ pub(crate) struct KernelTransportError {
 pub(crate) enum KernelOutgoingFrame {
     Response {
         request_id: String,
+        /// Protocol 568: the machine that answered a forwarded request, so a
+        /// client can tell a forwarded answer from a local one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machine: Option<String>,
         response: Box<Option<Value>>,
         error: Option<KernelTransportError>,
     },

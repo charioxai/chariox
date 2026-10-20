@@ -81,6 +81,7 @@ mod tests {
 
         sender
             .try_send(KernelOutgoingFrame::Response {
+                machine: None,
                 request_id: "request-1".to_string(),
                 response: Box::new(None),
                 error: None,
@@ -120,6 +121,7 @@ mod tests {
             &close_requested,
             &transport_health,
             KernelOutgoingFrame::Response {
+                machine: None,
                 request_id: "request-1".to_string(),
                 response: Box::new(None),
                 error: None,
@@ -133,6 +135,7 @@ mod tests {
             &close_requested,
             &transport_health,
             KernelOutgoingFrame::Response {
+                machine: None,
                 request_id: "request-2".to_string(),
                 response: Box::new(None),
                 error: None,

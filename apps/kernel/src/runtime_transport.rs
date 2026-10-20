@@ -1217,6 +1217,7 @@ fn incoming_frame_decode_error(payload: &[u8], error: &serde_json::Error) -> Ker
         ),
     };
     KernelOutgoingFrame::Response {
+        machine: None,
         request_id,
         response: Box::new(None),
         error: Some(KernelTransportError {
@@ -1341,6 +1342,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                             close_requested,
                             &runtime.transport_health,
                             KernelOutgoingFrame::Response {
+                                machine: None,
                                 request_id,
                                 response: Box::new(None),
                                 error: Some(KernelTransportError {
@@ -1413,6 +1415,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                         close_requested,
                         &runtime.transport_health,
                         KernelOutgoingFrame::Response {
+                            machine: None,
                             request_id,
                             response: Box::new(None),
                             error: Some(map_kernel_error(&error)),
@@ -1460,6 +1463,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                                     &close_requested,
                                     &transport_health,
                                     KernelOutgoingFrame::Response {
+                                        machine: None,
                                         request_id,
                                         response: Box::new(None),
                                         error: Some(KernelTransportError {
@@ -1492,6 +1496,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                                 &close_requested,
                                 &transport_health,
                                 KernelOutgoingFrame::Response {
+                                    machine: None,
                                     request_id,
                                     response,
                                     error,
@@ -1510,6 +1515,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                             close_requested,
                             &runtime.transport_health,
                             KernelOutgoingFrame::Response {
+                                machine: None,
                                 request_id,
                                 response: Box::new(None),
                                 error: Some(KernelTransportError {
@@ -1547,6 +1553,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                         close_requested,
                         &runtime.transport_health,
                         KernelOutgoingFrame::Response {
+                            machine: None,
                             request_id,
                             response: Box::new(None),
                             error: Some(KernelTransportError {
@@ -1618,12 +1625,14 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                             }
                         }
                         KernelOutgoingFrame::Response {
+                            machine: None,
                             request_id,
                             response: Box::new(Some(response)),
                             error: None,
                         }
                     }
                     Err(error) => KernelOutgoingFrame::Response {
+                        machine: None,
                         request_id,
                         response: Box::new(None),
                         error: Some(map_kernel_error(&error)),
@@ -1661,6 +1670,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                     close_requested,
                     &runtime.transport_health,
                     KernelOutgoingFrame::Response {
+                        machine: None,
                         request_id,
                         response: Box::new(None),
                         error: Some(KernelTransportError {
@@ -1738,6 +1748,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 close_requested,
                 &runtime.transport_health,
                 KernelOutgoingFrame::Response {
+                    machine: None,
                     request_id,
                     response: Box::new(Some(serde_json::json!({
                         "ok": true,
@@ -1816,6 +1827,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 close_requested,
                 &runtime.transport_health,
                 KernelOutgoingFrame::Response {
+                    machine: None,
                     request_id,
                     response: Box::new(Some(serde_json::json!({ "ok": true }))),
                     error: None,
