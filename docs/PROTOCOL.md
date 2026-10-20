@@ -4908,7 +4908,7 @@ authority for its own sessions, agents, terminals and files.
   it with `JoinTerminalPairingLink`; the link's relay must be this kernel's relay; a scoped relay also needs the
   operator CLIENT token in `relay_token`) and `ForgetGatewayMachine { name }` -> `GatewayMachineForgotten
   { kernel_id }`. Pairings are kept in `gateway-machines.json` (0600) with the target key learned at first contact
-  and pinned from then on; a machine seen on the relay is online, one not seen is listed offline. A refusal is
+  and pinned from then on (a connection that announces another key is refused). `ListGatewayMachines` asks each paired machine for its status over its own relay link: one that answers is online and its capabilities refresh, one that does not is offline with its last answer time. No relay inventory permission is needed, so a scoped relay works with the CLIENT token alone. Every state-changing request is audited as `kernel_access.forward` (machine, request kind, outcome, latency; no payload) on the sending kernel and `machine_gateway.request` (origin kernel, harness, request kind) on the receiving one. A refusal is
   `machine_join_refused`. The grant on the other machine is revoked there; forgetting only drops it here.
 The Rust hash test `machine_gateway_protocol_568_shapes_and_hash` pins the shapes.
 
