@@ -142,3 +142,13 @@ test('MP-11 a known frame from another session is not trusted at admission',asyn
  const pending=f.cache.target(f.browser,f.stored);await new Promise(r=>setImmediate(r));
  assert.deepEqual(f.calls,['Page.getFrameTree']);finish();assert.equal((await pending).document_id,'a');f.cache.clear();
 });
+
+test('MP-10 input arriving while the document is being identified waits for it, then is admitted; a document that never settles is still refused',async()=>{
+ const f=fixture(),tab=await f.cache.target(f.browser,f.stored);let release;
+ f.block(new Promise(r=>release=r));f.navigate('b');f.event('Page.loadEventFired');
+ assert.equal(f.cache.current(tab),false);
+ const waiting=f.cache.target(f.browser,f.stored,2000);setTimeout(release,120);
+ assert.equal((await waiting).document_id,'b','the click is delivered to the identified document, not refused as loading');
+ f.block(new Promise(()=>{}));f.event('Page.loadEventFired');
+ await assert.rejects(f.cache.target(f.browser,f.stored,150),/unavailable while loading/);f.cache.clear();
+});

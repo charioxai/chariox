@@ -9,7 +9,8 @@ export class DisplayDocumentPending extends Error {
 }
 export class DisplayDocuments {
  constructor(){this.entries=new Map();}
- async target(browser,stored){
+ // `wait`: input arriving while a document transition is not yet identified waits for it (bounded) instead of being refused.
+ async target(browser,stored,wait=0){
   let entry=this.entries.get(stored.target_id);
   if(entry&&(entry.browser!==browser||entry.connection?.isOpen?.()===false||entry.retired)){this.retire(entry,stored.target_id);entry=null;}
   if(!entry){
@@ -19,6 +20,8 @@ export class DisplayDocuments {
    entry.ready=this.admit(entry,stored.target_id).catch(error=>{this.retire(entry,stored.target_id);throw error});
   }
   await entry.ready;
+  if(entry.retired||entry.connection.isOpen?.()===false)throw Error('MP-11: display document unavailable');
+  for(const until=Date.now()+wait;entry.pending&&!entry.retired&&Date.now()<until;)await new Promise(resolve=>setTimeout(resolve,40));
   if(entry.retired||entry.connection.isOpen?.()===false)throw Error('MP-11: display document unavailable');
   if(entry.pending)throw new DisplayDocumentPending();
   if(!entry.document)throw Error('MP-11: display document unavailable');
@@ -83,10 +86,10 @@ export class DisplayDocuments {
 }
 
 // MP-08/MP-10/MP-11: native metadata reads use the same document owner as mirrors/captures.
-export async function resolveDisplayTarget(host, command, native = false) {
+export async function resolveDisplayTarget(host, command, native = false, wait = 0) {
  if(command.generation!==host.generation)throw new UserDomainRefusal('stale_epoch');
  const stored=host.tabs.get(command.tab_id);if(!stored)throw new UserDomainRefusal('not_granted');
- if(native)return host.displayDocuments.target(host.browser,stored);
+ if(native)return host.displayDocuments.target(host.browser,stored,wait);
  const browser=host.browser,target=stored.target_id,generation=host.generation,frame=browser.currentPageFrame?.(target);
  const owner=frame?captureDocumentOwner(browser,{target_id:target,document_id:frame.frame.loaderId}):null;
  const {connection,sessionId}=owner??await browser.resolvePageTarget(target);

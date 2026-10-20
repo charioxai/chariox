@@ -68,6 +68,8 @@ const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 's
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
 const SLOW_OP_MS = 1000;
 const POST_INPUT_OBSERVE_MS = 500;
+// A click or key arriving while the page is loading waits this long for its document to be identified, instead of being refused.
+const INPUT_DOCUMENT_WAIT_MS = 1500;
 // `promise`'s value, or null once `ms` have passed (the promise is left to settle on its own).
 const withinMs = (promise, ms) => { let timer; return Promise.race([promise, new Promise(resolve => { timer = setTimeout(resolve, ms, null); })]).finally(() => clearTimeout(timer)); };
 const TIMED_OPS = new Set(['start', 'state', 'open', 'close', 'navigate', 'mirror_subscribe', 'display_subscribe']);
@@ -511,7 +513,7 @@ export class KernelBrowserHost {
     const current = this.browser.currentPageFrame?.(stored.target_id);
     return current ? { ...stored, document_id: current.frame.loaderId } : this.displayTarget(command);
   }
-  displayTarget(command, native = false) { return resolveDisplayTarget(this, command, native); }
+  displayTarget(command, native = false, wait = 0) { return resolveDisplayTarget(this, command, native, wait); }
 
   sampleLane(tab) {
     let lane=this.sampleLanes.get(tab.tab_id);
@@ -736,7 +738,7 @@ export class KernelBrowserHost {
     // MP-08/MP-10: a navigation or a selection note reads only its own Tab's live document: a full
     // all-tab reconcile waits for busy (loading) pages and held the mutation lane.
     let tab = command.op === 'input' && typeof command.document_id === 'string' || ['navigate', 'note_selection', 'note_reanchor'].includes(command.op)
-      ? await slowMark(this.timing, 'input_wait display_target', this.displayTarget(command,nativeInputDocumentTarget(this,command,scope,nativeDisplay))) : await this.target(command);
+      ? await slowMark(this.timing, 'input_wait display_target', this.displayTarget(command,nativeInputDocumentTarget(this,command,scope,nativeDisplay),INPUT_DOCUMENT_WAIT_MS)) : await this.target(command);
     assertNotCancelled(signal);
     if (agentRequest && ["input", "navigate"].includes(command.op) && extensionManagementUrl(tab.url)) throw new Error(EXTENSIONS_REFUSED);
     const { app, agent } = this.appAgent(tab, command, ["input", "navigate", "close"].includes(command.op));
