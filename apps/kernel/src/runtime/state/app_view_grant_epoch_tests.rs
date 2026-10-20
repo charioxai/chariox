@@ -507,3 +507,6 @@ async fn mp11_app_installation_revoke_regrant_cancels_a_pending_worker_reply() {
     );
     assert!(cancelled, "the worker receives Cancel");
 }
+
+#[path = "app_host_concurrency_tests.rs"]
+mod host_concurrency_tests;

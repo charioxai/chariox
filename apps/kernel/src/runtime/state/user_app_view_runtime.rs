@@ -263,13 +263,33 @@ impl KernelRuntimeState {
         restoring: bool,
     ) -> Result<Result<(UserAppView, AppFrontendBundle), AppRequestErrorCode>, DaemonError> {
         let instances = self.app_control().user_views();
-        if host == Some(UserAppViewHost::KernelBrowser) {
+        let _opening = if host == Some(UserAppViewHost::KernelBrowser) {
+            let opening = instances.opening(owner).await;
             self.seed_user_app_tabs(owner);
+            Some(opening)
+        } else {
+            None
+        };
+        // An explicit Open that held the guard first already settled this restore.
+        if restoring
+            && !instances
+                .restore_batch(owner)
+                .iter()
+                .any(|a| a == installation)
+        {
+            return Ok(Err(AppRequestErrorCode::Conflict));
         }
         let (binding, frontend) = match self.user_app_frontend(owner, installation).await {
             Ok(view) => view,
             Err(code) => return Ok(Err(code)),
         };
+        if host == Some(UserAppViewHost::KernelBrowser) && !restoring {
+            if let Some(view) =
+                Box::pin(self.focus_user_app_browser(owner, &binding, &frontend)).await
+            {
+                return Ok(Ok((view, frontend)));
+            }
+        }
         let mut view =
             match instances.open(owner, binding.clone(), &origin_label(owner, installation)) {
                 Ok(view) => view,
@@ -373,7 +393,7 @@ impl KernelRuntimeState {
         .unwrap_or(false)
     }
 
-    async fn user_app_frontend(
+    pub(super) async fn user_app_frontend(
         &self,
         owner: &str,
         installation: &str,

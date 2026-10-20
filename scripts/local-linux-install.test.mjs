@@ -26,7 +26,7 @@ async function script(path, contents) {
 }
 
 const DESKTOP = ["Xvfb", "openbox", "bwrap", "dbus-daemon", "setxkbmap"]
-const PACKAGES = "python3-xlib python3-pil xvfb openbox bubblewrap dbus-daemon x11-xkb-utils"
+const PACKAGES = "python3-xlib python3-pil xvfb openbox bubblewrap dbus-daemon x11-xkb-utils libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 libcups2 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2"
 
 async function harness() {
   const base = await mkdtemp(join(tmpdir(), "chariox-local-install-"))
@@ -216,6 +216,9 @@ test("local Linux root install is idempotent, merges owners and uninstalls", { s
       await readFile(join(repositoryRoot, "deploy/local-linux/chariox-app-bwrap.apparmor"), "utf8"))
     assert.equal(await readFile(p(h, "etc/systemd/system/chariox-app-storage.service"), "utf8"),
       await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-app-storage.service"), "utf8"))
+    // MP-08/MP-11: a user's kernel (user@UID.service starts after systemd-user-sessions) stops before the
+    // storage helper at shutdown; the helper stopping first kills running Apps, which then come back Failed.
+    assert.match(await readFile(p(h, "etc/systemd/system/chariox-app-storage.service"), "utf8"), /^Before=.*\bsystemd-user-sessions\.service\b/m)
     assert.ok(existsSync(p(h, "var/lib/chariox-local-install/linger-1000")))
     // MP-11: the kernel browser's private policy namespace launcher, the only
     // unshare the AppArmor exception admits (Ubuntu >= 23.10 restricts userns).

@@ -104,18 +104,16 @@ impl AppHostBroker {
             let _permit = permit;
             if let Some((authority, budget)) = authority {
                 authority
-                    .commit(|| {
+                    .enqueue(|| {
                         budget
                             .check()
                             .map_err(|_| super::app_view_authority::not_granted())?;
-                        store
-                            .app_host_action(HostActionCommand::Create(offer))
-                            .map_err(|code| {
-                                crate::runtime::browser_controller_app_view::BrowserAppViewError {
-                                    code: code.into(),
-                                    message: code.into(),
-                                }
-                            })
+                        store.offer_app_host_action(offer, budget).map_err(|code| {
+                            crate::runtime::browser_controller_app_view::BrowserAppViewError {
+                                code: code.into(),
+                                message: code.into(),
+                            }
+                        })
                     })
                     .map_err(|error| error.code)
             } else {

@@ -158,7 +158,7 @@ async function handleBrowserControllerRequestInner(
       const apps = browser.appTabs;
       if (request.method === "browser.app.open") return successResponse(request.id, await apps.open(request.params));
       if (request.method === "browser.app.close") return successResponse(request.id, await apps.close(request.params));
-      if (request.method === "browser.app.calls") return successResponse(request.id, await apps.takeCalls());
+      if (request.method === "browser.app.calls") return successResponse(request.id, await apps.takeCalls(request.params));
       if (request.method === "browser.app.respond") return successResponse(request.id, await apps.respond(request.params));
       if (request.method === "browser.app.reload") return successResponse(request.id, await apps.reload(request.params));
       if (request.method === "browser.app.layout") return successResponse(request.id, await apps.layout(request.params));

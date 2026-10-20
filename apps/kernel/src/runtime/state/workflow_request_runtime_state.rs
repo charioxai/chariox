@@ -538,7 +538,11 @@ impl KernelRuntimeState {
                 .await
             }
             LocalDaemonRequest::CancelWorkflowRun(request) => {
-                self.execute_workflow_cancel_run_request(request).await
+                self.execute_workflow_cancel_run_request_for_user(
+                    request,
+                    self.terminal_stop_user(&caller_user_id),
+                )
+                .await
             }
             LocalDaemonRequest::ControlRoomWorkflowRuns(request) => {
                 self.execute_room_workflow_control_request(request, &caller_user_id)

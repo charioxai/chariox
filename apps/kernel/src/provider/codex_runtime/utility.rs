@@ -320,3 +320,7 @@ mod tests {
         assert_eq!(output.unwrap(), expected);
     }
 }
+
+#[cfg(test)]
+#[path = "utility/terminal_connection_tests.rs"]
+mod terminal_connection_tests;

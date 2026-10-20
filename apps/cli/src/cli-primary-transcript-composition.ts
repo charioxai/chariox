@@ -63,6 +63,7 @@ export type CliPrimaryTranscriptCompositionDeps = {
   workspaceShellContext: AnyFn
   waitingRoomLaunchOwnershipRevision?: AnyFn
   applyWaitingRoomBootstrapDefaults?: AnyFn
+  applyAttachedProviderRun: AnyFn
   waitingRoomState: AnyFn
   availableSessions: AnyFn
   waitingRoomProjects: AnyFn
@@ -324,6 +325,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
   const deferredBootstrapController = createDeferredBootstrapController({
     getDeferred: () => deps.bootstrap.deferred,
     applyWaitingRoomDefaults: bootstrapDefaultsController.apply,
+    applyAttachedProviderRun: deps.applyAttachedProviderRun,
     currentAttachmentSessionId: () => deps.attachmentState()?.session_id ?? null,
     currentTranscriptEntryCount: () => deps.transcriptEntryProjectionController.renderableEntries().length,
     entryCounter: deps.entryCounter,

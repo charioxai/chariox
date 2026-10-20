@@ -341,6 +341,11 @@ pub(crate) enum Operation {
         task: String,
     },
     /// Private kernel lineage; not a serialized client contract.
+    ReconcileFailedWorkflow {
+        owner_id: String,
+        room: String,
+        run: String,
+    },
     BindWorkflow {
         task: String,
         prompt: String,

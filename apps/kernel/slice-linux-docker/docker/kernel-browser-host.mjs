@@ -3,11 +3,12 @@ import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
 import {captureVisiblePage,pngFallbackCommand,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeInputDocumentTarget} from './kernel-browser-page-display.mjs';
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
+import { appRestoreOrigin } from "./browser-app-restore.mjs";
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {displayGeometry as geometry,hostViewport} from './kernel-browser-geometry.mjs';
 // MD-2: sessionless host adapter over the shared controller/CDP implementation.
-import { CaptureRefusal, UserDomainRefusal } from "./kernel-browser-refusal.mjs";
+import { CaptureRefusal, PointerOutsideViewport, UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -165,6 +166,13 @@ export class KernelBrowserHost {
     const active = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget);
     const data = { generation: this.generation, active_tab_id: active?.tab_id ?? null, groups: this.savedGroups,
       tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => ({ tab_id, url: redactObservation(url, this.protection.values) === url ? restorationUrl(url) : "about:blank" })) };
+    // App intent remains kernel-owned; only its origin selects the restored view.
+    data.app_origins = [...new Set([
+      ...[...(this.browser?.appTabs?.apps?.values() ?? [])].map(app => appRestoreOrigin(app.origin)).filter(Boolean),
+      ...(this.pendingActive?.apps ?? []),
+    ])].slice(0, TAB_LIMIT);
+    data.active_tab_id = this.pendingActive?.tab_id ?? active?.tab_id ?? null;
+    data.active_app_origin = this.pendingActive?.app_origin ?? appRestoreOrigin(active?.url) ?? null;
     const serialized = JSON.stringify(data);
     if (serialized === this.lastSaved) return;
     await writeFile(`${name}.new`, serialized, { mode: 0o600 });
@@ -239,6 +247,11 @@ export class KernelBrowserHost {
     this.browser.pageTiming = this.timing;
     connection.presentationFence?.bindOwner?.(this.browser, this.timing);
     this.browser.protectedValues = new Set(this.protection.values);
+    this.pendingActive = { tab_id: typeof saved.active_tab_id === 'string' ? saved.active_tab_id : null,
+      app_origin: appRestoreOrigin(saved.active_app_origin),
+      apps: Array.isArray(saved.app_origins) ? saved.app_origins.map(appRestoreOrigin).filter(Boolean).slice(0, TAB_LIMIT) : [],
+      until: Date.now() + 30_000 };
+    if (!this.pendingActive.tab_id && !this.pendingActive.app_origin) this.pendingActive = null;
     this.generation = saved.generation + 1;
     this.chromeWindows.retire('browser_generation');
     // Publish the new generation before any restoration, so old references never revive.
@@ -274,6 +287,8 @@ export class KernelBrowserHost {
         await connection.send('Target.activateTarget', { targetId: active.target_id });
         this.activeTarget = active.target_id;
       }
+      this.restoring = false;
+      await this.reconcile();
       await this.save();
       await this.rebindWindows();
       this.recovery.watch(connection);
@@ -479,7 +494,10 @@ export class KernelBrowserHost {
     if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1" || this.chromium?.policy !== "managed" || !(tabbed?.isBandCurrent ?? tabbed?.isCurrent)?.()) return null;
     const active = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget);
     // Protocol 530: the window's own popups (menus, omnibox dropdown, extension popups, bubbles).
-    return { window_generation: tabbed.window_generation, active_tab_id: active?.tab_id ?? null, auxiliary: this.chromeWindows.auxiliaryState() };
+    // MP-08/MP-10: restoring Apps temporarily focus their own windows. The
+    // existing nullable selection stays unknown until restore settles; physical
+    // input still checks the actual native target through activeTarget.
+    return { window_generation: tabbed.window_generation, active_tab_id: this.pendingActive ? null : active?.tab_id ?? null, auxiliary: this.chromeWindows.auxiliaryState() };
   }
   async reconcile({readOnly=false}={}) {
     const browser = this.browser, generation = this.generation;
@@ -527,7 +545,28 @@ export class KernelBrowserHost {
     }
     for (const [id, tab] of this.tabs) tab.tab_id = id;
     const previous = this.activeTarget;
-    this.activeTarget = await this.tabGroups?.active?.().catch(() => null) ?? null;
+    const intent = this.pendingActive;
+    const boundOrigins = new Set([...(this.browser.appTabs?.apps?.values() ?? [])].filter(app => app.ready === true).map(app => app.origin));
+    const restoreReady = intent && (intent.apps.every(origin => boundOrigins.has(origin)) || Date.now() >= intent.until);
+    const restored = !this.restoring && restoreReady && [...this.tabs.values()].find(tab => intent.app_origin
+      ? [...(this.browser.appTabs?.apps?.values() ?? [])].some(app => app.ready === true && app.targetId === tab.target_id && app.origin === intent.app_origin)
+      : tab.tab_id === intent.tab_id);
+    const nativeActive = await this.tabGroups?.active?.().catch(() => null) ?? null;
+    if (restored) {
+      if (this.pendingActive !== intent) return this.reconcile();
+      if (nativeActive !== restored.target_id) {
+        await this.retireNativeForeground(restored.target_id);
+        const connection = await this.browser.ensureConnection();
+        if (this.pendingActive !== intent) return this.reconcile();
+        await connection.send('Target.activateTarget', {targetId:restored.target_id});
+      }
+      if (this.pendingActive !== intent) return this.reconcile();
+      this.pendingActive = null;
+    } else if (intent && this.pendingActive === intent && !this.restoring && Date.now() >= intent.until) {
+      // The saved selection cannot return (App uninstalled, Tab closed): the live native selection wins.
+      this.pendingActive = null;
+    }
+    this.activeTarget = restored?.target_id ?? nativeActive;
     if (this.activeTarget !== previous) await this.retireNativeForeground(this.activeTarget);
     const result = this.tabState();
     for (const [id, stream] of this.streams) if (!this.tabs.has(stream.tabId)) await this.removeStream(id);
@@ -840,6 +879,9 @@ export class KernelBrowserHost {
       return { generation: this.generation, subscription_id: id, codec, bitrate: command.bitrate, device_scale_factor: scale };
     }));
     if (command.op === "close") {
+      // The closed Tab can no longer be restored as the selection (MP-08/MP-10).
+      const intent = this.pendingActive, origin = appRestoreOrigin(tab.url);
+      if (intent && (intent.tab_id === tab.tab_id || (origin && intent.app_origin === origin))) this.pendingActive = null;
       this.mirror.removeTab(tab.tab_id);
       for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id && !['browser_chrome', 'browser_auxiliary', 'browser_window'].includes(stream.regionTarget?.kind)) { await stream.close(); this.displays.delete(id); }
       await this.closeCompositors(tab.tab_id);if(this.foreground.tab===tab.tab_id)this.foreground.reset();
@@ -888,9 +930,21 @@ export class KernelBrowserHost {
       // Retiring an encoded row on each key forces an IDR and can delay echo
       // behind its byte budget. Epochs still retire exact work; policy/document
       // retirement still closes the source/producer and resets every row.
+      const rememberSelection = () => {
+        // MP-08/MP-10/MP-11: CDP can type into a background window. Its
+        // admitted human selection supersedes older native restore intent.
+        const intent = this.pendingActive, origin = appRestoreOrigin(tab.url);
+        // The cached target can still match while a late native window fold
+        // changed Chrome's selection. Reconcile checks the live native target
+        // before activating, so ordinary keys do not refocus an active tab.
+        if (!agent && !command._agent_input && !command.focused_agent) {
+          this.pendingActive = {tab_id:tab.tab_id,app_origin:origin,apps:intent?.apps ?? [],until:intent?.until ?? Date.now()};
+        }
+      };
       const onDispatch = () => {
         if (dispatched) return;
         dispatched = true;
+        rememberSelection();
         this.inputChangedAt.set(tab.tab_id, performance.now());
         this.timing.event?.('input_dispatch',{at,input:this.inputCount=(this.inputCount??0)+1,kind:inputKinds[command.input?.kind]??0});
         this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
@@ -915,7 +969,12 @@ export class KernelBrowserHost {
         const nativeKey=viewerActive()&&owned?.attested&&typeof owned.key==='function'?(keysym,shift)=>viewerActive()&&owned.key(keysym,shift):null;
         const documentCurrent=(nativeKey&&command.input?.kind==='key'||nativeWheel&&command.input?.kind==='scroll')?await slowMark(this.timing,'input_wait document_guard',this.displayDocuments.guard(this.browser,tab)):undefined;
         const laneAt=timestamp();
-        const deferred=await this.sampleLane(tab).run("input", () => (timestamp()-laneAt>250&&this.timing('input_wait sample_lane',laneAt),this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, inputGuard, documentCurrent, chromeFocused: () => Boolean(this.arbiter?.chromeFocus), slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }))));
+        const deferred=await this.sampleLane(tab).run("input", async () => {
+          if(timestamp()-laneAt>250)this.timing('input_wait sample_lane',laneAt);
+          const result=await this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, inputGuard, documentCurrent, chromeFocused: () => Boolean(this.arbiter?.chromeFocus), slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+          rememberSelection();
+          return result;
+        });
         // MP-08/MP-10: wheel input is asynchronous, as in a native browser. The
         // fenced, ledgered dispatch is ordered by CDP; the renderer's
         // frame-aligned ack would otherwise serialize kernel input admission.
@@ -1124,7 +1183,7 @@ export class KernelBrowserHost {
       if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }
-      return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: error instanceof MirrorInputEpochRefusal ? "MP-11: stale mirror input epoch" : hostFailureMessage(error) } }; }
+      return { id: request.id, ok: false, error: { code: error?.code === "browser_action_cancelled" ? "browser_action_cancelled" : "kernel_browser_failed", message: error instanceof MirrorInputEpochRefusal ? "MP-11: stale mirror input epoch" : error instanceof PointerOutsideViewport ? error.message : hostFailureMessage(error) } }; }
   }
 }
 

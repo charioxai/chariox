@@ -574,12 +574,15 @@ refresh_slice_support_files() {
     || fail "failed to refresh required slice support overlay: safe App session restore"
   run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod 0644 /opt/chariox-slice/browser-app-restore.mjs \
     || fail "failed to set permissions on safe App session restore overlay"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-app-drafts.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-app-drafts.mjs" "Browser Controller App drafts"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-events.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller events"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-files.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller files"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-artifacts.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-artifacts.mjs" "MP-08/MP-10/MP-11 Browser artifact module"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-image.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-image.mjs" "MP-08/MP-10/MP-11 Browser artifact module"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-observation-regions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-observation-regions.mjs" "Browser Controller dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-response-bodies.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-response-bodies.mjs" "Browser Controller dependency"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/kernel-browser-refusal.mjs" "$SLICE_NAME:/opt/chariox-slice/kernel-browser-refusal.mjs" "MP-08/MP-10/MP-11 controller dependency"
   for shared_display_asset in "$REPO_ROOT"/apps/kernel/slice-linux-docker/docker/kernel-*.mjs "$REPO_ROOT"/apps/kernel/slice-linux-docker/docker/kernel-*.py "$REPO_ROOT"/apps/kernel/slice-linux-docker/docker/room-shared-display.mjs; do
     case "$shared_display_asset" in *.test.mjs) continue ;; esac

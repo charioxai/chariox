@@ -64,10 +64,12 @@ impl KernelRuntimeState {
             };
             match run {
                 Some(run) if run.id() == run_id && run.workflow_id() == request.workflow_id => {
-                    if let Err(error) = self
-                        .owned
-                        .ensure_workflow_run_has_control_provenance(&initial, &run)
-                    {
+                    if let Err(error) = self.owned.ensure_workflow_run_interrupt_allowed(
+                        &initial,
+                        &run,
+                        request.action != RoomWorkflowRunAction::Stop,
+                        self.terminal_stop_user(caller_user_id),
+                    ) {
                         result.error = Some(error.to_string());
                     } else if run.status().is_terminal()
                         || (request.action == RoomWorkflowRunAction::Pause
@@ -81,7 +83,12 @@ impl KernelRuntimeState {
                                 .await
                                 .map(|_| ()),
                             RoomWorkflowRunAction::Stop => self
-                                .execute_workflow_interrupt_run(&request.session_id, run_id, false)
+                                .execute_workflow_interrupt_run_for_user(
+                                    &request.session_id,
+                                    run_id,
+                                    false,
+                                    self.terminal_stop_user(caller_user_id),
+                                )
                                 .await
                                 .map(|_| ()),
                             RoomWorkflowRunAction::Resume => self

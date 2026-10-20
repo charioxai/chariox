@@ -1,3 +1,4 @@
+import { installAppDrafts } from "./browser-app-drafts.mjs";
 // App views: one tab per installation on its own https origin. The controller
 // serves the kernel-verified UI assets through CDP Fetch interception, so no
 // port is opened and the page is a secure context. Every other request from
@@ -87,6 +88,7 @@ const BRIDGE_SOURCE = `(() => {
       get() { return request("chariox.panel", {}); },
     }),
   }) });
+  (${installAppDrafts.toString()})();
 })();`;
 
 function invalid(message) {
@@ -119,6 +121,19 @@ function assets(raw, entry) {
 }
 
 export class AppTabs {
+  // MP-08/MP-10/MP-11: only managed App pages have draft state. Finish a
+  // captured edit's disk commit before showing it as recoverable to viewers.
+  async flushDrafts(targetId) {
+    const entry = [...this.apps].find(([, app]) => app.targetId === targetId);
+    if (!entry) return;
+    const [sessionId] = entry;
+    const reply = await this.connection.send('Runtime.evaluate', {
+      expression: 'globalThis.__charioxAppDraftFlushed?.() ?? true', awaitPromise: true, returnByValue: true,
+    }, sessionId);
+    if (reply.exceptionDetails || reply.result?.value !== true) throw new Error('App draft commit unavailable');
+    return true;
+  }
+
   constructor(browser, { restoreGraceMs = 30_000 } = {}) {
     this.browser = browser;
     // Every new CDP connection sweeps App Tabs, even when no App command
@@ -171,14 +186,20 @@ export class AppTabs {
     const shown = [...this.apps.entries()].find(([, open]) => open.installation === app.installation && open.origin === origin && open.instanceId === instanceId);
     if (shown) {
       const [sessionId, open] = shown;
+      const changed = open.entry !== entry || open.assets.size !== app.assets.size
+        || [...app.assets].some(([name, value]) => open.assets.get(name)?.contentType !== value.contentType || open.assets.get(name)?.body !== value.body);
       Object.assign(open, { entry, assets: app.assets, page: app.page });
+      if (changed) open.ready = false;
       const metrics = this.browser.appMetrics?.(open.page);
       if (metrics) await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId).catch(() => {});
       await connection.send("Target.activateTarget", { targetId: open.targetId });
       await this.fullscreen(connection, open.targetId).catch(() => false);
-      // Navigate (not reload): it returns once the document commits, so the
-      // Room projects the Tab's URL rather than the empty one of a reload.
-      await connection.send("Page.navigate", { url: `${origin}/` }, sessionId);
+      // MP-08/MP-10: an unchanged Open only focuses the existing editor.
+      // Verified asset changes still navigate and retire the old document.
+      if (changed) {
+        await connection.send("Page.navigate", { url: `${origin}/` }, sessionId);
+        open.ready = true;
+      }
       return { target_id: open.targetId, origin };
     }
     // Each App view gets its own fullscreen window, so page and desktop
@@ -194,7 +215,8 @@ export class AppTabs {
     clearTimeout(this.orphanRestores.get(targetId)?.timer);
     this.orphanRestores.delete(targetId);
     const sessionId = await this.browser.ensureTargetSession(connection, targetId);
-    this.apps.set(sessionId, { ...app, targetId, document: null, pending: new Set(), agents: new Set() });
+    const opening = { ...app, targetId, document: null, pending: new Set(), agents: new Set(), ready: false };
+    this.apps.set(sessionId, opening);
     try {
       if (restored) await connection.send("Target.activateTarget", { targetId });
       await this.fullscreen(connection, targetId);
@@ -204,6 +226,7 @@ export class AppTabs {
       await connection.send("Runtime.addBinding", { name: BINDING }, sessionId);
       await connection.send("Page.addScriptToEvaluateOnNewDocument", { source: BRIDGE_SOURCE }, sessionId);
       await connection.send("Page.navigate", { url: `${origin}/` }, sessionId);
+      opening.ready = true;
     } catch (error) {
       this.apps.delete(sessionId);
       await this.browser.closePageTarget(connection, targetId).catch(() => {});
@@ -462,8 +485,8 @@ export class AppTabs {
 
   // Keep the existing RPC and batch shape. Enqueue wakes an outstanding drain;
   // the bounded timeout still projects closed targets and maintains windows.
-  async waitForCalls() {
-    if (this.calls.length || !this.apps.size) return;
+  async waitForCalls(eligible) {
+    if (this.calls.some(eligible) || !this.apps.size) return;
     await new Promise((resolve) => {
       const wake = () => {
         clearTimeout(timer);
@@ -475,14 +498,19 @@ export class AppTabs {
     });
   }
 
-  async takeCalls() {
+  async takeCalls(params = {}) {
+    // MP-08/MP-11: only drain targets whose kernel binding was published.
+    // An existing owner's idle drain may wake while another Open is in flight.
+    const targets = params.target_ids == null ? null : new Set(params.target_ids);
+    const eligible = call => targets === null || targets.has(call.target_id);
     await this.reconcile();
-    await this.waitForCalls();
+    await this.waitForCalls(eligible);
     // A call whose Tab closed or moved to another document is not run.
     const current = new Map([...this.apps.values()].map((app) => [app.targetId, app.document]));
-    const calls = this.calls.filter((call) => current.has(call.target_id)
+    const currentCalls = this.calls.filter((call) => current.has(call.target_id)
       && (call.document_id == null || current.get(call.target_id) == null || call.document_id === current.get(call.target_id)));
-    this.calls = [];
+    const calls = currentCalls.filter(eligible);
+    this.calls = currentCalls.filter(call => !eligible(call));
     // Keep App windows fullscreen (someone may press Esc), so the panel beside
     // each page covers exactly the desktop the page leaves free.
     this.maintainFullscreen();

@@ -238,6 +238,44 @@ change. Focused fail-first checks do not establish real-provider, hosted UI or
 MP-10 parity acceptance; the updated admission anchor needs current independent
 semantic review.
 
+## MP-08 / MP-10 / MP-11 failed workflow delegate settlement (2026-10-14)
+
+A durable Failed/Stopped workflow settles an unstarted delegate only when the
+parent has an accepted receipt for that invocation, is its immutable creator,
+and the delegate names a node with no admitted task. The shared lifecycle writer
+cancels that obligation and subscription, with a redacted failure/recovery
+event. Acknowledging the workflow error or blocking the parent does not strand
+the delegate; periodic reconciliation also reads archived failures. Already
+admitted workflow tasks use normal exact-task cancellation and resource
+settlement. Other invocations and completed delegates retain their outcomes.
+
+Isolated validation workers mount the selected source plus its referenced Git
+common directory read-only through `scripts/e2e-stack/read-only-worktree-mounts.mjs`;
+no enclosing checkout/state directory is mounted to repair Git. Both corrections
+retain local513/peer121 and apply below client-specific behavior. Focused
+regressions and physical mount checks supplement the real-provider/client cells;
+this inventory alone closes no MP acceptance item.
+
+## MP-08 / MP-10 / MP-11 queued schedule and display errors (2026-10-13)
+
+Busy Queue schedules emit an enqueue-only runtime plan rather than mutating the
+queue during collection. The shared runtime admission writes the queued prompt
+and immutable endpoint-owner record in one SQLite transition with rollback.
+Later dispatch reuses that exact queue identity and owner. Display pairing
+lookup failures map to definitive subscription responses and preserve unrelated
+relay subscribers. These shared changes add no managed-only path or serialized
+shape and retain allocated local513/peer121. Source red/green checks supplement
+the BQ-01 and DS-01 real live requirements in `AGENT_MODEL_OVERHAUL_PLAN.md`;
+source checks alone close no MP item or security-anchor review.
+
+The 2026-10-13 17:12 coordinator amendment allows the live kernel owner to Stop
+non-terminal history without changing its provenance or read-only marker.
+Individual and captured paths share the guard, rechecked at commit; agent
+origins, other users, Pause/Resume and terminal history keep the denial. Read
+projection looks up the invoker once per autonomous run and captures the owner
+identity once per projection without cloning the full config. Interrupted/resumed
+control fixtures now use legitimate immutable creator provenance.
+
 ## MP-08 / MP-10 / MP-11 historical workflow admission (2026-10-13)
 
 Allocated local513/peer121 carries paired display caller normalization and an
@@ -246,13 +284,14 @@ or invoking-user proof are read-only to the authenticated kernel owner; Full
 collaboration does not expose them to another user. Current Room, endpoint and
 node ownership never creates historical proof. List/Get, snapshots, updates and
 Room inventory share the same provenance policy. Individual and captured Room
-pause/resume/stop controls reject legacy runs below client adapters. New runs
+controls reject legacy runs below client adapters except the authenticated kernel
+owner's Stop of a non-terminal run under the 17:12 amendment. New runs
 retain atomic invoking-user proof and their ordinary control path. Web/TUI
 project the historical label; native clients receive the same shared marker.
 
 This is common kernel behavior, not a managed-only policy. Managed upgrade pins
 retain506 as an explicit predecessor and the consuming web floor follows513.
-Focused regressions, real pre-proof upgrade cells HW-01/HW-02/HW-03 in the agent
+Focused regressions, real pre-proof upgrade cells HW-01/HW-02/HW-03/HW-04 in the agent
 model plan, and current semantic review of this admission anchor are separate
 requirements. No MP item gains acceptance from this inventory alone.
 

@@ -141,6 +141,15 @@ async fn invoke_append_failure_rolls_back_before_snapshot_and_retries_once() {
 
 #[test]
 fn scheduled_watchdog_append_failure_rolls_back_before_snapshot_and_retries_once() {
+    scheduled_watchdog_append_failure_scenario(false);
+}
+
+#[test]
+fn mp11_busy_schedule_append_failure_rolls_back_owner_and_queue() {
+    scheduled_watchdog_append_failure_scenario(true);
+}
+
+fn scheduled_watchdog_append_failure_scenario(entry_busy: bool) {
     let (runtime, session_id, workflow_id, endpoint_id, _test_root) = runtime_with_idle_workflow();
     runtime
         .owned
@@ -175,6 +184,23 @@ fn scheduled_watchdog_append_failure_rolls_back_before_snapshot_and_retries_once
         .persist_workflow_runtime_session(&session_id, "watchdog_failure_test_baseline")
         .expect("watchdog baseline should persist");
 
+    if entry_busy {
+        runtime
+            .owned
+            .session_store
+            .write()
+            .invoke_workflow_endpoint(
+                &session_id,
+                &workflow_id,
+                &endpoint_id,
+                Some("busy entry".into()),
+            )
+            .unwrap();
+        runtime
+            .owned
+            .persist_workflow_runtime_session(&session_id, "busy_entry_baseline")
+            .unwrap();
+    }
     let state_path = runtime.owned.durable_state_store.path().to_path_buf();
     let connection = rusqlite::Connection::open(state_path)
         .expect("durable database should open for watchdog failure injection");
@@ -203,7 +229,15 @@ fn scheduled_watchdog_append_failure_rolls_back_before_snapshot_and_retries_once
         .get_session(&session_id)
         .expect("rolled-back session should remain available");
     assert!(rolled_back.workflow_queued_prompts().is_empty());
-    assert!(rolled_back.workflow_runs().is_empty());
+    let owner_records: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM durable_state_metadata WHERE metadata_key LIKE '%workflow.user_invocation%'",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(
+        owner_records, 0,
+        "MP-11: failed admission also rolls back its owner record"
+    );
+    assert_eq!(rolled_back.workflow_runs().len(), usize::from(entry_busy));
     assert!(
         !rolled_back
             .workflow_prompt_queues()
@@ -227,7 +261,10 @@ fn scheduled_watchdog_append_failure_rolls_back_before_snapshot_and_retries_once
         .session_snapshot(&session_id)
         .expect("unrelated session snapshot should remain available");
     assert!(unrelated_snapshot.workflow_queued_prompts().is_empty());
-    assert!(unrelated_snapshot.workflow_runs().is_empty());
+    assert_eq!(
+        unrelated_snapshot.workflow_runs().len(),
+        usize::from(entry_busy)
+    );
 
     connection
         .execute_batch("DROP TRIGGER fail_workflow_watchdog_admission_append;")
@@ -241,7 +278,12 @@ fn scheduled_watchdog_append_failure_rolls_back_before_snapshot_and_retries_once
         .session_store
         .get_session(&session_id)
         .expect("retried session should remain available");
-    assert!(retried.workflow_runs().is_empty());
+    // Retry may reconcile the synthetic busy run, which has no provider.
+    // The disabled queue must not create a new scheduled run.
+    assert!(retried
+        .workflow_runs()
+        .iter()
+        .all(|run| run.queue_item_id().is_none()));
     assert_eq!(retried.workflow_queued_prompts().len(), 1);
     assert!(!retried
         .workflow_prompt_queues()
@@ -250,6 +292,14 @@ fn scheduled_watchdog_append_failure_rolls_back_before_snapshot_and_retries_once
         .expect("default queue configuration should remain available after retry")
         .enabled());
     let queued_prompt = &retried.workflow_queued_prompts()[0];
+    assert_eq!(
+        runtime
+            .owned
+            .durable_state_store
+            .workflow_invocation_owner(retried.host_daemon_id(), &session_id, queued_prompt.id(),)
+            .unwrap(),
+        Some(crate::session::DEFAULT_LOCAL_USER_ID.into())
+    );
     assert_eq!(queued_prompt.watchdog_id(), Some(watchdog.id()));
     assert_eq!(queued_prompt.prompt(), Some("scheduled exactly once"));
     let retried_watchdog = retried

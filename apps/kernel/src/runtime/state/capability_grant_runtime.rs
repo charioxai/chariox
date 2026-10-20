@@ -27,6 +27,41 @@ mod tests {
     use super::*;
     use crate::extension::{ExtensionGrant, ExtensionKind};
 
+    // MP-08/MP-10/MP-11 A06: a still-live binding answers at once in Room mode.
+    #[tokio::test]
+    async fn room_self_binding_of_a_live_app_binding_asks_nothing_and_keeps_it() {
+        let worktree = crate::test_support::TestWorktree::new("room-live-binding");
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        crate::durable_state::app_state::fixture_catalog(&app.durable_state_store());
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request().with_owner_user_id("alice"))
+            .unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            4,
+        );
+        let state = router.runtime_state();
+        let bound = state
+            .grant_agent_extension(agent.id(), ExtensionGrant::app("installed"), "alice")
+            .await
+            .unwrap();
+        let permit = tokio::time::timeout(
+            Duration::from_secs(2),
+            state.authorize_agent_app_binding(session.id(), agent.id(), agent.id(), "installed"),
+        )
+        .await
+        .expect("a live binding must not wait for a decision")
+        .unwrap();
+        assert!(permit.is_some());
+        let kept = state
+            .grant_agent_app_for_tool(agent.id(), ExtensionGrant::app("installed"), "alice", permit)
+            .await
+            .unwrap();
+        assert_eq!(kept.extension_grants(), bound.extension_grants());
+    }
+
     #[tokio::test]
     async fn capability_app_expiry_wakes_and_revokes_only_its_delegated_bindings() {
         let worktree = crate::test_support::TestWorktree::new("capability-app-expiry");

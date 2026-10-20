@@ -148,6 +148,21 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 .map_err(sql)?;
             Ok(Outcome::Saved)
         }
+        Operation::ReconcileFailedWorkflow {
+            owner_id,
+            room,
+            run,
+        } => {
+            for mut task in tasks(tx)?.into_iter().filter(|t| t.room_id == room) {
+                if super::workflow_tasks::settle_unstarted_delegates(
+                    tx, &mut task, &owner_id, &run,
+                )? {
+                    task.revision += 1;
+                    save(tx, &task)?;
+                }
+            }
+            Ok(Outcome::Saved)
+        }
         Operation::BindWorkflow {
             task,
             prompt,

@@ -222,7 +222,8 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
   assert.deepEqual(calls, ["resolve", "attach", "session", "launch", "catchup", "session", "outline:agent-a", "prompt-history"])
   assert.deepEqual(launched, [{ provider: "codex", model: "codex/gpt-5.4-mini", effort: "low" }])
   assert.equal(bootstrap.binding?.attachment.id, "attachment-1")
-  assert.equal(bootstrap.binding?.providerRun?.id, "run-1")
+  assert.equal(bootstrap.binding?.providerRun, null)
+  assert.equal((await bootstrap.deferred?.attachedProviderRun)?.providerRun?.id, "run-1")
   assert.deepEqual(bootstrap.binding?.historyEntries, [])
   assert.deepEqual(bootstrap.binding?.promptHistoryEntries, [])
   const deferredHistory = await bootstrap.deferred?.attachedHistory
@@ -561,7 +562,6 @@ test("bootstrapSession recovers when the launch target moves remote during attac
   const launchError = new Error("agent became remote-backed")
   const info: Array<{ message: string; fields: Record<string, unknown> | undefined }> = []
   let stateReads = 0
-  let catchUpSession: RuntimeSession = localSession
 
   const bootstrap = await bootstrapSession(
     {} as never,
@@ -596,9 +596,7 @@ test("bootstrapSession recovers when the launch target moves remote during attac
         throw launchError
       },
       tryGetProviderRun: async () => null,
-      catchUpAttachedSession: async (_client, _sessionId, _attachmentId, session) => {
-        catchUpSession = session
-      },
+      catchUpAttachedSession: async () => {},
       getSessionHistoryOutline: async () => ({ agents: [] }),
       resolveVisibleAgentId: () => agent.id,
       prepareHistoryOutlineAgent: () => [],
@@ -606,9 +604,7 @@ test("bootstrapSession recovers when the launch target moves remote during attac
   )
 
   assert.equal(bootstrap.binding?.providerRun, null)
-  assert.equal(bootstrap.binding?.session.agents[0]?.remote_execution?.worker_kernel_id, "worker-1")
-  assert.equal(catchUpSession.agents[0]?.remote_execution?.worker_kernel_id, "worker-1")
-  assert.equal(stateReads, 3)
+  assert.deepEqual(await bootstrap.deferred?.attachedProviderRun, { sessionId: "session-1", providerRun: null, statusLine: null })
   assert.deepEqual(info, [{
     message: "recovered attach-time provider launch after agent moved remote",
     fields: {
@@ -738,4 +734,40 @@ test("MP-08 / MP-11 direct session creation checks the default account before cr
     prepareHistoryOutlineAgent: () => [],
   }), /codex-1 needs sign-in/)
   assert.equal(created, false)
+})
+
+// After a kernel restart the Vault is locked: the kernel holds the attach-time launch on its own
+// unlock prompt. The TUI must render (and show that prompt) instead of waiting blank for it.
+test("bootstrapSession renders while the kernel holds the attach-time launch on a Vault unlock prompt", async () => {
+  const agent = { id: "agent-a", agent_ref: "agent-a", session_id: "session-1", alias: null, provider: "claude-p", model: "claude-haiku-5-5", effort: "low",
+    worktree_id: null, state: "Idle" as const, is_processing: false, grid_row: 0, grid_col: 0, grid_row_span: 1, grid_col_span: 1, created_at_ms: 1, last_activity_at_ms: 1 }
+  const session = { id: "session-1", project_id: "project-default", workspace_id: "/workspace", worktree_id: "/workspace", created_at_ms: 1, status: "Active",
+    active_provider_run_id: null, attachment_ids: [], active_prompt: null, queued_prompts: [], focused_agent_id: "agent-a", max_agents: 8, agents: [agent],
+    config_state: { version: 1, values: {} } }
+  const run = { id: "run-1", session_id: "session-1", agent_instance_id: "agent-a", adapter_key: "claude-p", provider: "claude-p", account_profile: "default",
+    model: "claude-haiku-5-5", variant: "low", usage_tokens_total: null, state: "Running" }
+  let unlock!: (value: typeof run) => void
+  const pending = bootstrapSession({} as never, { clientId: "cli-1", sessionId: "session-1", model: "default", accountProfile: "default", effort: "low" },
+    "/workspace", "/workspace", {}, {
+      listSessions: async () => [session],
+      getProviderCatalog: async () => fallbackProviderCatalog(),
+      getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+      getTerminalCommandCatalog: async () => terminalCatalog(),
+      createSession: async () => { throw new Error("should not create") },
+      resolveSession: async () => session,
+      attachToSession: async () => ({ id: "attachment-1", session_id: "session-1" }),
+      getSessionState: async () => session,
+      launchProviderRun: () => new Promise(resolve => { unlock = resolve }),
+      tryGetProviderRun: async () => null,
+      catchUpAttachedSession: async () => {},
+      getSessionHistoryOutline: async () => ({ agents: [] }),
+      resolveVisibleAgentId: () => "agent-a",
+      prepareHistoryOutlineAgent: () => [],
+    })
+  const bootstrap = await Promise.race([pending, new Promise<"held">(resolve => setTimeout(() => resolve("held"), 1000))])
+  assert.notEqual(bootstrap, "held", "the TUI renders while the kernel waits for the Vault passphrase")
+  if (bootstrap === "held") return
+  assert.equal(bootstrap.binding?.providerRun, null)
+  unlock(run)
+  assert.deepEqual(await bootstrap.deferred?.attachedProviderRun, { sessionId: "session-1", providerRun: run, statusLine: null })
 })

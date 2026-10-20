@@ -3,8 +3,13 @@ use super::*;
 impl KernelRuntimeOwnedState {
     pub(super) fn spawn_agent(
         &self,
-        request: crate::agent::CreateAgentRequest,
+        mut request: crate::agent::CreateAgentRequest,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        crate::runtime::agent_account_admission::resolve_spawn_account(
+            &self.config_projection.snapshot(),
+            &self.provider_account_profiles,
+            &mut request,
+        )?;
         let obligation = request
             .spawned_by_agent_id
             .as_deref()
@@ -53,8 +58,15 @@ impl KernelRuntimeOwnedState {
 
     pub(super) fn spawn_agents(
         &self,
-        requests: Vec<crate::agent::CreateAgentRequest>,
+        mut requests: Vec<crate::agent::CreateAgentRequest>,
     ) -> Result<Vec<crate::agent::AgentInstance>, DaemonError> {
+        for request in &mut requests {
+            crate::runtime::agent_account_admission::resolve_spawn_account(
+                &self.config_projection.snapshot(),
+                &self.provider_account_profiles,
+                request,
+            )?;
+        }
         let mut obligations = Vec::with_capacity(requests.len());
         for request in &requests {
             let registered = request

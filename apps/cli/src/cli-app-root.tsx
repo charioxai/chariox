@@ -32,6 +32,7 @@ import { reconcile } from "solid-js/store"
 
 import type {
   BootstrapState,
+  RuntimeProviderRun,
   RuntimeSession,
   TerminalOutputRecord,
   TranscriptEntry,
@@ -811,6 +812,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     transcriptEntryProjectionController, transcriptRenderDeferralController, isAttached,
     workflowScreenActive: () => workflowActions.workflowScreenActive(),
     maxAgentsPerScreen, responseVisibleAgents, focusedAgentId, providerRunState,
+    getProviderAccountProfile: (provider, reference) => getProviderAccountProfile(client, provider, reference),
     currentProviderSelection, providerAccountsState, agentActivityLabels, streamingAgentId, agentBusyLatch,
     agentBusyLatches, sessionState, workspaceLiveSyncStatus, agentLocationLabel,
     workingAnimationFrame, activeInteractionForAgent,
@@ -868,6 +870,10 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   } = createCliPrimaryTranscriptComposition({
     waitingRoomLaunchOwnershipRevision,
     applyWaitingRoomBootstrapDefaults: reconcileWaitingRoom,
+    applyAttachedProviderRun: (run: RuntimeProviderRun | null, line: string | null) => {
+      if (run) setProviderRunState(run)
+      if (line) setStatusLine(line)
+    },
     client,
     bootstrap: props.bootstrap,
     renderer, appLogger, formatError,

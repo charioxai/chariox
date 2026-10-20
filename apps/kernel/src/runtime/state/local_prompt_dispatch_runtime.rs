@@ -1938,6 +1938,8 @@ pub(in crate::runtime::state) mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("test root should exist");
         std::env::set_var("CHARIOX_HOME", &root);
+        // This credential-delivery regression uses the mocked PTY spawn path.
+        std::env::set_var("CHARIOX_CLAUDE_BIN", std::env::current_exe().unwrap());
         std::env::set_var("CHARIOX_TEST_CLAUDE_SETUP_TOKEN", "workflow-setup-token");
 
         let mut app = DaemonApp::bootstrap(
@@ -2024,6 +2026,7 @@ pub(in crate::runtime::state) mod tests {
             .is_empty());
 
         std::env::remove_var("CHARIOX_TEST_CLAUDE_SETUP_TOKEN");
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
         std::env::remove_var("CHARIOX_HOME");
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2042,6 +2045,8 @@ pub(in crate::runtime::state) mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("test root should exist");
         std::env::set_var("CHARIOX_HOME", &root);
+        // This credential-delivery regression uses the mocked PTY spawn path.
+        std::env::set_var("CHARIOX_CLAUDE_BIN", std::env::current_exe().unwrap());
         let vault_path = root.join("credentials.vault");
         let mut config =
             DaemonConfig::for_tests().with_session_history_root(root.join("session-history"));
@@ -2217,6 +2222,7 @@ pub(in crate::runtime::state) mod tests {
 
         let _ = crate::secret::lock_chariox_encrypted_vault(&vault_path);
         let _ = crate::secret::clear_vault_secret_process_cache();
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
         std::env::remove_var("CHARIOX_HOME");
         let _ = std::fs::remove_dir_all(root);
     }

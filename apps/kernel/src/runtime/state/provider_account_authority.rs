@@ -2,6 +2,23 @@
 use super::*;
 
 impl KernelRuntimeState {
+    // MP-08/MP-10/MP-11: metadata reads use the same caller-owned exact
+    // reference namespace as launch. The home picker and mutations stay scoped.
+    pub(crate) fn provider_account_owner_for_profile_read(
+        &self,
+        runtime_owner: &str,
+        provider: &str,
+        reference: &str,
+    ) -> Result<String, DaemonError> {
+        crate::account_profile::provider_account_authority_owner_for_profile(
+            &self.owned.config_projection.snapshot(),
+            &self.owned.provider_account_profiles,
+            runtime_owner,
+            provider,
+            reference,
+        )
+    }
+
     pub(super) async fn resolve_provider_launch_account_authority(
         &self,
         mut request: crate::provider::LaunchProviderRequest,

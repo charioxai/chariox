@@ -21,7 +21,26 @@ export function launchEnvironment(environment, uid = process.getuid?.()) {
 // step execs, so the spawned PID stays the browser's PID. The kernel's private
 // temporary directory becomes /tmp there: a short singleton socket path that the
 // namespace can open (it cannot open the kernel's /proc/<pid>/fd).
-const script = 'set -e; launcher=$1; layer=$2; temporary=$3; uid=$4; gid=$5; shift 5; /usr/bin/mount -t overlay overlay -o "lowerdir=$layer:/etc" /etc; /usr/bin/mount --bind "$temporary" /tmp; export TMPDIR=/tmp; exec "$launcher" --user --map-user="$uid" --map-group="$gid" -- "$@"';
+// A new mount namespace holds locked copies of every host mount, and a locked copy
+// of an App's storage mount keeps its loop device busy after the storage helper
+// releases it (stop fails, the App stays Failed). So the namespace starts from a
+// fresh tmpfs root that rbinds every top-level tree except the App storage root
+// and pivots into it (cwd too, or it would pin the old tree); the old root, with all
+// inherited copies, is detached.
+const script = [
+  'set -e; launcher=$1; layer=$2; temporary=$3; uid=$4; gid=$5; storage=$6; shift 6',
+  'pivot=/usr/sbin/pivot_root; [ -x "$pivot" ] || pivot=/usr/bin/pivot_root; new=$temporary/.root; mkdir "$new"; /usr/bin/mount -t tmpfs tmpfs "$new"; /usr/bin/mount --make-unbindable "$new"',
+  'copy() { for e in "$1"/* "$1"/.[!.]*; do',
+  '  if [ -L "$e" ]; then ln -s "$(readlink "$e")" "$2${e#"$1"}"; continue; fi',
+  '  [ -d "$e" ] || continue; [ "$e" = "$storage" ] && continue',
+  '  mkdir "$2${e#"$1"}"',
+  '  case $storage in "$e"/*) copy "$e" "$2${e#"$1"}";; *) /usr/bin/mount --rbind "$e" "$2${e#"$1"}";; esac',
+  'done; }',
+  'copy "" "$new"; mkdir "$new/.old"; "$pivot" "$new" "$new/.old"; cd /; /usr/bin/umount -l /.old; rmdir /.old; rmdir "$temporary/.root" || :',
+  '/usr/bin/mount -t overlay overlay -o "lowerdir=$layer:/etc" /etc; /usr/bin/mount --bind "$temporary" /tmp; export TMPDIR=/tmp; exec "$launcher" --user --map-user="$uid" --map-group="$gid" -- "$@"',
+].join("\n");
+// Host App storage root (packages/app-runtime storage_linux.rs); never part of the browser's view.
+export const appStorageRoot = "/var/lib/chariox-app-storage";
 // Ubuntu >= 23.10 restricts unprivileged user namespaces through AppArmor unless a
 // profile allows them (Chrome's own package installs one for its binary only).
 // install-root.sh installs this root-owned copy of util-linux unshare; its AppArmor
@@ -34,7 +53,7 @@ export function policyNamespaceAvailable(run = spawnSync, launcher = namespaceLa
   const probe = run(launcher, ["--user", "--map-root-user", "--mount", "--", "/bin/true"], { stdio: "ignore", timeout: 5000 });
   return probe.status === 0;
 }
-export function policyLaunch(layer, temporary, binary, args, uid = process.getuid(), gid = process.getgid(), launcher = namespaceLauncher()) {
+export function policyLaunch(layer, temporary, binary, args, uid = process.getuid(), gid = process.getgid(), launcher = namespaceLauncher(), storage = appStorageRoot) {
   if (!Number.isSafeInteger(uid) || uid <= 0 || !Number.isSafeInteger(gid) || gid < 0) throw new Error("MP-11: invalid browser user");
-  return { command: launcher, args: ["--user", "--map-root-user", "--mount", "--", "/bin/sh", "-c", script, "chariox-browser", launcher, layer, temporary, String(uid), String(gid), binary, "--disable-setuid-sandbox", ...args] };
+  return { command: launcher, args: ["--user", "--map-root-user", "--mount", "--", "/bin/sh", "-c", script, "chariox-browser", launcher, layer, temporary, String(uid), String(gid), storage, binary, "--disable-setuid-sandbox", ...args] };
 }

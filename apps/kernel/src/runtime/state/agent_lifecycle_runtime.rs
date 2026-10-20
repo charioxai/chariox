@@ -664,6 +664,7 @@ impl KernelRuntimeState {
             let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
                 continue;
             };
+            self.reconcile_failed_workflow_tasks(&task).await?;
             if let Some(check) = ledger::completion::evaluation(&task).filter(|e| {
                 task.state == ExecutionState::Working
                     && e.result.is_none()
@@ -734,10 +735,9 @@ impl KernelRuntimeState {
                     {
                         None
                     }
-                    _ if obligation.tracks_workflow_run() => session
-                        .workflow_runs()
-                        .iter()
-                        .find(|r| r.id() == source)
+                    _ if obligation.tracks_workflow_run() => self
+                        .owned
+                        .agent_workflow_source(&session, source)?
                         .map(|r| match r.status() {
                             crate::session::WorkflowRunStatus::Completed => Some(true),
                             crate::session::WorkflowRunStatus::Failed
@@ -771,13 +771,16 @@ impl KernelRuntimeState {
                         .map(|t| self.owned.public_agent_task_answer(t))
                         .transpose()?
                         .flatten();
+                    let workflow_source = if obligation.tracks_workflow_run() {
+                        self.owned.agent_workflow_source(&session, source)?
+                    } else {
+                        None
+                    };
                     let occurrence = terminal_task
                         .as_ref()
                         .map(|t| format!("task-terminal-{}", t.task_id))
                         .unwrap_or_else(|| {
-                            if let Some(run) =
-                                session.workflow_runs().iter().find(|r| r.id() == source)
-                            {
+                            if let Some(run) = workflow_source.as_ref() {
                                 format!(
                                     "source-terminal-{source}-{}",
                                     run.completed_at_ms().unwrap_or(0)

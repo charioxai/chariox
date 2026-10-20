@@ -235,7 +235,16 @@ test("exhausted OpenCode service stays visible but does not block the start", ()
 // MP-08 / MP-10 / MP-11: stale account references require an explicit local action.
 test("MP-08 / MP-10 / MP-11 missing target profile directs login or copy", () => {
   for (const mode of ["claude", "claude-p", "claude-headless"]) {
-    assert.match(selectedProviderAccountStartBlockReason([], mode, "claude-miguel") ?? "",
-      /not available on this kernel.*[Cc]opy login/)
+    assert.equal(selectedProviderAccountStartBlockReason([], mode, "claude-miguel"), null)
   }
+})
+
+// MP-08 / MP-10 / MP-11: a replica or retained alias is outside home inventory.
+test("explicit accounts outside the home inventory defer authentication to the kernel", () => {
+  const local = account("codex", "local", true)
+  local.auth_state = "not_configured"
+  assert.equal(selectedProviderAccountStartBlockReason([local], "codex", "replica-id", { kind: "local" }), null)
+  assert.equal(selectedProviderAccountStartBlockReason([local], "codex", "retained-home-label"), null)
+  assert.match(selectedProviderAccountStartBlockReason([local], "codex", "local") ?? "", /needs sign-in/)
+  assert.match(selectedProviderAccountStartBlockReason([], "codex", "default") ?? "", /needs sign-in/)
 })

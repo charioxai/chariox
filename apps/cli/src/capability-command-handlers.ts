@@ -252,7 +252,7 @@ export async function handleMcpSlashCommand(
       deps.flashFooter(`usage: /mcp ${action} <agent-ref> <name>`, "error")
       return
     }
-    if (confirmActiveHomeProxySlashGrant(deps, command, action, "mcp", agentRef, name)) return
+    if (explainActiveHomeProxySlashGrant(deps, command, action, "mcp", agentRef, name)) return
     const agent = await handler(agentRef, name)
     deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} MCP ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
     return
@@ -436,7 +436,7 @@ export async function handleScriptSlashCommand(
     if (action === "grant") {
       const environment = readOption(command.args, "--env")
       if (!agentRef || !name || !environment || !deps.grantAgentScript) return deps.flashFooter("usage: /script grant <agent-ref> <name> --env <environment>", "error")
-      if (confirmActiveHomeProxySlashGrant(deps, command, action, "script", agentRef, name)) return
+      if (explainActiveHomeProxySlashGrant(deps, command, action, "script", agentRef, name)) return
       const agent = await deps.grantAgentScript(agentRef, name, environment)
       deps.flashFooter(`granted script ${name} to ${agent.agent_ref}`, "info")
       return
@@ -644,7 +644,7 @@ export async function handleConnectorSlashCommand(
     const name = command.args[2]
     if (action === "grant") {
       if (!agentRef || !name || !deps.grantAgentConnector) return deps.flashFooter("usage: /connector grant <agent-ref> <name> [--credential <id>] [--allow read|write|destructive]", "error")
-      if (confirmActiveHomeProxySlashGrant(deps, command, action, "connector", agentRef, name)) return
+      if (explainActiveHomeProxySlashGrant(deps, command, action, "connector", agentRef, name)) return
       const agent = await deps.grantAgentConnector(agentRef, name, readOption(command.args, "--credential"), readOption(command.args, "--allow"))
       deps.flashFooter(`granted connector ${name} to ${agent.agent_ref}`, "info")
       return
@@ -717,7 +717,7 @@ export async function handleExtensionSlashCommand(
   if (kind === "mcp") {
     const handler = action === "grant" ? deps.grantAgentMcp : deps.revokeAgentMcp
     if (!handler) return deps.flashFooter(`MCP ${action} is not available`, "error")
-    if (confirmActiveHomeProxySlashGrant(deps, command, action, kind, agentRef, name)) return
+    if (explainActiveHomeProxySlashGrant(deps, command, action, kind, agentRef, name)) return
     const agent = await handler(agentRef, name)
     deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} MCP ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
     return
@@ -732,7 +732,7 @@ export async function handleExtensionSlashCommand(
   if (kind === "connector") {
     const handler = action === "grant" ? deps.grantAgentConnector : deps.revokeAgentConnector
     if (!handler) return deps.flashFooter(`connector ${action} is not available`, "error")
-    if (confirmActiveHomeProxySlashGrant(deps, command, action, kind, agentRef, name)) return
+    if (explainActiveHomeProxySlashGrant(deps, command, action, kind, agentRef, name)) return
     const agent = action === "grant"
       ? await deps.grantAgentConnector!(agentRef, name, readOption(command.args, "--credential"), readOption(command.args, "--allow"))
       : await deps.revokeAgentConnector!(agentRef, name)
@@ -741,7 +741,7 @@ export async function handleExtensionSlashCommand(
   }
   if (action === "grant") {
     if (!environment || !deps.grantAgentScript) return deps.flashFooter("usage: /extension grant script <agent-ref> <name> --env <environment>", "error")
-    if (confirmActiveHomeProxySlashGrant(deps, command, action, kind, agentRef, name)) return
+    if (explainActiveHomeProxySlashGrant(deps, command, action, kind, agentRef, name)) return
     const agent = await deps.grantAgentScript(agentRef, name, environment)
     deps.flashFooter(`granted script ${name} to ${agent.agent_ref}`, "info")
     return
@@ -864,7 +864,9 @@ function formatSkillImportOutcome(outcome: SkillImportOutcome): string {
   return lines.length === 0 ? "No skills imported." : lines.join("\n")
 }
 
-function confirmActiveHomeProxySlashGrant(
+/** An explicit owner grant needs no second confirmation: say where it runs and continue.
+ * Returns true only when the grant target cannot be resolved (the caller stops). */
+function explainActiveHomeProxySlashGrant(
   deps: CapabilityCommandHandlerDeps,
   command: Extract<ParsedSlashCommand, { kind: "mcp" | "script" | "connector" | "extension" }>,
   action: "grant" | "revoke",
@@ -875,16 +877,10 @@ function confirmActiveHomeProxySlashGrant(
   if (action !== "grant" || kind === "skill") return false
   const agent = resolveGrantTarget(deps, agentRef, `usage: /${command.kind} grant <agent-ref> <name>`)
   if (!agent) return true
-  if (!agent.remote_execution || command.args.includes("--confirm-home-proxy")) return false
-  const rerun = command.raw.includes("--confirm-home-proxy")
-    ? command.raw
-    : `${command.raw} --confirm-home-proxy`
-  deps.appendNotice([
-    `Confirm exposing ${kind} ${name} to remote agent ${agent.agent_ref}; home keeps credentials local and executes calls on this machine.`,
-    `rerun: ${rerun}`,
-  ].join("\n"))
-  deps.flashFooter("confirmation required for home-proxy grant", "error")
-  return true
+  if (agent.remote_execution && !command.args.includes("--confirm-home-proxy")) {
+    deps.appendNotice(`${kind} ${name} is exposed to remote agent ${agent.agent_ref}; home keeps credentials local and executes calls on this machine.`)
+  }
+  return false
 }
 
 function resolveGrantTarget(

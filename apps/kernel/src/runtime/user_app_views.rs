@@ -63,9 +63,23 @@ impl Registry {
 pub(crate) struct UserAppViews {
     registry: Arc<Mutex<Registry>>,
     changed: Arc<tokio::sync::Notify>,
+    /// One kernel-browser open per owner at a time (see `opening`).
+    opening: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl UserAppViews {
+    /// MP-08/MP-11: opening an App as a kernel-browser Tab, from first check to
+    /// bound Tab, is one step per owner; racing Opens (Web, TUI, restore) then
+    /// find the Tab the first one made instead of each allocating their own.
+    pub(crate) async fn opening(&self, owner: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut opening = self.opening.lock().unwrap_or_else(|e| e.into_inner());
+            opening.retain(|_, lock| Arc::strong_count(lock) > 1);
+            opening.entry(owner.into()).or_default().clone()
+        };
+        lock.lock_owned().await
+    }
+
     pub(crate) fn open(
         &self,
         owner: &str,
@@ -109,6 +123,22 @@ impl UserAppViews {
             .views
             .get(id)
             .filter(|(b, _)| b.owner == owner)
+            .cloned()
+    }
+
+    /// The owner's view of this installation that holds a browser Tab.
+    pub(crate) fn hosted(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Option<(AppViewBinding, UserAppView)> {
+        let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        registry
+            .views
+            .values()
+            .find(|(b, v)| {
+                b.owner == owner && b.installation == installation && v.browser.is_some()
+            })
             .cloned()
     }
 
@@ -171,6 +201,23 @@ impl UserAppViews {
         drop(registry);
         self.changed.notify_waiters();
         Some(view)
+    }
+
+    /// Binds a view to another release generation: an update reloads its page onto it.
+    pub(crate) fn set_generation(&self, owner: &str, id: &str, generation: u64) -> bool {
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        let Some((binding, view)) = registry.views.get_mut(id) else {
+            return false;
+        };
+        if binding.owner != owner {
+            return false;
+        }
+        binding.generation = generation;
+        view.generation = generation.to_string();
+        *registry.cursors.entry(owner.into()).or_default() += 1;
+        drop(registry);
+        self.changed.notify_waiters();
+        true
     }
 
     pub(crate) fn browser_target(&self, owner: &str, id: &str) -> Option<String> {
@@ -272,7 +319,14 @@ impl UserAppViews {
         if registry.restore.contains_key(owner) {
             return;
         }
-        let mut pending: Vec<_> = installations.into_iter().take(32).collect();
+        // An earlier kernel saved one entry per open (repeat opens added Tabs):
+        // an App is restored as one Tab.
+        let mut pending: Vec<String> = Vec::new();
+        for installation in installations {
+            if pending.len() < 32 && !pending.contains(&installation) {
+                pending.push(installation);
+            }
+        }
         // First use may load disk after an explicit browser binding. Account
         // for each hosted Tab once here; later bindings consume their entry.
         for installation in registry.hosted(owner) {
@@ -383,6 +437,17 @@ impl UserAppViews {
 mod tests {
     use super::*;
     #[test]
+    fn an_update_rebinds_a_view_to_the_new_generation_for_its_owner_only() {
+        let views = UserAppViews::default();
+        let view = views.open("alice", binding("alice"), "a").unwrap();
+        let before = views.cursor("alice");
+        assert!(!views.set_generation("bob", &view.view_id, 9));
+        assert!(views.set_generation("alice", &view.view_id, 9));
+        let (bound, listed) = views.get("alice", &view.view_id).unwrap();
+        assert_eq!((bound.generation, listed.generation.as_str()), (9, "9"));
+        assert_eq!(views.cursor("alice"), before + 1);
+    }
+    #[test]
     fn shutdown_revokes_instances_and_refuses_new_open() {
         let views = UserAppViews::default();
         let view = views.open("alice", binding("alice"), "a").unwrap();
@@ -432,17 +497,14 @@ mod tests {
                     generation: 1,
                 },
             );
-            assert_eq!(views.restore_intent("alice"), vec!["todo", "todo"]);
+            // The saved duplicate collapsed into one Tab, which the explicit open settles.
+            assert_eq!(views.restore_intent("alice"), vec!["todo"]);
             if stop {
                 views.suspend("alice", &view.view_id);
             } else {
                 views.close("alice", &view.view_id);
             }
-            let expected = if stop {
-                vec!["todo", "todo"]
-            } else {
-                vec!["todo"]
-            };
+            let expected = if stop { vec!["todo"] } else { vec![] };
             assert_eq!(views.restore_intent("alice"), expected);
             assert_eq!(views.restore_batch("alice"), expected);
         }
@@ -541,6 +603,40 @@ mod tests {
             );
         }
         assert!(views.browser_view("eve", "same-cdp-id").is_none());
+    }
+
+    #[test]
+    fn restore_intent_saved_with_repeat_opens_restores_one_tab_per_app() {
+        let views = UserAppViews::default();
+        views.seed_restore(
+            "alice",
+            ["todo", "todo", "docs", "todo", "docs"]
+                .map(String::from)
+                .to_vec(),
+        );
+        assert_eq!(views.restore_batch("alice"), vec!["todo", "docs"]);
+    }
+
+    #[test]
+    fn hosted_finds_only_the_owners_live_tab_of_that_installation() {
+        let views = UserAppViews::default();
+        let view = views.open("alice", binding("alice"), "a").unwrap();
+        assert!(views.hosted("alice", "todo").is_none(), "no Tab yet");
+        let browser = crate::local::UserAppViewBrowser {
+            tab_id: "host-tab-a".into(),
+            generation: 1,
+        };
+        views
+            .bind_browser("alice", &view.view_id, "target".into(), browser)
+            .unwrap();
+        assert_eq!(
+            views.hosted("alice", "todo").unwrap().1.view_id,
+            view.view_id
+        );
+        assert!(views.hosted("bob", "todo").is_none());
+        assert!(views.hosted("alice", "docs").is_none());
+        views.close("alice", &view.view_id);
+        assert!(views.hosted("alice", "todo").is_none());
     }
 
     #[test]

@@ -12,6 +12,7 @@ import { KernelBrowserHost, navigationUrl, scheduleHostRequest } from "./kernel-
 import { candidates as macCandidates, launchEnvironment as macEnvironment } from "./kernel-browser-macos.mjs";
 import { launchEnvironment as linuxEnvironment } from "./kernel-browser-linux.mjs";
 import { launchArguments, HostChromium, chromiumTemporaryEnvironment } from "./kernel-browser-process.mjs";
+import { PointerOutsideViewport } from "./kernel-browser-refusal.mjs";
 
 test('MP-08 / MP-11: Chromium temporary sockets use the held private directory through a bounded path', () => {
   const environment = { TMPDIR: '/private/' + 'long/'.repeat(60), XAUTHORITY: '/private/authority' };
@@ -885,7 +886,7 @@ test("MP-08/MP-10 mirror reads and cleanup never start an explicitly stopped bro
   }
 }));
 
-test('MP-11: only pre-dispatch mirror epoch refusal survives host error sanitization', () => using(async ({host,sent}) => {
+test('MP-11: only typed pre-dispatch refusals survive host error sanitization', () => using(async ({host,sent}) => {
   const opened=await host.request({op:'open',url:'about:blank'});
   const tab=host.tabs.get(opened.tab_id),scope='epoch-test';
   host.mirror.streams.set('epoch-test',{scope,tab_id:tab.tab_id,document_id:tab.document_id,expires:Date.now()+60000,policy:host.protection,epochs:[]});
@@ -896,13 +897,25 @@ test('MP-11: only pre-dispatch mirror epoch refusal survives host error sanitiza
   assert.equal(refused.error.code,'kernel_browser_failed');
   assert.equal(refused.error.message,'MP-11: stale mirror input epoch');
   assert.equal(sent.length,before,'admission must not focus or dispatch');
-  for(const error of [new Error('MP-11: stale mirror input epoch'),Object.assign(new Error('page secret'),{code:'mirror_input_epoch_stale'})]) {
+  for(const error of [new Error('MP-11: stale mirror input epoch'),new Error(new PointerOutsideViewport().message),Object.assign(new Error('page secret'),{code:'mirror_input_epoch_stale'})]) {
     host.request=async()=>{throw error};
     const rejected=await host.handle({id:'other',method:'host.browser',params:{op:'input'}});
     assert.match(rejected.error.message,/^MD-2: host browser operation failed; refresh state or check host browser readiness \(/);
     assert.notEqual(rejected.error.message,'MP-11: stale mirror input epoch');
     assert(!rejected.error.message.includes('page secret'));
   }
+}));
+
+test('MP-08/MP-10/MP-11 an agent click outside the viewport says so, in CSS pixels, without dispatch', () => using(async ({host, sent}) => {
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0],viewport=(await host.request({op:'state'})).viewport;
+ const before=sent.filter(x=>x.method==='Input.dispatchMouseEvent').length;
+ // A device-pixel guess from a DPR 2 screenshot lands beyond the CSS viewport.
+ const refused=await host.handle({id:'outside',method:'host.browser',params:{op:'input',_agent_input:true,tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'click',x:viewport.css_width+158,y:355}}});
+ assert.equal(refused.ok,false);
+ assert.equal(refused.error.code,'kernel_browser_failed');
+ assert.equal(refused.error.message,'MD-2: pointer outside viewport; x/y are CSS pixels inside state viewport css_width x css_height (screenshot pixels / device_scale_factor)');
+ assert.equal(sent.filter(x=>x.method==='Input.dispatchMouseEvent').length,before,'nothing is dispatched');
+ assert.equal(host.browser?.connection!==undefined,true,'a refused coordinate does not stop the browser');
 }));
 
 test('private CDP pipe loss retires the browser generation even while child is live', () => using(async ({host,chromium,connection}) => {
@@ -2422,4 +2435,143 @@ test('group updates during restoration do not apply a partial native inventory',
  const groups=[{tab_id:opened.tab_id,label:'Agent'}];await host.syncTabGroups(groups);
  assert.equal(applied,0);assert.deepEqual(host.savedGroups,groups);
  await host.syncTabGroups(groups,{restore:true});assert.equal(applied,1);host.restoring=false;
+});
+
+// MP-08/MP-10: restoring the registry must retain selection, including a pending App.
+test('restart retains the active regular Tab and active App origin', () => using(async ({host}, root) => {
+  const first = await host.request({op:'open',url:'https://example.com/first'});
+  await host.request({op:'open',url:'https://example.com/second'});
+  host.activeTarget = host.tabs.get(first.tab_id).target_id;
+  await host.save();
+  let saved = JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8'));
+  assert.equal(saved.active_tab_id, first.tab_id);
+  const opened = await host.request({op:'open',url:'https://app.todo.invalid/'});
+  const targetId = host.tabs.get(opened.tab_id).target_id;
+  host.browser.appTabs = {apps:new Map([['app',{targetId,origin:'https://app.todo.invalid'}]])};
+  host.activeTarget = targetId;
+  await host.save();
+  saved = JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8'));
+  assert.equal(saved.active_app_origin,'https://app.todo.invalid');
+  assert.equal(saved.tabs.some(tab=>tab.url.includes('app.todo.invalid')),false);
+}));
+
+test('MP-08/MP-10: active first Tab is selected after every saved Tab reopens', () => using(async ({host}, root) => {
+  const first = await host.request({op:'open',url:'https://example.com/first'});
+  await host.request({op:'open',url:'https://example.com/second'});
+  host.activeTarget = host.tabs.get(first.tab_id).target_id;
+  await host.save();await host.stop();await host.start();
+  assert.equal(host.activeTarget, host.tabs.get(first.tab_id).target_id);
+}));
+
+test('MP-08/MP-10/MP-11: selection waits for all verified App rebindings', () => using(async ({host}, root) => {
+  const todo = await host.request({op:'open',url:'https://app.todo.invalid/'});
+  const documents = await host.request({op:'open',url:'https://app.documents.invalid/'});
+  const app = (tab, origin) => ({targetId:host.tabs.get(tab.tab_id).target_id,origin,ready:true});
+  host.browser.appTabs = {apps:new Map([['todo',app(todo,'https://app.todo.invalid')],['documents',app(documents,'https://app.documents.invalid')]])};
+  host.activeTarget = host.tabs.get(todo.tab_id).target_id;await host.save();
+  await host.stop();await host.start();
+  const reboundTodo = await host.request({op:'open',url:'https://app.todo.invalid/'});
+  host.browser.appTabs = {apps:new Map([['todo',app(reboundTodo,'https://app.todo.invalid')]])};
+  await host.reconcile();assert(host.pendingActive);
+  const reboundDocuments = await host.request({op:'open',url:'https://app.documents.invalid/'});
+  host.browser.appTabs.apps.set('documents',{...app(reboundDocuments,'https://app.documents.invalid'),ready:false});
+  await host.reconcile();assert(host.pendingActive,'an opening App may still take native focus');
+  host.browser.appTabs.apps.get('documents').ready=true;
+  await host.reconcile();
+  assert.equal(host.activeTarget,host.tabs.get(reboundTodo.tab_id).target_id);
+  assert.equal(host.pendingActive,null);
+}));
+
+// MP-08/MP-10/MP-11: mirrored input can target a page in a background Chrome window.
+// Its admitted human intent must supersede a pending native-window restoration.
+for (const actor of ['human','mirror-human','agent','denied']) test(`MP-08/MP-10/MP-11: ${actor} input preserves the correct pending selection`, () => using(async ({host,connection},root) => {
+  const todo=await host.request({op:'open',url:'https://example.com/todo'});
+  const docs=await host.request({op:'open',url:'https://example.com/documents'});
+  const target=id=>host.tabs.get(id).target_id;let active=target(docs.tab_id);
+  host.tabGroups={active:async()=>active};host.activeTarget=active;
+  const send=connection.send.bind(connection);connection.send=async(method,params,session)=>{if(method==='Target.activateTarget')active=params.targetId;return send(method,params,session)};
+  const pending={tab_id:docs.tab_id,app_origin:null,apps:[],until:Date.now()+30000};host.pendingActive=pending;
+  fixture.secretFocused=actor==='denied';
+  if(actor==='mirror-human')host.mirror.resolveInput=async()=>({perform:async()=>{},fenced:false});
+  const input=host.request({op:'input',tab_id:todo.tab_id,generation:todo.generation,document_id:host.tabs.get(todo.tab_id).document_id,...(actor==='agent'?{_agent_input:true}:{}),input:actor==='mirror-human'?{kind:'mirror',action:{kind:'set',node_id:'n1',value:'unsent draft'}}:{kind:'text',text:'unsent draft'}});
+  if(actor==='denied'){await assert.rejects(input,error=>error.code==='user_domain_sensitive_requires_focus');assert.equal(host.pendingActive,pending)}
+  else {await input;const saved=JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8'));assert.equal(saved.active_tab_id,actor==='human'||actor==='mirror-human'?todo.tab_id:docs.tab_id)}
+}));
+
+// MP-08/MP-10/MP-11: a saved selection that can never return must not hide the live native selection.
+test('MP-08/MP-10: an expired selection intent for an App that never binds yields to the native selection', () => using(async ({host,connection},root) => {
+ const plain=await host.request({op:'open',url:'https://example.com/plain'});
+ const target=host.tabs.get(plain.tab_id).target_id;
+ host.tabGroups={active:async()=>target};host.activeTarget=target;
+ host.pendingActive={tab_id:null,app_origin:'https://app.gone.invalid',apps:['https://app.gone.invalid'],until:Date.now()-1};
+ await host.reconcile();
+ assert.equal(host.pendingActive,null);
+ assert.equal(host.activeTarget,target);
+ assert.equal(JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8')).active_tab_id,plain.tab_id);
+}));
+
+test('MP-08/MP-10: closing the selected Tab cancels its pending selection intent', () => using(async ({host}) => {
+ const first=await host.request({op:'open',url:'https://example.com/first'});
+ const second=await host.request({op:'open',url:'https://example.com/second'});
+ // An origin that has not rebound keeps the restore unsettled, so only Close can cancel the intent.
+ host.pendingActive={tab_id:first.tab_id,app_origin:null,apps:['https://app.unready.invalid'],until:Date.now()+30000};
+ await host.request({op:'close',tab_id:first.tab_id,generation:first.generation,document_id:host.tabs.get(first.tab_id).document_id});
+ assert.equal(host.pendingActive,null);
+ assert(host.tabs.has(second.tab_id));
+}));
+
+test('MP-08/MP-11: restoring a selection retires native capture before activating its window', () => using(async ({host,connection}) => {
+ const first=await host.request({op:'open',url:'https://example.com/first'});
+ await host.request({op:'open',url:'https://example.com/second'});
+ host.pendingActive={tab_id:first.tab_id,app_origin:null,apps:[],until:Date.now()};
+ let retired=false;host.retireNativeForeground=async()=>{retired=true};
+ const send=connection.send.bind(connection);connection.send=async(method,params,session)=>{if(method==='Target.activateTarget')assert(retired,'old native capture must retire before focus moves');return send(method,params,session)};
+ await host.reconcile();
+}));
+
+for (const mirrored of [false,true]) test(`MP-08/MP-10/MP-11: ${mirrored?'DOM':'physical'} human input rechecks a stale matching selection`, () => using(async ({host,connection},root) => {
+ const todo=await host.request({op:'open',url:'https://example.com/todo'});
+ const docs=await host.request({op:'open',url:'https://example.com/documents'});
+ const target=id=>host.tabs.get(id).target_id;let active=target(docs.tab_id),activations=0;
+ host.tabGroups={active:async()=>active};host.activeTarget=target(todo.tab_id);
+ const send=connection.send.bind(connection);connection.send=async(method,params,session)=>{if(method==='Target.activateTarget'){active=params.targetId;activations++}return send(method,params,session)};
+ if(mirrored)host.mirror.resolveInput=async()=>({perform:async()=>{},fenced:false});
+ const input={op:'input',tab_id:todo.tab_id,generation:todo.generation,document_id:host.tabs.get(todo.tab_id).document_id,input:mirrored?{kind:'mirror',action:{kind:'set',node_id:'n1',value:'draft'}}:{kind:'text',text:'draft'}};
+ await host.request(input);
+ assert.equal(host.activeTarget,target(todo.tab_id),'a delayed native change cannot replace the admitted human selection');
+ assert.equal(active,target(todo.tab_id));assert.equal(activations,1);
+ await host.request(input);assert.equal(activations,1,'already selected native tab requires no activation');
+ const saved=JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8'));assert.equal(saved.active_tab_id,todo.tab_id);
+}));
+
+// MP-08/MP-10/MP-11: an input can publish before its focus reconciliation settles.
+test('pending human selection preserves every verified App restore barrier', () => using(async ({host},root) => {
+ const todo=await host.request({op:'open',url:'https://app.todo.invalid/'});
+ const docs=await host.request({op:'open',url:'https://app.documents.invalid/'});
+ host.browser.appTabs={apps:new Map([['todo',{targetId:host.tabs.get(todo.tab_id).target_id,origin:'https://app.todo.invalid',ready:true}],['docs',{targetId:host.tabs.get(docs.tab_id).target_id,origin:'https://app.documents.invalid',ready:false}]])};
+ host.pendingActive={tab_id:todo.tab_id,app_origin:'https://app.todo.invalid',apps:[],until:Date.now()};
+ await host.save();let saved=JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8'));
+ assert.deepEqual(new Set(saved.app_origins),new Set(['https://app.todo.invalid','https://app.documents.invalid']));
+ host.pendingActive.apps=['https://app.todo.invalid','https://app.pending.invalid'];await host.save();saved=JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8'));
+ assert.deepEqual(new Set(saved.app_origins),new Set(['https://app.todo.invalid','https://app.documents.invalid','https://app.pending.invalid']));
+ assert.equal(saved.active_app_origin,'https://app.todo.invalid');
+}));
+
+// MP-08/MP-10/MP-11: App rebinding can focus a transient window before restore settles.
+test('native selection stays unknown while the saved App selection is pending', () => using(async ({host}) => {
+ const previous=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try {
+  const todo=await host.request({op:'open',url:'https://app.todo.invalid/'});
+  const docs=await host.request({op:'open',url:'https://app.documents.invalid/'});
+  host.chromium.policy='managed';
+  host.chromeWindows={bound:{tabbed:{isCurrent:()=>true,window_generation:1}},auxiliaryState:()=>[]};
+  host.activeTarget=host.tabs.get(docs.tab_id).target_id;
+  host.pendingActive={tab_id:todo.tab_id,app_origin:'https://app.todo.invalid',apps:['https://app.todo.invalid','https://app.documents.invalid'],until:Date.now()+30000};
+  assert.equal(host.chromeWindow().active_tab_id,null,'a rebinding window is not a settled native selection');
+  assert.equal(host.activeTarget,host.tabs.get(docs.tab_id).target_id,'physical input retains the actual native target');
+  host.activeTarget=host.tabs.get(todo.tab_id).target_id;host.pendingActive=null;
+  assert.equal(host.chromeWindow().active_tab_id,todo.tab_id);
+  host.activeTarget=host.tabs.get(docs.tab_id).target_id;
+  assert.equal(host.chromeWindow().active_tab_id,docs.tab_id,'later native changes remain visible');
+ } finally {host.chromeWindows={retire(){}};if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous}
 }));
