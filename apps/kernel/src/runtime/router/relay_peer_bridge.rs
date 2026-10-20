@@ -444,6 +444,17 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) async fn relay_room_terminal(
+        &self,
+        leased_agent_id: &str,
+        actor: crate::room_terminal::TerminalActor,
+        operation: crate::local::RoomTerminalOperation,
+    ) -> Result<crate::local::RoomTerminalResult, DaemonError> {
+        self.runtime_state
+            .relay_room_terminal(leased_agent_id, actor, operation)
+            .await
+    }
+
     pub(crate) async fn relay_resize_leased_provider_terminal(
         &self,
         leased_agent_id: &str,

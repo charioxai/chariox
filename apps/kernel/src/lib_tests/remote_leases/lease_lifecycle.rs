@@ -319,6 +319,7 @@ fn leased_agent_cleanup_is_retryable_and_retains_authority_and_capacity() {
         LeasedAgentCleanupPhase::Attachment,
         LeasedAgentCleanupPhase::Agent,
         LeasedAgentCleanupPhase::BackingSessionEnd,
+        LeasedAgentCleanupPhase::BackingTerminals,
         LeasedAgentCleanupPhase::BackingSessionDelete,
     ] {
         RemoteLeaseRuntime::new(&mut app)
@@ -759,4 +760,96 @@ fn leased_agents_materialize_remote_git_worktree_before_creation() {
     assert_eq!(backing_session.worktree_id(), target.display().to_string());
     let _ = std::fs::remove_dir_all(&target);
     let _ = std::fs::remove_dir_all(&root);
+}
+
+fn open_leased_room_terminal(
+    app: &DaemonApp,
+    backing_session_id: &str,
+    worktree: &std::path::Path,
+) {
+    app.room_terminals()
+        .open(crate::room_terminal::OpenRoomTerminal {
+            session_id: backing_session_id.to_string(),
+            working_directory: worktree.to_path_buf(),
+            cols: 80,
+            rows: 24,
+            title: None,
+            opened_by: crate::room_terminal::TerminalActor::User,
+            command: None,
+        })
+        .expect("terminal opens in the leased agent's Room");
+    assert_eq!(app.room_terminals().list(backing_session_id).len(), 1);
+}
+
+#[tokio::test]
+async fn destroying_a_leased_agent_or_its_lease_stops_its_room_terminals() {
+    for expire in [false, true] {
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        config.kernel_runtime_role = crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+        config.remote_lease_capacity = Some(1);
+        let mut app = DaemonApp::bootstrap(config).expect("worker should boot");
+        let caller = LeaseCallerBinding {
+            home_kernel_id: "home-kernel".to_string(),
+            authenticated_machine_id: "home-machine".to_string(),
+            owner_user_id: "user-home".to_string(),
+            realm_id: "realm-home".to_string(),
+            public_key_thumbprint: "key-home".to_string(),
+        };
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_bound_execution_lease(
+                "home-kernel",
+                "session-1",
+                "agent-home-1",
+                false,
+                "user-home",
+                caller.clone(),
+            )
+            .expect("bound execution lease should create");
+        let worktree = std::env::temp_dir().join(format!(
+            "chariox-leased-terminal-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&worktree).expect("leased worktree should exist");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent_for_caller(
+                &lease.id,
+                &caller,
+                "opencode",
+                "default",
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(worktree.display().to_string()),
+                None,
+            )
+            .expect("leased agent should create");
+        open_leased_room_terminal(&app, &leased_agent.backing_session_id, &worktree);
+
+        if expire {
+            RemoteLeaseRuntime::new(&mut app)
+                .reconcile_expired_execution_leases(
+                    lease
+                        .created_at_ms
+                        .saturating_add(crate::app::REMOTE_EXECUTION_LEASE_MAX_LIFETIME_MS)
+                        .saturating_add(1),
+                )
+                .expect("expired lease reconciliation should complete");
+        } else {
+            RemoteLeaseRuntime::new(&mut app)
+                .destroy_leased_agent_for_caller(&leased_agent.id, &caller)
+                .expect("leased agent destroys");
+        }
+
+        assert!(
+            app.room_terminals()
+                .list(&leased_agent.backing_session_id)
+                .is_empty(),
+            "terminals must end with the leased agent's Room (expire={expire})"
+        );
+        std::fs::remove_dir_all(worktree).expect("leased worktree should clean up");
+    }
 }
