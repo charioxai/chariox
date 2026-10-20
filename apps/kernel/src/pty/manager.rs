@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -84,6 +84,9 @@ fn terminate_pty_process_group(_master: &dyn MasterPty, _process_group: Option<i
 pub(crate) struct PtyInputWriter {
     provider_run_id: String,
     input_tx: SyncSender<PtyInputRequest>,
+    /// Requests queued or mid-write: non-zero while the writer may be stuck
+    /// behind a program that does not read its input.
+    unwritten: Arc<AtomicUsize>,
 }
 
 struct PtyInputRequest {
@@ -502,6 +505,8 @@ impl PtyManager {
                 message: error.to_string(),
             })?;
         let (input_tx, input_rx) = mpsc::sync_channel(PTY_INPUT_QUEUE_LIMIT);
+        let unwritten = Arc::new(AtomicUsize::new(0));
+        let writer_unwritten = unwritten.clone();
         let writer_provider_run_id = request.provider_run_id.clone();
         let writer_process_key = request.process_key.clone();
         let writer_output_signal = self.output_signal.clone();
@@ -509,7 +514,13 @@ impl PtyManager {
             .name(format!("chariox-pty-writer-{}", request.provider_run_id))
             .stack_size(PTY_WRITER_STACK_BYTES)
             .spawn(move || {
-                run_pty_writer(writer, input_rx, writer_process_key, writer_output_signal)
+                run_pty_writer(
+                    writer,
+                    input_rx,
+                    writer_process_key,
+                    writer_output_signal,
+                    writer_unwritten,
+                )
             });
         if let Err(error) = writer_thread {
             let _ = child.kill();
@@ -522,6 +533,7 @@ impl PtyManager {
         let input_writer = PtyInputWriter {
             provider_run_id: writer_provider_run_id,
             input_tx,
+            unwritten,
         };
 
         let (output_tx, output_rx) = mpsc::sync_channel(PTY_OUTPUT_QUEUE_LIMIT);
@@ -661,8 +673,14 @@ impl PtyInputWriter {
         })
     }
 
+    fn has_unwritten_input(&self) -> bool {
+        self.unwritten.load(Ordering::SeqCst) > 0
+    }
+
     fn send_request(&self, request: PtyInputRequest) -> Result<(), DaemonError> {
+        self.unwritten.fetch_add(1, Ordering::SeqCst);
         self.input_tx.try_send(request).map_err(|error| {
+            self.unwritten.fetch_sub(1, Ordering::SeqCst);
             let message = match error {
                 TrySendError::Full(_) => {
                     format!("PTY input queue reached its {PTY_INPUT_QUEUE_LIMIT}-request limit")
@@ -682,12 +700,14 @@ fn run_pty_writer(
     input_rx: Receiver<PtyInputRequest>,
     process_key: String,
     output_signal: PtyOutputSignal,
+    unwritten: Arc<AtomicUsize>,
 ) {
     while let Ok(request) = input_rx.recv() {
         output_signal.prefer_alias(&process_key, &request.provider_run_id);
         let result = writer
             .write_all(&request.bytes)
             .and_then(|_| writer.flush());
+        unwritten.fetch_sub(1, Ordering::SeqCst);
         let result = result.map_err(|error| error.to_string());
         let failed = result.is_err();
         if let Some(completion_tx) = request.completion_tx {
@@ -879,6 +899,64 @@ impl PtyManager {
                     provider_run_id: provider_run_id.to_string(),
                 })?;
         Ok(process.master.process_group_leader())
+    }
+
+    /// Deliver an interrupt, quit or suspend key as the signal the terminal
+    /// would raise, when earlier input is stuck unread in the writer queue and
+    /// the key would only wait behind it. Returns whether `key` was consumed;
+    /// otherwise the caller writes it as ordinary input.
+    #[cfg(unix)]
+    pub fn signal_key_behind_blocked_input(
+        &self,
+        provider_run_id: &str,
+        key: u8,
+    ) -> Result<bool, DaemonError> {
+        let process_key = self.resolve_process_key(provider_run_id)?;
+        let process =
+            self.processes
+                .get(&process_key)
+                .ok_or_else(|| DaemonError::PtyProcessNotFound {
+                    provider_run_id: provider_run_id.to_string(),
+                })?;
+        if !process.input_writer.has_unwritten_input() {
+            return Ok(false);
+        }
+        let Some(fd) = process.master.as_raw_fd() else {
+            return Ok(false);
+        };
+        let mut attributes = std::mem::MaybeUninit::<libc::termios>::uninit();
+        if unsafe { libc::tcgetattr(fd, attributes.as_mut_ptr()) } != 0 {
+            return Ok(false);
+        }
+        let attributes = unsafe { attributes.assume_init() };
+        if attributes.c_lflag & libc::ISIG == 0 {
+            return Ok(false);
+        }
+        let signal = [
+            (libc::VINTR, libc::SIGINT),
+            (libc::VQUIT, libc::SIGQUIT),
+            (libc::VSUSP, libc::SIGTSTP),
+        ]
+        .into_iter()
+        .find(|(index, _)| attributes.c_cc[*index] == key)
+        .map(|(_, signal)| signal);
+        let (Some(signal), Some(group)) = (signal, process.master.process_group_leader()) else {
+            return Ok(false);
+        };
+        // Never signal a group id that could mean "every process".
+        if group <= 1 {
+            return Ok(false);
+        }
+        Ok(unsafe { libc::killpg(group, signal) } == 0)
+    }
+
+    #[cfg(not(unix))]
+    pub fn signal_key_behind_blocked_input(
+        &self,
+        _provider_run_id: &str,
+        _key: u8,
+    ) -> Result<bool, DaemonError> {
+        Ok(false)
     }
 
     pub fn remove_process(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
@@ -1083,6 +1161,8 @@ impl Default for PtyManager {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
 
@@ -1776,6 +1856,7 @@ mod tests {
         let writer = PtyInputWriter {
             provider_run_id: "provider-run-blocked".to_string(),
             input_tx,
+            unwritten: Arc::new(AtomicUsize::new(0)),
         };
 
         for _ in 0..PTY_INPUT_QUEUE_LIMIT {
@@ -1910,6 +1991,7 @@ mod tests {
                     input_rx,
                     process_key.to_string(),
                     output_signal,
+                    Arc::new(AtomicUsize::new(1)),
                 )
             }
         });

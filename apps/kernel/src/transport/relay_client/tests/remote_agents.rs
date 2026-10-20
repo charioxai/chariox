@@ -569,12 +569,31 @@ async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up_async() {
         .await
         .expect("home remote inventory should refresh");
 
-    let session_id = {
+    let (session_id, home_tool_token) = {
         let mut app = app_home.lock().await;
-        let (session, _) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
+        let (session, home_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-home",
+                std::env::temp_dir().to_string_lossy(),
+            ))
             .expect("home session should be created");
-        session.id().to_string()
+        let home_run = app
+            .launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "native-tui-idle",
+                )
+                .with_agent_id(home_agent.id().to_string()),
+            )
+            .expect("the home agent's provider run should launch");
+        let token = home_run
+            .runtime_mcp_auth_token()
+            .expect("the home agent's run should hold runtime tool auth")
+            .to_string();
+        (session.id().to_string(), token)
     };
 
     let remote_agent = {
@@ -691,6 +710,12 @@ async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up_async() {
         &remote_agent,
     ))
     .await;
+    Box::pin(assert_home_agent_tools_reach_worker_terminal(
+        &app_home,
+        &home_tool_token,
+        &remote_agent,
+    ))
+    .await;
 
     {
         let mut app = app_home.lock().await;
@@ -793,6 +818,97 @@ async fn assert_remote_native_terminal_resize(
     ));
     let app = app_worker.lock().await;
     assert_eq!(app.pty().size(&worker_provider_run_id), Some((83, 27)));
+}
+
+/// A home agent's terminal tools reach a terminal hosted by a worker: the
+/// list shows it with its host, and read, send and close take the host back.
+async fn assert_home_agent_tools_reach_worker_terminal(
+    app_home: &Arc<Mutex<DaemonApp>>,
+    token: &str,
+    remote_agent: &crate::agent::AgentInstance,
+) {
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(app_home), 8);
+    let host = remote_agent.id();
+    let call = |tool: &'static str, arguments: serde_json::Value| {
+        let router = router.clone();
+        let token = token.to_string();
+        async move {
+            router
+                .runtime_state()
+                .dispatch_authenticated_runtime_tool_call(&token, tool, arguments)
+                .await
+                .unwrap_or_else(|error| panic!("{tool}: {error}"))
+        }
+    };
+    let opened = call(
+        "chariox.terminal_open",
+        serde_json::json!({ "host_agent": host }),
+    )
+    .await;
+    assert!(opened.ok, "{:?}", opened.payload);
+    assert_eq!(opened.payload["terminal"]["host_agent"], host);
+    let id = opened.payload["terminal"]["terminal_id"]
+        .as_str()
+        .expect("terminal id")
+        .to_string();
+
+    let listed = call("chariox.terminal_list", serde_json::json!({})).await;
+    let listed = listed.payload["terminals"].as_array().expect("terminals");
+    assert_eq!(
+        listed
+            .iter()
+            .map(|terminal| (
+                terminal["terminal_id"].as_str().unwrap(),
+                terminal["host_agent"].as_str()
+            ))
+            .collect::<Vec<_>>(),
+        vec![(id.as_str(), Some(host))],
+        "the home agent's list shows the worker's terminal and its host"
+    );
+
+    let sent = call(
+        "chariox.terminal_send",
+        serde_json::json!({
+            "terminal_id": id,
+            "host_agent": host,
+            "text": "echo tool-worker-$((6*7))",
+            "enter": true,
+        }),
+    )
+    .await;
+    assert!(sent.ok, "{:?}", sent.payload);
+    let waited = call(
+        "chariox.terminal_wait",
+        serde_json::json!({
+            "terminal_id": id,
+            "host_agent": host,
+            "until": [{"text": "tool-worker-42"}],
+            "after_offset": sent.payload["after_offset"],
+            "timeout_seconds": 20,
+        }),
+    )
+    .await;
+    assert_eq!(
+        waited.payload["still_running"], false,
+        "{:?}",
+        waited.payload
+    );
+    let read = call(
+        "chariox.terminal_read",
+        serde_json::json!({ "terminal_id": id, "host_agent": host }),
+    )
+    .await;
+    assert!(read.payload["screen_text"]
+        .as_str()
+        .unwrap()
+        .contains("tool-worker-42"));
+    let closed = call(
+        "chariox.terminal_close",
+        serde_json::json!({ "terminal_id": id, "host_agent": host }),
+    )
+    .await;
+    assert_eq!(closed.payload["closed"], true);
 }
 
 /// A Room terminal for an agent leased to a worker runs on the worker, over

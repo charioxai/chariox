@@ -269,7 +269,15 @@ impl RoomTerminalService {
                         // Queue it: waiting for the child to read would hold
                         // this lock, and with it every Room terminal, for as
                         // long as a program ignores its input.
-                        pty.input_writer(&run_id)?.enqueue_input(input)?;
+                        // A lone interrupt key must still stop the program
+                        // when the paste before it is stuck in the queue.
+                        let signalled = match input {
+                            [key] => pty.signal_key_behind_blocked_input(&run_id, *key)?,
+                            _ => false,
+                        };
+                        if !signalled {
+                            pty.input_writer(&run_id)?.enqueue_input(input)?;
+                        }
                         if *actor == TerminalActor::User {
                             terminal.mark_user_interacted();
                         }

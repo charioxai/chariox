@@ -1222,3 +1222,58 @@ async fn a_needle_split_across_the_wait_registration_still_matches() {
         "the half of the text that came before the wait was forgotten"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ctrl_c_stops_the_program_behind_a_blocked_paste() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = service
+        .open(OpenRoomTerminal {
+            session_id: "room-1".to_string(),
+            working_directory: root.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+            title: None,
+            opened_by: TerminalActor::User,
+            command: Some(vec![
+                "sh".into(),
+                "-c".into(),
+                "stty -icanon -echo; trap : INT; echo NOT-READING; sleep 600; \
+                 echo SHELL-STILL-ALIVE; exec sleep 600"
+                    .into(),
+            ]),
+        })
+        .unwrap()
+        .terminal_id;
+    until("the program to stop reading", || async {
+        screen_has(&service, &id, "NOT-READING").await
+    })
+    .await;
+    let flood = {
+        let service = service.clone();
+        let id = id.clone();
+        let runtime = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            runtime.block_on(service.input(
+                "room-1",
+                &id,
+                &TerminalActor::User,
+                &vec![b'x'; 64 * 1024],
+            ))
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let interrupt = service
+        .input("room-1", &id, &TerminalActor::User, b"\x03")
+        .await
+        .unwrap();
+    assert!(interrupt.accepted);
+    until(
+        "Ctrl-C to stop the program and leave the shell running",
+        || async { screen_has(&service, &id, "SHELL-STILL-ALIVE").await },
+    )
+    .await;
+    assert!(flood.join().is_ok());
+    service.end_session("room-1");
+}

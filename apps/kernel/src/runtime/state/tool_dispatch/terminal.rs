@@ -6,9 +6,10 @@ use super::*;
 use crate::local::{RoomTerminalOperation, RoomTerminalResult};
 use crate::room_terminal::{RoomTerminalWatch, TerminalActor};
 use crate::transport::runtime_tools::{
-    RuntimeToolResult, TerminalIdArgs, TerminalNamedCondition, TerminalOpenArgs, TerminalSendArgs,
-    TerminalWaitArgs, TerminalWaitCondition, TERMINAL_CLOSE_TOOL, TERMINAL_LIST_TOOL,
-    TERMINAL_OPEN_TOOL, TERMINAL_READ_TOOL, TERMINAL_SEND_TOOL, TERMINAL_WAIT_TOOL,
+    RuntimeToolResult, TerminalIdArgs, TerminalListArgs, TerminalNamedCondition, TerminalOpenArgs,
+    TerminalSendArgs, TerminalWaitArgs, TerminalWaitCondition, TERMINAL_CLOSE_TOOL,
+    TERMINAL_LIST_TOOL, TERMINAL_OPEN_TOOL, TERMINAL_READ_TOOL, TERMINAL_SEND_TOOL,
+    TERMINAL_WAIT_TOOL,
 };
 
 const DEFAULT_COLS: u16 = 120;
@@ -42,7 +43,9 @@ impl KernelRuntimeState {
                 )
             })?;
         let actor = TerminalActor::Agent(agent_id.clone());
-        let operation = match tool_name {
+        // Where the call runs: the machine the arguments name, else the
+        // calling agent's own. A list without a machine covers all of them.
+        let (host_agent, operation) = match tool_name {
             TERMINAL_OPEN_TOOL => {
                 let args: TerminalOpenArgs = parse_arguments(tool_name, arguments)?;
                 if let Some(command) = &args.command {
@@ -53,14 +56,20 @@ impl KernelRuntimeState {
                         return Ok(denied);
                     }
                 }
-                RoomTerminalOperation::Open {
-                    cols: args.cols.unwrap_or(DEFAULT_COLS),
-                    rows: args.rows.unwrap_or(DEFAULT_ROWS),
-                    title: args.title,
-                    command: args.command,
-                }
+                (
+                    args.host_agent,
+                    RoomTerminalOperation::Open {
+                        cols: args.cols.unwrap_or(DEFAULT_COLS),
+                        rows: args.rows.unwrap_or(DEFAULT_ROWS),
+                        title: args.title,
+                        command: args.command,
+                    },
+                )
             }
-            TERMINAL_LIST_TOOL => RoomTerminalOperation::List,
+            TERMINAL_LIST_TOOL => (
+                parse_arguments::<TerminalListArgs>(tool_name, arguments)?.host_agent,
+                RoomTerminalOperation::List,
+            ),
             TERMINAL_SEND_TOOL => {
                 let args: TerminalSendArgs = parse_arguments(tool_name, arguments)?;
                 if let Some(denied) = self
@@ -69,15 +78,34 @@ impl KernelRuntimeState {
                 {
                     return Ok(denied);
                 }
-                return self.send_terminal_text(&session_id, actor, args).await;
+                let host =
+                    self.terminal_tool_host(&session_id, &agent_id, args.host_agent.as_deref())?;
+                return self
+                    .send_terminal_text(&session_id, actor, host.as_deref(), args)
+                    .await;
             }
-            TERMINAL_READ_TOOL => RoomTerminalOperation::Snapshot {
-                terminal_id: parse_arguments::<TerminalIdArgs>(tool_name, arguments)?.terminal_id,
-            },
-            TERMINAL_WAIT_TOOL => wait_operation(parse_arguments(tool_name, arguments)?),
-            TERMINAL_CLOSE_TOOL => RoomTerminalOperation::Close {
-                terminal_id: parse_arguments::<TerminalIdArgs>(tool_name, arguments)?.terminal_id,
-            },
+            TERMINAL_READ_TOOL => {
+                let args: TerminalIdArgs = parse_arguments(tool_name, arguments)?;
+                (
+                    args.host_agent,
+                    RoomTerminalOperation::Snapshot {
+                        terminal_id: args.terminal_id,
+                    },
+                )
+            }
+            TERMINAL_WAIT_TOOL => {
+                let args: TerminalWaitArgs = parse_arguments(tool_name, arguments)?;
+                (args.host_agent.clone(), wait_operation(args))
+            }
+            TERMINAL_CLOSE_TOOL => {
+                let args: TerminalIdArgs = parse_arguments(tool_name, arguments)?;
+                (
+                    args.host_agent,
+                    RoomTerminalOperation::Close {
+                        terminal_id: args.terminal_id,
+                    },
+                )
+            }
             other => {
                 return Err(terminal_tool_error(
                     other,
@@ -85,11 +113,32 @@ impl KernelRuntimeState {
                 ))
             }
         };
-        let working_directory = self.room_project_directory(&session_id)?;
+        let everywhere = host_agent.is_none() && matches!(operation, RoomTerminalOperation::List);
+        let host = if everywhere {
+            None
+        } else {
+            self.terminal_tool_host(&session_id, &agent_id, host_agent.as_deref())?
+        };
         let result = self
-            .run_room_terminal_operation(&session_id, working_directory, actor, operation)
+            .route_room_terminal(&session_id, actor, host.as_deref(), everywhere, operation)
             .await?;
         Ok(terminal_result_payload(result))
+    }
+
+    /// The machine a terminal tool runs on: the agent the arguments name
+    /// (which must belong to this Room), else the calling agent.
+    fn terminal_tool_host(
+        &self,
+        session_id: &str,
+        calling_agent: &str,
+        named: Option<&str>,
+    ) -> Result<Option<String>, DaemonError> {
+        let Some(named) = named else {
+            return Ok(Some(calling_agent.to_string()));
+        };
+        self.ensure_room_agent(session_id, named)
+            .map_err(|error| terminal_tool_error("host_agent", error.to_string()))?;
+        Ok(Some(named.to_string()))
     }
 
     /// Type for the agent. Returns the output offset from before the
@@ -99,14 +148,15 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         actor: TerminalActor,
+        host: Option<&str>,
         args: TerminalSendArgs,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let working_directory = self.room_project_directory(session_id)?;
         let RoomTerminalResult::Snapshot { snapshot } = self
-            .run_room_terminal_operation(
+            .route_room_terminal(
                 session_id,
-                working_directory.clone(),
                 actor.clone(),
+                host,
+                false,
                 RoomTerminalOperation::Snapshot {
                     terminal_id: args.terminal_id.clone(),
                 },
@@ -120,10 +170,11 @@ impl KernelRuntimeState {
             text.push('\r');
         }
         let RoomTerminalResult::Input { input } = self
-            .run_room_terminal_operation(
+            .route_room_terminal(
                 session_id,
-                working_directory,
                 actor,
+                host,
+                false,
                 RoomTerminalOperation::Input {
                     terminal_id: args.terminal_id,
                     data_base64: base64::engine::general_purpose::STANDARD.encode(text),

@@ -23,8 +23,32 @@ impl KernelRuntimeState {
         let actor = self.authorize_room_terminal(caller, &request)?;
         let host = request
             .host_agent
-            .as_ref()
-            .or(request.acting_agent.as_ref());
+            .as_deref()
+            .or(request.acting_agent.as_deref());
+        let everywhere = host.is_none() && matches!(request.operation, RoomTerminalOperation::List);
+        let result = self
+            .route_room_terminal(
+                &request.session_id,
+                actor,
+                host,
+                everywhere,
+                request.operation,
+            )
+            .await?;
+        Ok(LocalDaemonResponse::RoomTerminal { result })
+    }
+
+    /// Run `operation` where `host` (a Room agent) runs: on the worker it is
+    /// leased to, else on this kernel. `everywhere` makes a list also cover the
+    /// workers of the Room's agents. Clients and agent tools share this path.
+    pub(crate) async fn route_room_terminal(
+        &self,
+        session_id: &str,
+        actor: TerminalActor,
+        host: Option<&str>,
+        everywhere: bool,
+        operation: RoomTerminalOperation,
+    ) -> Result<RoomTerminalResult, DaemonError> {
         let remote = match host {
             Some(agent_id) => self
                 .owned
@@ -34,31 +58,28 @@ impl KernelRuntimeState {
                 .cloned(),
             None => None,
         };
-        let result = match (remote, host) {
-            (Some(binding), Some(agent_id)) => self
-                .forward_room_terminal(binding, actor, request.operation)
+        match (remote, host) {
+            (Some(binding), Some(agent_id)) => Ok(self
+                .forward_room_terminal(binding, actor, operation)
                 .await?
-                .hosted_by(agent_id),
+                .hosted_by(agent_id)),
             _ => {
-                let working_directory = self.room_project_directory(&request.session_id)?;
-                let everywhere =
-                    host.is_none() && matches!(request.operation, RoomTerminalOperation::List);
+                let working_directory = self.room_project_directory(session_id)?;
                 let mut result = self
                     .run_room_terminal_operation(
-                        &request.session_id,
+                        session_id,
                         working_directory,
                         actor.clone(),
-                        request.operation,
+                        operation,
                     )
                     .await?;
                 if everywhere {
-                    self.add_worker_terminals(&request.session_id, actor, &mut result)
+                    self.add_worker_terminals(session_id, actor, &mut result)
                         .await?;
                 }
-                result
+                Ok(result)
             }
-        };
-        Ok(LocalDaemonResponse::RoomTerminal { result })
+        }
     }
 
     /// A Room-wide list also shows the terminals running on the workers its
@@ -307,7 +328,11 @@ impl KernelRuntimeState {
         }
     }
 
-    fn ensure_room_agent(&self, session_id: &str, agent_id: &str) -> Result<(), DaemonError> {
+    pub(crate) fn ensure_room_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
         match self.owned.agent_store.get_agent(agent_id) {
             Ok(agent) if agent.session_id() == session_id => Ok(()),
             _ => Err(refused(format!("this Room has no agent `{agent_id}`"))),
