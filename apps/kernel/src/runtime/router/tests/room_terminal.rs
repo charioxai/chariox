@@ -324,6 +324,48 @@ fn a_host_agent_must_belong_to_the_authorized_room() {
 }
 
 #[test]
+fn an_agent_made_by_another_member_is_not_the_owners_acting_or_host_agent() {
+    run("room-terminal-member-agent", || async {
+        let worktree = crate::test_support::TestWorktree::new("room_terminal_member_agent");
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon boots");
+        let session_id = app
+            .sessions_mut()
+            .create_session(worktree.session_request())
+            .expect("session")
+            .id()
+            .to_string();
+        let member_agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(&session_id, "dev-stub").with_owner_user_id("room-member"),
+            )
+            .expect("member agent");
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+
+        for (acting, host) in [
+            (Some(member_agent.id()), None),
+            (None, Some(member_agent.id())),
+        ] {
+            let refused = terminal_request_hosted(
+                &router,
+                DEFAULT_LOCAL_USER_ID,
+                &session_id,
+                acting,
+                host,
+                RoomTerminalOperation::List,
+            )
+            .await
+            .expect_err("another member's agent is not the owner's");
+            assert!(
+                refused
+                    .to_string()
+                    .contains("does not act for the Room owner"),
+                "{refused}"
+            );
+        }
+    });
+}
+
+#[test]
 fn the_enrolled_owner_of_a_legacy_local_room_keeps_its_terminals() {
     run("room-terminal-enrolled-owner", || async {
         let worktree = crate::test_support::TestWorktree::new("room_terminal_enrolled");

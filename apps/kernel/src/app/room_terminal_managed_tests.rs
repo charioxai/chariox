@@ -317,3 +317,96 @@ async fn a_terminal_opened_while_the_room_is_deleted_does_not_survive_it() {
         "a deleted Room must not keep terminals: {terminals:?}"
     );
 }
+
+/// Destroying a worker's lease ends its backing Room before the terminal
+/// sweep, so an open admitted just before the cleanup removes its own shell
+/// instead of outliving it. A failure between the two shows the order: the Room
+/// is already closed to new terminals while the sweep is still to come.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_worker_lease_closes_the_room_to_terminals_before_sweeping_them() {
+    use crate::app::{LeaseCallerBinding, LeasedAgentCleanupPhase, RemoteLeaseRuntime};
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    config.kernel_runtime_role = crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+    config.remote_lease_capacity = Some(1);
+    let mut app = DaemonApp::bootstrap(config).expect("worker boots");
+    let caller = LeaseCallerBinding {
+        home_kernel_id: "home-kernel".to_string(),
+        authenticated_machine_id: "home-machine".to_string(),
+        owner_user_id: "user-home".to_string(),
+        realm_id: "realm-home".to_string(),
+        public_key_thumbprint: "key-home".to_string(),
+    };
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_bound_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+            caller.clone(),
+        )
+        .expect("lease");
+    let worktree = crate::test_support::TestWorktree::new("lease-sweep-order");
+    let leased = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent_for_caller(
+            &lease.id,
+            &caller,
+            "opencode",
+            "default",
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(worktree.path().display().to_string()),
+            None,
+        )
+        .expect("leased agent");
+    let backing = leased.backing_session_id.clone();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let runtime = router.runtime_state();
+    let open = || {
+        runtime.run_room_terminal_operation(
+            &backing,
+            worktree.path().to_path_buf(),
+            TerminalActor::User,
+            RoomTerminalOperation::Open {
+                cols: 80,
+                rows: 24,
+                title: None,
+                command: sleep_command(),
+            },
+        )
+    };
+    open().await.expect("the worker's Room opens a terminal");
+
+    let leased_id = leased.id.clone();
+    let failed = runtime
+        .with_app_side_effect(move |app| {
+            RemoteLeaseRuntime::new(app).inject_next_leased_agent_cleanup_failure(
+                &leased_id,
+                LeasedAgentCleanupPhase::BackingTerminals,
+            );
+            RemoteLeaseRuntime::new(app).destroy_leased_agent(&leased_id)
+        })
+        .await;
+    assert!(failed.is_err(), "the injected sweep failure is reported");
+    assert!(
+        open().await.is_err(),
+        "before the sweep the Room is already closed to new terminals"
+    );
+
+    let leased_id = leased.id.clone();
+    runtime
+        .with_app_side_effect(move |app| {
+            RemoteLeaseRuntime::new(app).destroy_leased_agent(&leased_id)
+        })
+        .await
+        .expect("the retry finishes the cleanup");
+    let backing_id = backing.clone();
+    let left = runtime
+        .with_app_side_effect(move |app| app.room_terminals().list(&backing_id).len())
+        .await;
+    assert_eq!(left, 0, "a destroyed lease leaves no terminals");
+}

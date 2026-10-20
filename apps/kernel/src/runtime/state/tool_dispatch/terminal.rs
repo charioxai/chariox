@@ -38,6 +38,9 @@ impl KernelRuntimeState {
             })
             .await;
         let (session_id, agent_id) = self.terminal_tool_caller(provider_run, tool_name)?;
+        if leased.is_none() {
+            self.ensure_room_agent(&session_id, &agent_id)?;
+        }
         if let Some(typed) = call.typed_text() {
             // Permission stays the run's own: its sudo turn and its level.
             if let Some(denied) = self
@@ -81,6 +84,7 @@ impl KernelRuntimeState {
         }
         super::home_extension_authorizer::authorize_remote_home_context(self, &context, operation)?;
         let parsed = TerminalCall::parse(&call.tool_name, call.arguments)?;
+        self.ensure_room_agent(&context.home_session_id, &context.home_agent_id)?;
         self.run_terminal_call(&context.home_session_id, &context.home_agent_id, parsed)
             .await
     }

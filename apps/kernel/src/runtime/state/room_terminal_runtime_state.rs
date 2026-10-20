@@ -337,15 +337,27 @@ impl KernelRuntimeState {
         }
     }
 
+    /// Terminals belong to the Room's owner, and so do the agents that act for
+    /// them: an agent made by another member of the Room never reaches them.
     pub(crate) fn ensure_room_agent(
         &self,
         session_id: &str,
         agent_id: &str,
     ) -> Result<(), DaemonError> {
-        match self.owned.agent_store.get_agent(agent_id) {
-            Ok(agent) if agent.session_id() == session_id => Ok(()),
-            _ => Err(refused(format!("this Room has no agent `{agent_id}`"))),
+        let agent = self
+            .owned
+            .agent_store
+            .get_agent(agent_id)
+            .ok()
+            .filter(|agent| agent.session_id() == session_id)
+            .ok_or_else(|| refused(format!("this Room has no agent `{agent_id}`")))?;
+        let session = self.owned.session_store.get_session(session_id)?;
+        if agent.owner_user_id() != session.owner_user_id() {
+            return Err(refused(format!(
+                "agent `{agent_id}` does not act for the Room owner; only the owner's agents use the Room's terminals"
+            )));
         }
+        Ok(())
     }
 
     fn ensure_room_running(&self, session_id: &str) -> Result<(), DaemonError> {

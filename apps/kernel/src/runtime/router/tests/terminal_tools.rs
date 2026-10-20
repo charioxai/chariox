@@ -29,6 +29,8 @@ struct Room {
     session_id: String,
     first: (String, String),
     second: (String, String),
+    /// An agent made by another member of the Room: (agent id, token).
+    member: (String, String),
     _worktree: crate::test_support::TestWorktree,
 }
 
@@ -43,8 +45,11 @@ fn room(label: &str, permission: Option<AgentPermissionLevel>) -> Room {
         .id()
         .to_string();
     let mut agents = Vec::new();
-    for alias in ["first", "second"] {
+    for alias in ["first", "second", "member"] {
         let mut request = CreateAgentRequest::new(&session_id, "dev-stub").with_alias(alias);
+        if alias == "member" {
+            request = request.with_owner_user_id("room-member");
+        }
         if let Some(level) = permission {
             request = request.with_permission_level_override(level);
         }
@@ -63,6 +68,7 @@ fn room(label: &str, permission: Option<AgentPermissionLevel>) -> Room {
         agents.push((agent.id().to_string(), token));
     }
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let member = agents.pop().unwrap();
     let second = agents.pop().unwrap();
     let first = agents.pop().unwrap();
     Room {
@@ -70,6 +76,7 @@ fn room(label: &str, permission: Option<AgentPermissionLevel>) -> Room {
         session_id,
         first,
         second,
+        member,
         _worktree: worktree,
     }
 }
@@ -325,6 +332,79 @@ fn a_required_agent_asks_per_input_and_a_denial_types_nothing() {
         call(
             &room,
             token,
+            "chariox.terminal_close",
+            serde_json::json!({ "terminal_id": id }),
+        )
+        .await;
+    });
+}
+
+#[test]
+fn an_agent_made_by_another_member_cannot_reach_the_owners_terminals() {
+    run("terminal-tools-member-agent", || async {
+        let room = room("terminal_tools_member_agent", None);
+        let owner_token = &room.first.1;
+        let member_token = &room.member.1;
+        let id = open(&room, owner_token).await;
+
+        // The member's agent holds a legitimate runtime token of this Room,
+        // yet every terminal tool is refused for it.
+        for (tool, arguments) in [
+            ("chariox.terminal_list", serde_json::json!({})),
+            (
+                "chariox.terminal_read",
+                serde_json::json!({ "terminal_id": id }),
+            ),
+            (
+                "chariox.terminal_send",
+                serde_json::json!({ "terminal_id": id, "text": "echo intruder", "enter": true }),
+            ),
+            (
+                "chariox.terminal_close",
+                serde_json::json!({ "terminal_id": id }),
+            ),
+            ("chariox.terminal_open", serde_json::json!({})),
+        ] {
+            let error = room
+                .router
+                .runtime_state
+                .dispatch_authenticated_runtime_tool_call(member_token, tool, arguments)
+                .await
+                .expect_err(tool)
+                .to_string();
+            assert!(
+                error.contains("does not act for the Room owner"),
+                "{tool}: {error}"
+            );
+        }
+
+        // The owner's own agent still works, and the terminal is untouched.
+        let listed = call(
+            &room,
+            owner_token,
+            "chariox.terminal_list",
+            serde_json::json!({}),
+        )
+        .await;
+        assert!(listed.ok);
+        assert_eq!(
+            listed.payload["terminals"].as_array().map(Vec::len),
+            Some(1)
+        );
+        let screen = call(
+            &room,
+            owner_token,
+            "chariox.terminal_read",
+            serde_json::json!({ "terminal_id": id }),
+        )
+        .await;
+        assert!(!screen.payload["scrollback_tail"]
+            .as_str()
+            .unwrap()
+            .contains("intruder"));
+        call(
+            &room,
+            owner_token,
             "chariox.terminal_close",
             serde_json::json!({ "terminal_id": id }),
         )

@@ -319,6 +319,7 @@ fn leased_agent_cleanup_is_retryable_and_retains_authority_and_capacity() {
         LeasedAgentCleanupPhase::Attachment,
         LeasedAgentCleanupPhase::Agent,
         LeasedAgentCleanupPhase::BackingSessionEnd,
+        LeasedAgentCleanupPhase::BackingTerminals,
         LeasedAgentCleanupPhase::BackingSessionDelete,
     ] {
         RemoteLeaseRuntime::new(&mut app)
