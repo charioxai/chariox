@@ -93,7 +93,7 @@ fn outbound_generated_every_event_variant_hides_worker_credentials() {
         }
     }
     assert_eq!(
-        delivered, 22,
+        delivered, 23,
         "MP-11 current public events remain deliverable"
     );
 }

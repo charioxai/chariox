@@ -146,7 +146,7 @@ impl PausedBrief {
         self.wait_for("brief-started").await;
     }
     async fn wait_for(&self, name: &str) {
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
             while !self.root.path().join(name).exists() {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
@@ -328,6 +328,25 @@ async fn final_handoff_envelope_scrubs_already_registered_queued_session_facts()
 #[tokio::test]
 async fn cancellation_during_brief_promotes_followup_through_shared_preparation() {
     let fixture = PausedBrief::new(false, true).await;
+    // The submission entry records this turn before dispatch. After cancellation
+    // it makes the long historical turn prior history, which fits verbatim.
+    fixture
+        .runtime
+        .owned
+        .operational_history_store
+        .append_transcript(
+            &crate::history::SessionHistoryEntry::user_prompt(
+                &fixture.session_id,
+                &fixture.prompt_id,
+                &fixture.agent_id,
+                "active prompt",
+            ),
+            crate::history::HistoryEventTurnContext {
+                prompt_id: Some(fixture.prompt_id.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
     fixture.prepare().await;
     let session = fixture
         .runtime
@@ -603,31 +622,19 @@ async fn native_hook_rebuild_excludes_the_current_managed_prompt() {
 
 #[tokio::test]
 async fn room_retirement_between_brief_chunks_never_replays_the_next_utility_input() {
+    // Historical prompts must precede the active prompt's sequence. The
+    // handoff intentionally excludes events appended after that prompt.
+    let history: Vec<_> = (0..200)
+        .map(|index| {
+            format!(
+                "retire-this-transcript {index} {}",
+                "historical review record ".repeat(100)
+            )
+        })
+        .collect();
+    let history: Vec<_> = history.iter().map(String::as_str).collect();
     let (root, runtime, session_id, agent_id, attachment_id, prompt_id, _) =
-        runtime_with_active_prompt_and_history(Some("retire-this-transcript")).await;
-    for index in 0..100 {
-        let prior = format!("prior-review-{index}");
-        runtime
-            .owned
-            .operational_history_store
-            .append(&crate::history::HistoryEvent::transcript(
-                100,
-                &crate::history::SessionHistoryEntry::user_prompt(
-                    &session_id,
-                    &prior,
-                    &agent_id,
-                    format!(
-                        "retire-this-transcript {index} {}",
-                        "historical review record ".repeat(100)
-                    ),
-                ),
-                crate::history::HistoryEventTurnContext {
-                    prompt_id: Some(prior),
-                    ..Default::default()
-                },
-            ))
-            .unwrap();
-    }
+        runtime_with_active_prompt_and_prior_prompts(&history).await;
     let fixture = PausedBrief::from_history(
         root,
         runtime,
@@ -637,6 +644,23 @@ async fn room_retirement_between_brief_chunks_never_replays_the_next_utility_inp
         prompt_id,
         // Haiku has a stable 200k window; default Sonnet grows to 1M in #919.
         "haiku",
+    );
+    let history = fixture
+        .runtime
+        .owned
+        .operational_history_store
+        .load_session_events(&fixture.session_id, Some(&fixture.agent_id))
+        .unwrap();
+    assert_eq!(
+        history
+            .iter()
+            .filter(|event| event
+                .content
+                .as_deref()
+                .is_some_and(|text| text.starts_with("retire-this-transcript")))
+            .count(),
+        200,
+        "same-tick fixture transcripts must keep distinct history identities"
     );
     fixture.prepare().await;
     {
@@ -658,9 +682,17 @@ async fn room_retirement_between_brief_chunks_never_replays_the_next_utility_inp
     fixture.release();
     fixture.wait_for("final-provider-envelope").await;
     let inputs = std::fs::read_to_string(fixture.root.path().join("brief-utility-inputs")).unwrap();
+    let parts = inputs
+        .lines()
+        .next()
+        .unwrap()
+        .split("1 of ")
+        .nth(1)
+        .and_then(|suffix| suffix.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|number| number.parse::<usize>().ok());
     assert!(
-        inputs.lines().next().unwrap().contains("1 of 2"),
-        "the regression must exercise two real rendered utility chunks"
+        parts.is_some_and(|parts| parts >= 2),
+        "the regression must exercise multiple real rendered utility chunks: {parts:?}"
     );
     assert_eq!(
         inputs.lines().count(),

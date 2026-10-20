@@ -144,8 +144,8 @@ test("repository release policy admits reviewed predecessors and matches the run
   const policy = JSON.parse(policyBytes)
   const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
-  // MP-07/MP-10: released F/G/Apps predecessors, main 472/487, the 506..532 union ladder and the current union; unreleased379..409 remain refused.
-  const admittedProtocols = [343, ...Array.from({ length: 12 }, (_, index) => 367 + index), 410, 411, 415, 416, 435, 472, 487, 490, 491, 493, 506, 511, 513, 517, 519, 525, 528, 532, runtimeProtocol]
+  // MP-07/MP-10: reviewed predecessors retained by the 32-entry policy in 9699c3776 and the current union.
+  const admittedProtocols = [343, 367, ...Array.from({ length: 10 }, (_, index) => 369 + index), 410, 411, 415, 416, 435, 472, 487, 490, 491, 493, 506, 511, 513, 517, 519, 525, 528, 552, 556, runtimeProtocol]
   assert.deepEqual(policy, {
     schemaVersion: 1,
     protocol: runtimeProtocol,
@@ -1278,12 +1278,12 @@ test("managed kernel upgrade accepts the schema 3 receipt a Path-1 kernel writes
 
 // MP-07/MP-10/MP-11: use the shipped policy verbatim so normalization cannot
 // hide stale release metadata. This fixture does not prove live state migration.
-test("MP-07/MP-10/MP-11 signed main 520 to runtime 527 upgrade and rollback use the shipped policy", async (context) => {
+test("MP-07/MP-10/MP-11 signed predecessor 552 to current runtime upgrade and rollback use the shipped policy", async (context) => {
   const repositoryPolicy = JSON.parse(await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json"), "utf8"))
   const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
   const harness = await makeHarness(context, {
-    currentProtocol: 520,
+    currentProtocol: 552,
     targetProtocol: runtimeProtocol,
     targetTransitionPolicy: repositoryPolicy,
   })

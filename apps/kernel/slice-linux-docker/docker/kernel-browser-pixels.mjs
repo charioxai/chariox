@@ -198,8 +198,13 @@ export function maskNativeRaster(raw, regions, previousRegions, previous) {
 // MP-08/MP-11: crop/thumbnail only an already-protected viewport. The display
 // thumbnail is a damage hint; exact crops preserve every admitted native pixel.
 export function cropProtectedPng(data,clip,scale=1){
-  if(!clip)return {data_base64:data,width:geometry.width*scale,height:geometry.height*scale};
-  if(clip.width===geometry.width&&clip.height===geometry.height&&(clip.scale??1)===1)return {data_base64:data,width:geometry.width*scale,height:geometry.height*scale};
+  // MP-08/MP-10/MP-11: a full capture is the raster CDP actually returned,
+  // including a narrow layout or the native content area below the chrome.
+  // Reading its header retains the full-frame path's decode-free handoff.
+  if(!clip||clip.width===geometry.width&&clip.height===geometry.height&&(clip.scale??1)===1){
+    const png=Buffer.from(data,'base64');
+    return {data_base64:data,width:png.readUInt32BE(16),height:png.readUInt32BE(20)};
+  }
   const frame=decodePng(data,scale),factor=clip.scale??1;
   const full=clip.width===geometry.width&&clip.height===geometry.height;
   const left=full?0:Math.round(clip.x*scale),top=full?0:Math.round(clip.y*scale);

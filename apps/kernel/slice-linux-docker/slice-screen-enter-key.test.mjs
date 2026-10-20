@@ -15,7 +15,7 @@ function key(name) {
     for (const [name, body] of Object.entries({
       xdpyinfo: "exit 0",
       pgrep: "echo live",
-      xdotool: 'printf "%s\\n" "$@" > "$CHARIOX_SLICE_ROOT/input"',
+      timeout: 'printf "%s\\n" "$@" > "$CHARIOX_SLICE_ROOT/command"; cat > "$CHARIOX_SLICE_ROOT/input"',
     })) {
       writeFileSync(path.join(root, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 })
     }
@@ -24,14 +24,18 @@ function key(name) {
         CHARIOX_SLICE_CHROME_PROFILE: path.join(root, "chrome") },
       input: name, stdio: "pipe",
     })
-    return readFileSync(path.join(root, "input"), "utf8").trim().split("\n")
+    assert.deepEqual(readFileSync(path.join(root, "command"), "utf8").trim().split("\n"), [
+      "--foreground", "10s", "/opt/chariox-selkies/bin/python",
+      path.join(path.dirname(helper), "slice-keyboard.py"), "key-repeat", "1",
+    ])
+    return readFileSync(path.join(root, "input"), "utf8")
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
 }
 
-for (const [name, expected] of [["Enter", "Return"], ["ctrl+Enter", "ctrl+Return"], ["KP_Enter", "KP_Enter"], ["Return", "Return"], ["ctrl++", "ctrl++"], ["Enter+Enter", "Return+Return"]]) {
-  test(`Room key ${name} reaches the X11 executor as ${expected}`, linuxOnly, () => {
-    assert.equal(key(name).at(-1), expected)
+for (const name of ["Enter", "ctrl+Enter", "KP_Enter", "Return", "ctrl++", "Enter+Enter"]) {
+  test(`Room key ${name} reaches the physical keyboard executor unchanged`, linuxOnly, () => {
+    assert.equal(key(name), name)
   })
 }

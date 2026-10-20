@@ -1773,6 +1773,26 @@ test("MP-08/MP-10 mirrorregion: pointer beside media reaches an overlaid control
     assert.equal(await evaluate('document.querySelector("button").textContent'),'clicked');
   }
 ));
+test('MP-08/MP-10/MP-11: reopening a desktop mirror restores the captured viewport', () => mirrored(
+  '<p>visible viewport</p><div style="position:fixed;right:0;bottom:0;width:20px;height:20px;background:rgb(101,102,103)"></div>', async ({host, tab_id, generation, subscription_id, subscribe}) => {
+    const tab=host.tabs.get(tab_id),{connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id);
+    const {windowId}=await connection.send('Browser.getWindowForTarget',{targetId:tab.target_id});
+    await connection.send('Browser.setWindowBounds',{windowId,bounds:{width:1000,height:700}});
+    await host.request({op:'mirror_close',subscription_id,generation});
+    await host.releaseTabScale(tab_id);
+    const desktop=await subscribe(),frame=await desktop.next();
+    const shot=await host.request({op:'screenshot',tab_id,generation,bound_frames:true});
+    const png=Buffer.from(shot.data_base64,'base64');
+    assert.deepEqual([png.readUInt32BE(16),png.readUInt32BE(20),shot.width,shot.height],
+      [frame.css_width*frame.device_scale_factor,frame.css_height*frame.device_scale_factor,frame.css_width*frame.device_scale_factor,frame.css_height*frame.device_scale_factor],
+      'the reopened mirror and the CDP visible capture describe the same viewport');
+    const phone=await subscribe({layout_width:400,layout_height:250});await phone.next();
+    const small=await host.request({op:'screenshot',tab_id,generation,bound_frames:true});
+    const smallPng=Buffer.from(small.data_base64,'base64');
+    assert.deepEqual([small.width,small.height,smallPng.readUInt32BE(16),smallPng.readUInt32BE(20)],[400,250,400,250]);
+    const pixels=decodePng(small.data_base64).pixels,corner=((small.height-2)*small.width+small.width-2)*4;
+    assert.deepEqual([...pixels.subarray(corner,corner+3)],[101,102,103],'the logical bottom-right marker retains its native capture projection');
+  }));
 
 test("protocol 560/168: a layout change resets the Tab's existing mirror streams and the failed registration releases it", () => mirrored(
   "<p>page</p>", async ({ subscribe, host, evaluate, tab_id, generation }) => {

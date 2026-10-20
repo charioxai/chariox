@@ -2806,6 +2806,20 @@ pub(in crate::runtime::state) mod tests {
         String,
         String,
     ) {
+        runtime_with_active_prompt_and_prior_prompts(prior.as_slice()).await
+    }
+
+    async fn runtime_with_active_prompt_and_prior_prompts(
+        prior: &[&str],
+    ) -> (
+        crate::test_support::TestWorktree,
+        KernelRuntimeState,
+        String,
+        String,
+        String,
+        String,
+        String,
+    ) {
         let worktree = crate::test_support::TestWorktree::new("local-prompt-active");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = KernelSessionService::new(&mut app)
@@ -2838,21 +2852,30 @@ pub(in crate::runtime::state) mod tests {
             "active prompt",
             PromptStatus::Queued,
         );
-        if let Some(prior) = prior {
+        let history_timestamp_ms = crate::session::unix_epoch_ms();
+        for (index, prior) in prior.iter().enumerate() {
+            let prior_id = if index == 0 {
+                "prior".into()
+            } else {
+                format!("prior-{index}")
+            };
+            let mut entry = crate::history::SessionHistoryEntry::user_prompt(
+                session.id(),
+                &prior_id,
+                agent.id(),
+                *prior,
+            );
+            // Fast fixture writes can share a clock tick. Their identity must
+            // come from the history allocator, as it does for real transcripts.
+            entry.timestamp_ms = history_timestamp_ms;
             app.operational_history_store()
-                .append(&crate::history::HistoryEvent::transcript(
-                    100,
-                    &crate::history::SessionHistoryEntry::user_prompt(
-                        session.id(),
-                        "prior",
-                        agent.id(),
-                        prior,
-                    ),
+                .append_transcript(
+                    &entry,
                     crate::history::HistoryEventTurnContext {
-                        prompt_id: Some("prior".into()),
+                        prompt_id: Some(prior_id),
                         ..Default::default()
                     },
-                ))
+                )
                 .unwrap();
         }
         let PromptSubmissionOutcome::Started { prompt } = app
