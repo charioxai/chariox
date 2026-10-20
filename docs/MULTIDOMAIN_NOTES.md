@@ -51,11 +51,12 @@ MP-08 / MP-10 / MP-11: for every continuation of a retained task, the shared tas
 notes from that agent's authorized original history entry. Goal, catalog refresh,
 owner resolution and correlated inbox wakes (including timers and source outcomes)
 therefore recover the quote/comment in hidden context even on a fresh provider
-session. Completion checks include the notes in their hidden original objective.
+session. Completion checks use a short visible label and include the notes and assessment
+instructions only in their hidden original objective.
 
 Live regression `NOTES-INBOX-WAKE`: send only a note asking real Claude Haiku to
 wait on a roughly 30-second kernel timer, then answer after the correlated wake.
 Verify the provider receives the original quote/comment in hidden recovery context
-and neither body appears in the visible wake prompt. First demonstrate the missing
+and neither body appears in the visible wake or completion-check prompt. First demonstrate the missing
 hidden note on the base; repeat on the fix with a screen recording and provider
 transcript. A focused cold-session test also proves recovery without provider resume.

@@ -618,6 +618,14 @@ impl KernelRuntimeState {
         let workflow_attachment = workflow
             .as_ref()
             .map(|(run, _)| crate::scheduler::runtime::workflow_prompt_source_attachment_id(run));
+        let is_check = ledger::completion::evaluation(task)
+            .is_some_and(|e| e.prompt_id == id && e.result.is_none());
+        // The shared task hint supplies private assessment instructions and objective.
+        let text = if is_check {
+            "Check whether the original task is complete.".to_string()
+        } else {
+            text
+        };
         let prompt = crate::session::PromptQueueItem::new(
             id.clone(),
             workflow_attachment.as_deref().unwrap_or(attachment),
@@ -626,8 +634,6 @@ impl KernelRuntimeState {
             crate::session::PromptStatus::Queued,
         )
         .with_durable_operation(&id, format!("task:{}:{}", task.task_id, task.revision));
-        let is_check = ledger::completion::evaluation(task)
-            .is_some_and(|e| e.prompt_id == id && e.result.is_none());
         let prompt = match hidden_system_context {
             Some(context) => prompt.with_hidden_system_context(context),
             None => prompt,

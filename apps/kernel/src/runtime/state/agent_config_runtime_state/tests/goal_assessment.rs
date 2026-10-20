@@ -1114,3 +1114,108 @@ fn recovered_continuation_envelope(
         )
         .unwrap()
 }
+
+// MP-08 / MP-10 / MP-11: completion checks get the objective through the same
+// hidden dispatch context; their visible labels must not replay attached notes.
+#[tokio::test]
+async fn completion_check_keeps_original_notes_in_hidden_provider_context() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    use base64::Engine;
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let (_app, runtime, room, agent) = agent_config_runtime_in_worktree(
+        config,
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")
+            .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+    )
+    .await;
+    let store = &runtime.owned.durable_state_store;
+    let now = crate::session::unix_epoch_ms();
+    let task_id = "check-notes";
+    let note = crate::session::PromptAttachment::new(
+        "chariox-terminal://note/1",
+        crate::prompt_notes::NOTE_ATTACHMENT_MIME,
+        Some("Note".into()),
+    )
+    .with_contents_base64(
+        base64::engine::general_purpose::STANDARD
+            .encode(r#"{"quote":"QUOTED_CHECK_REQUIREMENT","comment":"COMMENT_FOR_CHECK"}"#),
+    );
+    let mut entry = crate::history::SessionHistoryEntry::user_prompt_with_attachments(
+        &room,
+        "att",
+        &agent,
+        "Please read the attached notes.",
+        &[note],
+    );
+    entry.merge_key = Some(format!("prompt:{task_id}"));
+    runtime.owned.append_history_entries(&room, vec![entry]);
+
+    for op in [
+        Operation::Begin {
+            owner: "local-user".into(),
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: task_id.into(),
+            run: Some("retired-run".into()),
+            now,
+        },
+        Operation::StartGoal {
+            task: task_id.into(),
+            owner: "local-user".into(),
+            objective: "Read the attached notes".into(),
+            minutes: 1,
+            now,
+        },
+        Operation::Settle {
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: task_id.into(),
+            run: "retired-run".into(),
+            has_answer: true,
+            cancelled: false,
+            now,
+        },
+    ] {
+        store.agent_lifecycle(op).unwrap();
+    }
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .remove(0);
+    let attachment = runtime
+        .ensure_agent_message_attachment(
+            &room,
+            &runtime.owned.agent_store.get_agent(&agent).unwrap(),
+        )
+        .unwrap();
+    let check_context = runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap();
+    runtime
+        .dispatch_task_continuation(&task, &attachment, check_context)
+        .await
+        .unwrap();
+    let session = runtime.owned.session_store.get_session(&room).unwrap();
+    let prompt = session
+        .active_prompt_for_agent(&agent)
+        .expect("check submitted");
+    assert_eq!(
+        prompt.prompt_origin(),
+        crate::session::PromptOrigin::CompletionCheck
+    );
+    for private in ["QUOTED_CHECK_REQUIREMENT", "COMMENT_FOR_CHECK"] {
+        assert!(
+            !prompt.prompt().contains(private),
+            "visible completion check lost hidden-only contract"
+        );
+    }
+    let envelope = recovered_continuation_envelope(&runtime, &room, &agent, prompt);
+    for private in ["QUOTED_CHECK_REQUIREMENT", "COMMENT_FOR_CHECK"] {
+        assert!(!envelope.visible_user_prompt.contains(private));
+        assert!(envelope.hidden_system_context.contains(private));
+    }
+}
