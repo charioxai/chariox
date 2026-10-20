@@ -168,11 +168,15 @@ export class KernelBrowserHost {
     await rename(`${name}.new`, name);
     this.lastSaved = serialized;
   }
+  isBrowserLive(browser = this.browser) {
+    return !!browser && browser === this.browser
+      && this.chromium?.child?.exitCode === null && this.chromium?.child?.signalCode === null
+      && this.chromium?.connection?.isOpen?.() !== false && browser.connection?.isOpen?.() !== false;
+  }
   async start({ signal, allowStart = true } = {}) {
     assertNotCancelled(signal);
     if (this.starting) return this.starting;
-    if (this.browser && this.chromium.child?.exitCode === null && this.chromium.child?.signalCode === null
-      && this.chromium.connection?.isOpen() !== false) return;
+    if (this.isBrowserLive()) return;
     if (!allowStart && !this.recovery.enabled) throw new BrowserActionError("browser_unavailable", "MP-11: user browser is stopped or unavailable; explicitly start/open the browser");
     const recovering = this.recovery.enabled;
     this.recovery.enabled = true;
@@ -709,6 +713,7 @@ export class KernelBrowserHost {
     // MP-11: observation never launches/relaunches the browser.
     await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_input_target", "note_selection", "note_reanchor", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
     assertNotCancelled(signal);
+    const browserAtStart = this.browser;
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
     for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
     // MP-08/MP-10: the kernel's navigate/subscribe preflight reads only its own Tab
@@ -897,7 +902,7 @@ export class KernelBrowserHost {
       catch (error) {
         if (dispatched) markDispatched(error);
         // A busy renderer that is only late to acknowledge a CDP press/release (both already queued in order) leaves nothing held: it must not take the browser down.
-        if (dispatched && !lateInputAck(error) || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) {
+        if ((dispatched && !lateInputAck(error) || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) && this.isBrowserLive(browserAtStart)) {
           // Clear any dispatched key/button state before another actor can use
           // the browser. Recovery rotates generation; cancelled input never replays.
           await this.stop();

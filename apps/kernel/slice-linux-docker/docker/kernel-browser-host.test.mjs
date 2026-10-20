@@ -2378,3 +2378,19 @@ test('MP-08/MP-10 recovery restores every tab before one inventory read', () => 
   assert.deepEqual([...host.tabs.keys()],tabs.map(tab=>tab.tab_id));
   assert.equal(host.activeTarget,host.tabs.get(tabs[2].tab_id).target_id);
 }));
+
+for(const late of [false,true])test(`MP-08/MP-10 a disconnected page input never cancels browser recovery (late=${late})`,{timeout:10000},()=>using(async({host,chromium,connection,handlers})=>{
+ let live=true;chromium.connection=connection;connection.isOpen=()=>live;
+ const start=chromium.start;chromium.start=async()=>{live=true;return start();};
+ const opened=await host.request({op:'open',url:'https://www.wikipedia.org/'}),tab=opened.tabs[0];
+ const began=Promise.withResolvers(),gate=Promise.withResolvers();let presses=0;
+ connection.beforeSend=async method=>{if(method==='Input.dispatchMouseEvent'){presses++;began.resolve();await gate.promise;throw Object.assign(Error('pipe closed'),{code:'browser_cdp_disconnected'});}};
+ const action=host.handle({id:'page-input',method:'host.browser',params:{op:'input',_agent_input:true,tab_id:opened.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'scroll',x:20,y:20,delta_x:0,delta_y:120}}});
+ await began.promise;chromium.child.signalCode='SIGSEGV';live=false;
+ for(const handler of [...handlers])handler({method:'Chariox.browserDisconnected',params:{code:'browser_cdp_disconnected'}});
+ if(late){for(let n=0;n<150&&host.generation===opened.generation;n++)await new Promise(r=>setTimeout(r,10));await host.starting;}
+ gate.resolve();const reply=await action;
+ assert.equal(reply.ok,false);assert.equal(reply.error.code,'browser_unavailable');assert.match(reply.error.message,/not replayed/);
+ for(let n=0;n<150&&host.generation===opened.generation;n++)await new Promise(r=>setTimeout(r,10));await host.starting;
+ assert.equal(host.generation,opened.generation+1);assert(host.browser);assert.equal(host.recovery.enabled,true);assert(host.tabs.has(opened.tab_id));assert.equal(presses,1,'the old input is never replayed');
+}));
