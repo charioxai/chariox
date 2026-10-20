@@ -1,6 +1,7 @@
 import { LocalIpcError } from "@chariox/kernel-client/ipc"
-import { CommandFailure, exitCodeFor, guideText, parseFlags } from "./agent-command-table.js"
+import { CommandFailure, exitCodeFor, guideText, parseArguments, usageOf } from "./agent-command-table.js"
 import { kernelUnixClient } from "./kernel-unix-client.js"
+import { FILES_VERBS, runFilesVerb, type SendRequest } from "./machine-files.js"
 
 const LOCAL_CONNECTION_LOSS = ["connection_closed", "outcome_unknown", "write_failed"]
 const CONNECT_OPERATION = "connect kernel websocket"
@@ -78,18 +79,58 @@ async function requireMachineGateway(socket: string | undefined, timeoutSeconds:
   } finally { await client.close() }
 }
 
-export async function sendRequest(
-  body: Record<string, unknown>,
+// Every request of `use` shares one connection and its own timeout; a transfer is many requests.
+export async function withKernel<T>(
   options: { socket: string | undefined; machine?: string | undefined; commandId?: string | undefined; timeoutSeconds: number },
-): Promise<unknown> {
+  use: (send: SendRequest) => Promise<T>,
+): Promise<T> {
   if (options.machine !== undefined) await requireMachineGateway(options.socket, options.timeoutSeconds)
   const client = kernelUnixClient(options.socket, { machine: options.machine, commandId: options.commandId })
   try {
-    return await sendWithin(client.send<unknown>(body), options.timeoutSeconds)
+    return await use(body => sendWithin(client.send<unknown>(body), options.timeoutSeconds))
   } catch (error) {
     if (!lostInFlight(error)) throw error
     throw lostConnectionFailure(await probeKernel(options.socket).then(() => null, probeError => probeError))
   } finally { await client.close() }
+}
+
+export function sendRequest(
+  body: Record<string, unknown>,
+  options: { socket: string | undefined; machine?: string | undefined; commandId?: string | undefined; timeoutSeconds: number },
+): Promise<unknown> {
+  return withKernel(options, send => send(body))
+}
+
+// Ends only by failing: the stream has no end of its own, and a lost connection says where to resume.
+export async function watchMachine(
+  options: { socket: string | undefined; machine: string; sessionId: string; attachmentId: string; from: number | null },
+  print: (line: string) => void,
+): Promise<never> {
+  await requireMachineGateway(options.socket, DEFAULT_TIMEOUT_SECONDS)
+  let lastEventId = options.from
+  let lose!: (failure: unknown) => void
+  const lost = new Promise<never>((_, reject) => { lose = reject })
+  const client = kernelUnixClient(options.socket, { machine: options.machine, onSubscriptionEnded: lose })
+  client.onKernelEvent((event, frame) => {
+    if (frame) {
+      lastEventId = frame.event_id
+      print(JSON.stringify(frame))
+    } else if (event.event === "transport_closed") {
+      // The client would reconnect on its own; a watcher that missed events must say so instead.
+      lose(new CommandFailure("machine_connection_lost", `the connection to the local kernel was lost; events may have been missed. Run chariox watch again${lastEventId === null ? "" : ` with --from ${lastEventId}`}.`))
+    }
+  })
+  try {
+    await Promise.race([client.subscribeToKernelEvents(options.sessionId, options.attachmentId, options.from), lost])
+    return await lost
+  } finally { await client.close() }
+}
+
+function parseEventId(value: string | true | undefined): number | null {
+  if (value === undefined) return null
+  const id = Number(value)
+  if (!Number.isSafeInteger(id) || id < 0) throw new CommandFailure("usage", "--from needs an event id: a whole number from 0")
+  return id
 }
 
 async function readStdin(): Promise<string> {
@@ -100,16 +141,31 @@ async function readStdin(): Promise<string> {
 
 export async function runMachineCommand(argv: string[]): Promise<boolean> {
   const [command, ...rest] = argv
-  if (command !== "guide" && command !== "machines" && command !== "request") return false
+  if (command !== "guide" && command !== "machines" && command !== "request" && command !== "watch" && command !== "files") return false
   let machine: string | null = null
   try {
-    const flags = parseFlags(command, rest)
+    // `files` is a command family: the verb is part of the table name.
+    const verb = command === "files" ? FILES_VERBS.find(name => name === rest[0]) : undefined
+    if (command === "files" && !verb) throw new CommandFailure("usage", `Usage: chariox files ${FILES_VERBS.join("|")} (chariox guide lists the arguments)`)
+    const { flags, positionals } = parseArguments(verb ? `files ${verb}` : command, verb ? rest.slice(1) : rest)
     const socket = flags.get("--socket") as string | undefined
     if (command === "guide") {
       console.log(guideText())
     } else if (command === "machines") {
       const listed = await sendRequest({ ListGatewayMachines: {} }, { socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS }) as { GatewayMachinesListed: unknown }
       console.log(JSON.stringify(listed.GatewayMachinesListed))
+    } else if (command === "watch") {
+      machine = (flags.get("--machine") as string | undefined) ?? null
+      const sessionId = flags.get("--session") as string | undefined
+      const attachmentId = flags.get("--attachment") as string | undefined
+      if (machine === null || sessionId === undefined || attachmentId === undefined) throw new CommandFailure("usage", usageOf("watch"))
+      await watchMachine({ socket, machine, sessionId, attachmentId, from: parseEventId(flags.get("--from")) }, line => console.log(line))
+    } else if (command === "files" && verb) {
+      machine = (flags.get("--machine") as string | undefined) ?? null
+      const timeoutSeconds = parseTimeout(flags.get("--timeout"))
+      const result = await withKernel({ socket, timeoutSeconds, machine: machine ?? undefined }, send =>
+        runFilesVerb(verb, positionals, { sha256: flags.has("--sha256"), overwrite: flags.has("--overwrite") }, send))
+      console.log(JSON.stringify(result))
     } else {
       machine = (flags.get("--machine") as string | undefined) ?? null
       const body = parseRequestBody(await readStdin())

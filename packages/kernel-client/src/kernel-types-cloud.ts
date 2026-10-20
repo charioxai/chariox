@@ -126,6 +126,18 @@ export type RemoteMachineRecord = {
   provider_accounts?: ProviderAccountSummary[]
 }
 
+/** A machine this kernel forwards requests to; `via` tells whether Cloud or a self-hosted relay carries it. */
+export type GatewayMachineRecord = {
+  name: string
+  kernel_id: string
+  machine_id: string
+  machine_alias: string | null
+  status: "online" | "offline"
+  last_seen_ms: number | null
+  gateway_ready: boolean
+  via: "hosted" | "self_hosted"
+}
+
 export type SliceRecord = {
   source_slice_ref?: string | null
   id: string

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { readdirSync, readFileSync } from "node:fs"
-import { COMMANDS, EXIT_CODES, REQUEST_EXAMPLES, CommandFailure, exitCodeFor, guideText, parseFlags } from "./agent-command-table.js"
+import { COMMANDS, EXIT_CODES, REQUEST_EXAMPLES, CommandFailure, exitCodeFor, guideText, parseArguments } from "./agent-command-table.js"
 import {
   attachToSessionRequest, cancelActivePromptRequest, createSessionRequest, endSessionRequest, getSessionStateRequest,
   listProjectsRequest, listSessionsRequest, searchWorkspaceDirectoriesRequest, spawnAgentRequest, submitPromptRequest,
@@ -15,36 +15,39 @@ test("the guide mentions exactly the commands and flags the parser knows", () =>
     .map(([, first, second]) => COMMANDS.some(spec => spec.name === `${first} ${second}`) ? `${first} ${second}` : first)
   for (const name of names) assert.ok(COMMANDS.some(spec => spec.name === name), `guide mentions unknown command ${name}`)
   for (const spec of COMMANDS) assert.ok(names.includes(spec.name), `guide omits command ${spec.name}`)
-  const flags = new Set(guide.match(/--[a-z-]+/g))
+  const flags = new Set(guide.match(/--[a-z0-9-]+/g))
   for (const flag of flags) assert.ok(knownFlags.has(flag), `guide mentions unknown flag ${flag}`)
   for (const flag of knownFlags) assert.ok(flags.has(flag), `guide omits flag ${flag}`)
-  assert.ok(guide.split("\n").length <= 60)
+  assert.ok(guide.split("\n").length <= 66)
   assert.match(guide, /show it to the user verbatim and wait/)
   assert.match(guide, /exit 0 and a printed grant mean approved: go on to step 2/, "an agent must not mistake the waiting note for a pending approval")
 })
 
 test("the parser accepts every flag the table lists and refuses anything else", () => {
   for (const spec of COMMANDS) {
+    const positionals = (spec.args ?? []).map(name => name.toLowerCase())
     for (const flag of spec.flags) {
-      const parsed = parseFlags(spec.name, flag.value ? [flag.name, "x"] : [flag.name])
-      assert.equal(parsed.get(flag.name), flag.value ? "x" : true)
-      assert.throws(() => parseFlags(spec.name, flag.value ? [flag.name, "x", flag.name, "y"] : [flag.name, flag.name]), CommandFailure)
-      if (flag.value) assert.throws(() => parseFlags(spec.name, [flag.name]), CommandFailure)
+      const parsed = parseArguments(spec.name, [...positionals, ...flag.value ? [flag.name, "x"] : [flag.name]])
+      assert.equal(parsed.flags.get(flag.name), flag.value ? "x" : true)
+      assert.deepEqual(parsed.positionals, positionals)
+      assert.throws(() => parseArguments(spec.name, [...positionals, ...flag.value ? [flag.name, "x", flag.name, "y"] : [flag.name, flag.name]]), CommandFailure)
+      if (flag.value) assert.throws(() => parseArguments(spec.name, [...positionals, flag.name]), CommandFailure)
     }
-    assert.throws(() => parseFlags(spec.name, ["--passkey", "never"]), (error: unknown) => error instanceof CommandFailure && error.code === "usage")
-    assert.throws(() => parseFlags(spec.name, ["stray"]), CommandFailure)
+    assert.throws(() => parseArguments(spec.name, [...positionals, "--passkey", "never"]), (error: unknown) => error instanceof CommandFailure && error.code === "usage")
+    assert.throws(() => parseArguments(spec.name, [...positionals, "stray"]), CommandFailure)
+    if (positionals.length > 0) assert.throws(() => parseArguments(spec.name, positionals.slice(1)), CommandFailure, "a missing argument is a usage error")
   }
 })
 
 test("one table maps every machine error code to its exit code", () => {
   const expected: Record<number, string[]> = {
-    3: ["kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "command_id_required", "duplicate_command_conflict"],
+    2: ["usage", "file_path_invalid"],
+    3: ["kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "command_id_required", "duplicate_command_conflict", "file_permission_denied"],
     4: ["machine_unknown", "machine_ambiguous", "machine_offline", "machine_unreachable", "machine_unpaired", "machine_incompatible", "machine_not_available"],
     5: ["machine_request_timeout", "machine_connection_lost", "machine_outcome_unknown"],
   }
   for (const [exit, codes] of Object.entries(expected)) for (const code of codes) assert.equal(exitCodeFor(code), Number(exit), code)
-  assert.equal(exitCodeFor("usage"), 2)
-  for (const code of ["kernel_request_overloaded", "ledger_unavailable", "anything_else"]) assert.equal(exitCodeFor(code), 1)
+  for (const code of ["kernel_request_overloaded", "ledger_unavailable", "anything_else", "file_not_found", "file_exists", "file_hash_mismatch", "file_offset_mismatch", "file_io_failed"]) assert.equal(exitCodeFor(code), 1)
   assert.deepEqual(EXIT_CODES.map(entry => entry.exit), [0, 2, 3, 4, 5, 6])
 })
 
@@ -108,4 +111,19 @@ test("the guide tells the agent to read parse errors and to give state-changing 
   const guide = guideText()
   assert.match(guide, /cannot parse[^\n]*read/)
   assert.match(guide, /changes state[^\n]*--command-id/)
+})
+
+test("the guide steps cover watching a machine and an attachment that is kept alive", () => {
+  const guide = guideText()
+  assert.match(guide, /4\. Watch events on a machine: chariox watch --machine NAME --session ID --attachment ID/)
+  assert.match(guide, /An AttachToSession you make on another machine is kept alive for you while your access lasts; send DetachFromSession when you are done with it\./)
+  assert.doesNotMatch(guide, /lapses/)
+  assert.deepEqual(COMMANDS.find(spec => spec.name === "watch")?.flags.map(flag => flag.name), ["--machine", "--session", "--attachment", "--from", "--socket"])
+})
+
+test("the guide teaches moving files and resuming a transfer", () => {
+  const guide = guideText()
+  assert.match(guide, /5\. Move files: chariox files put\|get\|stat\|ls --machine NAME/)
+  assert.match(guide, /put and get resume after an interruption: run the same command again/)
+  for (const verb of ["stat", "ls", "get", "put"]) assert.ok(COMMANDS.some(spec => spec.name === `files ${verb}`))
 })

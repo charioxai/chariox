@@ -139,7 +139,10 @@ import {
   addSshMachine,
   removeSshMachine,
   approveRemoteMachine,
+  forgetGatewayMachine,
   forgetRemoteMachine,
+  joinMachineLink,
+  listGatewayMachines,
   listRemoteMachineKernels,
   listRemoteMachines,
   renameRemoteMachine,
@@ -671,6 +674,9 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     approveRemoteMachine: (machineRef) => approveRemoteMachine(client, machineRef),
     forgetRemoteMachine: (machineRef) => forgetRemoteMachine(client, machineRef),
     renameRemoteMachine: (machineRef, alias) => renameRemoteMachine(client, machineRef, alias),
+    joinMachineLink: (link, relayToken) => joinMachineLink(client, link, relayToken),
+    listGatewayMachines: () => listGatewayMachines(client),
+    forgetGatewayMachine: (name) => forgetGatewayMachine(client, name),
     listSlices: async () => {
       const slices = await listSlices(client)
       setSlicesState(slices)

@@ -4,10 +4,13 @@ import {
 } from "./ipc-requests.js"
 
 type Flag = { name: string; value?: string }
-type CommandSpec = { name: string; flags: readonly Flag[]; summary: string }
+type CommandSpec = { name: string; flags: readonly Flag[]; args?: readonly string[]; summary: string }
 
 const SOCKET: Flag = { name: "--socket", value: "PATH" }
 const HOLDER: Flag = { name: "--holder-pid", value: "PID" }
+const MACHINE: Flag = { name: "--machine", value: "NAME" }
+const TIMEOUT: Flag = { name: "--timeout", value: "SECONDS" }
+const OVERWRITE: Flag = { name: "--overwrite" }
 
 export const COMMANDS: readonly CommandSpec[] = [
   { name: "guide", flags: [], summary: "print this guide" },
@@ -20,9 +23,18 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "machines", flags: [SOCKET], summary: "list the machines this kernel can reach" },
   {
     name: "request",
-    flags: [{ name: "--machine", value: "NAME" }, { name: "--command-id", value: "ID" }, { name: "--timeout", value: "SECONDS" }, SOCKET],
+    flags: [MACHINE, { name: "--command-id", value: "ID" }, TIMEOUT, SOCKET],
     summary: "send the one JSON request on stdin; prints the JSON response",
   },
+  {
+    name: "watch",
+    flags: [MACHINE, { name: "--session", value: "SESSION_ID" }, { name: "--attachment", value: "ATTACHMENT_ID" }, { name: "--from", value: "EVENT_ID" }, SOCKET],
+    summary: "print one JSON line per event of that machine's session until the connection is lost",
+  },
+  { name: "files stat", flags: [MACHINE, { name: "--sha256" }, TIMEOUT, SOCKET], args: ["PATH"], summary: "kind, size, modified time and optionally sha256 of a file; partial_size is an unfinished upload" },
+  { name: "files ls", flags: [MACHINE, TIMEOUT, SOCKET], args: ["PATH"], summary: "list a directory" },
+  { name: "files get", flags: [MACHINE, OVERWRITE, TIMEOUT, SOCKET], args: ["REMOTE_PATH", "LOCAL_PATH"], summary: "download a file, verified by sha256; prints size, bytes received and resumed_from" },
+  { name: "files put", flags: [MACHINE, OVERWRITE, TIMEOUT, SOCKET], args: ["LOCAL_PATH", "REMOTE_PATH"], summary: "upload a file, verified by sha256; prints size, bytes sent and resumed_from" },
 ]
 
 export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
@@ -48,8 +60,8 @@ const OUTCOME_UNCERTAIN = ["machine_request_timeout", "machine_connection_lost",
 
 export const EXIT_CODES: readonly { exit: number; meaning: string; codes: readonly string[] }[] = [
   { exit: 0, meaning: "ok", codes: [] },
-  { exit: 2, meaning: "usage error", codes: ["usage"] },
-  { exit: 3, meaning: "refused: the user or the grant does not allow it", codes: REFUSED },
+  { exit: 2, meaning: "usage error", codes: ["usage", "file_path_invalid"] },
+  { exit: 3, meaning: "refused: the user, the grant or the file permissions do not allow it", codes: [...REFUSED, "file_permission_denied"] },
   { exit: 4, meaning: "machine unavailable", codes: MACHINE_UNAVAILABLE },
   { exit: 5, meaning: "timeout or unknown outcome: the request may have run", codes: OUTCOME_UNCERTAIN },
   { exit: 6, meaning: "approval pending (access request --no-wait)", codes: [] },
@@ -78,19 +90,26 @@ function commandSpec(command: string): CommandSpec {
 
 function usage(spec: CommandSpec): string {
   const flags = spec.flags.map(flag => `[${flag.name}${flag.value ? ` ${flag.value}` : ""}]`)
-  return `Usage: chariox ${[spec.name, ...flags].join(" ")}`
+  return `Usage: chariox ${[spec.name, ...flags, ...spec.args ?? []].join(" ")}`
 }
 
 export function parseFlags(command: string, argv: readonly string[]): Map<string, string | true> {
+  return parseArguments(command, argv).flags
+}
+
+export function parseArguments(command: string, argv: readonly string[]): { flags: Map<string, string | true>; positionals: string[] } {
   const spec = commandSpec(command)
   const values = new Map<string, string | true>()
+  const positionals: string[] = []
   for (let i = 0; i < argv.length; i++) {
+    if (!argv[i]!.startsWith("--")) { positionals.push(argv[i]!); continue }
     const flag = spec.flags.find(entry => entry.name === argv[i])
     const value = flag?.value ? argv[++i] : true
     if (!flag || !value || values.has(flag.name)) throw new CommandFailure("usage", usage(spec))
     values.set(flag.name, value)
   }
-  return values
+  if (positionals.length !== (spec.args?.length ?? 0)) throw new CommandFailure("usage", usage(spec))
+  return { flags: values, positionals }
 }
 
 export function guideText(): string {
@@ -106,6 +125,10 @@ export function guideText(): string {
     "2. List machines: chariox machines",
     "3. Send a request (one JSON object on stdin): chariox request --machine NAME < request.json",
     "   Always pass --machine for another machine; without it the request runs on this one.",
+    "4. Watch events on a machine: chariox watch --machine NAME --session ID --attachment ID",
+    "   After machine_connection_lost run it again with --from N, the N in the message.",
+    "5. Move files: chariox files put|get|stat|ls --machine NAME ...",
+    "   put and get resume after an interruption: run the same command again.",
     "",
     "Commands:",
     ...commands,
@@ -114,7 +137,7 @@ export function guideText(): string {
     ...REQUEST_EXAMPLES.map(({ body, note }) => `  ${JSON.stringify(body)}  | ${note}`),
     "A request the kernel cannot parse comes back with a message naming the expected variants and fields: read it and fix the request.",
     "Give every request that changes state (CreateSession, SpawnAgent, SubmitPrompt, RunShellCommand, EndSession) its own --command-id ID; reuse one only to retry.",
-    "An AttachToSession made on another machine lapses after about 30 s idle (attachment_not_found): attach again right before the request that needs it.",
+    "An AttachToSession you make on another machine is kept alive for you while your access lasts; send DetachFromSession when you are done with it.",
     "",
     "Output is one JSON document on stdout. Errors are JSON on stderr: {\"error\":{\"code\",\"message\",\"machine\"}}.",
     "Exit codes:",

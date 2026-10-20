@@ -3,7 +3,7 @@ import { join } from "node:path"
 import { LocalIpcClient, type LocalIpcClientOptions } from "@chariox/kernel-client/ipc"
 import { defaultKernelUnixSocketPath, kernelSocketConfigRoot } from "@chariox/kernel-client/kernel-unix-socket-path"
 
-export function kernelUnixClient(socket?: string, route: Pick<LocalIpcClientOptions, "machine" | "commandId"> = {}): LocalIpcClient {
+export function kernelUnixClient(socket?: string, route: Pick<LocalIpcClientOptions, "machine" | "commandId" | "onSubscriptionEnded"> = {}): LocalIpcClient {
   const configRoot = kernelSocketConfigRoot()
   let socketPath = socket ?? process.env.CHARIOX_DAEMON_SOCKET
   if (!socketPath) {

@@ -15,6 +15,8 @@ export type KernelTransportResponseFrame<TResponse> = {
 export type KernelTransportEventFrame<TEvent = KernelEvent> = {
   type: "event"
   event_id: number
+  /** Set when the local kernel relays another machine's stream; `event_id` counts on that stream. */
+  machine?: string
   event: TEvent
 }
 

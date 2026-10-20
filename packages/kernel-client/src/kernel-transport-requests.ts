@@ -13,6 +13,7 @@ export type KernelTransportRequest =
     attachment_id: string
     subscription_scope: string | null
     resume_from_event_id: number | null
+    machine?: string
   }
   | {
     type: "unsubscribe"
@@ -41,6 +42,7 @@ export function normalizeWebSocketRequest(requestId: string, request: unknown, r
       attachment_id: transportRequest.attachment_id,
       subscription_scope: transportRequest.subscription_scope ?? null,
       resume_from_event_id: transportRequest.resume_from_event_id ?? null,
+      ...(route.machine === undefined ? {} : { machine: route.machine }),
     }
   }
   if (transportRequest?.type === "unsubscribe") {
