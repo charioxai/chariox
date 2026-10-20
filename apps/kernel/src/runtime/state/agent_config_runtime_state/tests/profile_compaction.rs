@@ -238,8 +238,10 @@ async fn assert_profile_queue_claims_keep_app_available(preparation_first: bool)
         .unwrap();
     // The queue closure has the app mutex before this unrelated read begins.
     // On RED it spins on the profile-reserved head while /compact remains gated.
+    // A held mutex never releases while /compact is gated, so a generous bound
+    // separates RED from a slow, loaded host.
     let available = tokio::time::timeout(
-        std::time::Duration::from_millis(300),
+        std::time::Duration::from_secs(5),
         runtime.with_app_side_effect(|app| {
             crate::app::KernelSessionReadService::new(app).session_snapshot(&session)
         }),
