@@ -1,3 +1,8 @@
+import {
+  attachToSessionRequest, cancelActivePromptRequest, createSessionRequest, endSessionRequest, getSessionStateRequest,
+  listProjectsRequest, listSessionsRequest, searchWorkspaceDirectoriesRequest, spawnAgentRequest, submitPromptRequest,
+} from "./ipc-requests.js"
+
 type Flag = { name: string; value?: string }
 type CommandSpec = { name: string; flags: readonly Flag[]; summary: string }
 
@@ -18,6 +23,23 @@ export const COMMANDS: readonly CommandSpec[] = [
     flags: [{ name: "--machine", value: "NAME" }, { name: "--command-id", value: "ID" }, { name: "--timeout", value: "SECONDS" }, SOCKET],
     summary: "send the one JSON request on stdin; prints the JSON response",
   },
+]
+
+export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
+  { body: listSessionsRequest(), note: "SessionsListed.sessions" },
+  { body: listProjectsRequest(), note: "ProjectsListed.projects" },
+  { body: searchWorkspaceDirectoriesRequest("NAME", 20), note: "WorkspaceDirectoriesSearched.directories: absolute directory paths on that machine" },
+  { body: createSessionRequest("/PATH", "/PATH"), note: "workspace_id and worktree_id are one such directory path; SessionCreated.session.id" },
+  { body: attachToSessionRequest("SESSION_ID", "CLIENT_NAME"), note: "SessionAttached.attachment.id; client_id is any name you pick" },
+  { body: getSessionStateRequest("SESSION_ID"), note: "SessionState: agents, prompts, output" },
+  { body: spawnAgentRequest("SESSION_ID", "codex"), note: "provider is claude, codex or opencode; AgentSpawned.agent.id" },
+  { body: submitPromptRequest("SESSION_ID", "ATTACHMENT_ID", null, "PROMPT", []), note: "target_agent_id is an agent id, or null for the default agent" },
+  { body: cancelActivePromptRequest("SESSION_ID", "ATTACHMENT_ID", null), note: "stops the running prompt" },
+  {
+    body: { RunShellCommand: { session_id: "SESSION_ID", attachment_id: "ATTACHMENT_ID", command: "ls", args: ["-la"], working_directory: "/PATH", timeout_ms: 60000 } },
+    note: "runs on that machine; ShellCommandCompleted.result has exit_code, stdout, stderr",
+  },
+  { body: endSessionRequest("SESSION_ID"), note: "SessionEnded" },
 ]
 
 const REFUSED = ["kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "command_id_required", "duplicate_command_conflict"]
@@ -87,6 +109,11 @@ export function guideText(): string {
     "",
     "Commands:",
     ...commands,
+    "",
+    "Requests for chariox request (replace the UPPERCASE values; ids come from earlier answers):",
+    ...REQUEST_EXAMPLES.map(({ body, note }) => `  ${JSON.stringify(body)}  | ${note}`),
+    "A request the kernel cannot parse comes back with a message naming the expected variants and fields: read it and fix the request.",
+    "Give every request that changes state (CreateSession, SpawnAgent, SubmitPrompt, RunShellCommand, EndSession) its own --command-id ID; reuse one only to retry.",
     "",
     "Output is one JSON document on stdout. Errors are JSON on stderr: {\"error\":{\"code\",\"message\",\"machine\"}}.",
     "Exit codes:",
