@@ -1,7 +1,8 @@
 import {
   providerAccountAdmissionBlocked,
-  providerAccountCapacityLabel,
   providerAccountCapacityResetLabel,
+  providerAccountName,
+  providerAccountStatusLabel,
   type ProviderAccountProfile,
 } from "@chariox/kernel-client"
 
@@ -82,8 +83,8 @@ export function defaultProviderAccountProfileId(
 }
 
 export function providerAccountDisplayLabel(profile: ProviderAccountProfile, model?: string | null): string {
-  const reset = providerAccountCapacityResetLabel(profile, Date.now(), model)
-  return `${providerAccountCapacityLabel(profile, Date.now(), model)}${reset ? ` · ${reset}` : ""} · ${profile.auth_state === "authenticated" ? "signed in" : profile.auth_state === "unknown" ? "sign-in not checked" : "needs sign-in"}`
+  const status = providerAccountStatusLabel(profile, Date.now(), model)
+  return status ? `${providerAccountName(profile, model)} · ${status}` : providerAccountName(profile, model)
 }
 
 export function selectedProviderAccountStartBlockReason(
