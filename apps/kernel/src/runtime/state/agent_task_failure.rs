@@ -9,7 +9,7 @@ impl KernelRuntimeOwnedState {
         room: &str,
         agent: &str,
         prompt: &str,
-        run: &str,
+        run: Option<&str>,
         diagnostic: &str,
     ) -> Result<(), DaemonError> {
         if !self.config_projection.snapshot().room_agent_tools {
@@ -22,7 +22,9 @@ impl KernelRuntimeOwnedState {
             .find(|task| {
                 task.prompt_id == prompt
                     && task.state == ExecutionState::Working
-                    && task.provider_run_id.as_deref().is_none_or(|id| id == run)
+                    && run.is_none_or(|run| {
+                        task.provider_run_id.as_deref().is_none_or(|id| id == run)
+                    })
             });
         if let Some(task) = task {
             let diagnostic = crate::provider::sanitize_provider_diagnostic(diagnostic);

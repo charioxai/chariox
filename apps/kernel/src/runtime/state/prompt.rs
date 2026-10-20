@@ -147,7 +147,13 @@ impl KernelRuntimeOwnedState {
         if active_prompt.id() != prompt_id {
             return Ok(None);
         }
-        self.block_failed_prompt_task(session_id, agent_id, prompt_id, provider_run_id, message)?;
+        self.block_failed_prompt_task(
+            session_id,
+            agent_id,
+            prompt_id,
+            Some(provider_run_id),
+            message,
+        )?;
         let workflow_prompt_settled = if active_prompt.workflow_run_id().is_some() {
             match self.workflow_fail_provider_prompt_without_queue_advance(
                 session_id,
