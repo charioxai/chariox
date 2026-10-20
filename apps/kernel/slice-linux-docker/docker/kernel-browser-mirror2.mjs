@@ -226,8 +226,13 @@ export class Mirror2 {
   }
   // A closed subscription's observers stop (best effort: a gone world has none).
   // MP-11: nothing built under the old protection (early packet, cached replies, resend history) reaches the viewer.
-  // Protocol 560/168: the page size a packet describes; a stream whose last packet described another one resets.
-  layoutKey(tabId) { const size = this.host.pageSize?.(tabId); return size ? `${size.width}x${size.height}` : ''; }
+  // Protocol 560/168: the page size a packet describes (and the layout changes seen, so A->B->A differs); a stream whose last packet described another one resets.
+  layoutKey(tabId) { const size = this.host.pageSize?.(tabId); return size ? `${size.width}x${size.height}#${this.host.layoutRevision?.(tabId) ?? 0}` : ''; }
+  // The observation consumed the page's pending changes: a refused packet retires the stream base, so the next credit re-snapshots.
+  layoutMoved(stream, tab, layoutKey) {
+    if (this.layoutKey(tab.tab_id) === layoutKey) return;
+    stream.policy = null; throw new Error('MP-11: mirror layout changed during observation');
+  }
   invalidate(stream) { stream.policy = null; stream.early = null; stream.replies = null; stream.history = null; stream.historyBytes = 0; stream.resources.clear(); }
   dispose(stream) {
     this.regions.retireStream(stream);
@@ -553,7 +558,7 @@ export class Mirror2 {
       stream.policy = null; throw new Error('MP-11: stale mirror protection policy or subscription');
     }
     // Another viewer's layout change during the observation: this packet describes the old page size.
-    if (this.layoutKey(tab.tab_id) !== layoutKey) throw new Error('MP-11: mirror layout changed during observation');
+    this.layoutMoved(stream, tab, layoutKey);
     const sequence = stream.issued + 1;
     // Protocol 489 compact delta: the binding, base (sequence - 1) and every
     // header field equal to the base packet's are implied; empty lists omitted.
@@ -590,7 +595,7 @@ export class Mirror2 {
     if (this.host.protection !== policy || stream.policy !== policy || this.service.streams.get(command.subscription_id) !== stream) {
       stream.policy = null; throw new Error('MP-11: stale mirror protection policy or subscription');
     }
-    if (this.layoutKey(tab.tab_id) !== layoutKey) throw new Error('MP-11: mirror layout changed during observation');
+    this.layoutMoved(stream, tab, layoutKey);
     this.remember(stream, sequence, wire, reset);
     mark('serialize'); this.host.timing?.('mirror2_total', started);
     return wire;
