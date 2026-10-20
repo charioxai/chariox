@@ -6,7 +6,8 @@ const mediaTags=new Set(['VIDEO','CANVAS','OBJECT','EMBED']);
 export async function mediaLayerEvidence(mirror,stream,boxes){
  const groups=[];
  for(const box of boxes){
-  if(box.media!==true||box.distorted)continue;
+  // A composited (rotated, translucent, filtered) element is excluded by its on-screen box like any other media.
+  if(box.media!==true)continue;
   const slot=slotOf(box.id),entry=slot?[...stream.frames.values()].find(e=>e.slot===slot):null;
   const world=slot?entry?.child:stream.world,loader=slot?entry?.loaderId:stream.document_id;
   if(!world||!loader||await mirror.frames.loaderId(world)!==loader)continue;

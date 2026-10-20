@@ -26,7 +26,7 @@ const HISTORY_BYTES = 8 * 1024 * 1024;
 // GATE-bytes: sheets from this size (normalized text) are pruned to their used rules for a first paint.
 const FIRST_PAINT_SHEET = 32 * 1024;
 const MOVED = Symbol('document moved');
-const MAX_WAIT_MS = 2000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000, DISTORTION_SETTLE_MS = 2500;
+const MAX_WAIT_MS = 2000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000;
 // Protocol 489: resource bytes travel in slices (base64 characters, a multiple
 // of 4) of at most a packet budget, smaller while the viewer is typing or
 // clicking so an echo never waits behind more than one slice on the socket.
@@ -545,10 +545,7 @@ export class Mirror2 {
     // Stills, like image bytes, never ride on a DOM change or follow viewer input
     // within QUIET_MS: an echo must not queue behind a lossless region.
     const still = reset || (this.emptyDom(stream, source) && !this.recentInput(stream));
-    if (!fallback) try { tiles = await this.tiles(world, tab, stream, reset, still, source?.opaque === false); } catch (error) {
-      if (!['region_area', 'region_transform'].includes(error.mirrorReason)) throw error;
-      fallback = error.mirrorReason; this.host.timing?.(`mirror2_fallback_${fallback}${error.mirrorDetail ? ' ' + error.mirrorDetail : ''}`, timestamp()); source = null; reset = true; resources = [];
-    }
+    if (!fallback) tiles = await this.tiles(world, tab, stream, reset, still, source?.opaque === false);
     mark('tiles');
     // The page session's navigation events arrive in order with the replies above: a cached document equal to the
     // tab's needs no renderer round trip (which waits for the page's next task ahead of an echo). Any other
@@ -841,6 +838,7 @@ export class Mirror2 {
     await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id);
     assertNotCancelled(signal); return boxes;
   }
+  async opaqueBoxes(world, stream) { return [...(await this.evaluate(world, `${world.ref}.opaqueBoxes()`)).filter(b => !b.foreign || !stream.frames.has(b.id)), ...await this.frames.opaqueBoxes(stream, world)]; }
   async tiles(world, tab, stream, reset, still, none = false) {
     // No opaque region in the page and no attached frame: nothing to place or capture. A DOM echo does not wait
     // for an evaluation in the page's next task (MP-08 click path, 8-12 ms behind a busy source page).
@@ -849,32 +847,24 @@ export class Mirror2 {
     // are measured by the next quiet packet, so an echo does not wait for an evaluation in a busy page.
     if (!reset && !still && this.recentInput(stream)) { stream.tilesPending = true; return []; }
     stream.tilesPending = false;
-    let boxes = [...(await this.evaluate(world, `${world.ref}.opaqueBoxes()`)).filter(b => !b.foreign || !stream.frames.has(b.id)), ...await this.frames.opaqueBoxes(stream, world)];
+    let boxes = await this.opaqueBoxes(world, stream);
     stream.tileKeys = boxes.map(b => b.id).join(',');
-    // Plan 3.2 handoff: opaque regions over most of the viewport hand the
-    // whole page to protected video (labelled; the client retries later).
-    if (regionOverBudget(boxes)) { const error = new Error('MP-10: opaque regions exceed the mirror budget'); error.mirrorReason = 'region_area'; throw error; }
-    if (!boxes.length) stream.distortedAt = null;
-    if (!boxes.length || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
+    // Opaque regions over most of the viewport are carried by their region video leases alone (viewport-clipped): their
+    // lossless stills would be megabytes ahead of the page copy's handover. Media area never retires the page copy.
+    if (!boxes.length || regionOverBudget(boxes) || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
     stream.tilesAt = Date.now();
     // The viewer keeps a still until replaced: unchanged pixels are not sent again.
     if (reset || !stream.tileHashes) stream.tileHashes = new Map();
-    const scale = this.host.scales.get(tab.tab_id) ?? 1, out = [], shots = []; let settling = false;
+    const scale = this.host.scales.get(tab.tab_id) ?? 1, out = [], shots = [];
     const send = (id, tile) => { const digest = createHash('sha256').update(`${tile.x},${tile.y},${tile.width},${tile.height},${tile.data_base64}`).digest('hex'); if (stream.tileHashes.get(id) === digest) return; stream.tileHashes.set(id, digest); out.push({ node_id: id, ...tile }); };
     for (const b of boxes) {
       const slot = slotOf(b.id), owner = slot ? stream.frameSlots.get(slot)?.child : world;
       const own = b.foreign || !owner ? null : await this.evaluate(owner, `${owner.ref}.elementPixels(${JSON.stringify(slot ? localId(b.id) : b.id)},${scale})`, true).catch(() => null);
       if (own) send(b.id, own);
-      else if (b.distorted) {
-        // An animation (a fade, a slide) distorts a region only while it runs: keep the page mirrored without that still
-        // until it settles; only a lasting distortion needs the whole page as video.
-        if (!stream.distortedAt) { stream.distortedAt = Date.now(); this.host.timing?.(`mirror2_region_distorted ${b.distorted} ${b.tag ?? '?'}`, timestamp()); }
-        if (Date.now() - stream.distortedAt < DISTORTION_SETTLE_MS) { settling = true; continue; }
-        const error = new Error('MP-10: a transformed opaque region needs video'); error.mirrorReason = 'region_transform'; error.mirrorDetail = `${b.distorted} ${b.tag ?? '?'}`; throw error;
-      }
-      else shots.push(b);
+      // A distorted region's screenshot already holds its compositing: as the element's background the mirrored DOM
+      // would apply the transform/opacity again, so such a region carries no still (its video lease shows it).
+      else if (!b.distorted) shots.push(b);
     }
-    if (!settling) stream.distortedAt = null;
     if (!shots.length) return out;
     boxes = shots;
     const x0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => b.box[0])))), y0 = Math.max(0, Math.floor(Math.min(...boxes.map(b => b.box[1]))));

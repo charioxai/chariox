@@ -812,14 +812,18 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (continuation && (yielded || !urgent && !ops.length)) { yielded = false; ops.push(...continuationOps(chunk())); } else if (continuation) yielded = true;
       return { ops: fontOps(ops), changed: rebound, ...take(), ...header(), closed_candidates: closedTodo.size > 0, pressed: Math.max(0, Math.ceil(pressedAt + 50 - performance.now())), loaded: loadedCount() };
     };
+    const topBox = node => {
+      let [x, y, width, height] = box(node);
+      for (let view = node.ownerDocument.defaultView; view && view !== window; view = view.parent) { const owner = view.frameElement; if (!owner) break; const b = owner.getBoundingClientRect(); x += b.x + owner.clientLeft; y += b.y + owner.clientTop; }
+      return [x, y, width, height];
+    };
     // Opaque regions visible now, in top-level viewport CSS pixels.
     const opaqueBoxes = () => {
       const out = [];
       for (const [id, node] of nodes) {
         if (kindOf.get(id) !== 'tile' && !foreign.has(id) || !node.isConnected) continue;
-        let [x, y, width, height] = box(node);
-        for (let view = node.ownerDocument.defaultView; view && view !== window; view = view.parent) { const owner = view.frameElement; if (!owner) break; const b = owner.getBoundingClientRect(); x += b.x + owner.clientLeft; y += b.y + owner.clientTop; }
-        if (width > 0 && height > 0 && x < innerWidth && y < innerHeight && x + width > 0 && y + height > 0 && !invisible(node)) { const cause = distorted(node); out.push({ id, box: [x, y, width, height], ...(foreign.has(id) ? { foreign: true } : {}), ...(cause ? { distorted: cause, tag: node.localName } : {}) }); }
+        const [x, y, width, height] = topBox(node);
+        if (width > 0 && height > 0 && x < innerWidth && y < innerHeight && x + width > 0 && y + height > 0 && !invisible(node)) { const cause = distorted(node); out.push({ id, box: [x, y, width, height], view: [innerWidth, innerHeight], ...(foreign.has(id) ? { foreign: true } : {}), ...(cause ? { distorted: cause, tag: node.localName } : {}) }); }
       }
       return out;
     };
@@ -832,6 +836,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let bounds=box(node),clip=intersect(bounds,[0,0,node.ownerDocument.defaultView.innerWidth,node.ownerDocument.defaultView.innerHeight]);
       for(let view=node.ownerDocument.defaultView;view !== window;view=view.parent){
         const owner=view.frameElement;if(!owner)throw new Error('mirror2 frame unavailable');
+        // The owner's origin maps the child by translation only: a rotated/scaled owner (or ancestor of it) would misplace the crop.
+        if(moved(owner))throw new Error('mirror2 region frame transformed');
         const r=owner.getBoundingClientRect(),style=getComputedStyle(owner),x=r.x+owner.clientLeft+(parseFloat(style.paddingLeft)||0),y=r.y+owner.clientTop+(parseFloat(style.paddingTop)||0);
         bounds=[bounds[0]+x,bounds[1]+y,bounds[2],bounds[3]];clip=[clip[0]+x,clip[1]+y,clip[2],clip[3]];
         clip=intersect(clip,[0,0,view.parent.innerWidth,view.parent.innerHeight]);
@@ -839,6 +845,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if(!(clip[2]>0&&clip[3]>0))throw new Error('mirror2 region offscreen');
       const out={id,box:bounds,clip,distorted:distorted(node),media:node.namespaceURI===HTML&&['video','canvas','object','embed'].includes(node.localName)};
       if(foreign.has(id)){
+        out.moved=moved(node);
         const style=getComputedStyle(node),left=node.clientLeft+(parseFloat(style.paddingLeft)||0),top=node.clientTop+(parseFloat(style.paddingTop)||0);
         const width=node.clientWidth-(parseFloat(style.paddingLeft)||0)-(parseFloat(style.paddingRight)||0),height=node.clientHeight-(parseFloat(style.paddingTop)||0)-(parseFloat(style.paddingBottom)||0);
         out.contentBox=[bounds[0]+left,bounds[1]+top,width,height];
@@ -876,6 +883,18 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if (at.nodeType !== 1) continue;
         const style = getComputedStyle(at), cause = style.filter !== 'none' ? 'filter' : linear(style.transform) ? 'transform' : style.rotate !== 'none' ? 'rotate' : style.scale !== 'none' ? 'scale' : Number(style.opacity) < 1 ? 'opacity' : style.mixBlendMode !== 'normal' ? 'blend' : '';
         if (cause) return cause + (at === node ? '' : '_ancestor');
+      }
+      return false;
+    };
+    // Whether the node or an ancestor (through frame owners) moves or resizes pixels, independent of the one cause distorted() names:
+    // a crop of the frame inside maps into the page by translation only.
+    const moved = node => {
+      const [, , width, height] = box(node), [layoutWidth, layoutHeight] = layoutSize(node);
+      if (Math.abs(width - layoutWidth) > 1 || Math.abs(height - layoutHeight) > 1) return true;
+      for (let at = node, depth = 0; at && depth < DEPTH; depth++, at = at.parentElement ?? at.getRootNode?.()?.host ?? at.ownerDocument?.defaultView?.frameElement) {
+        if (at.nodeType !== 1) continue;
+        const style = getComputedStyle(at);
+        if (linear(style.transform) || style.rotate !== 'none' || style.scale !== 'none') return true;
       }
       return false;
     };
@@ -926,7 +945,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       }
       return [x, y];
     };
-    // A point inside the live element at the viewer's offset (clamped), hit-tested.
+    // A point inside the live element at the viewer's offset (clamped). A media crop includes overlaid controls:
+    // the person's pointer is delivered at that location, even when another page element is on top of the media.
     const point = request => {
       const node = live(request.node_id);
       if (node.nodeType !== 1) throw new Error('mirror2 element required');
@@ -935,27 +955,15 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const ox = Number.isFinite(request.x) ? Math.min(Math.max(request.x, 0.5), width - 0.5) : width / 2;
       const oy = Number.isFinite(request.y) ? Math.min(Math.max(request.y, 0.5), height - 0.5) : height / 2;
       let x = bx + ox, y = by + oy;
-      let hit = node.ownerDocument.elementFromPoint(x, y);
-      for (let shadow = 0; shadow < 128 && hit?.shadowRoot; shadow++) { const child = hit.shadowRoot.elementFromPoint(x, y); if (!child || child === hit) break; hit = child; }
-      if (!hit || hit !== node && !node.contains(hit) && !(node.shadowRoot?.contains(hit))) throw new Error('mirror2 occluded node');
-      protectedAncestor(hit);
       const [fx, fy] = frameOffset(node); x += fx; y += fy;
       if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) throw new Error('mirror2 offscreen node');
       return { x: Math.floor(x), y: Math.floor(y) };
     };
-    // Re-validates at dispatch time: the same live target is still at the point.
+    // Revalidate the live reference and viewport at dispatch. A person's pointer may hit a control above
+    // that node (including beside a media crop); occlusion is not a secret flowing into a model.
     const hitCheck = (pt, id) => {
-      const node = live(id); let owner = document, x = pt.x, y = pt.y, hit;
-      for (let depth = 0; depth < 128; depth++) {
-        hit = owner.elementFromPoint(x, y);
-        for (let shadow = 0; shadow < 128 && hit?.shadowRoot; shadow++) { const child = hit.shadowRoot.elementFromPoint(x, y); if (!child || child === hit) break; hit = child; }
-        if (hit?.localName !== 'iframe') break;
-        let nested = null; try { nested = hit.contentDocument; } catch {} if (!nested) break;
-        const r = hit.getBoundingClientRect(), style = getComputedStyle(hit); if (style.transform !== 'none') throw new Error('mirror2 transformed frame');
-        x -= r.x + hit.clientLeft + (parseFloat(style.paddingLeft) || 0); y -= r.y + hit.clientTop + (parseFloat(style.paddingTop) || 0); owner = nested;
-      }
-      if (!hit || hit !== node && !node.contains(hit) && !(node.shadowRoot?.contains(hit))) throw new Error('mirror2 changed live target');
-      protectedAncestor(hit);
+      live(id);
+      if (![pt.x, pt.y].every(Number.isFinite) || pt.x < 0 || pt.y < 0 || pt.x >= innerWidth || pt.y >= innerHeight) throw new Error('mirror2 offscreen node');
       return true;
     };
     const activeTarget = (editable = true) => {
