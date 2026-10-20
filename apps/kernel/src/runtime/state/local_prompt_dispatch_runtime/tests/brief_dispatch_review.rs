@@ -328,6 +328,25 @@ async fn final_handoff_envelope_scrubs_already_registered_queued_session_facts()
 #[tokio::test]
 async fn cancellation_during_brief_promotes_followup_through_shared_preparation() {
     let fixture = PausedBrief::new(false, true).await;
+    // The submission entry records this turn before dispatch. After cancellation
+    // it makes the long historical turn prior history, which fits verbatim.
+    fixture
+        .runtime
+        .owned
+        .operational_history_store
+        .append_transcript(
+            &crate::history::SessionHistoryEntry::user_prompt(
+                &fixture.session_id,
+                &fixture.prompt_id,
+                &fixture.agent_id,
+                "active prompt",
+            ),
+            crate::history::HistoryEventTurnContext {
+                prompt_id: Some(fixture.prompt_id.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
     fixture.prepare().await;
     let session = fixture
         .runtime

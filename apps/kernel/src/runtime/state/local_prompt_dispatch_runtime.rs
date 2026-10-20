@@ -2852,6 +2852,7 @@ pub(in crate::runtime::state) mod tests {
             "active prompt",
             PromptStatus::Queued,
         );
+        let history_timestamp_ms = crate::session::unix_epoch_ms();
         for (index, prior) in prior.iter().enumerate() {
             let prior_id = if index == 0 {
                 "prior".into()
@@ -2866,7 +2867,7 @@ pub(in crate::runtime::state) mod tests {
             );
             // Fast fixture writes can share a clock tick. Their identity must
             // come from the history allocator, as it does for real transcripts.
-            entry.timestamp_ms = 100;
+            entry.timestamp_ms = history_timestamp_ms;
             app.operational_history_store()
                 .append_transcript(
                     &entry,
