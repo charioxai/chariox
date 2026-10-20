@@ -37,7 +37,7 @@ import type {
   RelayTarget,
 } from "./kernel-transport-frames.js"
 import type { KernelResourceTelemetryResponse } from "./kernel-types.js"
-import { normalizeWebSocketRequest } from "./kernel-transport-requests.js"
+import { normalizeWebSocketRequest, type KernelRequestRoute } from "./kernel-transport-requests.js"
 import {
   buildKernelSubscriptionTransportRequest,
   createKernelSessionSubscriptionStart,
@@ -264,6 +264,10 @@ export type LocalIpcClientOptions = {
   controlResponseStallMs?: number | undefined
   relayIdentity?: RelayClientIdentity | undefined
   relayAuthorizationIssuer?: RelayAuthorizationIssuer | undefined
+  /** Another machine for the local kernel to forward requests to; ignored in relay mode. */
+  machine?: string | undefined
+  /** Idempotency key sent as the request's command id; ignored in relay mode. */
+  commandId?: string | undefined
 }
 
 export class LocalIpcClient {
@@ -325,9 +329,11 @@ export class LocalIpcClient {
   private readonly kernelEventStaleMs: number
   private readonly kernelPingIntervalMs: number
   private readonly kernelMaxMissedPongs: number
+  private readonly requestRoute: KernelRequestRoute
 
   constructor(endpoint: string, options: LocalIpcClientOptions = {}) {
     this.transportObserver = options.onTransportDiagnostic
+    this.requestRoute = { machine: options.machine, commandId: options.commandId }
     if (!isWebSocketEndpoint(endpoint)) {
       if (endpoint.includes("://") && !endpoint.startsWith("unix://")) throw new Error("unsupported kernel endpoint")
       endpoint = `ws+unix://${endpoint.replace(/^unix:\/\//, "")}`
@@ -736,7 +742,7 @@ export class LocalIpcClient {
         }
         const payload = relayRequest
           ? relayRequest.frame
-          : normalizeWebSocketRequest(requestId, request)
+          : normalizeWebSocketRequest(requestId, request, this.requestRoute)
         socket.send(JSON.stringify(payload))
       } catch (error) {
         pending.reject(new LocalIpcError("write kernel request", error instanceof Error ? error.message : String(error), "write_failed", true))
