@@ -1323,7 +1323,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
             let route = match (machine, &request) {
                 (Some(machine), _) => Some(unix_access::GatewayRoute::Forward {
                     machine,
-                    request: request.clone(),
+                    request: Box::new(request.clone()),
                 }),
                 // A terminal's listing is answered by the router like any request.
                 (None, crate::local::LocalDaemonRequest::ListGatewayMachines(_))

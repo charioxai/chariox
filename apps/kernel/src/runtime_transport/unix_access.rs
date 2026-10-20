@@ -400,7 +400,7 @@ pub(super) enum GatewayRoute {
     List,
     Forward {
         machine: String,
-        request: crate::local::LocalDaemonRequest,
+        request: Box<crate::local::LocalDaemonRequest>,
     },
 }
 
