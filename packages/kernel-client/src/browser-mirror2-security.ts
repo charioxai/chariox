@@ -14,6 +14,7 @@ const MIME = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'ima
 const fail = (why: string): never => { throw Error(`MP-11: unsafe mirror ${why}`) }
 const finite = (values: unknown[]): boolean => values.every(v => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 1e7)
 
+const layoutSize = (value: unknown, min: number, max: number): boolean => Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max
 // Every url() must be a kernel resource key or a same-document fragment.
 export function validateMirror2Css(text: unknown): void {
   if (typeof text !== 'string' || text.length > 16 * 1024 * 1024) fail('CSS')
@@ -172,7 +173,7 @@ function validateOp(op: Mirror2Op, known: (id: string) => Mirror2Record | undefi
   }
 }
 export function validateMirror2Packet(packet: Mirror2Packet, previous: ReadonlyMap<string, Mirror2Record>): void {
-  if (packet.wire !== 2 || !Number.isSafeInteger(packet.sequence) || packet.sequence <= 0 || packet.css_width !== 1280 || packet.css_height !== 800 || ![1, 2].includes(packet.device_scale_factor) || !Array.isArray(packet.resources) || !Array.isArray(packet.tiles) || packet.resources.length > 4096 || packet.tiles.length > 256) throw Error('MP-11: mirror packet bounds')
+  if (packet.wire !== 2 || !Number.isSafeInteger(packet.sequence) || packet.sequence <= 0 || !layoutSize(packet.css_width, 320, 1280) || !layoutSize(packet.css_height, 200, 800) || ![1, 2].includes(packet.device_scale_factor) || !Array.isArray(packet.resources) || !Array.isArray(packet.tiles) || packet.resources.length > 4096 || packet.tiles.length > 256) throw Error('MP-11: mirror packet bounds')
   if (packet.snapshot_complete !== undefined && typeof packet.snapshot_complete !== 'boolean') fail('header')
   if (packet.font_failures !== undefined && (!Array.isArray(packet.font_failures) || packet.font_failures.length > 128 || new Set(packet.font_failures).size !== packet.font_failures.length || packet.font_failures.some(value => typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)))) fail('header')
   if (!Array.isArray(packet.scroll) || packet.scroll.length !== 2 || !finite(packet.scroll) || packet.focused !== null && !id.test(packet.focused) || packet.fragment !== undefined && packet.fragment !== null && (typeof packet.fragment !== 'string' || packet.fragment.length > 2048)) fail('header')
