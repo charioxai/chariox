@@ -33,6 +33,7 @@ impl Terminal {
             let _ = pty.remove_process(&run_id);
             self.last_program_end = Some(ProgramEnd {
                 output_offset: self.log.end_offset(),
+                started_offset: None,
                 exit_code,
                 signal: signal.clone(),
             });
@@ -46,10 +47,16 @@ impl Terminal {
         let program_running = !self.shell_is_foreground(pty);
         // Once the shell reports its commands, sampling would only race it.
         if !self.mark_tracking {
+            let mut ended_start = None;
+            if program_running && !self.program_running {
+                self.command_started_offset = Some(self.log.end_offset());
+            }
             if self.program_running && !program_running {
                 self.command_in_flight = false;
+                ended_start = self.command_started_offset.take();
                 self.last_program_end = Some(ProgramEnd {
                     output_offset: self.log.end_offset(),
+                    started_offset: ended_start,
                     exit_code: None,
                     signal: None,
                 });
@@ -59,7 +66,7 @@ impl Terminal {
             if program_running || self.program_running {
                 pumped
                     .fired
-                    .extend(self.watches.on_foreground(program_running));
+                    .extend(self.watches.on_foreground(program_running, ended_start));
             }
         }
         self.program_running = program_running;

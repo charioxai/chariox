@@ -885,6 +885,54 @@ async fn typed_commands_report_finish_and_exit_code_even_when_instant() {
 }
 
 #[tokio::test]
+async fn a_finished_wait_belongs_to_the_command_that_was_submitted() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    let pump = service.clone();
+    let pumping = tokio::spawn(async move {
+        loop {
+            pump.pump_once();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    });
+    // The agent reads its offset at the prompt; before its line is typed the
+    // user runs a command that ends after that offset.
+    let offset = service.snapshot("room-1", &id).unwrap().output_offset;
+    assert!(
+        type_as(&service, &id, &TerminalActor::User, "(exit 1)\r")
+            .await
+            .accepted
+    );
+    assert!(
+        type_as(&service, &id, &agent("a"), "(exit 5)\r")
+            .await
+            .accepted
+    );
+    let fired = service
+        .wait(
+            "room-1",
+            &id,
+            "a",
+            vec![RoomTerminalWatch::Finished],
+            Some(offset),
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap()
+        .fired;
+    assert_eq!(
+        fired,
+        Some(RoomTerminalEventKind::Finished {
+            exit_code: Some(5),
+            signal: None
+        })
+    );
+    pumping.abort();
+    service.end_session("room-1");
+}
+
+#[tokio::test]
 async fn a_shell_started_inside_the_terminal_does_not_repeat_the_marks() {
     let root = TempDir::new();
     let service = service(root.path());
@@ -1007,6 +1055,7 @@ async fn an_output_marker_survives_a_large_burst_in_one_pump_batch() {
         },
         OutputMatcher::new(&terminal.plain),
         false,
+        None,
     );
     let now = Instant::now();
     let mut fired = terminal.apply_output(b"ready-", now);
@@ -1022,6 +1071,7 @@ async fn an_output_marker_survives_a_large_burst_in_one_pump_batch() {
         },
         OutputMatcher::new(&terminal.plain),
         false,
+        None,
     );
     for part in long_needle.as_bytes().chunks(1023) {
         fired.extend(terminal.apply_output(part, now));

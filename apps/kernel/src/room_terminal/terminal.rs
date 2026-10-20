@@ -44,6 +44,8 @@ pub(super) struct Terminal {
     pub unsaved_since: Option<Instant>,
     /// The last time a program returned to the prompt (or the shell exited).
     pub last_program_end: Option<ProgramEnd>,
+    /// Output offset at which the command now running began.
+    pub command_started_offset: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -51,6 +53,10 @@ pub(super) struct ProgramEnd {
     /// Output offset when it ended: a watch armed after reading less than
     /// this still sees the end.
     pub output_offset: u64,
+    /// Where the command that ended began. A wait armed from an offset taken
+    /// later belongs to a later command and must not see this end. `None`
+    /// for a shell exit, which ends whatever was running.
+    pub started_offset: Option<u64>,
     pub exit_code: Option<u32>,
     pub signal: Option<String>,
 }
@@ -101,6 +107,7 @@ impl Terminal {
             dropped_input_bytes: 0,
             unsaved_since: None,
             last_program_end: None,
+            command_started_offset: None,
         }
     }
 
@@ -132,6 +139,7 @@ impl Terminal {
         match mark {
             ShellMark::CommandStarted => {
                 self.command_in_flight = true;
+                self.command_started_offset = Some(self.log.end_offset());
                 Fired::new()
             }
             ShellMark::CommandFinished { exit_code } => {
@@ -141,12 +149,14 @@ impl Terminal {
                     return Fired::new();
                 }
                 self.command_in_flight = false;
+                let started_offset = self.command_started_offset.take();
                 self.last_program_end = Some(ProgramEnd {
                     output_offset: self.log.end_offset(),
+                    started_offset,
                     exit_code,
                     signal: None,
                 });
-                self.watches.on_command_finished(exit_code)
+                self.watches.on_command_finished(exit_code, started_offset)
             }
         }
     }
@@ -203,6 +213,7 @@ impl Terminal {
         now: Instant,
         program_running: bool,
     ) -> Option<RoomTerminalEventKind> {
+        let submitted_after = self.driver.last_submit_offset(&owner.agent_id);
         let output = match &watch {
             RoomTerminalWatch::OutputContains { text } => {
                 match self.replay_output(text, after_offset) {
@@ -211,13 +222,16 @@ impl Terminal {
                 }
             }
             _ => {
-                if let Some(kind) = self.already_true(&watch, after_offset, now, program_running) {
+                if let Some(kind) =
+                    self.already_true(&watch, after_offset, submitted_after, now, program_running)
+                {
                     return Some(kind);
                 }
                 OutputMatcher::new(&self.plain)
             }
         };
-        self.watches.arm(owner, watch, output, program_running);
+        self.watches
+            .arm(owner, watch, output, program_running, submitted_after);
         None
     }
 
@@ -253,15 +267,22 @@ impl Terminal {
         &self,
         watch: &RoomTerminalWatch,
         after_offset: Option<u64>,
+        submitted_after: Option<u64>,
         now: Instant,
         program_running: bool,
     ) -> Option<RoomTerminalEventKind> {
         match watch {
             RoomTerminalWatch::Finished => {
                 let end = self.last_program_end.as_ref()?;
-                (end.output_offset > after_offset?).then(|| RoomTerminalEventKind::Finished {
-                    exit_code: end.exit_code,
-                    signal: end.signal.clone(),
+                let counts = match (end.started_offset, submitted_after) {
+                    (Some(start), Some(submitted)) => start > submitted,
+                    _ => true,
+                };
+                (end.output_offset > after_offset? && counts).then(|| {
+                    RoomTerminalEventKind::Finished {
+                        exit_code: end.exit_code,
+                        signal: end.signal.clone(),
+                    }
                 })
             }
             RoomTerminalWatch::OutputContains { .. } => None,

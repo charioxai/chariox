@@ -43,6 +43,19 @@ struct ArmedWatch {
     output: OutputMatcher,
     /// A program has been in the foreground since arming (for `Finished`).
     seen_busy: bool,
+    /// Output offset at which the owner last submitted a command line at the
+    /// prompt: a `Finished` watch only counts a command that began after it,
+    /// so an earlier command that ended later is not taken for it.
+    submitted_after: Option<u64>,
+}
+
+impl ArmedWatch {
+    fn counts_command_started_at(&self, started: Option<u64>) -> bool {
+        match (self.submitted_after, started) {
+            (Some(submitted), Some(start)) => start > submitted,
+            _ => true,
+        }
+    }
 }
 
 /// Incremental text matching, shared by live watches and retained-log replay.
@@ -105,12 +118,14 @@ impl WatchSet {
         watch: RoomTerminalWatch,
         output: OutputMatcher,
         program_running: bool,
+        submitted_after: Option<u64>,
     ) {
         self.armed.push(ArmedWatch {
             owner,
             watch,
             output,
             seen_busy: program_running,
+            submitted_after,
         });
     }
 
@@ -126,7 +141,13 @@ impl WatchSet {
         })
     }
 
-    pub(super) fn on_foreground(&mut self, program_running: bool) -> Fired {
+    /// `ended_start` is where the program that just returned to the prompt
+    /// began.
+    pub(super) fn on_foreground(
+        &mut self,
+        program_running: bool,
+        ended_start: Option<u64>,
+    ) -> Fired {
         for armed in &mut self.armed {
             armed.seen_busy |= program_running;
         }
@@ -134,7 +155,9 @@ impl WatchSet {
             return Fired::new();
         }
         self.fire(|armed| match armed.watch {
-            RoomTerminalWatch::Finished if armed.seen_busy => {
+            RoomTerminalWatch::Finished
+                if armed.seen_busy && armed.counts_command_started_at(ended_start) =>
+            {
                 Some(RoomTerminalEventKind::Finished {
                     exit_code: None,
                     signal: None,
@@ -145,12 +168,18 @@ impl WatchSet {
     }
 
     /// The shell reported a command line finished.
-    pub(super) fn on_command_finished(&mut self, exit_code: Option<u32>) -> Fired {
+    pub(super) fn on_command_finished(
+        &mut self,
+        exit_code: Option<u32>,
+        started: Option<u64>,
+    ) -> Fired {
         self.fire(|armed| match armed.watch {
-            RoomTerminalWatch::Finished => Some(RoomTerminalEventKind::Finished {
-                exit_code,
-                signal: None,
-            }),
+            RoomTerminalWatch::Finished if armed.counts_command_started_at(started) => {
+                Some(RoomTerminalEventKind::Finished {
+                    exit_code,
+                    signal: None,
+                })
+            }
             _ => None,
         })
     }
@@ -235,6 +264,7 @@ mod tests {
             },
             OutputMatcher::new(&plain),
             false,
+            None,
         );
         assert!(watches.on_output(&plain).is_empty());
         plain.append(b"\nPassword: ");
@@ -251,10 +281,11 @@ mod tests {
             RoomTerminalWatch::Finished,
             OutputMatcher::new(&plain),
             false,
+            None,
         );
-        assert!(watches.on_foreground(false).is_empty());
-        assert!(watches.on_foreground(true).is_empty());
-        assert_eq!(watches.on_foreground(false).len(), 1);
+        assert!(watches.on_foreground(false, None).is_empty());
+        assert!(watches.on_foreground(true, None).is_empty());
+        assert_eq!(watches.on_foreground(false, None).len(), 1);
     }
 
     #[test]
@@ -266,6 +297,7 @@ mod tests {
             RoomTerminalWatch::WaitingForInput,
             OutputMatcher::new(&plain),
             true,
+            None,
         );
         watches.arm(
             owner("w1"),
@@ -274,6 +306,7 @@ mod tests {
             },
             OutputMatcher::new(&plain),
             true,
+            None,
         );
         plain.append(b"ready");
         assert_eq!(watches.on_output(&plain).len(), 1);

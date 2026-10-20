@@ -4,6 +4,7 @@
 //! process group other than the shell) belongs to the actor who submitted the
 //! command that started it until it exits. The user can always type.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use super::types::{RoomTerminalDriver, TerminalActor};
@@ -15,6 +16,8 @@ pub(super) const LAUNCH_SETTLE: Duration = Duration::from_millis(250);
 pub(super) struct DriverTracker {
     last_submit: Option<(TerminalActor, Instant)>,
     program_owner: Option<TerminalActor>,
+    /// Output offset when each agent last submitted a line at the prompt.
+    submit_offsets: HashMap<String, u64>,
 }
 
 pub(super) enum Admission {
@@ -31,6 +34,7 @@ impl DriverTracker {
         Self {
             last_submit: None,
             program_owner: Some(actor),
+            submit_offsets: HashMap::new(),
         }
     }
 
@@ -82,15 +86,23 @@ impl DriverTracker {
     }
 
     /// Remember who submitted a command at the prompt.
+    pub(super) fn last_submit_offset(&self, agent_id: &str) -> Option<u64> {
+        self.submit_offsets.get(agent_id).copied()
+    }
+
     pub(super) fn record_write(
         &mut self,
         actor: &TerminalActor,
         shell_is_foreground: bool,
         input: &[u8],
         now: Instant,
+        output_offset: u64,
     ) {
         if shell_is_foreground && input.iter().any(|byte| matches!(byte, b'\r' | b'\n')) {
             self.last_submit = Some((actor.clone(), now));
+            if let TerminalActor::Agent(agent_id) = actor {
+                self.submit_offsets.insert(agent_id.clone(), output_offset);
+            }
         }
     }
 }
@@ -111,7 +123,7 @@ mod tests {
             tracker.admit(&agent("a"), true, start),
             Admission::Admit
         ));
-        tracker.record_write(&agent("a"), true, b"python3\n", start);
+        tracker.record_write(&agent("a"), true, b"python3\n", start, 0);
         let later = start + LAUNCH_SETTLE * 2;
         assert!(matches!(
             tracker.admit(&agent("b"), false, later),
@@ -135,7 +147,7 @@ mod tests {
     fn another_actor_waits_for_a_command_that_is_still_launching() {
         let mut tracker = DriverTracker::default();
         let start = Instant::now();
-        tracker.record_write(&agent("a"), true, b"python3\r", start);
+        tracker.record_write(&agent("a"), true, b"python3\r", start, 0);
         assert!(matches!(
             tracker.admit(&agent("b"), true, start),
             Admission::Settle
@@ -146,7 +158,7 @@ mod tests {
     fn a_program_the_user_started_is_driven_by_the_user() {
         let mut tracker = DriverTracker::default();
         let start = Instant::now();
-        tracker.record_write(&TerminalActor::User, true, b"top\r", start);
+        tracker.record_write(&TerminalActor::User, true, b"top\r", start, 0);
         assert!(matches!(
             tracker.admit(&agent("a"), false, start + LAUNCH_SETTLE * 2),
             Admission::Refuse(RoomTerminalDriver::Busy {
