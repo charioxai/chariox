@@ -50,6 +50,8 @@ const connection = {
     }
     // MP-08/MP-11: popup creation evidence installs its isolated observer.
     if (['Runtime.enable', 'Runtime.addBinding', 'Page.addScriptToEvaluateOnNewDocument'].includes(method)) return {};
+    // Restoring the saved active Tab activates its target.
+    if (method === 'Target.activateTarget') return {};
     if (method === 'Input.dispatchKeyEvent') return {};
     if (method === 'Input.insertText') return {};
     throw new Error(`MD-N5: unexpected fixture CDP method ${method}`);
