@@ -4602,6 +4602,18 @@ Vault insertion never waits on a parked viewer. `state` itself is unchanged.
 `mp08_mp10_browser_state_wait_556_snapshot`). Viewers feature-detect 556 and poll
 older kernels as before; no client floor moves.
 
+MP-08 / MP-10 / MP-11: allocated 560/168 adds the `display_subscribe` target
+`{kind:"browser_window", window_generation}`: the owner's view of the Chrome window's page area. It
+is bound to the window epoch (the same `window_generation` as `chrome_window`), not to a Tab or
+document: Tab create, switch and navigation neither retire it nor ask any page renderer anything
+before its first frame, and `tab_id` only labels the subscription. A page-geometry or window
+change retires it and the viewer subscribes again. Frames carry the window epoch as
+`document_id` (`chrome-window-<generation>-<window_generation>-page`) and `sequence`. Masks stay per
+document and are measured only while a Vault fill target exists. The display is view-only: input
+on it is refused (the mirror and the band own input). `browser-window-display-560.json` pins the
+shape (Rust hash test `mp08_mp10_mp11_browser_window_display_560_snapshot`). Older kernels refuse
+the target; viewers feature-detect 560.
+
 MP-08 / MP-10 / MP-11: the 535 browser delivery client also negotiates the
 existing relay-96 `chariox-relay-binary-v96` capability. Bounded CXR1 routing
 metadata enters the same sender-authenticated display decrypt/binding path;

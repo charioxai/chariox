@@ -535,7 +535,7 @@ fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
 #[test]
 fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
-    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "db0e2aff3d85eb74cb1b2503de71872a7eaf38eeada4d0afb6b0011518cfcc33");
+    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "37b82053dc5f218df2adb90bce89886cc2162799cbaf39b9ffb63535c6e08b27");
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
     assert_eq!(value["peer_protocol"], crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION);
@@ -578,4 +578,20 @@ fn mp08_mp10_mp11_browser_parked_input_552_snapshot() {
         serde_json::to_value(response).unwrap(),
         snapshot["response"]
     );
+}
+
+// MP-08/MP-10/MP-11: allocated 560/168 adds the `browser_window` display target (owner window display).
+#[test]
+fn mp08_mp10_mp11_browser_window_display_560_snapshot() {
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 560);
+    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 168);
+    let bytes = include_bytes!("browser-window-display-560.json");
+    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "18b0226af9d413a8abc9e74585da22398232b5f1b744bfd7cf59afb34662a174");
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), snapshot["request"]);
+    // A window display names its epoch only: no Tab geometry, no window handle.
+    let extra = serde_json::json!({"KernelBrowser":{"command":{"op":"display_subscribe","tab_id":"t","generation":7,
+        "target":{"kind":"browser_window","window_generation":3,"xid":42},"codecs":["png"],"bitrate":2000000,"device_scale_factor":1}}});
+    assert!(serde_json::from_value::<LocalDaemonRequest>(extra).is_err());
 }

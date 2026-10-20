@@ -13,6 +13,7 @@ export type KernelBrowserDisplayTarget =
   | { kind: "browser_chrome"; window_generation: number }
   // Protocol 530: a popup of the band's window, by its id in the state's chrome_window.auxiliary.
   | { kind: "browser_auxiliary"; window_generation: number; auxiliary_id: number }
+  | { kind: "browser_window"; window_generation: number }
 export type KernelBrowserCommand =
   | { op: "grant_leased_computer"; agent_id: string; target: KernelDesktopTarget }
   | { op: "revoke_leased_computer"; agent_id: string }

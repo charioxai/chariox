@@ -212,6 +212,11 @@ pub enum KernelBrowserDisplayTarget {
         window_generation: u64,
         auxiliary_id: u64,
     },
+    /// MP-08/MP-10/MP-11 protocol 560: the owner's view of the Chrome window's page area. Bound to
+    /// the window epoch, never to a Tab or document; Tab create, switch and navigation keep it.
+    BrowserWindow {
+        window_generation: u64,
+    },
 }
 
 /// MP-08/MP-10/MP-11 protocol 530: non-primary buttons reach only Chrome's own UI.

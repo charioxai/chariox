@@ -43,7 +43,7 @@ export class PortableEncoder {
     if(raw.nativeEncode&&codec==='avc1.420033')return this.nativeEncode(raw,bitrate,reset,true);
     return this.exchange({raw,bitrate,reset,codec,operation:'stripes'});
   }
-    async nativeEncode(raw,bitrate,reset,stripes){
+    async nativeEncode(raw,bitrate,reset,stripes,rekeyed=false){
       this.nativeRetire=raw.nativeRetire;
       // MP-08/MP-10: dense whole-frame motion at Retina geometry encodes at
       // the reduced geometry (owner-approved adaptive scale; exact native
@@ -75,7 +75,10 @@ export class PortableEncoder {
         // L3: a delta must follow the last packet this encoder returned; an
         // encode nobody received in between skips this sample for a key.
         const row=reply.stripes[0];
-        if(!row.key&&row.reference_sequence!==this.chainSequence){discardPacket(reply.packet);this.packets.delete(reply.packet.name);this.chainSequence=undefined;this.timing?.('native_chain_gap',performance.timeOrigin+performance.now());throw Object.assign(Error('MD-DISPLAY: native chain gap'),{busy:true});}
+        if(!row.key&&row.reference_sequence!==this.chainSequence){discardPacket(reply.packet);this.packets.delete(reply.packet.name);this.chainSequence=undefined;this.timing?.('native_chain_gap',performance.timeOrigin+performance.now());
+          // Skipping the sample would hold its pixels until the next damage (a typed glyph after a quiet moment): encode this readback again as a key under a retired record.
+          if(!rekeyed){raw.nativeRetireState?.(this.nativeSession);return this.nativeEncode(raw,bitrate,true,stripes,true);}
+          throw Object.assign(Error('MD-DISPLAY: native chain gap'),{busy:true});}
         this.chainSequence=row.sequence;
         if(unprotected&&raw.nativeArm){const now=performance.timeOrigin+performance.now();if(!record||record.encoder!==this.nativeSession||record.bitrate!==bitrate||record.reduced!==reduced||record.until_ms-now<125)raw.nativeArm({encoder:this.nativeSession,bitrate,reduced,until_ms:now+250});}this.nativeRevision=reply.revision;return {key:reply.stripes[0].key,packet:reply.packet,...(fromAuto&&unprotected&&raw.nativeGrant?{lease:this.leaseOffer(raw,row.sequence,bitrate,reduced)}:{}),native_revision:reply.revision,native_deliver:raw.nativeDelivered,reduced:reply.reduced===true};}
       this.nativeRevision=reply.revision;return {stripes:reply.stripes,native_revision:reply.revision,native_deliver:raw.nativeDelivered,...(reply.packet?{packet:reply.packet}:{})};
@@ -455,7 +458,7 @@ export class DisplayStream {
     // L3 stage 2b: only a push-delivered whole video frame from the worker's
     // unprotected auto packet, with references on and no repair owed.
     if(payload.kind==='video'){const at=this.now();this.streak=at-this.streakAt<=LEASE_GAP_MS?this.streak+1:1;this.streakAt=at;}
-    if(this.leases&&this.streak>=this.leaseStreak&&offer&&payload.kind==='video'&&payload.native_packet&&source.push_delivery===true&&this.dependencies&&!this.repair&&(!this.regionTarget||['visible_page','browser_chrome'].includes(this.regionTarget.kind))){
+    if(this.leases&&this.streak>=this.leaseStreak&&offer&&payload.kind==='video'&&payload.native_packet&&source.push_delivery===true&&this.dependencies&&!this.repair&&(!this.regionTarget||['visible_page','browser_chrome','browser_window'].includes(this.regionTarget.kind))){
       const {key,sequence,native_packet,...template}=packet;
       packet[directLease]=()=>{
         if(!offer.current()||!currentBinding())return null;
