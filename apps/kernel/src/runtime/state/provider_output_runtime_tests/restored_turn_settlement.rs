@@ -274,6 +274,9 @@ async fn sweep_queues_a_continuation_persisted_before_restart() {
         task.prompt_id, continuation,
         "the persisted continuation must be admitted, not left pending"
     );
+    // A second sweep finds the continuation in flight and changes nothing.
+    runtime.sweep_agent_lifecycle().await.unwrap();
+    assert_eq!(task_of(&runtime, &turn), task);
 }
 
 // A leased task binds the projected `leased:<lease>:<worker-run>` id while its
