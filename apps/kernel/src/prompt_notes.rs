@@ -213,6 +213,18 @@ pub(crate) fn objective_with_notes(
     text: &str,
     attachments: &[crate::history::SessionHistoryPromptAttachment],
 ) -> String {
+    match hidden_notes_context(attachments) {
+        Some(context) => format!(
+            "{text}\n[The user attached notes to this request; they are part of it. Judge the answer against the request and these notes, and do not ask for the notes again.]\n{context}"
+        ),
+        None => text.to_string(),
+    }
+}
+
+/// The notes among replayed history chips, rendered as the hidden context the agent got.
+pub(crate) fn hidden_notes_context(
+    attachments: &[crate::history::SessionHistoryPromptAttachment],
+) -> Option<String> {
     let notes: Vec<PromptAttachment> = attachments
         .iter()
         .filter(|attachment| attachment.mime == NOTE_ATTACHMENT_MIME)
@@ -224,12 +236,7 @@ pub(crate) fn objective_with_notes(
             }
         })
         .collect();
-    match split_for_provider(notes, None).1 {
-        Some(context) => format!(
-            "{text}\n[The user attached notes to this request; they are part of it. Judge the answer against the request and these notes, and do not ask for the notes again.]\n{context}"
-        ),
-        None => text.to_string(),
-    }
+    split_for_provider(notes, None).1
 }
 
 /// Removes note attachments from the provider-bound list and renders them as hidden context.

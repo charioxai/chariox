@@ -732,3 +732,132 @@ async fn mp11_neutral_assessment_uses_private_work_result_without_public_or_dura
         .unwrap()
         .contains("PRIVATE_WORK_OUTCOME"));
 }
+
+// A goal continuation shows a short visible prompt; the original prompt's notes ride as hidden context.
+#[tokio::test]
+async fn goal_continuation_keeps_the_original_notes_in_hidden_context_not_visible_text() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    use base64::Engine;
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let (_app, runtime, room, agent) = agent_config_runtime_in_worktree(
+        config,
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")
+            .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+    )
+    .await;
+    let store = &runtime.owned.durable_state_store;
+    let now = crate::session::unix_epoch_ms();
+    for op in [
+        Operation::Begin {
+            owner: "local-user".into(),
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: "goal-notes".into(),
+            run: Some("run".into()),
+            now,
+        },
+        Operation::StartGoal {
+            task: "goal-notes".into(),
+            owner: "local-user".into(),
+            objective: "Apply my note".into(),
+            minutes: 1,
+            now,
+        },
+    ] {
+        store.agent_lifecycle(op).unwrap();
+    }
+    let note = crate::session::PromptAttachment::new(
+        "chariox-terminal://note/1",
+        crate::prompt_notes::NOTE_ATTACHMENT_MIME,
+        Some("Note".into()),
+    )
+    .with_contents_base64(
+        base64::engine::general_purpose::STANDARD
+            .encode(r#"{"quote":"QUOTED_OLD_NAME","comment":"COMMENT_RENAME_IT"}"#),
+    );
+    let mut entry = crate::history::SessionHistoryEntry::user_prompt_with_attachments(
+        &room,
+        "att",
+        &agent,
+        "Apply my note",
+        &[note],
+    );
+    entry.merge_key = Some("prompt:goal-notes".into());
+    runtime.owned.append_history_entries(&room, vec![entry]);
+    // The work turn settles, the check turn runs and answers "continue".
+    store
+        .agent_lifecycle(Operation::Settle {
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: "goal-notes".into(),
+            run: "run".into(),
+            has_answer: true,
+            cancelled: false,
+            now,
+        })
+        .unwrap();
+    let check = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .remove(0)
+        .pending_prompt_id
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local-user".into(),
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: check.clone(),
+            run: Some("check-run".into()),
+            now,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::EvaluateGoal {
+            task: "goal-notes".into(),
+            prompt: check,
+            result: r#"{"status":"continue","reason":"more work remains"}"#.into(),
+            now,
+        })
+        .unwrap();
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .remove(0);
+    assert!(task.pending_prompt_id.is_some());
+    let attachment = runtime
+        .ensure_agent_message_attachment(
+            &room,
+            &runtime.owned.agent_store.get_agent(&agent).unwrap(),
+        )
+        .unwrap();
+    let text = runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap();
+    assert!(text.contains("Apply my note"));
+    for private in ["QUOTED_OLD_NAME", "COMMENT_RENAME_IT"] {
+        assert!(!text.contains(private), "visible continuation: {text}");
+    }
+    runtime
+        .dispatch_task_continuation(&task, &attachment, text)
+        .await
+        .unwrap();
+    let session = runtime.owned.session_store.get_session(&room).unwrap();
+    let queued = session
+        .active_prompt_for_agent(&agent)
+        .cloned()
+        .or_else(|| {
+            session
+                .queued_prompts_for_agent(&agent)
+                .and_then(|queue| queue.front().cloned())
+        })
+        .expect("continuation prompt submitted");
+    for private in ["QUOTED_OLD_NAME", "COMMENT_RENAME_IT"] {
+        assert!(!queued.prompt().contains(private));
+        assert!(queued.hidden_system_context().contains(private));
+    }
+}
