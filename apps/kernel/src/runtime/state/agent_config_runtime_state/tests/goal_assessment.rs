@@ -861,3 +861,121 @@ async fn goal_continuation_keeps_the_original_notes_in_hidden_context_not_visibl
         assert!(queued.hidden_system_context().contains(private));
     }
 }
+
+// MP-08 / MP-10 / MP-11: catalog instructions and original note-only requirements both survive a fresh provider run.
+#[tokio::test]
+async fn catalog_continuation_merges_original_notes_with_supplied_hidden_context() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    use base64::Engine;
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let (_app, runtime, room, agent) = agent_config_runtime_in_worktree(
+        config,
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")
+            .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+    )
+    .await;
+    let store = &runtime.owned.durable_state_store;
+    let now = crate::session::unix_epoch_ms();
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local-user".into(),
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: "catalog-notes".into(),
+            run: Some("run".into()),
+            now,
+        })
+        .unwrap();
+    let note = crate::session::PromptAttachment::new(
+        "chariox-terminal://note/1",
+        crate::prompt_notes::NOTE_ATTACHMENT_MIME,
+        Some("Note".into()),
+    )
+    .with_contents_base64(
+        base64::engine::general_purpose::STANDARD
+            .encode(r#"{"quote":"QUOTED_OLD_NAME","comment":"COMMENT_RENAME_IT"}"#),
+    );
+    let mut entry = crate::history::SessionHistoryEntry::user_prompt_with_attachments(
+        &room,
+        "att",
+        &agent,
+        "",
+        &[note],
+    );
+    entry.merge_key = Some("prompt:catalog-notes".into());
+    runtime.owned.append_history_entries(&room, vec![entry]);
+    store
+        .agent_lifecycle(Operation::PrepareCatalogContinuation {
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: "catalog-notes".into(),
+            run: "run".into(),
+            next_prompt: "task-catalog:catalog-notes".into(),
+            now,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Settle {
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: "catalog-notes".into(),
+            run: "run".into(),
+            has_answer: false,
+            cancelled: false,
+            now,
+        })
+        .unwrap();
+    let (instructions, _) = crate::prompt_assembly::PromptAssemblyService::from_env()
+        .unwrap()
+        .assemble_mcp_skill_continuation_context("chariox-runtime")
+        .unwrap();
+    runtime
+        .dispatch_catalog_task_continuation(
+            PendingMcpContinuation {
+                session_id: room.clone(),
+                agent_id: agent.clone(),
+                source_prompt_id: Some("catalog-notes".into()),
+                mcp_name: "chariox-runtime".into(),
+                previous_prompt: "Continue the request".into(),
+                reload_reason: ProviderReloadReason::RuntimeToolCatalog,
+            },
+            None,
+            instructions.clone(),
+        )
+        .await
+        .unwrap();
+    let session = runtime.owned.session_store.get_session(&room).unwrap();
+    let queued = session
+        .active_prompt_for_agent(&agent)
+        .cloned()
+        .or_else(|| {
+            session
+                .queued_prompts_for_agent(&agent)
+                .and_then(|queue| queue.front().cloned())
+        })
+        .expect("continuation prompt submitted");
+    let run = runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&room, &agent)
+        .expect("catalog continuation launched a fresh provider run");
+    assert!(run.resume_state().is_empty());
+    assert!(run.provider_session_id().is_none());
+    let envelope = crate::prompt_assembly::PromptAssemblyService::from_env()
+        .unwrap()
+        .assemble_provider_turn(
+            &run,
+            queued.prompt(),
+            Some(queued.hidden_system_context()),
+            queued.attachments().to_vec(),
+            crate::prompt_assembly::PromptAssemblyMode::McpSkillContinuationTurn,
+        )
+        .unwrap();
+    assert!(envelope.hidden_system_context.contains(&instructions));
+    for private in ["QUOTED_OLD_NAME", "COMMENT_RENAME_IT"] {
+        assert!(!envelope.visible_user_prompt.contains(private));
+        assert!(envelope.hidden_system_context.contains(private));
+    }
+}
