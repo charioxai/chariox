@@ -41,8 +41,8 @@ async function mirrored(html, run, routes = {}) {
     // about:blank is "complete" too: wait for the fixture document itself.
     for (let i = 0; i < 400 && await evaluate("location.protocol === 'http:' && document.readyState === 'complete'").catch(() => false) !== true; i++) await new Promise(resolve => setTimeout(resolve, 25));
     await host.request({ op: "state" });
-    const subscribe = async () => {
-      const { subscription_id } = await host.request({ op: "mirror_subscribe", tab_id: opened.tab_id, generation: opened.generation, device_scale_factor: 1, wire: 2 });
+    const subscribe = async (extra = {}) => {
+      const { subscription_id } = await host.request({ op: "mirror_subscribe", tab_id: opened.tab_id, generation: opened.generation, device_scale_factor: 1, wire: 2, ...extra });
       // Protocol 489: bodies may be deflated in the subscription's context (in order, fresh per reset).
       let applied = 0, context = Buffer.alloc(0);
       const next = async (wait_ms = 0, reset = false) => {
@@ -55,7 +55,7 @@ async function mirrored(html, run, routes = {}) {
       return { next, input, subscription_id, generation: opened.generation };
     };
     const { next, input, subscription_id, generation } = await subscribe();
-    await run({ next, evaluate, host, input, subscribe, subscription_id, generation });
+    await run({ next, evaluate, host, input, subscribe, subscription_id, generation, tab_id: opened.tab_id });
   } finally {
     await host.stop();
     await new Promise(resolve => server.close(resolve));
@@ -1773,3 +1773,72 @@ test("MP-08/MP-10 mirrorregion: pointer beside media reaches an overlaid control
     assert.equal(await evaluate('document.querySelector("button").textContent'),'clicked');
   }
 ));
+
+test("protocol 560/168: a layout change resets the Tab's existing mirror streams and the failed registration releases it", () => mirrored(
+  "<p>page</p>", async ({ subscribe, host, evaluate, tab_id, generation }) => {
+    const innerWidth = () => evaluate("innerWidth");
+    const a = await subscribe({ layout_width: 400, layout_height: 700 }), first = await a.next();
+    assert.deepEqual([first.reset, first.css_width, await innerWidth()], [true, 400, 400]);
+    const b = await subscribe({ layout_width: 600, layout_height: 700 });
+    assert.equal((await b.next()).css_width, 600);
+    const moved = await a.next();
+    assert.deepEqual([moved.reset, moved.css_width], [true, 600], "the owner changed: the other viewer re-bases at the new page size");
+    await host.request({ op: "mirror_close", subscription_id: b.subscription_id, generation });
+    const restored = await a.next();
+    assert.deepEqual([restored.reset, restored.css_width, await innerWidth()], [true, 1280, 1280], "releasing the layout re-bases the remaining viewer");
+    assert.notEqual((await a.next()).reset, true, "a steady page keeps its stream");
+    // A registration that fails after the metrics override leaves no resized page behind.
+    const hold = host.browser.inputCapture.hold;
+    host.browser.inputCapture.hold = async () => { throw new Error("registration failed"); };
+    await assert.rejects(subscribe({ layout_width: 400, layout_height: 700 }), /registration failed/);
+    host.browser.inputCapture.hold = hold;
+    assert.equal(await innerWidth(), 1280, "the failed registration did not leave the Tab resized");
+  }));
+
+test("protocol 560/168: a protected capture is the size of the laid-out page and the canonical page again after the layout is released", () => mirrored(
+  "<p>page</p>", async ({ subscribe, host, tab_id, generation }) => {
+    const scale = host.scales.get(tab_id) ?? host.viewport().device_scale_factor;
+    const capture = async (width, height) => {
+      const shot = await host.request({ op: "screenshot", tab_id, generation, bound_frames: true, _capture_protection: true, _capture_viewport: { width: width * scale, height: height * scale } });
+      const png = Buffer.from(shot.data_base64, "base64");
+      return [png.readUInt32BE(16), png.readUInt32BE(20)];
+    };
+    const narrow = await subscribe({ layout_width: 400, layout_height: 700 });
+    await narrow.next();
+    assert.deepEqual(await capture(400, 700), [400 * scale, 700 * scale], "the capture matches the mirror frame at the laid-out size");
+    const wide = await subscribe({ layout_width: 1440, layout_height: 900 });
+    await wide.next();
+    assert.deepEqual(await capture(1280, 800), [1280 * scale, 800 * scale], "the newest viewer asks for the canonical page");
+    const again = await subscribe({ layout_width: 400, layout_height: 700 });
+    await again.next();
+    assert.deepEqual(await capture(400, 700), [400 * scale, 700 * scale], "400 -> 1440 -> 400 captures at the laid-out size");
+    await host.request({ op: "mirror_close", subscription_id: again.subscription_id, generation });
+    await host.request({ op: "mirror_close", subscription_id: narrow.subscription_id, generation });
+    assert.deepEqual(await capture(1280, 800), [1280 * scale, 800 * scale], "closing the layout owners restores the canonical capture");
+  }));
+
+test("protocol 560/168: a layout released while its override is still in flight does not leave the Tab resized", () => mirrored(
+  "<p>page</p>", async ({ subscribe, host, evaluate }) => {
+    for (let i = 0; i < 5; i++) {
+      const [narrow, wide] = await Promise.all([subscribe({ layout_width: 400, layout_height: 700 }), subscribe({ layout_width: 1440, layout_height: 900 })]);
+      await new Promise(resolve => setTimeout(resolve, 150));
+      const owner = host.layouts.size ? "narrow" : "canonical", width = await evaluate("innerWidth");
+      assert.equal(width, owner === "narrow" ? 400 : 1280, `round ${i}: the page width follows the layout owner (${owner})`);
+      for (const s of [narrow, wide]) await host.request({ op: "mirror_close", subscription_id: s.subscription_id, generation: (await host.request({ op: "state" })).generation });
+      assert.equal(await evaluate("innerWidth"), 1280, `round ${i}: closing restores the page`);
+    }
+  }));
+
+test("protocol 560/168: a credit whose page size changed while it was observed publishes nothing", () => mirrored(
+  "<p id='p'>page</p>", async ({ subscribe, host, evaluate }) => {
+    const a = await subscribe({ layout_width: 400, layout_height: 700 });
+    await a.next();
+    // Another viewer resizes the Tab after this credit read the size but before it published.
+    const v2 = host.mirror.v2, real = v2.layoutKey.bind(v2);
+    let reads = 0;
+    v2.layoutKey = tabId => (++reads > 1 ? "600x700" : real(tabId));
+    await evaluate("document.getElementById('p').textContent='changed'");
+    await assert.rejects(a.next(2000), /layout changed during observation/);
+    v2.layoutKey = real;
+    assert.notEqual((await a.next(2000)).reset, true, "the next credit answers at the size the Tab really has");
+  }));

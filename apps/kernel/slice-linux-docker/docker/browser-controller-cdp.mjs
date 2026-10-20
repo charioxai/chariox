@@ -143,6 +143,7 @@ export class BrowserCdpClient {
     this.inputCapture = new BrowserInputCapture();
     this.appliedViewport = null;
     this.viewportByTarget = new Map();
+    this.layoutQueue = new Map();
     this.layoutByTarget = new Map();
     this.canonical = null;
   }
@@ -462,7 +463,7 @@ export class BrowserCdpClient {
     this.networkRequestsBySession.delete(sessionId);
     this.responseBodies.drop(sessionId);
     this.sessionsByTarget.delete(targetId);
-    this.viewportByTarget.delete(targetId); this.layoutByTarget.delete(targetId);
+    this.viewportByTarget.delete(targetId); this.layoutByTarget.delete(targetId); this.layoutQueue.delete(targetId);
     this.documentIdsByTarget.delete(targetId); this.pageFramesByTarget.delete(targetId);
     this.focusWorldsByTarget.delete(targetId);
     this.snapshotStateByTarget.delete(targetId);
@@ -494,9 +495,16 @@ export class BrowserCdpClient {
   }
 
   // Null restores the canonical layout. App pages keep their panel-sized layout.
-  async setLayout(targetId, layout) {
+  // Applications run one at a time per Tab and read the newest layout, so a restore that overtakes a slower override still wins.
+  setLayout(targetId, layout) {
     if (layout) this.layoutByTarget.set(targetId, { width: layout.width, height: layout.height });
     else this.layoutByTarget.delete(targetId);
+    const run = (this.layoutQueue.get(targetId) ?? Promise.resolve()).catch(() => {}).then(() => this.applyLayout(targetId));
+    this.layoutQueue.set(targetId, run);
+    return run;
+  }
+
+  async applyLayout(targetId) {
     const connection = this.connection;
     if (!this.canonical || !connection) return;
     if ([...(this.appTabs?.apps?.values() ?? [])].some((app) => app.targetId === targetId)) return;
