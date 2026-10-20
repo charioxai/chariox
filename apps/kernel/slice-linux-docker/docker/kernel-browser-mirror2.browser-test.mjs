@@ -1829,16 +1829,27 @@ test("protocol 560/168: a layout released while its override is still in flight 
     }
   }));
 
-test("protocol 560/168: a credit whose page size changed while it was observed publishes nothing", () => mirrored(
+test("protocol 560/168: a layout changed and restored is a different layout key", () => mirrored(
+  "<p>page</p>", async ({ subscribe, host }) => {
+    const a = await subscribe({ layout_width: 400, layout_height: 700 }), v2 = host.mirror.v2, tabId = [...host.tabs.keys()][0], key = v2.layoutKey(tabId);
+    await subscribe({ layout_width: 600, layout_height: 700 });
+    await subscribe({ layout_width: 400, layout_height: 700 });
+    assert.notEqual(v2.layoutKey(tabId), key, "400 -> 600 -> 400 is not the layout the credit started with");
+    await a.next();
+  }));
+test("protocol 560/168: a credit whose page size changed while it was observed publishes nothing and re-bases the stream", () => mirrored(
   "<p id='p'>page</p>", async ({ subscribe, host, evaluate }) => {
     const a = await subscribe({ layout_width: 400, layout_height: 700 });
     await a.next();
-    // Another viewer resizes the Tab after this credit read the size but before it published.
-    const v2 = host.mirror.v2, real = v2.layoutKey.bind(v2);
-    let reads = 0;
-    v2.layoutKey = tabId => (++reads > 1 ? "600x700" : real(tabId));
+    // Another viewer resizes the Tab after this credit read the size but before it published (and back: A->B->A).
+    const v2 = host.mirror.v2, real = v2.layoutKey.bind(v2), tiles = v2.tiles.bind(v2);
+    let moved = false;
+    v2.layoutKey = tabId => (moved ? "600x700" : real(tabId));
+    v2.tiles = (...args) => { moved = true; return tiles(...args); };
     await evaluate("document.getElementById('p').textContent='changed'");
     await assert.rejects(a.next(2000), /layout changed during observation/);
-    v2.layoutKey = real;
-    assert.notEqual((await a.next(2000)).reset, true, "the next credit answers at the size the Tab really has");
+    v2.layoutKey = real; v2.tiles = tiles;
+    const next = await a.next(2000);
+    assert.equal(next.reset, true, "the observer's consumed change is not delivered by a delta: the next credit re-snapshots");
+    assert.match(JSON.stringify(next), /changed/, "the changed text reaches the viewer");
   }));

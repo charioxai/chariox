@@ -114,6 +114,7 @@ export class KernelBrowserHost {
     this.displaySessions = new DisplaySessions(this);
     this.scales = new Map();
     this.layouts = new Map();
+    this.layoutRevisions = new Map();
     this.inputEpochs = new Map();this.inputChangedAt=new Map();
     this.scrolling = new Map();
     this.sampleLanes = new Map();
@@ -354,13 +355,19 @@ export class KernelBrowserHost {
   // Protocol 560/168: a viewer narrower than the canonical desktop gets the Tab laid out at its own size.
   // The newest subscription owns the layout; null restores the canonical page.
   pageSize(tabId) { const l = this.layouts.get(tabId); return l ? { width: l.width, height: l.height } : { width: 1280, height: 800 }; }
+  noteLayout(tabId, before) { const now = this.pageSize(tabId); if (now.width !== before.width || now.height !== before.height) this.layoutRevisions.set(tabId, this.layoutRevision(tabId) + 1); }
+  layoutRevision(tabId) { return this.layoutRevisions.get(tabId) ?? 0; }
   async setLayout(tab, subscriptionId, layout) {
+    const before = this.pageSize(tab.tab_id);
     if (layout) this.layouts.set(tab.tab_id, { ...layout, subscriptionId }); else this.layouts.delete(tab.tab_id);
+    this.noteLayout(tab.tab_id, before);
     await this.browser.setLayout?.(tab.target_id, layout);
   }
   releaseLayout(tabId, subscriptionId) {
     if (this.layouts.get(tabId)?.subscriptionId !== subscriptionId) return;
+    const before = this.pageSize(tabId);
     this.layouts.delete(tabId);
+    this.noteLayout(tabId, before);
     const tab = this.tabs.get(tabId);
     return tab ? this.browser.setLayout?.(tab.target_id, null).catch(() => {}) : undefined;
   }
