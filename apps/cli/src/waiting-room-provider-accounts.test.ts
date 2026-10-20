@@ -248,3 +248,14 @@ test("explicit accounts outside the home inventory defer authentication to the k
   assert.match(selectedProviderAccountStartBlockReason([local], "codex", "local") ?? "", /needs sign-in/)
   assert.match(selectedProviderAccountStartBlockReason([], "codex", "default") ?? "", /needs sign-in/)
 })
+
+// MP-08 / MP-11: kernel first-use verification and native fallback own admission.
+test("Claude unknown and expired observations defer recovery to the kernel", () => {
+  for (const provider of ["claude", "claude-p", "claude-headless"]) {
+    for (const state of ["unknown", "expired"] as const) {
+      const profile = account("claude", "recoverable", true)
+      profile.auth_state = state
+      assert.equal(selectedProviderAccountStartBlockReason([profile], provider, profile.profile_id), null)
+    }
+  }
+})

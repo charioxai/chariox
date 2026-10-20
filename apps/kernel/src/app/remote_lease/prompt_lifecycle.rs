@@ -680,6 +680,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         })?;
         let backing_agent = self.app.agents.get_agent(&leased_agent.backing_agent_id)?;
+        if self
+            .app
+            .reusable_leased_claude_run_for_agent(&leased_agent.backing_session_id, &backing_agent)?
+            .is_some()
+        {
+            return Ok(());
+        }
         self.app
             .provider_account_profiles
             .require_agent_authenticated(

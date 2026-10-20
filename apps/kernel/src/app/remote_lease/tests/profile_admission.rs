@@ -517,6 +517,12 @@ async fn assert_leased_claude_home_credential(environment_changed: bool) {
         .providers_mut()
         .launch_run_detached(request.clone())
         .unwrap();
+    assert!(
+        RemoteLeaseRuntime::new(&mut worker)
+            .require_leased_prompt_account(&lease.id)
+            .is_err(),
+        "an unmarked worker run is not proof of HOME credential authority"
+    );
     worker
         .provider_run_projection
         .mark_leased_provider_run(run.id());
