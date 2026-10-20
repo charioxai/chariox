@@ -924,15 +924,17 @@ export class Mirror2 {
     const frameOf = id => { const slot = id ? slotOf(id) : 0; if (!slot) return null; const entry = stream.frameSlots.get(slot); if (!entry) throw new Error('MP-11: changed mirror input target'); return entry; };
     const inFrame = async (entry, expression) => { assertNotCancelled(signal); assertEpoch(); await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id); const value = await this.evaluate(entry.child, expression); assertEpoch(); return value; };
     if (action.kind === 'selection' && slotOf(action.anchor_id) !== slotOf(action.focus_id)) throw new Error('MP-11: invalid mirror selection');
+    // A viewer scrolled ahead of the native page (smooth scrolling still animating): the point comes into range within a moment.
+    const retryOffscreen = async resolve => { for (let attempt = 0; ; attempt++) { try { return await resolve(); } catch (error) { if (error?.mirrorReason !== 'offscreen_node' || attempt >= 3) throw error; assertNotCancelled(signal); await new Promise(done => setTimeout(done, 150)); } } };
     if (action.kind === 'click' || action.kind === 'scroll') {
       const entry = frameOf(action.node_id);
       let at, local = null;
       if (entry) {
-        local = await inFrame(entry, `${m}.point(${JSON.stringify({ node_id: localId(action.node_id), x: action.x, y: action.y })})`);
+        local = await retryOffscreen(() => inFrame(entry, `${m}.point(${JSON.stringify({ node_id: localId(action.node_id), x: action.x, y: action.y })})`));
         const origin = await call(`${m}.frameOrigin(${JSON.stringify(entry.owner)})`);
         at = { x: Math.floor(local.x + origin[0]), y: Math.floor(local.y + origin[1]) };
         if (at.x < 0 || at.y < 0 || at.x >= 1280 || at.y >= 800) throw new Error('MP-11: changed mirror input target');
-      } else at = await call(`${m}.point(${JSON.stringify({ node_id: action.node_id, x: action.x, y: action.y })})`);
+      } else at = await retryOffscreen(() => call(`${m}.point(${JSON.stringify({ node_id: action.node_id, x: action.x, y: action.y })})`));
       let checked = false;
       // MP-11: re-validated after focus emulation, immediately before the first
       // physical event; release stays paired even if the page reacts.
