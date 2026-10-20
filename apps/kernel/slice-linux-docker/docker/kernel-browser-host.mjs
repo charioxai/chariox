@@ -321,7 +321,7 @@ export class KernelBrowserHost {
     if([...this.displays.values()].some(s=>s.tab_id===tabId&&s.source_kind!=='desktop')||[...this.mirror.streams.values()].some(s=>s.tab_id===tabId))return;
     this.scales.delete(tabId);
     const tab=this.tabs.get(tabId);if(!tab)return;
-    try{const {connection,sessionId}=await this.browser.resolvePageTarget(tab.target_id);await connection.send('Emulation.clearDeviceMetricsOverride',{},sessionId);}catch{}
+    try{await this.browser.clearViewport(tab.target_id);}catch{}
   }
   async closeCompositors(tabId) {
     for(const [id,entry] of this.compositors) if(tabId===undefined||id===tabId){

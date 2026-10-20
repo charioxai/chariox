@@ -486,9 +486,25 @@ export class BrowserCdpClient {
   setLayout(targetId, layout) {
     if (layout) this.layoutByTarget.set(targetId, { width: layout.width, height: layout.height });
     else this.layoutByTarget.delete(targetId);
-    const run = (this.layoutQueue.get(targetId) ?? Promise.resolve()).catch(() => {}).then(() => this.applyLayout(targetId));
+    return this.queueLayout(targetId, () => this.applyLayout(targetId));
+  }
+
+  queueLayout(targetId, operation) {
+    const run = (this.layoutQueue.get(targetId) ?? Promise.resolve()).catch(() => {}).then(operation);
     this.layoutQueue.set(targetId, run);
     return run;
+  }
+
+  // MP-08/MP-10/MP-11: clearing native emulation also retires its configured
+  // key. A new viewer restores its viewport after this release, in order.
+  clearViewport(targetId) {
+    return this.queueLayout(targetId, async () => {
+      const connection = this.connection;
+      if (!connection) return;
+      const sessionId = await this.ensureTargetSession(connection, targetId);
+      this.viewportByTarget.delete(targetId);
+      await connection.send('Emulation.clearDeviceMetricsOverride', {}, sessionId);
+    });
   }
 
   async applyLayout(targetId) {
