@@ -1783,7 +1783,7 @@ async fn sudo_revocation_removes_authority_and_reports_failed_durable_end_receip
 
 // MP-08/MP-10/MP-11: requester identity stays separate from display prose.
 #[tokio::test]
-async fn sudo_review_keeps_requester_path_in_structured_identity() {
+async fn sudo_review_uses_verified_requester_instead_of_summary_path() {
     let f = fixture();
     let grant_id = f.state.insert_access_grant_for_test(&f.request.session_id);
     let path = "/workspace/provider\nlabel\tend";
@@ -1797,12 +1797,14 @@ async fn sudo_review_keeps_requester_path_in_structured_identity() {
         .unwrap()
         .summary
         .holder_executable = path.into();
+    let verified_executable = f.state.owned.kernel_access.lock().unwrap()
+        .grants.get(&grant_id).unwrap().holder.executable.clone();
     let state = f.state.clone();
     let request = external_request(&f);
     let task = tokio::spawn(async move { state.request_kernel_sudo(&grant_id, request).await });
     let prompt = popup(&f.state).await;
     let requester = prompt.requester.as_ref().unwrap();
-    assert_eq!(requester.executable, path);
+    assert_eq!(requester.executable, verified_executable);
     let clean = !prompt.message.contains(path) && !prompt.message.contains(['\r', '\t']);
     f.state
         .revoke_sudo(Some("local"), None, "fixture_cleanup")

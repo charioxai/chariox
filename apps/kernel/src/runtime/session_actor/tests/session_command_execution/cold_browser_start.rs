@@ -177,13 +177,14 @@ async fn refused_physical_viewport_does_not_publish_a_new_canonical_revision() {
     let after = state.room_environment_snapshot(&session_id).unwrap();
     assert_eq!(after.viewport, before.viewport);
     assert_eq!(after.actors, before.actors);
-    let (unsupported, _) = store
+    // Positive unsupported sizes normalize; malformed geometry still refuses.
+    let (invalid, _) = store
         .update_room_environment_viewport(
             crate::local::UpdateRoomEnvironmentViewportRequest {
                 session_id: session_id.clone(),
                 expected_revision: before.viewport.revision,
                 viewport: crate::local::RoomEnvironmentViewportRequest {
-                    css_width: 393,
+                    css_width: 0,
                     css_height: 844,
                     device_scale_factor: 1,
                     desktop_pixel_width: 391,
@@ -194,8 +195,8 @@ async fn refused_physical_viewport_does_not_publish_a_new_canonical_revision() {
         )
         .await;
     assert!(
-        unsupported.is_err(),
-        "unverified physical sizes must be refused"
+        invalid.is_err(),
+        "malformed viewport geometry must be refused"
     );
     assert_eq!(
         state

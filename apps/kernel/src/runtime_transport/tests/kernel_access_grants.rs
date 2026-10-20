@@ -1062,7 +1062,7 @@ async fn external_sudo_unix_socket_requires_grant_projects_identity_and_expires_
     let message = popup["message"].as_str().unwrap();
     assert_eq!(popup["requester"]["pid"], holder.child.id());
     assert_eq!(popup["sudo_request"]["agent_name"], "access-vault-agent");
-    assert_eq!(popup["session_id"], SESSION);
+    assert_eq!(popup["sudo_request"]["session_name"], "other-session");
     assert_eq!(popup["sudo_request"]["task"], "full external\nprompt");
     assert!(message.contains("full external prompt"));
     let refused = kernel.request(serde_json::json!({"RespondToInteraction":{"session_id":SESSION,"interaction_id":id,"choice_id":"refuse"}})).await;

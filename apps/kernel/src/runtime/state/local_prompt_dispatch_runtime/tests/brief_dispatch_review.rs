@@ -605,7 +605,7 @@ async fn native_hook_rebuild_excludes_the_current_managed_prompt() {
 async fn room_retirement_between_brief_chunks_never_replays_the_next_utility_input() {
     // Historical prompts must precede the active prompt's sequence. The
     // handoff intentionally excludes events appended after that prompt.
-    let history: Vec<_> = (0..100)
+    let history: Vec<_> = (0..200)
         .map(|index| {
             format!(
                 "retire-this-transcript {index} {}",
@@ -646,9 +646,12 @@ async fn room_retirement_between_brief_chunks_never_replays_the_next_utility_inp
     fixture.release();
     fixture.wait_for("final-provider-envelope").await;
     let inputs = std::fs::read_to_string(fixture.root.path().join("brief-utility-inputs")).unwrap();
+    let parts = inputs.lines().next().unwrap().split("1 of ").nth(1)
+        .and_then(|suffix| suffix.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|number| number.parse::<usize>().ok());
     assert!(
-        inputs.lines().next().unwrap().contains("1 of 2"),
-        "the regression must exercise two real rendered utility chunks"
+        parts.is_some_and(|parts| parts >= 2),
+        "the regression must exercise multiple real rendered utility chunks: {parts:?}"
     );
     assert_eq!(
         inputs.lines().count(),

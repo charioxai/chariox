@@ -547,6 +547,8 @@ async fn proxied_session_subscriptions_share_one_attachment_without_replacement(
     // Protocol 403: a terminal's subscription starts with its passkey prompts.
     let prompts = expect_client_event(&mut client_socket, &subscription_private_key).await;
     assert_empty_passkey_event(&prompts);
+    let catalog = expect_client_event(&mut client_socket, &subscription_private_key).await;
+    assert_client_catalog_event(&catalog);
     let event = expect_client_event(&mut client_socket, &subscription_private_key).await;
     assert_eq!(event["event"], serde_json::json!("session_snapshot"));
     assert_eq!(
@@ -603,6 +605,8 @@ async fn proxied_session_subscriptions_share_one_attachment_without_replacement(
     let second_prompts =
         expect_client_event(&mut second_client_socket, &second_subscription_private_key).await;
     assert_empty_passkey_event(&second_prompts);
+    let catalog = expect_client_event(&mut second_client_socket, &second_subscription_private_key).await;
+    assert_client_catalog_event(&catalog);
     let second_event =
         expect_client_event(&mut second_client_socket, &second_subscription_private_key).await;
     assert_eq!(second_event["event"], serde_json::json!("session_snapshot"));
@@ -744,6 +748,8 @@ async fn relay_subscription_replays_recent_events_after_resume_cursor() {
     // Protocol 403: the passkey prompts come first and are never replayed.
     let prompts = expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
     assert_empty_passkey_event(&prompts.1);
+    let catalog = expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
+    assert_client_catalog_event(&catalog.1);
     let first_event =
         expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
     assert_eq!(
@@ -1087,6 +1093,11 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
     .await
     .expect("the current passkey prompts should arrive first");
     assert_empty_passkey_event(&prompts.1);
+    let catalog = tokio::time::timeout(
+        Duration::from_secs(5),
+        decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key),
+    ).await.expect("current client catalog revision should precede the snapshot");
+    assert_client_catalog_event(&catalog.1);
     let current_snapshot = tokio::time::timeout(
         Duration::from_secs(5),
         decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key),
@@ -1220,6 +1231,8 @@ async fn room_workflows_encrypted_relay_drill_inventory_updates_replay_and_last_
     // Protocol 403: the passkey prompts come first and are never replayed.
     let prompts = expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
     assert_empty_passkey_event(&prompts.1);
+    let catalog = expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
+    assert_client_catalog_event(&catalog.1);
     let first_event =
         expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
     assert_eq!(
@@ -1352,4 +1365,11 @@ fn assert_empty_passkey_event(event: &serde_json::Value) {
             "kernel_now_ms": event["kernel_now_ms"],
         })
     );
+}
+
+fn assert_client_catalog_event(event: &serde_json::Value) {
+    assert!(event["revision"].as_u64().is_some());
+    assert_eq!(event, &serde_json::json!({
+        "event": "client_catalog_changed", "revision": event["revision"],
+    }));
 }
