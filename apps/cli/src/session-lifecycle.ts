@@ -361,6 +361,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     deps.setStatusLine(label)
     deps.clearPendingPromptAttachments()
     deps.bumpHistoryLoadGeneration()
+    deps.setNextHistoryCursor(null)
     deps.setSessionHydratingState(true)
     deps.updateSessionChrome()
     deps.requestRender()

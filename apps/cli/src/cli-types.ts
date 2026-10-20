@@ -480,7 +480,6 @@ export type BootstrapDeferredState = {
     includesPromptHistory?: boolean
     nextHistoryCursor: SessionHistoryCursorState
   }>
-  attachedProviderRun?: Promise<{ sessionId: string; providerRun: RuntimeProviderRun | null; statusLine: string | null }>
 }
 
 export type BootstrapState = {

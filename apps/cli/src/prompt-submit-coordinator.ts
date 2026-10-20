@@ -15,7 +15,7 @@ export type PromptSubmitCoordinatorDeps = {
   getPendingAttachmentCount: () => number
   clearPromptText: () => void
   workflowScreenShowing: () => boolean
-  submitProjectNameEntry?: (rawPrompt: string) => Promise<boolean>
+  submitProjectNameEntry?: (rawPrompt: string) => boolean | Promise<boolean>
   submitWorkspaceShellCommand: (rawPrompt: string) => Promise<void>
   workflowNodeInstructionsEditorOpen: () => boolean
   submitSlashCommand: (
@@ -53,9 +53,8 @@ export function createPromptSubmitCoordinator(
 
       deps.ensureBackgroundPollersStarted()
 
-      if (await deps.submitProjectNameEntry?.(rawPrompt)) {
-        return
-      }
+      const projectNameEntry = deps.submitProjectNameEntry?.(rawPrompt)
+      if (projectNameEntry === true || (projectNameEntry && await projectNameEntry)) return
 
       const preparation = promptSubmitPreparationDecision({
         rawPrompt,

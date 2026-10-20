@@ -15,7 +15,7 @@ test("MP-08/MP-10/MP-11 replica status is read by exact identity, not missing ho
   } })
   assert.equal(actual.label("codex", "replica"), "Account status not checked")
   await settle()
-  assert.equal(actual.label("codex", "replica"), "Replica account · signed in")
+  assert.equal(actual.label("codex", "replica"), "Replica account")
   assert.equal(requests, 1)
   assert.equal(repaints, 1, "a settled metadata read repaints a static Done footer")
   actual.dispose()
@@ -28,7 +28,7 @@ test("MP-08/MP-10/MP-11 failed reads never invent unavailability or retain stale
     if (fail) throw new Error("socket closed"); return profile
   } })
   controller.label("codex", "replica"); await settle()
-  assert.equal(controller.label("codex", "replica"), "Replica account · signed in")
+  assert.equal(controller.label("codex", "replica"), "Replica account")
   time = 30_001; fail = true
   assert.equal(controller.label("codex", "replica"), "Account status not checked")
   await settle()
@@ -44,7 +44,7 @@ test("MP-08/MP-10/MP-11 kernel switching fences old observations and sign-out ha
   controller.label("codex", "replica")
   kernel = "new"; controller.label("codex", "replica")
   resolve(profile); await settle()
-  assert.equal(controller.label("codex", "replica"), "Replica account · needs sign-in")
+  assert.equal(controller.label("codex", "replica"), "Replica account · sign in")
   controller.dispose()
 })
 
@@ -52,7 +52,7 @@ test("MP-08/MP-10/MP-11 retained home aliases display the canonical public accou
   const inventory: ProviderAccountProfile[] = []
   const controller = createProviderAccountLabelController({ profiles: () => inventory, kernelId: () => "home", readProfile: async () => profile })
   controller.label("codex", "Replica account"); await settle()
-  assert.equal(controller.label("codex", "Replica account"), "Replica account · signed in")
+  assert.equal(controller.label("codex", "Replica account"), "Replica account")
   controller.dispose()
 })
 

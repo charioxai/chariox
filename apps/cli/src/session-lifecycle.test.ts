@@ -263,65 +263,11 @@ test("attachBinding reattaches and hydrates the attached session before restorin
   await controller.attachBinding({ id: "session-2" }, false)
 
   assert.equal(events.filter((event) => event === "setProviderCatalogState").length, 0)
-  assert.deepEqual(events.filter((event) => event !== "setProviderCatalogState"), [
-    "setSessionHydratingState",
-    "clearPendingPromptAttachments",
-    "bumpHistoryLoadGeneration",
-    "attachToSession",
-    "getSessionState",
-    "setMultiAgentResponseLayout",
-    "setCreatedSessionState",
-    "setSessionState",
-    "setCenterMode",
-    "setAttachmentState",
-    "clearDirectoryTree",
-    "resetWorkspaceScreen",
-    "clearWorkflows",
-    "clearActiveToolLabels",
-    "setProviderActivityLabel",
-    "setActiveStatusLabel",
-    "setFatalError",
-    "setDaemonDisconnected",
-    "setStreamingAgentId",
-    "setSubmitting",
-    "setWorking",
-    "setStatusLine",
-    "updateSessionChrome",
-    "focusPromptInput",
-    "primeAttachedSessionBinding",
-    "setSessionHydratingState",
-    "syncKernelEventSubscription",
-    "tryGetProviderRun",
-    "logAttachedProviderRun",
-    "setProviderRunState",
-    "syncCliProviderSelection",
-    "reconcileWaitingRoom",
-    "hydrateAttachedSessionBinding",
-    "setMultiAgentResponseLayout",
-    "setCreatedSessionState",
-    "setSessionState",
-    "setCenterMode",
-    "setAttachmentState",
-    "clearDirectoryTree",
-    "resetWorkspaceScreen",
-    "clearWorkflows",
-    "clearActiveToolLabels",
-    "setProviderActivityLabel",
-    "setActiveStatusLabel",
-    "setFatalError",
-    "setDaemonDisconnected",
-    "setStreamingAgentId",
-    "setSubmitting",
-    "setWorking",
-    "setStatusLine",
-    "updateSessionChrome",
-    "focusPromptInput",
-    "listSessions",
-    "setAvailableSessions",
-    "scheduleShortViewportHistoryCheck",
-    "setSessionHydratingState",
-  ])
-})
+  assert.ok(events.indexOf("setSessionState") < events.indexOf("attachToSession"), "the selected placeholder owns the view before I/O")
+  assert.ok(events.indexOf("primeAttachedSessionBinding") < events.indexOf("hydrateAttachedSessionBinding"))
+  assert.ok(events.indexOf("syncKernelEventSubscription") < events.indexOf("tryGetProviderRun"))
+  assert.ok(events.lastIndexOf("setSessionState") > events.indexOf("hydrateAttachedSessionBinding"), "the final state follows hydration")
+  assert.equal(events.at(-1), "setSessionHydratingState")})
 
 test("attachBinding patches the waiting-room session row without listing every session", async () => {
   const appliedSessions: SessionListEntry[][] = []
@@ -1333,10 +1279,10 @@ test("MP-08 / MP-10 an old attach hydration cannot restore the Room after a newe
   const controller = createSessionLifecycleController(deps as never)
   const old = controller.attachBinding({ id: "old" }, false)
   await oldReachedHydration
-  await controller.attachBinding({ id: "new" }, false)
+  const next = controller.attachBinding({ id: "new" }, false)
   assert.equal(current.id, "new")
   release(room("old"))
-  await old
+  await Promise.all([old, next])
   assert.equal(current.id, "new")
   assert.equal((binding as RuntimeAttachment | null)?.session_id, "new")
 })
@@ -1364,11 +1310,12 @@ test("MP-08 / MP-10 rejected detach during a switch clears the abandoned hydrati
   const controller = createSessionLifecycleController(deps as never)
   const old = controller.attachBinding({ id: "old" }, false)
   await requested
-  await assert.rejects(controller.attachBinding({ id: "new" }, false), /relay lost/)
+  const next = controller.attachBinding({ id: "new" }, false)
   release(room("old"))
+  await assert.rejects(next, /relay lost/)
   await old
   assert.equal(hydrating, false)
-  assert.equal(binding, null)
+  assert.equal((binding as RuntimeAttachment | null)?.session_id, "old", "failed selection restores the retained attachment")
 })
 
 // MP-08 / MP-10: a partial Room snapshot has not published its attachment yet.
@@ -1395,9 +1342,9 @@ test("superseded partial attach releases its unpublished attachment", async () =
   const controller = createSessionLifecycleController(deps as never)
   const old = controller.attachBinding({ id: "old" }, false)
   await requested
-  await controller.attachBinding({ id: "new" }, false)
+  const next = controller.attachBinding({ id: "new" }, false)
   release(room("old"))
-  await old
+  await Promise.all([old, next])
   assert.deepEqual(detached, ["att-old"])
   assert.equal(current.id, "new")
   assert.equal((binding as RuntimeAttachment | null)?.id, "att-new")

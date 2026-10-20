@@ -886,10 +886,6 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   } = createCliPrimaryTranscriptComposition({
     waitingRoomLaunchOwnershipRevision,
     applyWaitingRoomBootstrapDefaults: reconcileWaitingRoom,
-    applyAttachedProviderRun: (run: RuntimeProviderRun | null, line: string | null) => {
-      if (run) setProviderRunState(run)
-      if (line) setStatusLine(line)
-    },
     client,
     bootstrap: props.bootstrap,
     renderer, appLogger, formatError,

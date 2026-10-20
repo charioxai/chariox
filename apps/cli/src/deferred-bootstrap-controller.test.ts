@@ -260,17 +260,16 @@ test("deferred bootstrap controller ignores stale attached history", async () =>
   assert.deepEqual(harness.prependCalls, [])
 })
 
-test("deferred bootstrap controller applies the attach-time launch once it settles, for the attached session only", async () => {
-  const locked = { sessionId: "session-1", providerRun: null, statusLine: "Chariox vault locked. Run /credential vault manage." }
-  const harness = bootstrapHarness({ attachmentSessionId: "session-1", deferred: { attachedProviderRun: Promise.resolve(locked) } })
+test("deferred bootstrap controller applies the attach-time launch only to its session", async () => {
+  const locked = { sessionId: "session-1", session: null, providerRun: null, issue: "credential_vault_locked" as const }
+  const harness = bootstrapHarness({ attachmentSessionId: "session-1", deferred: { attachLaunch: Promise.resolve(locked) } })
   harness.controller.apply()
   await flushPromises()
-  assert.deepEqual(harness.attachedProviderRuns, [{ run: null, statusLine: locked.statusLine }])
-
-  const switched = bootstrapHarness({ attachmentSessionId: "session-2", deferred: { attachedProviderRun: Promise.resolve(locked) } })
+  assert.deepEqual(harness.launches, [locked])
+  const switched = bootstrapHarness({ attachmentSessionId: "session-2", deferred: { attachLaunch: Promise.resolve(locked) } })
   switched.controller.apply()
   await flushPromises()
-  assert.deepEqual(switched.attachedProviderRuns, [])
+  assert.deepEqual(switched.launches, [])
 })
 
 test("MP-08 / MP-10 PANE-03: the attach-time launch result is applied to the attachment that started it", async () => {
@@ -310,7 +309,6 @@ function bootstrapHarness(options: {
     currentTranscriptEntryCount: options.currentTranscriptEntryCount ?? 0,
     entryCounter: options.entryCounter ?? 0,
     providerCatalog: null as ProviderCatalog | null,
-    attachedProviderRuns: [] as Array<{ run: string | null; statusLine: string | null }>,
     providerCommandCatalogs: null as ProviderCommandCatalogs | null,
     chromeUpdates: 0,
     promptHistoryEntries: [] as string[],
@@ -331,9 +329,6 @@ function bootstrapHarness(options: {
   }
   harness.controller = createDeferredBootstrapController({
     getDeferred: () => harness.deferred,
-    applyAttachedProviderRun: (run, statusLine) => {
-      harness.attachedProviderRuns.push({ run: run?.id ?? null, statusLine })
-    },
     currentAttachmentSessionId: () => harness.attachmentSessionId,
     currentAttachmentId: () => harness.attachmentId,
     currentPromptHistoryEntries: () => harness.promptHistoryEntries,

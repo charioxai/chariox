@@ -292,8 +292,7 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
   assert.deepEqual(calls, ["resolve", "attach", "session", "launch", "catchup", "session", "outline:agent-a"])
   assert.deepEqual(launched, [{ provider: "codex", model: "codex/gpt-5.4-mini", effort: "low" }])
   assert.equal(bootstrap.binding?.attachment.id, "attachment-1")
-  assert.equal(bootstrap.binding?.providerRun, null)
-  assert.equal((await bootstrap.deferred?.attachedProviderRun)?.providerRun?.id, "run-1")
+  assert.equal(bootstrap.binding?.providerRun?.id, "run-1")
   assert.deepEqual(bootstrap.binding?.historyEntries, [])
   assert.deepEqual(bootstrap.binding?.promptHistoryEntries, [])
   const deferredHistory = await bootstrap.deferred?.attachedHistory
@@ -676,7 +675,6 @@ test("bootstrapSession recovers when the launch target moves remote during attac
   )
 
   assert.equal(bootstrap.binding?.providerRun, null)
-  assert.deepEqual(await bootstrap.deferred?.attachedProviderRun, { sessionId: "session-1", providerRun: null, statusLine: null })
   assert.deepEqual(info, [{
     message: "recovered attach-time provider launch after agent moved remote",
     fields: {
@@ -849,6 +847,7 @@ test("bootstrapSession renders while the kernel holds the attach-time launch on 
   let unlock!: (value: typeof run) => void
   const pending = bootstrapSession({} as never, { clientId: "cli-1", sessionId: "session-1", model: "default", accountProfile: "default", effort: "low" },
     "/workspace", "/workspace", {}, {
+      deferProviderLaunch: true,
       listSessions: async () => [session],
       getProviderCatalog: async () => fallbackProviderCatalog(),
       getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
@@ -868,8 +867,10 @@ test("bootstrapSession renders while the kernel holds the attach-time launch on 
   assert.notEqual(bootstrap, "held", "the TUI renders while the kernel waits for the Vault passphrase")
   if (bootstrap === "held") return
   assert.equal(bootstrap.binding?.providerRun, null)
+  const starting = bootstrap.deferred!.providerLaunch!.start()
+  await new Promise(resolve => setImmediate(resolve))
   unlock(run)
-  assert.deepEqual(await bootstrap.deferred?.attachedProviderRun, { sessionId: "session-1", providerRun: run, statusLine: null })
+  assert.equal((await starting).providerRun?.id, "run-1")
 })
 
 

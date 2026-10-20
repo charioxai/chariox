@@ -498,7 +498,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     warn: (message, fields) => deps.appLogger?.warn(message, fields),
   })
 
-  const submitProjectNameEntry = async (rawPrompt: string) => {
+  const submitProjectNameEntry = (rawPrompt: string) => {
     if (pendingNewProjectName) {
       const name = rawPrompt.trim()
       if (!name) { deps.flashFooter("Enter a project name", "error"); return true }
@@ -512,9 +512,10 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     if (pendingProjectRenameId) {
       const projectId = pendingProjectRenameId
       pendingProjectRenameId = null
-      await deps.renameWaitingRoomProject(projectId, rawPrompt.trim())
-      deps.promptTextController.setText("")
-      return true
+      return deps.renameWaitingRoomProject(projectId, rawPrompt.trim()).then(() => {
+        deps.promptTextController.setText("")
+        return true
+      })
     }
     return false
   }

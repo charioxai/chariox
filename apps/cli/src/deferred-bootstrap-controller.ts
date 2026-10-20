@@ -14,7 +14,6 @@ import { reindexTranscriptEntries } from "@chariox/kernel-client/transcript-entr
 
 export type DeferredBootstrapControllerDeps = {
   applyWaitingRoomDefaults?: (defaults: { provider?: string; model?: string; effort?: string }) => void
-  applyAttachedProviderRun?: (providerRun: RuntimeProviderRun | null, statusLine: string | null) => void
   getDeferred: () => BootstrapDeferredState | undefined
   currentAttachmentSessionId: () => string | null
   currentAttachmentId: () => string | null
@@ -123,7 +122,7 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
 
     const launchAttachmentId = deps.currentAttachmentId()
     void deferred.attachLaunch?.then(launch => {
-      if (deps.currentAttachmentId() === launchAttachmentId) deps.applyAttachLaunch(launch)
+      if (deps.currentAttachmentId() === launchAttachmentId && deps.currentAttachmentSessionId() === launch.sessionId) deps.applyAttachLaunch(launch)
     }).catch(error => {
       warn("attach-time provider launch failed", error)
       if (deps.currentAttachmentId() === launchAttachmentId) deps.reportAttachLaunchFailure(deps.formatError(error))

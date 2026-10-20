@@ -62,7 +62,6 @@ fn zero_recipient_outputs_and_completions_are_not_retained() {
         b"detached prompt",
     );
     let batch = terminal.fan_out_outputs(vec![TerminalOutputAppend {
-        prompt_id: None,
         session_id: "session-1".to_string(),
         provider_run_id: "provider-run-1".to_string(),
         agent_id: Some("agent-1".to_string()),
