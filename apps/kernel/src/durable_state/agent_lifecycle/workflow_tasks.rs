@@ -93,12 +93,28 @@ pub(super) fn settle_unstarted_delegates(
         };
         if let Some(other_run) = load_run(tx, owner_id, &task.room_id, other_id)? {
             if !other_run.status().is_terminal() {
+                // Downstream nodes have no node run yet; their agents come from the run's mapping.
+                let completed = |n: &crate::session::WorkflowNodeRun| {
+                    n.status() == crate::session::WorkflowNodeRunStatus::Completed
+                };
                 shared_agents.extend(
                     other_run
                         .node_runs()
                         .iter()
-                        .filter(|n| n.status() != crate::session::WorkflowNodeRunStatus::Completed)
+                        .filter(|n| !completed(n))
                         .map(|n| n.agent_id().to_string()),
+                );
+                shared_agents.extend(
+                    other_run
+                        .runtime_agent_ids_by_node()
+                        .iter()
+                        .filter(|(node, _)| {
+                            !other_run
+                                .node_runs()
+                                .iter()
+                                .any(|n| n.node_id() == node.as_str() && completed(n))
+                        })
+                        .map(|(_, agent)| agent.clone()),
                 );
             }
         }

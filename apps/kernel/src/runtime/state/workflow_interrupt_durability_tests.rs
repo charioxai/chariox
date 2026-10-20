@@ -1906,26 +1906,41 @@ async fn mp08_workflow_resume_running_run_keeps_current_prompt() {
 // the parent's workflow receipt was already acknowledged before it blocked.
 #[tokio::test]
 async fn a01_failed_workflow_settles_unstarted_delegate_on_blocked_parent() {
-    failed_workflow_delegate_settlement(false, false).await;
+    failed_workflow_delegate_settlement(false, SharedDelegate::No).await;
 }
 
 // MP-08 / MP-10 / MP-11: one parent task may accept two invocations that share
 // an unbound delegate; the first failure must not cancel the second's delegate.
 #[tokio::test]
 async fn a01_failed_workflow_preserves_delegate_shared_with_live_invocation() {
-    failed_workflow_delegate_settlement(false, true).await;
+    failed_workflow_delegate_settlement(false, SharedDelegate::StartedNode).await;
+}
+
+// MP-08 / MP-10 / MP-11: the second invocation is still on its upstream node;
+// the shared delegate is a downstream node that has no node run yet.
+#[tokio::test]
+async fn a01_failed_workflow_preserves_delegate_needed_by_downstream_node() {
+    failed_workflow_delegate_settlement(false, SharedDelegate::DownstreamNode).await;
 }
 
 // MP-08 / MP-10 / MP-11: successful task receipts survive a later startup
 // failure in the same invocation, including repeated lifecycle sweeps.
 #[tokio::test]
 async fn a01_failed_workflow_preserves_fully_settled_successful_task() {
-    failed_workflow_delegate_settlement(true, false).await;
+    failed_workflow_delegate_settlement(true, SharedDelegate::No).await;
 }
 
 const SECOND_INVOCATION: &str = "second-invocation-run";
 
-async fn failed_workflow_delegate_settlement(settled_upstream: bool, shared_delegate: bool) {
+#[derive(Clone, Copy, PartialEq)]
+enum SharedDelegate {
+    No,
+    StartedNode,
+    DownstreamNode,
+}
+
+async fn failed_workflow_delegate_settlement(settled_upstream: bool, shared: SharedDelegate) {
+    let shared_delegate = shared != SharedDelegate::No;
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
@@ -2021,6 +2036,11 @@ async fn failed_workflow_delegate_settlement(settled_upstream: bool, shared_dele
         second["active_node_run_id"] = serde_json::Value::Null;
         second["node_runs"][0]["id"] = serde_json::json!("second-invocation-node");
         second["node_runs"][0]["status"] = serde_json::json!("Created");
+        if shared == SharedDelegate::DownstreamNode {
+            second["node_runs"][0]["agent_id"] = serde_json::json!(fixture.second_target_agent_id);
+            second["runtime_agent_ids_by_node"]["downstream-definition"] =
+                serde_json::json!(fixture.target_agent_id);
+        }
         restored["workflow_runs"].as_array_mut().unwrap().push(second);
         owned.session_store.write().restore_session(serde_json::from_value(restored).unwrap());
         owned.persist_workflow_runtime_session(session.id(), "shared_delegate_fixture").unwrap();

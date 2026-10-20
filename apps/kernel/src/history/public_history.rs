@@ -13,9 +13,10 @@ fn read_u64(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
 // identity; version 2 indexed streamed deltas and allowed unknown tools. The
 // Version 3 could misclassify worker MCP calls using colliding local run IDs.
 // The existing version fence removes those projections on upgrade.
-// Version 5 retires internal assessment turns and kernel instruction echoes,
-// preserving unrelated sanitized source rather than rebuilding from raw data.
-pub(crate) const PUBLIC_HISTORY_VERSION: u32 = 5;
+// Versions 5 and 6 retire internal assessment turns and kernel instruction
+// echoes (6 adds owner-resume), preserving unrelated sanitized source rather
+// than rebuilding from raw data.
+pub(crate) const PUBLIC_HISTORY_VERSION: u32 = 6;
 // Internal projection input only; never serialized into operational events.
 pub(crate) const PUBLIC_HISTORY_BATCH_REFS: &str = "_public_history_batch_refs";
 pub(crate) type PublicHistoryProjector =
@@ -896,13 +897,14 @@ pub(super) fn initialize_public_history(connection: &Connection) -> Result<(), D
         })
         .map_err(public_error)?;
     if version != PUBLIC_HISTORY_VERSION {
-        if version == 4 {
+        let retire_only = matches!(version, 4 | 5);
+        if retire_only {
             retire_internal_public_history(connection)?;
         }
         // Earlier versions lack trustworthy provenance. Never repopulate them
-        // from raw history; version 4 needs only the internal-turn retirement.
+        // from raw history; versions 4 and 5 need only the internal-turn retirement.
         let tx = connection.unchecked_transaction().map_err(public_error)?;
-        if version != 4 {
+        if !retire_only {
             tx.execute_batch("DELETE FROM public_history; DELETE FROM public_history_member; UPDATE public_history_revision SET revision=revision+1; UPDATE public_history_build SET cursor=0,complete=0,epoch=epoch+1;").map_err(public_error)?;
         }
         tx.execute(

@@ -1207,6 +1207,15 @@ fn public_history_nonmatching_stream_growth_still_restarts_cursor() {
 
 #[test]
 fn public_history_upgrade_retires_internal_turns_without_losing_public_answers() {
+    upgrade_retires_internal_turns_from_version(4);
+}
+
+#[test]
+fn public_history_version_five_upgrade_retires_owner_resume_echoes() {
+    upgrade_retires_internal_turns_from_version(5);
+}
+
+fn upgrade_retires_internal_turns_from_version(stored_version: u32) {
     // MP-08 / MP-10 / MP-11: old sanitized rows need the same visibility fence.
     let f = Fixture::new();
     let public = f.append("room", "owner public task");
@@ -1215,6 +1224,7 @@ fn public_history_upgrade_retires_internal_turns_without_losing_public_answers()
         (HistoryEventKind::UserPrompt, "goal-check-task-1", None),
         (HistoryEventKind::ProviderOutput, "goal-check-task-1", None),
         (HistoryEventKind::UserPrompt, "task-correction-task-1", None),
+        (HistoryEventKind::UserPrompt, "task-resume-task-1", None),
         (HistoryEventKind::UserPrompt, "agent-event-peer-1", None),
         (
             HistoryEventKind::ProviderOutput,
@@ -1253,7 +1263,10 @@ fn public_history_upgrade_retires_internal_turns_without_losing_public_answers()
     {
         let connection = f.store.connection.lock().unwrap();
         connection
-            .execute("UPDATE public_history_version SET version=4", [])
+            .execute(
+                "UPDATE public_history_version SET version=?1",
+                [stored_version],
+            )
             .unwrap();
         initialize_public_history(&connection).unwrap();
     }
