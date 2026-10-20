@@ -152,3 +152,19 @@ test('MP-08/MP-10/MP-11 native font failure metadata wakes and excludes a nonfai
   assert.deepEqual((await page.evaluate(()=>window.observer.drain())).font_failures,[],'an unloaded matching face could still supply glyphs, so failure is not certified');
  }finally{await browser.close()}
 });
+
+// MP-08/MP-10/MP-11 (r73): the viewer must fall through a font stack exactly where the native page did. Names a stack
+// lists that the native machine does not have travel as `absent`; installed families and the page's own faces never do.
+test('MP-08/MP-10/MP-11 the fonts op names stack families the native machine lacks', async () => {
+  const browser = await launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent(String.raw`<style>@font-face{font-family:"Page Face";src:url(data:font/woff2;base64,AA==)}</style><body style="font-family:-apple-system,'Chariox Absent One','Page Face',Arial,serif"><p style="font-family:'Chariox Absent Two',sans-serif">text</p><p style="font-family:'Evil\&quot;};x{',monospace">x</p></body>`);
+    await install(page);
+    const first = await page.evaluate(() => window.observer.snapshot());
+    const op = first.ops.find(entry => entry.op === 'fonts');
+    assert.deepEqual(op.absent, ['-apple-system', 'chariox absent one', 'chariox absent two']);
+    const again = await page.evaluate(() => window.observer.drain());
+    assert(!again.ops.some(entry => entry.op === 'fonts'), 'an unchanged absent set is not re-sent');
+  } finally { await browser.close(); }
+});

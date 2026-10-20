@@ -23,7 +23,7 @@ export type Mirror2Op =
   | { op: 'state'; id: string; state: Mirror2State }
   | { op: 'fragment'; id: string; fragment: string | null }
   /** Unreleased539: native loaded-font descriptors for this document; null while pending. */
-  | { op: 'fonts'; id: string; required: string[] | null }
+  | { op: 'fonts'; id: string; required: string[] | null; absent?: string[] }
 // A slice carries `offset`/`total` (base64 characters); slices of a key arrive in order.
 export type Mirror2Resource = { key: string; resource_id: string; mime_type: string; data_base64: string; offset?: number; total?: number }
 export type Mirror2Tile = { node_id: string; x: number; y: number; width: number; height: number; data_base64: string }

@@ -24,7 +24,7 @@ const OPS = {
   children: slot => ({ children: list => list.map(id(slot)), nodes: list => list.map(record => rebaseRecord(record, slot)) }),
   attr: slot => ({ name: same, value: same }), text: () => ({ text: same }), form: () => ({ form: same }), scroll: () => ({ scroll: same }), size: () => ({ size: same }), state: () => ({ state: same }),
   css: slot => ({ css: text => rebaseCss(text, slot) }), adopted: slot => ({ sheets: list => list.map(text => rebaseCss(text, slot)) }), res: slot => ({ res: key => key && rebaseKey(key, slot) }), fragment: () => ({ fragment: same }),
-  fonts: () => ({ required: same }),
+  fonts: () => ({ required: same, absent: same }),
 };
 const DELTA = slot => ({ ops: list => list.map(op => rebaseOp(op, slot)), changed: list => list.map(id(slot)), resources: list => list.map(d => ({ ...d, key: rebaseKey(d.key, slot), slot })),
   focused: value => value ? rebaseId(value, slot) : null, selection: value => value ? { ...value, anchor_id: rebaseId(value.anchor_id, slot), focus_id: rebaseId(value.focus_id, slot) } : null,
@@ -205,7 +205,7 @@ export class MirrorFrames {
       try {
         const origin = await this.mirror.evaluate(parent, `${parent.ref}.frameOrigin(${JSON.stringify(owner)})`);
         const boxes = await this.mirror.evaluate(entry.child, `${entry.child.ref}.opaqueBoxes()`);
-        for (const { id, box, distorted, tag } of boxes) out.push({ id: rebaseId(id, entry.slot), box: [box[0] + origin[0], box[1] + origin[1], box[2], box[3]], ...(distorted ? { distorted, tag } : {}) });
+        for (const { id, box, distorted, tag } of boxes) out.push({ id: rebaseId(id, entry.slot), box: [origin[0] + (origin[2] ?? 1) * box[0], origin[1] + (origin[3] ?? 1) * box[1], (origin[2] ?? 1) * box[2], (origin[3] ?? 1) * box[3]], ...(distorted ? { distorted, tag } : {}) });
       } catch {}
     }
     return out;

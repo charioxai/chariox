@@ -177,7 +177,8 @@ const SERIALIZER = String.raw`const lossy=/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;const
 export class Mirror2 {
   constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); }
   // MP-08/MP-10/MP-11: older v2 viewers never receive an unknown operation.
-  viewerOps(stream, ops) { return stream.fontRequirements === true ? ops : ops.filter(op => op.op !== 'fonts'); }
+  // `absent` (protocol 567) only reaches a viewer that asked for it: older viewers refuse unknown op fields.
+  viewerOps(stream, ops) { return stream.fontRequirements === true ? stream.fontAbsent === true ? ops : ops.map(op => op.op === 'fonts' && op.absent ? { op: op.op, id: op.id, required: op.required } : op) : ops.filter(op => op.op !== 'fonts'); }
   parentWorld(stream) { return stream.world; }
   async world(tab, stream, patience) {
     const targetAt = timestamp();
@@ -920,9 +921,15 @@ export class Mirror2 {
       const entry = frameOf(action.node_id);
       let at, local = null;
       if (entry) {
-        local = await retryOffscreen(() => inFrame(entry, `${m}.point(${JSON.stringify({ node_id: localId(action.node_id), x: action.x, y: action.y })})`));
+        const localAt = () => inFrame(entry, `${m}.point(${JSON.stringify({ node_id: localId(action.node_id), x: action.x, y: action.y })})`);
+        try { local = await retryOffscreen(localAt); } catch (error) {
+          // Below the frame's own viewport (the viewer scrolled ahead inside it): scroll the frame to the node, then aim again.
+          if (error?.mirrorReason !== 'offscreen_node') throw error;
+          await inFrame(entry, `${m}.reveal(${JSON.stringify({ node_id: localId(action.node_id) })})`);
+          local = await localAt();
+        }
         const origin = await call(`${m}.frameOrigin(${JSON.stringify(entry.owner)})`);
-        at = { x: Math.floor(local.x + origin[0]), y: Math.floor(local.y + origin[1]) };
+        at = { x: Math.floor(origin[0] + (origin[2] ?? 1) * local.x), y: Math.floor(origin[1] + (origin[3] ?? 1) * local.y) };
         if (at.x < 0 || at.y < 0 || at.x >= 1280 || at.y >= 800) throw new Error('MP-11: changed mirror input target');
       } else {
         const pointAt = () => call(`${m}.point(${JSON.stringify({ node_id: action.node_id, x: action.x, y: action.y })})`);
