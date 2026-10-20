@@ -76,7 +76,7 @@ pub use peer_client::send_peer_request_via_relay;
 pub(crate) use peer_client::send_peer_request_via_temporary_connection_with_optional_timeout;
 pub(crate) use peer_client::{
     enqueue_peer_request_via_connected_relay_authorized,
-    enqueue_peer_request_via_connected_relay_with_timeout, managed_slice_home_public_key,
+    enqueue_peer_request_via_connected_relay_with_timeout,
     send_peer_request_to_known_kernel_via_relay,
     send_peer_request_to_known_kernel_via_relay_with_timeout,
     send_peer_request_via_connected_relay_authenticated,

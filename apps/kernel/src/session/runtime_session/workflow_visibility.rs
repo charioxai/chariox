@@ -5,6 +5,7 @@ use crate::error::DaemonError;
 use crate::session::WorkflowRun;
 
 impl RuntimeSession {
+    #[cfg(test)]
     pub(crate) fn workflow_run_visible_for_user(
         &self,
         run: &WorkflowRun,

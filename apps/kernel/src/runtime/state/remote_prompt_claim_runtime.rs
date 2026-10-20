@@ -25,9 +25,11 @@ pub(super) type RemotePromptProjectionDrainClaimStore =
 // Worker projection replies must reach the transcript in the order the worker produced them.
 // A drain claim only stops duplicate poll loops; the output pump and receipt reconciliation also
 // drain, so each request-and-apply runs under its agent's serial lock.
+type RemotePromptProjectionSerials = BTreeMap<(String, String), Arc<tokio::sync::Mutex<()>>>;
+
 #[derive(Default)]
 pub(super) struct RemotePromptProjectionSerialStore(
-    std::sync::Mutex<BTreeMap<(String, String), Arc<tokio::sync::Mutex<()>>>>,
+    std::sync::Mutex<RemotePromptProjectionSerials>,
 );
 
 impl RemotePromptProjectionSerialStore {

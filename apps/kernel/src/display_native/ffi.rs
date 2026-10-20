@@ -81,7 +81,6 @@ extern "C" {
         height: i32,
         automatic: i32,
     ) -> *mut c_void;
-    pub(super) fn cx_capture_open(owner: libc::c_ulong, width: i32, height: i32) -> *mut c_void;
     pub(super) fn cx_capture_open_region(
         owner: libc::c_ulong,
         window_width: i32,
@@ -160,6 +159,7 @@ extern "C" {
     pub(super) fn cx_codec_openh264(c: *mut c_void) -> i32;
     pub(super) fn cx_codec_reduced(c: *mut c_void) -> i32;
     pub(super) fn cx_codec_unprotected(c: *mut c_void, unprotected: i32);
+    #[cfg(test)]
     pub(super) fn cx_codec_guard_decodes(c: *mut c_void) -> u64;
     pub(super) fn cx_codec_rate(c: *mut c_void, bitrate: i32) -> i32;
     pub(super) fn cx_codec_cpu(c: *mut c_void, out: *mut f64);

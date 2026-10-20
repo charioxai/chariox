@@ -448,9 +448,7 @@ impl ProviderOutputFanout {
 
     /// Returns the history sequence of the stored row.
     fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) -> Option<u64> {
-        let Some(entry) = bounded_history_entry(entry) else {
-            return None;
-        };
+        let entry = bounded_history_entry(entry)?;
         if let Err(error) = self.session_store.get_session(session_id) {
             crate::logging::warn_with_fields(
                 "daemon.history",

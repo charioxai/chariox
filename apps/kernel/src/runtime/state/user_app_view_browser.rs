@@ -327,7 +327,7 @@ impl KernelRuntimeState {
             .app_control()
             .active_app_lease(owner, &binding.installation)
             .map(|lease| lease.catalog().generation());
-        if !running.is_some_and(|generation| generation > binding.generation) {
+        if running.is_none_or(|generation| generation <= binding.generation) {
             return;
         }
         let Ok((current, frontend)) = self.user_app_frontend(owner, &binding.installation).await
