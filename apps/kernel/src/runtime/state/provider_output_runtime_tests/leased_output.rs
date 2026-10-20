@@ -160,7 +160,14 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
                     .map(|chunk| String::from_utf8_lossy(&chunk.bytes).into_owned()),
             );
         }
-        if !projected_errors.is_empty() || tokio::time::Instant::now() >= deadline {
+        let settled = runtime
+            .owned
+            .session_store
+            .get_session(&leased.backing_session_id)
+            .unwrap()
+            .active_prompt_for_agent(&leased.backing_agent_id)
+            .is_none();
+        if (!projected_errors.is_empty() && settled) || tokio::time::Instant::now() >= deadline {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;

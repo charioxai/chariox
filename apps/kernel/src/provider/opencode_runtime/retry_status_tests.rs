@@ -262,8 +262,24 @@ fn status_failure_preserves_drained_text_and_tool_output_through_http_recovery()
             })
             .unwrap();
     }
-    let first = drain_opencode_events(&test_run(), &mut state, None)
+    let mut first = drain_opencode_events(&test_run(), &mut state, None)
         .expect("failed status HTTP must not discard consumed SSE output");
+    // Ready output may be split at the bounded drain's render budget.
+    for _ in 0..message.parts.len() {
+        if first
+            .chunks
+            .iter()
+            .any(|chunk| chunk.kind == TerminalOutputKind::ProviderTool)
+        {
+            break;
+        }
+        let next = drain_opencode_events(&test_run(), &mut state, None)
+            .expect("remaining ready SSE output must be delivered before quiet HTTP polling");
+        assert!(!next.prompt_completed);
+        first.chunks.extend(next.chunks);
+        first.completions.extend(next.completions);
+        first.notices.extend(next.notices);
+    }
     assert!(!first.prompt_completed);
     assert!(
         first.notices.is_empty(),
