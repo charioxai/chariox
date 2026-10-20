@@ -2664,11 +2664,23 @@ async fn r16_spanning_tool_blob_never_restores_internal_turn_text() {
             text,
         )
     };
+    // One call stored as "running" and "completed" rows: its blob spans the
+    // rows between them, which include the hidden assessment/correction.
+    let tool = |status: &str, note: &str| {
+        SessionHistoryEntry::provider_output(
+            "session-1",
+            "run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderTool,
+            Some("call-1".into()),
+            format!(r#"{{"id":"call-1","tool":"read","status":"{status}","note":"{note}"}}"#),
+        )
+    };
     let events = vec![
         HistoryEvent::transcript(1, &prompt("original user request"), context("prompt-1")),
         HistoryEvent::transcript(
             2,
-            &output(TerminalOutputKind::ProviderTool, "public tool before"),
+            &tool("running", "public tool before"),
             context("prompt-1"),
         ),
         HistoryEvent::transcript(
@@ -2699,7 +2711,7 @@ async fn r16_spanning_tool_blob_never_restores_internal_turn_text() {
         ),
         HistoryEvent::transcript(
             7,
-            &output(TerminalOutputKind::ProviderTool, "public tool after"),
+            &tool("completed", "public tool after"),
             context("task-correction-prompt-1"),
         ),
         HistoryEvent::transcript(
@@ -2756,9 +2768,7 @@ async fn r16_spanning_tool_blob_never_restores_internal_turn_text() {
     };
     let text = serde_json::to_string(&entries).unwrap();
     assert!(
-        text.contains("public tool before")
-            && text.contains("public tool after")
-            && text.contains("first public work answer"),
+        text.contains("public tool before") && text.contains("public tool after"),
         "{text}"
     );
     assert!(

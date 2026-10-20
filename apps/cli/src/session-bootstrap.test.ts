@@ -898,6 +898,7 @@ test("scoped bootstrap renders its attachment before a protected provider launch
     assert.equal(result.binding?.session.id, "room")
     assert.ok(result.deferred?.providerLaunch)
     void result.deferred.providerLaunch.start()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
     assert.equal(launched, true)
   }
 })
