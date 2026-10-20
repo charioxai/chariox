@@ -1225,7 +1225,8 @@ async fn idle_claude_native_tui_projects_startup_terminal_without_history() {
     let _ = app.pty_mut().remove_process(run.id());
 }
 
-// MP-08 / MP-10 / MP-11: a leased run uses the home account authority.
+// MP-08 / MP-10 / MP-11: observed account usage is advisory, so a leased run's
+// home account never has to be registered on the worker.
 #[tokio::test]
 async fn leased_output_usage_does_not_require_a_worker_account_registration() {
     for leased in [false, true] {
@@ -1281,20 +1282,14 @@ async fn leased_output_usage_does_not_require_a_worker_account_registration() {
         let result = runtime
             .apply_owned_structured_output_batch(session.id(), run.id(), Vec::new(), batch)
             .await;
-        if leased {
-            result.expect(
-                "home-owned account usage must not prevent leased native output or settlement",
-            );
-            let run = runtime.owned.provider_store.get_run(run.id()).expect("run");
-            assert_eq!(
-                run.resume_state().claude_session_id(),
-                Some("worker-native")
-            );
-        } else {
-            assert!(result
-                .expect_err("ordinary local runs still require a registered local account")
-                .to_string()
-                .contains("home-claude-only"));
-        }
+        // Observed usage is advisory metadata: an unregistered profile never
+        // drops the run's native output, leased or ordinary.
+        result.expect("unregistered account usage must not prevent native output or settlement");
+        let run = runtime.owned.provider_store.get_run(run.id()).expect("run");
+        assert_eq!(
+            run.resume_state().claude_session_id(),
+            Some("worker-native"),
+            "leased: {leased}"
+        );
     }
 }
