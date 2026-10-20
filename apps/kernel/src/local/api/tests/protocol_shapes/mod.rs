@@ -105,3 +105,5 @@ mod screenshot;
 
 mod relay_transport;
 mod ssh_machine;
+
+mod waiting_room_workspace;

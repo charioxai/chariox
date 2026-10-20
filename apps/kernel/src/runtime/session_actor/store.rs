@@ -626,6 +626,22 @@ impl SessionRuntimeStore {
         (Ok(LocalDaemonResponse::ProjectsListed { projects }), None)
     }
 
+    pub(super) async fn set_project_pinned(
+        &self,
+        request: crate::local::SetProjectPinnedRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .set_project_pinned(&request.project_id, request.pinned, &caller_user_id)
+            .await
+            .map(|project| LocalDaemonResponse::ProjectPinned { project });
+        (result, None)
+    }
+
     pub(super) async fn rename_project(
         &self,
         request: RenameProjectRequest,

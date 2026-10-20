@@ -288,3 +288,7 @@ export function abortMetaagentTaskRequest(
     },
   }
 }
+
+export function setProjectPinnedRequest(projectId: string, pinned: boolean) {
+  return { SetProjectPinned: { project_id: projectId, pinned } }
+}

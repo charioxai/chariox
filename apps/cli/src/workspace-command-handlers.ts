@@ -1,3 +1,4 @@
+import { workspaceLiveSyncUiEnabled } from "@chariox/kernel-client/workspace-live-sync-mode"
 import type {
   RuntimeSession,
   WorkspaceLinkDefinition,
@@ -64,6 +65,7 @@ export async function handleWorkspaceSlashCommand(
 ): Promise<void> {
   const [resource, action, ...args] = command.args
   if (resource === "sync") {
+    if (!workspaceLiveSyncUiEnabled) { deps.flashFooter("This command is unavailable", "error"); return } // MP-08 OWNER-20: discontinued.
     await handleWorkspaceSyncCommand(deps, action, args)
     return
   }
@@ -216,7 +218,7 @@ async function handleWorkspaceSyncCommand(
   if (action === "link") {
     await attachWorkspaceLink(deps, args[0], args[1], {
       usage: "/workspace sync link <name-or-id> [repo-root]",
-      success: (repoRoot, link) => `linked ${repoRoot} for workspace live sync via ${link.name}; next: /workspace sync managed, or /workspace sync tracked on workers without managed write fencing`,
+      success: (repoRoot, link) => `linked ${repoRoot} for workspace live sync via ${link.name}`,
     })
     return
   }

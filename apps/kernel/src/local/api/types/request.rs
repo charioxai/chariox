@@ -93,6 +93,7 @@ pub enum LocalDaemonRequest {
     CommitEnvironmentImport(CommitEnvironmentImportRequest),
     GetProjectEnvironmentManifest(GetProjectEnvironmentManifestRequest),
     AdjustProjectEnvironment(AdjustProjectEnvironmentRequest),
+    SetProjectPinned(SetProjectPinnedRequest),
     RenameProject(RenameProjectRequest),
     UpdateProjectWorkspaces(UpdateProjectWorkspacesRequest),
     ArchiveProject(ArchiveProjectRequest),

@@ -34,7 +34,6 @@ test("waiting room start rows render configuration labels and join action", () =
     "effort",
     "workspace",
     "worktree",
-    "live-sync",
     "collaborators",
     "slice",
     "managed-development",
@@ -48,7 +47,7 @@ test("waiting room start rows render configuration labels and join action", () =
   assert.equal(rows.find((row) => row.id === "model")?.value, "gpt-5.4")
   assert.equal(rows.find((row) => row.id === "effort")?.value, "High")
   assert.equal(rows.find((row) => row.id === "workspace")?.value, "/workspace")
-  assert.equal(rows.find((row) => row.id === "live-sync")?.value, "off (default; all repositories unrestricted)")
+  assert.equal(rows.find((row) => row.id === "live-sync"), undefined)
   assert.equal(rows.find((row) => row.id === "collaborators")?.value, "after session start")
   assert.equal(rows.find((row) => row.id === "slice")?.value, "linux-dev (running, headless, 0 agents, auth missing codex)")
   assert.equal(rows.find((row) => row.id === "managed-development")?.value, "Empty")
@@ -124,7 +123,7 @@ test("waiting room start rows render loading placeholders before inventory arriv
   assert.equal(rows.find((row) => row.id === "effort")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "workspace")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "worktree")?.value, "loading..")
-  assert.equal(rows.find((row) => row.id === "live-sync")?.value, "off (default; all repositories unrestricted)")
+  assert.equal(rows.find((row) => row.id === "live-sync"), undefined)
   assert.equal(rows.find((row) => row.id === "collaborators")?.value, "after session start")
   assert.equal(rows.find((row) => row.id === "slice")?.value, "loading..")
   assert.equal(rows.find((row) => row.id === "join-header")?.value, "loading..")
@@ -150,7 +149,7 @@ test("waiting room start rows hint cloud collaborator setup when cloud-linked", 
   assert.equal(rows.find((row) => row.id === "collaborators")?.focused, true)
 })
 
-test("waiting room start rows explain managed and tracked live sync modes", () => {
+test("MP-08 OWNER-20 start rows hide discontinued sync modes", () => {
   const catalog = fallbackProviderCatalog()
   const modelOptions = catalogModelOptions(catalog, "opencode")
 
@@ -188,9 +187,9 @@ test("waiting room start rows explain managed and tracked live sync modes", () =
     },
   )
 
-  assert.equal(offRows.find((row) => row.id === "live-sync")?.value, "off (default; all repositories unrestricted)")
-  assert.equal(managedRows.find((row) => row.id === "live-sync")?.value, "managed (selected workspace/worktree only; other repositories unrestricted)")
-  assert.equal(trackedRows.find((row) => row.id === "live-sync")?.value, "tracked (turn-end; selected workspace/worktree only; other repositories unrestricted)")
+  assert.equal(offRows.find((row) => row.id === "live-sync"), undefined)
+  assert.equal(managedRows.find((row) => row.id === "live-sync"), undefined)
+  assert.equal(trackedRows.find((row) => row.id === "live-sync"), undefined)
 })
 
 test("waiting room start rows mark provider choices from local fallback catalog", () => {

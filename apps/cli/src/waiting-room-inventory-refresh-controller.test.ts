@@ -445,6 +445,18 @@ test("waiting room inventory row patch merges project changes and removals", asy
   assert.deepEqual(harness.projects().map(({ id, name }) => [id, name]), [["project-1", "Web"]])
 })
 
+test("MP-08 OWNER-15 pin reordering keeps focus on the same project", async () => {
+  const older = { ...project("older", "Older"), last_session_activity_at_ms: 1 }
+  const recent = { ...project("recent", "Recent"), last_session_activity_at_ms: 2 }
+  const harness = createHarness({ snapshots: [inventory("v1", { projects: [older, recent] })] })
+  await harness.controller.refreshNow()
+  harness.focusProject(1)
+  harness.controller.applyRowsChanged({ inventoryVersion: "v2", structuralVersion: "v2", activityRevision: "v2", sessions: [], removedSessionIds: [], projects: [{ ...older, pinned: true }] })
+  assert.equal(harness.waitingRoomState().projectIndex, 0)
+  harness.controller.applyRowsChanged({ inventoryVersion: "v3", structuralVersion: "v3", activityRevision: "v3", sessions: [], removedSessionIds: [], projects: [older] })
+  assert.equal(harness.waitingRoomState().projectIndex, 1)
+})
+
 test("MP-08/MP-10 cold row patches cannot skip full snapshot hydration", async () => {
   const harness = createHarness({
     snapshots: [inventory("v2", {
@@ -801,6 +813,8 @@ function createHarness(options: {
 
   return {
     controller,
+    focusProject: (projectIndex: number) => { waitingRoomState = { ...waitingRoomState, focus: "project-entry", projectIndex } },
+    waitingRoomState: () => waitingRoomState,
     inventoryCalls: () => inventoryCalls,
     inventoryStatus: () => inventoryStatus,
     availableSessions: () => availableSessions,

@@ -801,6 +801,7 @@ fn provider_account_profile() -> crate::account_profile::ProviderAccountProfile 
 
 fn session_summary(id: &str, last_used_at_ms: u64) -> WaitingRoomPublicSessionSummary {
     WaitingRoomPublicSessionSummary {
+        repository_state: None,
         id: id.to_string(),
         project_id: "project-a".to_string(),
         alias: None,
@@ -825,6 +826,7 @@ fn session_summary(id: &str, last_used_at_ms: u64) -> WaitingRoomPublicSessionSu
 
 fn project_summary(id: &str, name: &str) -> crate::local::WaitingRoomPublicProjectSummary {
     crate::local::WaitingRoomPublicProjectSummary {
+        pinned: false,
         id: id.to_string(),
         owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
         workspace_id: "workspace-1".to_string(),

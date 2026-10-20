@@ -206,6 +206,9 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::ListProjects(request) => {
                 Box::pin(async move { self.store.list_projects(request, caller_user_id).await })
             }
+            LocalDaemonRequest::SetProjectPinned(request) => {
+                self.store.set_project_pinned(request, caller_user_id).await
+            }
             LocalDaemonRequest::RenameProject(request) => {
                 Box::pin(async move { self.store.rename_project(request, caller_user_id).await })
             }
