@@ -32,7 +32,8 @@ export class DesktopDisplay {
     const binding=this.binding(command);
     // MP-08/MP-10: the kernel's native x264 encoder serves H.264 offers first.
     const codec=nativeDesktopWorker()&&command.codecs?.includes('avc1.420033')?'avc1.420033':command.codecs?.find(value=>['avc1.420033','vp8','vp09.00.10.08'].includes(value));
-    if(command._agent_input||!codec||![1,2].includes(command.device_scale_factor)||!Number.isSafeInteger(command.bitrate)||command.bitrate<500000||command.bitrate>20000000||this.host.displays.size>=8)throw new UserDomainRefusal('not_granted');
+    // MP-08/MP-11: only the kernel names the owner (typed client commands cannot carry it); every other audience reads the masked source.
+    if(command._agent_input||![undefined,'owner'].includes(command.audience)||!codec||![1,2].includes(command.device_scale_factor)||!Number.isSafeInteger(command.bitrate)||command.bitrate<500000||command.bitrate>20000000||this.host.displays.size>=8)throw new UserDomainRefusal('not_granted');
     await this.ensureSource();
     if(this.host.chromium.desktop?.binding()!==binding)throw new UserDomainRefusal('stale_reference');
     const id='host-display-'+randomUUID();
@@ -41,6 +42,7 @@ export class DesktopDisplay {
       css_width:binding.width/command.device_scale_factor,css_height:binding.height/command.device_scale_factor,
       dependencies:command.codecs.includes('chariox-video-dependencies-v1'),
       pngBootstrap:command.codecs.includes('png'),stripes:command.codecs.includes('chariox-stripes-v1')&&['avc1.420033','vp8'].includes(codec),relay_binary:command.codecs.includes('chariox-relay-binary-v96')},{timing:this.host.timing});
+    stream.audience=command.audience??'masked';
     this.host.displays.set(id,stream);this.host.armDisplayExpiry(stream);
     return {generation:this.host.generation,subscription_id:id,codec,bitrate:command.bitrate,device_scale_factor:command.device_scale_factor,source:{kind:'desktop',surface_id:binding.surface_id,generation:binding.generation,width:binding.width,height:binding.height}};
   }
@@ -53,9 +55,9 @@ export class DesktopDisplay {
     stream.expires=Date.now()+60000;this.host.armDisplayExpiry(stream);
     if(command.op==='display_attach')return {generation:this.host.generation,attached:true};
     if(command.op!=='screenshot'||!stream.acceptsCredit(command.after_sequence))throw new UserDomainRefusal('stale_reference');
-    const policy=this.host.protection,source=await this.ensureSource();
+    const policy=this.host.protection,source=await this.ensureSource(),feed=stream.audience==='owner'?source.ownerFeed():source;
     const lifetimeValid=()=>this.host.protection===policy&&source.valid()&&this.host.displays.get(stream.subscription_id)===stream&&this.host.chromium.desktop?.binding()===binding;
-    if(!stream.producer){stream.producer=this.createProducer(source,stream.encoder,{codec:stream.codec,bitrate:stream.bitrate,independent:!stream.dependencies,stripes:stream.stripes,bootstrapExact:stream.pngBootstrap,valid:lifetimeValid,timing:this.host.timing});}
+    if(!stream.producer){stream.producer=this.createProducer(feed,stream.encoder,{codec:stream.codec,bitrate:stream.bitrate,independent:!stream.dependencies,stripes:stream.stripes,bootstrapExact:stream.pngBootstrap,valid:lifetimeValid,timing:this.host.timing});}
     const valid=()=>!signal?.aborted&&lifetimeValid();
     // MP-08/MP-10: a protocol 475 push credit may ask for a key and waits
     // briefly for the next frame (the kernel pump paces the stream).
@@ -67,10 +69,10 @@ export class DesktopDisplay {
       if(!signal?.aborted&&this.host.displays.get(stream.subscription_id)===stream&&this.host.chromium.desktop?.binding()===binding)return {generation:this.host.generation,frame_sent:false,display_frame:null};
       throw new UserDomainRefusal('not_granted');
     }
-    const encoded=stream.producer.take(),sample=encoded??this.refine(stream,source,policy,lifetimeValid);
+    const encoded=stream.producer.take(),sample=encoded??this.refine(stream,feed,policy,lifetimeValid);
     if(!sample)return {generation:this.host.generation,frame_sent:false,display_frame:null};
     // A newer published sample abandons a link-paced repair batch (motion first).
-    const published=source.sample(),current=encoded?valid:()=>valid()&&source.sample()===published;
+    const published=feed.sample(),current=encoded?valid:()=>valid()&&feed.sample()===published;
     // MP-08/MP-10: the shared kernel ACK pump bounds pushed bytes. Legacy
     // display credits keep the stream's byte pacing, as Browser does.
     const frame=await stream.frame({...sample,generation:this.host.generation,push_delivery:Boolean(command.push)},binding.generation,command.after_sequence,async()=>current(),current);

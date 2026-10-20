@@ -1,6 +1,7 @@
 """MP-08/MP-11: desktop protection oracle answers masks only for complete snapshots."""
 import importlib.util
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 spec = importlib.util.spec_from_file_location('kernel_desktop_protection', Path(__file__).with_name('kernel-desktop-protection.py'))
 module = importlib.util.module_from_spec(spec)
@@ -19,6 +20,33 @@ class OracleTests(unittest.TestCase):
         for change in ({'complete': False}, {'available': False}):
             tree = {'available': True, 'complete': True, 'protected': False, 'masks': [], **change}
             self.assertIsNone(module.answer(REQUEST, lambda *args: tree)['masks'], change)
+
+    def test_an_unplaceable_filled_window_answers_no_masks_instead_of_ending_the_oracle(self):
+        def unplaceable(*args):
+            raise ValueError('fill desktop placement unavailable')
+        answer = module.answer(REQUEST, unplaceable)
+        self.assertIsNone(answer['masks'])
+        self.assertEqual(answer['digest'], module.answer(REQUEST, unplaceable)['digest'])
+
+    def test_an_unplaced_filled_window_is_covered_whole_after_a_short_grace(self):
+        tree = {'available': True, 'complete': True, 'protected': False, 'masks': [[0, 0, 800, 600]], 'nodes': [], 'unplaced': True}
+        module.unplaced_since = None
+        with patch.object(module, 'UNPLACED_GRACE', 60):
+            self.assertIsNone(module.answer(REQUEST, lambda *args: dict(tree))['masks'], 'withheld while the placement settles')
+        with patch.object(module, 'UNPLACED_GRACE', 0):
+            self.assertEqual(module.answer(REQUEST, lambda *args: dict(tree))['masks'], [[0, 0, 800, 600]], 'then the window is covered, never frozen')
+        placed = {**tree, 'unplaced': False, 'masks': [[1, 2, 3, 4]]}
+        self.assertEqual(module.answer(REQUEST, lambda *args: placed)['masks'], [[1, 2, 3, 4]])
+        self.assertIsNone(module.unplaced_since, 'a placed field restarts the grace')
+
+    def test_the_fill_flag_reaches_the_snapshot_and_is_a_boolean(self):
+        seen = []
+        tree = {'available': True, 'complete': True, 'protected': False, 'masks': [], 'nodes': []}
+        module.answer({**REQUEST, 'fill': True}, lambda *args: seen.append(args) or tree)
+        module.answer(REQUEST, lambda *args: seen.append(args) or tree)
+        self.assertEqual([args[4] for args in seen], [True, False])
+        with self.assertRaises(ValueError):
+            module.scope({**REQUEST, 'fill': 1})
 
     def test_native_password_dots_preserve_only_local_saved_value_masks(self):
         for masks in ([], [[10, 20, 30, 40]]):

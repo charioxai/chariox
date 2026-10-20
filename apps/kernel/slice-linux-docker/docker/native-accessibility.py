@@ -140,11 +140,16 @@ def native_frame_scale(bounds, frame, client):
     return None
 
 
-def capture_snapshot(processes, browser_processes=None, browser_protection=None, values=()):
-    """MP-08/MP-11: capture only live Vault fill fields; input uses snapshot()."""
+def capture_snapshot(processes, browser_processes=None, browser_protection=None, values=(), fill=None):
+    """MP-08/MP-11: capture only live Vault fill fields; input uses snapshot().
+
+    `fill` is given only by the desktop stream oracle (True while a Vault fill is tracked): there a kernel-browser window whose
+    filled field cannot be placed (no adopted measurement yet, no document pairing) is reported `unplaced` with the whole
+    window as its mask, so a viewer sees a covered window, never a stale picture. Other callers refuse such a capture."""
     masks = _fills.regions()
     pages = [page for page in (browser_protection or {}).get('pages', []) if page.get('regions')]
-    if pages:
+    unplaced = False
+    if pages or fill:
         owned = {item['pid'] for item in browser_processes or () if alive(item)}
         try:
             from Xlib import X, display
@@ -163,15 +168,21 @@ def capture_snapshot(processes, browser_processes=None, browser_protection=None,
                 if pid not in owned: continue
                 geometry = window.get_geometry(); origin = root.translate_coords(window, 0, 0)
                 client = [origin.x, origin.y, geometry.width, geometry.height]
+                frame = frame_rect(root, window)
                 matching = [page for page in unmatched if _protection._screen_scale(page.get('window'), client)]
-                if not matching: continue
-                placed = _protection.window_masks({'pages': matching}, client, frame_insets(connection, window))
-                if placed is None: raise ValueError('fill desktop placement unavailable')
+                if not matching and pages: continue
+                placed = _protection.window_masks({'pages': matching}, client, frame_insets(connection, window)) if matching else None
+                if placed is None:
+                    if fill is None: raise ValueError('fill desktop placement unavailable')
+                    placed = [frame]; unplaced = True
                 masks.extend(part for part in (visible_rect(box, screen) for box in placed) if part)
                 unmatched = [page for page in unmatched if page not in matching]
-            if unmatched: raise ValueError('fill desktop window unavailable')
+            if unmatched:
+                if fill is None: raise ValueError('fill desktop window unavailable')
+                # A measured page without a window to place it in: the whole desktop is covered.
+                masks.append(visible_rect([0, 0, screen.width_in_pixels, screen.height_in_pixels], screen)); unplaced = True
         finally: connection.close()
-    return {'available': True, 'complete': True, 'protected': False, 'masks': masks, 'nodes': []}
+    return {'available': True, 'complete': True, 'protected': False, 'masks': masks, 'nodes': [], 'unplaced': unplaced}
 
 
 def snapshot(processes, browser_processes=None, browser_protection=None, values=()):

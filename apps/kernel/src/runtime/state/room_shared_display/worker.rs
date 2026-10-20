@@ -1,5 +1,18 @@
 //! MP-08/MP-10/MP-11: exact bound-worker capture and viewer-key sealing.
 use super::*;
+fn display_subscribe_params(
+    lease_id: &str,
+    offer: RoomDisplayOffer,
+    viewport: &crate::session::CanonicalViewport,
+    target: RoomDisplayTarget,
+    audience: RoomDisplayAudience,
+) -> serde_json::Value {
+    let mut params = serde_json::json!({"op":"display_subscribe","lease_id":lease_id,"observed_by":lease_id,"codecs":offer.codecs,"bitrate":offer.bitrate,"device_scale_factor":offer.device_scale_factor,"viewport":viewport,"target":target});
+    if audience == RoomDisplayAudience::Owner {
+        params["audience"] = "owner".into();
+    }
+    params
+}
 impl KernelRuntimeState {
     async fn room_producer_request(
         &self,
@@ -33,6 +46,7 @@ impl KernelRuntimeState {
         slice_id: &str,
         lease_id: &str,
         viewer_public_key: String,
+        audience: RoomDisplayAudience,
         offer: RoomDisplayOffer,
         viewport: crate::session::CanonicalViewport,
         target: RoomDisplayTarget,
@@ -83,7 +97,12 @@ impl KernelRuntimeState {
             .computer_input_executions
             .capture_guard()
             .map_err(|_| error())?;
-        let result=self.room_producer_request(session_id,serde_json::json!({"op":"display_subscribe","lease_id":lease_id,"observed_by":lease_id,"codecs":offer.codecs,"bitrate":offer.bitrate,"device_scale_factor":offer.device_scale_factor,"viewport":viewport,"target":target})).await?;
+        let result = self
+            .room_producer_request(
+                session_id,
+                display_subscribe_params(lease_id, offer, &viewport, target, audience),
+            )
+            .await?;
         let binding: RoomDisplayBinding = serde_json::from_value(result).map_err(|_| error())?;
         if binding.subscription_id != lease_id
             || binding.source.kind != "desktop"
@@ -236,6 +255,39 @@ impl KernelRuntimeState {
                 Ok(RoomDisplayResult::Settled {})
             }
             _ => Ok(RoomDisplayResult::Settled {}),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::room_shared_display::RoomDisplayAudience;
+    #[test]
+    fn mp11_room_display_preserves_owner_and_invited_viewer_audiences() {
+        for audience in [RoomDisplayAudience::Owner, RoomDisplayAudience::Viewer] {
+            let params = display_subscribe_params(
+                "room-display-00000000000000000000000000000001",
+                RoomDisplayOffer {
+                    codecs: vec!["avc1.420033".into()],
+                    bitrate: 8000000,
+                    device_scale_factor: 1,
+                    resume_hint: None,
+                },
+                &crate::session::CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap(),
+                RoomDisplayTarget::Desktop {
+                    surface_id: "slice:slice-1".into(),
+                    generation: "native-one".into(),
+                },
+                audience,
+            );
+            match audience {
+                RoomDisplayAudience::Owner => assert_eq!(params["audience"], "owner"),
+                RoomDisplayAudience::Viewer => assert!(
+                    params.get("audience").is_none(),
+                    "MP-11 invited viewers use the masked default"
+                ),
+            }
         }
     }
 }

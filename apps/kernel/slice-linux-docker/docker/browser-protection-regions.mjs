@@ -179,7 +179,9 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
   const lifecycles=new Map(targets.map(target=>[fillKey(target),filling.get(connection)?.get(fillKey(target))]));
   // MP-11: preserve the pending state observed before awaiting the snapshot.
   const pendingAtSnapshot=new Map([...lifecycles].map(([key,lifecycle])=>[key,lifecycle?.pending]));
-  if(!targets.length)return page;
+  // Every known Vault value, also of targets that retired: a page can move the value into another field.
+  const known=new Set((policy.targets??[]).filter(t=>typeof t.value_hash==='string').map(t=>t.value_hash)),exact=[];
+  if(!known.size)return page;
   await withBrowserFrames(connection,sessionId,targetId,top.frame.loaderId,async frames=>{
     const seen=new Set(),transforms=new Map([[frames[0],point=>point]]);
     const toViewport=async entry=>{
@@ -208,10 +210,61 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
       await assertFramePaint(parent,parentFrame);
       checkedFramePaint.add(frame.id);
     };
+    // The covered box of one field: shared by the recorded fill target and by exact-value matches.
+    const maskField=async(entry,raw,frame,frameId,backendNodeId,state)=>{
+      // MP-08/MP-11: DOMSnapshot includes retained non-rendered fields. Only
+      // confirmed absence of layout for the entire field subtree permits
+      // skipping box lookup; keep identity tracking so reveal remasks it.
+      const nodeIndex=raw.nodes.backendNodeId.indexOf(backendNodeId),parents=raw.nodes.parentIndex;
+      if(!Array.isArray(raw.layout?.nodeIndex)||!Array.isArray(parents))throw Error('MP-11: fill layout unavailable');
+      const rendered=raw.layout.nodeIndex.some(index=>{
+        for(let steps=0;index>=0&&steps<parents.length;steps++,index=parents[index])if(index===nodeIndex)return true;
+        return false;
+      });
+      if(!rendered)return;
+      // Box and Range geometry cannot prove filter or reflection ink.
+      // Include composed ancestors and frame owners, for both field kinds.
+      if(state.unprovedPaint)throw Error('MP-11: fill paint coverage unavailable');
+      await assertFramePaint(entry,frame);
+      // Native text controls have the same layout/paint distinction. Password
+      // dots bypass this check; hidden controls retain tracking until reveal.
+      if(!state.contenteditable&&state.textShadow!=='none')throw Error('MP-11: fill text shadow coverage unavailable');
+      await onPlainField?.({sessionId:entry.sessionId,backendNodeId});
+      const {model}=await connection.send('DOM.getBoxModel',{backendNodeId},entry.sessionId);
+      const map=await toViewport(entry),fieldRegions=[];
+      const addQuad=(localQuad,transform)=>{
+        const quad=[];for(let i=0;i<8;i+=2)quad.push(...transform(localQuad.slice(i,i+2)));
+        const [x,y,w,h]=rect(quad),s=metrics.dpr;
+        if(w<=0||h<=0)return;
+        const left=Math.max(0,Math.floor(x*s)),upper=Math.max(0,Math.floor(y*s));
+        const right=Math.min(page.viewport[0],Math.ceil((x+w)*s)),bottom=Math.min(page.viewport[1],Math.ceil((y+h)*s));
+        if(right>left&&bottom>upper)fieldRegions.push([left,upper,right-left,bottom-upper]);
+      };
+      addQuad(model.border,map);
+      if(state.contenteditable) {
+        const geometry=await fieldTextGeometry(connection,entry,frameId,backendNodeId);
+        let textMap=map;
+        // Same-renderer child documents report Range bounds in their own CSS viewport.
+        // CDP frame-owner quads already place that viewport in this renderer's coordinates.
+        if(frameId!==entry.frame.id) {
+          const owner=await connection.send('DOM.getFrameOwner',{frameId},entry.sessionId);
+          const {model:frameModel}=await connection.send('DOM.getBoxModel',{backendNodeId:owner.backendNodeId},entry.sessionId);
+          const quad=frameModel.content,[width,height]=geometry.viewport;rect(quad);
+          if(!(width>0&&height>0)||Math.abs(quad[0]+quad[4]-quad[2]-quad[6])>.1||Math.abs(quad[1]+quad[5]-quad[3]-quad[7])>.1)throw Error('MP-11: fill text transform unavailable');
+          textMap=([x,y])=>map([quad[0]+x*(quad[2]-quad[0])/width+y*(quad[6]-quad[0])/height,quad[1]+x*(quad[3]-quad[1])/width+y*(quad[7]-quad[1])/height]);
+        }
+        for(const [x,y,w,h] of geometry.rects)addQuad([x,y,x+w,y,x+w,y+h,x,y+h],textMap);
+      }
+      if(fieldRegions.length) {
+        const left=Math.min(...fieldRegions.map(r=>r[0])),upper=Math.min(...fieldRegions.map(r=>r[1]));
+        const right=Math.max(...fieldRegions.map(r=>r[0]+r[2])),bottom=Math.max(...fieldRegions.map(r=>r[1]+r[3]));
+        page.regions.push([left,upper,right-left,bottom-upper]);
+      }
+    };
     for(const entry of frames) {
       const candidates=targets.filter(t=>t.document_id===top.frame.loaderId&&targetNode(t,entry));
-      if(!candidates.length)continue;
       const snapshot=await connection.send('DOMSnapshot.captureSnapshot',{computedStyles:[]},entry.sessionId);
+      const handled=new Set();
       for(const target of candidates) {
         const key=fillKey(target),backendNodeId=targetNode(target,entry);
         const raw=snapshot.documents?.find(doc=>doc.nodes?.backendNodeId?.includes(backendNodeId));
@@ -224,55 +277,24 @@ export async function measurePageProtection(connection,sessionId,targetId,policy
         // pending fill still owns protection; refuse pixels until it is measurable.
         if(inFlight&&(!state.exists||!state.editable))throw Error('MP-11: pending fill target unavailable');
         if(!inFlight&&(!state.exists||state.changed||!state.editable||!state.value || digest(state.value)!==target.value_hash)) {dead.add(key);continue;}
+        handled.add(backendNodeId);
         if(state.password)continue; // Rechecked even for a previously plain field.
-        // MP-08/MP-11: DOMSnapshot includes retained non-rendered fields. Only
-        // confirmed absence of layout for the entire field subtree permits
-        // skipping box lookup; keep identity tracking so reveal remasks it.
-        const nodeIndex=raw.nodes.backendNodeId.indexOf(backendNodeId),parents=raw.nodes.parentIndex;
-        if(!Array.isArray(raw.layout?.nodeIndex)||!Array.isArray(parents))throw Error('MP-11: fill layout unavailable');
-        const rendered=raw.layout.nodeIndex.some(index=>{
-          for(let steps=0;index>=0&&steps<parents.length;steps++,index=parents[index])if(index===nodeIndex)return true;
-          return false;
+        await maskField(entry,raw,frame,frameId,backendNodeId,state);
+      }
+      // Whatever the page did with the field (replace, clone, copy), an input or textarea whose current value is a known Vault
+      // value is covered. Exact value only: no identity guessing, no echo in text, attributes or media.
+      for(const raw of snapshot.documents??[]) {
+        const frameId=snapshot.strings[raw.frameId],frame=visit(entry.tree,frameId);
+        if(!frame)continue;
+        for(const rare of [raw.nodes.inputValue,raw.nodes.textValue])rare?.index?.forEach((nodeIndex,i)=>{
+          const value=snapshot.strings[rare.value[i]],backendNodeId=raw.nodes.backendNodeId[nodeIndex];
+          if(value&&known.has(digest(value))&&!handled.has(backendNodeId)){handled.add(backendNodeId);exact.push([entry,raw,frame,frameId,backendNodeId]);}
         });
-        if(!rendered)continue;
-        // Box and Range geometry cannot prove filter or reflection ink.
-        // Include composed ancestors and frame owners, for both field kinds.
-        if(state.unprovedPaint)throw Error('MP-11: fill paint coverage unavailable');
-        await assertFramePaint(entry,frame);
-        // Native text controls have the same layout/paint distinction. Password
-        // dots bypass this check; hidden controls retain tracking until reveal.
-        if(!state.contenteditable&&state.textShadow!=='none')throw Error('MP-11: fill text shadow coverage unavailable');
-        await onPlainField?.({sessionId:entry.sessionId,backendNodeId});
-        const {model}=await connection.send('DOM.getBoxModel',{backendNodeId},entry.sessionId);
-        const map=await toViewport(entry),fieldRegions=[];
-        const addQuad=(localQuad,transform)=>{
-          const quad=[];for(let i=0;i<8;i+=2)quad.push(...transform(localQuad.slice(i,i+2)));
-          const [x,y,w,h]=rect(quad),s=metrics.dpr;
-          if(w<=0||h<=0)return;
-          const left=Math.max(0,Math.floor(x*s)),upper=Math.max(0,Math.floor(y*s));
-          const right=Math.min(page.viewport[0],Math.ceil((x+w)*s)),bottom=Math.min(page.viewport[1],Math.ceil((y+h)*s));
-          if(right>left&&bottom>upper)fieldRegions.push([left,upper,right-left,bottom-upper]);
-        };
-        addQuad(model.border,map);
-        if(state.contenteditable) {
-          const geometry=await fieldTextGeometry(connection,entry,frameId,backendNodeId);
-          let textMap=map;
-          // Same-renderer child documents report Range bounds in their own CSS viewport.
-          // CDP frame-owner quads already place that viewport in this renderer's coordinates.
-          if(frameId!==entry.frame.id) {
-            const owner=await connection.send('DOM.getFrameOwner',{frameId},entry.sessionId);
-            const {model:frameModel}=await connection.send('DOM.getBoxModel',{backendNodeId:owner.backendNodeId},entry.sessionId);
-            const quad=frameModel.content,[width,height]=geometry.viewport;rect(quad);
-            if(!(width>0&&height>0)||Math.abs(quad[0]+quad[4]-quad[2]-quad[6])>.1||Math.abs(quad[1]+quad[5]-quad[3]-quad[7])>.1)throw Error('MP-11: fill text transform unavailable');
-            textMap=([x,y])=>map([quad[0]+x*(quad[2]-quad[0])/width+y*(quad[6]-quad[0])/height,quad[1]+x*(quad[3]-quad[1])/width+y*(quad[7]-quad[1])/height]);
-          }
-          for(const [x,y,w,h] of geometry.rects)addQuad([x,y,x+w,y,x+w,y+h,x,y+h],textMap);
-        }
-        if(fieldRegions.length) {
-          const left=Math.min(...fieldRegions.map(r=>r[0])),upper=Math.min(...fieldRegions.map(r=>r[1]));
-          const right=Math.max(...fieldRegions.map(r=>r[0]+r[2])),bottom=Math.max(...fieldRegions.map(r=>r[1]+r[3]));
-          page.regions.push([left,upper,right-left,bottom-upper]);
-        }
+      }
+      for(const [at,doc,owner,id,backendNodeId] of exact.splice(0)) {
+        const state=await fieldState(connection,at,{frameId:id},backendNodeId);
+        if(!state.exists||!state.editable||state.password||!known.has(digest(state.value)))continue; // dots stay dots; a changed value is no longer the secret
+        await maskField(at,doc,owner,id,backendNodeId,state);
       }
     }
     for(const target of targets)if(!seen.has(fillKey(target))){const key=fillKey(target);if(lifecycles.get(key)!==filling.get(connection)?.get(key))throw Error('MP-11: fill changed during protection measurement');if(pendingAtSnapshot.get(key)||lifecycles.get(key)?.pending)throw Error('MP-11: pending fill target unavailable');dead.add(key);}

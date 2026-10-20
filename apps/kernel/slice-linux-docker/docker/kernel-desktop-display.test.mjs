@@ -196,3 +196,17 @@ test('MP-08/MP-11 a credit in flight when protection changes asks the viewer to 
   assert.equal(producers,2,'the next credit builds a producer over the new protected source');
  }finally{await display.close()}
 });
+test('MP-08/MP-11 only a kernel-named owner reads the unmasked feed; every other viewer reads the masked source',async()=>{
+ const {host}=fixture();const fed=[];
+ const feed={name:'owner-feed',sample:()=>null};
+ const display=new DesktopDisplay(host,{
+  createSource:async()=>{const source={closed:false,name:'masked',sample:()=>null,ownerFeed:()=>feed,close:async()=>{source.closed=true},valid:()=>!source.closed};return source},
+  createProducer:source=>{fed.push(source.name);return {feedback(){},waitReady:()=>Promise.resolve(),take:()=>null,invalidate(){},retireUnsent(){},close:async()=>{}}}});
+ try{
+  const owner=await display.subscribe({...command,audience:'owner'},'lease-a'),other=await display.subscribe(command,'lease-b');
+  for(const [subscription,scope] of [[owner,'lease-a'],[other,'lease-b']])
+   await display.request({op:'screenshot',display_subscription_id:subscription.subscription_id,generation:1,after_sequence:0},scope);
+  assert.deepEqual(fed,['owner-feed','masked']);
+  await assert.rejects(display.subscribe({...command,audience:'masked-by-me'},'x'),{code:'user_domain_not_granted'});
+ }finally{await display.close()}
+});

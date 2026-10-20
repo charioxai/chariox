@@ -690,11 +690,14 @@ pub enum RelayPeerRequest {
         slice_id: String,
         command: super::room_browser_controller::RoomBrowserControllerCommand,
     },
+    // MP-11: old workers must reject this request instead of ignoring its audience.
+    #[serde(rename = "open_room_shared_display_with_audience")]
     OpenRoomSharedDisplay {
         session_id: String,
         slice_id: String,
         lease_id: String,
         viewer_public_key: String,
+        audience: super::room_shared_display::RoomDisplayAudience,
         offer: crate::slice::RoomDisplayOffer,
         viewport: crate::session::CanonicalViewport,
         target: super::room_shared_display::RoomDisplayTarget,

@@ -32,9 +32,24 @@ async function settle(child) {
   for (let n = 0; n < 50 && child.exitCode === null && child.signalCode === null; n++) await delay(20);
   if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await new Promise(resolve => child.once('exit', resolve)); }
 }
+// MP-08/MP-11: the session owner's own view reads the desktop as it is (they may reveal a password to themselves).
+// The model never subscribes to a stream: its captures are Computer screenshots, masked kernel-side. Other viewers stay on the masked source.
+class OwnerFeed {
+  constructor(source) { this.source=source;this.listeners=new Set();this.latest=null;this.changedAt=0; }
+  get closed() { return this.source.closed; }
+  valid() { return this.source.valid(); }
+  subscribe(fn) { this.listeners.add(fn);return()=>this.listeners.delete(fn); }
+  sample() { return this.source.closed?null:this.latest; }
+  publish(sample) {
+    this.latest?.raw.release?.();sample.raw.retain?.();sample.published_ms=Date.now();
+    this.latest=sample;this.changedAt=performance.now();
+    for(const listener of this.listeners)listener(sample);
+  }
+  close() { this.latest?.raw.release?.();this.latest=null;this.listeners.clear(); }
+}
 export class DesktopSource {
   constructor(binding, policy, { native = nativeDesktopWorker(), timing = () => {} } = {}) {
-    this.binding=binding;this.policy=policy;this.native=native;this.timing=timing;this.listeners=new Set();this.closed=false;this.latest=null;this.pending=[];this.stepStarted=null;this.verifiedStep=null;
+    this.binding=binding;this.policy=policy;this.native=native;this.timing=timing;this.listeners=new Set();this.closed=false;this.latest=null;this.pending=[];this.stepStarted=null;this.verifiedStep=null;this.owner=new OwnerFeed(this);
     // MP-08/MP-11: kernel-browser windows are revealed only under a stable,
     // presented CDP measurement that is re-verified after each frame's capture.
     this.gate=new ProtectionGate(async()=>{
@@ -47,8 +62,10 @@ export class DesktopSource {
     });
   }
   valid() { return !this.closed && this.binding.isCurrent?.() !== false; }
+  fillTracked() { const browser=this.binding.browser?.();return Boolean(browser&&hasBrowserFill(browser,this.policy)); }
   subscribe(fn) { this.listeners.add(fn);return()=>this.listeners.delete(fn); }
   sample() { return this.closed?null:this.latest; }
+  ownerFeed() { return this.worker?this.owner:this; }
   async scope() {
     const at=Date.now();
     // MP-08/MP-10/MP-11: one conservative observation traversal; input
@@ -62,9 +79,9 @@ export class DesktopSource {
     catch(error) { await this.close(); throw error; }
     // The gate measures from the start: with a tracked Vault fill the first frame waits for its adopted measurement.
     void this.verify();
-    // The first native frame waits for the oracle's start and two snapshots.
-    for(let n=0;n<500&&!this.latest&&!this.closed;n++)await delay(10);
-    if(!this.latest||this.closed){await this.close();throw Error('MP-08: protected desktop source unavailable');}
+    // The owner's first frame needs no proof; a masked one waits for the oracle's start and two snapshots.
+    for(let n=0;n<500&&!this.latest&&!this.owner.latest&&!this.closed;n++)await delay(10);
+    if(!(this.latest||this.owner.latest)||this.closed){await this.close();throw Error('MP-08: protected desktop source unavailable');}
     if(this.worker)void this.heartbeat();
     return this;
   }
@@ -78,13 +95,16 @@ export class DesktopSource {
       if(header.width!==this.binding.width||header.height!==this.binding.height||!validMasks(header.protected_regions,header.width,header.height))throw Error('MP-11: desktop raster protection/geometry');
     },(header,pixels)=>{
       if(this.closed)return;
-      const raw=raster.apply(header,pixels);raw.format='bgr0';raw[displayMaskRegions]=header.protected_regions.map(([x,y,width,height])=>({x,y,width,height}));
-      this.offer({raw,serial:raw.serial,width:raw.width,height:raw.height,motion:true,data_base64:raw.signature},header.protection_serial,raw.captured_ms);
+      this.helperFrame(header,raster.apply(header,pixels));
     });
     child.stdout.on('data',bytes=>{try{pipe.push(bytes);}catch{fail();}});
     const scope=await this.scope();
     child.stdin.write(JSON.stringify({desktop:true,pid:process.pid,width:this.binding.width,height:this.binding.height,browser_protection:null,protection_serial:0,
       mask:scope.mask,values:scope.values,processes:scope.processes,browser_processes:scope.browser_processes})+'\n');
+  }
+  helperFrame(header,raw) {
+    raw.format='bgr0';raw[displayMaskRegions]=header.protected_regions.map(([x,y,width,height])=>({x,y,width,height}));
+    this.offer({raw,serial:raw.serial,width:raw.width,height:raw.height,motion:true,data_base64:raw.signature},header.protection_serial,header.captured_ms);
   }
   // MP-08/MP-10/MP-11: the native worker reads the owned desktop root into
   // private slots and encodes with x264; every readback is masked here, bound
@@ -93,11 +113,10 @@ export class DesktopSource {
     const {width,height}=this.binding;
     this.current=await this.scope();
     this.poolRoot=await mkdtemp(path.join(this.native.root,'raster-'));
-    const oracle=spawn(python(),['-u',helper('./kernel-desktop-protection.py')],{env:this.binding.environment,stdio:['pipe','pipe','ignore']});this.oracle=oracle;
+    this.spawnOracle();
     const child=spawn(this.native.executable,['--display-native-worker'],{env:this.binding.environment,stdio:['pipe','pipe','ignore']});this.child=child;
     const fail=()=>{void this.close().catch(()=>{});};
-    for(const process of [oracle,child]){process.on('error',fail);process.on('exit',fail);process.stdin.on('error',fail);safeChildPid(process);}
-    this.answers=createInterface({input:oracle.stdout})[Symbol.asyncIterator]();
+    child.on('error',fail);child.on('exit',fail);child.stdin.on('error',fail);safeChildPid(child);
     this.worker=new NativeWorkerControl(child);
     const pool=new SharedRasterPool(this.poolRoot,(slot,serial)=>this.worker.notify({release:slot,serial}));
     const pipe=new NativePipe(header=>{
@@ -112,14 +131,37 @@ export class DesktopSource {
       raw.nativeDelivered=(encoder,revision)=>this.worker.delivered(encoder,revision);
       raw.nativeCommit=(encoder,admit)=>this.worker.commit(encoder,raw.serial,admit);
       if(this.closed){raw.release();return;}
-      this.next?.release();this.next=raw;void this.protect();
+      this.ownerFrame(raw);this.next?.release();this.next=raw;void this.protect();
     });
     child.stdout.on('data',bytes=>{try{pipe.push(bytes);}catch{fail();}});
     child.stdin.write(JSON.stringify({pid:process.pid,width,height,pool:this.poolRoot,desktop:true})+'\n');
   }
+  spawnOracle() {
+    const oracle=spawn(python(),['-u',helper('./kernel-desktop-protection.py')],{env:this.binding.environment,stdio:['pipe','pipe','ignore']});this.oracle=oracle;
+    const lost=()=>{if(this.oracle===oracle)this.lost();};
+    oracle.on('error',lost);oracle.on('exit',lost);oracle.stdin.on('error',lost);safeChildPid(oracle);
+    this.answers=createInterface({input:oracle.stdout})[Symbol.asyncIterator]();
+  }
+  // MP-08/MP-11: a lost oracle or ownership read withholds masked frames only (readbacks drop while it is rebuilt);
+  // the source and the owner's feed stay. The proof restarts from a fresh scope and no snapshot of the old oracle.
+  lost() {
+    if(this.closed||this.rebuilding)return;
+    this.rebuilding=this.rebuild().finally(()=>{this.rebuilding=null;});
+  }
+  async rebuild() {
+    for(let wait=0;!this.closed;wait=250){
+      await delay(wait);
+      try{
+        const old=this.oracle;this.oracle=null;await settle(old);
+        const scope=await this.scope();
+        if(this.closed)return;
+        this.current=scope;this.history=[];this.spawnOracle();this.worker.notify({refresh:true},true);return;
+      }catch{}
+    }
+  }
   async measure(scope) {
     const start=Date.now();
-    this.oracle.stdin.write(JSON.stringify({processes:scope.processes,browser_processes:scope.browser_processes,browser_protection:scope.browser_protection,values:scope.values??[]})+'\n');
+    this.oracle.stdin.write(JSON.stringify({processes:scope.processes,browser_processes:scope.browser_processes,browser_protection:scope.browser_protection,values:scope.values??[],fill:this.fillTracked()})+'\n');
     let timer;
     const next=await Promise.race([this.answers.next(),new Promise(resolve=>{timer=setTimeout(resolve,5000,{done:true});})]).finally(()=>clearTimeout(timer));
     if(next.done)throw Error('MP-11: desktop protection unavailable');
@@ -142,7 +184,7 @@ export class DesktopSource {
     if(this.protecting)return;this.protecting=true;
     try{while(this.next&&!this.closed){
       const raw=this.next,scope=this.current;this.next=null;this.inflight=true;
-      if(scope.mask){raw.release();continue;}
+      if(scope.mask||this.rebuilding){raw.release();continue;}
       try{await this.measure(scope);}catch(error){raw.release();throw error;}
       if(this.closed){raw.release();break;}
       const first=this.history.findLastIndex(item=>item.end<=raw.captured_ms),span=first<0?[]:this.history.slice(first);
@@ -156,7 +198,7 @@ export class DesktopSource {
       }
       this.timing('desktop_readback_bound',raw.captured_ms);
       this.bind(raw,span[0].masks,scope.serial,raw.captured_ms);
-    }}catch{this.next?.release();this.next=null;void this.close().catch(()=>{});}
+    }}catch{this.next?.release();this.next=null;this.lost();}
     finally{this.protecting=false;this.inflight=false;}
   }
   // MP-08/MP-11: idle snapshots keep a preceding observation for the first
@@ -164,10 +206,10 @@ export class DesktopSource {
   async heartbeat() { while(!this.closed){await delay(HEARTBEAT_MS);await this.observeIdle();} }
   async observeIdle() {
     const scope=this.current;
-    if(this.closed||!this.worker||this.protecting||this.next||!scope||scope.mask)return;
+    if(this.closed||!this.worker||this.rebuilding||this.protecting||this.next||!scope||scope.mask)return;
     this.protecting=true;
     try{await this.measure(scope);}
-    catch{void this.close().catch(()=>{});return;}
+    catch{this.lost();return;}
     finally{this.protecting=false;}
     if(this.next)void this.protect();
   }
@@ -179,17 +221,22 @@ export class DesktopSource {
     this.previousRegions=regions;
     this.offer({raw:masked,serial:raw.serial,captured_ms:captured,width,height,motion:true,data_base64:masked.signature},serial,captured);
   }
+  // A frame coincident with a CDP capture is dropped; a fresh one is asked for once the window is restored.
+  transient(start,duration=0) {
+    const presentation=this.binding.browser?.()?.connection?.presentationFence;
+    if(!presentation||presentation.stable(start,start+(duration??0)))return false;
+    this.timing('desktop_capture_transient_dropped',start);resumeAfterCapturePresentation(this,presentation,()=>this.wake());return true;
+  }
+  ownerFrame(raw) {
+    if(this.transient(raw.captured_ms,raw.capture_ms))return;
+    this.owner.publish({raw,serial:raw.serial,captured_ms:raw.captured_ms,width:raw.width,height:raw.height,motion:true,data_base64:raw.signature});
+  }
   offer(sample,serial,captured) {
     if(this.closed){sample.raw.release?.();return;}
-    const presentation=this.binding.browser?.()?.connection?.presentationFence;
-    const start=captured??sample.raw.captured_ms,end=start+(sample.raw.capture_ms??0);
-    if(presentation&&!presentation.stable(start,end)){
-      this.timing('desktop_capture_transient_dropped',start);sample.raw.release?.();resumeAfterCapturePresentation(this,presentation,()=>this.wake());return;
-    }
-    // Serial 0 has no adopted measurement. A tracked fill in a live kernel browser (a password
-    // field just revealed as text) leaves its pixels unplaced: wait for the adopted measurement.
-    const browser=this.binding.browser?.();
-    if(serial===0){if(browser&&hasBrowserFill(browser,this.policy))sample.raw.release?.();else this.publish(sample);}
+    if(this.transient(captured??sample.raw.captured_ms,sample.raw.capture_ms)){sample.raw.release?.();return;}
+    // Serial 0 has no adopted measurement. With the native oracle a tracked fill is covered whole by the oracle itself
+    // (the frame arrives masked, no wait); the helper path has no such cover and waits for the adopted measurement.
+    if(serial===0){if(!this.worker&&this.fillTracked())sample.raw.release?.();else this.publish(sample);}
     else if(serial===this.gate.protectionSerial){this.pending.push({sample,serial,captured});this.settle();}
     else sample.raw.release?.();
   }
@@ -253,14 +300,14 @@ export class DesktopSource {
           this.worker.notify({refresh:true},true);
         }else this.child?.stdin.write(JSON.stringify({refresh:true,processes:scope.processes,browser_processes:scope.browser_processes,browser_protection:scope.browser_protection,protection_serial:scope.serial,values:scope.values})+'\n');
       }while(this.wakePending&&!this.closed);
-    })().catch(()=>this.close()).finally(()=>{this.waking=null});
+    })().catch(()=>this.worker?this.lost():this.close()).finally(()=>{this.waking=null});
     return this.waking;
   }
   async close() {
     if(this.closed&&!this.child&&!this.oracle)return;
     this.closed=true;this.presentationResume?.();this.presentationResume=null;
     for(const raw of [this.latest?.raw,...this.pending.map(item=>item.sample.raw),this.next])raw?.release?.();
-    this.latest=null;this.pending=[];this.next=null;this.listeners.clear();
+    this.latest=null;this.pending=[];this.next=null;this.listeners.clear();this.owner.close();
     const child=this.child,oracle=this.oracle,poolRoot=this.poolRoot;this.child=null;this.oracle=null;this.poolRoot=null;
     this.worker?.close();
     await Promise.all([settle(child),settle(oracle)]);

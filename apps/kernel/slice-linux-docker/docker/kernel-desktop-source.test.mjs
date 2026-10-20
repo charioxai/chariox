@@ -202,6 +202,19 @@ test('MP-08/MP-11 an unadopted frame is withheld while a Vault fill is tracked i
   f.source.offer(f.frame(1),0);
   assert.equal(f.published.length,0);assert.equal(f.released(),1);
 });
+test('MP-08/MP-11 the native oracle covers a tracked fill itself: its serial-0 frames are published, never waited for',()=>{
+  const f=fillFixture();f.source.worker={};
+  f.source.offer(f.frame(1),0);
+  assert.equal(f.published.length,1,'the frame arrives with the oracle masks, so a masked viewer resumes at once');
+});
+test('MP-08/MP-11 the oracle is told when a Vault fill is tracked',()=>{
+  for(const [options,expected] of [[{},true],[{targets:[],tracked:1},true],[{targets:[]},false],[{browser:false},false]]){
+    const f=fillFixture(options),written=[];f.source.oracle={stdin:{write:line=>written.push(JSON.parse(line))}};
+    f.source.answers=(async function*(){yield JSON.stringify({digest:'d',masks:[],state:[1,1,0,0]})})();
+    f.source.measure({processes:[],browser_processes:[],browser_protection:null,values:[]});
+    assert.equal(written[0].fill,expected);
+  }
+});
 test('MP-08/MP-11 a fill still pending in the browser controller withholds unadopted frames too',()=>{
   const f=fillFixture({targets:[],tracked:1});
   f.source.offer(f.frame(1),0);
@@ -242,4 +255,78 @@ test('MP-08/MP-11 a new source with a tracked fill measures while it waits for i
       assert.equal(steps>=1,true);assert.equal(f.published.length,1,'the first frame is the one the adopted measurement covers');
     }finally{await f.source.close()}
   }
+});
+
+test('MP-08/MP-11 helper frames carry their capture time into the gate, so a tracked fill can start the helper stream',async()=>{
+  const f=fillFixture();
+  f.source.native=null;f.source.startNative=f.source.startHelper=async()=>{};
+  f.source.gate={protectionSerial:0,protection:null,step:async()=>{
+    const started=Date.now();f.source.gate.protectionSerial=1;
+    // The helper's header carries captured_ms; the frame arrives through the helper callback, not offer().
+    const sample=f.frame(1);f.source.helperFrame({protected_regions:[],protection_serial:1,captured_ms:started-5},sample.raw);
+    return {started,verified:1,changed:false};
+  }};
+  try{
+    await f.source.start();
+    assert.equal(f.published.length,1,'the helper frame the adopted measurement covers is published');
+  }finally{await f.source.close()}
+});
+
+// MP-08/MP-11: a lost protection oracle withholds masked frames only; the source stays, the owner's view continues and the proof is rebuilt.
+function recoveryFixture(){
+  const f=fixture();let spawned=0;
+  f.source.spawnOracle=()=>{spawned++};
+  f.source.scope=async()=>({processes:[],browser_processes:[],browser_protection:null,serial:0,mask:false,values:[]});
+  const measure=f.source.measure;
+  f.fail=()=>{f.source.measure=async()=>{throw Error('MP-11: desktop protection unavailable')}};
+  f.heal=()=>{f.source.measure=measure};
+  return {...f,spawned:()=>spawned};
+}
+test('MP-08/MP-11 an oracle failure under a readback keeps the source, rebuilds the oracle and resumes masked frames',async()=>{
+  const f=recoveryFixture();
+  f.fail();f.source.next=f.raw(1,f.now());await f.source.protect();
+  assert.equal(f.source.closed,false);assert.equal(f.published.length,0,'no masked frame while the proof is uncertain');
+  await until(()=>f.spawned()===1&&!f.source.rebuilding);
+  f.heal();
+  f.source.history=[];f.source.next=f.raw(2,f.now());await f.source.protect();
+  f.source.next=f.raw(3,f.now()+2);await f.source.protect();
+  assert.equal(f.published.length,1,'the stream resumes on its own');
+  assert.deepEqual(f.published[0].raw[displayMaskRegions],[{x:0,y:0,width:10,height:10}]);
+});
+test('MP-08/MP-11 an oracle failure in an idle snapshot keeps the source and rebuilds the oracle',async()=>{
+  const f=recoveryFixture();
+  f.fail();await f.source.observeIdle();
+  assert.equal(f.source.closed,false);await until(()=>f.spawned()===1&&!f.source.rebuilding);
+});
+test('MP-08/MP-11 a failed ownership refresh keeps the source and retries until the scope is read',async()=>{
+  const f=recoveryFixture();let calls=0;const scope=f.source.scope;
+  f.source.scope=async()=>{if(calls++<2)throw Error('ownership');return scope()};
+  await f.source.wake();
+  assert.equal(f.source.closed,false);await until(()=>f.spawned()===1&&!f.source.rebuilding);
+  assert.equal(calls,3,'rebuilt on the first successful read');
+});
+test('MP-08/MP-11 readbacks arriving while the oracle is rebuilt are dropped, never published unmasked',async()=>{
+  const f=recoveryFixture();
+  f.fail();f.source.next=f.raw(1,f.now());await f.source.protect();
+  f.heal();f.source.next=f.raw(2,f.now());f.source.next.captured_ms=f.now();await f.source.protect();
+  assert.equal(f.published.length,0);await until(()=>!f.source.rebuilding);
+});
+test('MP-08/MP-11 the owner feed carries the unmasked desktop whatever the oracle does',async()=>{
+  const f=recoveryFixture(),seen=[];
+  f.source.worker={notify(){}};f.source.owner.subscribe(sample=>seen.push(sample));
+  f.fail();
+  const raw=f.raw(1,Date.now());f.source.ownerFrame(raw);await f.source.protect();
+  assert.equal(seen.length,1);assert.equal(seen[0].raw,raw);assert.equal(seen[0].raw[displayMaskRegions],undefined);
+  assert.equal(f.source.ownerFeed(),f.source.owner,'a native source serves the owner its own feed');
+  assert.equal(f.source.owner.sample(),seen[0]);assert.equal(f.published.length,0,'the masked feed stays empty');
+});
+test('MP-08/MP-11 a helper source has no unmasked feed: the owner gets the masked one',()=>{
+  const f=fixture();f.source.worker=undefined;assert.equal(f.source.ownerFeed(),f.source);
+});
+test('MP-08/MP-11 a source starts on the owner feed alone when the oracle cannot answer',async()=>{
+  const f=recoveryFixture();
+  f.source.worker.close=()=>{};f.source.startHelper=async()=>{};
+  f.source.startNative=async()=>{setTimeout(()=>f.source.ownerFrame(f.raw(1,Date.now())),20);};
+  f.source.verify=async()=>{};
+  try{await f.source.start();assert.equal(f.source.owner.sample().serial,1);}finally{await f.source.close();}
 });

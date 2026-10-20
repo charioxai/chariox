@@ -65,6 +65,17 @@ fn mp08_mp10_mp11_room_display_carry_525_133_snapshot_hash() {
         snapshot["endpoint"]
     );
     for value in snapshot["peer_requests"].as_array().unwrap() {
+        // MP-11: keep the historical bytes/hash; an audience-less open is no
+        // longer admitted. Existing lease commands retain their original shape.
+        if value["kind"] == "open_room_shared_display" {
+            assert!(
+                serde_json::from_value::<crate::transport::relay_peer::RelayPeerRequest>(
+                    value.clone()
+                )
+                .is_err()
+            );
+            continue;
+        }
         let request: crate::transport::relay_peer::RelayPeerRequest =
             serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), *value);

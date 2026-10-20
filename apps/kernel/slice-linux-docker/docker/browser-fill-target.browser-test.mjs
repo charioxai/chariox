@@ -659,11 +659,26 @@ for(const dpr of [1,2]) {
    await fill('#password');assert.equal((await collect()).length,1,'password dots stay visible');
    await evaluate("document.querySelector('#password').type='text'");assert.equal((await collect()).length,2,'show password checked on every capture');await capture('toggle');
    await evaluate("document.querySelector('#plain').value='user replacement'");assert.equal((await collect()).length,1);
-   await evaluate("document.querySelector('#plain').value='MP11-disposable-fill-value'");assert.equal((await collect()).length,1,'retired target never resurrects');
+   await evaluate("document.querySelector('#plain').value='MP11-disposable-fill-value'");assert.equal((await collect()).length,2,'any plain field holding the Vault value is covered');
    await evaluate("document.querySelector('#password').value=''");assert.deepEqual(await collect(),[]);
    await fill('#area');await fill('#editor');assert.equal((await collect()).length,2,'textarea and contenteditable are fill targets');
    await evaluate("document.querySelector('#area').remove();document.querySelector('#editor').remove()");assert.deepEqual(await collect(),[]);
    await connection.send('Page.navigate',{url:'about:blank'},sessionId);assert.deepEqual(await collect(),[],'navigation retires targets');assert.equal(browser.fillTargets.size,0,'MP-11 retired targets leave the tracking registry');
+ }));
+ test(`MP-08/MP-11 DPR${dpr}: model pixels cover every plain field whose current value is the Vault value`,()=>setup(dpr,async({fill,collect,capture,evaluate})=>{
+   const swap=(text,type='text')=>evaluate(`(()=>{const old=document.querySelector('#password,#swap');const next=document.createElement('input');next.id='swap';next.type=${JSON.stringify(type)};next.style.cssText=old.style.cssText;next.value=${JSON.stringify(text)};old.replaceWith(next);})()`);
+   await fill('#password');assert.deepEqual(await collect(),[],'password dots stay visible');
+   await swap(value);
+   assert.equal((await collect()).length,1,'a replacement holding the value is covered');
+   const frame=await capture('swapped');const pixel=(x,y)=>[...frame.pixels.subarray(((y*dpr)*frame.width+x*dpr)*4,((y*dpr)*frame.width+x*dpr)*4+3)];
+   assert.deepEqual(pixel(100,170),[0,0,0],'the replacement field is covered in the model capture');assert.deepEqual(pixel(400,400),[255,255,255]);
+   await swap(value,'password');assert.deepEqual(await collect(),[],'hidden again: dots only');
+   await swap(value);assert.equal((await collect()).length,1,'later replacements are covered too');
+   await evaluate("(()=>{const copy=document.createElement('input');copy.style.cssText='position:absolute;left:700px;top:600px;width:200px;height:30px';copy.value='MP11-disposable-fill-value';document.body.append(copy);})()");
+   assert.equal((await collect()).length,2,'a copy of the value elsewhere is covered');
+   await evaluate("document.querySelectorAll('input')[document.querySelectorAll('input').length-1].value='something else'");
+   assert.equal((await collect()).length,1,'a field that no longer holds the value is not covered');
+   await swap('something the user typed');assert.deepEqual(await collect(),[],'another value is never covered');
  }));
  test(`MP-08/MP-11 DPR${dpr}: capture cannot retire the fill before insertion completes`,()=>setup(dpr,async({browser,connection,fill,collect})=>{
    const send=connection.send.bind(connection);let intercepted=false;

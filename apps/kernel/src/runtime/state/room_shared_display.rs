@@ -7,7 +7,8 @@ use crate::slice::{
     SliceDisplayEndpointKind,
 };
 use crate::transport::room_shared_display::{
-    RoomDisplayCommand, RoomDisplayResult, RoomDisplayTarget, SealedRoomDisplayFrame,
+    RoomDisplayAudience, RoomDisplayCommand, RoomDisplayResult, RoomDisplayTarget,
+    SealedRoomDisplayFrame,
 };
 #[derive(Clone, Default)]
 pub(super) struct RoomDisplayLeases {
@@ -40,7 +41,45 @@ fn error() -> DaemonError {
         message: "Room display lease or binding is unavailable".into(),
     }
 }
+/// MP-11: only the Room owner's display open drives the shared browser
+/// (acquire + viewport reconcile); an invited viewer watches read-only.
+fn room_display_prelude(
+    audience: RoomDisplayAudience,
+    viewport: &crate::session::CanonicalViewport,
+    browser_bar_visible: bool,
+) -> Vec<crate::transport::room_browser_controller::RoomBrowserControllerCommand> {
+    use crate::transport::room_browser_controller::RoomBrowserControllerCommand as Command;
+    match audience {
+        RoomDisplayAudience::Owner => vec![
+            Command::Acquire,
+            Command::Reconcile {
+                viewport: viewport.clone(),
+                browser_bar_visible,
+            },
+        ],
+        RoomDisplayAudience::Viewer => Vec::new(),
+    }
+}
 impl KernelRuntimeState {
+    fn room_display_audience(
+        &self,
+        caller: &KernelCaller,
+        session_id: &str,
+    ) -> Result<RoomDisplayAudience, DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        let user = caller.user_id.as_deref().or_else(|| {
+            matches!(
+                caller.caller_kind,
+                crate::runtime::command::KernelCallerKind::LocalClient
+            )
+            .then_some(crate::session::DEFAULT_LOCAL_USER_ID)
+        });
+        Ok(if user == Some(session.owner_user_id()) {
+            RoomDisplayAudience::Owner
+        } else {
+            RoomDisplayAudience::Viewer
+        })
+    }
     pub(crate) fn is_room_display(&self, id: &str) -> bool {
         self.owned
             .room_display_leases
@@ -104,14 +143,8 @@ impl KernelRuntimeState {
         let viewport = room.viewport;
         // Resolve the worker's existing native surface through its ordinary Room
         // observation protocol. It remains the same desktop Room Actions drive.
-        use crate::transport::room_browser_controller::RoomBrowserControllerCommand as Command;
-        for command in [
-            Command::Acquire,
-            Command::Reconcile {
-                viewport: viewport.clone(),
-                browser_bar_visible: room.browser_bar_visible,
-            },
-        ] {
+        let audience = self.room_display_audience(caller, session)?;
+        for command in room_display_prelude(audience, &viewport, room.browser_bar_visible) {
             match self
                 .room_bound_display_peer(
                     &slice,
@@ -176,6 +209,7 @@ impl KernelRuntimeState {
                     slice_id: slice.id.clone(),
                     lease_id: id.clone(),
                     viewer_public_key: viewer.into(),
+                    audience,
                     offer,
                     viewport,
                     target,
@@ -442,6 +476,66 @@ impl KernelRuntimeState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mp11_room_display_viewer_open_never_drives_the_shared_browser() {
+        let viewport = crate::session::CanonicalViewport::new(1280, 720, 1, 1280, 720).unwrap();
+        assert_eq!(
+            room_display_prelude(RoomDisplayAudience::Owner, &viewport, false).len(),
+            2
+        );
+        assert!(
+            room_display_prelude(RoomDisplayAudience::Viewer, &viewport, false).is_empty(),
+            "MP-11 a read-only viewer must not acquire or resize the owner's browser"
+        );
+    }
+    #[tokio::test]
+    async fn mp11_room_display_home_distinguishes_room_owner_from_invited_human() {
+        let root = crate::test_support::TestWorktree::new("room-display-audiences");
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::ProcessMemory;
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(root.session_request().with_owner_user_id("owner"))
+            .unwrap();
+        let session = session.id().to_string();
+        let state = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            4,
+        )
+        .runtime_state();
+        state
+            .create_session_invite(
+                &session,
+                "invite".into(),
+                "owner".into(),
+                None,
+                None,
+                crate::session::CollaborationLevel::Full,
+            )
+            .unwrap();
+        state
+            .join_session_invite(&session, "invite", "invited".into(), 1)
+            .unwrap();
+        for (user, expected) in [
+            ("owner", RoomDisplayAudience::Owner),
+            ("invited", RoomDisplayAudience::Viewer),
+        ] {
+            let caller = KernelCaller {
+                caller_kind: crate::runtime::command::KernelCallerKind::RemoteClient,
+                user_id: Some(user.into()),
+                client_id: Some(format!("{user}-client")),
+                ..KernelCaller::default()
+            };
+            assert_eq!(
+                state.room_display_audience(&caller, &session).unwrap(),
+                expected,
+                "MP-11 attachment ownership must not imply Room ownership"
+            );
+        }
+        state.shutdown_cleanup().await.unwrap();
+    }
     #[tokio::test]
     async fn mp11_room_display_worker_rejects_each_foreign_binding_before_controller_start() {
         let root = crate::test_support::TestWorktree::new("room-shared-display-admission");
@@ -498,6 +592,7 @@ mod tests {
                     slice,
                     "room-display-00000000000000000000000000000001",
                     home.relay_public_key.clone(),
+                    RoomDisplayAudience::Viewer,
                     RoomDisplayOffer {
                         codecs: vec!["avc1.420033".into()],
                         bitrate: 8000000,
