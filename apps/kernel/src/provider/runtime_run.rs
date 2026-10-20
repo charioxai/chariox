@@ -530,6 +530,7 @@ impl RuntimeProviderRun {
     fn metadata_only_claude_args(&self) -> Vec<String> {
         let mut args: Vec<String> = vec![
             "-p".into(),
+            "--no-session-persistence".into(),
             "--input-format".into(),
             "stream-json".into(),
             "--output-format".into(),
