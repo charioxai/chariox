@@ -717,12 +717,19 @@ impl KernelRuntimeState {
             crate::session::PromptStatus::Queued,
         )
         .with_durable_operation(&id, format!("task:{}:{}", task.task_id, task.revision));
-        let is_check = ledger::completion::evaluation(&task)
+        let is_check = ledger::completion::evaluation(task)
             .is_some_and(|e| e.prompt_id == id && e.result.is_none());
         // The check judges against the notes in its objective; continuations get them hidden.
-        let hidden_system_context = match hidden_system_context {
-            None if !is_check => self.owned.original_prompt_notes_context(task)?,
-            other => other,
+        let hidden_system_context = if is_check {
+            hidden_system_context
+        } else {
+            match (
+                hidden_system_context,
+                self.owned.original_prompt_notes_context(task)?,
+            ) {
+                (Some(context), Some(notes)) => Some(format!("{context}\n\n{notes}")),
+                (context, notes) => context.or(notes),
+            }
         };
         let prompt = match hidden_system_context {
             Some(context) => prompt.with_hidden_system_context(context),

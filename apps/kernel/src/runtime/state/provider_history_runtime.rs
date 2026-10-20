@@ -111,57 +111,6 @@ impl ProviderHistoryAppends {
 async fn await_history_job(job: &mut HistoryJob) -> Result<(), DaemonError> {
     job.await.map_err(|e| history_task_error(e.to_string()))?
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn cancelled_history_flush_preserves_the_ordered_tail() {
-        let appends = ProviderHistoryAppends::default();
-        let release = Arc::new(tokio::sync::Notify::new());
-        let ready = release.clone();
-        let mut lease = appends.reserve("run").await.unwrap();
-        *lease.tail = Some(tokio::spawn(async move {
-            ready.notified().await;
-            Ok(())
-        }));
-        drop(lease);
-        let flushing = appends.clone();
-        let flush = tokio::spawn(async move { flushing.flush_run("run").await });
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        flush.abort();
-        assert!(flush.await.unwrap_err().is_cancelled());
-        let lease = appends.reserve("run").await.unwrap();
-        assert!(
-            lease.tail.is_some(),
-            "cancelled flush lost the pending write"
-        );
-        drop(lease);
-        release.notify_one();
-        appends.flush_run("run").await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn history_reservations_apply_bounded_backpressure() {
-        let appends = ProviderHistoryAppends::default();
-        let mut leases = Vec::new();
-        for index in 0..MAX_PENDING_HISTORY_BATCHES {
-            leases.push(appends.reserve(&format!("run-{index}")).await.unwrap());
-        }
-        assert!(
-            tokio::time::timeout(Duration::from_millis(20), appends.reserve("overflow"))
-                .await
-                .is_err()
-        );
-        leases.pop();
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), appends.reserve("overflow"))
-                .await
-                .is_ok()
-        );
-    }
-}
 fn history_task_error(message: String) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "append provider output history",
@@ -211,5 +160,56 @@ impl KernelRuntimeState {
     }
     pub(super) async fn flush_provider_history(&self, run_id: &str) -> Result<(), DaemonError> {
         self.provider_history_appends.flush_run(run_id).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancelled_history_flush_preserves_the_ordered_tail() {
+        let appends = ProviderHistoryAppends::default();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let ready = release.clone();
+        let mut lease = appends.reserve("run").await.unwrap();
+        *lease.tail = Some(tokio::spawn(async move {
+            ready.notified().await;
+            Ok(())
+        }));
+        drop(lease);
+        let flushing = appends.clone();
+        let flush = tokio::spawn(async move { flushing.flush_run("run").await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        flush.abort();
+        assert!(flush.await.unwrap_err().is_cancelled());
+        let lease = appends.reserve("run").await.unwrap();
+        assert!(
+            lease.tail.is_some(),
+            "cancelled flush lost the pending write"
+        );
+        drop(lease);
+        release.notify_one();
+        appends.flush_run("run").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn history_reservations_apply_bounded_backpressure() {
+        let appends = ProviderHistoryAppends::default();
+        let mut leases = Vec::new();
+        for index in 0..MAX_PENDING_HISTORY_BATCHES {
+            leases.push(appends.reserve(&format!("run-{index}")).await.unwrap());
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), appends.reserve("overflow"))
+                .await
+                .is_err()
+        );
+        leases.pop();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), appends.reserve("overflow"))
+                .await
+                .is_ok()
+        );
     }
 }

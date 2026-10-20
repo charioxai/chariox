@@ -97,6 +97,8 @@ impl<'a> KernelAgentService<'a> {
     /// Admits a prompt like `submit_prompt_with_hidden_system_context`, but
     /// returns its local provider dispatch instead of sending it. The admitted
     /// origin must survive queueing so provider policy follows the home turn.
+    // Keep the shared prompt admission contract used by local and leased dispatchers.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn submit_prompt_holding_dispatch(
         &mut self,
         session_id: &str,

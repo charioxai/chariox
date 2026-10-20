@@ -5,8 +5,12 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn mp08_mp10_mp11_display_resumption_525_133_snapshot_hash() {
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 525);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 133);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 525);
+    };
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 133);
+    };
     let requests = [
         KernelBrowserCommand::DisplaySuspend {
             subscription_id: "delivery-old".into(),
@@ -53,9 +57,13 @@ fn mp08_mp10_mp11_room_display_carry_525_133_snapshot_hash() {
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(snapshot["local_protocol"], 525);
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 525);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 525);
+    };
     assert_eq!(snapshot["peer_protocol"], 133);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 133);
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 133);
+    };
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
     assert_eq!(serde_json::to_value(request).unwrap(), snapshot["request"]);
     let endpoint: LocalDaemonResponse =
@@ -99,8 +107,12 @@ fn mp08_mp10_mp11_display_registration_535_143_snapshot_hash() {
     // The registration shape introduced at 535/143 is carried unchanged by later versions.
     assert_eq!(value["local_protocol"], 535);
     assert_eq!(value["peer_protocol"], 143);
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 535);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 143);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 535);
+    };
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 143);
+    };
     let registration: chariox_relay::protocol::RelayEnvelope =
         serde_json::from_value(value["registration"].clone()).unwrap();
     assert_eq!(
@@ -128,8 +140,12 @@ fn mp08_mp10_mp11_display_connect_553_161_snapshot_hash() {
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], 553);
     assert_eq!(value["peer_protocol"], 161);
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 553);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 161);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 553);
+    };
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 161);
+    };
     let connect: chariox_relay::protocol::RelayEnvelope =
         serde_json::from_value(value["initial_connect"].clone()).unwrap();
     assert_eq!(

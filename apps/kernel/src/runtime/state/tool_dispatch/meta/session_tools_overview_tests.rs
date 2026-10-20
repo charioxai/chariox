@@ -465,7 +465,8 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
                 representation.contains("synthetic-no-creator-history"),
                 "MP-11 kernel owner can read unproven history at {level:?}"
             );
-            for canary in ["synthetic-unknown-history"] {
+            {
+                let canary = "synthetic-unknown-history";
                 assert_eq!(
                     representation.contains(canary),
                     level.can_view_agent_trace(),
