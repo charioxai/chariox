@@ -243,7 +243,7 @@ The extension can ship after the core; the core's popups cover the Mac TUI, and 
 
 **How.**
 - They are ordinary kernel API requests (`ReadMachineFile`, `WriteMachineFile`, `StatMachineFile`), not terminal traffic. The gateway routes them to the target kernel like any other request with `machine`; the target kernel does the file work and answers.
-- Chunked: each request moves one bounded chunk (offset, length). A large file is a sequence of chunks, streamed with relay backpressure.
+- Chunked: each request moves one bounded chunk (offset, length) of at most 256 KiB, so it fits the relay's 768 KiB request bound after base64 (found in the r5 drill: 1 MiB chunks were refused). A large file is a sequence of chunks.
 - Resumable: `Stat` returns size and sha256 of what is already there; the client continues at the offset after an interruption (drill EA2-07 interrupts at 40 %).
 - Verified: the final sha256 is compared by the receiving kernel; a mismatch is a typed error and the partial file is never presented as complete.
 - Capped: 2 GiB per file; a larger file is refused with a typed error naming the cap.
@@ -300,7 +300,7 @@ Process: the `val910` lane and its "val910 r3 + Miguel attended session" next st
 
 1. **Core A, local only.** Access term + until-exit detection, popup choices, `--until-exit`, `--no-wait`, in-flight outcome and revoke-toast fixes, doc rewrites. (EA2-01..03)
 2. **Core B, gateway hosted.** First check whether a kernel credential can read the Cloud machine list (3.3). Inventory-source interface, directory, gateway identity, connections, frame `machine`, error codes, `on_behalf_of`, shared policy, `machines`, `request`, `guide`, `--machine`. (EA2-04, 05, 09, 10, 11, 12)
-3. **Core C, self-hosted.** `/machine add <link>`, `gateway-machines.json`, scoped-token path. (EA2-08)
+3. **Core C, self-hosted.** `/machine add <link>`, `gateway-machines.json`, scoped-token path. (EA2-08) **Built in r5**: human-only `JoinMachineLink` / `ForgetGatewayMachine`, TUI `/machine add|linked|unlink`; the target key learned at first contact is pinned; a scoped relay lists the paired machines with the CLIENT token given at pairing.
 4. **Core D, work surface.** Terminal verbs on top of #1054; file family; slice check. (EA2-06, 07, 13, 15)
 5. **Dogfood.** EA2-14, 16, 19 on the real Mac + b3.
 6. **Extension, approvals.** Pointer frame, `approvals`, Cloud pointer endpoint, web approval view, self-hosted remote-TUI path. (EA2-17, 18)
