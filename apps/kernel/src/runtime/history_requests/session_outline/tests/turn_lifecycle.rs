@@ -2200,3 +2200,94 @@ fn blob_content_hides_external_observer_state_signals() {
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
 }
+
+// MP-08/MP-10: reconnect retains internal turn attribution and replies,
+// without presenting kernel instructions as something the user typed.
+#[tokio::test]
+async fn internal_turn_outline_rehydrates_replies_without_instruction_text() {
+    for prompt_id in [
+        "agent-event-1",
+        "task-correction-1",
+        "task-resume-1",
+        "goal-check-task-1-1-1",
+        "user-1",
+    ] {
+        let path = std::env::temp_dir().join(format!(
+            "chariox-internal-outline-{:032x}.db",
+            rand::random::<u128>()
+        ));
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".into()),
+            agent_id: Some("agent-1".into()),
+            turn_id: Some(prompt_id.into()),
+            prompt_id: Some(prompt_id.into()),
+            provider_run_id: Some("run-1".into()),
+            ..Default::default()
+        };
+        {
+            let store = OperationalHistoryStore::open(path.clone()).unwrap();
+            store
+                .append_many(&[
+                    HistoryEvent::transcript(
+                        1,
+                        &SessionHistoryEntry::user_prompt(
+                            "session-1",
+                            "attachment-1",
+                            "agent-1",
+                            "Kernel event inbox, untrusted data",
+                        ),
+                        context.clone(),
+                    ),
+                    HistoryEvent::transcript(
+                        2,
+                        &SessionHistoryEntry::provider_output(
+                            "session-1",
+                            "run-1",
+                            Some("agent-1"),
+                            TerminalOutputKind::ProviderOutput,
+                            None,
+                            "Reminder delivered",
+                        ),
+                        context,
+                    ),
+                ])
+                .unwrap();
+        }
+        let response = execute_session_history_outline_request(
+            OperationalHistoryStore::open(path.clone()).unwrap(),
+            GetSessionHistoryOutlineRequest {
+                session_id: "session-1".into(),
+                agent_ids: Some(vec!["agent-1".into()]),
+                latest_prompt_count: Some(4),
+                cursor: None,
+            },
+        )
+        .await
+        .unwrap();
+        let LocalDaemonResponse::SessionHistoryOutline { agents } = response else {
+            panic!("expected outline")
+        };
+        assert_eq!(agents[0].turns.len(), 1);
+        let turn = &agents[0].turns[0];
+        assert_eq!(turn.prompt_id.as_deref(), Some(prompt_id));
+        assert_eq!(turn.turn_id, prompt_id);
+        assert_eq!(
+            turn.summary.as_ref().unwrap().entry.text,
+            "Reminder delivered"
+        );
+        if prompt_id == "user-1" {
+            assert_eq!(
+                turn.user_prompt.entry.text,
+                "Kernel event inbox, untrusted data"
+            );
+        } else {
+            assert_eq!(turn.user_prompt.entry.text, "");
+            assert_eq!(turn.user_prompt.total_chars, 0);
+            assert_eq!(turn.user_prompt.fragment_end, 0);
+            assert!(turn.blobs.is_empty());
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+}

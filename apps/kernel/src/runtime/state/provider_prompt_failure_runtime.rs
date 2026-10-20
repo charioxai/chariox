@@ -216,6 +216,32 @@ impl KernelRuntimeState {
             Some(provider_run_id),
             &safe_message,
         );
+        // Provider EOF/error cannot promote a partial answer to done. Task
+        // bookkeeping is best-effort: the prompt failure path below always runs.
+        let task_settlement = {
+            let settle = || -> Result<_, DaemonError> {
+                owned.ensure_agent_task(session_id, &agent_id, active_prompt.id(), None)?;
+                owned.block_failed_prompt_task(
+                    session_id,
+                    &agent_id,
+                    active_prompt.id(),
+                    provider_run_id,
+                    &safe_message,
+                )?;
+                Ok(owned
+                    .durable_state_store
+                    .agent_tasks(Some(session_id), Some(&agent_id))?
+                    .into_iter()
+                    .find(|t| t.prompt_id == active_prompt.id()))
+            };
+            match settle() {
+                Ok(current) => current.map(|t| (t, false)),
+                Err(error) => {
+                    tracing::warn!(error=%crate::secret_redaction::redact_secrets(&error.to_string()), "MP-08/MP-09/MP-10/MP-11 A02: failed turn task disposition retained for sweep");
+                    None
+                }
+            }
+        };
         let workflow_failed = active_prompt.workflow_run_id().is_some();
         if workflow_failed {
             owned.workflow_fail_provider_prompt_without_queue_advance(
@@ -239,6 +265,7 @@ impl KernelRuntimeState {
         if completion.is_none() {
             return Ok(false);
         }
+        Box::pin(self.finish_agent_task_settlement(task_settlement, &active_prompt)).await?;
         // Recorded before any queued prompt or substitute is started, so the
         // agent's next turn carries the note.
         owned.record_failed_request(

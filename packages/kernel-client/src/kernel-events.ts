@@ -1,4 +1,5 @@
 import type {
+  AgentTaskExecution,
   PasskeyPrompt,
   ProviderAccountSummary,
   SliceRecord,
@@ -130,6 +131,11 @@ export type KernelEvent =
     event: "workflow_run_updated"
     session_id: string
     workflow_run: WorkflowRun
+  }
+  | {
+    event: "agent_task_updated"
+    session_id: string
+    task: AgentTaskExecution
   }
   | {
     event: "heartbeat"

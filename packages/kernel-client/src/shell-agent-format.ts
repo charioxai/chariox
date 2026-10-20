@@ -2,6 +2,7 @@ import type { AgentInstance, RuntimeSession, SliceRecord } from "./kernel-types.
 import {
   sessionAgentRuntimeState,
 } from "./session-runtime-status.js"
+import { agentTaskStatus } from "./agent-task-status.js"
 import { agentLegacyProcessingStateIsBusy } from "./agent-activity.js"
 import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "./shell-capability-format.js"
 import {
@@ -79,7 +80,7 @@ function formatAgentListEntry(
   providerRunContext: ShellAgentProviderRunContext,
   sessionContext: ShellAgentSessionContext,
 ): string {
-  const runtimeState = agentRuntimeStateForSessionContext(agent, sessionContext)
+  const runtimeState = agentStatusLabelForSessionContext(agent, sessionContext)
   const parts = [
     runtimeState,
     formatAgentProvider(agent),
@@ -195,7 +196,7 @@ export function formatAgentInspectSummary(
   sessionContext: ShellAgentSessionContext = {},
 ): string {
   const slice = sliceForRemoteAgent(agent, slices)
-  const runtimeState = agentRuntimeStateForSessionContext(agent, sessionContext)
+  const runtimeState = agentStatusLabelForSessionContext(agent, sessionContext)
   const lines = [
     `${formatAgentRef(agent)} [${runtimeState}]`,
     `id: ${agent.id}`,
@@ -369,6 +370,17 @@ function agentIsBusyForSessionContext(
 ): boolean {
   return agentBusyForSessionContext(agent, sessionContext)
     ?? (agentRuntimeStateForSessionContext(agent, sessionContext) === "Working")
+}
+
+// A retained wait or block belongs to an earlier task; a running turn on the
+// same agent is the current fact and must not be masked by it.
+function agentStatusLabelForSessionContext(
+  agent: AgentInstance,
+  sessionContext: ShellAgentSessionContext,
+): string {
+  const runtimeState = agentRuntimeStateForSessionContext(agent, sessionContext)
+  if (runtimeState === "Working") return runtimeState
+  return agentTaskStatus(sessionContext.session, agent.id)?.label ?? runtimeState
 }
 
 function agentRuntimeStateForSessionContext(

@@ -10,6 +10,7 @@ mod environment;
 #[cfg(unix)]
 mod pre_exec_child;
 mod runtime_mcp;
+pub(crate) mod task_delta;
 pub(crate) use environment::{environment_test_isolated, isolate_environment_test};
 #[cfg(unix)]
 pub(crate) use pre_exec_child::PreExecChild;

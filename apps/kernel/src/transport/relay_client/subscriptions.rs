@@ -591,14 +591,7 @@ pub(super) async fn run_relay_subscription_loop(
                     // hot-session snapshot cannot immediately erase it in the client.
                     let mut emitted_projection_delta = emitted_terminal_workflow_run_update;
                     let mut emit_failed = false;
-                    for event in [
-                        agent_activity_changed_event(&snapshot, previous_snapshot_ref),
-                        provider_run_changed_event(&snapshot, previous_snapshot_ref),
-                        session_metadata_changed_event(&snapshot, previous_snapshot_ref),
-                        runtime_interactions_changed_event(&snapshot, previous_snapshot_ref),
-                    ]
-                    .into_iter()
-                    .flatten()
+                    for event in session_projection_changed_events(&snapshot, previous_snapshot_ref)
                     {
                         emitted_projection_delta = true;
                         if emit_relay_event(
@@ -654,8 +647,10 @@ pub(super) async fn run_relay_subscription_loop(
                             return;
                         }
                     }
+                    let ledger_snapshot_needed =
+                        agent_ledger_needs_snapshot(&snapshot, previous_snapshot_ref);
                     previous_snapshot = Some(snapshot.clone());
-                    if emitted_projection_delta || workflow_run_only {
+                    if (emitted_projection_delta || workflow_run_only) && !ledger_snapshot_needed {
                         continue;
                     }
                     if emit_relay_event(

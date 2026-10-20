@@ -1,3 +1,4 @@
+import { formatAgentWakeLines } from "@chariox/kernel-client/agent-wake-status"
 import type { ParsedSlashCommand } from "./commands.js"
 import {
   handleAgentAliasCommand,
@@ -26,7 +27,7 @@ import {
   handleCycleAgentFocus,
   type AgentLifecycleCommandHandlerDeps,
 } from "./agent-lifecycle-command-handlers.js"
-import type { AgentForkPayload, RuntimeSession, TurnUndoResult } from "./cli-types.js"
+import type { AgentForkPayload, RuntimeSession, TranscriptEntry, TurnUndoResult } from "./cli-types.js"
 
 export type AgentCommandHandlerDeps =
   & AgentConfigCommandHandlerDeps
@@ -35,6 +36,7 @@ export type AgentCommandHandlerDeps =
   & AgentSubstituteCommandHandlerDeps
   & AgentTaskCommandHandlerDeps
   & {
+    appendNotice: (message: string, emphasis?: TranscriptEntry["emphasis"], mergeKey?: string) => void
     undoTurn?: (agentRef?: string | null, turnRef?: string | null) => Promise<TurnUndoResult>
     forkAgent?: (sourceAgentRef?: string | null, alias?: string | null) => Promise<AgentForkPayload>
     refreshSessionState: (sessionId: string) => Promise<RuntimeSession>
@@ -167,9 +169,24 @@ export async function handleAgentSlashCommand(
       await handleAgentTaskCommand(deps, args)
       return
     }
+    case "wakes": {
+      // MP-08 / MP-09 / MP-10 / MP-11 A03: armed wakes, next fire and last receipt.
+      const resolved = args[1] ? deps.resolveSessionAgent(args[1]) : null
+      if (resolved && (resolved.error || !resolved.agent)) {
+        deps.flashFooter(resolved.error ?? "usage: /agent wakes [agent-ref]", "error")
+        return
+      }
+      const session = deps.sessionState()
+      deps.appendNotice(
+        formatAgentWakeLines(session, resolved?.agent?.id ?? null).join("\n"),
+        "muted",
+        `agent-wakes:${encodeURIComponent(session.id)}:${Date.now()}`,
+      )
+      return
+    }
     default:
       deps.flashFooter(
-        "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>|--slice off|new:headless|new:headed|<slice-ref>] | /agent spawn <count> | fork [agent-ref] | delete [agent-name|agent-alias] | focus <agent-id> | alias [agent-ref] <alias|clear> | provider/account/model/variant [agent-ref] <value> | list | inspect [agent-ref] | cycle | mode [agent-ref] <build|plan|inherit> | permissions [agent-ref] <required|yolo|inherit> | task [show|edit|plan|pause|resume|abort] | substitute ...",
+        "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>|--slice off|new:headless|new:headed|<slice-ref>] | /agent spawn <count> | fork [agent-ref] | delete [agent-name|agent-alias] | focus <agent-id> | alias [agent-ref] <alias|clear> | provider/account/model/variant [agent-ref] <value> | list | inspect [agent-ref] | cycle | mode [agent-ref] <build|plan|inherit> | permissions [agent-ref] <required|yolo|inherit> | task [show|edit|plan|pause|resume|abort] | wakes [agent-ref] | substitute ...",
         "error",
       )
   }

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod agent_events;
 mod agent_messaging_tools;
 mod credential_tools;
 mod extension_tools;
@@ -13,6 +14,7 @@ mod slice_tools;
 mod validation;
 mod workflow_tools;
 mod workspace_live_sync_tools;
+pub(crate) use agent_events::{agent_event_tool_specs, canonical_agent_event_tool_name};
 pub use agent_messaging_tools::*;
 pub use credential_tools::*;
 pub use extension_tools::*;

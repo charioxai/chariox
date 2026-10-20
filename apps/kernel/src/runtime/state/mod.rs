@@ -194,6 +194,8 @@ struct KernelRuntimeOwnedState {
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
     room_browser_health_inflight: Arc<std::sync::Mutex<BTreeSet<String>>>,
     next_room_browser_health_at_ms: Arc<AtomicU64>,
+    next_agent_lifecycle_sweep_ms: Arc<AtomicU64>,
+    agent_wakes: Arc<agent_wake_scheduler::AgentWakeMonitor>,
     room_environment_health_probes: Arc<room_environment_health::RoomEnvironmentHealthProbes>,
     browser_controller_generations:
         Arc<std::sync::Mutex<BTreeMap<String, browser_controller_runtime_state::ControllerGenerationObservation>>>,
@@ -350,15 +352,25 @@ struct SlicePrivateRelayConnector {
 
 mod agent_config_owned_state;
 mod agent_config_runtime_state;
+mod agent_inbox_delivery;
 mod agent_lifecycle_owned_state;
+mod agent_lifecycle_runtime;
 mod agent_profile_owned_state;
 mod agent_prompt_schedule_runtime_state;
+mod agent_task_cancellation;
+mod agent_task_failure;
+mod agent_task_owner_interactions;
+mod agent_task_owner_resolution;
+mod agent_task_projection;
 mod agent_turn_actions_runtime_state;
 mod agent_utility_runtime_state;
+mod agent_wake_cancellation;
+mod agent_wake_scheduler;
 mod attachment_owned_state;
 mod browser_controller_action_cancellation_runtime_state;
 mod browser_controller_action_execution_runtime_state;
 mod browser_controller_compatibility_runtime_state;
+mod wake_driver;
 pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
 mod browser_configuration_runtime_state;
 mod browser_controller_runtime_state;
@@ -814,6 +826,8 @@ impl KernelRuntimeState {
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
                 room_browser_health_inflight: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
                 next_room_browser_health_at_ms: Arc::new(AtomicU64::new(0)),
+                next_agent_lifecycle_sweep_ms: Arc::new(AtomicU64::new(0)),
+                agent_wakes: Arc::new(agent_wake_scheduler::AgentWakeMonitor::new()),
                 room_environment_health_probes: Arc::new(room_environment_health::RoomEnvironmentHealthProbes::default()),
                 browser_controller_generations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 session_projection,

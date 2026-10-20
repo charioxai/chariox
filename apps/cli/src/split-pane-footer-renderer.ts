@@ -33,6 +33,7 @@ type SplitPaneFooterSlotState = {
   parts: Partial<SplitPaneFooterTextGroup>
   taskParts: SplitPaneFooterTaskGroup
   badgeTexts: TextRenderable[]
+  badgeBox?: BoxRenderable
 }
 
 type SplitPaneFooterTaskGroup = {
@@ -187,6 +188,7 @@ function ensureFooterRenderables(
   state.parts = nextParts
   state.taskParts = nextTaskParts
   state.badgeTexts = nextBadgeTexts
+  state.badgeBox = badgeBox
 }
 
 function clearFooter(
@@ -242,6 +244,11 @@ function renderFooter(
     ? options.metaagentTasks.find((entry) => entry.metaagent_id === agent.id) ?? null
     : null
   renderTaskParts(state.taskParts, task)
+  while (state.badgeBox && state.badgeTexts.length < badge.label.length) {
+    const text = new TextRenderable(options.renderer, { wrapMode: "none" })
+    state.badgeBox.add(text)
+    state.badgeTexts.push(text)
+  }
   renderStatusBadgeTexts(state.badgeTexts, badge.label, badge.tone, options)
   const activeRun = options.providerRun && options.providerRun.agent_instance_id === agent?.id
     ? {

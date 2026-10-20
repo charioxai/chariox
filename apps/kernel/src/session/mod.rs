@@ -1,3 +1,5 @@
+mod internal_prompts;
+pub(crate) use internal_prompts::is_internal_prompt_echo_id;
 mod agent_config;
 mod agent_prompt_scheduling;
 mod metaagent_task;

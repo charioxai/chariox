@@ -173,8 +173,8 @@ fn starting_workflow_prompt_persists_running_node_for_restart_recovery() {
     );
 }
 
-#[test]
-fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
+#[tokio::test]
+async fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
     let worktree = crate::test_support::TestWorktree::new("workflow-tool-idle-provider");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
@@ -292,6 +292,105 @@ fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
 
     assert_ne!(workflow_provider.id(), ordinary.id());
     assert!(workflow_provider.workflow_tools_enabled());
+    runtime
+        .owned
+        .provider_store
+        .mark_run_running(workflow_provider.id())
+        .unwrap();
+    runtime
+        .owned
+        .advance_next_queued_prompt_dispatch(session.id(), agent.id(), workflow_provider.id())
+        .unwrap()
+        .expect("workflow turn should start");
+    // MP-08/MP-10/MP-11: workflow continuation identity is not integrated with
+    // task waits. Neither discovery nor a direct MCP call may offer that path.
+    let token = workflow_provider
+        .runtime_mcp_auth_token()
+        .expect("workflow MCP auth");
+    let event_tools: Vec<_> = runtime
+        .runtime_tool_specs_for_auth_token(token)
+        .into_iter()
+        .filter(|spec| spec.name.starts_with("chariox.events."))
+        .collect();
+    let before = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap();
+    let active = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&before, agent.id())
+        .unwrap();
+    runtime
+        .owned
+        .ensure_agent_task(
+            session.id(),
+            agent.id(),
+            active.id(),
+            Some(workflow_provider.id()),
+        )
+        .unwrap();
+    let tasks_before = runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap();
+    let task = tasks_before
+        .iter()
+        .find(|task| task.prompt_id == active.id())
+        .unwrap();
+    let mut refused = Vec::new();
+    for name in [
+        "timer",
+        "yield",
+        "blocked",
+        "inbox",
+        "ack",
+        "cancel_wake",
+        "wakes",
+    ] {
+        let result = runtime.dispatch_authenticated_runtime_tool_call(token, &format!("chariox.events.{name}"),
+            serde_json::json!({"task_id": task.task_id, "origin_prompt_id": active.id(), "label": "workflow wait", "delay_ms": 1000,
+                "registration_ids": ["workflow-timer"], "inbox_cursor": 0, "deadline_ms": crate::session::unix_epoch_ms() + 60000,
+                "reason": "wait for workflow timer", "sequence": 1, "wake_id": "workflow-timer"})).await;
+        refused.push(
+            result.is_err_and(|error| error.to_string().contains("unavailable in workflow turns")),
+        );
+    }
+    assert!(
+        event_tools.is_empty() && refused.iter().all(|refused| *refused),
+        "workflow event tools: advertised={}, explicitly refused={refused:?}",
+        event_tools.len()
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(session.id()), Some(agent.id()))
+            .unwrap(),
+        tasks_before
+    );
+    assert!(runtime
+        .owned
+        .durable_state_store
+        .agent_wakes(Some(session.id()), Some(agent.id()))
+        .unwrap()
+        .is_empty());
+    assert!(runtime
+        .owned
+        .agent_task_context_hint(session.id(), agent.id(), active.id())
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap()
+            .workflow_runs(),
+        before.workflow_runs()
+    );
     assert!(matches!(
         runtime
             .owned

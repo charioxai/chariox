@@ -359,7 +359,7 @@ impl KernelRuntimeState {
         Ok(result)
     }
 
-    fn ensure_agent_message_attachment(
+    pub(in crate::runtime::state) fn ensure_agent_message_attachment(
         &self,
         session_id: &str,
         sender: &crate::agent::AgentInstance,

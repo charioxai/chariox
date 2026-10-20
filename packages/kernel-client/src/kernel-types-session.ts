@@ -49,6 +49,8 @@ export type RuntimeSession = {
   active_interactions?: RuntimeInteraction[]
   metaagent_tasks?: MetaagentTask[]
   queued_metaagent_tasks?: QueuedMetaagentTask[]
+  agent_tasks?: AgentTaskExecution[]
+  agent_wakes?: AgentWake[]
   agent_prompt_schedules?: AgentPromptSchedule[]
   focused_agent_id: string | null
   max_agents: number
@@ -349,4 +351,29 @@ export type WorkspaceLiveSyncStatus = {
   targets: WorkspaceLiveSyncTargetStatus[]
   conflicts: WorkspaceLiveSyncConflictSummary[]
   ignore: WorkspaceLiveSyncIgnoreStatus
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A02, protocol 561: the kernel's durable task ledger.
+export type AgentTaskExecution = {
+  task_id: string; room_id: string; owner_user_id: string; agent_id: string; prompt_id: string
+  provider_run_id: string | null; revision: number; blocked_revision: number
+  state: "working" | "waiting" | "blocked" | "done" | "cancelled"
+  reason: string
+  obligations: { id: string; kind: string; resource_id: string | null; status: string; dispatch_state: string }[]
+  wait: { registration_ids: string[]; deadline_ms: number; started_at_ms: number; inbox_cursor: number; long_wait_notified: boolean; last_checked_at_ms: number } | null
+  last_progress_at_ms: number; progress_sequence: number; no_progress_wakes: number
+  correction_used: boolean; pending_prompt_id: string | null
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A03, protocol 561: one kernel-owned wake source with its receipts.
+// `kind` names the driver (e.g. "timer"); `summary` is the driver's redacted one-line description.
+export type AgentWake = {
+  id: string; task_id: string; room_id: string; agent_id: string; registration_id: string
+  kind: string; label: string
+  state: "scheduled" | "starting" | "running" | "cancelling" | "fired" | "exited" | "lost" | "cancelled"
+  created_at_ms: number; verified_at_ms: number | null; next_due_ms: number | null; interval_ms: number | null
+  summary: string; detail: unknown
+  fire_count: number; missed_fires: number; last_fired_at_ms: number | null; last_sequence: number | null
+  last_delivery: string | null; last_delivered_at_ms: number | null; last_acknowledged_at_ms: number | null
+  alerted_sequence: number | null
 }

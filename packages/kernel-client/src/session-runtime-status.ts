@@ -8,6 +8,7 @@ import {
   agentRuntimeActivityResolvedStatus,
   projectAgentRuntimeActivity,
 } from "./agent-activity.js"
+import { agentTaskStatus } from "./agent-task-status.js"
 import type { AgentRuntimeActivityBusyInput, AgentRuntimeActivityProjection, AgentRuntimeActivityStatus } from "./agent-activity.js"
 import {
   ACTIVE_STATUS_FALLBACK,
@@ -175,7 +176,7 @@ export function sessionAgentPaneStatusBadgeForSession(options: {
     return sessionAgentPaneStatusBadge({ agent: null, activeLabel: options.activeLabel })
   }
   const runtimeState = sessionAgentRuntimeState(options.session, agent)
-  return sessionAgentPaneStatusBadge({
+  const badge = sessionAgentPaneStatusBadge({
     agent: { state: runtimeState, is_processing: false },
     activeLabel: options.activeLabel,
     hasPromptWork: runtimeState === "Working",
@@ -183,6 +184,24 @@ export function sessionAgentPaneStatusBadgeForSession(options: {
     busyLatch: options.busyLatch ?? false,
     useLegacyAgentProcessingState: false,
   })
+  // A retained wait or block belongs to an earlier task; a running turn on the
+  // same agent is the current fact and must not be masked by it.
+  if (badge.tone === "working") return badge
+  return sessionAgentTaskStatus(options.session, agent.id) ?? badge
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A02: the kernel's wait or block. A static
+// deadline clock keeps the badge correct without a client timer.
+export function sessionAgentTaskStatus(
+  session: RuntimeSession | null | undefined,
+  agentId: string,
+): SessionAgentPaneStatusBadge | null {
+  const status = agentTaskStatus(session, agentId)
+  if (!status) return null
+  const label = status.deadline_ms !== undefined
+    ? `WAITING UNTIL ${new Date(status.deadline_ms).toISOString().slice(11, 19)}Z`
+    : status.label.length > 24 ? `${status.label.slice(0, 23)}…` : status.label
+  return { label, tone: status.tone }
 }
 
 export function sessionAgentRuntimeActivityProjection(

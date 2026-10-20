@@ -1,3 +1,4 @@
+import { withAgentTaskUpdate } from "@chariox/kernel-client/agent-task-state"
 import { createEffect, onCleanup, onMount } from "solid-js"
 
 import { createBackgroundPollerStartupController } from "./background-poller-startup-controller.js"
@@ -35,7 +36,7 @@ import {
 import {
   shouldRenderProviderStatus,
 } from "./transcript.js"
-import type { WorkflowDesignOpForwarded } from "@chariox/kernel-client/kernel-types"
+import type { AgentTaskExecution, WorkflowDesignOpForwarded } from "@chariox/kernel-client/kernel-types"
 import type {
   AgentRuntimeActivity,
   RuntimeInteraction,
@@ -514,6 +515,12 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
       deps.rebuildTranscript()
     }
   }
+  const applyAgentTaskUpdated = (
+    sessionId: string,
+    task: AgentTaskExecution,
+  ) => {
+    applyDeltaSessionState(sessionId, (session) => withAgentTaskUpdate(session, sessionId, task))
+  }
   const applyWorkflowDesignOp = (event: WorkflowDesignOpForwarded) => {
     const applied = applyDeltaSessionState(event.session_id, (session) => ({
       ...session,
@@ -570,6 +577,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     applySessionMetadataChanged,
     applyRuntimeInteractionsChanged,
     applyWorkflowRunUpdated,
+    applyAgentTaskUpdated,
     applyWorkflowDesignOp,
     scheduleSharedPromptInputHistoryRefresh: deps.scheduleSharedPromptInputHistoryRefresh,
     handleKernelSessionUnavailable,

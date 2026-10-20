@@ -15,9 +15,8 @@ use crate::terminal::{
     AssistantMessageCompletionRecord, RuntimeNoticeRecord, TerminalOutputRecord,
 };
 use crate::transport::kernel_protocol::{
-    agent_activity_changed_event, event_is_relevant_to_attachment, event_session_id,
-    event_stream_id_for_event, kernel_event_trace_payload, provider_run_changed_event,
-    runtime_interactions_changed_event, session_metadata_changed_event,
+    agent_ledger_needs_snapshot, event_is_relevant_to_attachment, event_session_id,
+    event_stream_id_for_event, kernel_event_trace_payload, session_projection_changed_events,
     subscription_event_stream_id, workflow_run_only_changed, workflow_run_updated_events,
     KernelEvent, KernelOutgoingFrame, KernelSubscriptionScope, WaitingRoomInventoryEventProjection,
     WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
@@ -241,14 +240,7 @@ pub(super) async fn run_subscription_loop(
                     // hot-session snapshot cannot immediately erase it in the client.
                     let mut emitted_projection_delta = emitted_terminal_workflow_run_update;
                     let mut emit_failed = false;
-                    for event in [
-                        agent_activity_changed_event(&snapshot, previous_snapshot_ref),
-                        provider_run_changed_event(&snapshot, previous_snapshot_ref),
-                        session_metadata_changed_event(&snapshot, previous_snapshot_ref),
-                        runtime_interactions_changed_event(&snapshot, previous_snapshot_ref),
-                    ]
-                    .into_iter()
-                    .flatten()
+                    for event in session_projection_changed_events(&snapshot, previous_snapshot_ref)
                     {
                         emitted_projection_delta = true;
                         if !emit_kernel_event(
@@ -304,8 +296,10 @@ pub(super) async fn run_subscription_loop(
                             return;
                         }
                     }
+                    let ledger_snapshot_needed =
+                        agent_ledger_needs_snapshot(&snapshot, previous_snapshot_ref);
                     previous_snapshot = Some(snapshot.clone());
-                    if emitted_projection_delta || workflow_run_only {
+                    if (emitted_projection_delta || workflow_run_only) && !ledger_snapshot_needed {
                         continue;
                     }
                     if !emit_kernel_event(

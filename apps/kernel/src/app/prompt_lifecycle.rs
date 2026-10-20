@@ -679,6 +679,32 @@ impl DaemonApp {
             .providers
             .drain_finished_structured_prompt_submit_jobs();
         for finished in finished_jobs {
+            match crate::durable_state::agent_lifecycle::finish_provider_event_submit(
+                &self.durable_state,
+                self.providers.structured_submit_epoch(),
+                &finished,
+            ) {
+                Ok(Some(receipt)) => {
+                    if let Some(notice) = receipt.notice {
+                        self.record_notice(
+                            &finished.session_id,
+                            Some(&finished.provider_run_id),
+                            self.attachments
+                                .list_session_attachment_ids(&finished.session_id),
+                            notice,
+                        );
+                    }
+                    if receipt.steered || receipt.stale {
+                        continue;
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    self.providers
+                        .schedule_finished_structured_prompt_submit_retry(finished);
+                    continue;
+                }
+            }
             match crate::runtime::state::notification_delivery::finish_structured_notification_submit(
                 &self.durable_state,
                 &self.sessions,

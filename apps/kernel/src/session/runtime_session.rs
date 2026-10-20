@@ -122,6 +122,10 @@ pub struct RuntimeSession {
     active_interactions: Vec<RuntimeInteraction>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     metaagent_tasks: Vec<MetaagentTask>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    agent_tasks: Vec<crate::durable_state::agent_lifecycle::AgentTaskExecution>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    agent_wakes: Vec<crate::durable_state::agent_lifecycle::AgentWake>,
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     queued_metaagent_tasks: VecDeque<QueuedMetaagentTask>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -162,6 +166,30 @@ pub struct RuntimeSession {
 }
 
 impl RuntimeSession {
+    pub(crate) fn agent_tasks(
+        &self,
+    ) -> &[crate::durable_state::agent_lifecycle::AgentTaskExecution] {
+        &self.agent_tasks
+    }
+
+    pub(crate) fn set_agent_tasks(
+        &mut self,
+        tasks: Vec<crate::durable_state::agent_lifecycle::AgentTaskExecution>,
+    ) {
+        self.agent_tasks = tasks;
+    }
+
+    pub(crate) fn agent_wakes(&self) -> &[crate::durable_state::agent_lifecycle::AgentWake] {
+        &self.agent_wakes
+    }
+
+    pub(crate) fn set_agent_wakes(
+        &mut self,
+        wakes: Vec<crate::durable_state::agent_lifecycle::AgentWake>,
+    ) {
+        self.agent_wakes = wakes;
+    }
+
     pub(crate) fn durable_workflow_hot_state(&self) -> DurableWorkflowHotState {
         DurableWorkflowHotState {
             workflows: self.workflows.clone(),
@@ -245,6 +273,8 @@ impl RuntimeSession {
             prompt_runtime: PromptRuntimeState::default(),
             active_interactions: Vec::new(),
             metaagent_tasks: Vec::new(),
+            agent_tasks: Vec::new(),
+            agent_wakes: Vec::new(),
             queued_metaagent_tasks: VecDeque::new(),
             agent_prompt_schedules: Vec::new(),
             agent_output_read_state: BTreeMap::new(),
