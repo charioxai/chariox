@@ -48,6 +48,33 @@ impl KernelRuntimeOwnedState {
                 agent.provider_account_profile(),
             )?;
             if selection_matches || owner == alias_owner {
+                // MP-08 / MP-11: the marked worker process already holds HOME's
+                // launch credential; it has no independent worker login.
+                if provider == "claude"
+                    && self
+                        .provider_run_projection
+                        .is_leased_provider_run(run.id())
+                    && matches!(
+                        run.state(),
+                        crate::provider::ProviderRunState::Starting
+                            | crate::provider::ProviderRunState::Running
+                    )
+                    && owner == self.provider_account_authority_owner_for_agent(agent)?
+                {
+                    let selected = self.provider_account_profiles.get(
+                        &owner,
+                        provider,
+                        agent.provider_account_profile(),
+                    )?;
+                    let launched = self.provider_account_profiles.get(
+                        &owner,
+                        provider,
+                        run.account_profile(),
+                    )?;
+                    if selected.profile_id == launched.profile_id {
+                        return Ok(());
+                    }
+                }
                 self.provider_account_profiles.require_authenticated(
                     &owner,
                     provider,

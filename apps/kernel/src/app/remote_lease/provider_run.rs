@@ -239,6 +239,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 // do not replace it with a managed run while refresh is pending.
                 return Err(native_runtime_catalog_refresh_pending_error());
             }
+            if active && !environment_matches {
+                return Err(DaemonError::LocalTransport {
+                    operation: "remote Project environment reload",
+                    message: "the worker provider run has an active turn and changed Project inputs; retry after the active turn completes so HOME can supply the next launch credential".into(),
+                });
+            }
             if active && !mcp_matches {
                 return Err(DaemonError::LocalTransport {
                     operation: "remote MCP provider reload",
