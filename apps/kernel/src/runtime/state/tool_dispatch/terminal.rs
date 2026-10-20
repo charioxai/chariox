@@ -7,10 +7,10 @@ use crate::local::{RoomTerminalOperation, RoomTerminalResult};
 use crate::room_terminal::{RoomTerminalWatch, TerminalActor, MAX_WAIT};
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use crate::transport::runtime_tools::{
-    RuntimeToolResult, TerminalIdArgs, TerminalListArgs, TerminalNamedCondition, TerminalOpenArgs,
-    TerminalSendArgs, TerminalWaitArgs, TerminalWaitCondition, TERMINAL_CLOSE_TOOL,
-    TERMINAL_LIST_TOOL, TERMINAL_OPEN_TOOL, TERMINAL_READ_TOOL, TERMINAL_SEND_TOOL,
-    TERMINAL_WAIT_TOOL,
+    RuntimeToolResult, TerminalHost, TerminalIdArgs, TerminalListArgs, TerminalNamedCondition,
+    TerminalOpenArgs, TerminalSendArgs, TerminalWaitArgs, TerminalWaitCondition,
+    TERMINAL_CLOSE_TOOL, TERMINAL_LIST_TOOL, TERMINAL_OPEN_TOOL, TERMINAL_READ_TOOL,
+    TERMINAL_SEND_TOOL, TERMINAL_WAIT_TOOL,
 };
 
 const DEFAULT_COLS: u16 = 120;
@@ -158,24 +158,21 @@ impl KernelRuntimeState {
         let actor = TerminalActor::Agent(agent_id.to_string());
         // Where the call runs: the machine the arguments name, else the
         // calling agent's own. A list without a machine covers all of them.
-        let (host_agent, operation) = match call {
-            TerminalCall::Send(args) => {
-                let host =
-                    self.terminal_tool_host(session_id, agent_id, args.host_agent.as_deref())?;
+        let (host, operation) = match call {
+            TerminalCall::Send { host, args } => {
+                let host = self.terminal_tool_host(session_id, agent_id, &host)?;
                 return self
                     .send_terminal_text(session_id, actor, host.as_deref(), args)
                     .await;
             }
-            TerminalCall::Operate {
-                host_agent,
-                operation,
-            } => (host_agent, operation),
+            TerminalCall::Operate { host, operation } => (host, operation),
         };
-        let everywhere = host_agent.is_none() && matches!(operation, RoomTerminalOperation::List);
+        let everywhere =
+            host == TerminalHost::CallingAgent && matches!(operation, RoomTerminalOperation::List);
         let host = if everywhere {
             None
         } else {
-            self.terminal_tool_host(session_id, agent_id, host_agent.as_deref())?
+            self.terminal_tool_host(session_id, agent_id, &host)?
         };
         let result = self
             .route_room_terminal(session_id, actor, host.as_deref(), everywhere, operation)
@@ -183,20 +180,24 @@ impl KernelRuntimeState {
         Ok(terminal_result_payload(result))
     }
 
-    /// The machine a terminal tool runs on: the agent the arguments name
-    /// (which must belong to this Room), else the calling agent.
+    /// The Room agent whose machine a terminal tool runs on: the agent the
+    /// arguments name (which must belong to this Room), else the calling
+    /// agent. `None` is this kernel, the Room's home.
     fn terminal_tool_host(
         &self,
         session_id: &str,
         calling_agent: &str,
-        named: Option<&str>,
+        host: &TerminalHost,
     ) -> Result<Option<String>, DaemonError> {
-        let Some(named) = named else {
-            return Ok(Some(calling_agent.to_string()));
-        };
-        self.ensure_room_agent(session_id, named)
-            .map_err(|error| terminal_tool_error("host_agent", error.to_string()))?;
-        Ok(Some(named.to_string()))
+        match host {
+            TerminalHost::CallingAgent => Ok(Some(calling_agent.to_string())),
+            TerminalHost::HomeKernel => Ok(None),
+            TerminalHost::Agent(named) => {
+                self.ensure_room_agent(session_id, named)
+                    .map_err(|error| terminal_tool_error("host_agent", error.to_string()))?;
+                Ok(Some(named.clone()))
+            }
+        }
     }
 
     /// Type for the agent. Returns the output offset from before the
@@ -324,58 +325,73 @@ impl KernelRuntimeState {
 
 /// A terminal tool call with its arguments checked once.
 enum TerminalCall {
-    Send(TerminalSendArgs),
+    Send {
+        host: TerminalHost,
+        args: TerminalSendArgs,
+    },
     Operate {
-        host_agent: Option<String>,
+        host: TerminalHost,
         operation: RoomTerminalOperation,
     },
 }
 
 impl TerminalCall {
     fn parse(tool_name: &str, arguments: serde_json::Value) -> Result<Self, DaemonError> {
-        let operate = |host_agent, operation| Self::Operate {
-            host_agent,
-            operation,
+        let host = |host_agent, home_kernel| {
+            TerminalHost::from_arguments(host_agent, home_kernel)
+                .map_err(|message| terminal_tool_error(tool_name, message))
         };
         Ok(match tool_name {
             TERMINAL_OPEN_TOOL => {
                 let args: TerminalOpenArgs = parse_arguments(tool_name, arguments)?;
-                operate(
-                    args.host_agent,
-                    RoomTerminalOperation::Open {
+                Self::Operate {
+                    host: host(args.host_agent, args.home_kernel)?,
+                    operation: RoomTerminalOperation::Open {
                         cols: args.cols.unwrap_or(DEFAULT_COLS),
                         rows: args.rows.unwrap_or(DEFAULT_ROWS),
                         title: args.title,
                         command: args.command,
                     },
-                )
+                }
             }
-            TERMINAL_LIST_TOOL => operate(
-                parse_arguments::<TerminalListArgs>(tool_name, arguments)?.host_agent,
-                RoomTerminalOperation::List,
-            ),
-            TERMINAL_SEND_TOOL => Self::Send(parse_arguments(tool_name, arguments)?),
+            TERMINAL_LIST_TOOL => {
+                let args: TerminalListArgs = parse_arguments(tool_name, arguments)?;
+                Self::Operate {
+                    host: host(args.host_agent, args.home_kernel)?,
+                    operation: RoomTerminalOperation::List,
+                }
+            }
+            TERMINAL_SEND_TOOL => {
+                let args: TerminalSendArgs = parse_arguments(tool_name, arguments)?;
+                Self::Send {
+                    host: host(args.host_agent.clone(), args.home_kernel)?,
+                    args,
+                }
+            }
             TERMINAL_READ_TOOL => {
                 let args: TerminalIdArgs = parse_arguments(tool_name, arguments)?;
-                operate(
-                    args.host_agent,
-                    RoomTerminalOperation::Snapshot {
+                Self::Operate {
+                    host: host(args.host_agent, args.home_kernel)?,
+                    operation: RoomTerminalOperation::Snapshot {
                         terminal_id: args.terminal_id,
                     },
-                )
+                }
             }
             TERMINAL_WAIT_TOOL => {
                 let args: TerminalWaitArgs = parse_arguments(tool_name, arguments)?;
-                operate(args.host_agent.clone(), wait_operation(args))
+                Self::Operate {
+                    host: host(args.host_agent.clone(), args.home_kernel)?,
+                    operation: wait_operation(args),
+                }
             }
             TERMINAL_CLOSE_TOOL => {
                 let args: TerminalIdArgs = parse_arguments(tool_name, arguments)?;
-                operate(
-                    args.host_agent,
-                    RoomTerminalOperation::Close {
+                Self::Operate {
+                    host: host(args.host_agent, args.home_kernel)?,
+                    operation: RoomTerminalOperation::Close {
                         terminal_id: args.terminal_id,
                     },
-                )
+                }
             }
             other => {
                 return Err(terminal_tool_error(
@@ -389,7 +405,7 @@ impl TerminalCall {
     /// What the agent would run or type, when that needs approval.
     fn typed_text(&self) -> Option<String> {
         match self {
-            Self::Send(args) => Some(args.text.clone()),
+            Self::Send { args, .. } => Some(args.text.clone()),
             Self::Operate {
                 operation:
                     RoomTerminalOperation::Open {

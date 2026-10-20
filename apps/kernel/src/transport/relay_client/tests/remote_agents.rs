@@ -1070,6 +1070,91 @@ async fn assert_worker_provider_tools_act_as_the_home_agent(
     )
     .await;
     assert_eq!(closed.payload["closed"], true, "{:?}", closed.payload);
+
+    // A terminal the user opened on the home kernel names no worker. The
+    // provider addresses it by asking for the home kernel, without naming
+    // any home agent of the Room.
+    let user_client = |operation| {
+        let router = home_router.clone();
+        let request = LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
+            session_id: session_id.to_string(),
+            acting_agent: None,
+            host_agent: None,
+            operation,
+        });
+        async move {
+            let command = KernelCommand::from_local_request("room-terminal", None, None, &request);
+            match router.dispatch(command, request).await {
+                Ok(LocalDaemonResponse::RoomTerminal { result }) => result,
+                other => panic!("unexpected terminal response: {other:?}"),
+            }
+        }
+    };
+    let RoomTerminalResult::Opened { terminal } = user_client(RoomTerminalOperation::Open {
+        cols: 90,
+        rows: 24,
+        title: None,
+        command: None,
+    })
+    .await
+    else {
+        panic!("the user's terminal should open on the home kernel");
+    };
+    let user_terminal = terminal.terminal_id;
+    let listed = tool("chariox.terminal_list", serde_json::json!({})).await;
+    assert!(
+        listed.payload["terminals"]
+            .as_array()
+            .expect("terminals")
+            .iter()
+            .any(|terminal| terminal["terminal_id"] == user_terminal.as_str()
+                && terminal["host_agent"].is_null()),
+        "the provider's list shows the home terminal without a worker: {:?}",
+        listed.payload
+    );
+    let home_only = tool(
+        "chariox.terminal_list",
+        serde_json::json!({ "home_kernel": true }),
+    )
+    .await;
+    assert_eq!(
+        home_only.payload["terminals"].as_array().map(Vec::len),
+        Some(1),
+        "{:?}",
+        home_only.payload
+    );
+    let read = tool(
+        "chariox.terminal_read",
+        serde_json::json!({ "terminal_id": user_terminal, "home_kernel": true }),
+    )
+    .await;
+    assert!(read.ok, "{:?}", read.payload);
+    let sent = tool(
+        "chariox.terminal_send",
+        serde_json::json!({ "terminal_id": user_terminal, "text": "echo home-ok", "enter": true, "home_kernel": true }),
+    )
+    .await;
+    assert!(sent.ok, "{:?}", sent.payload);
+    assert!(
+        worker_router
+            .runtime_state()
+            .dispatch_authenticated_runtime_tool_call(
+                &worker_token,
+                "chariox.terminal_read",
+                serde_json::json!({
+                    "terminal_id": user_terminal,
+                    "host_agent": home_agent_id,
+                    "home_kernel": true,
+                }),
+            )
+            .await
+            .is_err(),
+        "a machine is named once"
+    );
+    user_client(RoomTerminalOperation::Close {
+        terminal_id: user_terminal,
+    })
+    .await;
 }
 
 /// A Room terminal for an agent leased to a worker runs on the worker, over

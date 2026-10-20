@@ -27,6 +27,31 @@ pub struct TerminalOpenArgs {
     /// The machine to use: the `host_agent` a terminal was listed with.
     #[serde(default)]
     pub host_agent: Option<String>,
+    /// Use the Room's home kernel: terminals listed without a `host_agent`.
+    #[serde(default)]
+    pub home_kernel: bool,
+}
+
+/// Where a terminal tool runs, as its arguments name it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminalHost {
+    /// The calling agent's machine (a list without one covers every machine).
+    CallingAgent,
+    /// The machine of this Room agent.
+    Agent(String),
+    /// The Room's home kernel, whatever machines its agents run on.
+    HomeKernel,
+}
+
+impl TerminalHost {
+    pub fn from_arguments(host_agent: Option<String>, home_kernel: bool) -> Result<Self, String> {
+        match (host_agent, home_kernel) {
+            (None, false) => Ok(Self::CallingAgent),
+            (Some(agent), false) => Ok(Self::Agent(agent)),
+            (None, true) => Ok(Self::HomeKernel),
+            (Some(_), true) => Err("name host_agent or home_kernel, not both".to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -40,6 +65,9 @@ pub struct TerminalSendArgs {
     /// The machine to use: the `host_agent` a terminal was listed with.
     #[serde(default)]
     pub host_agent: Option<String>,
+    /// Use the Room's home kernel: terminals listed without a `host_agent`.
+    #[serde(default)]
+    pub home_kernel: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -49,6 +77,9 @@ pub struct TerminalIdArgs {
     /// The machine to use: the `host_agent` a terminal was listed with.
     #[serde(default)]
     pub host_agent: Option<String>,
+    /// Use the Room's home kernel: terminals listed without a `host_agent`.
+    #[serde(default)]
+    pub home_kernel: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -57,6 +88,9 @@ pub struct TerminalListArgs {
     /// List only this machine's terminals instead of every machine's.
     #[serde(default)]
     pub host_agent: Option<String>,
+    /// List only the home kernel's terminals.
+    #[serde(default)]
+    pub home_kernel: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -74,6 +108,9 @@ pub struct TerminalWaitArgs {
     /// The machine to use: the `host_agent` a terminal was listed with.
     #[serde(default)]
     pub host_agent: Option<String>,
+    /// Use the Room's home kernel: terminals listed without a `host_agent`.
+    #[serde(default)]
+    pub home_kernel: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -99,6 +136,10 @@ pub fn terminal_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         "type": "string",
         "description": "The host_agent a terminal was listed with, when it runs on another machine of this Room. Omit for your own machine."
     });
+    let home_kernel = serde_json::json!({
+        "type": "boolean",
+        "description": "Use the Room's home kernel, where terminals listed with a null host_agent run. Not together with host_agent."
+    });
     vec![
         RuntimeToolSpec {
             name: TERMINAL_OPEN_TOOL.to_string(),
@@ -110,17 +151,18 @@ pub fn terminal_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     "command": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 64},
                     "cols": {"type": "integer", "minimum": 20, "maximum": 500},
                     "rows": {"type": "integer", "minimum": 5, "maximum": 200},
-                    "host_agent": host_agent
+                    "host_agent": host_agent,
+                    "home_kernel": home_kernel
                 },
                 "additionalProperties": false
             }),
         },
         RuntimeToolSpec {
             name: TERMINAL_LIST_TOOL.to_string(),
-            description: "List this Room's terminals on every machine, with their status, who drives them, their output offset and the host_agent to pass back for terminals on another machine.".to_string(),
+            description: "List this Room's terminals on every machine, with their status, who drives them, their output offset and the host_agent to pass back for terminals on another machine (home_kernel true for those with a null host_agent).".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
-                "properties": {"host_agent": host_agent},
+                "properties": {"host_agent": host_agent, "home_kernel": home_kernel},
                 "additionalProperties": false
             }),
         },
@@ -134,7 +176,8 @@ pub fn terminal_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     "terminal_id": terminal_id,
                     "text": {"type": "string", "maxLength": 65536},
                     "enter": {"type": "boolean"},
-                    "host_agent": host_agent
+                    "host_agent": host_agent,
+                    "home_kernel": home_kernel
                 },
                 "additionalProperties": false
             }),
@@ -145,7 +188,7 @@ pub fn terminal_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["terminal_id"],
-                "properties": {"terminal_id": terminal_id, "host_agent": host_agent},
+                "properties": {"terminal_id": terminal_id, "host_agent": host_agent, "home_kernel": home_kernel},
                 "additionalProperties": false
             }),
         },
@@ -175,7 +218,8 @@ pub fn terminal_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     },
                     "after_offset": {"type": "integer", "minimum": 0},
                     "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 240},
-                    "host_agent": host_agent
+                    "host_agent": host_agent,
+                    "home_kernel": home_kernel
                 },
                 "additionalProperties": false
             }),
@@ -186,7 +230,7 @@ pub fn terminal_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["terminal_id"],
-                "properties": {"terminal_id": terminal_id, "host_agent": host_agent},
+                "properties": {"terminal_id": terminal_id, "host_agent": host_agent, "home_kernel": home_kernel},
                 "additionalProperties": false
             }),
         },

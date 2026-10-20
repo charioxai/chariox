@@ -2281,4 +2281,56 @@ mod room_terminal_170_shapes {
             "97df114510c195b53e132e9bc4bc8fb9cad7d9bfe806b33ad8530022e46a03c9",
         );
     }
+
+    #[test]
+    fn forwarded_terminal_tool_peer_170_request_and_response_shapes() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 170);
+        let request = RelayPeerRequest::ForwardTerminalRuntimeTool {
+            context: RemoteExtensionInvocationContext {
+                home_kernel_id: "home".into(),
+                home_session_id: "room-1".into(),
+                home_agent_id: "agent-1".into(),
+                leased_agent_id: "leased-1".into(),
+                worker_provider_run_id: "run-1".into(),
+                worker_kernel_id: Some("worker".into()),
+                worker_machine_id: None,
+            },
+            call: RemoteTerminalRuntimeToolCall {
+                tool_name: "chariox.terminal_read".into(),
+                arguments: serde_json::json!({"terminal_id": "term-1", "home_kernel": true}),
+            },
+        };
+        let wire = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({"kind": "forward_terminal_runtime_tool",
+                "context": {"home_kernel_id": "home", "home_session_id": "room-1",
+                    "home_agent_id": "agent-1", "leased_agent_id": "leased-1",
+                    "worker_provider_run_id": "run-1", "worker_kernel_id": "worker"},
+                "call": {"tool_name": "chariox.terminal_read",
+                    "arguments": {"terminal_id": "term-1", "home_kernel": true}}})
+        );
+        assert_wire::<RelayPeerRequest>(
+            wire,
+            "a351eac8619e213b3af207f645f068c2fc28a8046125b98d26c447b0861f2139",
+        );
+        let response = RelayPeerResponse::TerminalRuntimeToolHandled {
+            result: RemoteTerminalRuntimeToolResult(
+                crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({"closed": true}),
+                },
+            ),
+        };
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({"kind": "terminal_runtime_tool_handled",
+                "result": {"ok": true, "payload": {"closed": true}}})
+        );
+        assert_wire::<RelayPeerResponse>(
+            wire,
+            "48fbcd5f06df3e69938eb9c3d53b4d84f3c73901fa1c953aa2e364f3b098ae2a",
+        );
+    }
 }
