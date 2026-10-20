@@ -94,6 +94,19 @@ export class ChromeTabGroups {
     const { id } = await this.connection.send("Extensions.loadUnpacked", { path: directory });
     if (id !== TAB_GROUPS_EXTENSION_ID) throw new Error("MP-11: unexpected kernel tab-groups extension id");
     this.directory = directory;
+    // MP-08/MP-10: Chrome can serve updated files while running a cached
+    // worker. Reload this owned component before binding its native state.
+    const worker = await this.worker(40);
+    if (!worker) throw new Error("MP-11: kernel tab-groups extension unavailable");
+    const {sessionId} = await this.connection.send("Target.attachToTarget",{targetId:worker.targetId,flatten:true});
+    await this.connection.send("Runtime.evaluate",{expression:"chrome.runtime.reload()"},sessionId).catch(()=>{});
+    await this.connection.send("Target.detachFromTarget",{sessionId}).catch(()=>{});
+    this.nativeState.detach(); this.signature="[]";
+    for(let attempt=0;attempt<40;attempt++){
+      if((await this.worker(1))?.targetId!==worker.targetId)return;
+      await delay(50);
+    }
+    throw new Error("MP-11: kernel tab-groups extension unavailable");
   }
   async worker(polls) {
     for (let n = 0; n < polls; n++) {
