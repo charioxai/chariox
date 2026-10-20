@@ -50,6 +50,14 @@ impl OwnedAgentPromptState {
             .is_none_or(|hold| hold.prompts.contains(prompt))
     }
 
+    /// A prompt bound to a held sudo window starts ahead of a backlog that
+    /// the window itself keeps from running.
+    fn sudo_holds(&self, prompt: &str) -> bool {
+        self.sudo_work
+            .as_ref()
+            .is_some_and(|hold| hold.prompts.contains(prompt))
+    }
+
     fn bind_sudo_work(&mut self) {
         let Some(active) = self.active_prompt.as_ref() else {
             return;
@@ -484,7 +492,7 @@ impl PromptStateOwner {
             !force_queue
                 && !profile_transition_pending
                 && state.active_prompt.is_none()
-                && state.queued_prompts.is_empty()
+                && (state.queued_prompts.is_empty() || state.sudo_holds(prompt.id()))
                 && state.sudo_admits(prompt.id())
         };
         if should_start {
