@@ -59,6 +59,19 @@ impl OutputMatcher {
         }
     }
 
+    /// Text that may be the start of a match, kept from output already seen
+    /// when the matcher starts at the end of `plain`.
+    pub(super) fn after(plain: &PlainText, tail: String) -> Self {
+        Self {
+            processed_plain_bytes: plain.total_bytes(),
+            text_tail: tail,
+        }
+    }
+
+    pub(super) fn into_tail(self) -> String {
+        self.text_tail
+    }
+
     pub(super) fn matches(&mut self, plain: &PlainText, text: &str) -> bool {
         self.text_tail
             .push_str(plain.since(self.processed_plain_bytes));
@@ -90,13 +103,13 @@ impl WatchSet {
         &mut self,
         owner: WatchOwner,
         watch: RoomTerminalWatch,
-        plain: &PlainText,
+        output: OutputMatcher,
         program_running: bool,
     ) {
         self.armed.push(ArmedWatch {
             owner,
             watch,
-            output: OutputMatcher::new(plain),
+            output,
             seen_busy: program_running,
         });
     }
@@ -220,7 +233,7 @@ mod tests {
             RoomTerminalWatch::OutputContains {
                 text: "Password:".into(),
             },
-            &plain,
+            OutputMatcher::new(&plain),
             false,
         );
         assert!(watches.on_output(&plain).is_empty());
@@ -233,7 +246,12 @@ mod tests {
     fn finished_waits_for_a_program_to_return_to_the_prompt() {
         let plain = PlainText::new();
         let mut watches = WatchSet::default();
-        watches.arm(owner("w1"), RoomTerminalWatch::Finished, &plain, false);
+        watches.arm(
+            owner("w1"),
+            RoomTerminalWatch::Finished,
+            OutputMatcher::new(&plain),
+            false,
+        );
         assert!(watches.on_foreground(false).is_empty());
         assert!(watches.on_foreground(true).is_empty());
         assert_eq!(watches.on_foreground(false).len(), 1);
@@ -246,7 +264,7 @@ mod tests {
         watches.arm(
             owner("w1"),
             RoomTerminalWatch::WaitingForInput,
-            &plain,
+            OutputMatcher::new(&plain),
             true,
         );
         watches.arm(
@@ -254,7 +272,7 @@ mod tests {
             RoomTerminalWatch::OutputContains {
                 text: "ready".into(),
             },
-            &plain,
+            OutputMatcher::new(&plain),
             true,
         );
         plain.append(b"ready");

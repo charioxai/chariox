@@ -200,11 +200,50 @@ impl Terminal {
         now: Instant,
         program_running: bool,
     ) -> Option<RoomTerminalEventKind> {
-        if let Some(kind) = self.already_true(&watch, after_offset, now, program_running) {
-            return Some(kind);
-        }
-        self.watches.arm(owner, watch, &self.plain, program_running);
+        let output = match &watch {
+            RoomTerminalWatch::OutputContains { text } => {
+                match self.replay_output(text, after_offset) {
+                    Ok(unmatched) => OutputMatcher::after(&self.plain, unmatched),
+                    Err(kind) => return Some(kind),
+                }
+            }
+            _ => {
+                if let Some(kind) = self.already_true(&watch, after_offset, now, program_running) {
+                    return Some(kind);
+                }
+                OutputMatcher::new(&self.plain)
+            }
+        };
+        self.watches.arm(owner, watch, output, program_running);
         None
+    }
+
+    /// Whether `text` already appeared in the output after `after_offset`.
+    /// If not, the unmatched end is returned: it may be the start of a match
+    /// that the live output completes.
+    fn replay_output(
+        &self,
+        text: &str,
+        after_offset: Option<u64>,
+    ) -> Result<String, RoomTerminalEventKind> {
+        let Some(after_offset) = after_offset else {
+            return Ok(String::new());
+        };
+        let page = self.log.read(after_offset, usize::MAX);
+        if page.gap {
+            return Ok(String::new());
+        }
+        let mut plain = PlainText::new();
+        let mut output = OutputMatcher::new(&plain);
+        for part in page.bytes.chunks(4096) {
+            plain.append(part);
+            if output.matches(&plain, text) {
+                return Err(RoomTerminalEventKind::OutputMatched {
+                    text: text.to_string(),
+                });
+            }
+        }
+        Ok(output.into_tail())
     }
 
     fn already_true(
@@ -222,21 +261,7 @@ impl Terminal {
                     signal: end.signal.clone(),
                 })
             }
-            RoomTerminalWatch::OutputContains { text } => {
-                let page = self.log.read(after_offset?, usize::MAX);
-                if page.gap {
-                    return None;
-                }
-                let mut plain = PlainText::new();
-                let mut output = OutputMatcher::new(&plain);
-                for part in page.bytes.chunks(4096) {
-                    plain.append(part);
-                    if output.matches(&plain, text) {
-                        return Some(RoomTerminalEventKind::OutputMatched { text: text.clone() });
-                    }
-                }
-                None
-            }
+            RoomTerminalWatch::OutputContains { .. } => None,
             RoomTerminalWatch::WaitingForInput => (program_running
                 && now.duration_since(self.last_output_at) >= QUIET_BEFORE_WAITING)
                 .then_some(RoomTerminalEventKind::WaitingForInput),

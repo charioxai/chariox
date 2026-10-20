@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use super::events::OutputMatcher;
 use super::*;
 
 struct TempDir(std::path::PathBuf);
@@ -1004,7 +1005,7 @@ async fn an_output_marker_survives_a_large_burst_in_one_pump_batch() {
         RoomTerminalWatch::OutputContains {
             text: "ready-marker".into(),
         },
-        &terminal.plain,
+        OutputMatcher::new(&terminal.plain),
         false,
     );
     let now = Instant::now();
@@ -1019,7 +1020,7 @@ async fn an_output_marker_survives_a_large_burst_in_one_pump_batch() {
         RoomTerminalWatch::OutputContains {
             text: long_needle.clone(),
         },
-        &terminal.plain,
+        OutputMatcher::new(&terminal.plain),
         false,
     );
     for part in long_needle.as_bytes().chunks(1023) {
@@ -1095,5 +1096,129 @@ async fn a_start_mark_alone_keeps_foreground_completion_available() {
     assert!(
         !tracking,
         "a start-only hook disabled the foreground fallback"
+    );
+}
+
+/// Runs `call` on its own thread so a hang fails the test instead of
+/// freezing it.
+fn finishes_within<T: Send + 'static>(
+    wait: Duration,
+    call: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (done, result) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = done.send(call());
+    });
+    result.recv_timeout(wait).ok()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_terminal_that_stops_reading_does_not_lock_the_others() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let blocked = service
+        .open(OpenRoomTerminal {
+            session_id: "room-1".to_string(),
+            working_directory: root.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+            title: None,
+            opened_by: TerminalActor::User,
+            command: Some(vec![
+                "sh".into(),
+                "-c".into(),
+                "stty -icanon -echo; echo NOT-READING; exec sleep 600".into(),
+            ]),
+        })
+        .unwrap()
+        .terminal_id;
+    let other = open(&service, root.path()).terminal_id;
+    until("the program to stop reading", || async {
+        screen_has(&service, &blocked, "NOT-READING").await
+    })
+    .await;
+
+    // Far more than the tty input buffer holds.
+    let flood = {
+        let service = service.clone();
+        let blocked = blocked.clone();
+        let runtime = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            runtime.block_on(service.input(
+                "room-1",
+                &blocked,
+                &TerminalActor::User,
+                &vec![b'x'; 64 * 1024],
+            ))
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let others_work = {
+        let service = service.clone();
+        let other = other.clone();
+        finishes_within(Duration::from_secs(5), move || {
+            service.pump_once();
+            service.snapshot("room-1", &other).is_ok() && service.list("room-1").len() == 2
+        })
+    };
+    assert_eq!(
+        others_work,
+        Some(true),
+        "a stuck write locked every terminal"
+    );
+    let closed = {
+        let service = service.clone();
+        let blocked = blocked.clone();
+        finishes_within(Duration::from_secs(5), move || {
+            service.close("room-1", &blocked, &TerminalActor::User)
+        })
+    };
+    assert!(
+        matches!(closed, Some(Ok(()))),
+        "the stuck terminal could not be closed"
+    );
+    assert!(flood.join().is_ok());
+    service.end_session("room-1");
+}
+
+#[tokio::test]
+async fn a_needle_split_across_the_wait_registration_still_matches() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = service
+        .open(OpenRoomTerminal {
+            session_id: "room-1".to_string(),
+            working_directory: root.path().to_path_buf(),
+            cols: 80,
+            rows: 24,
+            title: None,
+            opened_by: agent("a"),
+            command: Some(vec!["sleep".into(), "30".into()]),
+        })
+        .unwrap()
+        .terminal_id;
+    let mut state = service.lock();
+    let terminal = state.terminals.get_mut(&id).unwrap();
+    let now = Instant::now();
+    let offset = terminal.log.end_offset();
+    terminal.apply_output(b"ready-", now);
+    let at_once = terminal.arm_watch(
+        owner("split", "a"),
+        RoomTerminalWatch::OutputContains {
+            text: "ready-marker".into(),
+        },
+        Some(offset),
+        now,
+        true,
+    );
+    let fired = terminal.apply_output(b"marker", now);
+    drop(state);
+    service.end_session("room-1");
+    assert_eq!(at_once, None);
+    assert!(
+        fired.iter().any(|(owner, kind)| owner.wake_id == "split"
+            && matches!(kind, RoomTerminalEventKind::OutputMatched { text } if text == "ready-marker")),
+        "the half of the text that came before the wait was forgotten"
     );
 }

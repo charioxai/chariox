@@ -266,7 +266,10 @@ impl RoomTerminalService {
                 let now = Instant::now();
                 match terminal.driver.admit(actor, shell_foreground, now) {
                     Admission::Admit => {
-                        pty.write_input(&run_id, input)?;
+                        // Queue it: waiting for the child to read would hold
+                        // this lock, and with it every Room terminal, for as
+                        // long as a program ignores its input.
+                        pty.input_writer(&run_id)?.enqueue_input(input)?;
                         if *actor == TerminalActor::User {
                             terminal.mark_user_interacted();
                         }
