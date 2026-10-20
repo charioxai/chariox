@@ -78,7 +78,7 @@ test("quota reservations survive failed destroy and are released only after cont
     read("./slice-disk-quota-allocator.mjs"),
     read("./slice-disk-quota-xfs-backend.mjs"),
   ])
-  const execute = broker.slice(broker.indexOf("async function execute(request)"), broker.indexOf("function errorResponse"))
+  const execute = broker.slice(broker.indexOf("async function execute(request"), broker.indexOf("function errorResponse"))
   const destroy = execute.slice(execute.indexOf('request.kind === "provisioner" && request.action === "destroy"'))
   const removalSuccess = destroy.indexOf("request.action === \"destroy\" && result.status === 0")
   const release = destroy.indexOf('operation: "release"')
