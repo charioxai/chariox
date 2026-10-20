@@ -147,7 +147,8 @@ class Handler(socketserver.StreamRequestHandler):
                             notification = {'method':'turn/completed', 'params':{'threadId':params['threadId'], 'turn':{'id':turn_id,'status':'failed','error':{'message':failure}}}}
                         else:
                             resumed = turn_id
-                            notification = {'method':'turn/completed', 'params':{'threadId':params['threadId'], 'turn':{'id':turn_id,'status':'completed'}}}
+                            
+                            if not (home / 'synthetic-hold-sudo').exists(): notification = {'method':'turn/completed', 'params':{'threadId':params['threadId'], 'turn':{'id':turn_id,'status':'completed'}}}
                     # The test reads the turns once the resume marker exists.
                     state_path.with_suffix('.tmp').write_text(json.dumps(state))
                     state_path.with_suffix('.tmp').replace(state_path)

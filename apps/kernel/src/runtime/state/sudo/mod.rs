@@ -14,6 +14,7 @@ mod entry;
 mod external;
 pub(crate) mod leased;
 mod lifecycle;
+mod login_recovery;
 mod policy;
 mod process;
 mod receipts;

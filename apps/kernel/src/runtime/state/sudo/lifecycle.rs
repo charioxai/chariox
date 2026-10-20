@@ -147,6 +147,7 @@ impl KernelRuntimeState {
         let ended = turns
             .into_iter()
             .filter_map(|turn| {
+                if self.sudo_login_recovery_pending(&turn) { return None; }
                 let reason = self.owned.sudo_end_reason(&turn)?;
                 Some((turn, reason))
             })

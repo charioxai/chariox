@@ -133,7 +133,9 @@ test("a wrong passkey keeps the popup open and asks again", async () => {
   assert.equal(h.popup.view().error, "That passkey is not correct.")
   assert.equal(h.popup.view().passkey.length, 0)
   h.popup.handleKey(key("return"))
-  assert.equal(h.requests.length, 1, "an empty passkey is not sent")
+  assert.deepEqual(h.requests[1], ["p1", "approve"], "the kernel checks owner-wide presence")
+  h.reject("PASSKEY_REQUIRED: enter your passkey")
+  await settle()
   assert.equal(h.popup.view().error, "Enter your Chariox passkey to approve.")
 })
 
@@ -184,7 +186,7 @@ test("Esc hides the popup and only explicit focus brings it back", () => {
   assert.equal(h.popup.show("session-1", "unknown"), false)
 })
 
-test("this terminal's remember window approves without retyping until the kernel refuses", async () => {
+test("the kernel decides whether remembered presence still authorizes an approval", async () => {
   const h = harness()
   h.popup.apply([prompt("p1"), prompt("p2")])
   h.popup.show()
@@ -206,7 +208,18 @@ test("this terminal's remember window approves without retyping until the kernel
   await settle()
   assert.equal(h.popup.view().error, "Enter your Chariox passkey to approve.")
   h.popup.handleKey(key("return"))
-  assert.equal(h.requests.length, 2)
+  assert.deepEqual(h.requests[2], ["p2", "approve"])
+})
+
+test("a fresh terminal tries the owner's kernel remember window without local proof", async () => {
+  const h = harness()
+  h.popup.apply([prompt("remembered-in-another-client")])
+  h.popup.show()
+  h.popup.handleKey(key("return"))
+  assert.deepEqual(h.requests, [["remembered-in-another-client", "approve"]])
+  h.resolve()
+  await settle()
+  assert.equal(h.popup.view().count, 0)
 })
 
 test("a disconnected terminal sends nothing", () => {
@@ -321,7 +334,7 @@ test("MP-08/MP-10/MP-11 A04 sudo asks for a fresh passkey and offers a 1-8 hour 
   h.resolve(); await settle()
 })
 
-test("MP-08/MP-11 reconnect clears remembered presence including a late old acknowledgement", async () => {
+test("MP-08/MP-11 reconnect rejects stale acknowledgements and rechecks kernel presence", async () => {
   const h = harness()
   h.popup.apply([prompt("old")])
   h.popup.show()
@@ -333,12 +346,14 @@ test("MP-08/MP-11 reconnect clears remembered presence including a late old ackn
   await pending
   h.popup.apply([prompt("fresh")])
   h.popup.show()
-  await h.popup.approve()
-  assert.equal(h.requests.length, 1)
+  const check = h.popup.approve()
+  assert.deepEqual(h.requests[1], ["fresh", "approve"])
+  h.reject("PASSKEY_REQUIRED: enter your passkey")
+  await check
   assert.match(h.popup.view().error ?? "", /Enter your Chariox passkey/)
 })
 
-test("MP-08/MP-11 resume invalidates presence without dropping an already fresh prompt feed", () => {
+test("MP-08/MP-11 resume keeps an already fresh prompt feed", () => {
   const h = harness()
   h.popup.invalidateConnectionState()
   h.popup.apply([prompt("fresh")])

@@ -147,7 +147,7 @@ export function createKernelApprovalController(deps: {
     deps.onOpen()
     render()
   }
-  const send = async (interactionId: string, choiceId: string) => {
+  const send = async (interactionId: string, choiceId: string, passkeyChoice = false) => {
     const requestEpoch = epoch
     const requestSession = sessionId
     const token = {}
@@ -160,9 +160,14 @@ export function createKernelApprovalController(deps: {
         if (response.id !== requestSession) throw new Error("interaction response session mismatch")
         deps.applySession(response)
       }
-    } catch {
+    } catch (failure) {
       if (!disposed && requestEpoch === epoch && deps.getSession().id === requestSession) {
-        error = "The kernel did not confirm this choice. Check the pending approval before retrying."
+        if (passkeyChoice && failure instanceof Error && failure.message.includes("PASSKEY_REQUIRED")
+          && kernelApprovals(deps.getSession()).some(item => item.id === interactionId)) {
+          error = deps.showPasskeyPrompt(requestSession, interactionId) ? null : PASSKEY_IN_POPUP
+        } else {
+          error = "The kernel did not confirm this choice. Check the pending approval before retrying."
+        }
       }
     } finally {
       if (pending === token) pending = null
@@ -208,13 +213,14 @@ export function createKernelApprovalController(deps: {
       render()
       return
     }
-    // A critical approval is approved only in the passkey popup.
-    if (choice.requires_passkey) {
+    // Fresh authority cannot reuse presence. Ordinary approvals first consult
+    // the kernel's owner-wide remember window, including on a cold terminal.
+    if (choice.requires_passkey && /^(sudo:|access-grant:|access-extension:)/.test(current.interaction.kernel_operation_id ?? "")) {
       error = deps.showPasskeyPrompt(sessionId, interactionId) ? null : PASSKEY_IN_POPUP
       render()
       return
     }
-    await send(interactionId, choiceId)
+    await send(interactionId, choiceId, choice.requires_passkey === true)
   }
   // A paste never reaches the prompt while the panel is open.
   const handlePaste = (event: KernelApprovalPaste): boolean => {
