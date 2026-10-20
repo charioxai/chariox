@@ -4980,13 +4980,12 @@ management routes (docs/AEGS_SDK.md). Clients need kernel protocol ≥551 for ei
 request (`integrationReceivedEventsMinimumProtocolVersion`); other minimums stay.
 Relay peer 159 only pairs the embedded local response union with local 551.
 
-### Room terminals — provisional local 562 / relay peer 170
+### Room terminals — provisional local 569 / relay peer 177
 
-Numbering: the landing branch already carries local 567 / peer 175 (568/176 is
-provisional for external agents). The terminal shapes below were written at
-562/170 and ride the landing's numbers until the final pair is allocated
-(proposed: local 569 / peer 177). The "170 re-binds ..." wording below means the
-peer version that carries them.
+Numbering: the terminal shapes below were written at 562/170 and are carried by
+the provisional pair local 569 / peer 177 (568/176 is provisional for external
+agents); the final pair is fixed by landing order. The "170 re-binds ..." wording
+below means the peer version that carries them.
 
 A Room has kernel-owned terminals: real PTYs running the user's login shell
 (`$SHELL -l -i`, else the account's shell; bash instead of a bare `sh` account shell,
@@ -5040,5 +5039,5 @@ still running) and `close`.
 - A terminal survives client disconnects. It ends on close, when its shell or
   command exits, or with its Room. A kernel restart ends it as
   `ended: kernel restarted` and keeps the scrollback.
-- Peer 170 only re-binds the embedded local response union to local 562; no
+- Peer 177 only re-binds the embedded local response union to local 569; no
   peer request is added.

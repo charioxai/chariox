@@ -1,4 +1,4 @@
-//! Wire and domain shapes of Room terminals (protocol 561).
+//! Wire and domain shapes of Room terminals (provisional protocol 569).
 
 use serde::{Deserialize, Serialize};
 
