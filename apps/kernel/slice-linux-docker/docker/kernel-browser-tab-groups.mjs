@@ -64,8 +64,9 @@ globalThis.charioxTabs = {
     for (const { target_ids, title, color } of groups) {
       const tabIds = target_ids.map(id => ids.get(id)).filter(id => id !== undefined);
       if (!tabIds.length) continue;
-      const existing = (await chrome.tabGroups.query({ title }))[0];
-      const groupId = await chrome.tabs.group({ tabIds, ...(existing ? { groupId: existing.id } : {}) });
+      const windowId = (await chrome.tabs.get(tabIds[0])).windowId;
+      const existing = (await chrome.tabGroups.query({ title, windowId }))[0];
+      const groupId = await chrome.tabs.group({ tabIds, ...(existing ? { groupId: existing.id } : { createProperties: { windowId } }) });
       await chrome.tabGroups.update(groupId, { title, color, collapsed: false });
       tabIds.forEach(id => grouped.add(id));
     }

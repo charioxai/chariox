@@ -265,7 +265,7 @@ export class KernelBrowserHost {
       // MP-08/MP-10: restore the registry in one inventory pass. A loading
       // background page must not delay every subsequent Tab's creation.
       if (saved.tabs.length) await this.reconcile({ readOnly: true });
-      await this.syncTabGroups(this.savedGroups);
+      await this.syncTabGroups(this.savedGroups,{restore:true});
       const active = this.tabs.get(saved.active_tab_id);
       if (active) {
         await connection.send('Target.activateTarget', { targetId: active.target_id });
@@ -282,9 +282,10 @@ export class KernelBrowserHost {
     if (!this.chromium.display) return;
     try { await this.chromeWindows.resolve(); } catch { this.chromeWindows.retire('window_changed'); }
   }
-  async syncTabGroups(groups) {
+  async syncTabGroups(groups,{restore=false}={}) {
     this.savedGroups = groups.slice(0, TAB_LIMIT).filter(group => typeof group?.tab_id === 'string' && typeof group.label === 'string' && group.label)
       .map(({ tab_id, label }) => ({ tab_id, label: label.slice(0, 64) }));
+    if(this.restoring&&!restore)return;
     const labels = new Map();
     for (const { tab_id, label } of this.savedGroups) {
       const target = this.tabs.get(tab_id)?.target_id;

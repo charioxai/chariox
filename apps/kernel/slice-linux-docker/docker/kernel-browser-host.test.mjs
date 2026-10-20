@@ -2415,3 +2415,11 @@ test('group synchronization during recovery cannot save an empty registry',()=>u
  assert.deepEqual([...host.tabs.keys()],ids);
  assert.deepEqual(host.savedGroups,groups);assert.equal(host.restoring,false);
 }));
+
+test('group updates during restoration do not apply a partial native inventory',()=>using(async({host})=>{
+ const opened=await host.request({op:'open',url:'https://www.wikipedia.org/'});let applied=0;
+ host.tabGroups={sync:async()=>{applied++}};host.restoring=true;
+ const groups=[{tab_id:opened.tab_id,label:'Agent'}];await host.syncTabGroups(groups);
+ assert.equal(applied,0);assert.deepEqual(host.savedGroups,groups);
+ await host.syncTabGroups(groups,{restore:true});assert.equal(applied,1);host.restoring=false;
+}));

@@ -109,3 +109,19 @@ test('MP-08/MP-10/MP-11 viewport reads one live native Tab and one target invent
   assert.equal(await state.charioxTabs.active(),null);
  }finally{await rm(root,{recursive:true,force:true})}
 });
+
+// MP-08/MP-10: recovery's keepalive popup can own focus while restored tabs
+// are in a background normal window. Group creation must name that window.
+test('restored groups use their tab window while a popup is focused',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'chariox-group-window-'));
+ try{
+  const source=await readFile(path.join(await writeTabGroupsExtension(root),'sw.js'),'utf8'),state={},calls=[];
+  const chrome={runtime:{getPlatformInfo(){}},debugger:{getTargets:async()=>[{id:'target-a',tabId:7}]},
+   tabs:{onCreated:{addListener(){}},onAttached:{addListener(){}},get:async id=>({id,windowId:10}),query:async()=>[{id:7,windowId:10,groupId:42}],
+    group:async spec=>{assert.equal(spec.createProperties?.windowId,10,'the implicit current window is a popup');calls.push(spec);return 42},ungroup:async()=>{}},
+   tabGroups:{query:async()=>[],update:async()=>{}}};
+  new Function('chrome','setInterval','globalThis',source)(chrome,()=>{},state);
+  await state.charioxTabs.sync([{target_ids:['target-a'],title:'Agent',color:'blue'}]);
+  assert.deepEqual(calls,[{tabIds:[7],createProperties:{windowId:10}}]);
+ }finally{await rm(root,{recursive:true,force:true})}
+});
