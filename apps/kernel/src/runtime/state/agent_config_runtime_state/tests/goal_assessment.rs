@@ -856,9 +856,11 @@ async fn goal_continuation_keeps_the_original_notes_in_hidden_context_not_visibl
                 .and_then(|queue| queue.front().cloned())
         })
         .expect("continuation prompt submitted");
+    let envelope = recovered_continuation_envelope(&runtime, &room, &agent, &queued);
     for private in ["QUOTED_OLD_NAME", "COMMENT_RENAME_IT"] {
         assert!(!queued.prompt().contains(private));
-        assert!(queued.hidden_system_context().contains(private));
+        assert!(!envelope.visible_user_prompt.contains(private));
+        assert!(envelope.hidden_system_context.contains(private));
     }
 }
 
@@ -956,26 +958,159 @@ async fn catalog_continuation_merges_original_notes_with_supplied_hidden_context
                 .and_then(|queue| queue.front().cloned())
         })
         .expect("continuation prompt submitted");
-    let run = runtime
-        .owned
-        .provider_store
-        .get_run_for_agent(&room, &agent)
-        .expect("catalog continuation launched a fresh provider run");
-    assert!(run.resume_state().is_empty());
-    assert!(run.provider_session_id().is_none());
-    let envelope = crate::prompt_assembly::PromptAssemblyService::from_env()
-        .unwrap()
-        .assemble_provider_turn(
-            &run,
-            queued.prompt(),
-            Some(queued.hidden_system_context()),
-            queued.attachments().to_vec(),
-            crate::prompt_assembly::PromptAssemblyMode::McpSkillContinuationTurn,
-        )
-        .unwrap();
+    let envelope = recovered_continuation_envelope(&runtime, &room, &agent, &queued);
     assert!(envelope.hidden_system_context.contains(&instructions));
     for private in ["QUOTED_OLD_NAME", "COMMENT_RENAME_IT"] {
         assert!(!envelope.visible_user_prompt.contains(private));
         assert!(envelope.hidden_system_context.contains(private));
     }
+}
+
+// MP-08 / MP-10 / MP-11: a correlated wake must recover note-only requirements
+// even when no provider thread exists to remember the original submission.
+#[tokio::test]
+async fn inbox_wake_recovers_original_notes_in_hidden_provider_context() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Registration};
+    use base64::Engine;
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let (_app, runtime, room, agent) = agent_config_runtime_in_worktree(
+        config,
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")
+            .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+    )
+    .await;
+    let store = &runtime.owned.durable_state_store;
+    let now = crate::session::unix_epoch_ms();
+    let task_id = "waiting-notes";
+    let note = crate::session::PromptAttachment::new(
+        "chariox-terminal://note/1",
+        crate::prompt_notes::NOTE_ATTACHMENT_MIME,
+        Some("Note".into()),
+    )
+    .with_contents_base64(
+        base64::engine::general_purpose::STANDARD
+            .encode(r#"{"quote":"QUOTED_WAITING_REQUIREMENT","comment":"COMMENT_AFTER_WAKE"}"#),
+    );
+    let mut entry = crate::history::SessionHistoryEntry::user_prompt_with_attachments(
+        &room,
+        "att",
+        &agent,
+        "Please read the attached notes.",
+        &[note],
+    );
+    entry.merge_key = Some(format!("prompt:{task_id}"));
+    runtime.owned.append_history_entries(&room, vec![entry]);
+    for op in [
+        Operation::Begin {
+            owner: "local-user".into(),
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: task_id.into(),
+            run: Some("retired-run".into()),
+            now,
+        },
+        Operation::Subscribe {
+            task: task_id.into(),
+            prompt: task_id.into(),
+            registration: Registration {
+                id: "wait-source".into(),
+                task_id: task_id.into(),
+                source_id: "source".into(),
+                obligation_id: None,
+                source_cursor: 0,
+                live: true,
+            },
+        },
+        Operation::Yield {
+            task: task_id.into(),
+            prompt: task_id.into(),
+            registrations: vec!["wait-source".into()],
+            cursor: 0,
+            deadline: now + 60_000,
+            reason: "Waiting for the source".into(),
+            now,
+        },
+        Operation::Settle {
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: task_id.into(),
+            run: "retired-run".into(),
+            has_answer: false,
+            cancelled: false,
+            now,
+        },
+    ] {
+        store.agent_lifecycle(op).unwrap();
+    }
+    assert_eq!(
+        store.agent_tasks(Some(&room), Some(&agent)).unwrap()[0].state,
+        ExecutionState::Waiting
+    );
+    store
+        .agent_lifecycle(Operation::SourceOutcome {
+            now,
+            room: room.clone(),
+            source: "source".into(),
+            occurrence: "finished".into(),
+            success: true,
+            public_answer: None,
+        })
+        .unwrap();
+    Box::pin(runtime.deliver_agent_inbox(&room, &agent))
+        .await
+        .unwrap();
+    let event = store.agent_inbox(&room, &agent, 0).unwrap().remove(0);
+    assert_eq!(event.state, "accepted");
+    let session = runtime.owned.session_store.get_session(&room).unwrap();
+    let prompt = session
+        .active_prompt_for_agent(&agent)
+        .expect("wake submitted");
+    assert_eq!(Some(prompt.id()), event.prompt_id.as_deref());
+    let envelope = recovered_continuation_envelope(&runtime, &room, &agent, prompt);
+    for private in ["QUOTED_WAITING_REQUIREMENT", "COMMENT_AFTER_WAKE"] {
+        assert!(
+            !prompt.hidden_system_context().contains(private),
+            "recovery belongs to shared task context"
+        );
+        assert!(!envelope.visible_user_prompt.contains(private));
+        assert!(
+            envelope.hidden_system_context.contains(private),
+            "wake lost {private}"
+        );
+    }
+}
+
+// The production local/leased dispatchers append this shared context immediately
+// before provider assembly, rather than persisting notes on a continuation prompt.
+fn recovered_continuation_envelope(
+    runtime: &KernelRuntimeState,
+    room: &str,
+    agent: &str,
+    prompt: &crate::session::PromptQueueItem,
+) -> crate::prompt_assembly::PromptEnvelope {
+    let run = runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(room, agent)
+        .unwrap();
+    assert!(run.resume_state().is_empty());
+    assert!(run.provider_session_id().is_none());
+    let hint = runtime
+        .owned
+        .agent_task_context_hint(room, agent, prompt.id())
+        .unwrap()
+        .unwrap();
+    let hidden = format!("{}\n{hint}", prompt.hidden_system_context());
+    crate::prompt_assembly::PromptAssemblyService::from_env()
+        .unwrap()
+        .assemble_provider_turn(
+            &run,
+            prompt.prompt(),
+            Some(&hidden),
+            prompt.attachments().to_vec(),
+            crate::prompt_assembly::PromptAssemblyMode::McpSkillContinuationTurn,
+        )
+        .unwrap()
 }
