@@ -115,6 +115,6 @@ fn machine_gateway_protocol_568_shapes_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "0e989a3d3eb859810756c5b5c294c17f7f9187ca7a82e9d2493a170c8a52466d"
+        "88ad314a9021d64d7b5df1d389f3b8136011e33860e2cdac98c33758ea35f7ef"
     );
 }

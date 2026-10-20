@@ -1061,6 +1061,27 @@ mod tests {
     use base64::Engine;
 
     #[test]
+    fn the_largest_machine_file_chunk_fits_one_relayed_request() {
+        let request = crate::local::LocalDaemonRequest::WriteMachineFile(
+            crate::local::WriteMachineFileRequest {
+                path: "p".repeat(4096),
+                offset: u64::MAX,
+                data_base64: base64::engine::general_purpose::STANDARD.encode(vec![
+                    0u8;
+                    crate::local::MACHINE_FILE_MAX_CHUNK_BYTES
+                        as usize
+                ]),
+                total_size: u64::MAX,
+                sha256: Some("a".repeat(64)),
+                overwrite: true,
+            },
+        );
+        let plaintext =
+            serde_json::json!({ "command_id": "c".repeat(128), "request": request }).to_string();
+        assert!(plaintext.len() + 16 <= super::MAX_BROWSER_IMPORT_ENCRYPTED_BYTES);
+    }
+
+    #[test]
     fn the_largest_app_file_answer_fits_one_relayed_request() {
         use crate::durable_state::app_file_grants::{MAX_FILES, MAX_TOTAL_BYTES};
         let share = MAX_TOTAL_BYTES / MAX_FILES;

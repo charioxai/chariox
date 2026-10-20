@@ -1,7 +1,7 @@
 //! Validate launcher syntax before a build, logger or runtime can be started.
 
 pub const USAGE: &str = "usage: chariox-cli [options]
-       chariox-cli access|sudo|guide|machines|request|app|context|logs|codex|claude|opencode|publication|deployments|deployed|cloud [args]
+       chariox-cli access|sudo|guide|machines|request|watch|files|app|context|logs|codex|claude|opencode|publication|deployments|deployed|cloud [args]
        chariox-cli serve <package> <port> [options]
 
 Options:
@@ -40,6 +40,8 @@ pub fn help_requested(args: &[String]) -> Result<bool, String> {
                 | "guide"
                 | "machines"
                 | "request"
+                | "watch"
+                | "files"
                 | "app"
                 | "context"
                 | "logs"
@@ -131,6 +133,25 @@ mod tests {
             vec!["guide"],
             vec!["machines", "--socket", "/tmp/kernel.sock"],
             vec!["request", "--machine", "b3", "--command-id", "c-1"],
+            vec![
+                "watch",
+                "--machine",
+                "b3",
+                "--session",
+                "s",
+                "--attachment",
+                "a",
+            ],
+            vec!["files", "put", "--machine", "b3", "./a.bin", "/tmp/a.bin"],
+            vec![
+                "files",
+                "get",
+                "--machine",
+                "b3",
+                "--overwrite",
+                "/tmp/a.bin",
+                "./a.bin",
+            ],
             vec!["access", "status"],
         ] {
             let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();

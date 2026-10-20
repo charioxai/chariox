@@ -65,13 +65,7 @@ impl CommandRouter {
         if let LocalDaemonRequest::ListGatewayMachines(_) = &request {
             return self.list_gateway_machines(&command).await;
         }
-        if let LocalDaemonRequest::HeartbeatAttachments(heartbeat) = &request {
-            return self.heartbeat_attachments(&command, heartbeat).await;
-        }
-        if let Some(response) = self.dispatch_machine_pairing(&command, &request).await {
-            return response;
-        }
-        if let Some(response) = self.dispatch_machine_file(&command, &request).await {
+        if let Some(response) = self.dispatch_machine_request(&command, &request).await {
             return response;
         }
         if let Some(response) = self.dispatch_kernel_access(&command, &request)? {

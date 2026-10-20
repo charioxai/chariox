@@ -113,17 +113,17 @@ impl MachineGateway {
         let mut misses = 0;
         loop {
             tokio::time::sleep(HEARTBEAT_EVERY).await;
-            let grant_live = self
+            if self
                 .runtime_state
                 .access_grant_summary(&held.grant_id)
-                .is_some();
-            let due = if grant_live {
-                self.keeper.due(&held)
-            } else {
-                None
-            };
-            let Some((harness, attachments)) = due else {
+                .is_none()
+            {
                 self.keeper.give_up(&held);
+                return;
+            }
+            // `due` removes the entry when nothing is left, under the same lock a new
+            // attachment is added with, so a later one starts a beat of its own.
+            let Some((harness, attachments)) = self.keeper.due(&held) else {
                 return;
             };
             let origin = Origin {

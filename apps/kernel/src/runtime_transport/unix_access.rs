@@ -467,8 +467,16 @@ pub(super) async fn serve_gateway_subscription(
         let mut last_event_id = None;
         while let Some((event_id, body)) = events.recv().await {
             let Ok(event) = serde_json::from_slice::<KernelEvent>(&body) else {
+                eprintln!(
+                    "GWTRACE parse failure {}",
+                    String::from_utf8_lossy(&body)
+                        .chars()
+                        .take(120)
+                        .collect::<String>()
+                );
                 continue;
             };
+            eprintln!("GWTRACE forward event {event_id}");
             last_event_id = Some(event_id);
             if !send(KernelOutgoingFrame::Event {
                 event_id,

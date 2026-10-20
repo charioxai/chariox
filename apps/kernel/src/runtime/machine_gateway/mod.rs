@@ -74,6 +74,7 @@ impl MachineGateway {
         let source = Arc::new(RelayInventory {
             config: config.clone(),
             projection,
+            own: RemoteRelayInventoryProjectionStore::default(),
             paired: Arc::clone(&paired),
         });
         Self {
@@ -150,7 +151,7 @@ impl MachineGateway {
         }
     }
 
-    pub(super) async fn link_for(
+    async fn link_for(
         &self,
         machine: &str,
         kernel: &chariox_relay::protocol::RelayKernelPresence,
@@ -159,23 +160,40 @@ impl MachineGateway {
         if let Some(link) = links.get(&kernel.kernel_id).filter(|link| link.usable()) {
             return Ok(Arc::clone(link));
         }
-        let identity = self.identity()?;
-        let connection = self.connection(machine, kernel, &identity).await?;
-        let link = Link::open(LinkParams {
-            relay_url: connection.relay_url,
-            auth_token: connection.relay_token,
-            target_kernel_id: kernel.kernel_id.clone(),
-            target_public_key: Some(kernel.public_key.clone()),
-            client_private_key: identity.private_key,
-        })
-        .await
-        .map_err(|failure| map_open_failure(machine, failure))?;
-        let link = Arc::new(link);
+        let link = self.open_link(machine, kernel).await?;
         links.insert(kernel.kernel_id.clone(), Arc::clone(&link));
         Ok(link)
     }
 
-    pub(super) async fn connection(
+    /// A fresh connection to `kernel`. A self-hosted machine is held to the key
+    /// it had when it was paired, whatever the relay announces now.
+    async fn open_link(
+        &self,
+        machine: &str,
+        kernel: &chariox_relay::protocol::RelayKernelPresence,
+    ) -> Result<Arc<Link>, GatewayError> {
+        let identity = self.identity()?;
+        let connection = self.connection(machine, kernel, &identity).await?;
+        let pinned = match self.config.snapshot().cloud_relay {
+            None => self
+                .paired
+                .find(&kernel.kernel_id)
+                .map(|paired| paired.presence.public_key),
+            Some(_) => None,
+        };
+        let link = Link::open(LinkParams {
+            relay_url: connection.relay_url,
+            auth_token: connection.relay_token,
+            target_kernel_id: kernel.kernel_id.clone(),
+            target_public_key: Some(pinned.unwrap_or_else(|| kernel.public_key.clone())),
+            client_private_key: identity.private_key,
+        })
+        .await
+        .map_err(|failure| map_open_failure(machine, failure))?;
+        Ok(Arc::new(link))
+    }
+
+    async fn connection(
         &self,
         machine: &str,
         kernel: &chariox_relay::protocol::RelayKernelPresence,
@@ -216,7 +234,7 @@ impl MachineGateway {
         })
     }
 
-    pub(super) fn identity(&self) -> Result<GatewayIdentity, GatewayError> {
+    fn identity(&self) -> Result<GatewayIdentity, GatewayError> {
         let mut identity = self.identity.lock().expect("identity poisoned");
         if let Some(identity) = identity.as_ref() {
             return Ok(identity.clone());
@@ -229,7 +247,7 @@ impl MachineGateway {
 
 /// Opening the link sends nothing to the machine, so a connect that does not
 /// finish is "unreachable", never a request timeout that invites a retry.
-pub(super) fn map_open_failure(machine: &str, failure: LinkFailure) -> GatewayError {
+fn map_open_failure(machine: &str, failure: LinkFailure) -> GatewayError {
     match failure {
         LinkFailure::TimedOut => GatewayError::Unreachable {
             name: machine.into(),
@@ -239,7 +257,7 @@ pub(super) fn map_open_failure(machine: &str, failure: LinkFailure) -> GatewayEr
     }
 }
 
-pub(super) fn map_failure(machine: &str, failure: LinkFailure) -> GatewayError {
+fn map_failure(machine: &str, failure: LinkFailure) -> GatewayError {
     let name = machine.to_string();
     match failure {
         LinkFailure::Closed => GatewayError::ConnectionLost { name },
@@ -250,12 +268,15 @@ pub(super) fn map_failure(machine: &str, failure: LinkFailure) -> GatewayError {
         },
         LinkFailure::Relay(error) => match error.code.as_str() {
             "target_not_connected" => GatewayError::Offline { name },
+            // The relay drops a request the target never answered when the target disconnects.
+            "target_disconnected" => GatewayError::ConnectionLost { name },
             "authorization_denied" if error.message.contains("unpaired or revoked") => {
                 GatewayError::Unpaired { name }
             }
             "invalid_request" => GatewayError::Incompatible {
                 name,
-                detail: error.message,
+                // An older target lists every variant it knows; the first part says what is wrong.
+                detail: error.message.chars().take(240).collect(),
             },
             "connect_failed" | "connect_refused" | "empty_response" | "decrypt_failed"
             | "encrypt_failed" => GatewayError::Unreachable {
@@ -290,6 +311,16 @@ mod tests {
         );
         assert_eq!(
             map_open_failure("b3", LinkFailure::Closed).code(),
+            "machine_connection_lost"
+        );
+        // EA2-09(a): the target killed with a request in flight is a lost connection, not a raw relay code.
+        let disconnected = chariox_relay::protocol::RelayError {
+            code: "target_disconnected".into(),
+            message: "the target disconnected".into(),
+            retryable: true,
+        };
+        assert_eq!(
+            map_failure("b3", LinkFailure::Relay(disconnected)).code(),
             "machine_connection_lost"
         );
     }

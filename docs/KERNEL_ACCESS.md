@@ -23,7 +23,7 @@ An external agent (Claude Code, Codex) talks only to its local kernel over the U
 - `chariox access request --until-exit` asks the user for access once. With `--no-wait` it exits 6 and a detached waiter keeps the request; `chariox access status` then prints `granted`, `pending`, `ended` or `not_requested`.
 - `chariox machines` lists the machines this kernel can reach. `chariox request [--machine M] [--command-id ID] [--timeout SECONDS]` sends one `LocalDaemonRequest` read from stdin to this kernel, or through it to machine `M`, and prints the response JSON.
 - `chariox watch --machine M --session ID --attachment ID [--from EVENT_ID]` prints one JSON line per event of that machine until the connection is lost; it then ends with `machine_connection_lost` naming the event to resume from. An attachment made through the gateway is kept alive by this kernel while the grant lasts, and ends with `DetachFromSession`.
-- `chariox files stat|ls|get|put --machine M ...` moves files in chunks of 1 MiB, resumable and verified by sha256 (2 GiB per file); run the same command again after an interruption.
+- `chariox files stat|ls|get|put --machine M ...` moves files in chunks of 256 KiB, resumable and verified by sha256 (2 GiB per file); run the same command again after an interruption.
 - A person pairs this kernel with a self-hosted machine with `/machine add <link>` in a Chariox terminal (`/machine linked`, `/machine unlink NAME`); agents cannot.
 - Output is one JSON document on stdout. Errors are `{"error":{"code","message","machine"}}` on stderr.
 

@@ -3,7 +3,8 @@ import { createReadStream, type Stats } from "node:fs"
 import { open, rename, rm, stat } from "node:fs/promises"
 import { CommandFailure } from "./agent-command-table.js"
 
-const CHUNK_BYTES = 1024 * 1024
+// Matches the kernel: a chunk travels base64 inside one relayed request of at most 768 KiB.
+const CHUNK_BYTES = 256 * 1024
 // The same name the kernel gives an unfinished upload, so a download resumes the way an upload does.
 const PARTIAL_SUFFIX = ".chariox-partial"
 

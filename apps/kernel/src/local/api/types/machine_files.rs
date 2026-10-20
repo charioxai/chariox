@@ -2,8 +2,9 @@ use super::*;
 
 /// Protocol 568: one file is at most this large.
 pub const MACHINE_FILE_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-/// Protocol 568: one read or write request moves at most this many bytes.
-pub const MACHINE_FILE_MAX_CHUNK_BYTES: u64 = 1024 * 1024;
+/// Protocol 568: one read or write request moves at most this many bytes. A write chunk
+/// travels base64 inside one relayed request, which the target accepts up to 768 KiB.
+pub const MACHINE_FILE_MAX_CHUNK_BYTES: u64 = 256 * 1024;
 
 /// Protocol 568: what a path is on this machine. `path` is absolute or starts
 /// with `~/`; a directory listing is `ListMachineDirectory`.

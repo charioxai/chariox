@@ -8,7 +8,7 @@ import type { WebSocket } from "ws"
 import { runMachineCommand } from "./machine-command.js"
 import { fakeMachineFiles, serveMachineFiles, startFakeKernel, type FakeKernel, type FakeKernelFrame, type FakeMachineFiles } from "./fake-unix-kernel.test-support.js"
 
-const MIB = 1024 * 1024
+const CHUNK = 256 * 1024
 const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex")
 
 // Runs the command as an agent would and returns what it printed and how it ended.
@@ -42,15 +42,15 @@ async function withRig(run: (rig: { kernel: FakeKernel; store: FakeMachineFiles;
 
 const requestsOf = (kernel: FakeKernel, name: string) => kernel.frames.filter((frame: FakeKernelFrame) => name in frame.request).map(frame => frame.request[name] as Record<string, unknown>)
 
-test("put sends 1 MiB chunks in order on one connection, each carrying the total size and sha256", async () => {
+test("put sends 256 KiB chunks in order on one connection, each carrying the total size and sha256", async () => {
   await withRig(async ({ kernel, store, dir, socket }) => {
-    const content = randomBytes(2 * MIB + MIB / 2)
+    const content = randomBytes(2 * CHUNK + CHUNK / 2)
     await writeFile(join(dir, "big.bin"), content)
     const result = await chariox(["files", "put", ...socket, join(dir, "big.bin"), "/srv/big.bin"])
     assert.equal(result.exit, 0, result.stderr)
     assert.deepEqual(store.files.get("/srv/big.bin"), content)
     const writes = requestsOf(kernel, "WriteMachineFile")
-    assert.deepEqual(writes.map(write => write.offset), [0, MIB, 2 * MIB])
+    assert.deepEqual(writes.map(write => write.offset), [0, CHUNK, 2 * CHUNK])
     for (const write of writes) assert.deepEqual([write.total_size, write.sha256, write.overwrite], [content.length, sha256(content), false])
     const printed = JSON.parse(result.stdout)
     assert.deepEqual([printed.path, printed.size, printed.sha256, printed.bytes_sent_or_received, printed.resumed_from], ["/srv/big.bin", content.length, sha256(content), content.length, 0])
@@ -61,21 +61,21 @@ test("put sends 1 MiB chunks in order on one connection, each carrying the total
 
 test("put continues at the partial size the target reports and starts over when that partial cannot belong to this file", async () => {
   await withRig(async ({ kernel, store, dir, socket }) => {
-    const content = randomBytes(2 * MIB + 10)
+    const content = randomBytes(2 * CHUNK + 10)
     await writeFile(join(dir, "f.bin"), content)
-    store.partials.set("/srv/f.bin", content.subarray(0, MIB + 7))
+    store.partials.set("/srv/f.bin", content.subarray(0, CHUNK + 7))
     const resumed = await chariox(["files", "put", ...socket, join(dir, "f.bin"), "/srv/f.bin"])
     assert.equal(resumed.exit, 0, resumed.stderr)
-    assert.deepEqual(requestsOf(kernel, "WriteMachineFile").map(write => write.offset), [MIB + 7, 2 * MIB + 7])
+    assert.deepEqual(requestsOf(kernel, "WriteMachineFile").map(write => write.offset), [CHUNK + 7, 2 * CHUNK + 7])
     assert.deepEqual(store.files.get("/srv/f.bin"), content)
-    assert.equal(JSON.parse(resumed.stdout).resumed_from, MIB + 7)
-    assert.equal(JSON.parse(resumed.stdout).bytes_sent_or_received, content.length - MIB - 7)
+    assert.equal(JSON.parse(resumed.stdout).resumed_from, CHUNK + 7)
+    assert.equal(JSON.parse(resumed.stdout).bytes_sent_or_received, content.length - CHUNK - 7)
 
     const before = kernel.frames.length
     store.partials.set("/srv/g.bin", randomBytes(content.length + 1))
     const restarted = await chariox(["files", "put", ...socket, join(dir, "f.bin"), "/srv/g.bin"])
     assert.equal(restarted.exit, 0, restarted.stderr)
-    assert.deepEqual(kernel.frames.slice(before).flatMap(frame => "WriteMachineFile" in frame.request ? [(frame.request.WriteMachineFile as { offset: number }).offset] : []), [0, MIB, 2 * MIB])
+    assert.deepEqual(kernel.frames.slice(before).flatMap(frame => "WriteMachineFile" in frame.request ? [(frame.request.WriteMachineFile as { offset: number }).offset] : []), [0, CHUNK, 2 * CHUNK])
     assert.deepEqual(store.files.get("/srv/g.bin"), content)
   })
 })
@@ -105,16 +105,16 @@ test("put names a local file that is missing or not a file", async () => {
   })
 })
 
-test("get downloads in 1 MiB chunks, verifies the sha256 of what it wrote and leaves no partial file", async () => {
+test("get downloads in 256 KiB chunks, verifies the sha256 of what it wrote and leaves no partial file", async () => {
   await withRig(async ({ kernel, store, dir, socket }) => {
-    const content = randomBytes(2 * MIB + MIB / 2)
+    const content = randomBytes(2 * CHUNK + CHUNK / 2)
     store.files.set("/srv/big.bin", content)
     const result = await chariox(["files", "get", ...socket, "/srv/big.bin", join(dir, "big.bin")])
     assert.equal(result.exit, 0, result.stderr)
     assert.deepEqual(await readFile(join(dir, "big.bin")), content)
     assert.deepEqual(await readdir(dir), ["big.bin"])
     assert.deepEqual(requestsOf(kernel, "StatMachineFile"), [{ path: "/srv/big.bin", with_sha256: true }])
-    assert.deepEqual(requestsOf(kernel, "ReadMachineFile").map(read => [read.offset, read.length]), [[0, MIB], [MIB, MIB], [2 * MIB, MIB / 2]])
+    assert.deepEqual(requestsOf(kernel, "ReadMachineFile").map(read => [read.offset, read.length]), [[0, CHUNK], [CHUNK, CHUNK], [2 * CHUNK, CHUNK / 2]])
     const printed = JSON.parse(result.stdout)
     assert.deepEqual([printed.path, printed.size, printed.sha256, printed.bytes_sent_or_received, printed.resumed_from], [join(dir, "big.bin"), content.length, sha256(content), content.length, 0])
     assert.equal(store.sockets.size, 1, "one connection for the whole transfer")
@@ -153,7 +153,7 @@ test("get keeps no final file and no partial when the bytes do not match the sou
     serve(socket, frame)
   }
   await withRig(async ({ store, dir, socket }) => {
-    store.files.set("/srv/f.bin", randomBytes(MIB + 3))
+    store.files.set("/srv/f.bin", randomBytes(CHUNK + 3))
     const result = await chariox(["files", "get", ...socket, "/srv/f.bin", join(dir, "f.bin")])
     assert.equal(JSON.parse(result.stderr).error.code, "file_hash_mismatch")
     assert.equal(result.exit, 1)
@@ -163,16 +163,16 @@ test("get keeps no final file and no partial when the bytes do not match the sou
 
 test("get resumes an interrupted download from its .chariox-partial file", async () => {
   await withRig(async ({ kernel, store, dir, socket }) => {
-    const content = randomBytes(2 * MIB + 10)
+    const content = randomBytes(2 * CHUNK + 10)
     store.files.set("/srv/f.bin", content)
-    await writeFile(join(dir, "f.bin.chariox-partial"), content.subarray(0, MIB + 5))
+    await writeFile(join(dir, "f.bin.chariox-partial"), content.subarray(0, CHUNK + 5))
     const result = await chariox(["files", "get", ...socket, "/srv/f.bin", join(dir, "f.bin")])
     assert.equal(result.exit, 0, result.stderr)
-    assert.deepEqual(requestsOf(kernel, "ReadMachineFile").map(read => read.offset), [MIB + 5, 2 * MIB + 5])
+    assert.deepEqual(requestsOf(kernel, "ReadMachineFile").map(read => read.offset), [CHUNK + 5, 2 * CHUNK + 5])
     assert.deepEqual(await readFile(join(dir, "f.bin")), content)
     assert.deepEqual(await readdir(dir), ["f.bin"])
-    assert.equal(JSON.parse(result.stdout).resumed_from, MIB + 5)
-    assert.equal(JSON.parse(result.stdout).bytes_sent_or_received, content.length - MIB - 5)
+    assert.equal(JSON.parse(result.stdout).resumed_from, CHUNK + 5)
+    assert.equal(JSON.parse(result.stdout).bytes_sent_or_received, content.length - CHUNK - 5)
   })
 })
 

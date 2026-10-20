@@ -4892,9 +4892,9 @@ authority for its own sessions, agents, terminals and files.
 - Machine files (kernel API requests, any machine, owner only: a Chariox terminal or a local grant holder, or the
   gateway acting for one): `StatMachineFile { path, with_sha256 }` -> `MachineFileStat { stat: {path, exists, kind,
   size, modified_ms, sha256, partial_size} }`; `ListMachineDirectory { path }` -> `MachineDirectoryListed { path,
-  entries, truncated }` (2000 entries); `ReadMachineFile { path, offset, length }` (length <= 1 MiB) ->
+  entries, truncated }` (2000 entries); `ReadMachineFile { path, offset, length }` (length <= 256 KiB) ->
   `MachineFileChunk { path, offset, data_base64, size, eof }`; `WriteMachineFile { path, offset, data_base64,
-  total_size, sha256?, overwrite }` (chunk <= 1 MiB, in order) -> `MachineFileWritten { path, received, complete,
+  total_size, sha256?, overwrite }` (chunk <= 256 KiB, in order) -> `MachineFileWritten { path, received, complete,
   sha256 }`. Paths are absolute or `~/`. An upload lives in `<path>.chariox-partial` and the file appears at `path`
   only when `total_size` is reached and `sha256`, if sent, matches (otherwise `file_hash_mismatch` and nothing is
   kept); a chunk at the wrong offset is `file_offset_mismatch` and the message names the offset to continue at.

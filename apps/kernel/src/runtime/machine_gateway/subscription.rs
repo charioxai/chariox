@@ -18,6 +18,8 @@ use super::{map_failure, GatewayError, MachineGateway};
 const SUBSCRIBE_DEADLINE: Duration = Duration::from_secs(30);
 /// Hosted relay tokens last five minutes.
 const RENEW_EVERY: Duration = Duration::from_secs(3 * 60 + 30);
+const RENEW_RETRIES: u32 = 2;
+const RENEW_RETRY_AFTER: Duration = Duration::from_secs(15);
 static SUBSCRIPTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// What the agent asked to watch on the machine.
@@ -57,7 +59,9 @@ impl MachineGateway {
         request: SubscribeRequest,
     ) -> Result<ForwardedSubscription, GatewayError> {
         let kernel = self.directory.resolve(machine).await?;
-        let link = self.link_for(machine, &kernel).await?;
+        // Its own connection: the relay token it renews is the one it was opened with,
+        // not one shared with requests that may be minutes older.
+        let link = self.open_link(machine, &kernel).await?;
         let subscription_id = format!(
             "gw-sub-{}-{}",
             crate::session::unix_epoch_ms(),
@@ -104,18 +108,28 @@ impl MachineGateway {
     ) {
         loop {
             tokio::time::sleep(RENEW_EVERY).await;
-            if !link.is_alive() {
-                return;
-            }
-            let renewed = match self.identity() {
-                Ok(identity) => self.connection(&machine, &kernel, &identity).await,
-                Err(error) => Err(error),
-            };
-            // The relay closes the connection when the old token expires; the
-            // agent then hears `machine_connection_lost` and subscribes again.
-            let Ok(connection) = renewed else { return };
-            if !link.renew(connection.relay_token) {
-                return;
+            let mut attempts = 0;
+            loop {
+                if !link.is_alive() {
+                    return;
+                }
+                let renewed = match self.identity() {
+                    Ok(identity) => self.connection(&machine, &kernel, &identity).await,
+                    Err(error) => Err(error),
+                };
+                if let Ok(connection) = renewed {
+                    if link.renew(connection.relay_token) {
+                        break;
+                    }
+                }
+                // Retried within the token's remaining minute; if it still fails the
+                // relay closes the connection at expiry and the agent hears
+                // `machine_connection_lost`, then subscribes again.
+                if attempts >= RENEW_RETRIES {
+                    return;
+                }
+                attempts += 1;
+                tokio::time::sleep(RENEW_RETRY_AFTER).await;
             }
         }
     }

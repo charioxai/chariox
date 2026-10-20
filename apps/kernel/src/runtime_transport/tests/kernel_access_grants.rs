@@ -1319,6 +1319,22 @@ async fn a_heartbeat_reports_the_lapsed_attachments_and_a_machine_subscription_n
         serde_json::json!(["gone", attachment]),
         "{beat}"
     );
+    // Pairing is a person's act at a terminal; a grant holder is refused, locally or on a machine.
+    for request in [
+        serde_json::json!({"JoinMachineLink":{"link":"chariox-terminal-pair-v1.x"}}),
+        serde_json::json!({"ForgetGatewayMachine":{"name":"b3"}}),
+    ] {
+        let refused = holder.request(request.clone());
+        assert_eq!(
+            refused["error"]["code"], "kernel_access_human_only",
+            "{refused}"
+        );
+        let refused = holder.request_on("b3", request);
+        assert_eq!(
+            refused["error"]["code"], "kernel_access_human_only",
+            "{refused}"
+        );
+    }
     let subscribed = holder.subscribe_on("b3", &attachment);
     assert_eq!(
         subscribed["error"]["code"], "machine_unknown",

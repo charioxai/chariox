@@ -38,9 +38,9 @@ pub(crate) fn is_public_code(code: &str) -> bool {
     )
 }
 
-fn fail(code: &'static str, message: impl Into<String>) -> DaemonError {
-    DaemonError::MachineFile {
-        code,
+fn fail(code: &str, message: impl Into<String>) -> DaemonError {
+    DaemonError::MachineRequest {
+        code: code.into(),
         message: message.into(),
     }
 }
@@ -323,7 +323,30 @@ pub(crate) fn write(request: &WriteMachineFileRequest) -> Result<LocalDaemonResp
             ));
         }
     }
-    std::fs::rename(&partial, &path).map_err(|e| io_failure(&path, &e))?;
+    if request.overwrite {
+        // Replacing a file keeps its permissions (a 0600 credentials file stays private).
+        if let Ok(existing) = std::fs::metadata(&path) {
+            std::fs::set_permissions(&partial, existing.permissions())
+                .map_err(|e| io_failure(&partial, &e))?;
+        }
+        std::fs::rename(&partial, &path).map_err(|e| io_failure(&path, &e))?;
+    } else {
+        // A hard link fails when something appeared at `path` meanwhile; a rename would replace it.
+        std::fs::hard_link(&partial, &path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                fail(
+                    "file_exists",
+                    format!(
+                        "{} already exists; send overwrite to replace it.",
+                        path.display()
+                    ),
+                )
+            } else {
+                io_failure(&path, &error)
+            }
+        })?;
+        std::fs::remove_file(&partial).map_err(|e| io_failure(&partial, &e))?;
+    }
     Ok(LocalDaemonResponse::MachineFileWritten {
         path: path.display().to_string(),
         received: end,
@@ -359,9 +382,9 @@ mod tests {
         }
     }
 
-    fn code(error: DaemonError) -> &'static str {
+    fn code(error: DaemonError) -> String {
         match error {
-            DaemonError::MachineFile { code, .. } => code,
+            DaemonError::MachineRequest { code, .. } => code,
             other => panic!("not a machine file error: {other}"),
         }
     }
@@ -435,6 +458,32 @@ mod tests {
         replace.overwrite = true;
         write(&replace).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"again");
+    }
+
+    #[test]
+    fn replacing_a_private_file_keeps_it_private_and_a_new_file_never_replaces() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch();
+        let target = dir.join("credentials");
+        std::fs::write(&target, b"old").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut replace = chunk(&target, 0, b"new", 3, None);
+        replace.overwrite = true;
+        write(&replace).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // Something appears at the path while the upload is unfinished: no chunk replaces it.
+        let racing = dir.join("racing");
+        write(&chunk(&racing, 0, b"ab", 4, None)).unwrap();
+        std::fs::write(&racing, b"someone else").unwrap();
+        assert_eq!(
+            code(write(&chunk(&racing, 2, b"cd", 4, None)).unwrap_err()),
+            "file_exists"
+        );
+        assert_eq!(std::fs::read(&racing).unwrap(), b"someone else");
     }
 
     #[test]

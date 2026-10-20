@@ -15,7 +15,9 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
             mapped.message = error.to_string();
             mapped
         }
-        DaemonError::MachineFile { code, .. } => relay_error(code, &error.to_string(), false),
+        DaemonError::MachineRequest { code, .. } => {
+            relay_error(code.as_str(), &error.to_string(), false)
+        }
         DaemonError::SessionNotFound { .. } => {
             relay_error("session_not_found", &error.to_string(), false)
         }

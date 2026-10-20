@@ -296,6 +296,14 @@ impl Link {
             .lock()
             .expect("pending poisoned")
             .insert(request_id.clone(), reply);
+        // Dropped before the ack (cancelled, failed or late): the target may already
+        // stream to us, so it is told to stop and nothing stays registered here.
+        let mut abandon = Abandon {
+            link: self,
+            subscription_id: &subscription_id,
+            request_id: &request_id,
+            armed: true,
+        };
         let envelope = RelayEnvelope::ClientSubscribe {
             request_id: request_id.clone(),
             subscription_id: subscription_id.clone(),
@@ -307,29 +315,16 @@ impl Link {
             resume_from_event_id: params.resume_from_event_id,
         };
         let text = serde_json::to_string(&envelope).expect("envelope serializes");
-        let outcome = if self.outgoing.send(Message::Text(text.into())).is_err() {
-            Err(LinkFailure::Closed)
-        } else {
-            match tokio::time::timeout(deadline, answer).await {
-                Ok(Ok(result)) => result,
-                Ok(Err(_)) => Err(LinkFailure::Closed),
-                Err(_) => Err(LinkFailure::TimedOut),
-            }
-        };
-        match outcome {
-            Ok(ack) => Ok((ack, received)),
-            Err(failure) => {
-                self.pending
-                    .lock()
-                    .expect("pending poisoned")
-                    .remove(&request_id);
-                self.subscriptions
-                    .lock()
-                    .expect("subscriptions poisoned")
-                    .remove(&subscription_id);
-                Err(failure)
-            }
+        if self.outgoing.send(Message::Text(text.into())).is_err() {
+            return Err(LinkFailure::Closed);
         }
+        let ack = match tokio::time::timeout(deadline, answer).await {
+            Ok(Ok(result)) => result?,
+            Ok(Err(_)) => return Err(LinkFailure::Closed),
+            Err(_) => return Err(LinkFailure::TimedOut),
+        };
+        abandon.armed = false;
+        Ok((ack, received))
     }
 
     /// Tells the target to stop a subscription; the link stays open.
@@ -368,6 +363,27 @@ impl Link {
     }
 }
 
+/// Undoes a subscription that did not complete; see `Link::subscribe`.
+struct Abandon<'a> {
+    link: &'a Link,
+    subscription_id: &'a str,
+    request_id: &'a str,
+    armed: bool,
+}
+
+impl Drop for Abandon<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.link
+                .pending
+                .lock()
+                .expect("pending poisoned")
+                .remove(self.request_id);
+            self.link.unsubscribe(self.subscription_id);
+        }
+    }
+}
+
 impl Drop for Link {
     fn drop(&mut self) {
         let _ = self.outgoing.send(Message::Close(None));
@@ -381,6 +397,10 @@ fn route(
     target_public_key: &str,
     text: &str,
 ) {
+    eprintln!(
+        "GWTRACE link text {}",
+        &text.chars().take(80).collect::<String>()
+    );
     match serde_json::from_str::<RelayEnvelope>(text) {
         Ok(RelayEnvelope::ClientEvent {
             subscription_id,
@@ -396,6 +416,10 @@ fn route(
                 return;
             }
             let events = subscriptions.lock().expect("subscriptions poisoned");
+            eprintln!(
+                "GWTRACE client_event id={subscription_id} event_id={event_id} known={}",
+                events.contains_key(&subscription_id)
+            );
             if let Some(channel) = events.get(&subscription_id) {
                 let _ = channel.send((event_id, decrypted.plaintext.to_vec()));
             }
@@ -551,6 +575,7 @@ mod tests {
     async fn subscribing_relay(
         target_private_key: String,
         announced_key: String,
+        acknowledge: bool,
     ) -> (String, mpsc::UnboundedReceiver<&'static str>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
@@ -583,6 +608,10 @@ mod tests {
                         client_public_key,
                         ..
                     }) => {
+                        if !acknowledge {
+                            let _ = seen.send("subscribe");
+                            continue;
+                        }
                         let seal = |body: &[u8]| {
                             relay_crypto::encrypt_payload_for_peer(
                                 &target_private_key,
@@ -699,7 +728,7 @@ mod tests {
     #[tokio::test]
     async fn a_subscription_streams_events_renews_in_place_and_unsubscribes() {
         let (private, public) = keys();
-        let (url, mut observed) = subscribing_relay(private.clone(), public).await;
+        let (url, mut observed) = subscribing_relay(private.clone(), public, true).await;
         let link = open(url, &private).await.ok().expect("link opens");
         let (ack, mut events) = link
             .subscribe(
@@ -727,6 +756,34 @@ mod tests {
         link.unsubscribe("sub-1");
         assert_eq!(observed.recv().await, Some("unsubscribe"));
         assert!(link.is_alive());
+    }
+
+    // A subscription cancelled before its acknowledgement is undone on the target too,
+    // so nothing keeps streaming to a connection nobody reads.
+    #[tokio::test]
+    async fn a_subscription_cancelled_before_its_ack_is_withdrawn_on_the_target() {
+        let (private, public) = keys();
+        let (url, mut observed) = subscribing_relay(private.clone(), public, false).await;
+        let link = open(url, &private).await.ok().expect("link opens");
+        let mut attempt = Box::pin(link.subscribe(
+            "sub-1".into(),
+            SubscribeParams {
+                session_id: "s".into(),
+                attachment_id: "a".into(),
+                scope: None,
+                resume_from_event_id: None,
+            },
+            Duration::from_secs(60),
+        ));
+        tokio::select! {
+            _ = &mut attempt => panic!("the target never acknowledged"),
+            seen = observed.recv() => assert_eq!(seen, Some("subscribe")),
+        }
+        drop(attempt);
+        let withdrawn = tokio::time::timeout(Duration::from_secs(5), observed.recv()).await;
+        assert_eq!(withdrawn, Ok(Some("unsubscribe")));
+        assert!(link.subscriptions.lock().unwrap().is_empty());
+        assert!(link.pending.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

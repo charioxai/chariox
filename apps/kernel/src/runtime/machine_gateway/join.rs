@@ -12,8 +12,8 @@ use super::link::{Link, LinkParams};
 use super::paired::PairedMachine;
 use super::{map_failure, map_open_failure, MachineGateway, REQUEST_COUNTER};
 use crate::local::{
-    GatewayMachine, JoinMachineLinkRequest, JoinTerminalPairingLinkRequest, LocalDaemonRequest,
-    TerminalType,
+    GatewayMachine, GatewayMachineStatus, GatewayMachineVia, JoinMachineLinkRequest,
+    JoinTerminalPairingLinkRequest, LocalDaemonRequest, RelayStatusRequest, TerminalType,
 };
 
 /// A scoped relay's pairing link carries this instead of a transport token.
@@ -63,7 +63,7 @@ impl MachineGateway {
                 (None, CLIENT_TOKEN_REQUIRED) => return Err(refused(
                     "that relay needs its client transport token; give it with --relay-token-env.",
                 )),
-                (None, shared) if shared.is_empty() => None,
+                (None, "") => None,
                 (None, shared) => Some(shared.to_string()),
             };
         let identity = self.identity()?;
@@ -117,24 +117,50 @@ impl MachineGateway {
             kernel_alias: token.target_daemon_alias.clone(),
             available_providers: Vec::new(),
             provider_accounts: Vec::new(),
-            capabilities: Vec::new(),
+            capabilities: self.capabilities_of(&link).await,
             accepting_remote_leases: false,
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: link.target_public_key().to_string(),
+        };
+        let machine = GatewayMachine {
+            name: super::directory::display_name(&presence),
+            kernel_id: presence.kernel_id.clone(),
+            machine_id: presence.machine_id.clone(),
+            machine_alias: presence.machine_alias.clone(),
+            status: GatewayMachineStatus::Online,
+            last_seen_ms: crate::session::unix_epoch_ms(),
+            gateway_ready: super::directory::is_gateway_ready(&presence),
+            via: GatewayMachineVia::SelfHosted,
         };
         self.paired.save(PairedMachine {
             presence,
             relay_token: client_token,
             paired_at_ms: crate::session::unix_epoch_ms(),
         })?;
-        let machines = self.directory.machines().await?;
-        machines
-            .into_iter()
-            .find(|machine| machine.kernel_id == token.target_daemon_id)
-            .ok_or_else(|| {
-                refused("the machine was paired but is not listed; run `chariox machines`.")
-            })
+        Ok(machine)
+    }
+
+    /// What the just-paired kernel advertises (for example `machine_gateway_v1`). The
+    /// pairing is complete either way; a refresh of the machine list learns it later.
+    async fn capabilities_of(&self, link: &Link) -> Vec<String> {
+        let request = serde_json::to_vec(
+            &serde_json::json!({"request": LocalDaemonRequest::RelayStatus(RelayStatusRequest)}),
+        )
+        .expect("relay status serializes");
+        let request_id = format!(
+            "gw-status-{}-{}",
+            crate::session::unix_epoch_ms(),
+            REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let Ok(answer) = link.request(request_id, &request, JOIN_DEADLINE).await else {
+            return Vec::new();
+        };
+        serde_json::from_slice::<Value>(&answer)
+            .ok()
+            .and_then(|value| value.pointer("/RelayStatus/status/capabilities").cloned())
+            .and_then(|capabilities| serde_json::from_value(capabilities).ok())
+            .unwrap_or_default()
     }
 
     /// Drops a paired machine; the machine keeps its grant until revoked there.

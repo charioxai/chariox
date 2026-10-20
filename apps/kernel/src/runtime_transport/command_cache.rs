@@ -181,6 +181,10 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
         request,
         LocalDaemonRequest::RequestKernelSudo(_)
             | LocalDaemonRequest::ExtendKernelSudo(_)
+            // File contents are never kept in the result cache, and a heartbeat is
+            // only ever fresh; a replay of either is safe to run again.
+            | LocalDaemonRequest::ReadMachineFile(_)
+            | LocalDaemonRequest::HeartbeatAttachments(_)
             // MP-11 A07: physical owner input carrying a value is never
             // fingerprinted, cached or replayed.
             | LocalDaemonRequest::RespondToHandoff(_)

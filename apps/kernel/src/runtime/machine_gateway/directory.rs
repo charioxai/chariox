@@ -129,7 +129,7 @@ fn unreachable_inventory(detail: String) -> GatewayError {
     }
 }
 
-fn display_name(kernel: &RelayKernelPresence) -> String {
+pub(super) fn display_name(kernel: &RelayKernelPresence) -> String {
     kernel
         .kernel_alias
         .clone()
