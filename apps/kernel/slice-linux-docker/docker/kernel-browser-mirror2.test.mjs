@@ -12,7 +12,13 @@ test('MP-08/MP-10/MP-11 document font operations require viewer negotiation',()=
  const mirror=new Mirror2({host:{}}),ops=[{op:'fonts',id:'n1',required:[]},{op:'text',id:'n2',text:'paint'}];
  assert.deepEqual(mirror.viewerOps({},ops),[ops[1]]);
  assert.deepEqual(mirror.viewerOps({fontRequirements:false},ops),[ops[1]]);
- assert.equal(mirror.viewerOps({fontRequirements:true},ops),ops);
+ assert.deepEqual(mirror.viewerOps({fontRequirements:true},ops),ops);
+});
+test('MP-08/MP-10/MP-11 the absent font list reaches only viewers that asked for it (567)',()=>{
+ const mirror=new Mirror2({host:{}}),ops=[{op:'fonts',id:'n1',required:[],absent:['segoe ui']},{op:'text',id:'n2',text:'paint'}];
+ assert.deepEqual(mirror.viewerOps({fontRequirements:true},ops),[{op:'fonts',id:'n1',required:[]},ops[1]]);
+ assert.deepEqual(mirror.viewerOps({fontRequirements:true,fontAbsent:true},ops),ops);
+ assert.deepEqual(mirror.viewerOps({fontAbsent:true},ops),[ops[1]]);
 });
 
 test('MP-08/MP-10/MP-11 native font negotiation is acknowledged only on an opted-in v2 stream',async()=>{
@@ -26,6 +32,9 @@ test('MP-08/MP-10/MP-11 native font negotiation is acknowledged only on an opted
    assert.equal(reply.font_requirements,requested);
    assert.equal(service.streams.get(reply.subscription_id).fontRequirements,requested===true);
   }
+  const absent=await service.subscribe({wire:2,font_requirements:true,font_absent:true,device_scale_factor:1},'owner');
+  assert.equal(absent.font_absent,true);assert.equal(service.streams.get(absent.subscription_id).fontAbsent,true);
+  for(const command of [{wire:2,font_absent:true},{wire:2,font_requirements:true,font_absent:false}])await assert.rejects(service.subscribe({...command,device_scale_factor:1},'owner'),/mirror font negotiation/);
   for(const command of [{wire:2,font_requirements:false},{wire:2,font_requirements:'true'},{wire:1,font_requirements:true}])await assert.rejects(service.subscribe({...command,device_scale_factor:1},'owner'),/mirror font negotiation/);
  } finally {service.clear();clearInterval(service.expiry);}
 });
@@ -281,6 +290,7 @@ test('MP-11: every field of a child-frame delta is rebased into the frame slot; 
   assert.deepEqual(out.font_failures,['a'.repeat(64)],'font descriptors are hashes, never rebased as node or resource ids');
   assert.deepEqual(frames.rebaseOp({op:'fonts',id:'n1',required:['a'.repeat(64)]},slot),{op:'fonts',id:n(1),required:['a'.repeat(64)]});
   assert.deepEqual(frames.rebaseOp({op:'fonts',id:'n1',required:null},slot),{op:'fonts',id:n(1),required:null});
+  assert.deepEqual(frames.rebaseOp({op:'fonts',id:'n1',required:[],absent:['x']},slot),{op:'fonts',id:n(1),required:[],absent:['x']});
   assert.deepEqual(out.ops[0], { op: 'children', id: n(6), children: [n(7)], nodes: [{ ...record, id: n(7), parent: n(6), attrs: { class: 'x', style: `background:url("mr:${r(3)}")` }, res: r(4) }] });
   assert.deepEqual(out.ops.slice(1).map(op => op.id), [n(7), n(8), n(9), n(1), n(7), n(7), n(7), n(7), n(7), n(7)]);
   assert.match(JSON.stringify(out.ops), new RegExp(`mr:${r(5)}.*mr:${r(6)}.*mr:${r(7)}.*"res":"${r(8)}".*"res":null`));

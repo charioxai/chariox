@@ -50,6 +50,9 @@ pub enum KernelBrowserCommand {
         /// MP-08/MP-10/MP-11: protocol 550 native document font proof.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         font_requirements: Option<bool>,
+        /// MP-08/MP-10/MP-11: protocol 567/175 asks for the `fonts` op's `absent` list (needs `font_requirements`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        font_absent: Option<bool>,
     },
     /// MP-08/MP-10: protocol 482 `wait_ms` (<= 2000) makes a v2 credit a long
     /// poll answered by the next page change; credits apply in sequence.

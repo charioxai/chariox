@@ -411,8 +411,26 @@ export class BrowserMirror2Renderer {
     else {
       const { node: root, raw } = entry as Extract<Styled, { kind: 'adopted' }>
       const view = (root.nodeType === 9 ? root as Document : (root as ShadowRoot).ownerDocument).defaultView as (Window & typeof globalThis) | null
-      if (view) root.adoptedStyleSheets = raw.map(text => { const sheet = new view.CSSStyleSheet(); sheet.replaceSync(this.substitute(text)); return sheet })
+      if (view) this.adopt(root, raw.map(text => { const sheet = new view.CSSStyleSheet(); sheet.replaceSync(this.substitute(text)); return sheet }))
     }
+  }
+  // Author sheets of a document, led by its font shadow: for each stack name the native machine lacks, a face that covers no
+  // character and is never fetched (a failed face would hand the name back to the system fonts), so the stack falls
+  // through to the next family here as it did natively.
+  private shadows = new WeakMap<Document, CSSStyleSheet>()
+  private adopt(root: Document | ShadowRoot, sheets: CSSStyleSheet[]): void {
+    const shadow = root.nodeType === 9 ? this.shadows.get(root as Document) : undefined
+    root.adoptedStyleSheets = shadow ? [shadow, ...sheets] : sheets
+  }
+  private shadowFonts(doc: Document, names: readonly string[]): void {
+    const held = this.shadows.get(doc), view = doc.defaultView as (Window & typeof globalThis) | null
+    this.shadows.delete(doc)
+    if (names.length && view?.CSSStyleSheet) {
+      const sheet = new view.CSSStyleSheet()
+      sheet.replaceSync(names.map(name => `@font-face{font-family:${JSON.stringify(name)};src:url(${this.empty});unicode-range:U+10FFFF}`).join(''))
+      this.shadows.set(doc, sheet)
+    }
+    this.adopt(doc, doc.adoptedStyleSheets.filter(sheet => sheet !== held))
   }
   private setStyled(id: string, entry: Styled | null): void {
     const previous = this.styled.get(id)
@@ -596,7 +614,7 @@ export class BrowserMirror2Renderer {
       const html = subtree[1] ? built.get(subtree[1].id) as Element | undefined : undefined
       if (html) { if (nested.documentElement) nested.documentElement.replaceWith(html); else nested.appendChild(html); this.csp(nested) }
       if (documentRecord.adopted?.length) this.setStyled(documentRecord.id, { kind: 'adopted', raw: documentRecord.adopted as string[], node: nested, keys: [] })
-      else nested.adoptedStyleSheets = [] // a replaced document's sheets do not style the new one
+      else { this.shadows.delete(nested); nested.adoptedStyleSheets = [] } // a replaced document's sheets do not style the new one
       this.bind(nested)
     }
   }
@@ -811,14 +829,14 @@ export class BrowserMirror2Renderer {
       this.csp(doc)
     }
     if (root.adopted?.length) this.setStyled(root.id, { kind: 'adopted', raw: root.adopted as string[], node: doc, keys: [] })
-    else doc.adoptedStyleSheets = []
+    else { this.shadows.delete(doc); doc.adoptedStyleSheets = [] }
     this.hydrateFrames(frames, records, scrolls)
   }
   private op(op: Mirror2Op, scrolls: Array<[Element, number, number]>): void {
     const node = this.dom.get(op.id)
     if (!node) return // removed earlier in this packet
     switch (op.op) {
-      case 'fonts': this.fontRequirements.set(op.id, op.required); this.fontRequirementsVersion++; break
+      case 'fonts': this.fontRequirements.set(op.id, op.required); this.fontRequirementsVersion++; this.shadowFonts(node as Document, op.absent ?? []); break
       case 'children': {
         const frames: Array<{ frame: HTMLIFrameElement; id: string }> = []
         // A frame's child is its document: rebuild the frame's own document.
@@ -941,7 +959,7 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
   const releaseHold = transport.prioritize?.() ?? (() => {})
   let priorityReleased = false
   const releasePriority = () => { if (!priorityReleased) { priorityReleased = true; releaseHold() } }
-  const subscribe = { op: 'mirror_subscribe', ...binding, wire: 2, font_requirements:true, ...(handlers.preparing ? {navigation_preview:true} : {}) }
+  const subscribe = { op: 'mirror_subscribe', ...binding, wire: 2, font_requirements:true, ...(transport.protocolVersion >= 567 ? {font_absent:true} : {}), ...(handlers.preparing ? {navigation_preview:true} : {}) }
   const subscribed = await request(subscribe).catch(error => { releasePriority(); throw error }); const subscription_id = subscribed.subscription_id as string
   // Four credits while the page or the viewer is active, one when idle (one heartbeat per wait).
   let closed = false, inflight = 0, applied = 0, wantReset = true, resetOutstanding = false, wantResend = false, resendOutstanding = false, activeAt = -Infinity, gapSince = 0, failures = 0, failingSince = 0, failGeneration = 0

@@ -1405,3 +1405,24 @@ for (const [name, css] of [['transparent', ''], ['dark', 'html{color-scheme:dark
     assert.deepEqual(await pixel(page), await pixel(native), 'the viewer preserves the standalone source canvas, including source color-scheme and author backgrounds');
   } finally { await page.close(); await native.close(); }
 });
+
+// MP-08/MP-10/MP-11 (r73): a stack name the native machine lacks is shadowed, so the viewer lands on the same family as the
+// native page even when only the viewer has the first one installed (GitHub: "Noto Sans" before Helvetica).
+test('MP-08/MP-10/MP-11: a font the native machine lacks does not style the viewer copy', async () => {
+  const page = await viewer();
+  try {
+    const nodes = stack => [{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
+      { id: 'n4', parent: 'n3', kind: 'element', tag: 'span', attrs: { id: 'probe', style: `font:40px ${stack}` } }, { id: 'n5', parent: 'n4', kind: 'text', text: 'Hamburgefonstiv mmmmm 0123456789' }];
+    const width = (selector = '#probe') => page.evaluate(selector => window.r.frame.contentDocument.querySelector(selector).getBoundingClientRect().width, selector);
+    await apply(page, snapshot(nodes('"Liberation Serif", "Liberation Mono"')));
+    const viewerOnly = await width();
+    await apply(page, delta(2, [{ op: 'fonts', id: 'n1', required: [], absent: ["liberation serif"] }]));
+    await frames(); const shadowed = await width();
+    await apply(page, delta(3, [{ op: 'attr', id: 'n4', name: 'style', value: 'font:40px "Liberation Mono"' }]));
+    const native = await width();
+    assert.notEqual(viewerOnly, native, 'the fixture needs a viewer-only family to differ');
+    assert.equal(shadowed, native, 'the shadowed name falls through to the next family');
+    await apply(page, delta(4, [{ op: 'fonts', id: 'n1', required: [] }, { op: 'attr', id: 'n4', name: 'style', value: 'font:40px "Liberation Serif", "Liberation Mono"' }]));
+    assert.equal(await width(), viewerOnly, 'a name no longer reported absent styles the copy again');
+  } finally { await page.close(); }
+});

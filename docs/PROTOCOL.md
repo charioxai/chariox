@@ -4307,6 +4307,17 @@ Vault insertion never waits on a parked viewer. `state` itself is unchanged.
 `mp08_mp10_browser_state_wait_556_snapshot`). Viewers feature-detect 556 and poll
 older kernels as before; no client floor moves.
 
+MP-08 / MP-10 / MP-11: allocated 567/175 adds the optional `absent` list to the mirror v2 `fonts` op
+(sent to viewers that negotiated `font_requirements`): the lowercase font family names the
+document's computed font stacks list that the native machine does not have (at most 64, each
+1-128 characters without quotes, backslashes, braces, `<>;` or control characters; page-defined
+faces and generic names never appear; omitted when empty). The viewer declares each name as a face
+that covers no character, so its stack falls through to the next family exactly where the native
+page's did, instead of landing on a family only the viewer installed. A `fonts` op without `absent`
+clears the list. `browser-mirror2-font-absent-567.json` pins the shape (Rust hash test
+`browser_mirror2_font_absent_567_shape_is_pinned`). Older kernels never send the field; older
+viewers refuse it, so they must stay below 567 or negotiate the same wire.
+
 MP-08 / MP-10 / MP-11: the 535 browser delivery client also negotiates the
 existing relay-96 `chariox-relay-binary-v96` capability. Bounded CXR1 routing
 metadata enters the same sender-authenticated display decrypt/binding path;

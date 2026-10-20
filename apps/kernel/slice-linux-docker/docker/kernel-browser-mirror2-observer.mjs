@@ -3,8 +3,8 @@
 // MutationObserver deltas (rrweb's model): the page's own stylesheets and
 // attributes travel instead of a computed-style dump. Page code never sees
 // this object; raw mutation records, URLs and unsanitized values stay here.
-import { nativeFontRequirements } from './kernel-browser-mirror2-fonts.mjs';
-export const mirror2ObserverExpression = () => `(${installMirror2.toString()})(${sanitizeMirrorCss.toString()},${nativeFontRequirements.toString()})`;
+import { nativeFontRequirements, nativeAbsentFonts } from './kernel-browser-mirror2-fonts.mjs';
+export const mirror2ObserverExpression = () => `(${installMirror2.toString()})(${sanitizeMirrorCss.toString()},${nativeFontRequirements.toString()},${nativeAbsentFonts.toString()})`;
 
 // Pure CSS sanitizer, shared verbatim with the kernel (cross-origin sheets read
 // through CDP). Every url() becomes a kernel resource key or `none`; nothing
@@ -47,7 +47,7 @@ export function sanitizeMirrorCss(text, base, resource) {
 }
 
 // The sanitizer is passed in: the isolated world has no module scope.
-export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontRequirements) {
+export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontRequirements, absentFonts = nativeAbsentFonts) {
   if (globalThis.__charioxMirror2) return true;
   // One independent observer per subscription (viewer): its own ids, mutation
   // journal and listeners, so one viewer's snapshot never resets another's.
@@ -580,12 +580,15 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       return [...groups].filter(([, failed]) => failed).map(([key]) => sha256(key)).sort().slice(0, 128);
     };
     let reportedFonts = '[]';
-    const reportedRequirements = new Map();
+    const reportedRequirements = new Map(), absentKeys = new Map(), absentOf = new Map(), installedFamilies = new Map();
     const fontOps = (ops, force = false) => {
       for (const [id, root] of roots) {
         if (root.nodeType !== 9) continue;
         const required = fontRequirements(root, fontDescriptor, sha256), signature = JSON.stringify(required);
-        if (force || reportedRequirements.get(id) !== signature) { reportedRequirements.set(id, signature); ops.push({ op: 'fonts', id, required }); }
+        // The stacks in use only settle with the document: sweep again when the requirements or completeness change.
+        const key = `${signature}|${complete()}`; let changed = false;
+        if (force || absentKeys.get(id) !== key) { absentKeys.set(id, key); const absent = absentFonts(root, installedFamilies); changed = JSON.stringify(absent) !== JSON.stringify(absentOf.get(id) ?? []); absentOf.set(id, absent); }
+        if (force || changed || reportedRequirements.get(id) !== signature) { reportedRequirements.set(id, signature); const absent = absentOf.get(id); ops.push(absent.length ? { op: 'fonts', id, required, absent } : { op: 'fonts', id, required }); }
       }
       return ops;
     };
@@ -610,7 +613,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       // The producer fences the old epoch before calling snapshot. Reclaim the
       // local id range without walking the previous (possibly huge) document.
       ids = new WeakMap(); serial = 0;
-      reportedRequirements.clear(); nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); controlShapes.clear(); imageNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); closedTodo.clear(); rootSignatures.clear(); foreign.clear(); opaque.clear(); fragments.clear();
+      reportedRequirements.clear(); absentKeys.clear(); absentOf.clear(); nodes.clear(); kids.clear(); parentOf.clear(); kindOf.clear(); resOf.clear(); formNodes.clear(); controlShapes.clear(); imageNodes.clear(); stateNodes.clear(); shapes.clear(); styleNodes.clear(); roots.clear(); pendingHosts.clear(); closedTodo.clear(); rootSignatures.clear(); foreign.clear(); opaque.clear(); fragments.clear();
       pendingSheets = []; fullSheets.clear(); hostIterator = null; budget = { nodes: 0, bytes: 0 };
       newResources = [...urlKeys.values()].map(({ key, kind, url }) => ({ key, url, kind }));
       continuation?.return(); open.clear(); deferred.clear(); continuation = serializeTree(document, null);

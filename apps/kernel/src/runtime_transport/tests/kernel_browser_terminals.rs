@@ -251,6 +251,7 @@ async fn mdnotes_two_local_connections_child() {
                     wire: None,
                     navigation_preview: None,
                     font_requirements: None,
+                    font_absent: None,
                 },
             )
             .await,
@@ -357,6 +358,7 @@ async fn mdnotes_two_local_connections_child() {
                     wire: None,
                     navigation_preview: None,
                     font_requirements: None,
+                    font_absent: None,
                 },
             )
             .await,

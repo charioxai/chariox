@@ -30,6 +30,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             wire: None,
             navigation_preview: None,
             font_requirements: None,
+            font_absent: None,
         },
         C::MirrorNext {
             subscription_id: "s".into(),
@@ -48,6 +49,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             wire: Some(2),
             navigation_preview: None,
             font_requirements: None,
+            font_absent: None,
         },
         C::MirrorNext {
             subscription_id: "s".into(),
@@ -244,7 +246,7 @@ fn browser_mirror2_native_font_failures_550_shape_is_pinned() {
     let bytes = include_bytes!("browser-mirror2-font-failures-550.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "4d9ecefd7196be6adc6f1b7a12b0798bb611ee29e0366f3e942dd9a52a0dfb3c"
+        "f443684c07aaa00c26945accb03a6624658e0e1a615601652178c5b200b7b756"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -260,12 +262,39 @@ fn browser_mirror2_native_font_failures_550_shape_is_pinned() {
 }
 
 #[test]
+fn browser_mirror2_font_absent_567_shape_is_pinned() {
+    // MP-08/MP-10/MP-11: protocol 567/175 adds `absent` (stack families the native machine lacks) to the `fonts` op.
+    let bytes = include_bytes!("browser-mirror2-font-absent-567.json");
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(bytes)),
+        "52b01fdc735ea4617260c7c935d10c8308d3a81163c94218c9d6946c6ea03d01"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    let subscribe: LocalDaemonRequest =
+        serde_json::from_value(fixture["subscribe"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(subscribe).unwrap(),
+        fixture["subscribe"]
+    );
+    for name in ["subscribed", "absent_delta"] {
+        let wire = serde_json::json!({"KernelBrowser": {"result": fixture[name]}});
+        let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), wire);
+    }
+}
+
+#[test]
 fn browser_mirror2_document_font_requirements_550_shape_is_pinned() {
     // MP-08/MP-10/MP-11: protocol 550/158 mirror v2 wire contract (font requirements).
     let bytes = include_bytes!("browser-mirror2-font-requirements-550.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "9ad57a8d3155c7ec5777301b1c770dd20079e41d761e86a270a858642a73cc98"
+        "cb70fccd110ae7767b7b7c7a4fb6f34781671d172703702d1225b1419d1e2654"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
