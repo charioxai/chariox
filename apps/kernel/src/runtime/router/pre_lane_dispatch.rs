@@ -81,6 +81,12 @@ impl CommandRouter {
                 Some(request.connection_id.clone())
             }
             LocalDaemonRequest::TestEventConnection(request) => Some(request.connection_id.clone()),
+            LocalDaemonRequest::ListEventConnectionEvents(request) => {
+                Some(request.connection_id.clone())
+            }
+            LocalDaemonRequest::ReplayEventConnectionEvent(request) => {
+                Some(request.connection_id.clone())
+            }
             LocalDaemonRequest::ReconnectEventConnection(request) => {
                 Some(request.connection_id.clone())
             }
@@ -269,6 +275,8 @@ impl CommandRouter {
             | LocalDaemonRequest::ObserveEventConnectionAuthorization(_)
             | LocalDaemonRequest::RefreshEventConnection(_)
             | LocalDaemonRequest::TestEventConnection(_)
+            | LocalDaemonRequest::ListEventConnectionEvents(_)
+            | LocalDaemonRequest::ReplayEventConnectionEvent(_)
             | LocalDaemonRequest::ReconnectEventConnection(_)
             | LocalDaemonRequest::ListEventConnectionResources(_)
             | LocalDaemonRequest::ListEventConnectionDependencies(_)

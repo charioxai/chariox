@@ -8,6 +8,12 @@ use sha2::{Digest, Sha256};
 
 use chariox_event_protocol::AegsProviderActionResponse;
 
+mod inbox;
+pub use inbox::{
+    ClaimedInboxDelivery, DeliveryStatus, InboxDelivery, InboxEntry, InboxStatus, Requeue,
+    SelectedInterest,
+};
+
 pub use chariox_event_protocol::AegsSubscriptionClaim as SubscriptionClaim;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +91,12 @@ pub struct AegsStore {
 }
 
 impl AegsStore {
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+        self.connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self, rusqlite::Error> {
         let connection = Connection::open(path)?;
         connection.execute_batch(
@@ -161,6 +173,36 @@ impl AegsStore {
                 created_at_ms INTEGER NOT NULL,
                 PRIMARY KEY(owner_id, connection_id, idempotency_key)
             );
+            CREATE TABLE IF NOT EXISTS webhook_inbox (
+                delivery_id TEXT PRIMARY KEY NOT NULL,
+                route_connection_id TEXT,
+                connection_scope TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                occurrence_id TEXT NOT NULL,
+                event_json TEXT NOT NULL,
+                received_at_ms INTEGER NOT NULL,
+                selected INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS webhook_inbox_received
+                ON webhook_inbox(received_at_ms);
+            CREATE TABLE IF NOT EXISTS webhook_inbox_delivery (
+                delivery_id TEXT NOT NULL,
+                binding_id TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                event_interest_key TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                interest_json TEXT NOT NULL,
+                authority_generation INTEGER,
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_due_at_ms INTEGER NOT NULL,
+                attempt_token TEXT,
+                published_at_ms INTEGER,
+                last_error TEXT,
+                PRIMARY KEY(delivery_id, binding_id)
+            );
+            CREATE INDEX IF NOT EXISTS webhook_inbox_delivery_due
+                ON webhook_inbox_delivery(status, next_due_at_ms);
             ",
         )?;
         migrate_subscription_owner(&connection)?;
@@ -1167,11 +1209,13 @@ impl AegsStore {
         Ok(())
     }
 
+    /// Stamps the connection's last accepted event. A legacy subscription has no connection row;
+    /// there is nothing to stamp and that is not an error (`false`).
     pub fn mark_connection_event_accepted(
         &self,
         connection_id: &str,
         accepted_at_ms: u64,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let connection = self
             .connection
             .lock()
@@ -1183,10 +1227,7 @@ impl AegsStore {
                 params![connection_id, accepted_at_ms as i64],
             )
             .map_err(|error| error.to_string())?;
-        if changed == 0 {
-            return Err("the provider connection was not found".to_string());
-        }
-        Ok(())
+        Ok(changed != 0)
     }
 
     pub fn update_connection_credential(
@@ -1511,9 +1552,10 @@ mod tests {
             )
             .unwrap();
         store.mark_connection_health("installation-1", 20).unwrap();
-        store
+        assert!(store
             .mark_connection_event_accepted("installation-1", 30)
-            .unwrap();
+            .unwrap());
+        assert!(!store.mark_connection_event_accepted("legacy", 30).unwrap());
 
         let connection = store.connection("installation-1").unwrap().unwrap();
         assert_eq!(connection.last_successful_health_check_at_ms, Some(20));
