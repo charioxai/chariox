@@ -1435,9 +1435,12 @@ done
         .to_bytes();
     let unmasked_secret_value: Value =
         serde_json::from_slice(&unmasked_secret_body).expect("unmasked secret body json");
-        // A plaintext Vault target is filled like any other field: the agent chose the
+    // A plaintext Vault target is filled like any other field: the agent chose the
     // credential, and only the value stays out of the model-visible result.
-    assert_eq!(unmasked_secret_value["result"]["isError"], false, "{unmasked_secret_value:#}");
+    assert_eq!(
+        unmasked_secret_value["result"]["isError"], false,
+        "{unmasked_secret_value:#}"
+    );
     assert!(
         !unmasked_secret_value
             .to_string()
