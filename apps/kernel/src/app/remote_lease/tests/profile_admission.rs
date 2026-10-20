@@ -389,7 +389,7 @@ async fn failed_leased_prompt_admission_after_run_assignment_settles_its_receipt
             None,
         )
     };
-    submit().await.unwrap_err();
+    let admission_error = submit().await.unwrap_err();
     assert!(
         app.lock()
             .await
@@ -410,7 +410,7 @@ async fn failed_leased_prompt_admission_after_run_assignment_settles_its_receipt
             target_home_prompt_id: None,
             execution_lease_id: Some(lease.lease_id.clone()),
         }),
-        "home settles this exact shape as an unadmitted prompt"
+        "home settles this exact shape as an unadmitted prompt; admission error: {admission_error}"
     );
     // The settled receipt fences the same home prompt from a second delivery.
     assert!(submit()

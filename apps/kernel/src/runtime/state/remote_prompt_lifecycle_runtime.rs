@@ -51,14 +51,12 @@ impl KernelRuntimeState {
         let mut active_prompt = owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, target_agent_id)
-            .filter(|prompt| {
-                expected_prompt_id
-                    .is_none_or(|id| prompt.id() == id || prompt.pending_prompt_id() == Some(id))
-            })
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
-        if expected_prompt_id.is_some_and(|id| active_prompt.id() != id) {
+        if expected_prompt_id.is_some_and(|id| {
+            active_prompt.id() != id && active_prompt.pending_prompt_id() != Some(id)
+        }) {
             return Ok(None);
         }
         if matches!(
@@ -211,12 +209,16 @@ impl KernelRuntimeState {
             }
             Some(crate::session::DurablePromptDeliveryPhase::Delivered) => {
                 let attachment_id = active_prompt.source_attachment_id().to_string();
-                let Some(cancellation_intent) = self.owned.begin_remote_prompt_cancellation_if_matches(
-                    session_id,
-                    target_agent_id,
-                    &attachment_id,
-                    Some(active_prompt.id()),
-                )? else { return Ok(false); };
+                let Some(cancellation_intent) =
+                    self.owned.begin_remote_prompt_cancellation_if_matches(
+                        session_id,
+                        target_agent_id,
+                        &attachment_id,
+                        Some(active_prompt.id()),
+                    )?
+                else {
+                    return Ok(false);
+                };
                 if let Err(error) = self
                     .send_remote_agent_prompt_cancellation_with_claim(
                         session_id,

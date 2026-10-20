@@ -1,3 +1,4 @@
+import { userDomainAccessMinimumProtocol } from "@chariox/kernel-client/user-domain-access"
 import { kernelBrowserAgentTabsMinimumProtocolVersion } from "@chariox/kernel-client"
 import assert from "node:assert/strict"
 import test from "node:test"
@@ -107,8 +108,9 @@ test("MP-08 TUI tab inventory lists every kernel tab with opener/title/URL witho
 
 // MP-08/MP-11: published PR937 cannot promise opener provenance.
 test("MP-08 TUI agent tabs require the merged minimum", async () => {
-  const h = fixture(kernelBrowserAgentTabsMinimumProtocolVersion - 1)
-  await assert.rejects(h.controller.handle(["tabs"]), new RegExp(`protocol ${kernelBrowserAgentTabsMinimumProtocolVersion}`))
+  const minimum = Math.max(userDomainAccessMinimumProtocol, kernelBrowserAgentTabsMinimumProtocolVersion)
+  const h = fixture(minimum - 1)
+  await assert.rejects(h.controller.handle(["tabs"]), new RegExp(`protocol ${minimum}`))
   assert(h.requests.every(r => r.KernelBrowser.command.op !== "state"))
   h.controller.stop()
 })

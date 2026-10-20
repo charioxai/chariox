@@ -474,6 +474,18 @@ fn claude_profile_auth_status(
     )? {
         return claude_auth_status(provider, &profile.profile_id, profile_environment);
     }
+    // Explicit logout fences the retained enrollment until the user signs in.
+    if profile.auth_state == crate::account_profile::ProviderAccountAuthState::NotConfigured {
+        return Ok(ProviderAuthStatus {
+            provider: provider.to_string(),
+            account_profile: profile.profile_id.clone(),
+            auth_state: "not_logged_in".into(),
+            identity_summary: None,
+            plan: None,
+            detected_version: profile.detected_version.clone(),
+            login_hint: Some("Log in through Provider Accounts".into()),
+        });
+    }
     // Local availability says nothing about the enrolled token. In particular,
     // an idle locked Vault must not erase the previous authentication proof.
     let secrets = crate::provider::resolve_provider_account_credentials(
@@ -1671,7 +1683,7 @@ mod tests {
     // MP-08 / MP-09 / MP-10 / MP-11: a valid file-only logout observation
     // must not erase a previously verified, account-bound Vault login.
     #[test]
-    fn claude_file_status_preserves_verified_vault_account_without_reviving_logout() {
+    fn locked_vault_status_preserves_authentication_observation_and_logout_fence() {
         crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
@@ -1752,9 +1764,21 @@ mod tests {
             &profile_id
         )
         .unwrap());
-        let status =
-            observe_provider_auth_status(&registry, "local", "claude-p", "default", &DaemonConfig::for_tests()).unwrap();
-        assert_eq!(status.auth_state, "authenticated");
+        let status = observe_provider_auth_status(
+            &registry,
+            "local",
+            "claude-p",
+            "default",
+            &DaemonConfig::for_tests(),
+        );
+        assert!(status.unwrap_err().to_string().contains("vault is locked"));
+        assert_eq!(
+            registry
+                .get("local", "claude", "default")
+                .unwrap()
+                .auth_state,
+            crate::account_profile::ProviderAccountAuthState::Authenticated
+        );
         registry
             .require_authenticated(
                 "local",
@@ -1768,10 +1792,23 @@ mod tests {
             .mark_logged_out("local", "claude", "default")
             .unwrap();
         assert_ne!(
-            observe_provider_auth_status(&registry, "local", "claude-p", "default", &DaemonConfig::for_tests())
+            observe_provider_auth_status(
+                &registry,
+                "local",
+                "claude-p",
+                "default",
+                &DaemonConfig::for_tests()
+            )
+            .unwrap()
+            .auth_state,
+            "authenticated"
+        );
+        assert_eq!(
+            registry
+                .get("local", "claude", "default")
                 .unwrap()
                 .auth_state,
-            "authenticated"
+            crate::account_profile::ProviderAccountAuthState::NotConfigured
         );
         registry
             .require_authenticated("local", "claude", "default", None, "MP-11 logout fence")
@@ -1794,11 +1831,20 @@ mod tests {
             registry
                 .update_observation("local", "claude", "default", state, None, None, None, None)
                 .unwrap();
-            assert_ne!(
-                observe_provider_auth_status(&registry, "local", "claude-p", "default", &DaemonConfig::for_tests())
+            assert!(observe_provider_auth_status(
+                &registry,
+                "local",
+                "claude-p",
+                "default",
+                &DaemonConfig::for_tests()
+            )
+            .is_err());
+            assert_eq!(
+                registry
+                    .get("local", "claude", "default")
                     .unwrap()
                     .auth_state,
-                "authenticated"
+                state
             );
         }
     }

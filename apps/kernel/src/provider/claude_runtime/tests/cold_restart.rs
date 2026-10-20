@@ -24,7 +24,12 @@ fn restarted_session_arguments(existing: Option<&str>, submitted: bool) -> (Stri
                 r#"printf 'argv' >> "$CLAUDE_TEST_TRACE"
 for arg in "$@"; do printf '\t%s' "$arg" >> "$CLAUDE_TEST_TRACE"; done
 printf '\n' >> "$CLAUDE_TEST_TRACE"
-while IFS= read -r line; do :; done"#
+session_id=''; previous=''
+for arg in "$@"; do
+  case "$previous" in --session-id|--resume) session_id="$arg" ;; esac
+  previous="$arg"
+done
+while IFS= read -r line; do printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$session_id"; done"#
                     .into(),
                 "fixture".into(),
             ],
@@ -35,7 +40,19 @@ while IFS= read -r line; do :; done"#
         },
     );
     let mut binding = initialize_claude_runtime(&run).unwrap();
-    let session = binding.state.session_id().unwrap().to_string();
+    let session = binding
+        .state
+        .session_id()
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            binding
+                .state
+                .args
+                .windows(2)
+                .find(|pair| pair[0] == "--session-id")
+                .unwrap()[1]
+                .clone()
+        });
     wait_for_launches(&trace, 1);
     if submitted {
         let envelope = crate::prompt_assembly::PromptEnvelope::new(
@@ -45,6 +62,15 @@ while IFS= read -r line; do :; done"#
             crate::prompt_assembly::PromptManifest::current(),
         );
         submit_claude_prompt(&run, &mut binding.state, &envelope).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while binding.state.session_id().is_none() {
+            super::drain_claude_events(&run, &mut binding.state).unwrap();
+            assert!(
+                Instant::now() < deadline,
+                "official init must confirm a resumable session"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
     restart_claude_runtime(&run, &mut binding.state, "regression_restart_selection").unwrap();
     let contents = wait_for_launches(&trace, 2);

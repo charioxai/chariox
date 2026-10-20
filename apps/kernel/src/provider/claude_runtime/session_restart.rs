@@ -19,4 +19,11 @@ pub(super) fn claude_restart_session_argument<'a>(
         .session_id
         .as_deref()
         .map(|session| ("--session-id", session))
+        .or_else(|| {
+            state
+                .args
+                .windows(2)
+                .find(|pair| pair[0] == "--session-id")
+                .map(|pair| ("--session-id", pair[1].as_str()))
+        })
 }

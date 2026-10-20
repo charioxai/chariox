@@ -1141,13 +1141,22 @@ fn interrupt_fixture_with_creator(
             .invoke_queued_workflow_endpoint(session.id(), &queued)
             .unwrap()
     } else {
-        app.sessions_mut()
-            .invoke_workflow_endpoint(
+        let queued = app
+            .sessions_mut()
+            .queue_workflow_endpoint_prompt(
                 session.id(),
                 workflow.id(),
                 endpoint.id(),
                 Some("interrupt exactly once".into()),
+                None,
+                crate::session::WorkflowQueuedPromptSource::Manual,
+                None,
+                None,
+                None,
             )
+            .expect("current user invocation should queue");
+        app.sessions_mut()
+            .invoke_queued_workflow_endpoint(session.id(), &queued)
             .expect("workflow run should be created")
     };
     let node_run_id = workflow_run.node_runs()[0].id().to_string();
@@ -1320,6 +1329,31 @@ fn interrupt_fixture_with_creator(
     let second_target_agent_id = second_target_agent.id().to_string();
     let unrelated_agent_id = unrelated_agent.id().to_string();
     let runtime = runtime_state_from_app(app);
+    if !agent_created {
+        let current = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let run = current.workflow_run(&workflow_run_id).unwrap();
+        runtime
+            .owned
+            .durable_state_store
+            .persist_workflow_runtime_transition_with_invocation(
+                &current,
+                "current_user_test_invocation",
+                Some(
+                    crate::durable_state::workflow_invocation_provenance::WorkflowUserInvocation {
+                        queue_item_id: run
+                            .queue_item_id()
+                            .expect("current invocation has queue provenance")
+                            .into(),
+                        user_id: current.owner_user_id().into(),
+                    },
+                ),
+            )
+            .unwrap();
+    }
     runtime
         .owned
         .persist_workflow_runtime_session(&session_id, "interrupt_failure_test_baseline")
