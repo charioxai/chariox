@@ -306,14 +306,9 @@ impl RoomTerminalService {
                         if *actor == TerminalActor::User {
                             terminal.mark_user_interacted();
                         }
-                        let output_offset = terminal.log.end_offset();
-                        terminal.driver.record_write(
-                            actor,
-                            shell_foreground,
-                            input,
-                            now,
-                            output_offset,
-                        );
+                        terminal
+                            .driver
+                            .record_write(actor, shell_foreground, input, now);
                         let driver = terminal.driver.observe(shell_foreground);
                         drop(state);
                         self.report_work();

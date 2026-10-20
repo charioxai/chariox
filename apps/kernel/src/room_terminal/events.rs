@@ -6,6 +6,7 @@
 use std::time::Duration;
 
 use super::plain_text::PlainText;
+use super::terminal::ProgramEnd;
 use super::types::{RoomTerminalEvent, RoomTerminalEventKind, RoomTerminalWatch};
 
 /// A foreground program this quiet is taken to wait for input.
@@ -43,16 +44,24 @@ struct ArmedWatch {
     output: OutputMatcher,
     /// A program has been in the foreground since arming (for `Finished`).
     seen_busy: bool,
-    /// Output offset at which the owner last submitted a command line at the
-    /// prompt: a `Finished` watch only counts a command that began after it,
-    /// so an earlier command that ended later is not taken for it.
-    submitted_after: Option<u64>,
+    binding: FinishBinding,
+}
+
+/// Which command a `Finished` watch is about.
+#[derive(Clone, Copy, Default)]
+pub(super) struct FinishBinding {
+    /// The number of the owner's latest line: it is the command with that
+    /// number, or a later one, so an earlier command that ends later is not
+    /// taken for it.
+    pub line: Option<u64>,
+    /// The output offset the owner had read when it armed the watch.
+    pub after_offset: Option<u64>,
 }
 
 impl ArmedWatch {
-    fn counts_command_started_at(&self, started: Option<u64>) -> bool {
-        match (self.submitted_after, started) {
-            (Some(submitted), Some(start)) => start > submitted,
+    fn counts_command(&self, command: Option<u64>) -> bool {
+        match (self.binding.line, command) {
+            (Some(line), Some(command)) => command >= line,
             _ => true,
         }
     }
@@ -118,14 +127,14 @@ impl WatchSet {
         watch: RoomTerminalWatch,
         output: OutputMatcher,
         program_running: bool,
-        submitted_after: Option<u64>,
+        binding: FinishBinding,
     ) {
         self.armed.push(ArmedWatch {
             owner,
             watch,
             output,
             seen_busy: program_running,
-            submitted_after,
+            binding,
         });
     }
 
@@ -141,12 +150,12 @@ impl WatchSet {
         })
     }
 
-    /// `ended_start` is where the program that just returned to the prompt
-    /// began.
+    /// `ended_command` is the number of the program that just returned to the
+    /// prompt.
     pub(super) fn on_foreground(
         &mut self,
         program_running: bool,
-        ended_start: Option<u64>,
+        ended_command: Option<u64>,
     ) -> Fired {
         for armed in &mut self.armed {
             armed.seen_busy |= program_running;
@@ -156,7 +165,7 @@ impl WatchSet {
         }
         self.fire(|armed| match armed.watch {
             RoomTerminalWatch::Finished
-                if armed.seen_busy && armed.counts_command_started_at(ended_start) =>
+                if armed.seen_busy && armed.counts_command(ended_command) =>
             {
                 Some(RoomTerminalEventKind::Finished {
                     exit_code: None,
@@ -171,13 +180,46 @@ impl WatchSet {
     pub(super) fn on_command_finished(
         &mut self,
         exit_code: Option<u32>,
-        started: Option<u64>,
+        command: Option<u64>,
     ) -> Fired {
         self.fire(|armed| match armed.watch {
-            RoomTerminalWatch::Finished if armed.counts_command_started_at(started) => {
+            RoomTerminalWatch::Finished if armed.counts_command(command) => {
                 Some(RoomTerminalEventKind::Finished {
                     exit_code,
                     signal: None,
+                })
+            }
+            _ => None,
+        })
+    }
+
+    /// Lines the shell never ran as commands left some watches waiting for a
+    /// command that will not start (`commands_started` is all there is). They
+    /// now follow the last command that did, which has already ended.
+    pub(super) fn on_lines_settled(
+        &mut self,
+        commands_started: u64,
+        last_end: Option<&ProgramEnd>,
+    ) -> Fired {
+        for armed in &mut self.armed {
+            if let Some(line) = &mut armed.binding.line {
+                *line = (*line).min(commands_started);
+            }
+        }
+        let Some(end) = last_end else {
+            return Fired::new();
+        };
+        self.fire(|armed| match armed.watch {
+            RoomTerminalWatch::Finished
+                if armed.counts_command(end.command)
+                    && armed
+                        .binding
+                        .after_offset
+                        .is_some_and(|offset| end.output_offset > offset) =>
+            {
+                Some(RoomTerminalEventKind::Finished {
+                    exit_code: end.exit_code,
+                    signal: end.signal.clone(),
                 })
             }
             _ => None,
@@ -264,7 +306,7 @@ mod tests {
             },
             OutputMatcher::new(&plain),
             false,
-            None,
+            FinishBinding::default(),
         );
         assert!(watches.on_output(&plain).is_empty());
         plain.append(b"\nPassword: ");
@@ -281,7 +323,7 @@ mod tests {
             RoomTerminalWatch::Finished,
             OutputMatcher::new(&plain),
             false,
-            None,
+            FinishBinding::default(),
         );
         assert!(watches.on_foreground(false, None).is_empty());
         assert!(watches.on_foreground(true, None).is_empty());
@@ -297,7 +339,7 @@ mod tests {
             RoomTerminalWatch::WaitingForInput,
             OutputMatcher::new(&plain),
             true,
-            None,
+            FinishBinding::default(),
         );
         watches.arm(
             owner("w1"),
@@ -306,7 +348,7 @@ mod tests {
             },
             OutputMatcher::new(&plain),
             true,
-            None,
+            FinishBinding::default(),
         );
         plain.append(b"ready");
         assert_eq!(watches.on_output(&plain).len(), 1);

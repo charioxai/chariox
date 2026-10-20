@@ -1,12 +1,16 @@
 //! One tick of a running terminal: PTY output into the screen, shell exit,
 //! foreground changes and the watches they fire.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::events::{Fired, QUIET_BEFORE_WAITING};
 use super::terminal::{ProgramEnd, Terminal};
 use super::types::RoomTerminalOutcome;
 use crate::pty::{PtyManager, PtyProcessState};
+
+/// How long an idle shell may take to start a command that was queued as
+/// typeahead while the previous one still ran.
+const UNRUN_LINES_SETTLE: Duration = Duration::from_millis(400);
 
 pub(super) struct Pumped {
     pub output_changed: bool,
@@ -33,7 +37,8 @@ impl Terminal {
             let _ = pty.remove_process(&run_id);
             self.last_program_end = Some(ProgramEnd {
                 output_offset: self.log.end_offset(),
-                started_offset: None,
+                command: None,
+                at: now,
                 exit_code,
                 signal: signal.clone(),
             });
@@ -47,16 +52,17 @@ impl Terminal {
         let program_running = !self.shell_is_foreground(pty);
         // Once the shell reports its commands, sampling would only race it.
         if !self.mark_tracking {
-            let mut ended_start = None;
-            if program_running && !self.program_running {
-                self.command_started_offset = Some(self.log.end_offset());
+            let mut ended_command = None;
+            if program_running && !self.program_running && !self.command_in_flight {
+                self.commands_started += 1;
             }
             if self.program_running && !program_running {
                 self.command_in_flight = false;
-                ended_start = self.command_started_offset.take();
+                ended_command = Some(self.commands_started);
                 self.last_program_end = Some(ProgramEnd {
                     output_offset: self.log.end_offset(),
-                    started_offset: ended_start,
+                    command: ended_command,
+                    at: now,
                     exit_code: None,
                     signal: None,
                 });
@@ -66,10 +72,11 @@ impl Terminal {
             if program_running || self.program_running {
                 pumped
                     .fired
-                    .extend(self.watches.on_foreground(program_running, ended_start));
+                    .extend(self.watches.on_foreground(program_running, ended_command));
             }
         }
         self.program_running = program_running;
+        pumped.fired.extend(self.settle_unrun_lines(pty, now));
         if self.is_busy(pty)
             && !self.waiting_reported
             && now.duration_since(self.last_output_at) >= QUIET_BEFORE_WAITING
@@ -79,6 +86,28 @@ impl Terminal {
             pumped.fired.extend(self.watches.on_quiet_program());
         }
         pumped
+    }
+
+    /// Lines that never became commands leave the shell idle with the line
+    /// count ahead of the commands. Once it has been quiet for a while no
+    /// queued command is left to start, so waits stop expecting one.
+    fn settle_unrun_lines(&mut self, pty: &PtyManager, now: Instant) -> Fired {
+        if self.is_busy(pty) || self.driver.lines_written() <= self.commands_started {
+            return Fired::new();
+        }
+        let quiet_since = [
+            self.driver.last_write(),
+            self.last_program_end.as_ref().map(|end| end.at),
+        ]
+        .into_iter()
+        .flatten()
+        .max();
+        if quiet_since.is_some_and(|since| now.duration_since(since) < UNRUN_LINES_SETTLE) {
+            return Fired::new();
+        }
+        self.driver.settle_lines(self.commands_started);
+        self.watches
+            .on_lines_settled(self.commands_started, self.last_program_end.as_ref())
     }
 
     fn drain(
