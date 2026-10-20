@@ -7410,6 +7410,7 @@ mod tests {
 
     #[test]
     fn default_claude_profile_inherits_the_host_environment() {
+        crate::test_support::isolated_env_test!();
         let (root, registry) = fixture();
         registry
             .migrate_effective_defaults("owner-a", &root.join("home"))
@@ -8494,6 +8495,7 @@ mod tests {
 
     #[test]
     fn default_alias_tracks_selected_provider_default() {
+        crate::test_support::isolated_env_test!();
         let (root, registry) = fixture();
         let native_default = registry
             .migrate_effective_defaults("owner-a", &root.join("home"))
