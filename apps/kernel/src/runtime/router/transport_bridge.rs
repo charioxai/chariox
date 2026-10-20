@@ -144,6 +144,13 @@ impl CommandRouter {
         self.runtime_state.passkey_prompts_for(user_id)
     }
 
+    pub(crate) fn passkey_prompt_closure_reason(
+        &self,
+        prompt: &crate::local::PasskeyPrompt,
+    ) -> crate::local::PasskeyPromptClosureReason {
+        self.runtime_state.passkey_prompt_closure_reason(prompt)
+    }
+
     pub(crate) fn passkey_prompt_change_sequence(&self) -> u64 {
         self.runtime_state.passkey_prompt_change_sequence()
     }

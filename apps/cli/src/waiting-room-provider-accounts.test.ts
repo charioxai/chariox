@@ -199,7 +199,7 @@ function usageMeter(
 test("MP-08 / MP-11 an unvalidated linked account asks for a check instead of another login", () => {
   const profile = account("codex", "linked", true)
   profile.auth_state = "unknown"
-  assert.match(providerAccountDisplayLabel(profile), /sign-in not checked$/)
+  assert.equal(providerAccountDisplayLabel(profile), profile.label)
   assert.match(selectedProviderAccountStartBlockReason([profile], "codex", "default") ?? "", /Refresh its status/)
   assert.equal(providerAccountSignInCommand(profile), "/provider accounts refresh codex linked")
 })
@@ -282,5 +282,15 @@ test("Claude unknown and expired observations defer recovery to the kernel", () 
       profile.auth_state = state
       assert.equal(selectedProviderAccountStartBlockReason([profile], provider, profile.profile_id), null)
     }
+  }
+})
+
+// MP-08 / MP-10 / MP-11: normal account labels are quiet; detected problems stay visible.
+test("MP-08/MP-11 account labels show only detected authentication problems", () => {
+  const healthy = account("claude", "claude-test")
+  assert.equal(providerAccountDisplayLabel(healthy), "claude-test")
+  assert.equal(providerAccountDisplayLabel({ ...healthy, auth_state: "unknown" }), "claude-test")
+  for (const auth_state of ["not_configured", "expired", "error"] as const) {
+    assert.match(providerAccountDisplayLabel({ ...healthy, auth_state }), /needs sign-in$/)
   }
 })

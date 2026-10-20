@@ -13,6 +13,10 @@ import { extendKernelSudo, revokeKernelAccessGrant } from "./kernel-api.js"
 import { respondToHandoff, respondToInteraction, respondToKernelAccessDecision } from "./prompt-runtime-api.js"
 import { createSudoWindowBand } from "./sudo-window-band.js"
 import { routeRawPastes, type RawPasteEvent } from "./raw-paste-routing.js"
+import { getCredentialVaultStatus } from "./config-api.js"
+import { listKernelAccessGrants } from "./kernel-api.js"
+import { createKernelSecurityRefresh } from "./kernel-security-refresh.js"
+import { createKernelClock, kernelTimeFromHealth } from "./kernel-clock.js"
 
 /** The kernel's decisions on this terminal: the session's approval panel and,
  * on top of it, the passkey popup (protocol 403), which shows the owner's
@@ -44,6 +48,11 @@ export function createCliKernelApprovalComposition(deps: {
     return answerUserDomainInteraction(source, id, choice, proof)
   }
   let savedFocus: CliDialogFocusTarget | null = null
+  const security = createKernelSecurityRefresh({
+    readVault: () => getCredentialVaultStatus(deps.client),
+    readGrants: () => listKernelAccessGrants(deps.client),
+    notify: deps.notify,
+  })
   let dialogs = 0
   const opened = () => {
     if (dialogs++ === 0) {
@@ -59,8 +68,10 @@ export function createCliKernelApprovalComposition(deps: {
     approve: () => { void popup.approve() },
     refuse: () => { void popup.refuse() },
     cycleRemember: () => popup.cycleRemember(),
+    toggleDetails: () => popup.toggleDetails(),
   })
   const popup = createPasskeyPopupController({
+    serverClock: createKernelClock(async () => kernelTimeFromHealth(await deps.client.send({GetDaemonHealth: null}))),
     connected: deps.kernelConnected,
     onView: (view) => popupSurface.render(view, deps.dimensions()),
     onOpen: opened,
@@ -79,6 +90,7 @@ export function createCliKernelApprovalComposition(deps: {
     choose: (interactionId, choiceId) => { void controller.choose(interactionId, choiceId) },
   })
   const controller = createKernelApprovalController({
+    delegateSudoToPasskeyPopup: true,
     getSession: deps.session,
     connected: deps.connected,
     onView: (view) => surface.render(view, deps.dimensions()),
@@ -122,6 +134,8 @@ export function createCliKernelApprovalComposition(deps: {
     renderBand()
   })
   createEffect(() => {
+    const connected = deps.kernelConnected()
+    if (security.connectionChanged(connected) && !connected) popup.invalidateConnectionState()
     deps.themeRevision()
     deps.dimensions()
     controller.sync()
@@ -132,18 +146,23 @@ export function createCliKernelApprovalComposition(deps: {
       const prompts = passkeyPromptsFromEvent(event.prompts, userAppViewsPrototypeEnabled())
       userPromptClients.clear()
       for (const prompt of prompts) if (prompt.session_id === "") userPromptClients.set(prompt.interaction_id, actualClient())
-      popup.apply(prompts)
+      popup.apply(prompts, event)
+    } else if (event.event === "transport_closed" || event.event === "transport_resumed") {
+      popup.invalidateConnectionState({preservePrompts: event.event === "transport_resumed"})
+      security.invalidate()
+      if (event.event === "transport_resumed") void security.refresh()
     }
   }))
   // A paste while the popup or the panel is open never reaches the prompt;
   // in the popup it belongs to the passkey.
   onCleanup(routeRawPastes(deps.renderer.keyInput,
     (event: RawPasteEvent) => popup.handlePaste(event) || controller.handlePaste(event)))
-  onCleanup(() => { popup.dispose(); controller.dispose() })
+  onCleanup(() => { security.invalidate(); popup.dispose(); controller.dispose() })
   return {
     ...controller,
     openFromCommand() {
-      if (!deps.attached()) deps.flashFooter("start or join a session to view approvals", "info")
+      if (popup.view().count) popup.show()
+      else if (!deps.attached()) deps.flashFooter("start or join a session to view approvals", "info")
       else if (controller.view().count) controller.show()
       else deps.flashFooter("No pending approvals", "info")
     },
@@ -153,6 +172,7 @@ export function createCliKernelApprovalComposition(deps: {
     handleKey: (event: KernelApprovalKey) => popup.handleKey(event) || controller.handleKey(event),
     ownsInput: () => popup.ownsInput() || controller.ownsInput(),
     assignBox(value: BoxRenderable) { surface.assign(value); controller.sync() },
+    assignPopupBanner(value: BoxRenderable) { popupSurface.assignBanner(value); popupSurface.render(popup.view(), deps.dimensions()) },
     assignPopupBox(value: BoxRenderable) { popupSurface.assign(value); popupSurface.render(popup.view(), deps.dimensions()) },
   }
 }

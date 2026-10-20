@@ -51,6 +51,9 @@ pub enum PasskeyPromptKind {
 /// choice without it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PasskeyPrompt {
+    /// MP-08 / MP-11 protocol 538: structured sudo decision presentation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sudo_request: Option<SudoRequestPresentation>,
     /// Protocol 470: present for access_grant/access_extension; absent on older kernels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<KernelAccessRequester>,
@@ -184,4 +187,35 @@ pub struct ExtendKernelSudoRequest {
     pub attachment_id: String,
     pub entry_id: String,
     pub revision: u64,
+}
+
+/// Protocol 538: presentation only; the pending interaction remains the authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SudoRequestPresentation {
+    pub requester_name: String,
+    pub agent_name: String,
+    pub session_name: String,
+    pub task_summary: String,
+    pub task: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_id: Option<String>,
+    pub terminal_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PasskeyPromptClosureReason {
+    Expired,
+    Answered,
+    Revoked,
+}
+
+/// Protocol 538: an authoritative delta for a prompt previously projected on this subscription.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PasskeyPromptClosure {
+    pub session_id: String,
+    pub interaction_id: String,
+    pub kind: PasskeyPromptKind,
+    pub expires_at_ms: u64,
+    pub reason: PasskeyPromptClosureReason,
 }

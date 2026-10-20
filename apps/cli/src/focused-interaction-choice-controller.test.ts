@@ -425,3 +425,28 @@ function runtimeSession(id: string): RuntimeSession {
     },
   }
 }
+
+test("MP-08/MP-11 a pending or acknowledged choice cannot be submitted twice", async () => {
+  let finish!: (session: RuntimeSession) => void
+  const h = createHarness({ respondToInteraction: () => new Promise(resolve => { finish = resolve }) })
+  const first = h.controller.submitChoice(0)
+  await h.controller.submitChoice(0)
+  assert.equal(h.responses().length, 1)
+  finish({ ...runtimeSession("session-1"), active_interactions: [interactionFixture()] })
+  await first
+  assert.deepEqual(h.appliedSessions().at(-1)?.active_interactions, [])
+  await h.controller.submitChoice(0)
+  assert.equal(h.responses().length, 1)
+})
+
+test("MP-08/MP-11 a failed choice re-enables retry with its error", async () => {
+  let attempts = 0
+  const h = createHarness({ respondToInteraction: async () => {
+    if (++attempts === 1) throw new Error("connection failed")
+    return runtimeSession("session-1")
+  } })
+  await h.controller.submitChoice(0)
+  assert.equal(h.footerMessages().at(-1)?.tone, "error")
+  await h.controller.submitChoice(0)
+  assert.equal(attempts, 2)
+})

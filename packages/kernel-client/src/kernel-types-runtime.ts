@@ -172,7 +172,26 @@ export type KernelAccessRequester = {
   provider_harness?: "codex" | "claude" | "opencode" | null
 }
 
+/** MP-08 / MP-11 protocol 538: kernel-authored presentation, never authority. */
+export type SudoRequestPresentation = {
+  requester_name: string
+  agent_name: string
+  session_name: string
+  task_summary: string
+  task: string
+  grant_id?: string | null
+  terminal_id: string
+}
+export type PasskeyPromptClosure = {
+  session_id: string
+  interaction_id: string
+  kind: PasskeyPrompt["kind"]
+  expires_at_ms: number
+  reason: "expired" | "answered" | "revoked"
+}
+
 export type PasskeyPrompt = {
+  sudo_request?: SudoRequestPresentation | null
   requester?: KernelAccessRequester | null
   kind: "critical_approval" | "access_grant" | "access_extension" | "sudo"
   lifetime_minutes?: number | null

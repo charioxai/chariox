@@ -70,6 +70,7 @@ export type CliAppWorkspaceViewProps = {
   assignSudoBand: (value: any) => void
   assignKernelApprovalBox: (value: any) => void
   assignPasskeyPopupBox: (value: any) => void
+  assignPasskeyPopupBanner?: (value: any) => void
   assignProviderAccountRecoveryBox?: (value: any) => void
   kernelApprovalOwnsInput: () => boolean
   handlePromptKeyDown: WorkspaceLayoutProps["onPromptKeyDown"]
@@ -122,6 +123,7 @@ export function CliAppWorkspaceView(props: CliAppWorkspaceViewProps) {
       onKernelApprovalBannerRef={props.assignKernelApprovalBanner}
       onSudoBandRef={props.assignSudoBand}
       onPasskeyPopupBoxRef={props.assignPasskeyPopupBox}
+      {...(props.assignPasskeyPopupBanner ? { onPasskeyPopupBannerRef: props.assignPasskeyPopupBanner } : {})}
       onProviderAccountRecoveryBoxRef={props.assignProviderAccountRecoveryBox}
       onResponseSurfaceMouseUp={props.handlePromptSelectionSurfaceMouseUp}
       onFooterMouseUp={props.handlePromptSelectionSurfaceMouseUp}

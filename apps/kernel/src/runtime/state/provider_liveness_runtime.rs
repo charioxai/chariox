@@ -341,7 +341,13 @@ impl KernelRuntimeState {
                 .settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)
                 .await;
         }
-        let message = match terminal_diagnostic {
+        let message = if active_prompt.delivery_pending() {
+            crate::provider::provider_exit_before_delivery_message(
+                &termination,
+                terminal_diagnostic,
+            )
+        } else {
+            match terminal_diagnostic {
             Some(diagnostic) if !diagnostic.trim().is_empty() => format!(
                 "Provider run `{provider_run_id}` ended unexpectedly: {}. Provider terminal diagnostic: {diagnostic}",
                 termination.reason
@@ -350,6 +356,7 @@ impl KernelRuntimeState {
                 "Provider run `{provider_run_id}` ended unexpectedly: {}.",
                 termination.reason
             ),
+        }
         };
         self.fail_owned_provider_prompt_with_termination(
             session_id,

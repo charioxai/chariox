@@ -161,6 +161,7 @@ fn passkey_prompts_and_their_popup_event_are_versioned() {
     );
     let prompt = |session_alias: Option<&str>, interaction_id: &str| PasskeyPrompt {
         kind: PasskeyPromptKind::CriticalApproval,
+        sudo_request: None,
         requester: None,
         session_id: "session-1".into(),
         session_alias: session_alias.map(str::to_owned),
@@ -175,6 +176,8 @@ fn passkey_prompts_and_their_popup_event_are_versioned() {
         max_lifetime_minutes: None,
     };
     let event = KernelEvent::PasskeyPromptsChanged {
+        kernel_now_ms: 1234,
+        closed: vec![],
         prompts: vec![
             prompt(Some("Payments"), "app_validation_op-1"),
             prompt(None, "app_validation_op-2"),
@@ -201,7 +204,7 @@ fn passkey_prompts_and_their_popup_event_are_versioned() {
     assert_eq!(
         wire,
         serde_json::json!({
-            "event": "passkey_prompts_changed",
+            "event": "passkey_prompts_changed", "kernel_now_ms": 1234, "closed": [],
             "prompts": [
                 expected(Some("Payments"), "app_validation_op-1"),
                 expected(None, "app_validation_op-2"),
@@ -213,11 +216,15 @@ fn passkey_prompts_and_their_popup_event_are_versioned() {
         event
     );
     // An empty set closes every popup.
-    let closed =
-        serde_json::to_value(KernelEvent::PasskeyPromptsChanged { prompts: vec![] }).unwrap();
+    let closed = serde_json::to_value(KernelEvent::PasskeyPromptsChanged {
+        prompts: vec![],
+        kernel_now_ms: 1234,
+        closed: vec![],
+    })
+    .unwrap();
     assert_eq!(
         closed,
-        serde_json::json!({"event": "passkey_prompts_changed", "prompts": []})
+        serde_json::json!({"event": "passkey_prompts_changed", "prompts": [], "kernel_now_ms": 1234, "closed": []})
     );
     // A later answer to an answered prompt is refused with this code.
     assert_eq!(PASSKEY_ALREADY_ANSWERED, "PASSKEY_ALREADY_ANSWERED");
@@ -230,7 +237,7 @@ fn passkey_prompts_and_their_popup_event_are_versioned() {
     let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "eb4f707985865d80b8ddc73fcf3f95534c4b6a99c30de7fbe666da5830159350"
+        "d764a65dbd4879191cd96b35887b4aa69859628ab4363ff95413ae3fc28761b3"
     );
 }
 
@@ -408,6 +415,8 @@ fn access_requester_protocol_470_shape_and_hash() {
     let grant: PasskeyPrompt = serde_json::from_value(serde_json::json!({"kind": "access_grant", "session_id": "kernel-access", "interaction_id": "g-grant", "title": "External access", "message": "Display only", "approve_choice_id": "approve", "refuse_choice_id": "refuse", "requested_at_ms": 1000, "expires_at_ms": 301000, "lifetime_minutes": 30, "max_lifetime_minutes": 1440, "requester": {"executable": "/opt/codex", "pid": 42, "process_start_id": "18446744073709551615", "process_exec_version": 7, "provider_harness": "codex"}})).unwrap();
     let extension: PasskeyPrompt = serde_json::from_value(serde_json::json!({"kind": "access_extension", "session_id": "kernel-access", "interaction_id": "g-extension", "title": "External access", "message": "Display only", "approve_choice_id": "approve", "refuse_choice_id": "refuse", "requested_at_ms": 1000, "expires_at_ms": 301000, "lifetime_minutes": 30, "max_lifetime_minutes": 1440, "requester": {"executable": "/opt/codex", "pid": 42, "process_start_id": "18446744073709551615", "process_exec_version": 7, "provider_harness": "codex"}})).unwrap();
     let event = KernelEvent::PasskeyPromptsChanged {
+        kernel_now_ms: 1234,
+        closed: vec![],
         prompts: vec![grant, extension],
     };
     let snapshot = serde_json::json!({"interaction":interaction,"event":event,"harnesses":[KernelAccessProviderHarness::Codex, KernelAccessProviderHarness::Claude, KernelAccessProviderHarness::Opencode]});
@@ -424,7 +433,7 @@ fn access_requester_protocol_470_shape_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "7b666b1bc31a3d6dbdcb41e9cec18f97dd98e6bf93b6bddba1ed1b27ecc43ef2"
+        "7ae788c3c7dedfc9f1bb25fbd4c44074d1e7263a20138c75b89d3c120eeb0f3e"
     );
     assert_eq!(
         serde_json::from_value::<KernelEvent>(serde_json::to_value(&event).unwrap()).unwrap(),
@@ -443,5 +452,32 @@ fn access_requester_protocol_470_shape_and_hash() {
             serde_json::json!({"holder_pid":42,"requester":requester})
         )
         .is_err()
+    );
+}
+
+// MP-08 / MP-10 / MP-11: coordinator-allocated lifecycle and sudo presentation contract.
+#[test]
+fn sudo_presentation_and_authoritative_closure_protocol_538_shape_and_hash() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 538);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        146
+    );
+    let snapshot = serde_json::json!({"sudo_request":{"requester_name":"Claude Code","agent_name":"Reviewer","session_name":"Payments","task_summary":"Review the release","task":"Review the release\nFull task","grant_id":"g","terminal_id":"t"},"kernel_now_ms":4001,"closed":[{"session_id":"s","interaction_id":"i","kind":"sudo","expires_at_ms":4000,"reason":"expired"},{"session_id":"s","interaction_id":"i","kind":"sudo","expires_at_ms":4000,"reason":"answered"},{"session_id":"s","interaction_id":"i","kind":"sudo","expires_at_ms":4000,"reason":"revoked"}]});
+    let presentation: crate::local::SudoRequestPresentation =
+        serde_json::from_value(snapshot["sudo_request"].clone()).unwrap();
+    let closures: Vec<crate::local::PasskeyPromptClosure> =
+        serde_json::from_value(snapshot["closed"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(presentation).unwrap(),
+        snapshot["sudo_request"]
+    );
+    assert_eq!(serde_json::to_value(closures).unwrap(), snapshot["closed"]);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "4a8c957ea27a395af0494a6d25ce19333f4eb9804d63991e88b60acef08dbd3b"
     );
 }

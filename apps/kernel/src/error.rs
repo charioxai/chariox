@@ -6,6 +6,15 @@ pub use user_domain_refusal::UserDomainRefusalReason;
 use crate::provider::ProviderRunState;
 use crate::session::SessionStatus;
 
+// MP-08 / MP-11: code-based explanations contain no provider/parser values.
+// Keep executor, MCP and final socket/cache projections consistent.
+pub(crate) fn external_request_failure_message(code: &str) -> &'static str {
+    match code {
+        "session_not_found" => "session not found; check its name or list available sessions",
+        _ => "external request failed; details are available only in the host terminal",
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum DaemonError {
     #[error("User-domain request refused")]
@@ -24,7 +33,7 @@ pub enum DaemonError {
     },
     /// MP-08 / MP-11: preserve mapped executor semantics for external grants
     /// and sudo without retaining any diagnostic values or source error.
-    #[error("external request failed; details are available only in the host terminal")]
+    #[error("{}", external_request_failure_message(.code))]
     ExternalRequestFailed { code: String, retryable: bool },
     #[error(
         "relay transport `{operation}` failed with code `{code}` (retryable={retryable}): {message}"

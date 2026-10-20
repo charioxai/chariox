@@ -204,6 +204,8 @@ pub(crate) enum KernelEvent {
     /// closes. Never replayed: each subscription sends the current set.
     PasskeyPromptsChanged {
         prompts: Vec<PasskeyPrompt>,
+        kernel_now_ms: u64,
+        closed: Vec<crate::local::PasskeyPromptClosure>,
     },
 }
 
@@ -393,7 +395,7 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
             "status": workflow_run.status(),
             "active_node_run_id": workflow_run.active_node_run_id(),
         }),
-        KernelEvent::PasskeyPromptsChanged { prompts } => serde_json::json!({
+        KernelEvent::PasskeyPromptsChanged { prompts, .. } => serde_json::json!({
             "event_id": event_id,
             "event": "passkey_prompts_changed",
             "prompt_count": prompts.len(),

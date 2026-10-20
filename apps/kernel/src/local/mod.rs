@@ -289,7 +289,7 @@ pub use api::{
 pub use api::{
     HandoffOutcome, HandoffResponseAction, HandoffStatus, HandoffValue,
     KernelAccessProviderHarness, KernelAccessRequester, KernelConnectionClass, PasskeyPrompt,
-    PasskeyPromptKind,
+    PasskeyPromptClosure, PasskeyPromptClosureReason, PasskeyPromptKind, SudoRequestPresentation,
 };
 pub use api::{
     KernelBrowserCommand, KernelBrowserDisplayTarget, KernelBrowserInput,

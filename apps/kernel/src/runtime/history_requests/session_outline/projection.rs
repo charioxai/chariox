@@ -233,6 +233,7 @@ fn outline_blob_from_event_group(events: &[&HistoryEvent]) -> Option<SessionHist
                 .and_then(|event| event.to_session_history_entry())
                 .map(|entry| blob_summary(entry.kind, &entry.text))
                 .unwrap_or_default(),
+            SessionHistoryEntryKind::ProviderError => compact_blob_summary(&first_entry.text),
             _ => format!("{} entries, {} chars", events.len(), total_chars),
         },
         sequence_start,
@@ -526,7 +527,10 @@ fn blob_summary(kind: SessionHistoryEntryKind, text: &str) -> String {
             return summary;
         }
     }
-    if kind == SessionHistoryEntryKind::ProviderStatus {
+    if matches!(
+        kind,
+        SessionHistoryEntryKind::ProviderStatus | SessionHistoryEntryKind::ProviderError
+    ) {
         return compact_blob_summary(text);
     }
     first_line(text)
@@ -590,6 +594,39 @@ mod tests {
     use super::*;
     use crate::history::{HistoryEventTurnContext, SessionHistoryEntry};
     use crate::terminal::TerminalOutputKind;
+
+    // MP-08 / MP-10 / MP-11: a hydrated failure must still explain itself.
+    #[test]
+    fn mp08_mp11_grouped_error_blob_retains_exit_cause_and_recovery() {
+        let cause = "Provider exited before the prompt was delivered: provider process exited with status 143. Retry the prompt to start a new provider run.";
+        let event = |sequence, text: &str| {
+            HistoryEvent::transcript(
+                sequence,
+                &SessionHistoryEntry::provider_output(
+                    "session-1",
+                    "provider-run-1",
+                    Some("agent-1"),
+                    TerminalOutputKind::ProviderError,
+                    None,
+                    text.to_string(),
+                ),
+                HistoryEventTurnContext::default(),
+            )
+        };
+        let first = event(1, cause);
+        let second = event(2, "Request not carried out; it was dropped.");
+        let blob = outline_blob_from_event_group(&[&first, &second]).unwrap();
+        assert!(blob.summary.contains("status 143"), "{}", blob.summary);
+        assert!(
+            blob.summary.contains("Retry the prompt"),
+            "{}",
+            blob.summary
+        );
+        assert_eq!(blob.entry_count, 2);
+        assert!(blob.summary.chars().count() <= 240);
+        let single = outline_blob_from_event(first).unwrap();
+        assert!(single.summary.contains("Retry the prompt"));
+    }
 
     #[test]
     fn grouped_blob_titles_are_user_facing() {

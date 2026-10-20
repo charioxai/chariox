@@ -46,11 +46,13 @@ export type KernelApprovalView = {
   error: string | null
 }
 
-export function kernelApprovals(session: RuntimeSession): RuntimeInteraction[] {
+export function kernelApprovals(session: RuntimeSession, delegateSudoToPasskeyPopup = false): RuntimeInteraction[] {
   return (session.active_interactions ?? []).filter((item) =>
     typeof item.kernel_operation_id === "string" && item.kernel_operation_id.trim().length > 0
     && !Object.hasOwn(item, "agent_id") && item.kind === "permission"
-    && item.custom_choice == null && item.default_on_timeout == null,
+    && item.custom_choice == null && item.default_on_timeout == null
+    && !(delegateSudoToPasskeyPopup && item.kernel_operation_id.startsWith("sudo:")
+      && item.choices.some(choice => choice.requires_passkey)),
   ).sort((a, b) => a.requested_at_ms - b.requested_at_ms || a.id.localeCompare(b.id))
 }
 
@@ -61,6 +63,8 @@ export function appHostOperationId(interaction: RuntimeInteraction): string | un
 
 export function createKernelApprovalController(deps: {
   getSession(): RuntimeSession
+  /** MP-08 / MP-11: one sudo approval surface, shared with external access. */
+  delegateSudoToPasskeyPopup?: boolean
   connected(): boolean
   onView(view: KernelApprovalView): void
   onOpen(): void
@@ -88,7 +92,7 @@ export function createKernelApprovalController(deps: {
   let lastDisplayedHost: { sessionId: string; operation: string; identity: string } | null = null
   let entry: { interactionId: string; value: ReturnType<typeof createHandoffEntry> } | null = null
   const view = (): KernelApprovalView => {
-    const items = kernelApprovals(deps.getSession())
+    const items = kernelApprovals(deps.getSession(), deps.delegateSudoToPasskeyPopup)
     index = Math.min(index, Math.max(0, items.length - 1))
     const interaction = items[index] ?? null
     if (entry && entry.interactionId !== interaction?.id) { entry.value.clear(); entry = null }

@@ -153,7 +153,7 @@ fn project_error(value: &Value) -> KernelTransportError {
             "kernel_request_overloaded" => "kernel request admission queue overloaded",
             "duplicate_command_unavailable" => "original duplicate command result was unavailable",
             "duplicate_command_conflict" => "command_id was already used for a different request",
-            _ => "external request failed; details are available only in the host terminal",
+            _ => crate::error::external_request_failure_message(code),
         }
         .into();
     }

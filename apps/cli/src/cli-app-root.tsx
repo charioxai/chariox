@@ -1236,6 +1236,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
       assignKernelApprovalBanner={kernelApprovals.assignBanner}
       assignSudoBand={kernelApprovals.assignSudoBand}
       assignPasskeyPopupBox={kernelApprovals.assignPopupBox}
+      assignPasskeyPopupBanner={kernelApprovals.assignPopupBanner}
       assignProviderAccountRecoveryBox={providerAccountRecovery.assignBox}
       kernelApprovalOwnsInput={() => kernelApprovals.ownsInput() || Boolean(userAppViews?.ownsInput())}
       handlePromptKeyDown={handlePromptKeyDown}

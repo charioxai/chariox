@@ -2160,8 +2160,15 @@ fn claude_headless_early_exit_before_ack_has_bounded_diagnostic() {
         .expect_err("an exited provider must fail before native dispatch");
     assert!(error
         .to_string()
-        .contains("exited before acknowledging the queued task"));
-    assert!(error.to_string().contains("no task text was dispatched"));
+        .contains("Provider exited before the prompt was delivered:"));
+    assert!(
+        error.to_string().contains("status 1"),
+        "MP-08 / MP-10: an early exit must preserve the real child status: {error}"
+    );
+    assert!(
+        error.to_string().contains("Retry"),
+        "a failed first turn needs recovery"
+    );
     assert!(fs::read_to_string(&context_file)
         .expect("context file should remain readable")
         .is_empty());
