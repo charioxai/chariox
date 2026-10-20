@@ -1194,7 +1194,7 @@ async fn grant_until_exit(kernel: &mut Kernel, holder: &mut Client) -> Value {
 // ends with its holder or a reused PID, like every other grant.
 #[tokio::test]
 async fn until_exit_grant_has_no_deadline_and_ends_with_its_holder() {
-    for action in ["exit", "reuse"] {
+    for action in ["exit", "reuse", "revoke"] {
         let mut kernel = Kernel::start().await;
         let mut holder = Client::start(&kernel.root);
         let grant = grant_until_exit(&mut kernel, &mut holder).await;
@@ -1213,10 +1213,21 @@ async fn until_exit_grant_has_no_deadline_and_ends_with_its_holder() {
         let listed = &list["response"]["KernelAccessGrantsListed"]["grants"];
         assert_eq!(listed[0]["term"], "until_holder_exits", "{list}");
         let started = std::time::Instant::now();
-        if action == "reuse" {
-            kernel.control("reuse").await;
-        } else {
-            drop(holder);
+        match action {
+            "reuse" => kernel.control("reuse").await,
+            "revoke" => {
+                let revoked = kernel
+                    .request(serde_json::json!({"RevokeKernelAccessGrant":{"grant_id":grant["grant_id"]}}))
+                    .await;
+                assert!(revoked["error"].is_null(), "{revoked}");
+                // The approved holder itself returns: its access ended, it is not a stranger.
+                holder.command("reconnect");
+                assert_eq!(holder.result()["reconnected"], true);
+                let ended =
+                    holder.request(serde_json::json!({"GetSessionState":{"session_id":SESSION}}));
+                assert_eq!(ended["error"]["code"], "kernel_access_ended", "{ended}");
+            }
+            _ => drop(holder),
         }
         timeout(Duration::from_secs(2), async {
             loop {
