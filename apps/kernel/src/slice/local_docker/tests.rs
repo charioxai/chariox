@@ -3232,3 +3232,36 @@ fn mp11_log_tail_is_bounded_and_survives_split_utf8() {
     );
     assert!(projected.truncated);
 }
+
+#[test]
+fn a_start_clears_the_previous_provision_log_before_its_admission_checks() {
+    // Clients poll this log for first-start progress; the checks before the provisioner take seconds.
+    let root = test_root("stale-provision-log");
+    let record = test_record();
+    let mut options = test_options();
+    options.root = root.clone();
+    options.disk_layer_mb = Some(1024);
+    options.disk_home_mb = Some(1024);
+    let log = local_docker_slice_action_log_path(&root, &record, LocalDockerSliceAction::Provision);
+    std::fs::create_dir_all(log.parent().expect("log has a directory")).expect("log directory");
+    std::fs::write(
+        &log,
+        "[slice-linux] progress: Starting the slice services\n",
+    )
+    .expect("stale log");
+    let error = run_local_docker_slice_action(
+        &record,
+        LocalDockerSliceAction::Provision,
+        None,
+        None,
+        None,
+        &options,
+    )
+    .expect_err("bounded slices need the managed broker, which this test does not run");
+    assert!(
+        error.to_string().contains("managed Docker broker"),
+        "{error}"
+    );
+    assert_eq!(std::fs::read_to_string(&log).expect("log"), "");
+    let _ = std::fs::remove_dir_all(&root);
+}
