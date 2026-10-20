@@ -932,13 +932,23 @@ export class Mirror2 {
       let at, local = null;
       if (entry) {
         const localAt = () => inFrame(entry, `${m}.point(${JSON.stringify({ node_id: localId(action.node_id), x: action.x, y: action.y })})`);
-        try { local = await retryOffscreen(localAt); } catch (error) {
-          // Below the frame's own viewport (the viewer scrolled ahead inside it): scroll the frame to the node, then aim again.
+        // The frame's point, then the frame as its owner's scrolling ancestors show it; each level reveals what the viewer scrolled ahead.
+        const aim = async () => {
+          try { local = await retryOffscreen(localAt); } catch (error) {
+            // Below the frame's own viewport (the viewer scrolled ahead inside it): scroll the frame to the node, then aim again.
+            if (error?.mirrorReason !== 'offscreen_node') throw error;
+            await inFrame(entry, `${m}.reveal(${JSON.stringify({ node_id: localId(action.node_id) })})`);
+            local = await localAt();
+          }
+          return retryOffscreen(() => call(`${m}.frameOrigin(${JSON.stringify(entry.owner)},${JSON.stringify([local.x, local.y])})`));
+        };
+        let origin;
+        try { origin = await aim(); } catch (error) {
+          // The frame itself is clipped by a scroll pane of the page that owns it: scroll the native page to the frame.
           if (error?.mirrorReason !== 'offscreen_node') throw error;
-          await inFrame(entry, `${m}.reveal(${JSON.stringify({ node_id: localId(action.node_id) })})`);
-          local = await localAt();
+          stream.ownScrolls.set(null, JSON.stringify(await call(`${m}.reveal(${JSON.stringify({ node_id: entry.owner })})`))); stream.movedAt = Date.now();
+          origin = await aim();
         }
-        const origin = await call(`${m}.frameOrigin(${JSON.stringify(entry.owner)})`);
         at = { x: Math.floor(origin[0] + (origin[2] ?? 1) * local.x), y: Math.floor(origin[1] + (origin[3] ?? 1) * local.y) };
         if (at.x < 0 || at.y < 0 || at.x >= 1280 || at.y >= 800) throw new Error('MP-11: changed mirror input target');
       } else {

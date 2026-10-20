@@ -168,3 +168,20 @@ test('MP-08/MP-10/MP-11 the fonts op names stack families the native machine lac
     assert(!again.ops.some(entry => entry.op === 'fonts'), 'an unchanged absent set is not re-sent');
   } finally { await browser.close(); }
 });
+
+// r74: the scan must follow the document: a class/style change or newly inserted content naming an absent family after the
+// document settled is reported, not left to the viewer's own installed family.
+test('MP-08/MP-10/MP-11 a font stack that changes after completion reports its absent families', async () => {
+  const browser = await launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<body style="font-family:Arial,serif"><p>settled</p></body>');
+    await install(page);
+    const first = await page.evaluate(() => window.observer.snapshot());
+    assert(!first.ops.find(entry => entry.op === 'fonts').absent, 'a settled system-font page names nothing');
+    await page.evaluate(() => { document.body.style.fontFamily = '"Chariox Late One", serif'; const p = document.createElement('p'); p.style.fontFamily = '"Chariox Late Two", sans-serif'; p.textContent = 'later'; document.body.append(p); });
+    let absent = null;
+    for (let n = 0; n < 8 && !absent; n++) absent = (await page.evaluate(() => window.observer.waitDrain(1500))).ops.find(entry => entry.op === 'fonts' && entry.absent)?.absent;
+    assert.deepEqual(absent, ['chariox late one', 'chariox late two']);
+  } finally { await browser.close(); }
+});
