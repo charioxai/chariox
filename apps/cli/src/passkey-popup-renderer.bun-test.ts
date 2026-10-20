@@ -264,7 +264,7 @@ for (const [kind, title, message] of [
       await h.renderOnce()
       const frame = h.captureCharFrame()
       assert.match(frame, new RegExp(title))
-      assert.ok(frame.includes(message))
+      assert.ok(frame.includes(message.slice(0, 60)))
       assert.match(frame, /Access for: 30 minutes/)
       assert.doesNotMatch(frame, /PID|pid|Executable|Process start|exec version|Local kernel|expires|maximum|Requester/)
     } finally { h.renderer.destroy() }

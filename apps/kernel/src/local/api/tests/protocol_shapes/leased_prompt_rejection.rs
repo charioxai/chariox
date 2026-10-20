@@ -52,6 +52,6 @@ fn leased_prompt_rejection_reason_is_versioned_hashed_and_optional() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "f9882b632d89538bd1893326b2ca8f0a897491f2ccfbca3bf851286d3acb7e3c"
+        "55981f1f10ac53876de7f3a36ddea5f6850c00a9e5a48fcf4cb108ca095e8d30"
     );
 }

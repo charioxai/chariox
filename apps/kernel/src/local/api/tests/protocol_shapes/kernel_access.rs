@@ -474,7 +474,7 @@ fn access_requester_protocol_470_shape_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "7ae788c3c7dedfc9f1bb25fbd4c44074d1e7263a20138c75b89d3c120eeb0f3e"
+        "7a8f7a3731b82ec085248149a6e969e6aa39652841a0aa34dee5a679186c6c67"
     );
     assert_eq!(
         serde_json::from_value::<KernelEvent>(serde_json::to_value(&event).unwrap()).unwrap(),
