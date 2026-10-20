@@ -177,30 +177,49 @@ async fn sync_refresh_async() {
         }
     }
     let replay = if let Some(rebound) = received.as_ref() {
-        let mut worker = worker.lock().await;
-        let leased = RemoteLeaseRuntime::new(&mut worker)
-            .leased_agent_snapshot_for_test(&rebound.remote_execution().unwrap().leased_agent_id)
-            .unwrap();
-        worker
-            .prompt_owner_active_prompt_for_agent_snapshot(
-                &leased.backing_session_id,
-                &leased.backing_agent_id,
-            )
-            .unwrap()
-            .is_some_and(|p| {
-                p.hidden_system_context()
-                    .contains("earlier home goal: preserve continuity")
-            })
+        // The binding is rebound before the worker's replayed prompt is registered.
+        let leased_agent_id = rebound.remote_execution().unwrap().leased_agent_id.clone();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let replayed = {
+                let mut worker = worker.lock().await;
+                let leased = RemoteLeaseRuntime::new(&mut worker)
+                    .leased_agent_snapshot_for_test(&leased_agent_id)
+                    .unwrap();
+                worker
+                    .prompt_owner_active_prompt_for_agent_snapshot(
+                        &leased.backing_session_id,
+                        &leased.backing_agent_id,
+                    )
+                    .unwrap()
+                    .is_some_and(|p| {
+                        p.hidden_system_context()
+                            .contains("earlier home goal: preserve continuity")
+                    })
+            };
+            if replayed || tokio::time::Instant::now() >= deadline {
+                break replayed;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
     } else {
         false
     };
-    let pending = received.as_ref().map(|a| {
-        home.try_lock()
-            .unwrap()
-            .operational_history_store()
-            .remote_lease_context_pending(session.id(), agent.id(), a.remote_execution().unwrap())
-            .unwrap()
-    });
+    // The home kernel's background tasks may hold the app lock at this instant.
+    let pending = match received.as_ref() {
+        Some(a) => Some(
+            home.lock()
+                .await
+                .operational_history_store()
+                .remote_lease_context_pending(
+                    session.id(),
+                    agent.id(),
+                    a.remote_execution().unwrap(),
+                )
+                .unwrap(),
+        ),
+        None => None,
+    };
     let _ = worker_stop_tx.send(true);
     worker_task.await.unwrap();
     worker
