@@ -1110,7 +1110,8 @@ fn recovered_continuation_envelope(
             prompt.prompt(),
             Some(&hidden),
             prompt.attachments().to_vec(),
-            crate::prompt_assembly::PromptAssemblyMode::McpSkillContinuationTurn,
+            crate::prompt_assembly::PromptAssemblyMode::McpSkillContinuationTurn
+                .with_prompt_origin(prompt.prompt_origin()),
         )
         .unwrap()
 }
@@ -1214,6 +1215,10 @@ async fn completion_check_keeps_original_notes_in_hidden_provider_context() {
         );
     }
     let envelope = recovered_continuation_envelope(&runtime, &room, &agent, prompt);
+    assert!(
+        envelope.assessment_only,
+        "exercise the real neutral assessment boundary"
+    );
     for private in ["QUOTED_CHECK_REQUIREMENT", "COMMENT_FOR_CHECK"] {
         assert!(!envelope.visible_user_prompt.contains(private));
         assert!(envelope.hidden_system_context.contains(private));

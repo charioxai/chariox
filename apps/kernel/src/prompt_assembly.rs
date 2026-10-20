@@ -873,6 +873,19 @@ impl PromptAssemblyService {
         attachments: Vec<PromptAttachment>,
         mode: PromptAssemblyMode,
     ) -> Result<PromptEnvelope, DaemonError> {
+        if mode == PromptAssemblyMode::AssessmentTurn {
+            let mut envelope = PromptEnvelope::new(
+                visible_user_prompt,
+                format!(
+                    "Assess only the supplied evidence, including exact kernel-private result data when supplied. Tools and external authority are unavailable.\n\n{}",
+                    additional_hidden_context.unwrap_or_default()
+                ),
+                Vec::new(),
+                PromptManifest::current(),
+            );
+            envelope.assessment_only = true;
+            return Ok(envelope);
+        }
         let mut hidden_fragments = Vec::new();
         let mut manifest = PromptManifest::current();
 
@@ -915,7 +928,8 @@ impl PromptAssemblyService {
         {
             hidden_fragments.push(additional_hidden_context.to_string());
         }
-        let (attachments, notes_context) = crate::prompt_notes::split_for_provider(attachments, run.agent_instance_id());
+        let (attachments, notes_context) =
+            crate::prompt_notes::split_for_provider(attachments, run.agent_instance_id());
         hidden_fragments.extend(notes_context);
         if additional_hidden_context.is_some_and(|context| {
             context.contains("<workflow-runtime-instructions>")
@@ -1357,8 +1371,16 @@ mod tests {
             .unwrap();
         assert_eq!(envelope.visible_user_prompt, "Please help");
         assert_eq!(envelope.attachments, vec![image]);
-        for expected in ["<user-notes>", "Room: Design review", "the selected sentence", "rewrite it"] {
-            assert!(envelope.hidden_system_context.contains(expected), "{expected}");
+        for expected in [
+            "<user-notes>",
+            "Room: Design review",
+            "the selected sentence",
+            "rewrite it",
+        ] {
+            assert!(
+                envelope.hidden_system_context.contains(expected),
+                "{expected}"
+            );
         }
         fs::remove_dir_all(root).unwrap();
     }

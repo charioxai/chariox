@@ -53,7 +53,8 @@ owner resolution and correlated inbox wakes (including timers and source outcome
 therefore recover the quote/comment in hidden context even on a fresh provider
 session. Completion checks use a short visible label and include the notes and assessment
 instructions only in their hidden original objective. Fresh tool-free Claude assessments
-receive that context through a private system-prompt file because they deliberately
+receive that context from the same assessment envelope used at dispatch, through
+a private system-prompt file because they deliberately
 omit the work session's hook bridge; the scratch file is removed when the assessment ends.
 
 Live regression `NOTES-INBOX-WAKE`: send only a note asking real Claude Haiku to
