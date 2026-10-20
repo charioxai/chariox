@@ -772,7 +772,6 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::SlicesChanged { .. } => "slices_changed",
         KernelEvent::WorkflowDesignOp { .. } => "workflow_design_op",
         KernelEvent::WorkflowRunUpdated { .. } => "workflow_run_updated",
-        KernelEvent::AgentTaskUpdated { .. } => "agent_task_updated",
         KernelEvent::Heartbeat { .. } => "heartbeat",
         KernelEvent::TransportResumed { .. } => "transport_resumed",
         KernelEvent::ReplayGap { .. } => "replay_gap",
@@ -807,7 +806,6 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::SlicesChanged { .. } => None,
         KernelEvent::WorkflowDesignOp { design_op } => Some(design_op.session_id.as_str()),
         KernelEvent::WorkflowRunUpdated { session_id, .. } => Some(session_id.as_str()),
-        KernelEvent::AgentTaskUpdated { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::Heartbeat { session_id } => Some(session_id.as_str()),
         KernelEvent::TransportResumed { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::ReplayGap { session_id, .. } => Some(session_id.as_str()),
@@ -872,7 +870,6 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         | KernelEvent::SlicesChanged { .. }
         | KernelEvent::WorkflowDesignOp { .. }
         | KernelEvent::WorkflowRunUpdated { .. }
-        | KernelEvent::AgentTaskUpdated { .. }
         | KernelEvent::Heartbeat { .. }
         | KernelEvent::TransportResumed { .. }
         | KernelEvent::ReplayGap { .. } => true,

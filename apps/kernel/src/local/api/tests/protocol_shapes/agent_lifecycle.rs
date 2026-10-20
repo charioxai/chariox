@@ -1,7 +1,7 @@
 //! MP-08/MP-09/MP-10/MP-11 A02/A03: protocol 561 agent task and wake projection snapshot and hash.
 use super::*;
 use crate::durable_state::agent_lifecycle::{
-    AgentObligation, AgentTaskExecution, AgentWait, AgentWake, ExecutionState,
+    AgentObligation, AgentTaskExecution, AgentWait, ExecutionState,
 };
 use sha2::{Digest, Sha256};
 
