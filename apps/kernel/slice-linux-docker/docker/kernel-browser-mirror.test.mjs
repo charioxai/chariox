@@ -407,3 +407,16 @@ test('MP-08 mirror observes the owned desktop density without changing it for th
   }finally{service.clear()}
  }}finally{if(before===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR;else process.env.CHARIOX_KERNEL_BROWSER_MIRROR=before}
 });
+test('protocol 560/168: a subscription names the person display size and the newest one owns the layout',async()=>{
+ const {service,host}=fixture(),laid=[];host.setLayout=async(tab,id,layout)=>{laid.push([tab.tab_id,layout]);};host.releaseLayout=(tabId,id)=>{laid.push(['release',tabId,id]);};
+ const phone=await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1,layout_width:400,layout_height:700},'a');
+ assert.deepEqual(laid.at(-1),['t',{width:400,height:700}]);
+ await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1,layout_width:2000,layout_height:900},'a');
+ assert.deepEqual(laid.at(-1),['t',null],'a display at or above the canonical size restores the page');
+ await service.subscribe({tab_id:'t',generation:1,device_scale_factor:1},'a');
+ assert.deepEqual(laid.at(-1),['t',null]);
+ for(const bad of [{layout_width:400},{layout_width:100,layout_height:700},{layout_width:'400',layout_height:700},{layout_width:400,layout_height:99999}])
+  await assert.rejects(service.subscribe({tab_id:'t',generation:1,device_scale_factor:1,...bad},'a'),/layout bounds/);
+ service.drop(phone.subscription_id);
+ assert.deepEqual(laid.at(-1),['release','t',phone.subscription_id]);
+});

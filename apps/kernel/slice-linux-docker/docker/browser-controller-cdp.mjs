@@ -142,6 +142,8 @@ export class BrowserCdpClient {
     this.inputCapture = new BrowserInputCapture();
     this.appliedViewport = null;
     this.viewportByTarget = new Map();
+    this.layoutByTarget = new Map();
+    this.canonical = null;
   }
 
   // MP-08/MP-10: discovery is observational once the canonical viewport, and
@@ -155,6 +157,7 @@ export class BrowserCdpClient {
 
   async reconcile(rawViewport, { browserBarVisible, appPanelCssWidth, visibleTargetId } = {}) {
     const viewport = canonicalViewport(rawViewport);
+    this.canonical = viewport;
     // A changed or failed viewport is never an observational preflight.
     if (this.appliedViewport !== appliedReconcileKey(viewport, browserBarVisible, appPanelCssWidth)) {
       this.appliedViewport = null;
@@ -192,7 +195,7 @@ export class BrowserCdpClient {
       // reconcile; a live Tab whose session went stale is attached again.
       const appTargets = new Map([...(this.appTabs?.apps?.values() ?? [])].map((app) => [app.targetId, app]));
       const metricsFor = (target) => (appTargets.has(target.targetId) && this.appMetrics(appTargets.get(target.targetId).page))
-        || deviceMetricsFor(viewport);
+        || this.layoutMetrics(target.targetId, viewport);
       const inspected = (await Promise.all(pages.map(async (target) => {
         try {
           return await this.inspectPage(connection, target, metricsFor(target), {visibleTargetId});
@@ -446,7 +449,7 @@ export class BrowserCdpClient {
     this.networkRequestsBySession.delete(sessionId);
     this.responseBodies.drop(sessionId);
     this.sessionsByTarget.delete(targetId);
-    this.viewportByTarget.delete(targetId);
+    this.viewportByTarget.delete(targetId); this.layoutByTarget.delete(targetId);
     this.documentIdsByTarget.delete(targetId); this.pageFramesByTarget.delete(targetId);
     this.focusWorldsByTarget.delete(targetId);
     this.snapshotStateByTarget.delete(targetId);
@@ -466,6 +469,31 @@ export class BrowserCdpClient {
     return { ...deviceMetricsFor(viewport), ...size };
   }
 
+
+  // The person's display sets the layout size of the Tab they view (a phone is narrower than the canonical desktop).
+  layoutViewport(targetId, viewport) {
+    const layout = this.layoutByTarget.get(targetId);
+    return layout ? { ...viewport, css_width: layout.width, css_height: layout.height } : viewport;
+  }
+
+  layoutMetrics(targetId, viewport) {
+    return { ...deviceMetricsFor(viewport), ...(this.layoutByTarget.get(targetId) ?? {}) };
+  }
+
+  // Null restores the canonical layout. App pages keep their panel-sized layout.
+  async setLayout(targetId, layout) {
+    if (layout) this.layoutByTarget.set(targetId, { width: layout.width, height: layout.height });
+    else this.layoutByTarget.delete(targetId);
+    const connection = this.connection;
+    if (!this.canonical || !connection) return;
+    if ([...(this.appTabs?.apps?.values() ?? [])].some((app) => app.targetId === targetId)) return;
+    const sessionId = await this.ensureTargetSession(connection, targetId);
+    const metrics = this.layoutMetrics(targetId, this.canonical);
+    const key = JSON.stringify(metrics);
+    if (this.viewportByTarget.get(targetId) === key) return;
+    await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
+    this.viewportByTarget.set(targetId, key);
+  }
 
   async inspectPage(connection, target, metrics, {visibleTargetId} = {}) {
     const sessionId = await this.ensureTargetSession(connection, target.targetId);
@@ -958,8 +986,9 @@ export class BrowserCdpClient {
       const documentId = requiredIdentity(request.document_id, "document_id");
       const generation = this.browserGeneration;
       if (request.browser_generation !== generation) throw new BrowserControllerError("stale_browser_generation", "Browser artifact needs the observed browser generation");
-      const viewport = canonicalViewport(request.viewport);
-      const metricsKey = JSON.stringify(deviceMetricsFor(viewport));
+      const canonical = canonicalViewport(request.viewport);
+      const viewport = this.layoutViewport(targetId, canonical);
+      const metricsKey = JSON.stringify(this.layoutMetrics(targetId, canonical));
       const assertBound = async () => {
         const tree = await connection.send("Page.getFrameTree", {}, sessionId);
         if (connection !== this.connection || generation !== this.browserGeneration || tree?.frameTree?.frame?.loaderId !== documentId)
