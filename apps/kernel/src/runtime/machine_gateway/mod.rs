@@ -165,7 +165,7 @@ impl MachineGateway {
             client_private_key: identity.private_key,
         })
         .await
-        .map_err(|failure| map_failure(machine, failure))?;
+        .map_err(|failure| map_open_failure(machine, failure))?;
         let link = Arc::new(link);
         links.insert(kernel.kernel_id.clone(), Arc::clone(&link));
         Ok(link)
@@ -179,6 +179,18 @@ impl MachineGateway {
         let created = GatewayIdentity::load_or_create(&self.config.snapshot())?;
         *identity = Some(created.clone());
         Ok(created)
+    }
+}
+
+/// Opening the link sends nothing to the machine, so a connect that does not
+/// finish is "unreachable", never a request timeout that invites a retry.
+fn map_open_failure(machine: &str, failure: LinkFailure) -> GatewayError {
+    match failure {
+        LinkFailure::TimedOut => GatewayError::Unreachable {
+            name: machine.into(),
+            detail: "the relay did not complete the connection in time".into(),
+        },
+        failure => map_failure(machine, failure),
     }
 }
 
@@ -212,5 +224,28 @@ fn map_failure(machine: &str, failure: LinkFailure) -> GatewayError {
                 retryable: error.retryable,
             },
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // EA2-09(c): with the relay stalled, a machine without an open link is
+    // unreachable within the connect bound; an open link that stalls times out.
+    #[test]
+    fn a_stalled_connect_is_unreachable_and_a_stalled_request_times_out() {
+        assert_eq!(
+            map_open_failure("b3", LinkFailure::TimedOut).code(),
+            "machine_unreachable"
+        );
+        assert_eq!(
+            map_failure("b3", LinkFailure::TimedOut).code(),
+            "machine_request_timeout"
+        );
+        assert_eq!(
+            map_open_failure("b3", LinkFailure::Closed).code(),
+            "machine_connection_lost"
+        );
     }
 }
