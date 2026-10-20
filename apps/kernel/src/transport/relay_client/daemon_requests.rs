@@ -828,6 +828,12 @@ async fn dispatch_on_behalf_of(
             false,
         ));
     }
+    if !is_repeatable(&request) {
+        router.runtime_state().audit_gateway_request(
+            on_behalf_of,
+            &crate::runtime::machine_gateway::ledger::variant_name(&request),
+        );
+    }
     if is_repeatable(&request) {
         return dispatch_relay_client_request(
             router,

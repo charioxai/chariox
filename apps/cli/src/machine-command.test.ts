@@ -177,6 +177,19 @@ test("a watch is never subscribed when the local kernel cannot forward", async (
   } finally { await kernel.close() }
 })
 
+test("a watch whose grant was revoked says the access ended, not that the connection was lost", async () => {
+  const kernel = await startFakeKernel((socket, frame) => {
+    if (frame.type === "subscribe") {
+      socket.send(JSON.stringify(subscribeAck(frame)))
+      setTimeout(() => socket.terminate(), 50)
+    } else if ("RelayStatus" in frame.request) replyWith(socket, frame, relayStatus(["machine_gateway_v1"]))
+    else replyWith(socket, frame, refusal("kernel_access_ended"))
+  })
+  try {
+    await assert.rejects(watchMachine({ ...watchOptions, socket: kernel.path }, () => {}), (error: unknown) => failureOf(error).code === "kernel_access_ended")
+  } finally { await kernel.close() }
+})
+
 test("a watch whose local kernel connection drops names the last event to resume from", async () => {
   const kernel = await startWatchKernel((socket, frame) => {
     socket.send(JSON.stringify(subscribeAck(frame)))

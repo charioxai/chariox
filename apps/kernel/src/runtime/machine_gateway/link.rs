@@ -397,10 +397,6 @@ fn route(
     target_public_key: &str,
     text: &str,
 ) {
-    eprintln!(
-        "GWTRACE link text {}",
-        &text.chars().take(80).collect::<String>()
-    );
     match serde_json::from_str::<RelayEnvelope>(text) {
         Ok(RelayEnvelope::ClientEvent {
             subscription_id,
@@ -416,10 +412,6 @@ fn route(
                 return;
             }
             let events = subscriptions.lock().expect("subscriptions poisoned");
-            eprintln!(
-                "GWTRACE client_event id={subscription_id} event_id={event_id} known={}",
-                events.contains_key(&subscription_id)
-            );
             if let Some(channel) = events.get(&subscription_id) {
                 let _ = channel.send((event_id, decrypted.plaintext.to_vec()));
             }

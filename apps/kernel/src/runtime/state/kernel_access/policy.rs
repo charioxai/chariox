@@ -116,6 +116,44 @@ impl KernelRuntimeState {
             .ok_or_else(|| error("grant revoked or expired"))
     }
 
+    /// A state-changing request arrived from another kernel's gateway for one of its
+    /// agents. Only who and what kind, never the payload.
+    pub(crate) fn audit_gateway_request(&self, on_behalf_of: &OnBehalfOf, request_kind: &str) {
+        let _ = self.owned.durable_state_store.append_event(
+            "machine_gateway.request",
+            Some(format!(
+                "{}:{}",
+                on_behalf_of.origin_kernel, on_behalf_of.grant_id
+            )),
+            serde_json::json!({
+                "origin_kernel": on_behalf_of.origin_kernel,
+                "harness": on_behalf_of.harness,
+                "request": request_kind,
+            }),
+        );
+    }
+
+    /// A state-changing request this kernel's agent sent to another machine.
+    pub(crate) fn audit_gateway_forward(
+        &self,
+        grant_id: &str,
+        machine: &str,
+        request_kind: &str,
+        outcome: &str,
+        latency_ms: u64,
+    ) {
+        let _ = self.owned.durable_state_store.append_event(
+            "kernel_access.forward",
+            Some(grant_id.to_string()),
+            serde_json::json!({
+                "machine": machine,
+                "request": request_kind,
+                "outcome": outcome,
+                "latency_ms": latency_ms,
+            }),
+        );
+    }
+
     fn audit_human_only_denial(&self, subject: &str, owner: &str) {
         let mut state = self
             .owned

@@ -282,3 +282,18 @@ fn mp11_missing_session_socket_reason_is_public_without_private_details() {
     );
     assert!(!projected.message.contains(CANARY));
 }
+
+// EA2-12: a forwarded stream starts with events an external peer may not see (the
+// target's pending passkey prompts). Offering one to the writer stops it for good,
+// so the forwarder asks first.
+#[test]
+fn a_forwarded_stream_offers_the_writer_only_events_an_external_peer_may_see() {
+    assert!(is_public_event(&KernelEvent::Heartbeat {
+        session_id: "s".into()
+    }));
+    assert!(!is_public_event(&KernelEvent::PasskeyPromptsChanged {
+        prompts: Vec::new(),
+        kernel_now_ms: 0,
+        closed: Vec::new(),
+    }));
+}

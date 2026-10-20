@@ -158,26 +158,31 @@ impl Drop for Unsettled {
     }
 }
 
+/// The request's variant name, for the audit trail and the retry rule: no payload.
+pub(crate) fn variant_name(request: &crate::local::LocalDaemonRequest) -> String {
+    match serde_json::to_value(request) {
+        Ok(Value::Object(tagged)) => tagged.keys().next().cloned().unwrap_or_default(),
+        Ok(Value::String(name)) => name,
+        _ => String::new(),
+    }
+}
+
 /// Reads, the attachment heartbeat and a file chunk (which names its own offset)
-/// may simply run again on a retry.
-/// Everything else is state-changing and goes through the ledger.
+/// may simply run again on a retry. Everything else is state-changing and goes
+/// through the ledger.
 pub(crate) fn is_repeatable(request: &crate::local::LocalDaemonRequest) -> bool {
-    let Ok(Value::Object(tagged)) = serde_json::to_value(request) else {
-        return false;
-    };
-    tagged.keys().next().is_some_and(|variant| {
-        [
-            "List",
-            "Get",
-            "Search",
-            "Stat",
-            "Heartbeat",
-            "ReadMachineFile",
-            "WriteMachineFile",
-        ]
-        .iter()
-        .any(|p| variant.starts_with(p))
-    })
+    let variant = variant_name(request);
+    [
+        "List",
+        "Get",
+        "Search",
+        "Stat",
+        "Heartbeat",
+        "ReadMachineFile",
+        "WriteMachineFile",
+    ]
+    .iter()
+    .any(|prefix| variant.starts_with(prefix))
 }
 
 #[cfg(test)]
@@ -370,5 +375,18 @@ mod tests {
             ListSessionsRequest
         )));
         assert!(!is_repeatable(&create()));
+        assert_eq!(variant_name(&create()), "DeleteSession");
+        // A heartbeat and a file chunk name their own state, so a retry is safe.
+        let beat =
+            LocalDaemonRequest::HeartbeatAttachments(crate::local::HeartbeatAttachmentsRequest {
+                attachments: Vec::new(),
+            });
+        assert!(is_repeatable(&beat));
+        // Pairing is a person's act and never retried by the ledger's rule.
+        let forget =
+            LocalDaemonRequest::ForgetGatewayMachine(crate::local::ForgetGatewayMachineRequest {
+                name: "b3".into(),
+            });
+        assert!(!is_repeatable(&forget));
     }
 }

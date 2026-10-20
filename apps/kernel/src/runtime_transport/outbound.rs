@@ -227,6 +227,14 @@ public_events! {
     ReplayGap => "replay_gap",
 }
 
+/// Whether an external grant holder may see this event: the list `project_payload` enforces.
+pub(super) fn is_public_event(event: &KernelEvent) -> bool {
+    serde_json::to_value(event)
+        .ok()
+        .and_then(|value| value["event"].as_str().map(public_event))
+        .unwrap_or(false)
+}
+
 pub(super) fn project_payload(mut value: Value) -> Result<Value, DaemonError> {
     let deny = || crate::runtime::kernel_access::error("external outbound payload withheld");
     match value["type"].as_str() {

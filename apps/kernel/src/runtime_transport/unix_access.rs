@@ -404,6 +404,8 @@ pub(super) enum GatewayRoute {
     },
 }
 
+const SUBSCRIPTION_SILENCE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Serves an admitted subscription on another machine: the target's events are
 /// relayed to this connection until the agent unsubscribes or the machine stops
 /// answering, which the agent is told with the subscribe request's own id.
@@ -465,19 +467,20 @@ pub(super) async fn serve_gateway_subscription(
             return;
         }
         let mut last_event_id = None;
-        while let Some((event_id, body)) = events.recv().await {
+        // The machine sends a heartbeat every 5 s; silence for six of them means it is gone
+        // (the relay does not say so when a target dies with a subscription open).
+        while let Ok(Some((event_id, body))) =
+            tokio::time::timeout(SUBSCRIPTION_SILENCE, events.recv()).await
+        {
             let Ok(event) = serde_json::from_slice::<KernelEvent>(&body) else {
-                eprintln!(
-                    "GWTRACE parse failure {}",
-                    String::from_utf8_lossy(&body)
-                        .chars()
-                        .take(120)
-                        .collect::<String>()
-                );
                 continue;
             };
-            eprintln!("GWTRACE forward event {event_id}");
             last_event_id = Some(event_id);
+            // An event an external peer may not see is skipped, not offered to the writer:
+            // a denied frame stops it for good.
+            if !super::outbound::is_public_event(&event) {
+                continue;
+            }
             if !send(KernelOutgoingFrame::Event {
                 event_id,
                 machine: Some(machine.clone()),
@@ -578,6 +581,18 @@ pub(super) fn serve_gateway(
             GatewayRoute::Forward { machine, .. } => Some(machine.clone()),
             GatewayRoute::List => None,
         };
+        let started = std::time::Instant::now();
+        let audited = match &route {
+            GatewayRoute::Forward { machine, request }
+                if !crate::runtime::machine_gateway::ledger::is_repeatable(request) =>
+            {
+                Some((
+                    machine.clone(),
+                    crate::runtime::machine_gateway::ledger::variant_name(request),
+                ))
+            }
+            _ => None,
+        };
         let outcome = match route {
             GatewayRoute::Forward { machine, request } => {
                 let gateway = router.machine_gateway();
@@ -602,6 +617,17 @@ pub(super) fn serve_gateway(
                 .expect("machine list serializes")
             }),
         };
+        if let Some((machine, kind)) = audited {
+            router.runtime_state().audit_gateway_forward(
+                &origin.grant_id,
+                &machine,
+                &kind,
+                outcome
+                    .as_ref()
+                    .map_or_else(|failure| failure.code(), |_| "ok"),
+                u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            );
+        }
         let (response, error) = match outcome {
             Ok(value) => (Some(value), None),
             Err(failure) => (None, Some(failure.transport_error())),

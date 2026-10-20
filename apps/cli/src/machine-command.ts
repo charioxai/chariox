@@ -117,7 +117,14 @@ export async function watchMachine(
       print(JSON.stringify(frame))
     } else if (event.event === "transport_closed") {
       // The client would reconnect on its own; a watcher that missed events must say so instead.
-      lose(new CommandFailure("machine_connection_lost", `the connection to the local kernel was lost; events may have been missed. Run chariox watch again${lastEventId === null ? "" : ` with --from ${lastEventId}`}.`))
+      // A revoked or expired grant closes the socket too: a fresh connection tells which.
+      void probeKernel(options.socket).then(() => null, probeError => probeError).then(probeError => {
+        if (probeError instanceof LocalIpcError && probeError.code === "kernel_access_ended") {
+          lose(new CommandFailure("kernel_access_ended", "the access grant ended; this watch stopped"))
+        } else {
+          lose(new CommandFailure("machine_connection_lost", `the connection to the local kernel was lost; events may have been missed. Run chariox watch again${lastEventId === null ? "" : ` with --from ${lastEventId}`}.`))
+        }
+      })
     }
   })
   try {
@@ -155,6 +162,8 @@ export async function runMachineCommand(argv: string[]): Promise<boolean> {
       const listed = await sendRequest({ ListGatewayMachines: {} }, { socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS }) as { GatewayMachinesListed: unknown }
       console.log(JSON.stringify(listed.GatewayMachinesListed))
     } else if (command === "watch") {
+      // Stopping a watch is the normal way to end it, not a failure.
+      for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => process.exit(0))
       machine = (flags.get("--machine") as string | undefined) ?? null
       const sessionId = flags.get("--session") as string | undefined
       const attachmentId = flags.get("--attachment") as string | undefined

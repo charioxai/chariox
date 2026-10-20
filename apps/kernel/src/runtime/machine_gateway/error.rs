@@ -98,7 +98,7 @@ impl GatewayError {
                     || "Subscribe again.".to_string(),
                     |id| format!("Subscribe again with resume_from_event_id {id}."),
                 );
-                format!("The subscription on machine \"{name}\" ended because the connection was lost. {resume}")
+                format!("The subscription on machine \"{name}\" ended because the connection was lost or the machine stopped answering. {resume} If the machine restarted, expect a replay_gap and read its session state again.")
             }
             Self::JoinRefused { detail } => format!("Could not pair with that machine: {detail}"),
             Self::Remote { message, .. } => message.clone(),

@@ -51,7 +51,6 @@ pub(super) async fn emit_relay_event(
     event: KernelEvent,
 ) -> Result<(), DaemonError> {
     let prepared_at_ms = crate::session::unix_epoch_ms();
-    eprintln!("GWTRACE emit_relay_event sub={subscription_id}");
     router.admit_self_host_terminal(client_public_key)?;
     let daemon_private_key = router.relay_private_key();
     let plaintext = serde_json::to_vec(&event).map_err(|error| DaemonError::LocalTransport {
