@@ -12,6 +12,8 @@ import {
   reconnectEventConnectionRequest,
   removeEventConnectionRequest,
   testEventConnectionRequest,
+  listEventConnectionEventsRequest,
+  replayEventConnectionEventRequest,
 } from "./ipc-event-publication-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
@@ -44,6 +46,12 @@ test("event connection lifecycle requests match protocol 261", () => {
       connection_id: "connection-1",
       event_type: "pull_request.opened",
     },
+  })
+  assert.deepEqual(listEventConnectionEventsRequest("connection-1", 20), {
+    ListEventConnectionEvents: { connection_id: "connection-1", limit: 20 },
+  })
+  assert.deepEqual(replayEventConnectionEventRequest("connection-1", "delivery-1"), {
+    ReplayEventConnectionEvent: { connection_id: "connection-1", delivery_id: "delivery-1" },
   })
   assert.deepEqual(reconnectEventConnectionRequest("connection-1", "https://example.test"), {
     ReconnectEventConnection: {

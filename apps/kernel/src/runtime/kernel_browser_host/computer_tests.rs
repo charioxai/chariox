@@ -126,9 +126,20 @@ fn mp08_mp11_display_resume_transfers_the_owner_lease_without_retake() {
     let now = std::time::Instant::now();
     model.desktop_viewer("terminal:owner", "old", now);
     model.takeover_desktop(actor, "s", "g").unwrap();
-    model.suspend_desktop_viewer("terminal:owner", "old", now).unwrap();
-    assert!(model.resume_desktop_viewer("terminal:forged", "old", "stolen", now).is_err());
-    model.resume_desktop_viewer("terminal:owner", "old", "fresh", now + std::time::Duration::from_millis(700)).unwrap();
+    model
+        .suspend_desktop_viewer("terminal:owner", "old", now)
+        .unwrap();
+    assert!(model
+        .resume_desktop_viewer("terminal:forged", "old", "stolen", now)
+        .is_err());
+    model
+        .resume_desktop_viewer(
+            "terminal:owner",
+            "old",
+            "fresh",
+            now + std::time::Duration::from_millis(700),
+        )
+        .unwrap();
     model.retire_lapsed_desktop_viewers(now + std::time::Duration::from_secs(6));
     assert!(model.desktop_owner_is("terminal:owner"));
     model.end_desktop_viewer("fresh", now + std::time::Duration::from_secs(7));
@@ -142,8 +153,16 @@ fn mp11_display_suspend_cannot_extend_grace_or_keep_a_stale_owner() {
     let now = std::time::Instant::now();
     model.desktop_viewer("terminal:owner", "old", now);
     model.takeover_desktop(actor, "s", "g").unwrap();
-    model.suspend_desktop_viewer("terminal:owner", "old", now).unwrap();
-    model.suspend_desktop_viewer("terminal:owner", "old", now + std::time::Duration::from_secs(4)).unwrap();
+    model
+        .suspend_desktop_viewer("terminal:owner", "old", now)
+        .unwrap();
+    model
+        .suspend_desktop_viewer(
+            "terminal:owner",
+            "old",
+            now + std::time::Duration::from_secs(4),
+        )
+        .unwrap();
     model.retire_lapsed_desktop_viewers(now + std::time::Duration::from_secs(5));
     assert!(!model.desktop_owner_is("terminal:owner"));
 }
@@ -220,8 +239,7 @@ fn mp10_desktop_mirror_wait_does_not_block_input_or_cross_responses() {
     // Initial/reset credits omit wait_ms or use zero, but can still await CDP.
     // Exercise those alongside an ordinary waiting credit on the same backend.
     for wait in [None, Some(0), Some(1000)] {
-        let mut credit =
-            json!({"op":"mirror_next","subscription_id":"view","generation":1});
+        let mut credit = json!({"op":"mirror_next","subscription_id":"view","generation":1});
         if let Some(wait) = wait {
             credit["wait_ms"] = wait.into();
         }

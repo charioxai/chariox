@@ -1,6 +1,24 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+test("MP-08 / MP-10 an unseen repeated history-sequenced delta is preserved", () => {
+  const history = { ...entry(1, "assistant", "a", { mergeKey: "part", historyEntryIndex: 10 }), historySequenceRanges: [[10, 10] as const] }
+  const result = applyTranscriptProviderChunk([history], { role: "assistant", chunk: "a", mergeKey: "part", metadata: { historySequence: 11 } })
+  assert.equal(result.entries[0]?.text, "aa")
+  assert.deepEqual(result.entries[0]?.historySequenceRanges, [[10, 11]])
+  assert.deepEqual(history.historySequenceRanges, [[10, 10]])
+  const replay = applyTranscriptProviderChunk(result.entries, { role: "assistant", chunk: "a", mergeKey: "part", metadata: { historySequence: 11 } })
+  assert.equal(replay.kind, "noop")
+  assert.equal(replay.entries[0]?.text, "aa")
+})
+
+test("MP-08 / MP-10 a partial history fragment is completed before its row is deduplicated", () => {
+  const result = applyTranscriptProviderChunk([entry(1, "assistant", "a", { mergeKey: "part", historyEntryIndex: 10 })], { role: "assistant", chunk: "aa", mergeKey: "part", metadata: { historySequence: 10 } })
+  assert.equal(result.entries[0]?.text, "aa")
+  const replay = applyTranscriptProviderChunk(result.entries, { role: "assistant", chunk: "aa", mergeKey: "part", metadata: { historySequence: 10 } })
+  assert.equal(replay.kind, "noop")
+})
+
 import {
   applyTranscriptProviderChunk,
   applyTranscriptToolUpdate,
@@ -16,6 +34,25 @@ import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
 } from "./external-provider-observation.js"
 
+test("MP-08 / MP-10: persisted text replay is deduplicated across later tool boundaries", () => {
+  for (const role of ["assistant", "reasoning"]) for (const keys of [["a", "b"], ["reused", "reused"], [undefined, undefined]]) {
+    const rows = [
+      { ...entry(1, role, "before", { turnId: 4, providerRunId: "run", mergeKey: keys[0] }), historySequenceRanges: [[10, 10] as const] },
+      entry(2, "tool", "read file", { turnId: 4, providerRunId: "run" }),
+      { ...entry(3, role, "after", { turnId: 4, providerRunId: "run", mergeKey: keys[1] }), historySequenceRanges: [[12, 12] as const] },
+    ]
+    const replay = applyTranscriptProviderChunk(rows, { role, chunk: "before", mergeKey: keys[0], currentTurnId: 4, providerRunId: "run", metadata: { historySequence: 10 } })
+    assert.equal(replay.kind, "noop")
+    assert.deepEqual(replay.entries, rows)
+    const unseen = applyTranscriptProviderChunk(rows, { role, chunk: "new", mergeKey: keys[0], currentTurnId: 4, providerRunId: "run", metadata: { historySequence: 13 } })
+    assert.notEqual(unseen.kind, "noop")
+    assert.equal(unseen.entries[0]?.text, "before")
+    for (const identity of [{ currentTurnId: 5, providerRunId: "run" }, { currentTurnId: 4, providerRunId: "other" }]) {
+      assert.equal(applyTranscriptProviderChunk(rows, { role, chunk: "different identity", ...identity, metadata: { historySequence: 10 } }).kind, "appended")
+    }
+  }
+})
+
 test("transcript stream state appends provider chunks to the current turn", () => {
   const result = applyTranscriptProviderChunk([
     entry(1, "user", "prompt", { turnId: 4 }),
@@ -29,6 +66,30 @@ test("transcript stream state appends provider chunks to the current turn", () =
   assert.deepEqual(result.entries, [
     entry(1, "user", "prompt", { turnId: 4 }),
     entry(2, "assistant", "hello\n", { turnId: 4 }),
+  ])
+})
+
+// MP-08 / MP-10 (panes R5/R6): a provider that reuses one merge key per run
+// (Claude) must not fold text written after a tool call back above it.
+test("transcript stream state keeps text after a tool call below it even with a reused merge key", () => {
+  const before = applyTranscriptProviderChunk([
+    entry(1, "user", "prompt", { turnId: 4 }),
+  ], { role: "assistant", chunk: "Listing.", mergeKey: "claude:run:assistant" })
+  const tool = applyTranscriptToolUpdate(before.entries, JSON.stringify({
+    id: "tool-1", tool: "Bash", status: "completed", input: { command: "ls" },
+  }), new Map<string, ToolTranscriptUpdate>())
+  const after = applyTranscriptProviderChunk(tool.entries, {
+    role: "assistant",
+    chunk: "Done.",
+    mergeKey: "claude:run:assistant",
+  })
+
+  assert.equal(after.kind, "appended")
+  assert.deepEqual(after.entries.map((item) => [item.role, item.text]), [
+    ["user", "prompt"],
+    ["assistant", "Listing."],
+    ["tool", tool.entries.at(-1)?.text],
+    ["assistant", "Done."],
   ])
 })
 

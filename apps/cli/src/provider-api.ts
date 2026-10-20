@@ -81,6 +81,7 @@ export async function getProviderCatalog(
 export async function getProviderCommandCatalogs(
   client: LocalIpcClient,
   logger?: CharioxLogger | null,
+  fallbackOnError = true,
 ): Promise<ProviderCommandCatalogs> {
   try {
     const response = await client.send<Record<string, unknown>>(getProviderCommandCatalogsRequest())
@@ -100,6 +101,7 @@ export async function getProviderCommandCatalogs(
       ]),
     ) as ProviderCommandCatalogs
   } catch (error) {
+    if (!fallbackOnError) throw error
     const message = describeCliError(error)
     logger?.warn("provider command catalog lookup failed; using fallback command catalogs", {
       error: message,
@@ -292,8 +294,9 @@ export async function logoutProvider(
   client: LocalIpcClient,
   provider: string,
   accountProfile = "default",
+  endEverywhere = false,
 ): Promise<ProviderLogoutOutcome> {
-  const response = await client.send<Record<string, unknown>>(logoutProviderRequest(provider, accountProfile))
+  const response = await client.send<Record<string, unknown>>(logoutProviderRequest(provider, accountProfile, endEverywhere))
   if ("ProviderLoggedOut" in response) {
     return { kind: "logged_out", result: response.ProviderLoggedOut as ProviderLogoutResult }
   }

@@ -81,6 +81,29 @@ fn current_starting_workflow_provider_run(
         .filter(|current| current.id() == provider_run_id)
 }
 
+/// MP-08 / MP-11: content-free facts at the actual native-dispatch guard.
+/// There is no content revision guard here: ownership and prompt identity fence writes.
+fn prompt_dispatch_guard_diagnostics(
+    dispatch: &crate::app::KernelPromptDispatch,
+    active: Option<&crate::session::PromptQueueItem>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "session_id": dispatch.session_id, "agent_id": dispatch.agent_id,
+        "provider_run_id": dispatch.provider_run_id, "dispatch_prompt_id": dispatch.prompt_id,
+        "target_active_prompt_id": dispatch.target_active_prompt_id, "steering": dispatch.steering,
+        "active_prompt_present": active.is_some(), "active_prompt_id": active.map(|p| p.id()),
+        "ownership_changed": active.map(|p| !p.is_chariox_owned()),
+        "prompt_id_changed": active.map(|p| p.id() != dispatch.target_active_prompt_id.as_deref().unwrap_or(&dispatch.prompt_id)),
+        "text_changed": active.map(|p| p.prompt() != dispatch.prompt),
+        "attachments_changed": active.map(|p| p.attachments() != dispatch.attachments.as_slice()),
+        "source_attachment_changed": active.map(|p| p.source_attachment_id() != dispatch.source_attachment_id),
+        "status": active.map(|p| p.status()), "delivery_phase": active.and_then(|p| p.durable_delivery_phase()),
+        "delivery_provider_run_changed": active.map(|p| p.durable_delivery_provider_run_id() != Some(dispatch.provider_run_id.as_str())),
+        "prompt_updated_at_ms": active.map(|p| p.updated_at_ms()),
+        "content_revision_guard": false,
+    })
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn prompt_dispatch_matches_active_prompt(
         &self,
@@ -102,10 +125,18 @@ impl KernelRuntimeOwnedState {
             prompt.id() == dispatch.prompt_id
                 && prompt.status() != crate::session::PromptStatus::Cancelling
         };
-        Ok(self
+        let active = self
             .prompt_state_owner
-            .active_prompt_for_agent(&session, &dispatch.agent_id)
-            .is_some_and(|prompt| prompt_is_dispatch_prompt(&prompt)))
+            .active_prompt_for_agent(&session, &dispatch.agent_id);
+        let matches = active.as_ref().is_some_and(prompt_is_dispatch_prompt);
+        if !matches {
+            crate::logging::warn_with_fields(
+                "runtime.prompt_dispatch",
+                "stale provider dispatch skipped before native write",
+                prompt_dispatch_guard_diagnostics(dispatch, active.as_ref()),
+            );
+        }
+        Ok(matches)
     }
 
     pub(super) fn ensure_prompt_dispatch_matches_active_prompt(
@@ -2856,7 +2887,29 @@ pub(in crate::runtime::state) mod tests {
         String,
         crate::app::KernelPromptDispatch,
     ) {
+        runtime_with_admitted_prompt_in_git(false).await
+    }
+
+    async fn runtime_with_admitted_prompt_in_git(
+        git_worktree: bool,
+    ) -> (
+        crate::test_support::TestWorktree,
+        KernelRuntimeState,
+        String,
+        String,
+        String,
+        String,
+        crate::app::KernelPromptDispatch,
+    ) {
         let worktree = crate::test_support::TestWorktree::new("local-prompt-admitted");
+        if git_worktree {
+            let status = std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(worktree.path())
+                .status()
+                .expect("git should initialize the real test workspace");
+            assert!(status.success());
+        }
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = KernelSessionService::new(&mut app)
             .create_session(worktree.session_request())
@@ -3142,6 +3195,134 @@ pub(in crate::runtime::state) mod tests {
             external_provider_turn_id: None,
             steering,
         }
+    }
+
+    // MP-08 / MP-10 / MP-11: the output pump can settle a turn while native
+    // dispatch waits for the app lock. A stale writer must not invent a failure
+    // for that settled turn, or send its text to a replacement turn.
+    #[tokio::test]
+    async fn mp08_claude_native_dispatch_skips_settled_and_replaced_prompts() {
+        crate::test_support::isolated_env_test!();
+        for replace in [false, true] {
+            let (_worktree, mut runtime, session_id, agent_id, source_id, run, dispatch) =
+                runtime_with_claude_headless_active_prompt().await;
+            let reached_native_attempt = Arc::new(tokio::sync::Notify::new());
+            runtime.observe_app_lock_wait_for_test(reached_native_attempt.clone());
+            let app = Arc::clone(&runtime.app);
+            let held = app.lock().await;
+            let writer = runtime.clone();
+            let task = tokio::spawn(async move {
+                writer
+                    .enqueue_prompt_dispatch_after_liveness_with_acceptance(
+                        &dispatch,
+                        &writer.owned,
+                    )
+                    .await
+            });
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                reached_native_attempt.notified(),
+            )
+            .await
+            .expect("native attempt should wait for app ownership");
+            if replace {
+                runtime
+                    .owned
+                    .cancel_active_prompt_only(&session_id, &agent_id)
+                    .expect("a real user cancellation should settle the old turn");
+            } else {
+                runtime
+                    .owned
+                    .complete_local_prompt_without_advance(&session_id, &agent_id, Some(run.id()))
+                    .expect("the independent output pump should settle the first turn");
+            }
+            if replace {
+                let session = runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap();
+                runtime
+                    .owned
+                    .prompt_state_owner
+                    .submit_prepared_prompt(
+                        &session,
+                        PromptQueueItem::new(
+                            "replacement-after-edit",
+                            &source_id,
+                            &agent_id,
+                            "replacement task",
+                            PromptStatus::Queued,
+                        ),
+                        false,
+                    )
+                    .expect("a replacement prompt should be admitted");
+            }
+            drop(held);
+            assert_eq!(
+                task.await
+                    .unwrap()
+                    .expect("settled prompt is a stale dispatch, not a provider failure"),
+                PromptDispatchAcceptance::Dropped
+            );
+            let session = runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .unwrap();
+            let active = runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id);
+            assert_eq!(
+                active.as_ref().map(|prompt| prompt.id()),
+                replace.then_some("replacement-after-edit")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn mp08_native_dispatch_diagnostics_identify_fields_without_content() {
+        crate::test_support::isolated_env_test!();
+        let (_root, runtime, session_id, agent_id, _source, _run, dispatch) =
+            runtime_with_claude_headless_active_prompt().await;
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let active = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .unwrap();
+        let mut stale = dispatch.clone();
+        stale.prompt = "private prompt text must not be logged".into();
+        stale
+            .attachments
+            .push(crate::session::PromptAttachment::new(
+                "private-file-url",
+                "text/plain",
+                Some("private-file-name".into()),
+            ));
+        let fields = prompt_dispatch_guard_diagnostics(&stale, Some(&active));
+        assert_eq!(fields["text_changed"], true);
+        assert_eq!(fields["attachments_changed"], true);
+        assert_eq!(fields["prompt_id_changed"], false);
+        assert_eq!(fields["ownership_changed"], false);
+        assert_eq!(fields["content_revision_guard"], false);
+        let output = fields.to_string();
+        for private in [
+            stale.prompt.as_str(),
+            "private-file-url",
+            "private-file-name",
+        ] {
+            assert!(!output.contains(private));
+        }
+        assert_eq!(
+            prompt_dispatch_guard_diagnostics(&dispatch, None)["active_prompt_present"],
+            false
+        );
     }
 
     #[tokio::test]
@@ -3519,6 +3700,38 @@ pub(in crate::runtime::state) mod tests {
             .owned
             .prompt_dispatch_matches_active_prompt(&dispatch)
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn local_prompt_admission_echo_does_not_wait_for_git_observation() {
+        let (_worktree, runtime, session_id, _, observer_id, provider_run_id, dispatch) =
+            runtime_with_admitted_prompt_in_git(true).await;
+        let echoes = runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(&session_id, &observer_id);
+        assert!(
+            echoes.iter().any(|record| {
+                record.kind == crate::terminal::TerminalOutputKind::PromptEcho
+                    && record.prompt_id.as_deref() == Some(dispatch.prompt_id.as_str())
+                    && record.sequence.is_some()
+            }),
+            "the durable prompt must be visible before provider dispatch"
+        );
+        assert!(runtime.owned.git_turn_snapshots.get(&provider_run_id, &dispatch.prompt_id).is_none(),
+            "admission must not wait for repository observation; the dispatch owner captures it before provider input");
+        runtime
+            .enqueue_prompt_dispatch(&dispatch)
+            .await
+            .expect("provider dispatch should succeed");
+        assert!(
+            runtime
+                .owned
+                .git_turn_snapshots
+                .get(&provider_run_id, &dispatch.prompt_id)
+                .is_some(),
+            "the dispatch owner must still capture the real repository before provider input"
+        );
     }
 
     #[tokio::test]

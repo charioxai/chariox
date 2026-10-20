@@ -165,6 +165,16 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 message: "provider has no tool-free structured assessment path".into(),
             });
         }
+        let private_evidence = match self.app.private_assessment_dispatch.as_ref() {
+            Some(dispatch) => dispatch.for_app_dispatch(
+                &self.app.sessions.get_session(session_id)?,
+                &agent_id,
+                prompt_id,
+                provider_run_id,
+                origin,
+            )?,
+            None => None,
+        };
         if structured {
             let (source_client_id, _source_user_id) = self
                 .app
@@ -186,7 +196,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 hidden_system_context,
                 attachments,
                 mode.with_prompt_origin(origin),
-                None,
+                private_evidence,
                 false,
             )?;
             return Ok(());
@@ -938,7 +948,10 @@ mod remote_note_tests {
         let other = PromptAttachment::new("chariox-terminal://x", "text/plain", None)
             .with_contents_base64("aGk=");
         let sent = serialize_remote_prompt_attachments(&[note, other]).unwrap();
-        assert_eq!(sent[0].contents_base64.as_deref(), Some("eyJxdW90ZSI6ImEifQ=="));
+        assert_eq!(
+            sent[0].contents_base64.as_deref(),
+            Some("eyJxdW90ZSI6ImEifQ==")
+        );
         assert_eq!(sent[1].contents_base64, None);
     }
 }

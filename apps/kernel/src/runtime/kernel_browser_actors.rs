@@ -659,7 +659,8 @@ mod tests {
     #[test]
     fn mp08_chrome_input_tracks_home_commit_without_retargeting_or_replay() {
         let model = ready();
-        let mut params = json!({"op":"input","generation":1,"tab_id":"host-tab-a","document_id":"old"});
+        let mut params =
+            json!({"op":"input","generation":1,"tab_id":"host-tab-a","document_id":"old"});
         model.refresh_chrome_input_document(&mut params).unwrap();
         assert_eq!(params["document_id"], "d");
         assert_eq!(params["tab_id"], "host-tab-a");

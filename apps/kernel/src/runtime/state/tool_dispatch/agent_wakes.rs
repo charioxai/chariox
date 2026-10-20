@@ -150,10 +150,11 @@ impl KernelRuntimeState {
                         "watched processes require an active unrestricted build agent",
                     ));
                 };
-                if run.execution_mode() != crate::provider::AgentExecutionMode::Build
+                if (run.execution_mode() != crate::provider::AgentExecutionMode::Build
                     || run.permission_level() != crate::provider::AgentPermissionLevel::Yolo
                     || run.write_access_mode()
-                        != crate::provider::ProviderWriteAccessMode::Unrestricted
+                        != crate::provider::ProviderWriteAccessMode::Unrestricted)
+                    && !self.sudo_task_authorizes_run(run).await
                 {
                     return Err(ledger::error("watched processes require an unrestricted build agent with unattended command permission"));
                 }
@@ -197,6 +198,16 @@ impl KernelRuntimeState {
                 wake.match_text = match_text;
                 self.approve_agent_process(run, &wake, &cwd, &task.prompt_id)
                     .await?;
+                if (run.permission_level() != crate::provider::AgentPermissionLevel::Yolo
+                    || run.write_access_mode()
+                        != crate::provider::ProviderWriteAccessMode::Unrestricted
+                    || run.execution_mode() != crate::provider::AgentExecutionMode::Build)
+                    && !self.sudo_task_authorizes_run(run).await
+                {
+                    return Err(ledger::error(
+                        "sudo task ended before watched process launch",
+                    ));
+                }
                 self.authorize_current_external_command()?;
                 let wake = self
                     .start_agent_process(wake, argv, cwd, &task.task_id, &task.prompt_id, run)

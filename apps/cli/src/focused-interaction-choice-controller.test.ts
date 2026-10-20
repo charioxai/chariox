@@ -274,11 +274,31 @@ function loginInteractionFixture(): RuntimeInteraction {
   }
 }
 
+test("MP-08 / MP-10 PANE-10: Enter and digits belong to a composer that already holds text", () => {
+  const typed = createHarness({ composerText: "Also print banana, twice." })
+  for (const name of ["return", "enter", "1", "2"]) {
+    assert.equal(typed.controller.handleKey({ name, sequence: name }), false, `${name} must reach the composer`)
+  }
+  assert.deepEqual(typed.responses(), [])
+
+  const empty = createHarness({ composerText: "  " })
+  assert.equal(empty.controller.handleKey({ name: "return", sequence: "\r" }), true)
+  assert.equal(empty.controller.handleKey({ name: "1", sequence: "1" }), true)
+  assert.equal(empty.controller.handleKey({ name: "down", sequence: "" }), true, "arrows still choose")
+
+  const customEditing = createHarness({ composerText: "ignored while typing a card reply" })
+  customEditing.customEditing.add("interaction-1")
+  customEditing.selectedIndexes.set("interaction-1", 2)
+  customEditing.customReplies.set("interaction-1", "yes")
+  assert.equal(customEditing.controller.handleKey({ name: "return", sequence: "\r" }), true)
+})
+
 function createHarness(options: {
   interaction?: RuntimeInteraction | null
   attached?: boolean
   respondToInteraction?: FocusedInteractionChoiceControllerDeps["respondToInteraction"]
   providerLogin?: FocusedInteractionChoiceControllerDeps["providerLogin"]
+  composerText?: string
 } = {}) {
   const selectedIndexes = new Map<string, number>()
   const customReplies = new Map<string, string>()
@@ -299,6 +319,7 @@ function createHarness(options: {
   const controller = createFocusedInteractionChoiceController({
     getFocusedInteraction: () => options.interaction === undefined ? interactionFixture() : options.interaction,
     isAttached: () => options.attached ?? true,
+    getComposerText: () => options.composerText ?? "",
     getSessionId: () => "session-1",
     getSelectedIndex: (interactionId) => selectedIndexes.get(interactionId),
     setSelectedIndex: (interactionId, index) => {
@@ -404,3 +425,28 @@ function runtimeSession(id: string): RuntimeSession {
     },
   }
 }
+
+test("MP-08/MP-11 a pending or acknowledged choice cannot be submitted twice", async () => {
+  let finish!: (session: RuntimeSession) => void
+  const h = createHarness({ respondToInteraction: () => new Promise(resolve => { finish = resolve }) })
+  const first = h.controller.submitChoice(0)
+  await h.controller.submitChoice(0)
+  assert.equal(h.responses().length, 1)
+  finish({ ...runtimeSession("session-1"), active_interactions: [interactionFixture()] })
+  await first
+  assert.deepEqual(h.appliedSessions().at(-1)?.active_interactions, [])
+  await h.controller.submitChoice(0)
+  assert.equal(h.responses().length, 1)
+})
+
+test("MP-08/MP-11 a failed choice re-enables retry with its error", async () => {
+  let attempts = 0
+  const h = createHarness({ respondToInteraction: async () => {
+    if (++attempts === 1) throw new Error("connection failed")
+    return runtimeSession("session-1")
+  } })
+  await h.controller.submitChoice(0)
+  assert.equal(h.footerMessages().at(-1)?.tone, "error")
+  await h.controller.submitChoice(0)
+  assert.equal(attempts, 2)
+})

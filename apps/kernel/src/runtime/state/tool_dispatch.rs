@@ -175,7 +175,7 @@ impl KernelRuntimeState {
         {
             specs.push(crate::transport::runtime_tools::RuntimeToolSpec {
                 name: sudo::SUDO_TOOL.into(),
-                description: "Act as the host on this kernel during your sudo window, for the owner-authorized task only. Submit a LocalDaemonRequest in request. Cannot answer approvals, grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at expiry, task end or revocation; regular work continues.".into(),
+                description: "Act as the host on this kernel during your sudo window, for the owner-authorized task only. Submit a LocalDaemonRequest using its case-sensitive externally tagged JSON: for example {\"request\":{\"AliasSession\":{\"session_id\":\"SESSION_ID\",\"alias\":\"new-name\"}}} or {\"request\":{\"ListSessions\":null}}. Do not use method/params or type fields. Cannot answer approvals, grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at expiry, task end or revocation; regular work continues.".into(),
                 input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
             });
             specs.push(super::sudo::vault_generate_spec());

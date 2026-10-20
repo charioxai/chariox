@@ -1160,7 +1160,7 @@ impl KernelRuntimeOwnedState {
             session_id,
             context.queued_prompt.source_attachment_id(),
         )?;
-        self.append_steering_prompt_history(
+        let sequence = self.append_steering_prompt_history(
             session_id,
             &context.provider_run_id,
             &target_active_prompt_id,
@@ -1193,6 +1193,7 @@ impl KernelRuntimeOwnedState {
             prompt.prompt(),
             prompt.attachments(),
             prompt.prompt_origin(),
+            Some(sequence),
         );
         self.record_notice(
             session_id,
@@ -1319,7 +1320,7 @@ impl KernelRuntimeOwnedState {
             session_id,
             prepared.prompt.source_attachment_id(),
         )?;
-        self.append_steering_prompt_history(
+        let sequence = self.append_steering_prompt_history(
             session_id,
             provider_run_id,
             &prepared.target_active_prompt_id,
@@ -1357,6 +1358,7 @@ impl KernelRuntimeOwnedState {
             prompt.prompt(),
             prompt.attachments(),
             prompt.prompt_origin(),
+            Some(sequence),
         );
         self.record_notice(
             session_id,

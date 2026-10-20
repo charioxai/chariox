@@ -1617,7 +1617,15 @@ done
     state().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let early = std::thread::scope(|scope| {
-        let read = scope.spawn(|| host.protected_request("alice", None, "host.browser", json!({"op":"display_subscribe","tab_id":"host-tab-a","generation":1}), policy.clone()));
+        let read = scope.spawn(|| {
+            host.protected_request(
+                "alice",
+                None,
+                "host.browser",
+                json!({"op":"display_subscribe","tab_id":"host-tab-a","generation":1}),
+                policy.clone(),
+            )
+        });
         let deadline = Instant::now() + Duration::from_secs(2);
         while !root.join("state").exists() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
@@ -1637,7 +1645,9 @@ done
     host.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();
     assert_eq!(
-        early.expect("input waited behind native subscription readiness").unwrap()["input_completed"],
+        early
+            .expect("input waited behind native subscription readiness")
+            .unwrap()["input_completed"],
         true
     );
 }
@@ -1668,13 +1678,20 @@ done
 "#).unwrap();
     let host = KernelBrowserHost::new(root.path().to_path_buf());
     host.install_fixture_backend("alice", &script, root.path());
-    host.backend("alice").unwrap().lock().unwrap().start().unwrap();
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
     let policy = json!({"values":[],"targets":[],"unknown":false});
-    let states = || std::fs::read_to_string(root.path().join("states")).map_or(0, |log| log.lines().count());
+    let states =
+        || std::fs::read_to_string(root.path().join("states")).map_or(0, |log| log.lines().count());
     let subscribe = |target: serde_json::Value| {
         let mut params = json!({"op":"display_subscribe","tab_id":"host-tab-a","generation":1});
         params["target"] = target;
-        host.protected_request("alice", None, "host.browser", params, policy.clone()).unwrap();
+        host.protected_request("alice", None, "host.browser", params, policy.clone())
+            .unwrap();
     };
     subscribe(json!({"kind":"browser_chrome","window_generation":3}));
     let band = states();
@@ -1708,20 +1725,35 @@ done
         .unwrap()
         .reconcile(&json!({"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}))
         .unwrap();
-    let backend = host.inner.lock().unwrap().browsers.get("alice").cloned().unwrap();
+    let backend = host
+        .inner
+        .lock()
+        .unwrap()
+        .browsers
+        .get("alice")
+        .cloned()
+        .unwrap();
     backend.lock().unwrap().ensure_host_started().unwrap();
     let held = backend.lock().unwrap();
     let retired = root.path().join("retired");
     std::thread::scope(|scope| {
         let takeover = scope.spawn(|| {
-            host.request_takeover("alice", EnvironmentActor::new("terminal:b", EnvironmentActorKind::Human, "B"), "host-tab-a", 1)
+            host.request_takeover(
+                "alice",
+                EnvironmentActor::new("terminal:b", EnvironmentActorKind::Human, "B"),
+                "host-tab-a",
+                1,
+            )
         });
         std::thread::sleep(Duration::from_millis(150));
         assert!(!takeover.is_finished(), "takeover was reported while the host could still run the previous owner's parked input");
         drop(held);
         takeover.join().unwrap().unwrap();
         let sent = std::fs::read_to_string(&retired).unwrap();
-        assert!(sent.contains(r#""except":"terminal:b""#) && sent.contains(r#""epoch":1"#), "{sent}");
+        assert!(
+            sent.contains(r#""except":"terminal:b""#) && sent.contains(r#""epoch":1"#),
+            "{sent}"
+        );
     });
     host.shutdown().unwrap();
 }

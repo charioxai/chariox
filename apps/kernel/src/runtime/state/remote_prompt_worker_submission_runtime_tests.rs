@@ -1055,7 +1055,7 @@ fn leased_prompt_submit_timeout_covers_codex_mcp_retry_window() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn remote_workflow_submit_rejects_missing_vault_credential_before_transport() {
-    let _env = crate::env_lock::lock();
+    crate::test_support::isolated_env_test!();
     let mut fixture = WorkflowSubmissionFixture::new(WorkflowCredentialState::MissingCredential);
     assert!(fixture.dispatch.workflow_context.is_some());
     let error = fixture
@@ -1069,7 +1069,7 @@ async fn remote_workflow_submit_rejects_missing_vault_credential_before_transpor
 
 #[tokio::test(flavor = "current_thread")]
 async fn remote_workflow_submit_rejects_missing_or_locked_vault_before_transport() {
-    let _env = crate::env_lock::lock();
+    crate::test_support::isolated_env_test!();
     for credential_state in [
         WorkflowCredentialState::MissingVault,
         WorkflowCredentialState::Locked,
@@ -1093,7 +1093,8 @@ async fn remote_workflow_submit_rejects_missing_or_locked_vault_before_transport
 
 #[tokio::test(flavor = "current_thread")]
 async fn remote_workflow_submit_admits_vaulted_token_or_active_worker_run_without_exposing_it() {
-    let _env = crate::env_lock::lock();
+    crate::test_support::isolated_env_test!();
+    let _claude = crate::test_support::TestClaudeExecutable::new();
     for credential_state in [
         WorkflowCredentialState::Unlocked,
         WorkflowCredentialState::ActiveWorkerRun,

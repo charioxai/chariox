@@ -109,7 +109,7 @@ export function waitingRoomSessionRows(
     columns: [
       formatWaitingRoomColumnHeader("Status", statusWidth),
       formatWaitingRoomColumnHeader("Home", homeWidth),
-      formatWaitingRoomColumnHeader("Sync", syncWidth),
+
       formatWaitingRoomColumnHeader("Work", workWidth),
       formatWaitingRoomColumnHeader("Next", nextWidth),
       formatWaitingRoomColumnHeader("Last used", lastUsedWidth),
@@ -131,10 +131,7 @@ export function waitingRoomSessionRows(
       columns: [
         formatWaitingRoomColumn(formatWaitingRoomSessionStatus(session), statusWidth),
         formatWaitingRoomColumn(formatSessionHomeKernelLabel(session), homeWidth),
-        formatWaitingRoomColumn(
-          formatWorkspaceLiveSyncModeCompactLabel(session.workspace_live_sync_mode),
-          syncWidth,
-        ),
+
         formatWaitingRoomColumn(formatWaitingRoomSessionWork(session), workWidth),
         formatWaitingRoomColumn(formatWaitingRoomSessionNext(session), nextWidth),
         formatWaitingRoomColumn(formatSessionTimestamp(session.last_used_at_ms ?? null), lastUsedWidth),

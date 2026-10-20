@@ -308,6 +308,9 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
         records: vec![
             crate::terminal::TerminalOutputRecord {
                 record_id: Some(7),
+                sequence: Some(41),
+                sequence_end: None,
+                sequence_byte_lengths: Vec::new(),
                 timestamp_ms: 1_700_000_000_000,
                 session_id: "session-1".to_string(),
                 provider_run_id: "provider-run-1".to_string(),
@@ -338,6 +341,9 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
             },
             crate::terminal::TerminalOutputRecord {
                 record_id: Some(8),
+                sequence: None,
+                sequence_end: None,
+                sequence_byte_lengths: Vec::new(),
                 timestamp_ms: 1_700_000_000_001,
                 session_id: "session-1".to_string(),
                 provider_run_id: "provider-run-1".to_string(),
@@ -359,6 +365,17 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
         snapshot.pointer("/TerminalOutput/records/0/record_id"),
         Some(&serde_json::json!(7))
     );
+    // MP-08 / MP-10 (panes R5): live records carry their history sequence
+    // since local protocol 508; records without a history row omit it.
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert_eq!(
+        snapshot.pointer("/TerminalOutput/records/0/sequence"),
+        Some(&serde_json::json!(41))
+    );
+    assert_eq!(snapshot.pointer("/TerminalOutput/records/1/sequence"), None);
     assert_eq!(
         snapshot.pointer("/TerminalOutput/records/0/timestamp_ms"),
         Some(&serde_json::json!(1_700_000_000_000u64))
@@ -412,7 +429,7 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "e482165e9cbadadaa8daff7cac05690baf98eb18441fc7a78786c090b339ef6d"
+        "a89f6930effd0f870e6a3afc57bfded2d2138bd9d973d5b7e194022e89b87a1b"
     );
 }
 

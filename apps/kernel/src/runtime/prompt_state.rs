@@ -50,6 +50,14 @@ impl OwnedAgentPromptState {
             .is_none_or(|hold| hold.prompts.contains(prompt))
     }
 
+    /// A prompt bound to a held sudo window starts ahead of a backlog that
+    /// the window itself keeps from running.
+    fn sudo_holds(&self, prompt: &str) -> bool {
+        self.sudo_work
+            .as_ref()
+            .is_some_and(|hold| hold.prompts.contains(prompt))
+    }
+
     fn bind_sudo_work(&mut self) {
         let Some(active) = self.active_prompt.as_ref() else {
             return;
@@ -476,6 +484,11 @@ impl PromptStateOwner {
         let profile_transition_pending = owner
             .profile_transitions
             .contains_key(&PromptStateKey::new(session.id(), &agent_id));
+        // A paused task parks its notes on purpose; they resume with the task and
+        // must not hold back the owner's own prompt.
+        let backlog_parked = session
+            .metaagent_task(&agent_id)
+            .is_some_and(|task| task.status() == crate::session::MetaagentTaskStatus::Paused);
         let should_start = {
             let state = owner.ensure_agent_state(session, &agent_id);
             // Detached queue promotion can still be preparing Project/Vault
@@ -484,7 +497,9 @@ impl PromptStateOwner {
             !force_queue
                 && !profile_transition_pending
                 && state.active_prompt.is_none()
-                && state.queued_prompts.is_empty()
+                && (state.queued_prompts.is_empty()
+                    || backlog_parked
+                    || state.sudo_holds(prompt.id()))
                 && state.sudo_admits(prompt.id())
         };
         if should_start {

@@ -108,65 +108,16 @@ impl KernelRuntimeState {
                 );
             }
         }
-        let mut ready_provider_run_ids = self.owned.pty_output_signal.take_ready_provider_run_ids();
-        ready_provider_run_ids.extend(
-            self.owned
-                .provider_store
-                .run_actor_completion_signal()
-                .take_ready_provider_run_ids(),
-        );
-        ready_provider_run_ids.extend(
-            self.owned
-                .structured_output_records
-                .take_due_provider_run_ids(now_ms),
-        );
-        ready_provider_run_ids.extend(
-            self.owned
-                .provider_output_deadlines
-                .take_due_provider_run_ids(now_ms),
-        );
         self.reap_structured_prompt_jobs_and_dispatch();
-        let mut pumped_provider_run_ids = Vec::with_capacity(ready_provider_run_ids.len());
-        for provider_run_id in ready_provider_run_ids {
-            let Ok(provider_run) = self.owned.provider_store.get_run(&provider_run_id) else {
-                continue;
-            };
-            let session_id = provider_run.session_id().to_string();
-            let recipients = self
-                .owned
-                .attachment_store
-                .list_session_attachment_ids(&session_id);
-            // Browser/CLI terminal-output requests use this same provider lane. Keep the
-            // background pump in it too: otherwise both paths can apply one completion
-            // concurrently, allowing a queued prompt promoted by the first path to be
-            // settled immediately by the second path's stale turn state.
-            let _permit = self.provider_runtime_lanes.acquire(&provider_run_id).await;
-            match self
-                .pump_owned_provider_output(&session_id, &provider_run_id, recipients, false)
-                .await
-            {
-                Ok(_) => pumped_provider_run_ids.push(provider_run_id),
-                Err(error) => crate::logging::warn_with_fields(
-                    "daemon.provider_output",
-                    "ready provider output pump failed",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "provider_run_id": provider_run_id,
-                        "error": error.to_string(),
-                    }),
-                ),
-            }
-        }
+        // MP-08 / MP-10: only the independent output scheduler consumes ready
+        // run IDs. A serial maintenance pass must not strand ready siblings
+        // behind one run's history acknowledgement or provider lane.
         let watchdog_dispatches = self
             .owned
             .workflow_collect_due_watchdog_dispatches(crate::session::unix_epoch_ms());
         self.spawn_workflow_prompt_dispatches(watchdog_dispatches);
         self.dispatch_due_agent_prompt_schedules(crate::session::unix_epoch_ms())
             .await;
-        for provider_run_id in pumped_provider_run_ids {
-            self.observe_git_after_provider_activity_if_pending(&provider_run_id)
-                .await;
-        }
     }
 
     pub(crate) async fn record_terminal_attachment_heartbeat(
@@ -384,6 +335,17 @@ impl KernelRuntimeState {
             .await;
     }
 
+    pub(crate) fn provider_output_ready_sequence(&self) -> u64 {
+        self.owned.provider_store.output_ready_signal().sequence()
+    }
+    pub(crate) async fn wait_for_provider_output_ready_after(&self, sequence: u64) {
+        self.owned
+            .provider_store
+            .output_ready_signal()
+            .wait_for_change_after(sequence)
+            .await;
+    }
+
     pub(crate) fn provider_run_actor_completion_sequence(&self) -> u64 {
         self.owned
             .provider_store
@@ -521,9 +483,11 @@ impl KernelRuntimeState {
         let app_result = self
             .with_app_side_effect(|app| app.shutdown_cleanup())
             .await;
+        let history_result = self.provider_history_appends.flush_all().await;
         browser_result?;
         controller_result?;
-        app_result
+        app_result?;
+        history_result
     }
 
     #[cfg(test)]

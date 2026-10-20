@@ -3,12 +3,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {setTimeout as delay} from 'node:timers/promises';
 import {Mirror2} from './kernel-browser-mirror2.mjs';
+const pageSize=()=>({width:1280,height:800});
 
 function page(fontRequirements) {
  const policy={targets:[]},tab={tab_id:'t',target_id:'T',document_id:'D'};
  const connection={isOpen:()=>true},world={connection,sessionId:'S',frame:{loaderId:'D'},ref:'m'};
  const stream={fontRequirements,tab_id:'t',world,issued:0,document_id:'D',policy,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:'',hurry:0};
- const host={protection:policy,generation:1,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D']]),sessionsByTarget:new Map([['T','S']])}};
+ const host={protection:policy,generation:1,pageSize,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D']]),sessionsByTarget:new Map([['T','S']])}};
  const mirror=new Mirror2({host,assertWebTab(){},require:()=>stream,streams:new Map([['s',stream]])});
  mirror.world=async()=>world;
  const state={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],focused:null,selection:null,fragment:null,opaque:false,pressed:0,snapshot_complete:true,loaded:1};

@@ -7,14 +7,22 @@ export async function slowMark(timing, stage, operation) {
   const at = timestamp();
   try { return await operation; } finally { if (timestamp() - at > 250) timing?.(stage, at); }
 }
+
+// MP-08/MP-10/MP-11: the host controller receives a private packet directory,
+// not CHARIOX_HOME. Keep the trace there without widening its environment.
+export function roomDisplayTiming(environment=process.env) {
+  const root=environment.CHARIOX_BROWSER_DISPLAY_PACKET_ROOT??environment.CHARIOX_HOME;
+  return typeof root==='string'&&path.isAbsolute(root)?displayTiming(root):()=>{};
+}
 export function displayTiming(root) {
   // MP-08/MP-10: bounded control diagnostics, one append per frame interval.
   // Per-stage open/write/close otherwise dominates the Node control CPU sample.
-  let pending=[],bytes=0,timer;
+  let pending=[],bytes=0,written=0,timer;
+  const maxBytes=64*1024*1024;
   const flush=()=>{
     clearTimeout(timer);timer=null;
     if(!pending.length)return;
-    appendFileSync(path.join(root,'display-timing.jsonl'),pending.join(''),{mode:0o600});
+    if(written+bytes<=maxBytes){appendFileSync(path.join(root,'display-timing.jsonl'),pending.join(''),{mode:0o600});written+=bytes;}
     pending=[];bytes=0;
   };
   const timing = (stage, started, finished) => {

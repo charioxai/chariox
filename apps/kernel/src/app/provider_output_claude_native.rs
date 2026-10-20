@@ -21,13 +21,16 @@ mod attachments;
 mod context_delivery;
 mod hidden_context;
 mod permission;
+mod readiness;
 mod session_start;
+mod startup_exit;
 #[cfg(test)]
 pub(crate) mod tests;
 mod transcript;
 
 pub(crate) use context_delivery::clear_claude_context_delivery_for_settled_prompt;
 pub(crate) use permission::format_claude_permission_message;
+pub(super) use startup_exit::claude_native_startup_exit;
 
 use attachments::{
     extract_claude_native_prompt_attachments, format_claude_attachment_context,
@@ -55,6 +58,9 @@ use permission::{
     write_claude_hook_permission_tombstone, write_claude_native_marker,
     write_claude_permission_input, write_claude_permission_passthrough,
     write_claude_permission_response, write_claude_workspace_trust_selection_marker,
+};
+use readiness::{
+    CLAUDE_HEADLESS_RETRY_MS, CLAUDE_INITIAL_COMPOSER_WAIT_MS, CLAUDE_STARTUP_SETTLE_MS,
 };
 #[cfg(test)]
 use transcript::{drain_claude_transcript_file, drain_claude_transcript_file_since};
@@ -85,9 +91,6 @@ fn claude_workspace_trust_failure(context_file: &str) -> Option<&'static str> {
         None
     }
 }
-
-const CLAUDE_HEADLESS_EARLY_EXIT: &str =
-    "Claude Code exited before acknowledging the queued task; no task text was dispatched.";
 
 /// Delay between writing a prompt's visible text into the provider PTY and
 /// sending the Enter keystroke, giving the terminal time to register the
@@ -235,7 +238,8 @@ fn claude_typed_prompt(prompt: &ClaudeNativePromptInjection<'_>, context_file: &
         .filter(|attachment| !crate::prompt_notes::is_note(attachment))
         .cloned()
         .collect();
-    let native_attachment_suffix = format_claude_native_attachment_prompt_suffix(&files, context_file);
+    let native_attachment_suffix =
+        format_claude_native_attachment_prompt_suffix(&files, context_file);
     let visible = redact_native_hidden_instructions(prompt.prompt)
         .trim()
         .to_string();
@@ -1343,6 +1347,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let interaction = interaction.with_native_origin(origin);
         let session_id = session_id.to_string();
         let context_file = context_file.to_string();
+        let output_ready = self.app.providers.output_ready_signal();
+        let provider_run_id = provider_run_id.to_string();
         std::thread::spawn(move || {
             let input = match bridge.request_blocking(&session_id, interaction) {
                 Ok(resolution)
@@ -1366,6 +1372,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 }
             };
             write_claude_permission_input(&context_file, &interaction_id, &input);
+            // MP-08 / MP-10 / MP-11: a reply can arrive after PTY output stops.
+            // Publish readiness only after the existing mailbox write.
+            output_ready.record(&provider_run_id);
         });
         Ok(())
     }
@@ -1520,17 +1529,19 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 message: message.to_string(),
             });
         }
-        if provider_run.provider() == "claude-headless"
-            && provider_run.pty_target().is_some()
-            && crate::app::ProviderLaunchProcessRuntime::new(self.app)
+        if provider_run.provider() == "claude-headless" && provider_run.pty_target().is_some() {
+            if let Some(exit) = crate::app::ProviderLaunchProcessRuntime::new(self.app)
                 .poll_exit(provider_run_id)?
-                .is_some()
-        {
-            return Err(DaemonError::ProviderProtocol {
-                provider_run_id: provider_run_id.to_string(),
-                operation: "submit Claude headless prompt",
-                message: CLAUDE_HEADLESS_EARLY_EXIT.to_string(),
-            });
+            {
+                return Err(DaemonError::ProviderProtocol {
+                    provider_run_id: provider_run_id.to_string(),
+                    operation: "submit Claude headless prompt",
+                    message: crate::provider::provider_exit_before_delivery_message(
+                        &exit.termination_at(unix_epoch_ms()),
+                        exit.terminal_diagnostic.as_deref(),
+                    ),
+                });
+            }
         }
         if let Some(resolution) =
             self.process_pending_claude_workspace_trust(provider_run_id, context_file)?
@@ -1731,6 +1742,41 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         provider_run: &RuntimeProviderRun,
         prompt: &ClaudeNativePromptInjection<'_>,
     ) -> Result<(), DaemonError> {
+        // MP-08 / MP-10: a phase transition must carry its own readiness hint.
+        // Preserve the existing prompt path, PTY input and permission decisions.
+        let result = self.inject_prompt_once(
+            session_id,
+            provider_run_id,
+            agent_id,
+            context_file,
+            provider_run,
+            prompt,
+        );
+        if result.is_ok() {
+            if let Some(delay) = readiness::next_prompt_revisit_delay_ms(
+                context_file,
+                prompt.id,
+                provider_run,
+                unix_epoch_ms(),
+            ) {
+                self.app
+                    .providers
+                    .output_ready_signal()
+                    .record_after(provider_run_id, delay);
+            }
+        }
+        result
+    }
+
+    fn inject_prompt_once(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        context_file: &str,
+        provider_run: &RuntimeProviderRun,
+        prompt: &ClaudeNativePromptInjection<'_>,
+    ) -> Result<(), DaemonError> {
         let mut marker = claude_native_marker(context_file);
         if marker.as_deref().is_some_and(|value| {
             value.starts_with("permission:")
@@ -1817,7 +1863,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             .and_then(|value| value.strip_prefix("startup-wait:"))
             .and_then(|value| value.parse::<u64>().ok())
         {
-            if unix_epoch_ms().saturating_sub(started_at_ms) < 2_500 {
+            if unix_epoch_ms().saturating_sub(started_at_ms) < CLAUDE_STARTUP_SETTLE_MS {
                 append_claude_headless_debug(context_file, "startup_wait", prompt.id);
                 return Ok(());
             }
@@ -1826,7 +1872,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }
         if provider_run.provider() == "claude-headless"
             && marker.is_none()
-            && unix_epoch_ms().saturating_sub(provider_run.started_at_ms()) < 4_000
+            && unix_epoch_ms().saturating_sub(provider_run.started_at_ms())
+                < CLAUDE_INITIAL_COMPOSER_WAIT_MS
         {
             append_claude_headless_debug(context_file, "inject_wait", prompt.id);
             return Ok(());
@@ -1858,7 +1905,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             if !force_post_stop_ready
                 && !prompt_typed_for_headless
                 && !claude_headless_composer_visible(&recent)
-                && unix_epoch_ms().saturating_sub(provider_run.started_at_ms()) < 4_000
+                && unix_epoch_ms().saturating_sub(provider_run.started_at_ms())
+                    < CLAUDE_INITIAL_COMPOSER_WAIT_MS
             {
                 append_claude_headless_debug(context_file, "inject_wait_composer", prompt.id);
                 return Ok(());
@@ -1904,7 +1952,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 claude_headless_prompt_input(prompt, context_file)
             };
             if count < CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT
-                && now.saturating_sub(last_attempt_ms) >= 2_000
+                && now.saturating_sub(last_attempt_ms) >= CLAUDE_HEADLESS_RETRY_MS
                 && claude_headless_prompt_waiting_in_composer(
                     &recent,
                     redact_native_hidden_instructions(prompt.prompt).trim(),
@@ -1924,9 +1972,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     now,
                     &visible_prompt,
                 );
-            } else if provider_run.provider() == "claude-headless"
-                && count < CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT
-                && now.saturating_sub(last_attempt_ms) >= 2_000
+            } else if count < CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT
+                && now.saturating_sub(last_attempt_ms) >= CLAUDE_HEADLESS_RETRY_MS
                 && claude_headless_composer_visible(&recent)
             {
                 // Claude can drop both the pasted text and Enter while its
@@ -2046,6 +2093,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             // Like prompt submission, let the provider register the selection
             // before Enter, between short app-lock holds.
             write_claude_workspace_trust_selection_marker(context_file);
+            self.app
+                .providers
+                .output_ready_signal()
+                .record_after(provider_run_id, CLAUDE_SUBMIT_DELAY_MS);
             clear_claude_permission_recent(context_file);
             Ok(None)
         } else if input == b"\r" {
@@ -2115,6 +2166,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         ));
         let session_id = session_id.to_string();
         let context_file = context_file.to_string();
+        let output_ready = self.app.providers.output_ready_signal();
+        let provider_run_id = provider_run_id.to_string();
         std::thread::spawn(move || {
             let input = match bridge.request_blocking(&session_id, interaction) {
                 Ok(resolution)
@@ -2143,6 +2196,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 }
             };
             write_claude_permission_input(&context_file, &interaction_id, &input);
+            // MP-08 / MP-10 / MP-11: a reply can arrive after PTY output stops.
+            // Publish readiness only after the existing mailbox write.
+            output_ready.record(&provider_run_id);
         });
         Ok(())
     }

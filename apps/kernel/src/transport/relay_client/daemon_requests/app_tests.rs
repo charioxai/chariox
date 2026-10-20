@@ -1248,7 +1248,7 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                         encrypted,
                         &cache,
                         &Default::default(),
-                    None,
+                        None,
                     )
                     .await;
                     assert_eq!(refused.error.unwrap().code, "authorization_denied");
@@ -1289,7 +1289,7 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                         encrypted,
                         &cache,
                         &Default::default(),
-                    None,
+                        None,
                     )
                     .await;
                     assert!(joined.error.is_none(), "Cloud-free join must be admitted");
@@ -1317,7 +1317,7 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                         encrypted,
                         &cache,
                         &Default::default(),
-                    None,
+                        None,
                     )
                     .await;
                     assert!(allowed.error.is_none());
@@ -1333,7 +1333,7 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                         encrypted,
                         &cache,
                         &Default::default(),
-                    None,
+                        None,
                     )
                     .await;
                     assert_eq!(refused.error.unwrap().code, "unauthorized");
@@ -1353,7 +1353,7 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                         replay,
                         &cache,
                         &Default::default(),
-                    None,
+                        None,
                     )
                     .await;
                     assert!(
@@ -1374,7 +1374,7 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                         encrypted,
                         &cache,
                         &Default::default(),
-                    None,
+                        None,
                     )
                     .await;
                     assert_eq!(refused.error.unwrap().code, "authorization_denied");

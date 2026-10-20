@@ -218,6 +218,22 @@ impl KernelRuntimeOwnedState {
                 }
             }
         }
+        if !cancelled
+            && self
+                .provider_run_projection
+                .get(run)
+                .is_some_and(|run| !crate::provider::provider_run_uses_structured_prompt_io(&run))
+        {
+            if let Some(task) = self
+                .durable_state_store
+                .agent_tasks(Some(room), Some(agent))?
+                .into_iter()
+                .find(|t| t.prompt_id == prompt.id())
+            {
+                self.durable_state_store
+                    .agent_lifecycle(Operation::DisableCompletionCheck { task: task.task_id })?;
+            }
+        }
         let entries = self
             .operational_history_store
             .load_session_history_entries(room, Some(agent))?;
@@ -627,6 +643,13 @@ impl KernelRuntimeState {
             crate::session::PromptStatus::Queued,
         )
         .with_durable_operation(&id, format!("task:{}:{}", task.task_id, task.revision));
+        let is_check = ledger::completion::evaluation(&task)
+            .is_some_and(|e| e.prompt_id == id && e.result.is_none());
+        // The check judges against the notes in its objective; continuations get them hidden.
+        let hidden_system_context = match hidden_system_context {
+            None if !is_check => self.owned.original_prompt_notes_context(task)?,
+            other => other,
+        };
         let prompt = match hidden_system_context {
             Some(context) => prompt.with_hidden_system_context(context),
             None => prompt,
@@ -635,9 +658,7 @@ impl KernelRuntimeState {
             Some((run, node)) => prompt.with_workflow_context(run, node),
             None => prompt,
         };
-        let prompt = if ledger::completion::evaluation(&task)
-            .is_some_and(|e| e.prompt_id == id && e.result.is_none())
-        {
+        let prompt = if is_check {
             prompt.with_prompt_origin(crate::session::PromptOrigin::CompletionCheck)
         } else {
             prompt
@@ -920,6 +941,18 @@ impl KernelRuntimeState {
             );
         }
         let tasks = self.owned.durable_state_store.agent_tasks(None, None)?;
+        self.owned
+            .human_control_task_waits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|id, revision| {
+                tasks.iter().any(|task| {
+                    task.task_id == *id
+                        && task.state == ExecutionState::Blocked
+                        && task.blocked_revision == *revision
+                        && !task.goal.as_ref().is_some_and(|goal| goal.paused)
+                })
+            });
         let mut rooms = BTreeSet::new();
         for task in tasks.clone() {
             // Recovery retains unavailable Rooms; their tasks must not halt live supervision.

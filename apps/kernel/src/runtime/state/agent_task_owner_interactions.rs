@@ -44,6 +44,9 @@ impl KernelRuntimeState {
         &self,
         task: AgentTaskExecution,
     ) -> Result<(), DaemonError> {
+        if self.defer_task_for_human_control(&task).await {
+            return Ok(());
+        }
         if !task_needs_owner_interaction(&task) {
             self.retract_stale_task_owner_interactions(&task.room_id, std::slice::from_ref(&task))
                 .await;

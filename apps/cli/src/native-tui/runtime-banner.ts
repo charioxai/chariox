@@ -1,3 +1,4 @@
+import { workspaceLiveSyncUiEnabled } from "@chariox/kernel-client/workspace-live-sync-mode"
 import type {
   AgentInstance,
   RuntimeProviderRun,
@@ -50,7 +51,7 @@ export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput)
     `  worktree:       ${input.worktree || input.agent.worktree_id || input.session.worktree_id || "-"}`,
     `  placement:      ${formatAgentPlacement(input.agent, slice)}`,
     ...formatSliceLines(slice, input.agent, input.sliceLookupError),
-    `  live sync:      ${formatWorkspaceLiveSyncModeLabel(input.session.workspace_live_sync_mode)}`,
+    ...(workspaceLiveSyncUiEnabled ? [`  live sync:      ${formatWorkspaceLiveSyncModeLabel(input.session.workspace_live_sync_mode)}`] : []),
     `  extensions:     ${formatGrantedExtensions(input.agent, input.grantedMcps ?? [], input.grantedSkills ?? [], remoteNativeRun)}`,
     `  ext runtime:    ${formatNativeExtensionRuntime(extensionGrants, input.agent, remoteNativeRun)}`,
     `  ext boundary:   ${formatNativeExtensionBoundary(extensionGrants, input.agent, remoteNativeRun)}`,

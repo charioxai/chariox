@@ -17,6 +17,40 @@ test("agent pane transcript render controller rebuilds empty panes", () => {
   assert.equal(harness.emptyRenderables.get("agent-1")?.id, "empty-1")
 })
 
+// MP-08 / MP-10 (panes R1 review): when hydration clears, panes still on the
+// loading/empty renderable rebuild with the entries that arrived meanwhile.
+test("agent pane transcript render controller rebuilds only panes showing the empty state", () => {
+  const loading = child("loading")
+  const mounted = transcriptRenderable(entry(1, "assistant", "kept"))
+  const harness = renderHarness({
+    paneEntries: { "agent-1": [entry(1, "assistant", "arrived")], "agent-2": [entry(1, "assistant", "kept")] },
+    scrollboxes: new Map([["agent-1", scrollbox([loading])], ["agent-2", scrollbox([mounted.wrapper])]]),
+    emptyRenderables: new Map([["agent-1", loading]]),
+    entryRenderables: new Map([["agent-2", new Map([[1, mounted]])]]),
+  })
+
+  harness.controller.rebuildEmptyPanes()
+
+  assert.equal(loading.destroyed, true)
+  assert.equal(harness.emptyRenderables.has("agent-1"), false)
+  assert.deepEqual(harness.scrollboxes.get("agent-1")?.childIds(), ["entry-1"])
+  assert.equal(harness.entryRenderables.get("agent-1")?.get(1)?.entry.text, "arrived")
+  assert.equal(mounted.wrapper.destroyed, false)
+})
+
+// MP-08 / MP-10 (panes R11): a rebuilt split pane mounts what the shared
+// reconcile mounts: rows of a folded turn stay unmounted.
+test("agent pane transcript render controller rebuild skips hidden rows", () => {
+  const harness = renderHarness({
+    paneEntries: { "agent-1": [entry(1, "user", "go"), { ...entry(2, "tool", "ls"), hidden: true }, entry(3, "assistant", "done")] },
+    scrollboxes: new Map([["agent-1", scrollbox([])]]),
+  })
+
+  harness.controller.rebuildPane("agent-1")
+
+  assert.deepEqual(harness.scrollboxes.get("agent-1")?.childIds(), ["entry-1", "entry-3"])
+})
+
 test("agent pane transcript render controller mounts entries and removes empty state", () => {
   const empty = child("empty")
   const harness = renderHarness({

@@ -71,6 +71,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::AttachToSession(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::AttachSessionView(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::LaunchProviderRun(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -278,6 +281,9 @@ pub(crate) fn request_session_scope(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::GetSessionHistoryBlobContent(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetSessionHistoryBlobContents(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::GetPromptInputHistory(request) => Some(
@@ -654,6 +660,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::CreateSession(_)
         | LocalDaemonRequest::JoinSessionInvite(_)
         | LocalDaemonRequest::ListProjects(_)
+        | LocalDaemonRequest::SetProjectPinned(_)
         | LocalDaemonRequest::RenameProject(_)
         | LocalDaemonRequest::UpdateProjectWorkspaces(_)
         | LocalDaemonRequest::ArchiveProject(_)
@@ -671,6 +678,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetKernelResourceTelemetry(_)
         | LocalDaemonRequest::GetProviderRun(_)
         | LocalDaemonRequest::GetProviderCatalog(_)
+        | LocalDaemonRequest::GetClientCatalogSnapshot(_)
+        | LocalDaemonRequest::GetClientCatalogRevisions(_)
         | LocalDaemonRequest::GetProviderCommandCatalogs(_)
         | LocalDaemonRequest::ListProviderAccountProfiles(_)
         | LocalDaemonRequest::GetProviderAccountProfile(_)
@@ -857,6 +866,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ObserveEventConnectionAuthorization(_)
         | LocalDaemonRequest::RefreshEventConnection(_)
         | LocalDaemonRequest::TestEventConnection(_)
+        | LocalDaemonRequest::ListEventConnectionEvents(_)
+        | LocalDaemonRequest::ReplayEventConnectionEvent(_)
         | LocalDaemonRequest::ReconnectEventConnection(_)
         | LocalDaemonRequest::ListEventConnectionResources(_)
         | LocalDaemonRequest::ListEventConnectionDependencies(_)

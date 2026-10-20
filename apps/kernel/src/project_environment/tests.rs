@@ -2162,7 +2162,7 @@ fn mp08_mp10_mp11_foreign_owned_mounted_config_is_private_and_transactional() {
         return;
     }
     // A UID-dropped worker must not depend on a private TMPDIR's ancestors.
-    let fixture = Fixture::new_in(Path::new("/tmp"));
+    let fixture = Fixture::new_in(Path::new("/var/tmp"));
     std::fs::set_permissions(&fixture.0, std::fs::Permissions::from_mode(0o775)).unwrap();
     let directory = std::ffi::CString::new(fixture.0.as_os_str().as_encoded_bytes()).unwrap();
     assert_eq!(unsafe { libc::chown(directory.as_ptr(), 0, 31001) }, 0);

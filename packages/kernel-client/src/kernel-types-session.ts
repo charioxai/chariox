@@ -9,6 +9,7 @@ import type {
   SessionInvite,
   SessionMember,
   SessionConfigState,
+  RuntimeAttachment,
 } from "./kernel-types-runtime.js"
 import type {
   WorkflowConsole,
@@ -21,8 +22,24 @@ import type {
   WorkflowRun,
   WorkflowScheduleDefinition,
   WorkflowWatchdogDefinition,
+  RoomWorkflowInventory,
 } from "./kernel-types-workflow.js"
 import type { ProjectEnvironmentDefinition } from "./kernel-types-project-environment.js"
+import type { SessionHistoryOutline } from "./kernel-types-history.js"
+
+/** MP-08 / MP-10: protocol 508 bundles existing, caller-scoped replies. */
+export type SessionViewAttachedResponse = {
+  SessionViewAttached: {
+    attachment: RuntimeAttachment
+    state: { SessionState: {
+      session: RuntimeSession
+      agent_activity: Record<string, AgentRuntimeActivity>
+      agent_activity_revision: number
+      room_workflows: RoomWorkflowInventory
+    } }
+    history: { SessionHistoryOutline: SessionHistoryOutline }
+  }
+}
 
 export type RuntimeSession = {
   id: string
@@ -81,9 +98,10 @@ export type RuntimeProjectStatus = "active" | "archived"
 export type SessionProjectSelection =
   | { kind: "default" }
   | { kind: "existing"; project_id: string }
-  | { kind: "new" }
+  | { kind: "new"; name?: string }
 
 export type RuntimeProject = {
+  pinned?: boolean
   id: string
   owner_user_id: string
   workspace_id: string
@@ -177,6 +195,7 @@ export type WaitingRoomPublicSessionSummary = {
   machine_id?: string | null
   machine_alias?: string | null
   alias?: string | null
+  repository_state?: "ready" | "not-repository" | "unborn" | null
   workspace_id: string
   worktree_id: string
   workspace_label?: string | null

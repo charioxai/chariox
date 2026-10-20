@@ -137,6 +137,7 @@ impl SessionRuntimeStore {
                     request.viewport.desktop_pixel_width,
                     request.viewport.desktop_pixel_height,
                 )
+                .map(crate::session::CanonicalViewport::snapped_to_native_desktop)
             }
             Err(error) => Err(error),
         }
@@ -268,6 +269,7 @@ impl SessionRuntimeStore {
             request.viewport.desktop_pixel_width,
             request.viewport.desktop_pixel_height,
         )
+        .map(crate::session::CanonicalViewport::snapped_to_native_desktop)
         .map_err(|error| room_environment_control_error("environment.viewport.update", error));
         let result = async {
             let viewport = viewport?;
@@ -624,6 +626,22 @@ impl SessionRuntimeStore {
             .list_projects(&caller_user_id, request.include_archived)
             .await;
         (Ok(LocalDaemonResponse::ProjectsListed { projects }), None)
+    }
+
+    pub(super) async fn set_project_pinned(
+        &self,
+        request: crate::local::SetProjectPinnedRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .set_project_pinned(&request.project_id, request.pinned, &caller_user_id)
+            .await
+            .map(|project| LocalDaemonResponse::ProjectPinned { project });
+        (result, None)
     }
 
     pub(super) async fn rename_project(

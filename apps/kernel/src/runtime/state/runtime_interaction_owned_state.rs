@@ -591,7 +591,16 @@ impl KernelRuntimeOwnedState {
         }
         self.pending_interactions.write().remove(interaction_id);
         if pending.passkey_prompt.is_some() {
-            self.passkey_prompts.record_change();
+            let reason = if pending
+                .kernel_operation_deadline
+                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+            {
+                crate::local::PasskeyPromptClosureReason::Expired
+            } else {
+                crate::local::PasskeyPromptClosureReason::Revoked
+            };
+            self.passkey_prompts
+                .record_closed(session_id, interaction_id, reason);
         }
         if let Some(interaction) = &pending.user_domain_interaction {
             self.finish_user_domain_interaction(

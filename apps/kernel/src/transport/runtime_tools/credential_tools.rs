@@ -277,6 +277,13 @@ pub struct SliceBrowserDialogArgs {
     pub prompt_text: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SliceBrowserStatusArgs {
+    #[serde(default)]
+    pub cursor: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SliceBrowserEventsArgs {

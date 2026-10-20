@@ -17,7 +17,8 @@ impl KernelRuntimeState {
         // Claude's Bash sandbox applies even to print-mode bypass runs. Native
         // TUIs can change their permission mode after launch. Neither seam
         // supplies a current sandbox grant for a kernel-owned executable, so
-        // always require explicit approval there, including initial Yolo.
+        // require kernel process consent there, including initial Yolo. The shared
+        // bridge reuses a live task's prior consent before asking again.
         if run.provider() != "claude" && run.client_interface().is_chariox() {
             return Ok(());
         }

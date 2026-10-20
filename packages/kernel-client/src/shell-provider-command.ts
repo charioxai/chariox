@@ -95,8 +95,8 @@ export async function executeProviderCommand(
         const logout = (response.ProviderLogoutStarted as { logout: ProviderLoginStart }).logout
         return { ok: true, message: formatProviderLoginStart(logout, "logout"), data: { logout } }
       }
-      const result = expectVariant<{ provider: string }>(response, "ProviderLoggedOut")
-      return { ok: true, message: `${result.provider} logged out`, data: result }
+      const result = expectVariant<{ provider: string; local_only?: boolean }>(response, "ProviderLoggedOut")
+      return { ok: true, message: `${result.provider} logged out${result.local_only ? " on this machine only; other machines keep their copy" : ""}`, data: result }
     }
     if (action === "reauth" && !provider.startsWith("claude")) {
       const logoutResponse = await deps.client.send(logoutProviderRequest(provider))

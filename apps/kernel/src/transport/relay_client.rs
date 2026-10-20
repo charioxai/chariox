@@ -26,8 +26,7 @@ use crate::runtime_transport::{
     WAITING_ROOM_ROW_COALESCE_MS, WATCH_INTERVAL_MS,
 };
 use crate::transport::kernel_protocol::{
-    can_skip_session_snapshot, event_is_relevant_to_attachment, subscription_event_stream_id,
-    terminal_output_event_batches, workflow_run_only_changed, workflow_run_updated_events,
+    event_is_relevant_to_attachment, subscription_event_stream_id, terminal_output_event_batches,
     KernelEvent, WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 use crate::transport::relay_crypto;
@@ -35,12 +34,13 @@ use crate::transport::relay_discovery;
 use crate::transport::relay_peer::RelayPeerEvent;
 
 mod browser_display;
-mod display_admission;
 mod browser_input_order;
 mod connection_config;
 mod connection_state;
 mod connector;
 mod daemon_requests;
+mod display_admission;
+mod display_delivery;
 mod display_ingress;
 mod display_pump;
 mod display_tunnel;
@@ -53,13 +53,16 @@ mod peer_events;
 mod peer_requests;
 mod remote_inventory;
 mod request_errors;
+mod request_timing;
 mod sender_identity;
 mod subscriptions;
 use connection_config::{relay_config_continuity, RelayConfigContinuity};
 use connection_state::{
     publish_offline_and_set_disconnected, set_connected, spawn_cloud_presence_publish,
 };
-use daemon_requests::{handle_daemon_request, handle_prepared_daemon_request, prepare_daemon_request};
+use daemon_requests::{
+    handle_daemon_request, handle_prepared_daemon_request, prepare_daemon_request,
+};
 use display_tunnel::handle_display_tunnel_open;
 use envelope_io::{
     encrypt_json_response, encrypt_peer_payload, send_outgoing_envelope,

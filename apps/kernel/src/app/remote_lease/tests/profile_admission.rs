@@ -404,6 +404,7 @@ async fn failed_leased_prompt_admission_after_run_assignment_settles_its_receipt
             .await
             .unwrap(),
         Some(crate::transport::relay_peer::LeasedPromptReceipt {
+            rejection_reason: None,
             home_prompt_id: home_prompt_id.to_string(),
             worker_provider_run_id: String::new(),
             phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected,
@@ -517,15 +518,24 @@ async fn assert_leased_claude_home_credential(environment_changed: bool) {
         .providers_mut()
         .launch_run_detached(request.clone())
         .unwrap();
+    let selected_agent = worker.agents().get_agent(&lease.backing_agent_id).unwrap();
     assert!(
-        RemoteLeaseRuntime::new(&mut worker)
-            .require_leased_prompt_account(&lease.id)
-            .is_err(),
+        worker
+            .reusable_leased_claude_run_for_agent(&lease.backing_session_id, &selected_agent)
+            .unwrap()
+            .is_none(),
         "an unmarked worker run is not proof of HOME credential authority"
     );
     worker
         .provider_run_projection
         .mark_leased_provider_run(run.id());
+    assert!(
+        worker
+            .reusable_leased_claude_run_for_agent(&lease.backing_session_id, &selected_agent)
+            .unwrap()
+            .is_some(),
+        "the admitted HOME-bound run is reusable"
+    );
     if environment_changed {
         // MP-08/MP-10/MP-11: a prompt admitted before the Project change keeps
         // the live run that holds HOME's credential; nothing is deferred.

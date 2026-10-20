@@ -41,8 +41,8 @@ async function mirrored(html, run, routes = {}) {
     // about:blank is "complete" too: wait for the fixture document itself.
     for (let i = 0; i < 400 && await evaluate("location.protocol === 'http:' && document.readyState === 'complete'").catch(() => false) !== true; i++) await new Promise(resolve => setTimeout(resolve, 25));
     await host.request({ op: "state" });
-    const subscribe = async () => {
-      const { subscription_id } = await host.request({ op: "mirror_subscribe", tab_id: opened.tab_id, generation: opened.generation, device_scale_factor: 1, wire: 2 });
+    const subscribe = async (extra = {}) => {
+      const { subscription_id } = await host.request({ op: "mirror_subscribe", tab_id: opened.tab_id, generation: opened.generation, device_scale_factor: 1, wire: 2, ...extra });
       // Protocol 489: bodies may be deflated in the subscription's context (in order, fresh per reset).
       let applied = 0, context = Buffer.alloc(0);
       const next = async (wait_ms = 0, reset = false) => {
@@ -55,7 +55,7 @@ async function mirrored(html, run, routes = {}) {
       return { next, input, subscription_id, generation: opened.generation };
     };
     const { next, input, subscription_id, generation } = await subscribe();
-    await run({ next, evaluate, host, input, subscribe, subscription_id, generation });
+    await run({ next, evaluate, host, input, subscribe, subscription_id, generation, tab_id: opened.tab_id });
   } finally {
     await host.stop();
     await new Promise(resolve => server.close(resolve));
@@ -161,7 +161,7 @@ test("MP-10: adopted stylesheet edits with an unchanged rule count reach the vie
 
 // Compact rows -> [id, tag] for element rows (kind codes are numbers).
 const elements = packet => { const out = []; let id = 0; for (const row of packet.nodes) { id += row[0]; if (typeof row[2] === "string") out.push([`n${id}`, row[2], row[3] || {}]); } return out; };
-test("MP-08/MP-11: typing reaches a field inside a mirrored cross-origin frame; its password field stays refused", () => mirrored(
+test("MP-08/MP-11: typing reaches a field inside a mirrored cross-origin frame, password field included", () => mirrored(
   '<p>top</p><iframe src="http://localhost:PORT/form" style="width:400px;height:120px"></iframe>', async ({ next, input }) => {
     await new Promise(resolve => setTimeout(resolve, 500));
     const snapshot = await next();
@@ -171,7 +171,11 @@ test("MP-08/MP-11: typing reaches a field inside a mirrored cross-origin frame; 
     await input(snapshot.sequence, { kind: "text", node_id: field, text: "hi" });
     const changed = await next(1000);
     assert.deepEqual(changed.ops.filter(op => op.op === "form").map(op => [op.id, op.form.value]), [[field, "hi"]]);
-    await assert.rejects(input(changed.sequence, { kind: "text", node_id: secret, text: "x" }), /sensitive|protected|refus/i);
+    // UX-first: what a person types is delivered to every field, a password field too.
+    await input(changed.sequence, { kind: "text", node_id: secret, text: "x" });
+    const typed = await next(1000);
+    // The mirror shows the typed character masked ("•"), as it does for every password field.
+    assert.deepEqual(typed.ops.filter(op => op.op === "form").map(op => [op.id, op.form.value]), [[secret, "\u2022"]]);
   }, {
     "/form": { type: "text/html", body: '<!doctype html><input id="f" type="text"><input id="p" type="password">' },
   }));
@@ -852,18 +856,19 @@ test("MP-08: a long title travels as a 1 KB tooltip, in the snapshot and in late
 }));
 
 // Audit 2026-10-10 §4.8: packets whose replies were lost (a dropped socket) are sent again instead of a gap and a reset.
-test("MP-10: a credit that still names an older base after a packet's reply was lost gets that packet again (original bytes, in order), not a newer sequence", () => mirrored('<p id="x">one</p>', async ({ next, evaluate, host }) => {
+test("MP-10: a resend credit that still names an older base after a packet's reply was lost gets that packet again (original bytes, in order)", () => mirrored('<p id="x">one</p>', async ({ next, evaluate, host }) => {
   const first = await next();
   assert.equal(first.reset, true);
   const subscription_id = [...host.mirror.streams.keys()][0], generation = host.generation;
-  const credit = after => host.request({ op: "mirror_next", subscription_id, generation, after_sequence: after, drift_nodes: [], wait_ms: 1000 });
+  const credit = (after, resend) => host.request({ op: "mirror_next", subscription_id, generation, after_sequence: after, drift_nodes: [], wait_ms: 1000, ...(resend ? { resend: true } : {}) });
   // Two packets are issued but their replies never reach the viewer (it still names sequence 1).
   await evaluate("x.firstChild.data='two';true"); const lost2 = await credit(first.sequence);
   await evaluate("x.firstChild.data='three';true"); const lost3 = await credit(first.sequence);
   assert.deepEqual([lost2.sequence, lost3.sequence], [2, 3]);
   await new Promise(resolve => setTimeout(resolve, 1700));
   await evaluate("x.firstChild.data='four';true");
-  const again = [await credit(first.sequence), await credit(first.sequence)];
+  // Packet age never establishes loss; the viewer's explicit resend credits (protocol 501) ask for each packet after its base.
+  const again = [await credit(first.sequence, true), await credit(lost2.sequence, true)];
   assert.deepEqual(again, [lost2, lost3], "MP-10: the lost packets come back byte for byte, in order");
   assert.equal((await credit(3)).sequence, 4, "MP-10: then the stream continues");
 }));
@@ -1768,3 +1773,83 @@ test("MP-08/MP-10 mirrorregion: pointer beside media reaches an overlaid control
     assert.equal(await evaluate('document.querySelector("button").textContent'),'clicked');
   }
 ));
+
+test("protocol 560/168: a layout change resets the Tab's existing mirror streams and the failed registration releases it", () => mirrored(
+  "<p>page</p>", async ({ subscribe, host, evaluate, tab_id, generation }) => {
+    const innerWidth = () => evaluate("innerWidth");
+    const a = await subscribe({ layout_width: 400, layout_height: 700 }), first = await a.next();
+    assert.deepEqual([first.reset, first.css_width, await innerWidth()], [true, 400, 400]);
+    const b = await subscribe({ layout_width: 600, layout_height: 700 });
+    assert.equal((await b.next()).css_width, 600);
+    const moved = await a.next();
+    assert.deepEqual([moved.reset, moved.css_width], [true, 600], "the owner changed: the other viewer re-bases at the new page size");
+    await host.request({ op: "mirror_close", subscription_id: b.subscription_id, generation });
+    const restored = await a.next();
+    assert.deepEqual([restored.reset, restored.css_width, await innerWidth()], [true, 1280, 1280], "releasing the layout re-bases the remaining viewer");
+    assert.notEqual((await a.next()).reset, true, "a steady page keeps its stream");
+    // A registration that fails after the metrics override leaves no resized page behind.
+    const hold = host.browser.inputCapture.hold;
+    host.browser.inputCapture.hold = async () => { throw new Error("registration failed"); };
+    await assert.rejects(subscribe({ layout_width: 400, layout_height: 700 }), /registration failed/);
+    host.browser.inputCapture.hold = hold;
+    assert.equal(await innerWidth(), 1280, "the failed registration did not leave the Tab resized");
+  }));
+
+test("protocol 560/168: a protected capture is the size of the laid-out page and the canonical page again after the layout is released", () => mirrored(
+  "<p>page</p>", async ({ subscribe, host, tab_id, generation }) => {
+    const scale = host.scales.get(tab_id) ?? host.viewport().device_scale_factor;
+    const capture = async (width, height) => {
+      const shot = await host.request({ op: "screenshot", tab_id, generation, bound_frames: true, _capture_protection: true, _capture_viewport: { width: width * scale, height: height * scale } });
+      const png = Buffer.from(shot.data_base64, "base64");
+      return [png.readUInt32BE(16), png.readUInt32BE(20)];
+    };
+    const narrow = await subscribe({ layout_width: 400, layout_height: 700 });
+    await narrow.next();
+    assert.deepEqual(await capture(400, 700), [400 * scale, 700 * scale], "the capture matches the mirror frame at the laid-out size");
+    const wide = await subscribe({ layout_width: 1440, layout_height: 900 });
+    await wide.next();
+    assert.deepEqual(await capture(1280, 800), [1280 * scale, 800 * scale], "the newest viewer asks for the canonical page");
+    const again = await subscribe({ layout_width: 400, layout_height: 700 });
+    await again.next();
+    assert.deepEqual(await capture(400, 700), [400 * scale, 700 * scale], "400 -> 1440 -> 400 captures at the laid-out size");
+    await host.request({ op: "mirror_close", subscription_id: again.subscription_id, generation });
+    await host.request({ op: "mirror_close", subscription_id: narrow.subscription_id, generation });
+    assert.deepEqual(await capture(1280, 800), [1280 * scale, 800 * scale], "closing the layout owners restores the canonical capture");
+  }));
+
+test("protocol 560/168: a layout released while its override is still in flight does not leave the Tab resized", () => mirrored(
+  "<p>page</p>", async ({ subscribe, host, evaluate }) => {
+    for (let i = 0; i < 5; i++) {
+      const [narrow, wide] = await Promise.all([subscribe({ layout_width: 400, layout_height: 700 }), subscribe({ layout_width: 1440, layout_height: 900 })]);
+      await new Promise(resolve => setTimeout(resolve, 150));
+      const owner = host.layouts.size ? "narrow" : "canonical", width = await evaluate("innerWidth");
+      assert.equal(width, owner === "narrow" ? 400 : 1280, `round ${i}: the page width follows the layout owner (${owner})`);
+      for (const s of [narrow, wide]) await host.request({ op: "mirror_close", subscription_id: s.subscription_id, generation: (await host.request({ op: "state" })).generation });
+      assert.equal(await evaluate("innerWidth"), 1280, `round ${i}: closing restores the page`);
+    }
+  }));
+
+test("protocol 560/168: a layout changed and restored is a different layout key", () => mirrored(
+  "<p>page</p>", async ({ subscribe, host }) => {
+    const a = await subscribe({ layout_width: 400, layout_height: 700 }), v2 = host.mirror.v2, tabId = [...host.tabs.keys()][0], key = v2.layoutKey(tabId);
+    await subscribe({ layout_width: 600, layout_height: 700 });
+    await subscribe({ layout_width: 400, layout_height: 700 });
+    assert.notEqual(v2.layoutKey(tabId), key, "400 -> 600 -> 400 is not the layout the credit started with");
+    await a.next();
+  }));
+test("protocol 560/168: a credit whose page size changed while it was observed publishes nothing and re-bases the stream", () => mirrored(
+  "<p id='p'>page</p>", async ({ subscribe, host, evaluate }) => {
+    const a = await subscribe({ layout_width: 400, layout_height: 700 });
+    await a.next();
+    // Another viewer resizes the Tab after this credit read the size but before it published (and back: A->B->A).
+    const v2 = host.mirror.v2, real = v2.layoutKey.bind(v2), tiles = v2.tiles.bind(v2);
+    let moved = false;
+    v2.layoutKey = tabId => (moved ? "600x700" : real(tabId));
+    v2.tiles = (...args) => { moved = true; return tiles(...args); };
+    await evaluate("document.getElementById('p').textContent='changed'");
+    await assert.rejects(a.next(2000), /layout changed during observation/);
+    v2.layoutKey = real; v2.tiles = tiles;
+    const next = await a.next(2000);
+    assert.equal(next.reset, true, "the observer's consumed change is not delivered by a delta: the next credit re-snapshots");
+    assert.match(JSON.stringify(next), /changed/, "the changed text reaches the viewer");
+  }));

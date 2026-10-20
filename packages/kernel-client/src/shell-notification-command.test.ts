@@ -153,6 +153,41 @@ test("notification removal previews dependencies before confirmed removal", asyn
   ])
 })
 
+test("notification connection events and replay use the shared kernel requests", async () => {
+  const requests: Record<string, unknown>[] = []
+  const event = {
+    delivery_id: "delivery-1",
+    event_type: "pull_request.synchronize",
+    occurrence_id: "occurrence-1",
+    connection_scope: "charioxai/chariox",
+    subject: "#1026",
+    received_at_ms: 1_000,
+    status: "failed",
+    attempts: 8,
+    publication_count: 0,
+    last_error: "503",
+  }
+  const client = {
+    send: async (request: Record<string, unknown>) => {
+      requests.push(request)
+      return "ListEventConnectionEvents" in request
+        ? { EventConnectionEvents: { page: { events: [event] } } }
+        : { EventConnectionEventReplayed: { result: { event: { ...event, status: "published", last_error: null } } } }
+    },
+  }
+  const listed = await executeNotificationCommand(["connection", "events", "connection-1"], client)
+  assert.equal(listed.ok, true)
+  assert.match(listed.message ?? "", /delivery-1  pull_request.synchronize charioxai\/chariox#1026  failed/)
+  const replayed = await executeNotificationCommand(["connection", "replay", "connection-1", "delivery-1"], client)
+  assert.equal(replayed.ok, true)
+  assert.match(replayed.message ?? "", /published/)
+  assert.equal((await executeNotificationCommand(["connection", "replay", "connection-1"], client)).ok, false)
+  assert.deepEqual(requests, [
+    { ListEventConnectionEvents: { connection_id: "connection-1", limit: 50 } },
+    { ReplayEventConnectionEvent: { connection_id: "connection-1", delivery_id: "delivery-1" } },
+  ])
+})
+
 test("notification connection test uses the shared kernel lifecycle request", async () => {
   const requests: Record<string, unknown>[] = []
   const result = await executeNotificationCommand(

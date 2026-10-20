@@ -2435,7 +2435,7 @@ test('group updates during restoration do not apply a partial native inventory',
  const groups=[{tab_id:opened.tab_id,label:'Agent'}];await host.syncTabGroups(groups);
  assert.equal(applied,0);assert.deepEqual(host.savedGroups,groups);
  await host.syncTabGroups(groups,{restore:true});assert.equal(applied,1);host.restoring=false;
-});
+}));
 
 // MP-08/MP-10: restoring the registry must retain selection, including a pending App.
 test('restart retains the active regular Tab and active App origin', () => using(async ({host}, root) => {
@@ -2491,10 +2491,10 @@ for (const actor of ['human','mirror-human','agent','denied']) test(`MP-08/MP-10
   host.tabGroups={active:async()=>active};host.activeTarget=active;
   const send=connection.send.bind(connection);connection.send=async(method,params,session)=>{if(method==='Target.activateTarget')active=params.targetId;return send(method,params,session)};
   const pending={tab_id:docs.tab_id,app_origin:null,apps:[],until:Date.now()+30000};host.pendingActive=pending;
-  fixture.secretFocused=actor==='denied';
+  fixture.secretFocused=false;
   if(actor==='mirror-human')host.mirror.resolveInput=async()=>({perform:async()=>{},fenced:false});
-  const input=host.request({op:'input',tab_id:todo.tab_id,generation:todo.generation,document_id:host.tabs.get(todo.tab_id).document_id,...(actor==='agent'?{_agent_input:true}:{}),input:actor==='mirror-human'?{kind:'mirror',action:{kind:'set',node_id:'n1',value:'unsent draft'}}:{kind:'text',text:'unsent draft'}});
-  if(actor==='denied'){await assert.rejects(input,error=>error.code==='user_domain_sensitive_requires_focus');assert.equal(host.pendingActive,pending)}
+  const input=host.request({op:'input',tab_id:todo.tab_id,generation:todo.generation,document_id:host.tabs.get(todo.tab_id).document_id,...(actor==='agent'?{_agent_input:true}:{}),input:actor==='denied'?{kind:'click',x:-1,y:0}:actor==='mirror-human'?{kind:'mirror',action:{kind:'set',node_id:'n1',value:'unsent draft'}}:{kind:'text',text:'unsent draft'}});
+  if(actor==='denied'){await assert.rejects(input,PointerOutsideViewport);assert.equal(host.pendingActive,pending)}
   else {await input;const saved=JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8'));assert.equal(saved.active_tab_id,actor==='human'||actor==='mirror-human'?todo.tab_id:docs.tab_id)}
 }));
 

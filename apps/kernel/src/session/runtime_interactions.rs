@@ -223,6 +223,9 @@ impl NativeInteractionOrigin {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeInteraction {
+    /// MP-08 / MP-11 protocol 538: kernel-established sudo presentation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sudo_request: Option<crate::local::SudoRequestPresentation>,
     /// Protocol 470: structured OS requester for external access decisions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     requester: Option<crate::local::KernelAccessRequester>,
@@ -308,7 +311,19 @@ impl RuntimeInteraction {
             handoff: None,
             requester: None,
             decision_expires_at: None,
+            sudo_request: None,
         }
+    }
+
+    pub fn sudo_request(&self) -> Option<&crate::local::SudoRequestPresentation> {
+        self.sudo_request.as_ref()
+    }
+    pub(crate) fn with_sudo_request(
+        mut self,
+        request: crate::local::SudoRequestPresentation,
+    ) -> Self {
+        self.sudo_request = Some(request);
+        self
     }
 
     pub fn requester(&self) -> Option<&crate::local::KernelAccessRequester> {
@@ -393,6 +408,7 @@ impl RuntimeInteraction {
             handoff: None,
             requester: None,
             decision_expires_at: None,
+            sudo_request: None,
         }
     }
 

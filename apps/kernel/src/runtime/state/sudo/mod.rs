@@ -14,6 +14,8 @@ mod entry;
 mod external;
 pub(crate) mod leased;
 mod lifecycle;
+mod login_recovery;
+mod operation;
 mod policy;
 mod process;
 mod receipts;
@@ -27,6 +29,8 @@ pub(crate) use window::sudo_window_minutes;
 pub(crate) use window::SUDO_WINDOW_LENGTH_FOR_TEST;
 #[cfg(test)]
 mod catalog_tests;
+#[cfg(test)]
+mod operation_tests;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod process_tests;
 #[cfg(test)]
@@ -39,6 +43,8 @@ mod recall_tests;
 mod relaunch_tests;
 #[cfg(test)]
 mod remote_command_tests;
+#[cfg(test)]
+mod task_scope_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

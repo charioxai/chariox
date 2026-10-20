@@ -1,3 +1,6 @@
+use super::vault_unlock_requests::{
+    notify_vault_unlocked, vault_unlock_notifications, vault_unlock_session_request_lock,
+};
 use super::*;
 
 pub(crate) struct VaultUnlockGuard {
@@ -350,7 +353,7 @@ impl KernelRuntimeState {
         ))
     }
 
-    async fn await_vault_interaction(
+    pub(super) async fn await_vault_interaction(
         &self,
         session_id: &str,
         interaction: crate::session::RuntimeInteraction,
@@ -501,35 +504,45 @@ impl KernelRuntimeState {
         if !force_prompt && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
             return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path));
         }
-        let unlock_request_lock = vault_unlock_request_lock(&vault_path);
-        let _dedupe_guard = unlock_request_lock.lock().await;
+        let session_request_lock = vault_unlock_session_request_lock(&vault_path, session_id);
+        let _dedupe_guard = session_request_lock.lock().await;
+        let mut unlocks = vault_unlock_notifications(&vault_path);
         if !force_prompt && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
             return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path));
         }
 
-        let resolution = self
-            .await_vault_interaction(
+        let Some(resolution) = self
+            .await_vault_unlock_interaction(
                 session_id,
                 vault_passphrase_interaction(session_id, agent_id, operation),
                 operation,
-                "vault unlock",
+                &vault_path,
+                &mut unlocks,
+                !force_prompt,
             )
-            .await?;
+            .await?
+        else {
+            return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path.clone()));
+        };
         let passphrase = vault_passphrase_from_resolution(resolution, operation)?;
         let choice_id = if matches!(
             vault_config.unlock_policy,
             crate::config::CredentialVaultUnlockPolicy::Ttl
         ) {
-            vault_lease_choice_from_resolution(
-                self.await_vault_interaction(
+            let Some(resolution) = self
+                .await_vault_unlock_interaction(
                     session_id,
                     vault_unlock_lease_interaction(session_id, agent_id, &vault_config),
                     operation,
-                    "vault unlock lease",
+                    &vault_path,
+                    &mut unlocks,
+                    !force_prompt,
                 )
-                .await?,
-                operation,
-            )?
+                .await?
+            else {
+                return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path.clone()));
+            };
+            vault_lease_choice_from_resolution(resolution, operation)?
         } else if matches!(
             vault_config.unlock_policy,
             crate::config::CredentialVaultUnlockPolicy::KernelInit
@@ -540,6 +553,12 @@ impl KernelRuntimeState {
         };
         let (lease, lock_after_operation) =
             unlock_lease_for_choice(&choice_id, &vault_config, force_prompt);
+        // Human input must never hold the mutation lock across sessions.
+        let unlock_request_lock = vault_unlock_request_lock(&vault_path);
+        let _mutation = unlock_request_lock.lock().await;
+        if !force_prompt && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
+            return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path.clone()));
+        }
         let status =
             crate::secret::unlock_chariox_encrypted_vault(&vault_path, passphrase.as_str(), lease)?;
         if let Err(error) = self.pin_critical_approval_verifier_after_unlock(&vault_path) {
@@ -559,6 +578,9 @@ impl KernelRuntimeState {
                 "lock_after_operation": lock_after_operation,
             }),
         );
+        if !lock_after_operation {
+            notify_vault_unlocked(&vault_path);
+        }
         if lock_after_operation {
             Ok(VaultUnlockGuard::unlocked_for_operation(vault_path))
         } else {
@@ -749,7 +771,7 @@ fn vault_passphrase_interaction(
         format!(
             "vault-unlock-{}-{}",
             agent_id,
-            crate::session::unix_epoch_ms()
+            rand::random::<u64>()
         ),
         agent_id,
         crate::session::RuntimeInteractionKind::Choice,
@@ -766,8 +788,8 @@ fn vault_passphrase_interaction(
             Some(1),
             Some(512),
         )),
-        Some(300),
-        Some("cancel".to_string()),
+        Some(60),
+        None,
     )
 }
 
@@ -777,11 +799,7 @@ fn vault_unlock_lease_interaction(
     config: &crate::config::UserCredentialVaultConfig,
 ) -> crate::session::RuntimeInteraction {
     crate::session::RuntimeInteraction::new(
-        format!(
-            "vault-unlock-lease-{}-{}",
-            agent_id,
-            crate::session::unix_epoch_ms()
-        ),
+        format!("vault-unlock-lease-{}-{}", agent_id, rand::random::<u64>()),
         agent_id,
         crate::session::RuntimeInteractionKind::Choice,
         crate::session::RuntimeInteractionLevel::Critical,
@@ -823,8 +841,8 @@ fn vault_unlock_lease_interaction(
             ),
         ],
         None,
-        Some(300),
-        Some("cancel".to_string()),
+        Some(60),
+        None,
     )
 }
 
@@ -843,13 +861,27 @@ fn vault_secret_from_resolution(
     if resolution.status == "timed_out" {
         return Err(DaemonError::LocalTransport {
             operation,
-            message: format!("Chariox vault {action} timed out"),
+            message: format!(
+                "Chariox vault {action} timed out{}",
+                if action == "unlock" {
+                    ". Retry to unlock the vault."
+                } else {
+                    ""
+                }
+            ),
         });
     }
     match resolution.choice_id.as_deref() {
         None | Some("cancel") => Err(DaemonError::LocalTransport {
             operation,
-            message: format!("Chariox vault {action} was cancelled"),
+            message: format!(
+                "Chariox vault {action} was cancelled{}",
+                if action == "unlock" {
+                    ". Retry to unlock the vault."
+                } else {
+                    ""
+                }
+            ),
         }),
         Some("passphrase") => resolution
             .reply
@@ -872,13 +904,15 @@ fn vault_lease_choice_from_resolution(
     if resolution.status == "timed_out" {
         return Err(DaemonError::LocalTransport {
             operation,
-            message: "Chariox vault unlock duration selection timed out".to_string(),
+            message:
+                "Chariox vault unlock duration selection timed out. Retry to unlock the vault."
+                    .to_string(),
         });
     }
     match resolution.choice_id.as_deref() {
         None | Some("cancel") => Err(DaemonError::LocalTransport {
             operation,
-            message: "Chariox vault unlock was cancelled".to_string(),
+            message: "Chariox vault unlock was cancelled. Retry to unlock the vault.".to_string(),
         }),
         Some(
             choice_id
@@ -1016,20 +1050,7 @@ fn apply_vault_manage_choice(
 pub(super) fn vault_unlock_request_lock(
     path: &std::path::Path,
 ) -> std::sync::Arc<tokio::sync::Mutex<()>> {
-    static LOCKS: std::sync::OnceLock<
-        std::sync::Mutex<
-            std::collections::BTreeMap<std::path::PathBuf, std::sync::Arc<tokio::sync::Mutex<()>>>,
-        >,
-    > = std::sync::OnceLock::new();
-    let path = expand_vault_path(&path.to_string_lossy());
-    let mut locks = LOCKS
-        .get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))
-        .lock()
-        .expect("vault unlock request lock map poisoned");
-    locks
-        .entry(path)
-        .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
-        .clone()
+    super::vault_unlock_requests::vault_unlock_request_lock(path)
 }
 
 pub(super) fn expand_vault_path(path: &str) -> std::path::PathBuf {
@@ -1506,3 +1527,7 @@ mod mp11_always_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "vault_restart_tests.rs"]
+mod restart_tests;

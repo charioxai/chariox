@@ -9,8 +9,8 @@ mod registration;
 mod remote_agents;
 mod remote_queue;
 mod subscriptions;
-mod token_rollover;
 mod support;
+mod token_rollover;
 mod worker_steer_receipt_restart;
 
 mod lease_context_refresh;

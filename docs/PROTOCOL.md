@@ -16,6 +16,42 @@ companion validation-tooling change; it drives the built TUI over hosted WSS,
 checks both populated response variants and protocol advertisements, and verifies
 persistence after restart. Source tests alone do not establish live acceptance.
 
+### Worker refusal reason (local protocol 549 / relay peer 157)
+
+`LeasedPromptReceipt.rejection_reason` (optional, omitted when absent) carries
+why a worker refused a leased prompt (for example a signed-out provider account
+on that machine). It is set only on a rejected admission receipt, is one line of
+at most 200 characters, and is also stored in the worker's durable prompt receipt
+(old stored receipts load without it). The home appends it to "worker durably
+rejected exact prompt ..." so the pane and TUI show the real reason. An older
+worker sends no field and the message is unchanged; an older home ignores it. No
+minimum supported client protocol changes.
+
+### Provider login copies (local protocol 549 / relay peer 157; branch-only 541 / 149 never released)
+
+Decision record: [PROVIDER_LOGIN_COPIES.md](PROVIDER_LOGIN_COPIES.md). Two
+optional fields, both omitted when false, so older clients and kernels keep
+working and no minimum supported protocol changes:
+
+- `LogoutProvider.end_everywhere` (default false). Without it, signing out a
+  Codex or Claude login that other machines hold (this machine received it as a
+  copy, or handed copies out) only deletes this machine's credential. The
+  provider's own `logout` is not run because it revokes the refresh token every
+  other holder uses. With it, the kernel runs the provider logout and ends the
+  session on every machine holding the login.
+- `ProviderLoggedOut.local_only` (default false). True when the kernel removed
+  only this machine's copy so clients can say so.
+
+`StartProviderLogin` has no new field: for a shared Codex login, or a shared
+Claude login using the terminal method, the kernel deletes the stored credential
+locally before the provider's own sign-in starts, so that sign-in has nothing to
+revoke. Claude `setup_token` enrollment does not touch the stored login.
+
+A run or account check that fails because the machine's copy cannot be renewed
+marks the profile `expired` on that machine only and raises the existing
+`provider_login` runtime interaction titled `Sign in again on <machine>` (the
+machine alias, else its id) on every attached client. Hosted focused drill:
+`credfix` CRED-01..CRED-04.
 
 ### Hosted terminal renewal (local protocol 472)
 
@@ -237,6 +273,98 @@ The kernel remains the workspace/runtime authority in all cases.
 ## 3. Protocol Lanes
 
 ## 3.1 Terminal Lane (Provider Output Stream)
+
+MP-08 / MP-10, allocated local protocol 508 / peer 116: persisted terminal
+output carries its history `sequence`. Consecutive output or reasoning rows
+with the same run, merge key and recipient scope may coalesce. `sequence_end`
+is the inclusive last sequence; `sequence_byte_lengths` gives each persisted
+row's UTF-8 byte length, in order. A single row omits both fields. Clients split
+the range at these byte boundaries before replay deduplication, preserving
+unseen rows when history hydration overlaps only part of a range. Gaps and
+unsequenced bytes never join a persisted range.
+
+`GetSessionHistoryOutline.include_prefetched_content=true` returns optional
+`prefetched_blobs` on each requested agent, including an explicit empty array
+when no content is selected. The kernel selects up to 64 latest-turn detail,
+assistant-output and steering blobs per agent, with a shared 1 MiB encoded
+content budget. Other details remain available through the existing blob
+requests. The outline's `steering` flag identifies budgeted steering prompts;
+observed and recovery prompt envelopes retain their collapsed, on-demand role.
+Clients that omit the request flag retain the earlier outline and blob paths.
+
+MP-08 / MP-10 / MP-11: `AttachSessionView` was introduced in 508/116 and
+its first-screen behavior is updated in the allocated 518/126 bump. It
+accepts the ordinary session/client/capability binding plus an optional
+`preferred_agent_id`. `SessionViewAttached` returns an attachment, the normal
+`SessionState` response under `state`, and the normal `SessionHistoryOutline`
+response under `history`. The kernel uses the existing authorized and redacted
+read commands, selects at most six visible agents in the preferred agent's pane
+group and the latest turn without downloading tool/thought bodies. State and
+history reads run concurrently after the ordinary attachment; details and older
+turns remain available through normal history requests.
+It binds through `AttachToSession` before either read, so later output
+already includes the new recipient; a history failure retires that exact new
+attachment through normal detach. This removes client round trips without
+adding session or history authority.
+The event subscription remains the existing attachment-scoped path. Its first
+pump replays output for the new attachment, including output produced between
+the initial read and subscription. Clients render the initial view while event
+admission is pending, deduplicate replay by persisted sequence, and enable
+prompt controls only after subscription and hydration settle. Clients below
+508 retain their existing attach, subscribe, state and history requests.
+External-agent grants cannot request this full-terminal response bundle.
+
+MP-08 / MP-10 / MP-11, allocated 518/126: `GetClientCatalogRevisions` accepts
+exactly the same owner/provider/profile/execution-location scope as
+`GetProviderCatalog`. `ClientCatalogRevisions.revisions` returns content hashes
+for `provider_accounts`, `provider_catalog`, `provider_commands`, and the existing
+`terminal_commands` revision (`sha256:` prefix). It uses the normal scoped catalog
+loader and refreshes stale metadata before returning a revision. It adds no
+credential or provider execution path. Clients show their bounded private stored
+inventories immediately, then compare revisions in the background after four
+hours or explicit invalidation; unchanged inventories need no full download.
+Older kernels retain ordinary full catalog requests. Projection subscriptions
+send activity/metadata before terminal output batches on the same wake; the relay
+still routes opaque packets and owns no session state.
+
+
+### Conditional client catalogs (MP-08 / MP-10 / MP-11, protocol534 / peer142)
+
+`GetClientCatalogSnapshot` takes the ordinary `GetProviderCatalog` selection in
+`scope` plus nullable `known: ClientCatalogRevisions`. The response has
+`ClientCatalogSnapshot.snapshot.revisions` and only changed sections:
+`provider_accounts`, `provider_catalog`, `provider_commands`, `terminal_commands`.
+An omitted section means unchanged only when its returned revision equals the
+client's revision. No cache means `known: null`, returning all four sections.
+Model discovery for a scope the kernel has not yet read can take many seconds.
+A caller that already holds a catalog (`known` set) is answered at once: accounts,
+commands and revisions are current, `provider_catalog` is omitted with the caller's
+own revision, discovery continues in the background and `client_catalog_changed`
+follows when it ends. Accounts are read after discovery, and a discovery that an
+invalidation overtook is kept as stale metadata, never turned into a failed read.
+Provider kinds/availability are projected from `provider_catalog`; a session's
+live agent roster is never part of this cache. Account selection and admission
+remain kernel-owned and caller-scoped.
+
+Both local and relay session/waiting-room subscriptions emit
+`client_catalog_changed { revision }` on catalog invalidation or changed model
+metadata. `revision` is a process-local change sequence, not a cross-restart
+content hash. It contains no account data. Clients fetch conditional snapshots
+on first connection, reconnect, and this event; they do not poll catalog data.
+Authorized user/kernel-scoped cached catalogs can paint while revalidation
+runs. Sign-out/account switch clears private browser caches; cache values never
+include bootstrap credentials, provider authentication state files or clients.
+Older kernels use the preexisting catalog requests rather than receiving a
+protocol534 request.
+
+
+MP-08 / MP-10: complete owned output/thought groups in initial history pages
+also compact repeated delta metadata. `sequence_end`, `sequence_byte_lengths`
+and `sequence_indices` retain each original row identity, including gaps left
+by another agent. Clients reconstruct the rows before fragment reconciliation;
+inline summaries admit all those identities while displaying one message.
+The first row's timestamp is retained. Partial rows, tool snapshots and external
+observations are not compacted; persisted operational history is unchanged.
 
 Purpose:
 
@@ -1361,6 +1489,26 @@ a zero-total/zero-offset/empty-payload chunk checkpoint with its own increasing
 ID. Its receipt accounts for both the preceding binary envelope and checkpoint.
 Larger binary events use the existing encrypted JSON envelope and bounded
 chunks; the ciphertext is never decrypted or inspected by the relay.
+The lane's unreleased local534/peer142 allocation adds the optional query
+`chariox_window=262144` beside `chariox_transport=chunks-v1`. Updated clients
+request a 256KiB bound so a typical catalog can leave in one transport flight.
+An older relay ignores this additive hint and retains its existing bound;
+without the exact hint, the new relay also retains64KiB. The chunk size,
+receiver grammar, total bound, ordered receipts, independent small/control
+traffic and all admission/encryption checks are unchanged. The hint alone
+without `chunks-v1` does not opt a socket into bounded framing.
+
+
+Relay egress text envelopes larger than 16 KiB use JSON `transport_chunk`
+frames with `transfer_id`, `offset`, `total_bytes` and `payload`. Offsets and
+totals count UTF-8 bytes of the original envelope. Each serialized chunk is at
+most 16 KiB; at most 64 KiB of unacknowledged chunk bytes are written by default. The
+receiver immediately returns `transport_ack` with the same transfer ID and the
+exclusive byte offset received, then dispatches only the completely reassembled
+original envelope. Totals are bounded to 64 MiB, IDs increase per connection,
+and a receiver admits one contiguous transfer. Invalid bounds, duplicate or
+cross-transfer receipts, overlap, unknown chunk fields, and nested transport
+frames terminate the connection without retaining payloads in errors.
 
 A socket admits at most four active transfers and 128 MiB of aggregate declared
 assembly, with a 64 MiB per-envelope maximum. Buffers grow only with received
@@ -3321,6 +3469,22 @@ Workflow trigger and deployment direction:
   on the Unix socket gets `kernel_access_human_only`, EXT-UX-05): it is not
   audited and does not count toward the owner's limit. Nothing else changes; which
   connections answer as terminals is unchanged until enforcement.
+- MP-08 / MP-10 / MP-11, protocol 538 (peer 146): every
+  `passkey_prompts_changed` projection also includes `kernel_now_ms` and
+  `closed`. Each closure identifies a previously projected `session_id`,
+  `interaction_id`, `kind`, and `expires_at_ms`, with the kernel's explicit
+  `reason`: `expired`, `answered`, or `revoked`. Closures are scoped to the
+  subscription's authenticated owner and never replayed. Clients anchor
+  countdowns to kernel time plus monotonic elapsed time, and show expiry
+  notices from the authoritative closure rather than inferring why a request
+  disappeared. Reconnect starts with the current set and no historical toasts.
+  Sudo interactions and their passkey prompts carry optional `sudo_request`:
+  `requester_name`, `agent_name`, `session_name`, `task_summary`, full `task`,
+  optional `grant_id`, and `terminal_id`. These are presentation facts, never
+  authority. The default view shows names and the short quoted task; full task
+  text and identifiers stay inside bounded, scrollable Details. External sudo
+  also projects the OS-established `requester`. Authority and answers remain
+  on the existing pending interaction and fresh-passkey path.
 - protocol 403: passkey popups (kernel access plan D1). Every passkey prompt
   is a kernel-owned pending interaction; today each critical approval is one.
   It is projected as a popup to every terminal connected as its owner,
@@ -4248,6 +4412,41 @@ replacement-open retry or cursor-based shortcut. The new snapshot/hash is
 `mp08_mp10_mp11_display_registration_535_143_snapshot_hash`; the 525 snapshots
 remain unchanged. Source tests do not establish the ≤ 1 s live repaint gate.
 
+MP-08 / MP-10 / MP-11: allocation 553/161 composes
+client admission and one initial resume registration. The client offers
+WebSocket subprotocol `chariox-room-display-resume-v553` alongside the existing
+binary-v96 protocol. Selection of the new subprotocol positively advertises
+both initial registration and binary-v96 events; a legacy selection retains
+the existing connect-then-subscribe exchange. Kernel version alone does not
+advertise relay support.
+
+On a fresh negotiated socket, `ClientConnectDisplayResume` contains the ordinary
+`auth_token` and `target`, the previously admitted `expected_daemon_public_key`,
+and a strict `registration` record with `request_id`, `subscription_id`,
+`session_id` (the prior delivery lease), `attachment_id` (its generation) and
+`client_public_key`. The nested record cannot select another target, scope or
+cursor. Normal client admission verifies token, realm, live target, retained
+authority and the expected home key pin. It sends normal `ClientConnected`,
+rechecks expiry/revocation, then passes a normal `ClientSubscribe` with fixed
+`kernel_browser_display_resume` scope and null cursor to the existing route
+handler. Packet-route permission, identifiers, capacity, caller projection,
+response ownership and subscription cleanup remain there. The expected home
+key is rechecked in the transaction that selects the subscription sender, so
+a registration replaced after `ClientConnected` cannot receive the initial
+registration. Repeated combined
+connects and unnegotiated combined envelopes refuse. Normal `ClientConnect`
+continues to renew authorization without triggering a resume.
+
+This changes the relay wire (new envelope, hence 553/161) but not resume authority: the existing 535 registration invokes
+the same525 home/worker resume authority. Clients reserve encrypted response
+correlation before writing, keep fresh frames held until presenter activation,
+and retain auth-generation, target, peer, generation, retirement and hint checks.
+The 535 snapshot stays unchanged; `mp08_mp10_mp11_display_connect_553_161_snapshot_hash` pins the combined form. A client sends the combined message only to a kernel that reported local protocol ≥ 553 and a relay that selected the 553 subprotocol; older kernels or relays keep the legacy connect-then-subscribe exchange. The live Room network drill accepts
+`CHARIOX_ROOM_DISPLAY_EXPECT_INITIAL_RESUME=1` to require the combined write after
+each fault, recording only its envelope kind. Run the same real clients against
+a legacy relay to validate fallback; neither source checks nor negotiation alone
+establish repaint or stability acceptance.
+
 ### MP-08 / MP-11: explicit leased desktop Computer grant (local500 / peer109)
 
 The authenticated HOME owner sends `KernelBrowser.command={op:"grant_leased_computer",
@@ -4790,3 +4989,44 @@ Web Copy and TUI `/kernel copy-status <context-id>` project the same authoritati
 outcome. Refusals occur before packaging or publication; no bytes are copied.
 The existing C5 allocation remains local 520 / peer 128: this correction changes
 error strings and client rendering, with no new serialized fields or variants.
+### MP-08 / MP-10 / MP-11: reuse of sudo task consent
+
+The live owner/task/run-bound sudo window also supplies prior permission at
+provider tool approval and watched-command execution seams. These seams return
+the official one-operation response before registering another interaction.
+They do not authorize responding to arbitrary RuntimeInteractions. Leased
+watched commands revalidate the current home window through the existing
+leased kernel-request path, including before execution. Startup workspace trust
+may reuse an approved exact-workspace launch without making a queued sudo task
+live for tools. Scope expansion, missing authentication values, identity choices,
+revocation, sandboxing, tenant/owner checks and once-only effects keep their
+normal fences. This is kernel policy on existing shapes; no protocol shape or
+version changes.
+
+### Live output prompt identity — local 545 / relay peer 153 (MP-08 / MP-10 / MP-11)
+
+Structured provider output and terminal stream events carry the existing optional
+`prompt_id`, now populated from kernel ownership: the active prompt of the agent
+(local runs) or the dispatched home prompt (leased remote runs, including the
+settled prompt for dispatch failures). Home worker projections use the home
+prompt ID, never the worker's. Providers that reuse assistant or reasoning merge
+keys across turns (Claude) therefore no longer merge a later reply into an
+earlier answer in clients that scope live rows by prompt. Clients must treat an
+absent `prompt_id` (kernels below local 545) as unscoped. No field or variant is
+added; the bump records the changed relay terminal-event semantics under the
+Protocol Change Rule. Web/native minimums are unchanged unless a client requires
+prompt-scoped live rows.
+
+### Integration received events — local 551 / relay peer 159
+
+`ListEventConnectionEvents { connection_id, limit }` returns
+`EventConnectionEvents` with the webhooks the integration's generator received for
+the calling owner (delivery id, event/action, `repo#PR` subject, received and
+published times, status; never prompt or reply context).
+`ReplayEventConnectionEvent { connection_id, delivery_id }` re-publishes one stored
+event and returns `EventConnectionEventReplayed`; AEDS dedupes on the occurrence id,
+so a replay of an already published event is acknowledged without a second run.
+Both are served by the generator's `POST /v1/events/query` and `/v1/events/replay`
+management routes (docs/AEGS_SDK.md). Clients need kernel protocol ≥551 for either
+request (`integrationReceivedEventsMinimumProtocolVersion`); other minimums stay.
+Relay peer 159 only pairs the embedded local response union with local 551.

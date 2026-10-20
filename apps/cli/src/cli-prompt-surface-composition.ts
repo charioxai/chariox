@@ -395,7 +395,6 @@ export function createCliPromptSurfaceComposition(deps: CliPromptSurfaceComposit
     persistablePromptDraft,
     persistSessionPromptState,
     promptAreaBackground: promptChromeProjectionController.promptAreaBackground,
-    promptHistoryHydrationController,
     promptInputHistoryRefreshController,
     promptInputMaxHeight,
     promptPlaceholder,

@@ -81,6 +81,7 @@ pub(super) async fn handle_prepared_daemon_request(
     display_subscriptions: &super::subscriptions::RelaySubscriptionTasks,
     local_browser: Option<&Arc<super::LocalBrowserDirect>>,
 ) -> RelayRequestOutcome {
+    let received_at_ms = crate::session::unix_epoch_ms();
     let PreparedDaemonRequest {
         message,
         client_public_key,
@@ -484,6 +485,11 @@ pub(super) async fn handle_prepared_daemon_request(
                     };
                 }
             };
+            crate::runtime::perf_timing::record_relay_request(
+                request_kind,
+                received_at_ms,
+                plaintext.len(),
+            );
             if !quiet_success_request {
                 crate::logging::info_with_fields(
                     "daemon.relay_client",

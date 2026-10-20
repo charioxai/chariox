@@ -68,6 +68,9 @@ fn terminal_output_event_batches_stay_under_json_byte_cap() {
     let records = (0..20)
         .map(|index| TerminalOutputRecord {
             record_id: Some(index as u64),
+            sequence: None,
+            sequence_end: None,
+            sequence_byte_lengths: Vec::new(),
             timestamp_ms: 1_000 + index as u64,
             session_id: "session-1".to_string(),
             provider_run_id: "provider-run-1".to_string(),
@@ -138,6 +141,9 @@ fn terminal_output_event_batch_size_accounting_matches_serialized_json() {
     let records = (0..5)
         .map(|index| TerminalOutputRecord {
             record_id: Some(index as u64),
+            sequence: None,
+            sequence_end: None,
+            sequence_byte_lengths: Vec::new(),
             timestamp_ms: 2_000 + index as u64,
             session_id: format!("session-{index}"),
             provider_run_id: format!("provider-run-{index}"),
@@ -795,6 +801,7 @@ fn provider_account_profile() -> crate::account_profile::ProviderAccountProfile 
 
 fn session_summary(id: &str, last_used_at_ms: u64) -> WaitingRoomPublicSessionSummary {
     WaitingRoomPublicSessionSummary {
+        repository_state: None,
         id: id.to_string(),
         project_id: "project-a".to_string(),
         alias: None,
@@ -819,6 +826,7 @@ fn session_summary(id: &str, last_used_at_ms: u64) -> WaitingRoomPublicSessionSu
 
 fn project_summary(id: &str, name: &str) -> crate::local::WaitingRoomPublicProjectSummary {
     crate::local::WaitingRoomPublicProjectSummary {
+        pinned: false,
         id: id.to_string(),
         owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
         workspace_id: "workspace-1".to_string(),

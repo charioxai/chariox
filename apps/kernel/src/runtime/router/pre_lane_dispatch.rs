@@ -26,6 +26,12 @@ impl CommandRouter {
             self.runtime_state
                 .authorize_room_agent_request(actor, request)?;
         }
+        if let LocalDaemonRequest::AttachSessionView(request) = request {
+            return self
+                .attach_session_view(command, request.clone())
+                .await
+                .map(Some);
+        }
         if let Some(response) = self
             .dispatch_app_pre_lane(command, request, caller_user_id)
             .await?

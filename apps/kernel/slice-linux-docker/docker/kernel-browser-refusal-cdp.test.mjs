@@ -46,9 +46,9 @@ test('detached secure-fill node keeps trusted provenance through real performAct
 test('changed navigation document keeps trusted provenance through real navigate normalization', () => withAdapter(async (host, wire) => {
   wire.document = 'replacement';
   const reply = await host.handle({ id: 2, method: 'host.browser', params: {
-    op: 'navigate', tab_id: 'host-tab', generation: 1, url: 'https://fixture.invalid/next',
+    op: 'navigate', _agent_input: true, tab_id: 'host-tab', generation: 1, document_id: 'observed', url: 'https://fixture.invalid/next',
   } });
-  assert.ok(wire.calls.includes('Page.getFrameTree'));
+  assert.ok(wire.calls.includes('Page.getFrameTree'), JSON.stringify(reply));
   assert.deepEqual(reply.error, stale);
 }));
 for (const forged of [

@@ -184,6 +184,7 @@ async fn renewal_drill(reduce_permissions: bool) {
     let _ = foreign.close(None).await;
     for i in 1..=6 {
         sleep(Duration::from_millis(300)).await;
+        let sent_elapsed_ms = test_current_unix_ms().saturating_sub(now);
         send(
             &mut client,
             RelayEnvelope::ClientConnect {
@@ -192,10 +193,10 @@ async fn renewal_drill(reduce_permissions: bool) {
             },
         )
         .await;
-        assert!(matches!(
-            receive(&mut client).await,
-            RelayEnvelope::ClientConnected { .. }
-        ));
+        let response = receive(&mut client).await;
+        assert!(matches!(response, RelayEnvelope::ClientConnected { .. }),
+            "MP-10 fixture renewal step {i}: sent_elapsed_ms={sent_elapsed_ms}, previous_expiry_elapsed_ms={}, received_elapsed_ms={}",
+            400 + (i-1)*300, test_current_unix_ms().saturating_sub(now));
         send(
             &mut daemon_socket,
             RelayEnvelope::DaemonEvent {

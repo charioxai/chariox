@@ -2,6 +2,7 @@ export type WaitingRoomPromptBootstrapResult = "bootstrapped" | "handled" | "unh
 
 export type WaitingRoomPromptBootstrapControllerDeps = {
   isAttached: () => boolean
+  isSessionSelecting?: () => boolean
   startSessionFromWaitingRoomDefaults?: () => Promise<unknown>
   flashFooter: (message: string, tone: "info" | "error") => void
   formatError?: (error: unknown) => string
@@ -26,13 +27,17 @@ export function createWaitingRoomPromptBootstrapController(
       if (!deps.startSessionFromWaitingRoomDefaults) {
         return "unhandled"
       }
+      if (deps.isSessionSelecting?.()) {
+        deps.flashFooter("opening session", "info")
+        return "handled"
+      }
       if (inFlight) {
         deps.flashFooter("starting session", "info")
         return "handled"
       }
 
       inFlight = deps.startSessionFromWaitingRoomDefaults()
-        .then(() => "bootstrapped" as const)
+        .then(result => result === false ? "handled" as const : "bootstrapped" as const)
         .catch((error) => {
           deps.warn?.("waiting-room prompt bootstrap failed", { error: formatError(error) })
           deps.flashFooter(formatError(error), "error")

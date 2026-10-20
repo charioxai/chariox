@@ -254,7 +254,9 @@ impl KernelBrowserHost {
                 Duration::from_secs(20),
             )
             .for_host();
-            state.retire_lanes.insert(user.into(), backend.retire_lane());
+            state
+                .retire_lanes
+                .insert(user.into(), backend.retire_lane());
             state
                 .browsers
                 .insert(user.into(), Arc::new(Mutex::new(backend)));
@@ -275,7 +277,9 @@ impl KernelBrowserHost {
         )
         .for_host();
         let mut state = self.inner.lock().unwrap();
-        state.retire_lanes.insert(user.into(), backend.retire_lane());
+        state
+            .retire_lanes
+            .insert(user.into(), backend.retire_lane());
         state
             .browsers
             .insert(user.into(), Arc::new(Mutex::new(backend)));
@@ -699,8 +703,8 @@ impl KernelBrowserHost {
         // before dispatch and after readiness, as for other observations.
         let display_subscribe = method == "host.browser" && params["op"] == "display_subscribe";
         // r55: a selection note on a busy page waits for its renderer; it must not hold the controller lock meanwhile.
-        let note = method == "host.browser"
-            && matches!(params["op"].as_str(), Some("note_selection"));
+        let note =
+            method == "host.browser" && matches!(params["op"].as_str(), Some("note_selection"));
         let mut result = if display
             || mirror_credit
             || display_subscribe
@@ -1017,7 +1021,10 @@ impl KernelBrowserHost {
         // is serialized behind any cancelled request and never starts a desktop.
         let (backend, lane) = {
             let state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-            (state.browsers.get(user).cloned(), state.retire_lanes.get(user).cloned())
+            (
+                state.browsers.get(user).cloned(),
+                state.retire_lanes.get(user).cloned(),
+            )
         };
         let actor = actor.to_string();
         let observer = actor.clone();

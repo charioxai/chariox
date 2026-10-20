@@ -399,9 +399,8 @@ fn run_preloaded_writer(
     receiver: Receiver<DurableWriterRequest>,
     health: Arc<DurableWriterHealth>,
 ) {
-    // Each caller preloads and closes the queue: no timed wait occurs. Give
-    // batching a long deadline so scheduler pauses cannot split a fault batch.
-    run_durable_writer(connection, receiver, health, Duration::from_secs(60));
+    // Each caller preloads and closes the queue, so queued writes batch.
+    run_durable_writer(connection, receiver, health);
 }
 
 #[test]

@@ -31,6 +31,7 @@ mod dispatch;
 pub(crate) mod event_connection_lifecycle;
 mod kernel_access;
 mod managed_context_bridge;
+mod session_view;
 pub(crate) use managed_context_bridge::{
     RelayManagedContextArmRequest, RelayManagedContextChunkRequest,
 };
@@ -225,6 +226,8 @@ mod tests {
     mod m16_runtime_extension_registration;
     mod m23_metaagent_runtime_tools;
     mod normal_stack;
+    #[cfg(unix)]
+    mod provider_login_copy;
     mod provider_projection;
     #[cfg(unix)]
     mod provider_setup_token;

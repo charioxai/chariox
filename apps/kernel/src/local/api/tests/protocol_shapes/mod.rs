@@ -14,6 +14,7 @@ mod apps;
 mod browser_artifact;
 mod browser_import;
 mod browser_mirror;
+mod client_catalog_revisions;
 mod cloud_relay;
 mod computer_hold;
 mod core;
@@ -29,17 +30,20 @@ mod machine_gateway;
 mod kernel_browser;
 mod kernel_computer;
 mod kernel_operation_interactions;
+mod leased_prompt_rejection;
 mod managed_activity;
 mod managed_context;
 mod managed_environment;
 mod native_spawn_slice;
 mod notes;
+mod panes_history;
 mod project_environment_aggregate;
 mod project_environment_manifest;
 mod project_environment_setup;
 mod prompt_settings;
 mod provider_account_credential;
 mod provider_auth_recovery;
+mod provider_login_copies;
 mod provider_usage_activity;
 mod publication;
 mod recall_terminal_metaagent;
@@ -48,6 +52,7 @@ mod resource_telemetry;
 mod room_controller;
 mod room_environment;
 mod room_environment_placement;
+mod session_view;
 mod slice_disk_quota;
 mod slice_display;
 mod slice_logs;
@@ -65,6 +70,9 @@ fn history_page_entry(
 ) -> crate::session_history_page::SessionHistoryPageEntry {
     crate::session_history_page::SessionHistoryPageEntry {
         entry_index: sequence,
+        sequence_end: None,
+        sequence_byte_lengths: Vec::new(),
+        sequence_indices: Vec::new(),
         fragment_start: 0,
         fragment_end: text.chars().count(),
         total_chars: text.chars().count(),
@@ -101,3 +109,5 @@ mod screenshot;
 
 mod relay_transport;
 mod ssh_machine;
+
+mod waiting_room_workspace;

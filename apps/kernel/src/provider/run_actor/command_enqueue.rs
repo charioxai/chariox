@@ -338,6 +338,16 @@ impl ProviderRunActorMailbox {
         drain_finished_output_polls(&self.finished_output_polls)
     }
 
+    pub(crate) fn drain_finished_output_polls_for_run(
+        &self,
+        run_id: &str,
+    ) -> Vec<FinishedProviderOutputPollJob> {
+        super::finished_jobs::drain_finished_output_polls_for_run(
+            &self.finished_output_polls,
+            run_id,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn push_finished_submit_for_test(&self, finished: FinishedProviderPromptSubmitJob) {
         let provider_run_id = finished.provider_run_id.clone();

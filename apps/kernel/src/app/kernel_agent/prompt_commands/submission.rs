@@ -269,7 +269,12 @@ impl<'a> KernelAgentService<'a> {
             });
         }
         let remote_execution = target_agent.remote_execution().cloned();
-        if remote_execution.is_none() {
+        if remote_execution.is_none()
+            && self
+                .app
+                .reusable_leased_claude_run_for_agent(&session_id, &target_agent)?
+                .is_none()
+        {
             let account_owner = self
                 .app
                 .provider_account_authority_owner_for_agent(&target_agent)?;

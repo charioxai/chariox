@@ -994,7 +994,9 @@ pub(super) fn run() -> Result<(), String> {
                 }
                 // A failed read refuses this request only; the capture keeps running.
                 // The walk runs on its own thread: it never blocks readbacks or encodes.
-                Command::Windows { windows: q } => match &*inventory.get_or_insert_with(|| super::inventory::Inventory::start(owner).ok()) {
+                Command::Windows { windows: q } => match &*inventory
+                    .get_or_insert_with(|| super::inventory::Inventory::start(owner).ok())
+                {
                     Some(inventory) => inventory.ask(q.id),
                     None => reply(q.id, json!({ "error": "MP-11: native window inventory" }))?,
                 },
@@ -1128,6 +1130,8 @@ fn owner_windows(pid: u32) -> Result<Vec<Value>, String> {
     window_rows(&data, count)
 }
 pub(super) fn window_rows(data: &[i64; 32 * 13], count: i32) -> Result<Vec<Value>, String> {
-    if count < 0 { return Err("MP-11: native window inventory".into()); }
+    if count < 0 {
+        return Err("MP-11: native window inventory".into());
+    }
     Ok(data.chunks_exact(13).take(count as usize).map(|r|json!({"id":r[0],"width":r[1],"height":r[2],"x":r[3],"y":r[4],"visible":r[5]==1,"override_redirect":r[6]==1,"transient_for":r[7],"focused":r[8]==1,"frame_insets":[r[9],r[10],r[11],r[12]]})).collect())
 }

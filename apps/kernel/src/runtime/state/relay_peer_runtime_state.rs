@@ -1,9 +1,7 @@
 use crate::app::RemoteLeaseRuntime;
-use crate::durable_state::worker_prompt_receipts::WorkerPromptReceiptPhase;
+use crate::durable_state::worker_prompt_receipts::{rejection_reason, WorkerPromptReceiptPhase};
 use crate::execution_lease::{ExecutionLease, LeasedAgent, RemoteWorkflowTurnContext};
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
-use crate::runtime::projection::SessionSnapshotProjection;
-use crate::runtime_transport::WatchResult;
 use crate::skill::CharioxSkillPackage;
 use crate::transport::relay_peer::{
     RelayPeerEvent, RelayProjectEnvironmentSetupStatus, RelayPromptAttachment,
@@ -37,6 +35,23 @@ impl KernelRuntimeState {
                 phase,
                 worker_provider_run_id.as_deref(),
             )
+        })
+        .await
+    }
+
+    async fn reject_relay_leased_prompt_admission_receipt(
+        &self,
+        leased_agent_id: &str,
+        home_prompt_id: &str,
+        error: &DaemonError,
+    ) -> Result<(), DaemonError> {
+        let leased_agent_id = leased_agent_id.to_string();
+        let home_prompt_id = home_prompt_id.to_string();
+        let reason = rejection_reason(error);
+        self.with_app_side_effect(move |app| {
+            let mut runtime = RemoteLeaseRuntime::new(app);
+            runtime.begin_leased_prompt_receipt(&leased_agent_id, &home_prompt_id)?;
+            runtime.reject_leased_prompt_receipt(&leased_agent_id, &home_prompt_id, reason)
         })
         .await
     }
@@ -110,73 +125,6 @@ impl KernelRuntimeState {
             )
         })
         .await
-    }
-
-    pub(crate) async fn watch_relay_subscription_state(
-        &self,
-        session_id: &str,
-        attachment_id: &str,
-        should_check_snapshot: bool,
-        previous_snapshot: Option<SessionSnapshotProjection>,
-        last_workflow_design_sequence: u64,
-    ) -> WatchResult {
-        let session_id = session_id.to_string();
-        let attachment_id = attachment_id.to_string();
-        let previous_snapshot_for_compare = previous_snapshot.clone();
-        let mut result = self
-            .with_app_side_effect({
-                let session_id = session_id.clone();
-                let attachment_id = attachment_id.clone();
-                move |app| {
-                    crate::runtime_transport::watch_subscription_state(
-                        app,
-                        &session_id,
-                        &attachment_id,
-                        false,
-                        None,
-                        last_workflow_design_sequence,
-                    )
-                }
-            })
-            .await;
-        if !should_check_snapshot {
-            return result;
-        }
-        let projected_snapshot = match self.session_snapshot_projection_for_attachment(
-            &session_id,
-            &attachment_id,
-            self.session_projection_change_sequence(),
-        ) {
-            Ok(mut snapshot) => {
-                snapshot.metadata.last_event_id = self.session_projection_change_sequence();
-                Box::new(
-                    (previous_snapshot_for_compare.as_ref() != Some(&snapshot)).then_some(snapshot),
-                )
-            }
-            Err(DaemonError::SessionNotFound { .. })
-            | Err(DaemonError::AttachmentNotFound { .. })
-            | Err(DaemonError::AttachmentNotInSession { .. }) => {
-                return WatchResult::Unavailable(
-                    "Current session is no longer available.".to_string(),
-                );
-            }
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.runtime_transport",
-                    "kernel event loop failed to build owned session snapshot",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "attachment_id": attachment_id,
-                        "error": error.to_string(),
-                    }),
-                );
-                Box::new(None)
-            }
-        };
-        if let WatchResult::Ok { snapshot, .. } = &mut result {
-            *snapshot = projected_snapshot;
-        }
-        result
     }
 
     pub(crate) async fn create_relay_execution_lease(
@@ -685,13 +633,10 @@ impl KernelRuntimeState {
                         .as_deref()
                         .filter(|_| profile_receipt_is_new)
                     {
-                        runtime
-                            .begin_leased_prompt_receipt(&replay_leased_agent_id, home_prompt_id)?;
-                        runtime.update_leased_prompt_receipt(
+                        runtime.reject_leased_prompt_receipt(
                             &replay_leased_agent_id,
                             home_prompt_id,
-                            WorkerPromptReceiptPhase::Rejected,
-                            None,
+                            rejection_reason(&error),
                         )?;
                     }
                     return Err(error);
@@ -735,7 +680,9 @@ impl KernelRuntimeState {
         let context_for_prepare = home_prompt_id.clone();
         let prepared = match self
             .with_app_side_effect(move |app| {
-                RemoteLeaseRuntime::new(app).prepare_leased_prompt_submission(
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.require_leased_prompt_account(&leased_agent_for_prepare)?;
+                runtime.prepare_leased_prompt_submission(
                     &leased_agent_for_prepare,
                     &prompt_for_prepare,
                     &hidden_system_context,
@@ -753,11 +700,10 @@ impl KernelRuntimeState {
             Err(error) => {
                 if let Some(home_prompt_id) = context_for_prepare.as_deref().filter(|_| new_receipt)
                 {
-                    self.update_relay_leased_prompt_admission_receipt(
+                    self.reject_relay_leased_prompt_admission_receipt(
                         &leased_agent_id,
                         home_prompt_id,
-                        WorkerPromptReceiptPhase::Rejected,
-                        None,
+                        &error,
                     )
                     .await?;
                 }
@@ -829,6 +775,26 @@ impl KernelRuntimeState {
                 provider_run_id.clone()
             }
             crate::app::PreparedLeasedProviderRun::LaunchRequired(request) => {
+                if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
+                    && provider_launch_credential.is_none()
+                {
+                    let error = DaemonError::LocalTransport {
+                        operation: "launch remote provider without credential",
+                        message: format!(
+                            "{REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE}: the worker must relaunch the selected Claude profile",
+                        ),
+                    };
+                    if let Some(home_prompt_id) = home_prompt_id.as_deref().filter(|_| new_receipt)
+                    {
+                        self.reject_relay_leased_prompt_admission_receipt(
+                            &leased_agent_id,
+                            home_prompt_id,
+                            &error,
+                        )
+                        .await?;
+                    }
+                    return Err(error);
+                }
                 match self
                     .launch_provider_for_remote_lease_detached(
                         request.clone(),
@@ -841,11 +807,10 @@ impl KernelRuntimeState {
                         if let Some(home_prompt_id) =
                             home_prompt_id.as_deref().filter(|_| new_receipt)
                         {
-                            self.update_relay_leased_prompt_admission_receipt(
+                            self.reject_relay_leased_prompt_admission_receipt(
                                 &leased_agent_id,
                                 home_prompt_id,
-                                WorkerPromptReceiptPhase::Rejected,
-                                None,
+                                &error,
                             )
                             .await?;
                         }

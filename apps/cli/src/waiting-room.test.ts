@@ -175,7 +175,7 @@ test("waiting room cycles slices for new sessions", () => {
   }]
   let state = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high")
 
-  state = moveWaitingRoomFocus(state, [], 11, { slices })
+  state = moveWaitingRoomFocus(state, [], 10, { slices })
   assert.equal(state.focus, "slice")
   assert.equal(waitingRoomRows(state, [], catalog, { slices }).find((row) => row.id === "slice")?.value, "off")
 
@@ -207,7 +207,7 @@ test("waiting room renders indented sections and only previews the last two acti
   }))
 
   let state = createWaitingRoomState(sessions, catalog, "opencode", "opencode/gpt-5.4", "high")
-  state = moveWaitingRoomFocus(state, sessions, 12)
+  state = moveWaitingRoomFocus(state, sessions, 11)
 
   const firstWindow = waitingRoomRows(state, sessions, catalog)
   assert.equal(firstWindow[1]?.id, "launch-machine")
@@ -219,20 +219,18 @@ test("waiting room renders indented sections and only previews the last two acti
   assert.equal(firstWindow[6]?.id, "effort")
   assert.equal(firstWindow[7]?.id, "workspace")
   assert.equal(firstWindow[8]?.id, "worktree")
-  assert.equal(firstWindow[9]?.id, "live-sync")
-  assert.equal(firstWindow[9]?.value, "off (default; all repositories unrestricted)")
-  assert.equal(firstWindow[10]?.id, "collaborators")
-  assert.equal(firstWindow[11]?.id, "slice")
-  assert.equal(firstWindow[11]?.value, "off")
-  assert.equal(firstWindow[12]?.id, "join-header")
-  assert.equal(firstWindow[12]?.indent, 0)
-  assert.equal(firstWindow[12]?.focused, true)
-  assert.equal(firstWindow[12]?.value, "Press Enter")
+  assert.equal(firstWindow[9]?.id, "collaborators")
+  assert.equal(firstWindow[10]?.id, "slice")
+  assert.equal(firstWindow[10]?.value, "off")
+  assert.equal(firstWindow[11]?.id, "join-header")
+  assert.equal(firstWindow[11]?.indent, 0)
+  assert.equal(firstWindow[11]?.focused, true)
+  assert.equal(firstWindow[11]?.value, "Press Enter")
   assert.equal(firstWindow.at(-1)?.id, "theme")
   assert.equal(firstWindow.at(-1)?.indent, 0)
   assert.deepEqual(
     firstWindow.find((row) => row.id === "session-header")?.columns?.map((cell) => cell.trim()),
-    ["Status", "Home", "Sync", "Work", "Next", "Last used", "Created at"],
+    ["Status", "Home", "Work", "Next", "Last used", "Created at"],
   )
   const firstSessionRow = firstWindow.find((row) => row.id === "session:session-5")
   assert.equal(firstSessionRow?.title, "session-5")
@@ -241,7 +239,6 @@ test("waiting room renders indented sections and only previews the last two acti
     [
       "Active",
       "-",
-      "off",
       "-",
       "-",
       waitingRoomTimestampLabel(Date.UTC(2026, 3, 6, 11, 4)),
@@ -331,17 +328,15 @@ test("waiting room places join below start configuration and makes cloud relay l
   assert.equal(rows[6]?.id, "effort")
   assert.equal(rows[7]?.id, "workspace")
   assert.equal(rows[8]?.id, "worktree")
-  assert.equal(rows[9]?.id, "live-sync")
-  assert.equal(rows[9]?.value, "off (default; all repositories unrestricted)")
-  assert.equal(rows[10]?.id, "collaborators")
-  assert.equal(rows[11]?.id, "slice")
-  assert.equal(rows[11]?.value, "off")
-  assert.equal(rows[12]?.id, "join-header")
-  assert.equal(rows[12]?.title, "Join Existing Session")
+  assert.equal(rows[9]?.id, "collaborators")
+  assert.equal(rows[10]?.id, "slice")
+  assert.equal(rows[10]?.value, "off")
+  assert.equal(rows[11]?.id, "join-header")
+  assert.equal(rows[11]?.title, "Join Existing Session")
   assert.equal(rows.at(-1)?.id, "theme")
   assert.equal(rows.at(-1)?.indent, 0)
 
-  state = moveWaitingRoomFocus(state, [], 12)
+  state = moveWaitingRoomFocus(state, [], 11)
   assert.equal(state.focus, "relay")
   const relayRows = waitingRoomRows(state, [], catalog, {
     relay: {
@@ -424,7 +419,7 @@ test("waiting room shows relay kernels as selectable targets", () => {
     }],
   }
 
-  state = moveWaitingRoomFocus(state, [], 14, remote)
+  state = moveWaitingRoomFocus(state, [], 13, remote)
   assert.equal(state.focus, "remote-kernel")
 
   const rows = waitingRoomRows(state, [], catalog, remote)
@@ -466,7 +461,7 @@ test("waiting room makes inactive machines and kernels selectable for deletion",
     }],
   }
 
-  state = moveWaitingRoomFocus(state, [], 13, remote)
+  state = moveWaitingRoomFocus(state, [], 12, remote)
   assert.equal(state.focus, "machine")
   let rows = waitingRoomRows(state, [], catalog, remote)
   const machineRow = rows.find((row) => row.id === "machine:machine-offline")
@@ -500,9 +495,9 @@ test("waiting room keeps session metadata column widths stable across scroll win
   const firstWindow = waitingRoomRows(state, sessions, catalog)
   const scrolledWindowHeader = firstWindow.find((row) => row.id === "session-header")?.columns
   const firstWindowWidths = scrolledWindowHeader?.map((column) => column.length)
-  assert.deepEqual(firstWindowWidths?.slice(0, 5), [12, 4, 4, 4, 4])
-  assert.ok((firstWindowWidths?.[5] ?? 0) >= 20, "activity should use the long status width baseline")
-  assert.ok((firstWindowWidths?.[6] ?? 0) >= 20, "local timestamps may include a longer timezone label")
+  assert.deepEqual(firstWindowWidths?.slice(0, 4), [12, 4, 4, 4])
+  assert.ok((firstWindowWidths?.[4] ?? 0) >= 20, "activity should use the long status width baseline")
+  assert.ok((firstWindowWidths?.[5] ?? 0) >= 20, "local timestamps may include a longer timezone label")
 
   for (let step = 0; step < MAX_VISIBLE_WAITING_ROOM_SESSIONS; step += 1) {
     state = moveWaitingRoomFocus(state, sessions, 1)

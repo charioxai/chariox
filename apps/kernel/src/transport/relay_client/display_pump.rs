@@ -93,7 +93,9 @@ impl PumpState {
     }
     fn admit(&mut self, now: Instant) -> Gate {
         // MP-08/MP-10/MP-11: private fixed-label timings, no peer or payload.
-        self.mark("push_rtt_floor", now.checked_sub(self.rtt_floor()).unwrap_or(now),
+        self.mark(
+            "push_rtt_floor",
+            now.checked_sub(self.rtt_floor()).unwrap_or(now),
         );
         if let Some(&(_, oldest)) = self.sent.front() {
             let age = now.saturating_duration_since(oldest);
@@ -169,7 +171,9 @@ impl PumpState {
                             self.rtt.clear();
                         }
                         self.timed_ack = true;
-                        self.mark("push_ack_rtt", Instant::now().checked_sub(sample).unwrap_or(now),
+                        self.mark(
+                            "push_ack_rtt",
+                            Instant::now().checked_sub(sample).unwrap_or(now),
                         );
                     }
                     self.rtt.push_back((now, sample));
@@ -189,6 +193,7 @@ impl PumpState {
 pub(super) struct DisplayPump {
     state: std::sync::Mutex<PumpState>,
     wake: tokio::sync::Notify,
+    delivery: super::display_delivery::DisplayTask,
 }
 
 impl DisplayPump {
@@ -197,12 +202,20 @@ impl DisplayPump {
     pub(super) fn new(generation: u64, display_id: &str) -> Arc<Self> {
         Arc::new(Self {
             state: std::sync::Mutex::new(PumpState {
-                display: display_id.chars().rev().take(8).collect::<Vec<_>>().into_iter().rev().collect(),
+                display: display_id
+                    .chars()
+                    .rev()
+                    .take(8)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect(),
                 generation,
                 reset: true,
                 ..Default::default()
             }),
             wake: tokio::sync::Notify::new(),
+            delivery: Default::default(),
         })
     }
     fn with<T>(&self, f: impl FnOnce(&mut PumpState) -> T) -> T {
@@ -235,6 +248,16 @@ impl DisplayPump {
     pub(super) fn stop(&self) {
         self.with(|state| state.stopped = true);
         self.wake.notify_one();
+        self.delivery.stop();
+    }
+    pub(super) fn start_delivery(
+        &self,
+        delivery: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        self.delivery.start(delivery);
+        if self.with(|state| state.stopped) {
+            self.delivery.stop();
+        }
     }
 }
 

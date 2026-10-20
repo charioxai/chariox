@@ -495,20 +495,21 @@ async fn queued_peer_request_charges_state_lock_wait_to_the_decision_expiry() {
         drop(guard);
     });
     held_rx.await.expect("lock holder should start");
-    let _waiter = super::super::peer_client::enqueue_peer_request_to_known_kernel_via_relay_authorized(
-        &config,
-        &state,
-        ClientTarget {
-            daemon_id: Some("daemon-home".to_string()),
-            daemon_alias: None,
-        },
-        &target_public_key,
-        request,
-        Duration::from_secs(60),
-        || Ok(()),
-    )
-    .await
-    .expect("request should queue");
+    let _waiter =
+        super::super::peer_client::enqueue_peer_request_to_known_kernel_via_relay_authorized(
+            &config,
+            &state,
+            ClientTarget {
+                daemon_id: Some("daemon-home".to_string()),
+                daemon_alias: None,
+            },
+            &target_public_key,
+            request,
+            Duration::from_secs(60),
+            || Ok(()),
+        )
+        .await
+        .expect("request should queue");
     holder.await.expect("lock holder should finish");
     let envelope = tokio::select! {
         Some(envelope) = priority_rx.recv() => envelope,

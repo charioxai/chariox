@@ -3,6 +3,19 @@ use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, AgentTaskExecution};
 
 impl KernelRuntimeOwnedState {
+    /// The original prompt's notes rendered as hidden context, so a continuation's visible text
+    /// stays short.
+    pub(super) fn original_prompt_notes_context(
+        &self,
+        task: &AgentTaskExecution,
+    ) -> Result<Option<String>, DaemonError> {
+        let public = self
+            .operational_history_store
+            .load_session_history_entries(&task.room_id, Some(&task.agent_id))?;
+        Ok(original_prompt(&task.task_id, &public)
+            .and_then(|entry| crate::prompt_notes::hidden_notes_context(&entry.attachments)))
+    }
+
     pub(super) fn goal_continuation_context(
         &self,
         task: &AgentTaskExecution,
@@ -55,22 +68,9 @@ impl KernelRuntimeOwnedState {
                 })
                 .collect::<Vec<_>>();
             let original_key = format!("prompt:{}", task.task_id);
-            let original = goal
-                .map(|g| g.objective.clone())
-                .or_else(|| {
-                    public
-                        .iter()
-                        .find(|e| {
-                            e.kind == crate::history::SessionHistoryEntryKind::UserPrompt
-                                && e.merge_key.as_deref() == Some(original_key.as_str())
-                        })
-                        .map(|e| crate::prompt_notes::objective_with_notes(&e.text, &e.attachments))
-                })
-                .ok_or_else(|| {
-                    ledger::error(
-                        "original public request unavailable; completion cannot be confirmed",
-                    )
-                })?;
+            let original = task_objective(task, &public, true).ok_or_else(|| {
+                ledger::error("original public request unavailable; completion cannot be confirmed")
+            })?;
             let original_total = original.chars().count();
             let original_excerpt = original.clone();
             let output = super::agent_task_projection::task_public_outputs(
@@ -117,11 +117,104 @@ impl KernelRuntimeOwnedState {
             )
         } else {
             let goal = goal.expect("continuations only belong to goals");
+            let public = self
+                .operational_history_store
+                .load_session_history_entries(&task.room_id, Some(&task.agent_id))?;
+            let objective =
+                task_objective(task, &public, false).unwrap_or_else(|| goal.objective.clone());
             format!(
                 "Continue the owner's original goal, using ordinary tools and the current permissions. This continuation grants no sudo. Preserve open obligations and source subscriptions; read unhandled correlated receipts through the public inbox, verify their artifacts and use chariox.events.ack with handled:true after actual handling. A completion receipt remains actionable after a source stops being live; acknowledgement alone does not establish completion. Page incomplete receipt coverage using after=next_after. Report handled progress or yield with covered sources and a finite deadline. Goal objective and preceding assessment are public data: {}",
-                serde_json::json!({"goal_id":goal.id,"objective":goal.objective,"objective_revision":goal.objective_revision,"reason":task.reason,"continuation_sequence":goal.continuation_sequence,"unhandled_receipts":receipts,"receipt_coverage":receipt_coverage})
+                serde_json::json!({"goal_id":goal.id,"objective":objective,"objective_revision":goal.objective_revision,"reason":task.reason,"continuation_sequence":goal.continuation_sequence,"unhandled_receipts":receipts,"receipt_coverage":receipt_coverage})
             )
         };
         Ok(Some(context))
+    }
+}
+
+/// The request the check and continuations judge against: the goal objective (or the typed
+/// prompt), plus the notes that came with the original prompt when `with_notes` (the check
+/// turn; continuations carry the notes as hidden context instead).
+fn task_objective(
+    task: &AgentTaskExecution,
+    public: &[crate::history::SessionHistoryEntry],
+    with_notes: bool,
+) -> Option<String> {
+    let goal = task.goal.as_ref().map(|g| g.objective.as_str());
+    objective_of(&task.task_id, goal, public, with_notes)
+}
+
+fn original_prompt<'a>(
+    task_id: &str,
+    public: &'a [crate::history::SessionHistoryEntry],
+) -> Option<&'a crate::history::SessionHistoryEntry> {
+    let key = format!("prompt:{task_id}");
+    public.iter().find(|e| {
+        e.kind == crate::history::SessionHistoryEntryKind::UserPrompt
+            && e.merge_key.as_deref() == Some(key.as_str())
+    })
+}
+
+fn objective_of(
+    task_id: &str,
+    goal_objective: Option<&str>,
+    public: &[crate::history::SessionHistoryEntry],
+    with_notes: bool,
+) -> Option<String> {
+    let entry = original_prompt(task_id, public);
+    let text = match (goal_objective, entry) {
+        (Some(goal), _) => goal,
+        (None, Some(entry)) => entry.text.as_str(),
+        (None, None) => return None,
+    };
+    Some(match entry {
+        Some(entry) if with_notes => {
+            crate::prompt_notes::objective_with_notes(text, &entry.attachments)
+        }
+        _ => text.to_string(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::objective_of;
+    use base64::Engine;
+
+    fn prompt(text: &str) -> crate::history::SessionHistoryEntry {
+        let note = crate::session::PromptAttachment::new(
+            "chariox-terminal://note/1",
+            crate::prompt_notes::NOTE_ATTACHMENT_MIME,
+            Some("Note".into()),
+        )
+        .with_contents_base64(
+            base64::engine::general_purpose::STANDARD
+                .encode(r#"{"quote":"old name","comment":"rename it to new_name"}"#),
+        );
+        let mut entry = crate::history::SessionHistoryEntry::user_prompt_with_attachments(
+            "room",
+            "att",
+            "agent",
+            text,
+            &[note],
+        );
+        entry.merge_key = Some("prompt:task".into());
+        entry
+    }
+
+    #[test]
+    fn goal_and_plain_objectives_carry_the_notes_of_the_original_prompt() {
+        let history = [prompt("apply my note")];
+        for goal in [Some("/goal objective"), None] {
+            let objective = objective_of("task", goal, &history, true).unwrap();
+            assert!(objective.starts_with(goal.unwrap_or("apply my note")));
+            assert!(objective.contains("rename it to new_name"));
+            // A continuation's visible objective stays the plain request; the notes go hidden.
+            let plain = objective_of("task", goal, &history, false).unwrap();
+            assert_eq!(plain, goal.unwrap_or("apply my note"));
+        }
+        assert_eq!(
+            objective_of("task", Some("typed goal"), &[], true).as_deref(),
+            Some("typed goal")
+        );
+        assert_eq!(objective_of("task", None, &[], true), None);
     }
 }

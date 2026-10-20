@@ -1,6 +1,7 @@
 import type {
   AgentTaskExecution,
   PasskeyPrompt,
+  PasskeyPromptClosure,
   ProviderAccountSummary,
   SliceRecord,
   WaitingRoomPublicSessionSummary,
@@ -9,6 +10,7 @@ import type {
 } from "./kernel-types.js"
 
 export type KernelEvent =
+  | { event: "client_catalog_changed"; revision: number }
   | { event: "kernel_browser_frame"; subscription_id: string; frame: Record<string, unknown> }
   | {
     event: "terminal_output"
@@ -163,5 +165,8 @@ export type KernelEvent =
     /** Protocol 403: every passkey prompt pending for this terminal's user;
      * sent when a subscription starts and whenever the set changes. */
     event: "passkey_prompts_changed"
+    /** Protocol 538: authoritative lifecycle metadata. */
+    kernel_now_ms?: number
+    closed?: PasskeyPromptClosure[]
     prompts: PasskeyPrompt[]
   }

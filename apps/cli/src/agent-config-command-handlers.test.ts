@@ -162,7 +162,7 @@ test("agent account command loads its scoped catalog and applies a compatible pr
     model: "codex/gpt-5.6-luna",
     effort: "low",
   })
-  assert.equal(flashedMessage, "agent-1 account: Validation · signed in")
+  assert.equal(flashedMessage, "agent-1 account: Validation")
 })
 
 test("MP-08 MP-10 MP-11 reselecting the same account preserves its explicit native model", async () => {
@@ -297,7 +297,7 @@ test("agent account display resolves the virtual default pointer to its public a
     } satisfies ProviderAccountProfile],
   }, ["account"], "account")
 
-  assert.equal(flashedMessage, "agent-1 account: codex-1 · signed in")
+  assert.equal(flashedMessage, "agent-1 account: codex-1")
 })
 
 function deps(currentAgent: AgentInstance) {

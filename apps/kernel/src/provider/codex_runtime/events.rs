@@ -11,10 +11,10 @@ use crate::session::unix_epoch_ms;
 use crate::terminal::TerminalOutputKind;
 
 use super::transcript::{
-    append_text_delta, append_tool_output_delta, append_tool_progress, codex_exec_command_item,
-    decode_codex_output_delta_chunk, normalize_codex_item_type, sync_completed_text_item,
-    sync_tool_item_with_manifest, text_from_content_value, CodexTextTranscriptState,
-    CodexToolTranscriptState,
+    append_legacy_tool_output_delta, append_text_delta, append_tool_output_delta,
+    append_tool_progress, codex_exec_command_item, decode_codex_output_delta_chunk,
+    normalize_codex_item_type, sync_completed_text_item, sync_tool_item_with_manifest,
+    text_from_content_value, CodexTextTranscriptState, CodexToolTranscriptState,
 };
 use super::turn::{
     note_assistant_item_completed, note_tool_item_completed, note_tool_item_started,
@@ -213,7 +213,7 @@ pub(super) fn apply_notification_with_manifest(
             turn_tracker.note_activity();
             let delta = decode_codex_output_delta_chunk(&chunk);
             if let Some(chunk) =
-                append_tool_output_delta(tool_items, &call_id, "commandExecution", &delta)
+                append_legacy_tool_output_delta(tool_items, &call_id, "commandExecution", &delta)
             {
                 chunks.push(chunk);
             }

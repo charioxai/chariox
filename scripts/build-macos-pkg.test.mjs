@@ -21,6 +21,7 @@ const UNIVERSAL = Buffer.from('cafebabe00000002' + '0100000c' + '00'.repeat(16) 
 const INSTALLER_TOOL = 'chariox-app-runtime-install';
 const SUPPORT = 'Library/Application Support/Chariox';
 const CONTEXT = 'share/chariox/slice-build-context';
+const IMAGE = 'share/chariox/slice-image';
 const PROVISIONER = 'apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh';
 // A slice build context in the release bundle's layout: the provisioner, a dot file and plain sources.
 const CONTEXT_FILES = { [PROVISIONER]: '#!/bin/bash\n', 'apps/kernel/.charioxignore': 'target\n',
@@ -65,6 +66,9 @@ async function bundle(t) {
     // Group-writable sources still install as root's 0644, and the provisioner as 0755.
     await chmod(join(dir, CONTEXT, path), path === PROVISIONER ? 0o775 : 0o664);
   }
+  await mkdir(join(dir, IMAGE));
+  await writeFile(join(dir, IMAGE, 'chariox-slice-linux.tar.gz'), 'docker save bytes');
+  await writeFile(join(dir, IMAGE, 'slice-image.json'), '{}');
   await writeFile(join(dir, 'SHA256SUMS'), 'not packaged\n');
   return { root, dir, digest: sha256(inventory), output: join(root, 'Chariox-1.2.3.pkg') };
 }
@@ -118,13 +122,16 @@ test('the bundle check refuses a different runtime, missing or stray binaries, l
   // A release kernel runs local Docker slices only from the bundle's slice build context.
   const noContext = /the bundle has no executable share\/chariox\/slice-build-context\/apps\/kernel\/slice-linux-docker\/provision-linux-docker-slice\.sh/u;
   await refused(dir => rm(join(dir, 'share'), { recursive: true }), noContext);
+  // The bundle's signed linux/arm64 slice image installs beside it: both of its files, nothing else.
+  await refused(dir => rm(join(dir, IMAGE, 'chariox-slice-linux.tar.gz')), /slice-image\/ must hold only chariox-slice-linux\.tar\.gz and slice-image\.json/u);
+  await refused(dir => writeFile(join(dir, IMAGE, 'extra'), ''), /slice-image\/ must hold only/u);
   await refused(dir => writeFile(join(dir, 'bin/chariox-kernel'), Buffer.concat([ARM64, Buffer.from('an older or debug kernel')])),
     /bin\/chariox-kernel does not look for share\/chariox\/slice-build-context beside its bin\//u);
   await refused(dir => writeFile(join(dir, 'bin/chariox-kernel'), Buffer.concat([ARM64, Buffer.from(`old-kernel\0${CONTEXT}\0`)])),
     /cannot use provisioned root-owned read-only Docker admission locks/u);
   await refused(dir => rm(join(dir, CONTEXT, PROVISIONER)), noContext);
   await refused(dir => chmod(join(dir, CONTEXT, PROVISIONER), 0o644), noContext);
-  await refused(dir => mkdir(join(dir, 'share/man')), /share\/ must hold only chariox\/slice-build-context/u);
+  await refused(dir => mkdir(join(dir, 'share/man')), /share\/ must hold only chariox\/slice-build-context and chariox\/slice-image/u);
   await refused(dir => symlink('/etc/hosts', join(dir, CONTEXT, 'hosts')), /slice-build-context\/hosts is a link or special file/u);
   for (const name of ['a b.rs', "it's.rs", 'line\nbreak.rs', '..hidden'])
     await refused(dir => writeFile(join(dir, CONTEXT, 'apps', name), ''), /a path the package cannot list/u);

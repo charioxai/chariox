@@ -56,7 +56,12 @@ mod tests {
         .unwrap();
         assert!(permit.is_some());
         let kept = state
-            .grant_agent_app_for_tool(agent.id(), ExtensionGrant::app("installed"), "alice", permit)
+            .grant_agent_app_for_tool(
+                agent.id(),
+                ExtensionGrant::app("installed"),
+                "alice",
+                permit,
+            )
             .await
             .unwrap();
         assert_eq!(kept.extension_grants(), bound.extension_grants());

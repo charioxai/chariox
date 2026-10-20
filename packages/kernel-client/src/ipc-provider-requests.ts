@@ -100,11 +100,12 @@ export function cancelProviderLoginRequest(loginId: string) {
   return { CancelProviderLogin: { login_id: loginId } }
 }
 
-export function logoutProviderRequest(provider: string, accountProfile = "default") {
+export function logoutProviderRequest(provider: string, accountProfile = "default", endEverywhere = false) {
   return {
     LogoutProvider: {
       provider,
       account_profile: accountProfile,
+      ...(endEverywhere ? { end_everywhere: true } : {}),
     },
   }
 }
@@ -255,4 +256,17 @@ function normalizedProviderModel(provider: string, model: string) {
     }
   }
   return model
+}
+
+// MP-08 / MP-10 / MP-11: existing provider selection, small reconciliation reply.
+export const clientCatalogRevisionsMinimumProtocolVersion = 518
+export type ClientCatalogRevisions = { provider_accounts: string; provider_catalog: string; provider_commands: string; terminal_commands: string }
+export function getClientCatalogRevisionsRequest(options: Parameters<typeof getProviderCatalogRequest>[0] = {}) {
+  return { GetClientCatalogRevisions: getProviderCatalogRequest(options).GetProviderCatalog }
+}
+
+// MP-08 / MP-10: shared conditional inventories, including provider availability.
+export const clientCatalogSnapshotMinimumProtocolVersion = 534
+export function getClientCatalogSnapshotRequest(options: Parameters<typeof getProviderCatalogRequest>[0] = {}, known: ClientCatalogRevisions | null = null) {
+  return { GetClientCatalogSnapshot: { scope: getProviderCatalogRequest(options).GetProviderCatalog, known } }
 }

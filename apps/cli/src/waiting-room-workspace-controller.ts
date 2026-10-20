@@ -171,6 +171,11 @@ export function createWaitingRoomWorkspaceController(deps: {
       deps.resetSelection()
     }
     remember()
+    const repositoryState = inventory.launchTarget?.workspaceId === workspace
+      ? inventory.launchTarget.repositoryState : inventory.sessions.find(session => session.workspace_id === workspace)?.repository_state
+    if (repositoryState === "not-repository" || repositoryState === "unborn") {
+      setWaitingRoomKernelWorktrees(workspace, deps.getWorktree(), [], repositoryState === "not-repository" ? NO_REPOSITORY_WORKTREE_HINT : UNBORN_WORKTREE_HINT)
+    }
     render()
     await refreshWorkspace(workspace, send ? { send } : undefined)
   }

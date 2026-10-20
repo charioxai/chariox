@@ -7,6 +7,24 @@ use crate::error::DaemonError;
 
 const EVENT_KIND: &str = "remote_lease.prompt_admission_receipt";
 
+const MAX_REJECTION_REASON_CHARS: usize = 200;
+
+/// The one-line, bounded sentence the home shows when this worker refused a prompt.
+pub(crate) fn rejection_reason(error: &DaemonError) -> String {
+    let message = match error {
+        DaemonError::LocalTransport { message, .. } => message.clone(),
+        other => other.to_string(),
+    };
+    message
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(MAX_REJECTION_REASON_CHARS)
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WorkerPromptReceiptPhase {
@@ -22,6 +40,8 @@ pub(crate) struct WorkerPromptReceipt {
     pub(crate) worker_provider_run_id: Option<String>,
     pub(crate) execution_lease_id: String,
     pub(crate) phase: WorkerPromptReceiptPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) rejection_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,9 +244,35 @@ mod tests {
                 worker_provider_run_id: None,
                 execution_lease_id: "lease-1".to_string(),
                 phase,
+                rejection_reason: None,
             },
             caller: None,
         }
+    }
+
+    #[test]
+    fn rejection_reason_is_one_bounded_line() {
+        let error = DaemonError::LocalTransport {
+            operation: "submit prompt",
+            message: format!("first line {}\nsecond line", "x".repeat(300)),
+        };
+        let reason = rejection_reason(&error);
+        assert_eq!(reason.chars().count(), MAX_REJECTION_REASON_CHARS);
+        assert!(reason.starts_with("first line "));
+        assert!(!reason.contains("second"));
+    }
+
+    #[test]
+    fn rejection_reason_is_optional_on_stored_receipts() {
+        let mut rejected = receipt(WorkerPromptReceiptPhase::Rejected);
+        let old = serde_json::to_value(&rejected).unwrap();
+        assert!(old["receipt"].get("rejection_reason").is_none());
+        let restored: WorkerPromptReceiptRecord = serde_json::from_value(old).unwrap();
+        assert_eq!(restored.receipt.rejection_reason, None);
+        rejected.receipt.rejection_reason = Some("signed out".to_string());
+        let round_trip: WorkerPromptReceiptRecord =
+            serde_json::from_value(serde_json::to_value(&rejected).unwrap()).unwrap();
+        assert_eq!(round_trip, rejected);
     }
 
     #[test]

@@ -165,6 +165,7 @@ class WarmChannelTests(unittest.TestCase):
                 module.main({'op':'input','agent_input':True,'processes':[],
                              'input':{'kind':'text','text':'public'}},connection)
             self.assertIsNotNone(text.call_args.kwargs['before_press'])
+            self.assertIs(text.call_args.kwargs['key_guard'],destination.key_destinations)
             self.assertEqual(text.call_args.kwargs.get('pace_seconds',0.04),0.04)
             self.assertNotIn('connection',text.call_args.kwargs)
 

@@ -221,8 +221,9 @@ impl KernelRuntimeState {
                         error,
                     )
                 })?;
+            let mut sequence = None;
             if let Some(active_prompt_id) = dispatch.target_active_prompt_id.as_deref() {
-                if let Err(error) = self.owned.append_steering_prompt_history(
+                match self.owned.append_steering_prompt_history(
                     &dispatch.session_id,
                     &dispatch.provider_run_id,
                     active_prompt_id,
@@ -232,13 +233,15 @@ impl KernelRuntimeState {
                     &dispatch.prompt,
                     &dispatch.attachments,
                 ) {
-                    tracing::warn!(
-                        session_id = %dispatch.session_id,
-                        prompt_id = %dispatch.prompt_id,
-                        error = %error,
-                        "delivered agent message could not be recorded in prompt history"
-                    );
-                    self.owned.record_notice(
+                    Ok(appended) => sequence = Some(appended),
+                    Err(error) => {
+                        tracing::warn!(
+                            session_id = %dispatch.session_id,
+                            prompt_id = %dispatch.prompt_id,
+                            error = %error,
+                            "delivered agent message could not be recorded in prompt history"
+                        );
+                        self.owned.record_notice(
                         &dispatch.session_id,
                         Some(&dispatch.provider_run_id),
                         self.owned
@@ -246,6 +249,7 @@ impl KernelRuntimeState {
                             .list_session_attachment_ids(&dispatch.session_id),
                         "Agent message reached the provider, but its prompt history could not be recorded.",
                     );
+                    }
                 }
             }
             self.owned.echo_steering_prompt_to_other_attachments(
@@ -258,6 +262,7 @@ impl KernelRuntimeState {
                 &dispatch.prompt,
                 &dispatch.attachments,
                 dispatch.prompt_origin,
+                sequence,
             );
             let result = crate::transport::runtime_tools::RuntimeToolResult {
                 ok: true,

@@ -81,7 +81,7 @@ async fn delivered_without_settlement(adapter: &str, provider: &str) {
         // It has a bounded lifetime even on test failure and never signals a process.
         std::fs::write(
             &script,
-            r#"import os, select, sys, time
+            r#"import json, os, select, sys, time
 deadline = time.monotonic() + 20
 received = b''
 while time.monotonic() < deadline:
@@ -95,6 +95,13 @@ while time.monotonic() < deadline:
         capture.write(received)
     if sys.argv[2] == 'claude-headless' and b'NOTIFICATION_INJECT_PROOF' in received:
         break
+    # Native Claude proves a PTY write only through its UserPromptSubmit hook.
+    if len(sys.argv) > 3 and received.endswith(b'\n') and b'NOTIFICATION_INJECT_PROOF' in received:
+        with open(sys.argv[3], 'a') as events:
+            events.write(json.dumps({
+                'hook_event_name': 'UserPromptSubmit',
+                'prompt': received.decode(errors='replace').strip(),
+            }) + '\n')
 "#,
         )
         .unwrap();
@@ -105,11 +112,16 @@ while time.monotonic() < deadline:
             } else {
                 ProviderClientInterface::Chariox
             });
+        let events = root.path().join("hook-events.jsonl");
         let mut env = std::collections::BTreeMap::new();
         if adapter == "claude" {
             env.insert(
                 "CHARIOX_CLAUDE_NATIVE_CONTEXT".into(),
                 root.path().join("hidden-context.txt").display().to_string(),
+            );
+            env.insert(
+                "CHARIOX_CLAUDE_NATIVE_EVENTS".into(),
+                events.display().to_string(),
             );
         }
         let mut run = RuntimeProviderRun::new(
@@ -124,7 +136,10 @@ while time.monotonic() < deadline:
                     script.display().to_string(),
                     capture.display().to_string(),
                     provider.into(),
-                ],
+                ]
+                .into_iter()
+                .chain((adapter == "claude").then(|| events.display().to_string()))
+                .collect(),
                 pty_env: env,
                 pty_env_remove: vec![],
                 working_directory: Some(root.path().to_path_buf()),

@@ -117,7 +117,7 @@ mod provider_reload;
 mod room_computer_readiness;
 #[cfg(test)]
 mod room_computer_readiness_tests;
-use provider_output_deadline_store::ProviderOutputDeadlineStore;
+pub(crate) use provider_output_deadline_store::ProviderOutputDeadlineStore;
 pub(crate) use provider_reload::*;
 #[cfg(all(
     test,
@@ -179,6 +179,7 @@ pub(crate) struct KernelRuntimeState {
     queue_promotion_exit_probe: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
+    provider_history_appends: provider_history_runtime::ProviderHistoryAppends,
     leased_agent_operations: leased_agent_operations::LeasedAgentOperations,
     detached_workflow_provider_launches: Arc<std::sync::Mutex<BTreeSet<String>>>,
     owned: KernelRuntimeOwnedState,
@@ -229,6 +230,7 @@ struct KernelRuntimeOwnedState {
     browser_controller_processes:
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
+    human_control_task_waits: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
     room_computer_revoked: Arc<std::sync::Mutex<BTreeSet<String>>>,
     room_display_leases: room_shared_display::RoomDisplayLeases,
     room_secret_observations: room_secret_observation::RoomSecretObservations,
@@ -295,6 +297,7 @@ struct KernelRuntimeOwnedState {
     native_tui_turns: std::sync::Arc<
         std::sync::Mutex<std::collections::BTreeMap<String, crate::session::PromptQueueItem>>,
     >,
+    private_assessment_dispatch: agent_assessment_result::PrivateAssessmentDispatch,
     metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
     metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
     connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool,
@@ -470,8 +473,10 @@ pub(in crate::runtime) use provider_login_state::{
     ProviderLoginProcessBackend, ProviderLoginProcessRecord, ProviderLoginProcessStore,
     PROVIDER_LOGIN_TIMEOUT_MS,
 };
+mod provider_history_runtime;
 mod provider_mcp_continuation_runtime;
 mod provider_mcp_task_continuation_runtime;
+mod provider_output_pump_runtime;
 mod provider_output_runtime;
 mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;
@@ -517,6 +522,7 @@ mod session_lookup_state;
 mod slice_development_runtime_state;
 mod slice_project_source;
 mod slice_runtime_state;
+mod vault_unlock_requests;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
 mod kernel_browser_command_error;
 mod kernel_browser_mirror;
@@ -533,6 +539,7 @@ mod leased_computer_runtime_tests;
 mod notes_runtime;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
+mod terminal_subscription_runtime;
 mod tool_dispatch;
 mod transport_runtime_state;
 mod user_domain_access_runtime;
@@ -870,6 +877,27 @@ impl KernelRuntimeState {
         }));
         let room_secret_observations =
             room_secret_observations.with_public_history(operational_history_store.clone());
+        let private_assessment_dispatch = {
+            let started = Instant::now();
+            loop {
+                if let Ok(mut app) = app.try_lock() {
+                    break app
+                        .private_assessment_dispatch
+                        .get_or_insert_with(|| {
+                            PrivateAssessmentDispatch::new(
+                                config_projection.clone(),
+                                durable_state_store.clone(),
+                                room_secret_observations.clone(),
+                            )
+                        })
+                        .clone();
+                }
+                if started.elapsed() >= Duration::from_secs(5) {
+                    panic!("KernelRuntimeState could not bind private assessment dispatch");
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
         let runtime = Self {
             external_command_authority: None,
             room_provider_origin: None,
@@ -883,6 +911,7 @@ impl KernelRuntimeState {
             queue_promotion_exit_probe: None,
             app,
             provider_runtime_lanes,
+            provider_history_appends: Default::default(),
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             owned: KernelRuntimeOwnedState {
@@ -927,6 +956,7 @@ impl KernelRuntimeState {
                 browser_import_admission:
                     crate::runtime::browser_import_admission::BrowserImportAdmission::default(),
                 environment_execution_gates: Default::default(),
+                human_control_task_waits: Default::default(),
                 room_computer_revoked,
                 room_secret_observations,
                 room_display_leases: Default::default(),
@@ -987,7 +1017,8 @@ impl KernelRuntimeState {
                 pending_agent_context_handoffs,
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
                 private_assessment_results: Default::default(),
-                private_work_results: Default::default(),
+                private_work_results: private_assessment_dispatch.work_results.clone(),
+                private_assessment_dispatch,
                 native_tui_turns: Default::default(),
                 metaagent_events,
                 metaagent_trace_subscriptions,
@@ -1218,22 +1249,22 @@ impl KernelRuntimeState {
 }
 
 #[derive(Debug, Default)]
-struct RuntimeChangeSignal {
+pub(crate) struct RuntimeChangeSignal {
     sequence: AtomicU64,
     notify: Notify,
 }
 
 impl RuntimeChangeSignal {
-    fn sequence(&self) -> u64 {
+    pub(crate) fn sequence(&self) -> u64 {
         self.sequence.load(Ordering::Acquire)
     }
 
-    fn record_change(&self) {
+    pub(crate) fn record_change(&self) {
         self.sequence.fetch_add(1, Ordering::AcqRel);
         self.notify.notify_waiters();
     }
 
-    async fn wait_for_change_after(&self, sequence: u64) {
+    pub(crate) async fn wait_for_change_after(&self, sequence: u64) {
         if self.sequence() != sequence {
             return;
         }
@@ -1322,6 +1353,7 @@ mod room_agent_admission;
 
 mod agent_assessment_result;
 mod agent_delegation_runtime;
+pub(crate) use agent_assessment_result::PrivateAssessmentDispatch;
 mod agent_goal_context;
 mod agent_goal_migration;
 mod agent_goal_runtime;
@@ -1334,6 +1366,7 @@ mod agent_process_group;
 mod agent_process_output;
 mod agent_process_watch;
 mod agent_task_cancellation;
+mod agent_task_human_control_wait;
 mod agent_task_owner_interactions;
 mod agent_task_owner_resolution;
 mod agent_task_projection;

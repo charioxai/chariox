@@ -37,7 +37,7 @@ test("every brokered Docker start and unpause requires allocator admission befor
     read("./slice-disk-quota-admission.mjs"),
   ])
   assert.match(source, /runWithSliceDiskQuotaAdmission,[\s\S]*from "\.\/slice-disk-quota-admission\.mjs"/)
-  const execute = source.slice(source.indexOf("async function execute(request)"), source.indexOf("function errorResponse"))
+  const execute = source.slice(source.indexOf("async function execute(request"), source.indexOf("function errorResponse"))
   const runPrepared = execute.indexOf("const runPrepared = async (admission) =>")
   const prepare = execute.indexOf("prepared = request.kind === \"docker\" ? prepareDocker(request.args)", runPrepared)
   const spawn = execute.indexOf("return spawnBounded(command, args", prepare)
@@ -78,7 +78,7 @@ test("quota reservations survive failed destroy and are released only after cont
     read("./slice-disk-quota-allocator.mjs"),
     read("./slice-disk-quota-xfs-backend.mjs"),
   ])
-  const execute = broker.slice(broker.indexOf("async function execute(request)"), broker.indexOf("function errorResponse"))
+  const execute = broker.slice(broker.indexOf("async function execute(request"), broker.indexOf("function errorResponse"))
   const destroy = execute.slice(execute.indexOf('request.kind === "provisioner" && request.action === "destroy"'))
   const removalSuccess = destroy.indexOf("request.action === \"destroy\" && result.status === 0")
   const release = destroy.indexOf('operation: "release"')

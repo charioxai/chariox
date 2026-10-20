@@ -17,6 +17,7 @@ use crate::registry::{
     PendingRequestKind, RelayRegistry, RelaySender,
 };
 
+mod client_connect;
 mod support;
 #[cfg(test)]
 mod tests;
@@ -109,6 +110,7 @@ pub(crate) async fn handle_connection(
     stream.set_nodelay(true)?;
     let mut chunks = false;
     let mut binary_events = false;
+    let mut initial_resume_negotiated = false;
     let handshake = accept_hdr_async(
         stream,
         |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
@@ -132,21 +134,31 @@ pub(crate) async fn handle_connection(
                     ))
                     .unwrap());
             }
-            let protocol_offered = request
+            let protocols = request
                 .headers()
                 .get("sec-websocket-protocol")
                 .and_then(|value| value.to_str().ok())
-                .is_some_and(|protocols| {
-                    protocols
-                        .split(',')
-                        .any(|p| p.trim() == crate::binary_event::CAPABILITY)
-                });
+                .unwrap_or("");
+            let protocol_offered = protocols
+                .split(',')
+                .any(|p| p.trim() == crate::binary_event::CAPABILITY);
+            initial_resume_negotiated = protocols
+                .split(',')
+                .any(|p| p.trim() == crate::frame_transport::DISPLAY_RESUME_CONNECT_CAPABILITY);
             binary_events = protocol_offered
+                || initial_resume_negotiated
                 || request
                     .headers()
                     .get(crate::binary_event::VERSION_HEADER)
                     .is_some_and(|version| version == "96");
-            if protocol_offered {
+            if initial_resume_negotiated {
+                response.headers_mut().insert(
+                    "sec-websocket-protocol",
+                    crate::frame_transport::DISPLAY_RESUME_CONNECT_CAPABILITY
+                        .parse()
+                        .unwrap(),
+                );
+            } else if protocol_offered {
                 response.headers_mut().insert(
                     "sec-websocket-protocol",
                     crate::binary_event::CAPABILITY.parse().unwrap(),
@@ -433,99 +445,12 @@ pub(crate) async fn handle_connection(
                                 guard.daemons.insert(current_daemon_key, registration);
                             }
                         }
-                        RelayEnvelope::ClientConnect { auth_token, target } => {
-                            let identity = verify_relay_token(
-                                &auth_verifier,
-                                &auth_token,
-                                RelayAction::ClientConnect,
-                                target
-                                    .daemon_id
-                                    .as_deref()
-                                    .or(target.daemon_alias.as_deref()),
-                            )?;
-                            if verified_identity.as_ref().is_some_and(|previous| {
-                                !super::client_renewal::retains_client_authority(previous, &identity)
-                            }) {
-                                send_close(&outgoing_tx, "relay authorization renewal changed identity or reduced permissions".into());
-                                break;
-                            }
-                            auth_expiry_deadline = relay_auth_expiry_deadline(
-                                &auth_verifier,
-                                identity.expires_at_ms,
-                            );
-                            let allowed_actions = identity.allowed_actions.clone();
-                            let allowed_targets = identity.allowed_targets.clone();
-                            verified_identity = Some(identity.clone());
-                            let Some(daemon_key) =
-                                resolve_target_daemon_key(
-                                    &registry,
-                                    &auth_verifier,
-                                    &identity.realm_id,
-                                    &target,
-                                )
-                                .await
-                            else {
-                                log_target_not_connected(
-                                    "client_connect",
-                                    &registry,
-                                    peer_addr,
-                                    &identity.realm_id,
-                                    &target,
-                                )
-                                .await;
-                                send_close(
-                                    &outgoing_tx,
-                                    "target daemon is not connected to relay".to_string(),
-                                );
-                                break;
-                            };
-                            let existing_client_key = {
-                                let guard = registry.read().await;
-                                guard
-                                    .peers
-                                    .get(&peer_addr)
-                                    .filter(|peer| peer.role == RelayConnectionRole::Client)
-                                    .and_then(|peer| peer.client_daemon_key.clone())
-                            };
-                            if existing_client_key
-                                .as_ref()
-                                .is_some_and(|existing| existing != &daemon_key)
-                            {
-                                send_close(
-                                    &outgoing_tx,
-                                    "client connection already bound to target".to_string(),
-                                );
-                                break;
-                            }
-                            let daemon_public_key = {
-                                let guard = registry.read().await;
-                                guard
-                                    .daemons
-                                    .get(&daemon_key)
-                                    .map(|registration| registration.public_key.clone())
-                            };
-                            let mut guard = registry.write().await;
-                            guard.peers.insert(
-                                peer_addr,
-                                PeerHandle {
-                                    sender: outgoing_tx.clone(),
-                                    role: RelayConnectionRole::Client,
-                                    realm_id: Some(identity.realm_id.clone()),
-                                    identity: Some(identity.into()),
-                                    allowed_actions,
-                                    allowed_targets,
-                                    daemon_registration: None,
-                                    client_daemon_key: Some(daemon_key.clone()),
-                                },
-                            );
-                            routes.set_client_sender(peer_addr, outgoing_tx.clone());
-                            send_envelope(
-                                &outgoing_tx,
-                                &RelayEnvelope::ClientConnected {
-                                    target,
-                                    daemon_public_key: daemon_public_key.unwrap_or_default(),
-                                },
-                            )?;
+                        envelope @ (RelayEnvelope::ClientConnect { .. } | RelayEnvelope::ClientConnectDisplayResume { .. }) => {
+                            if !client_connect::admit(envelope,client_connect::ClientConnectContext {
+                                registry:&registry,routes:&routes,auth_verifier:&auth_verifier,peer_addr,
+                                outgoing_tx:&outgoing_tx,relay_request_counter:&relay_request_counter,
+                                verified_identity:&mut verified_identity,auth_expiry_deadline:&mut auth_expiry_deadline,initial_resume_negotiated,
+                            }).await? { break; }
                         }
                         RelayEnvelope::ClientMetadataRequest {
                             request_id,
@@ -1100,7 +1025,10 @@ pub(crate) async fn handle_connection(
     )
     .await;
     if connection_result.is_err()
-        || !matches!(end_reason, "peer_closed" | "peer_stream_ended" | "message_handling")
+        || !matches!(
+            end_reason,
+            "peer_closed" | "peer_stream_ended" | "message_handling"
+        )
         || registered_daemon_key.is_some()
         || !disconnect_errors.is_empty()
         || !disconnect_peer_errors.is_empty()

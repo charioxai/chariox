@@ -35,7 +35,7 @@ fn exchange(
         reader: BufReader::new(reader),
         writer,
     });
-    let result = execute_with_disk_evidence(request).is_ok();
+    let result = execute_with_disk_evidence(request, &mut |_| {}).is_ok();
     let read = probe.read_timeout().unwrap();
     let write = probe.write_timeout().unwrap();
     *state.lock().unwrap() = None;

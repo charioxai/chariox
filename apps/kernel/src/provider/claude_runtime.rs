@@ -81,6 +81,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
     let usage_file = env.get("CHARIOX_CLAUDE_USAGE_FILE").map(PathBuf::from);
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
+    let output_notifier = crate::provider::output_ready::ProviderEventNotifier::default();
     let (child, stdin, receiver) = spawn_claude_child(
         run.id(),
         &program,
@@ -90,6 +91,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
         &env_remove,
         working_directory.as_ref(),
         "initialize_claude_runtime",
+        &output_notifier,
     )?;
 
     Ok(ClaudeRuntimeBinding {
@@ -114,6 +116,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             child,
             stdin,
             receiver,
+            output_notifier,
             active_model: run.model().to_string(),
             active_variant: run.variant().map(str::to_string),
             active_execution_mode: run.execution_mode(),
@@ -493,6 +496,7 @@ fn restart_claude_runtime(
     let env = run.pty_env().clone();
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
+    let output_notifier = state.output_notifier.clone();
     let (child, stdin, receiver) = spawn_claude_child(
         run.id(),
         &state.program,
@@ -502,6 +506,7 @@ fn restart_claude_runtime(
         &env_remove,
         working_directory.as_ref(),
         operation,
+        &output_notifier,
     )?;
     *state
         .process_identity
@@ -655,6 +660,7 @@ mod tests {
                 child,
                 stdin,
                 receiver,
+                output_notifier: Default::default(),
                 active_model: "sonnet".to_string(),
                 active_variant: Some("low".to_string()),
                 active_execution_mode: AgentExecutionMode::Build,

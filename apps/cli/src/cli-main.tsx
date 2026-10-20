@@ -1,3 +1,5 @@
+import { createCliCachedStartup, CliCachedStartup } from "./cli-cached-startup.js"
+import { parseArgs } from "./cli-options.js"
 import process from "node:process"
 import { runContextCommand } from "./context-command.js"
 import { runCloudClientCommand } from "./cloud-client-command.js"
@@ -62,16 +64,21 @@ async function main() {
   transcriptParserRegistration.ensureRegistered()
   processLoggers.initialize("cli")
   getLogger("cli.main")?.info("starting cli process", { argv: redactCliStartupArgs(argv) })
-  const runtimeBootstrap = await bootstrapCliRuntime({
+  const cachedStartup = createCliCachedStartup()
+  const pendingBootstrap = bootstrapCliRuntime({
     argv,
     cwd: process.cwd(),
     logger: getLogger("cli.main"),
+    onClientReady: cachedStartup.onClientReady,
   })
-  if (runtimeBootstrap.kind === "deleted_session") {
-    return
-  }
+  const requested = parseArgs(argv)
+  const early = Boolean(requested.sessionId && !requested.createSession && !requested.deleteSessionRef && !requested.detached)
+  const runtimeBootstrap = early ? null : await pendingBootstrap
+  if (!early) cachedStartup.finish()
+  if (runtimeBootstrap?.kind === "deleted_session") return
   await render(
-    () => <CharioxCliApp bootstrap={runtimeBootstrap.bootstrap} />,
+    () => early ? <CliCachedStartup pending={pendingBootstrap} view={cachedStartup} />
+      : <CharioxCliApp bootstrap={runtimeBootstrap!.bootstrap} />,
     {
       targetFps: 60,
       gatherStats: false,

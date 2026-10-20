@@ -349,7 +349,11 @@ impl Drop for DirectFrames {
     fn drop(&mut self) {
         let _ = UnixStream::connect(&self.path);
         let _ = std::fs::remove_file(&self.path);
-        let accept = self.accept.get_mut().unwrap_or_else(|e| e.into_inner()).take();
+        let accept = self
+            .accept
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         if let Some(accept) = accept.filter(|a| a.thread().id() != std::thread::current().id()) {
             let _ = accept.join();
         }
@@ -421,9 +425,15 @@ mod tests {
         for _ in 0..3 {
             let (frames, _packets) = channel();
             let (fd, open) = (frames.listener, socket(frames.listener));
-            assert!(open.as_ref().is_some_and(|l| l.to_string_lossy().starts_with("socket:")));
+            assert!(open
+                .as_ref()
+                .is_some_and(|l| l.to_string_lossy().starts_with("socket:")));
             drop(frames);
-            assert_ne!(socket(fd), open, "the listener's socket is closed (its fd may be reused)");
+            assert_ne!(
+                socket(fd),
+                open,
+                "the listener's socket is closed (its fd may be reused)"
+            );
         }
     }
 
@@ -565,6 +575,10 @@ mod tests {
         let again = connect(&frames, &format!("{:032x}", 0));
         std::thread::sleep(Duration::from_millis(50));
         drop(again);
-        assert!(fds() <= before + 2, "worker disconnects leaked {} descriptors", fds() - before);
+        assert!(
+            fds() <= before + 2,
+            "worker disconnects leaked {} descriptors",
+            fds() - before
+        );
     }
 }

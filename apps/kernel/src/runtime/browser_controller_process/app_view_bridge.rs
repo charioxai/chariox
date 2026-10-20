@@ -20,7 +20,13 @@ impl BrowserControllerProcessStore {
             ownership.require_lease(session_id)?;
             let supervisor = &mut ownership.supervisor;
             supervisor.prepare_unlocked_request()?;
-            (supervisor.backend.begin_observation_request("browser.notes.observe", serde_json::json!({"target_id":target_id,"document_id":document_id}))?, supervisor.backend.timeout)
+            (
+                supervisor.backend.begin_observation_request(
+                    "browser.notes.observe",
+                    serde_json::json!({"target_id":target_id,"document_id":document_id}),
+                )?,
+                supervisor.backend.timeout,
+            )
         };
         let observation: crate::runtime::notes::observation::BrowserNoteObservation = pending
             .wait(timeout)?

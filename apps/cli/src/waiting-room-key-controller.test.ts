@@ -168,6 +168,8 @@ function createHarness(options: {
       lifecycleActions.push(action)
     },
     openProjectEnvironment: (projectId) => { calls.push(`environment:${projectId}`) },
+    pinProject: (projectId, pinned) => { calls.push(`pin:${projectId}:${pinned}`) },
+    beginNewProject: () => { calls.push("new-project-name") },
     beginProjectRename: (projectId, name) => {
       calls.push(`rename:${projectId}:${name}`)
     },
@@ -216,6 +218,18 @@ function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoo
     ...overrides,
   }
 }
+
+test("MP-08 OWNER-15 P toggles a focused project pin", () => {
+  const h = createHarness({ state: waitingRoomState({ focus: "project-entry", projectIndex: 0 }), projects: [projectSummary()] })
+  h.controller.handleKey({ name: "p" })
+  assert.ok(h.calls().includes(`pin:${projectSummary().id}:true`))
+})
+
+test("MP-08 OWNER-19 Enter on New asks for its name", () => {
+  const h = createHarness({ state: waitingRoomState({ focus: "project", projectSelectionId: "new" }) })
+  h.controller.handleKey({ name: "return" })
+  assert.ok(h.calls().includes("new-project-name"))
+})
 
 function projectSummary(overrides: Partial<WaitingRoomProjectSummary> = {}): WaitingRoomProjectSummary {
   return {

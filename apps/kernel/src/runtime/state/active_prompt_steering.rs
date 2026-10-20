@@ -83,7 +83,7 @@ impl KernelRuntimeState {
                     message: "active prompt changed before steering delivery".into(),
                 });
             }
-            owned.append_steering_prompt_history(
+            let sequence = owned.append_steering_prompt_history(
                 &request.session_id,
                 &dispatch.provider_run_id,
                 &request.expected_active_prompt_id,
@@ -103,6 +103,7 @@ impl KernelRuntimeState {
                 prompt.prompt(),
                 prompt.attachments(),
                 prompt.prompt_origin(),
+                Some(sequence),
             );
         }
         Ok(prompt)

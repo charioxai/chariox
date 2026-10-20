@@ -176,7 +176,26 @@ export type KernelAccessRequester = {
  * it ends with the approved harness process, a revoke or a kernel restart. */
 export type KernelAccessTerm = { minutes: number } | "until_holder_exits"
 
+/** MP-08 / MP-11 protocol 538: kernel-authored presentation, never authority. */
+export type SudoRequestPresentation = {
+  requester_name: string
+  agent_name: string
+  session_name: string
+  task_summary: string
+  task: string
+  grant_id?: string | null
+  terminal_id: string
+}
+export type PasskeyPromptClosure = {
+  session_id: string
+  interaction_id: string
+  kind: PasskeyPrompt["kind"]
+  expires_at_ms: number
+  reason: "expired" | "answered" | "revoked"
+}
+
 export type PasskeyPrompt = {
+  sudo_request?: SudoRequestPresentation | null
   requester?: KernelAccessRequester | null
   kind: "critical_approval" | "access_grant" | "access_extension" | "sudo"
   /** Protocol 568: the term an access popup starts on; absent for sudo and critical approvals. */

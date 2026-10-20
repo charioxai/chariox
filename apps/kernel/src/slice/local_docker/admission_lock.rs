@@ -208,7 +208,7 @@ mod tests {
             return; // Cross-UID proof runs on the disposable root builder.
         }
         // The ordinary UID must not depend on a private TMPDIR or checkout.
-        let fixture = Fixture::new_in(Path::new("/tmp"));
+        let fixture = Fixture::new_in(Path::new("/var/tmp"));
         let executable = fixture.0.join("worker-test");
         std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();

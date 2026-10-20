@@ -4,6 +4,7 @@ adapters/rust
 apps/aegs-dummy
 apps/kernel
 apps/relay
+deploy/managed-kernel
 examples/workflow-code
 packages/aegs-sdk
 packages/event-protocol
@@ -11,3 +12,7 @@ packages/app-package
 packages/app-runtime
 packages/app-sdk
 apps/app-worker/bundle.lock.json
+deploy/managed-kernel/extract-release.py
+deploy/managed-kernel/path1-service-policy.mjs
+deploy/managed-kernel/release-update-storage.py
+deploy/managed-kernel/verify-image-release.mjs

@@ -2,11 +2,23 @@ use super::*;
 
 pub(crate) const ENVIRONMENT_USE_ADMISSION_EXPIRED: &str =
     "Room Environment operation admission deadline expired before dispatch";
+pub(crate) const SHARED_DISPLAY_READ_OPERATION: &str = "environment.display.read";
+
+/// MP-10: numeric recovery timing only (operation label and durations).
+fn trace_admission(operation: &str, lock_ms: u128, total_ms: u128, route_waits: u32) {
+    if std::env::var("CHARIOX_BROWSER_DISPLAY_TIMING").as_deref() == Ok("1") {
+        eprintln!(
+            "[chariox.env_admission] {operation} {} lock_ms={lock_ms} total_ms={total_ms} route_waits={route_waits}",
+            crate::session::unix_epoch_ms()
+        );
+    }
+}
 
 impl SliceStore {
-    /// FIFO admission for controller routes and viewer reads. Admitted uses
-    /// share the slice, but a queued use waits for a controller route already
-    /// in flight. Only controller contention is retryable; lifecycle,
+    /// Fair admission for controller routes and viewer reads. A display resume
+    /// restores an admitted delivery, so it keeps lifecycle exclusion but never
+    /// waits behind queued controller routes; the worker serializes each lease.
+    /// Only controller contention is retryable; lifecycle,
     /// quarantine and scope errors remain refusals. Waiting never dispatches
     /// or retries the caller's command.
     pub(crate) async fn queue_environment_use(
@@ -47,10 +59,32 @@ impl SliceStore {
             operation,
             message: ENVIRONMENT_USE_ADMISSION_EXPIRED.to_string(),
         };
-        let queue = tokio::time::timeout_at(deadline, queue.lock_owned())
-            .await
-            .map_err(|_| timed_out())?;
+        // MP-10: a display resume restores an already admitted delivery. It keeps
+        // lifecycle exclusion but never waits behind queued controller routes.
+        let resume = operation == SHARED_DISPLAY_READ_OPERATION;
+        let queued = std::time::Instant::now();
+        let admission = if resume {
+            None
+        } else {
+            let acquire = async {
+                SliceEnvironmentQueueGuard::Write {
+                    _guard: queue.admission.clone().write_owned().await,
+                }
+            };
+            Some(
+                tokio::time::timeout_at(deadline, acquire)
+                    .await
+                    .map_err(|_| timed_out())?,
+            )
+        };
+        let lock_ms = queued.elapsed().as_millis();
+        let mut route_waits = 0u32;
         loop {
+            // Register before checking the marker so a synchronous release
+            // between the check and await cannot lose its wakeup.
+            let changed = queue.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
             if tokio::time::Instant::now() >= deadline {
                 return Err(timed_out());
             }
@@ -60,35 +94,32 @@ impl SliceStore {
                 CONTROLLER_ROUTE_OPERATION,
                 operation,
             )?;
-            // Normal queued callers serialize on the FIFO mutex. This also
-            // waits for an already-admitted synchronous route.
-            let route_in_flight = self
-                .inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .environment_route_uses
-                .contains_key(&slice.id);
-            if !route_in_flight {
-                match self.guard_environment_use(&slice.id, session_id, operation) {
-                    Ok(guard) => {
-                        return Ok(SliceEnvironmentUseGuard {
-                            _operation: guard,
-                            _queue: Some(queue),
-                        })
-                    }
-                    Err(DaemonError::LocalTransport {
-                        operation: "slice.operation",
-                        ..
-                    }) => {}
-                    Err(error) => return Err(error),
+            // MP-11: check the route marker and reserve this use under one
+            // store lock; a synchronous route cannot enter between them.
+            match self.guard_environment_use_with_route_admission(
+                &slice.id, session_id, operation, !resume,
+            ) {
+                Ok(guard) => {
+                    trace_admission(
+                        operation,
+                        lock_ms,
+                        queued.elapsed().as_millis(),
+                        route_waits,
+                    );
+                    return Ok(SliceEnvironmentUseGuard {
+                        _operation: guard,
+                        _queue: admission,
+                    });
                 }
+                Err(DaemonError::LocalTransport {
+                    operation: "slice.operation",
+                    ..
+                }) => route_waits += 1,
+                Err(error) => return Err(error),
             }
-            tokio::time::timeout_at(
-                deadline,
-                tokio::time::sleep(std::time::Duration::from_millis(10)),
-            )
-            .await
-            .map_err(|_| timed_out())?;
+            tokio::time::timeout_at(deadline, changed)
+                .await
+                .map_err(|_| timed_out())?;
         }
     }
 
@@ -98,7 +129,22 @@ impl SliceStore {
         session_id: Option<&str>,
         operation: &'static str,
     ) -> Result<SliceOperationGuard, DaemonError> {
-        let guard = self.begin_operation(slice_ref, operation, true)?;
+        self.guard_environment_use_with_route_admission(slice_ref, session_id, operation, false)
+    }
+
+    fn guard_environment_use_with_route_admission(
+        &self,
+        slice_ref: &str,
+        session_id: Option<&str>,
+        operation: &'static str,
+        require_route_idle: bool,
+    ) -> Result<SliceOperationGuard, DaemonError> {
+        let guard = self.begin_operation_with_route_admission(
+            slice_ref,
+            operation,
+            true,
+            require_route_idle,
+        )?;
         // Re-read under the use marker: binding cannot change until admission ends.
         let state = self
             .inner

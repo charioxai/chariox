@@ -97,6 +97,7 @@ export type WaitingRoomState = {
   managedAutoStopPreset?: "agents_done" | "idle_15m" | "idle_30m" | "minimum_3h" | "manual" | "custom"
   managedCustomMinimumRuntimeSeconds?: number
   managedCustomIdleDelaySeconds?: number | null
+  projectNameDraft?: string
   projectSelectionId?: string
   showArchivedProjects?: boolean
   sliceSelectionId?: string

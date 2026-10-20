@@ -41,6 +41,36 @@ const session: RuntimeSession = {
   config_state: { version: 1, values: {} },
 }
 
+test("MP-08/MP-10 TUI bootstrap can render before a launch asks for human input", async () => {
+  let launches = 0
+  let release!: () => void
+  const humanReply = new Promise<void>(resolve => { release = resolve })
+  const task = settleAttachProviderRun(session,
+    { provider: "claude-p", model: "claude-haiku-5-5", effort: "low" }, "work", false, {
+      deferLaunch: true,
+      launchProviderRun: async () => { launches++; await humanReply; return {} as never },
+      getSessionState: async () => session,
+      tryGetProviderRun: async () => null,
+    })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(launches, 0, "an unlock wait cannot start before the TUI mounts")
+    const result = await task
+    assert.equal(result.action, "deferred")
+    if (result.action !== "deferred") return
+    assert.equal(result.isPending(), true)
+    const first = result.start()
+    assert.equal(result.start(), first, "mounting twice cannot launch twice")
+    assert.equal(launches, 1)
+    release()
+    await first
+    assert.equal(result.isPending(), false)
+  } finally {
+    release()
+    await task
+  }
+})
+
 test("settleAttachProviderRun keeps the TUI attachable when the credential vault is locked", async () => {
   const result = await settleAttachProviderRun(
     session,
@@ -66,6 +96,22 @@ test("settleAttachProviderRun keeps the TUI attachable when the credential vault
   assert.equal(result.reason, "credential_vault_locked")
   assert.equal(result.providerRun, null)
   assert.equal(result.targetAgent?.id, "agent-vault")
+})
+
+test("MP-08/MP-10 attaching to an existing unlock does not launch the agent twice", async () => {
+  let launches = 0
+  const result = await settleAttachProviderRun({ ...session, active_interactions: [{
+    id: "vault-unlock-existing", agent_id: "agent-vault", kind: "choice", level: "critical",
+    title: "Unlock Chariox Vault", message: "Enter the passphrase.", requested_at_ms: 1,
+    choices: [{ id: "cancel", label: "Cancel", reply: "cancel" }],
+  }] }, { provider: "claude-p", model: "claude-haiku-5-5", effort: "low" }, "work", false, {
+    deferLaunch: true,
+    launchProviderRun: async () => { launches++; return {} as never },
+    getSessionState: async () => session,
+    tryGetProviderRun: async () => null,
+  })
+  assert.equal(result.action, "skipped")
+  assert.equal(launches, 0)
 })
 
 test("settleAttachProviderRun recognizes the structured vault-locked error code", async () => {
@@ -152,3 +198,13 @@ for (const provider of ["claude", "claude-p", "claude-headless"]) {
   })
 
 }
+// MP-08 / MP-10, PANE-13: attaching preserves the kernel-selected account.
+test("attach launch keeps the existing agent account instead of CLI defaults", async () => {
+  let account: string | null = null
+  await settleAttachProviderRun(session, { provider: "codex", model: "default", effort: "" }, "default", false, {
+    launchProviderRun: async (_session, _provider, profile) => { account = profile; return {} as never },
+    getSessionState: async () => session,
+    tryGetProviderRun: async () => null,
+  })
+  assert.equal(account, "codex-secondary")
+})

@@ -8,10 +8,11 @@ function client() {
   const sent = [];
   const connection = { async send(method, params, sessionId) { sent.push({ method, params, sessionId }); return {}; } };
   const proto = BrowserCdpClient.prototype;
-  const self = { connection, canonical, sent, layoutByTarget: new Map(), viewportByTarget: new Map(),
+  const self = { connection, canonical, sent, layoutByTarget: new Map(), viewportByTarget: new Map(), layoutQueue: new Map(),
     ensureTargetSession: async (_c, targetId) => `s-${targetId}`,
     layoutMetrics: proto.layoutMetrics, layoutViewport: proto.layoutViewport };
   self.setLayout = proto.setLayout.bind(self);
+  self.applyLayout = proto.applyLayout.bind(self);
   return self;
 }
 
@@ -30,4 +31,22 @@ test("the person's display sets one Tab's layout size and null restores the cano
   await c.setLayout("t1", null);
   assert.deepEqual([c.sent[1].params.width, c.sent[1].params.height], [1280, 800]);
   assert.equal(c.layoutByTarget.size, 0);
+});
+
+test("a restore that arrives while a layout override is in flight still ends on the canonical page", async () => {
+  const c = client();
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const send = c.connection.send;
+  c.connection.send = async (method, params, sessionId) => { await gate; return send(method, params, sessionId); };
+  // The canonical metrics are the configured state before the phone's layout arrives.
+  c.viewportByTarget.set("t1", JSON.stringify(c.layoutMetrics("t1", canonical)));
+  const narrow = c.setLayout("t1", { width: 400, height: 760 });
+  await new Promise(resolve => setImmediate(resolve));
+  const restore = c.setLayout("t1", null);
+  release();
+  await Promise.all([narrow, restore]);
+  const last = c.sent.at(-1).params;
+  assert.deepEqual([last.width, last.height], [1280, 800], "the Tab ends canonical, as the layout owner left");
+  assert.equal(c.viewportByTarget.get("t1"), JSON.stringify(c.layoutMetrics("t1", canonical)));
 });

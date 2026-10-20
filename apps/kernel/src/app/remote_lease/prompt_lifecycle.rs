@@ -42,6 +42,7 @@ fn leased_prompt_steer_receipt_projection(
         LeasedPromptSteerReceiptPhase::Rejected => LeasedPromptReceiptPhase::SteerRejected,
     };
     LeasedPromptReceipt {
+        rejection_reason: None,
         home_prompt_id: receipt.steer_id.clone(),
         worker_provider_run_id: receipt.worker_provider_run_id.clone(),
         phase,
@@ -74,6 +75,7 @@ fn leased_prompt_admission_receipt_projection(
         phase,
         target_home_prompt_id: None,
         execution_lease_id: Some(receipt.receipt.execution_lease_id.clone()),
+        rejection_reason: receipt.receipt.rejection_reason.clone(),
     }
 }
 
@@ -124,6 +126,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let record = WorkerPromptReceiptRecord {
             leased_agent_id: leased_agent_id.to_string(),
             receipt: WorkerPromptReceipt {
+                rejection_reason: None,
                 home_prompt_id: home_prompt_id.to_string(),
                 worker_provider_run_id: None,
                 execution_lease_id: leased_agent.lease_id,
@@ -155,6 +158,27 @@ impl<'a> RemoteLeaseRuntime<'a> {
             record.receipt.worker_provider_run_id = Some(worker_provider_run_id.to_string());
         }
         record.receipt.phase = phase;
+        self.app.worker_prompt_receipts.persist(record)?;
+        Ok(())
+    }
+
+    pub(crate) fn reject_leased_prompt_receipt(
+        &mut self,
+        leased_agent_id: &str,
+        home_prompt_id: &str,
+        reason: String,
+    ) -> Result<(), DaemonError> {
+        let mut record = self
+            .app
+            .worker_prompt_receipts
+            .get(leased_agent_id, home_prompt_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "reject leased prompt admission receipt",
+                message: "worker prompt admission receipt is missing".to_string(),
+            })?;
+        record.receipt.phase = WorkerPromptReceiptPhase::Rejected;
+        record.receipt.rejection_reason = Some(reason);
         self.app.worker_prompt_receipts.persist(record)?;
         Ok(())
     }
@@ -377,6 +401,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 return Ok(None);
             }
             return Ok(Some(LeasedPromptReceipt {
+                rejection_reason: None,
                 home_prompt_id: home_prompt_id.to_string(),
                 worker_provider_run_id: receipt.provider_run_id.clone(),
                 phase: LeasedPromptReceiptPhase::Completed,
@@ -423,6 +448,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             return Ok(None);
         }
         Ok(Some(LeasedPromptReceipt {
+            rejection_reason: None,
             home_prompt_id: home_prompt_id.to_string(),
             worker_provider_run_id: provider_run.id().to_string(),
             phase: LeasedPromptReceiptPhase::Active,
@@ -688,14 +714,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
             return Ok(());
         }
         self.app
-            .provider_account_profiles
-            .require_agent_authenticated(
-                &self
-                    .app
-                    .provider_account_authority_owner_for_agent(&backing_agent)?,
-                &backing_agent,
-                crate::transport::relay_peer::ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION,
-            )
+            .provider_account_profile_registry()
+            .require_leased_agent_authenticated(&self.app.config, &backing_agent, "submit prompt")
     }
 
     pub(crate) fn prepare_leased_prompt_submission(

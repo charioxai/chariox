@@ -151,6 +151,12 @@ pub fn drain_codex_events(
         );
     }
 
+    let chunks = state.tool_snapshots.coalesce(
+        chunks,
+        prompt_completed || terminal_failure.is_some(),
+        std::time::Instant::now(),
+        &state.output_notifier,
+    );
     Ok(CodexPollResult {
         chunks,
         completions,
@@ -268,6 +274,11 @@ mod tests {
         assert!(
             state.buffered_notifications.len() >= 65,
             "MP-08 buffered output must yield to queued controls"
+        );
+        assert_eq!(
+            first.chunks.len(),
+            1,
+            "MP-08 / MP-10: a chatty tool drain must publish only its last snapshot"
         );
         let mut completed = false;
         for _ in 0..128 {

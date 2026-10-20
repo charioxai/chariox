@@ -8,6 +8,25 @@ impl KernelRuntimeState {
         session_id: &str,
         provider_run_id: &str,
     ) -> Result<bool, DaemonError> {
+        self.reconcile_provider_run_exit_inner(session_id, provider_run_id, false)
+            .await
+    }
+
+    pub(super) async fn reconcile_provider_run_exit_for_output(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+    ) -> Result<bool, DaemonError> {
+        self.reconcile_provider_run_exit_inner(session_id, provider_run_id, true)
+            .await
+    }
+
+    async fn reconcile_provider_run_exit_inner(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        opportunistic: bool,
+    ) -> Result<bool, DaemonError> {
         let owned = &self.owned;
 
         if let Some(exit) = owned.reconcile_provider_run_liveness_provider_phase(
@@ -109,21 +128,30 @@ impl KernelRuntimeState {
             return Ok(exit.already_ended);
         }
 
-        let (process_exit, exit) = self
-            .with_app_side_effect(|app| {
-                let process_exit = crate::app::ProviderLaunchProcessRuntime::new(app)
-                    .poll_exit(provider_run_id)?;
-                // A rollback may replace the child under this app lock. Settle
-                // this observation before releasing it so an old exit cannot
-                // end the replacement process.
-                let exit = owned.reconcile_provider_run_liveness_provider_phase(
-                    session_id,
-                    provider_run_id,
-                    Some(process_exit.is_none()),
-                )?;
-                Ok((process_exit, exit))
-            })
-            .await?;
+        let poll_process = |app: &mut DaemonApp| {
+            let process_exit =
+                crate::app::ProviderLaunchProcessRuntime::new(app).poll_exit(provider_run_id)?;
+            // A rollback may replace the child under this app lock. Settle
+            // this observation before releasing it so an old exit cannot
+            // end the replacement process.
+            let exit = owned.reconcile_provider_run_liveness_provider_phase(
+                session_id,
+                provider_run_id,
+                Some(process_exit.is_none()),
+            )?;
+            Ok::<_, DaemonError>((process_exit, exit))
+        };
+        let observation = if opportunistic {
+            self.try_with_app_side_effect(poll_process)
+        } else {
+            Some(self.with_app_side_effect(poll_process).await)
+        };
+        let Some(observation) = observation else {
+            // Only the process observation is deferred. Ended provider state
+            // above and native terminal/error evidence remain authoritative.
+            return Ok(false);
+        };
+        let (process_exit, exit) = observation?;
         let process_terminal_diagnostic = process_exit
             .as_ref()
             .and_then(|exit| exit.terminal_diagnostic.clone());
@@ -313,7 +341,13 @@ impl KernelRuntimeState {
                 .settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)
                 .await;
         }
-        let message = match terminal_diagnostic {
+        let message = if active_prompt.delivery_pending() {
+            crate::provider::provider_exit_before_delivery_message(
+                &termination,
+                terminal_diagnostic,
+            )
+        } else {
+            match terminal_diagnostic {
             Some(diagnostic) if !diagnostic.trim().is_empty() => format!(
                 "Provider run `{provider_run_id}` ended unexpectedly: {}. Provider terminal diagnostic: {diagnostic}",
                 termination.reason
@@ -322,6 +356,7 @@ impl KernelRuntimeState {
                 "Provider run `{provider_run_id}` ended unexpectedly: {}.",
                 termination.reason
             ),
+        }
         };
         self.fail_owned_provider_prompt_with_termination(
             session_id,

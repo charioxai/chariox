@@ -1,8 +1,9 @@
 use super::*;
 use crate::local::{
     GetEventConnectionRequest, ListEventConnectionDependenciesRequest,
-    ObserveEventConnectionAuthorizationRequest, ReconnectEventConnectionRequest,
-    RefreshEventConnectionRequest, RemoveEventConnectionRequest,
+    ListEventConnectionEventsRequest, ObserveEventConnectionAuthorizationRequest,
+    ReconnectEventConnectionRequest, RefreshEventConnectionRequest, RemoveEventConnectionRequest,
+    ReplayEventConnectionEventRequest,
 };
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -301,6 +302,12 @@ fn serve_ready_connection(
             "test_event_supported": false
         })
         .to_string()
+    } else if request.starts_with("POST /v1/events/query HTTP/1.1") {
+        assert!(request.contains("\"owner_id\":"));
+        serde_json::json!({"events": [received_event_fixture("pending")]}).to_string()
+    } else if request.starts_with("POST /v1/events/replay HTTP/1.1") {
+        assert!(request.contains("\"delivery_id\":\"delivery-1\""));
+        serde_json::json!({"event": received_event_fixture("published")}).to_string()
     } else if request.starts_with("POST /v1/connections/revoke HTTP/1.1") {
         revoked.store(true, Ordering::Relaxed);
         serde_json::json!({"revoked": true}).to_string()
@@ -323,6 +330,67 @@ fn serve_ready_connection(
         body
     )
     .unwrap();
+}
+
+fn received_event_fixture(status: &str) -> serde_json::Value {
+    serde_json::json!({
+        "delivery_id": "delivery-1",
+        "event_type": "pull_request.synchronize",
+        "occurrence_id": "occurrence-1",
+        "connection_scope": "charioxai/chariox",
+        "subject": "#1026",
+        "received_at_ms": 10,
+        "status": status,
+        "attempts": 1,
+        "publication_count": 0
+    })
+}
+
+#[test]
+fn kernel_lists_and_replays_the_webhooks_an_integration_received() {
+    let server = ReadyConnectionServer::start();
+    let mut config = crate::DaemonConfig::for_tests();
+    config
+        .event_generator_management_targets
+        .insert("dev.chariox.dummy".to_string(), server.target());
+    let harness = LocalRouterTestHarness::with_config(config);
+    register_ready_connection(&harness);
+
+    let page = match harness
+        .dispatch(LocalDaemonRequest::ListEventConnectionEvents(
+            ListEventConnectionEventsRequest {
+                connection_id: "connection-local".to_string(),
+                limit: 20,
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::EventConnectionEvents { page } => page,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    assert_eq!(page.events.len(), 1);
+    assert_eq!(page.events[0].delivery_id, "delivery-1");
+    assert_eq!(
+        page.events[0].status,
+        chariox_event_protocol::AegsReceivedEventStatus::Pending
+    );
+
+    let replayed = match harness
+        .dispatch(LocalDaemonRequest::ReplayEventConnectionEvent(
+            ReplayEventConnectionEventRequest {
+                connection_id: "connection-local".to_string(),
+                delivery_id: "delivery-1".to_string(),
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::EventConnectionEventReplayed { result } => result,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    assert_eq!(
+        replayed.event.status,
+        chariox_event_protocol::AegsReceivedEventStatus::Published
+    );
 }
 
 #[test]

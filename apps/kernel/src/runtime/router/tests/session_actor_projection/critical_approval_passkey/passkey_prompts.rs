@@ -346,3 +346,42 @@ async fn no_passkey_reaches_a_log_an_audit_or_a_popup() {
         assert!(!popup.contains(secret));
     }
 }
+
+// MP-08 / MP-10 / MP-11: a real subscription feed distinguishes all terminal outcomes.
+#[tokio::test]
+async fn mp08_passkey_feed_projects_kernel_time_and_authoritative_closures() {
+    use crate::transport::passkey_prompt_feed::PasskeyPromptFeed;
+    let f = Fixture::new(true);
+    let mut feed = PasskeyPromptFeed::new(KernelConnectionClass::Terminal, DEFAULT_LOCAL_USER_ID);
+    let mut guest =
+        PasskeyPromptFeed::new(KernelConnectionClass::ExternalAgent, DEFAULT_LOCAL_USER_ID);
+    assert!(guest.next_event(&f.router).is_none());
+    for (name, expected) in [
+        ("answered", "answered"),
+        ("expired", "expired"),
+        ("revoked", "revoked"),
+    ] {
+        let _decision = f
+            .critical_expiring_in(name, if expected == "expired" { 1 } else { 300 })
+            .await;
+        let first = serde_json::to_value(feed.next_event(&f.router).unwrap()).unwrap();
+        assert!(first["kernel_now_ms"].as_u64().unwrap() > 0);
+        assert_eq!(first["closed"], serde_json::json!([]));
+        if expected == "answered" {
+            f.answer(name, "deny", None, None).await.unwrap();
+        } else if expected == "expired" {
+            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        } else {
+            f.router
+                .runtime_state
+                .timeout_runtime_interaction(&f.session, &id(name))
+                .await
+                .unwrap();
+        }
+        let event = serde_json::to_value(feed.next_event(&f.router).unwrap()).unwrap();
+        assert_eq!(event["prompts"], serde_json::json!([]));
+        assert_eq!(event["closed"][0]["reason"], expected);
+        assert_eq!(event["closed"][0]["interaction_id"], id(name));
+        assert!(feed.next_event(&f.router).is_none());
+    }
+}

@@ -122,16 +122,18 @@ impl KernelRuntimeState {
                 } else {
                     Some(self.owned.session_store.get_project(session.project_id())?)
                 };
-                if let Some(project) = project
-                    .as_ref()
-                    .filter(|project| !existing_project_ids.contains(project.id()))
-                {
+                if let Some(project) = project.as_ref() {
                     self.owned.durable_state_store.append_event(
-                        "project.created",
+                        if existing_project_ids.contains(project.id()) {
+                            "project.updated"
+                        } else {
+                            "project.created"
+                        },
                         Some(project.id().to_string()),
                         serde_json::json!({ "project": project }),
                     )?;
-                    publication_progress.project_created = true;
+                    publication_progress.project_created =
+                        !existing_project_ids.contains(project.id());
                 }
                 if let Some(slice_ref) = slice_ref {
                     let session_id = session.id().to_string();

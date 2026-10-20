@@ -67,6 +67,7 @@ export type WorkspaceLayoutProps = {
   onSudoBandRef: RefHandler
   onKernelApprovalBoxRef: RefHandler
   onPasskeyPopupBoxRef: RefHandler
+  onPasskeyPopupBannerRef?: RefHandler
   onProviderAccountRecoveryBoxRef?: RefHandler | undefined
 }
 
@@ -316,6 +317,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
 
       <box ref={props.onKernelApprovalBannerRef} flexShrink={0} flexDirection="column" visible={false} />
       <box ref={props.onSudoBandRef} flexShrink={0} flexDirection="column" />
+      <box {...(props.onPasskeyPopupBannerRef ? { ref: props.onPasskeyPopupBannerRef } : {})} flexShrink={0} flexDirection="column" visible={false} />
       <box
         visible={!(props.roomWorkflowsVisible?.() && props.width < 110)}
         flexShrink={0}

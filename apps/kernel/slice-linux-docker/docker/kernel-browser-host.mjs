@@ -114,6 +114,7 @@ export class KernelBrowserHost {
     this.displaySessions = new DisplaySessions(this);
     this.scales = new Map();
     this.layouts = new Map();
+    this.layoutRevisions = new Map();
     this.inputEpochs = new Map();this.inputChangedAt=new Map();
     this.scrolling = new Map();
     this.sampleLanes = new Map();
@@ -280,15 +281,11 @@ export class KernelBrowserHost {
       }
       // MP-08/MP-10: restore the registry in one inventory pass. A loading
       // background page must not delay every subsequent Tab's creation.
-      if (saved.tabs.length) await this.reconcile({ readOnly: true });
-      await this.syncTabGroups(this.savedGroups,{restore:true});
-      const active = this.tabs.get(saved.active_tab_id);
-      if (active) {
-        await connection.send('Target.activateTarget', { targetId: active.target_id });
-        this.activeTarget = active.target_id;
-      }
+      // Every target now exists. Apply the pending Tab/App selection inside
+      // this same inventory pass, after the restoration fence is released.
       this.restoring = false;
-      await this.reconcile();
+      await this.reconcile({ readOnly: true });
+      await this.syncTabGroups(this.savedGroups,{restore:true});
       await this.save();
       await this.rebindWindows();
       this.recovery.watch(connection);
@@ -358,15 +355,21 @@ export class KernelBrowserHost {
   // Protocol 560/168: a viewer narrower than the canonical desktop gets the Tab laid out at its own size.
   // The newest subscription owns the layout; null restores the canonical page.
   pageSize(tabId) { const l = this.layouts.get(tabId); return l ? { width: l.width, height: l.height } : { width: 1280, height: 800 }; }
+  noteLayout(tabId, before) { const now = this.pageSize(tabId); if (now.width !== before.width || now.height !== before.height) this.layoutRevisions.set(tabId, this.layoutRevision(tabId) + 1); }
+  layoutRevision(tabId) { return this.layoutRevisions.get(tabId) ?? 0; }
   async setLayout(tab, subscriptionId, layout) {
+    const before = this.pageSize(tab.tab_id);
     if (layout) this.layouts.set(tab.tab_id, { ...layout, subscriptionId }); else this.layouts.delete(tab.tab_id);
+    this.noteLayout(tab.tab_id, before);
     await this.browser.setLayout?.(tab.target_id, layout);
   }
   releaseLayout(tabId, subscriptionId) {
     if (this.layouts.get(tabId)?.subscriptionId !== subscriptionId) return;
+    const before = this.pageSize(tabId);
     this.layouts.delete(tabId);
+    this.noteLayout(tabId, before);
     const tab = this.tabs.get(tabId);
-    if (tab) this.browser.setLayout?.(tab.target_id, null).catch(() => {});
+    return tab ? this.browser.setLayout?.(tab.target_id, null).catch(() => {}) : undefined;
   }
   // MP-08/MP-11: on the owned Computer desktop the Browser window is the
   // visible one, and an emulated density leaves it unbindable (withheld):
@@ -1007,9 +1010,10 @@ export class KernelBrowserHost {
       return result;
     }
     if (command.op === "screenshot") {
-      const hint=command._capture_viewport,scale=this.scales.get(tab.tab_id)??this.viewport().device_scale_factor;
-      const crop=hint&&(hint.width!==geometry.width*scale||hint.height!==geometry.height*scale);
-      const frame = command._capture_protection===true?(crop?await captureVisiblePage(this,tab,hint):await this.screenshot(tab,null,true)):await this.displayScreenshot(tab);
+      // A frame laid out at the viewer's size (protocol 560/168) is the whole page; any other size is a crop of it.
+      const hint=command._capture_viewport,scale=this.scales.get(tab.tab_id)??this.viewport().device_scale_factor,page=this.layouts.get(tab.tab_id)??geometry;
+      const crop=hint&&(hint.width!==page.width*scale||hint.height!==page.height*scale);
+      const frame = command._capture_protection===true?(crop?await captureVisiblePage(this,tab,hint,scope):await this.screenshot(tab,null,true)):await this.displayScreenshot(tab);
       // MD-3: explicit binding is an internal display/MCP seam. Legacy 417
       // still emits its existing frame shape until the coordinator adapter lands.
       if (!command.focused_agent && !command.bound_frames) delete frame.document_id;

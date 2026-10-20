@@ -154,7 +154,7 @@ fn project_error(value: &Value) -> KernelTransportError {
             "kernel_request_overloaded" => "kernel request admission queue overloaded",
             "duplicate_command_unavailable" => "original duplicate command result was unavailable",
             "duplicate_command_conflict" => "command_id was already used for a different request",
-            _ => "external request failed; details are available only in the host terminal",
+            _ => crate::error::external_request_failure_message(code),
         }
         .into();
     }
@@ -214,6 +214,7 @@ public_events! {
     RemoteMachinesChanged => "remote_machines_changed",
     WaitingRoomInventoryChanged => "waiting_room_inventory_changed",
     WaitingRoomRowsChanged => "waiting_room_rows_changed",
+    ClientCatalogChanged => "client_catalog_changed",
     ProviderCatalogChanged => "provider_catalog_changed",
     SlicesChanged => "slices_changed",
     WorkflowDesignOp => "workflow_design_op",

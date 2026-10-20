@@ -56,6 +56,7 @@ pub(crate) struct ProviderRunActorMailbox {
     finished_selection_syncs: Arc<Mutex<Vec<FinishedProviderRunSelectionSyncJob>>>,
     finished_output_polls: Arc<Mutex<Vec<FinishedProviderOutputPollJob>>>,
     completion_signal: ProviderRunActorCompletionSignal,
+    output_ready_signal: super::output_ready::ProviderOutputReadySignal,
     output_poll_delays: Arc<Mutex<BTreeMap<String, Duration>>>,
     #[cfg(test)]
     manual_output_polls: Arc<std::sync::atomic::AtomicBool>,
@@ -77,6 +78,7 @@ impl Default for ProviderRunActorMailbox {
             finished_selection_syncs: Arc::new(Mutex::new(Vec::new())),
             finished_output_polls: Arc::new(Mutex::new(Vec::new())),
             completion_signal: ProviderRunActorCompletionSignal::default(),
+            output_ready_signal: Default::default(),
             output_poll_delays: Arc::new(Mutex::new(BTreeMap::new())),
             #[cfg(test)]
             manual_output_polls: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -107,6 +109,10 @@ impl ProviderRunActorMailbox {
         self.operation_lanes.clone()
     }
 
+    pub(crate) fn output_ready_signal(&self) -> super::output_ready::ProviderOutputReadySignal {
+        self.output_ready_signal.clone()
+    }
+
     pub(crate) fn completion_signal(&self) -> ProviderRunActorCompletionSignal {
         self.completion_signal.clone()
     }
@@ -134,14 +140,19 @@ impl ProviderRunActorMailbox {
     }
 
     pub(crate) fn insert_claude_runtime(&self, run_id: String, state: ClaudeRuntimeState) {
+        state
+            .output_notifier
+            .bind(run_id.clone(), self.output_ready_signal.clone());
         self.runtime_registry.insert_claude_runtime(run_id, state);
     }
 
-    pub(crate) fn insert_codex_runtime(&self, run_id: String, state: CodexRuntimeState) {
+    pub(crate) fn insert_codex_runtime(&self, run_id: String, mut state: CodexRuntimeState) {
+        state.bind_output_ready(run_id.clone(), self.output_ready_signal.clone());
         self.runtime_registry.insert_codex_runtime(run_id, state);
     }
 
     pub(crate) fn insert_opencode_runtime(&self, run_id: String, state: OpenCodeRuntimeState) {
+        state.bind_output_ready(run_id.clone(), self.output_ready_signal.clone());
         self.runtime_registry.insert_opencode_runtime(run_id, state);
     }
 

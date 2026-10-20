@@ -119,10 +119,12 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_BROWSER_STATUS_TOOL.to_string(),
-            description: "Return DOM-level browser status for the Chariox slice browser, including URL, title, focused element, and visible fields/buttons/links.".to_string(),
+            description: "Return DOM-level browser status for the Chariox slice browser, including URL, title, focused element, and visible fields/buttons/links. Output is capped at 24 KiB. When page.next_cursor is present the page has more elements: call again with cursor set to it, or use slice_browser_find to locate a specific element.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "cursor": {"type": "integer", "minimum": 0, "default": 0, "description": "page.next_cursor from a previous slice_browser_status result."}
+                },
                 "additionalProperties": false
             }),
         },

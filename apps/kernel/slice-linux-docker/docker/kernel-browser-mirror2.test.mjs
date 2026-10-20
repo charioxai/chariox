@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
 import { inflateRawSync, constants as zlib } from 'node:zlib';
 import { Mirror2, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports } from './kernel-browser-mirror2.mjs';
+const pageSize=()=>({width:1280,height:800});
 
 const keys = () => { const seen = []; return { seen, resource: (url, base, kind) => { const href = new URL(url, base).href; if (!/^(https?|data):/.test(href)) return null; seen.push([href, kind]); return `r${seen.length}`; } }; };
 const onlyKernelUrls = css => { const all = css.match(/url\s*\(/gi)?.length ?? 0, allowed = css.match(/url\("(?:mr:r[0-9]{1,6}|#[\w-]*)"\)/g)?.length ?? 0; return all === allowed; };
@@ -24,7 +25,7 @@ test('MP-08/MP-10/MP-11 the absent font list reaches only viewers that asked for
 test('MP-08/MP-10/MP-11 native font negotiation is acknowledged only on an opted-in v2 stream',async()=>{
  const {MirrorService}=await import('./kernel-browser-mirror.mjs');
  const connection={send:async method=>{assert.equal(method,'Page.getFrameTree');return {frameTree:{frame:{id:'T',loaderId:'D'}}};}};
- const host={generation:1,scales:new Map(),viewport:()=>({device_scale_factor:1}),displayTarget:async()=>({tab_id:'t',target_id:'T',document_id:'D'}),browser:{resolvePageTarget:async()=>({connection,sessionId:'s'}),inputCapture:{hold:async()=>async()=>{}}}};
+ const host={generation:1,pageSize,scales:new Map(),viewport:()=>({device_scale_factor:1}),displayTarget:async()=>({tab_id:'t',target_id:'T',document_id:'D'}),browser:{resolvePageTarget:async()=>({connection,sessionId:'s'}),inputCapture:{hold:async()=>async()=>{}}}};
  const service=new MirrorService(host);
  try {
   for(const requested of [undefined,true]){
@@ -302,7 +303,7 @@ test('MP-11: every field of a child-frame delta is rebased into the frame slot; 
 });
 
 test('MP-08: a page without opaque regions (and no attached frame) places no tiles without evaluating in the page', async () => {
-  const mirror = new Mirror2({ host: { scales: new Map() } }), calls = [];
+  const mirror = new Mirror2({ host: { pageSize, scales: new Map() } }), calls = [];
   mirror.evaluate = async (world, expression) => { calls.push(expression); return []; };
   mirror.frames = { opaqueBoxes: async () => [] };
   const stream = { frames: new Map(), tileKeys: 'n9', tilesAt: 0 }, world = { ref: 'm' };
@@ -319,7 +320,7 @@ test('MP-08/MP-11: a DOM echo is fenced by the page session\'s navigation events
   const run = async cached => {
     const frameTrees = [], tab = { tab_id: 't', target_id: 'T', document_id: 'D1' }, stream = { tab_id: 't', issued: 1, document_id: 'D1', policy: 'p', fallback: null, header: {}, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '' };
     const connection = { send: async method => { if (method === 'Page.getFrameTree') { frameTrees.push(method); return { frameTree: { frame: { loaderId: 'D2' } } }; } return {}; } };
-    const host = { protection: 'p', generation: 1, scales: new Map(), displayTarget: async () => tab, browser: { documentIdsByTarget: new Map([['T', cached]]) } };
+    const host = { protection: 'p', generation: 1, pageSize, scales: new Map(), displayTarget: async () => tab, browser: { documentIdsByTarget: new Map([['T', cached]]) } };
     const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
     mirror.world = async () => ({ connection, sessionId: 'S', ref: 'm' });
     mirror.evaluate = async () => ({ ops: [{ op: 'text', id: 'n5', text: 'menu' }], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0 });
@@ -398,7 +399,7 @@ test('MP-08/MP-10/MP-11: a packet on an unchanged document reuses its world; a n
     const connection = { isOpen: () => open, send: async method => { calls.push(method); return { frameTree: { frame: { loaderId: 'D1' } } }; } };
     const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
     const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy: 'p', fallback: null, header: {}, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '' };
-    const host = { protection: 'p', generation: 1, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => { calls.push('displayTarget'); return tab; },
+    const host = { protection: 'p', generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => { calls.push('displayTarget'); return tab; },
       browser: { connection, documentIdsByTarget: new Map([['T', document]]), sessionsByTarget: new Map([['T', session]]) } };
     const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
     mirror.world = async () => { calls.push('world'); return world; };
@@ -415,7 +416,7 @@ test('MP-08/MP-10/MP-11: a packet on an unchanged document reuses its world; a n
 // MP-08/MP-10: an echo right after viewer input does not wait for the page to measure opaque regions; the next
 // quiet packet measures them (and the 25% budget), even on a page that had none.
 test('MP-08/MP-10: opaque regions are measured by the next quiet packet, not by an echo after input', async () => {
-  const mirror = new Mirror2({ host: { scales: new Map() } }), calls = [];
+  const mirror = new Mirror2({ host: { pageSize, scales: new Map() } }), calls = [];
   mirror.evaluate = async (_world, expression) => { calls.push(expression); return []; };
   mirror.frames = { opaqueBoxes: async () => [] };
   const stream = { frames: new Map(), tileKeys: '', tilesAt: 0, inputAt: Date.now() }, world = { ref: 'm' };
@@ -438,7 +439,7 @@ test('MP-08/MP-10: an empty drain re-arms the long poll without a separate loade
   const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
   const header = { snapshot_complete: 'false', font_failures:'[]', scroll: '[0,0]', focused: 'null', selection: 'null', fragment: 'null' };
   const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy: 'p', fallback: null, header, sentScroll: [0, 0], resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', movedAt: 0 };
-  const host = { protection: 'p', generation: 1, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
+  const host = { protection: 'p', generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
     browser: { connection, documentIdsByTarget: new Map([['T', 'D1']]), sessionsByTarget: new Map([['T', 'S']]) } };
   const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
   const delta = ops => ({ ops, changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0, loaded: 4 });
@@ -457,7 +458,7 @@ test('MP-08/MP-10: a new document is held until its first contentful paint befor
     const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: document } } }) };
     const world = { connection, sessionId: 'S', frame: { loaderId: document }, ref: 'm', navigatedAt: performance.timeOrigin + performance.now() - age };
     const stream = { tab_id: 't', world, issued, document_id: previous, policy, fallback: null, header: {}, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '' };
-    const host = { protection: policy, generation: 1, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
+    const host = { protection: policy, generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
       browser: { connection, appTabs: { async flushDrafts() { calls.push('draft-flush'); } }, documentIdsByTarget: new Map([['T', document]]), sessionsByTarget: new Map([['T', 'S']]) } };
     const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
     mirror.world = async () => world;
@@ -487,7 +488,7 @@ test('MP-08/MP-10: a navigation ends a waiting long poll before its deadline', a
   const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: documents.get('T') } } }) };
   const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
   const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, header: { scroll: '[0,0]', focused: 'null', selection: 'null', fragment: 'null' } };
-  const host = { protection: policy, generation: 1, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
+  const host = { protection: policy, generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
     browser: { connection, documentIdsByTarget: documents, sessionsByTarget: new Map([['T', 'S']]) } };
   const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
   mirror.world = async () => world;
@@ -592,7 +593,7 @@ test('MP-10 independent sheet bodies overlap in batches of at most four and reta
 
 test('MP-08/MP-10/MP-11 native navigation preview precedes observer work and retires old input epochs', async () => {
  const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',navigationPreview:true,issued:5,document_id:'old',resetAt:1};
- const host={generation:1,scales:new Map(),protection:{},browser:{},mirrorTarget:async()=>tab};
+ const host={generation:1,pageSize,scales:new Map(),protection:{},browser:{},mirrorTarget:async()=>tab};
  const mirror=new Mirror2({host,require:()=>stream,streams:new Map([['s',stream]])});
  let retired=0;mirror.regions.retireStream=()=>{retired++};mirror.world=async()=>{throw Error('observer must not delay preview')};
  const packet=await mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:5},'scope');
@@ -610,7 +611,7 @@ test('MP-08/MP-10/MP-11 explicit handover flush ends older polls before a fresh 
 
 test('MP-08/MP-10/MP-11 native preview follows a document transition, not initial attachment',async()=>{
  const tab={tab_id:'t',target_id:'T',document_id:'initial'},stream={tab_id:'t',scope:'scope',navigationPreview:true,initialDocument:'initial',issued:0};
- const mirror=new Mirror2({host:{generation:1,scales:new Map(),protection:{},browser:{},mirrorTarget:async()=>tab},require:()=>stream,streams:new Map([['s',stream]])});
+ const mirror=new Mirror2({host:{generation:1,pageSize,scales:new Map(),protection:{},browser:{},mirrorTarget:async()=>tab},require:()=>stream,streams:new Map([['s',stream]])});
  mirror.world=async()=>{throw Error('initial document uses the ordinary mirror path')};
  await assert.rejects(mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:0},'scope'),/initial document uses the ordinary mirror path/);
  tab.document_id='typed';mirror.regions.retireStream=()=>{};
@@ -620,7 +621,7 @@ test('MP-08/MP-10/MP-11 native preview follows a document transition, not initia
 
 test('MP-08/MP-10/MP-11 the protected native preview can initialize before observer work',async()=>{
  const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',navigationPreview:true,previewDocument:'new',issued:6,document_id:'old',resetAt:7};
- const displays=new Map(),host={generation:1,scales:new Map(),protection:{},browser:{},displays,chromium:{desktop:{binding:()=>({})}},mirrorTarget:async()=>tab};
+ const displays=new Map(),host={generation:1,pageSize,scales:new Map(),protection:{},browser:{},displays,chromium:{desktop:{binding:()=>({})}},mirrorTarget:async()=>tab};
  const mirror=new Mirror2({host,require:()=>stream,streams:new Map([['s',stream]])});let ready=false;
  mirror.world=async()=>{assert(ready,'observer must leave startup time for the protected native source');throw Error('observer reached after preview')};
  const pending=mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:6},'scope');pending.catch(()=>{});
@@ -633,7 +634,7 @@ for(const reply of ['evicted','delta','rejected'])test('MP-08/MP-10/MP-11 naviga
  const connection={isOpen:()=>true,send:async method=>{calls.push(method);return{frameTree:{frame:{loaderId:'D2'}}};}};
  const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
  const stream={tab_id:'t',world,issued:1,document_id:'D1',policy,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
- const host={protection:policy,generation:1,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,browser:{connection,documentIdsByTarget:documents,sessionsByTarget:new Map([['T','S']])}};
+ const host={protection:policy,generation:1,pageSize,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,browser:{connection,documentIdsByTarget:documents,sessionsByTarget:new Map([['T','S']])}};
  const mirror=new Mirror2({host,require:()=>stream,streams:new Map([['s',stream]])});
  const delta={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],focused:null,selection:null,fragment:null,opaque:false,pressed:0,nodes:[],root:'n1'};
  mirror.evaluate=async(_,expression)=>{calls.push(expression);if(expression==='m.drain()'){documents.set('T','D2');if(reply==='rejected')throw Error('context destroyed');return reply==='evicted'?{resync:'evicted'}:delta;}return delta;};
@@ -649,7 +650,7 @@ test('MP-11 #1016 review 2: a completed early packet is retired when protection 
  const connection={isOpen:()=>true,send:async()=>({})};
  const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
  const stream={id:'s',chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
- const host={protection:policy,generation:1,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const host={protection:policy,generation:1,pageSize,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
  const service={streams:new Map([['s',stream]]),require:()=>stream};
  const mirror=new Mirror2({host,...service});let field='old secret',snapshots=0;
  mirror.evaluate=async(_,expression)=>{if(expression==='m.snapshot()'){snapshots++;return{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'input',attrs:{value:field}}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true};}return {ops:[],changed:[],resources:[],sheets:[],scroll:[0,0]};};
@@ -667,7 +668,7 @@ test('MP-11 #1016 @95ed0bdc8 review 1: a protection change retires cached credit
  const connection={isOpen:()=>true,send:async()=>({})};
  const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
  const stream={id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
- const host={protection:policy,generation:1,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const host={protection:policy,generation:1,pageSize,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
  const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});let field='old secret',snapshots=0;
  mirror.evaluate=async(_,expression)=>{if(expression==='m.snapshot()'){snapshots++;return{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'input',attrs:{value:field}}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true};}return {ops:[],changed:[],resources:[],sheets:[],scroll:[0,0]};};
  mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.tiles=async()=>[];mirror.markClosedHosts=async()=>{};
@@ -690,7 +691,7 @@ test('MP-11 #1016 @3a955d73c review 1: a packet still encoding when protection c
  const connection={isOpen:()=>true,send:async()=>({})};
  const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
  const stream={id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
- const host={protection:policy,generation:1,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const host={protection:policy,generation:1,pageSize,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
  const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});let field='old secret',snapshots=0;
  mirror.evaluate=async(_,expression)=>{if(expression==='m.snapshot()'){snapshots++;return{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'input',attrs:{value:field}}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true};}return {ops:[],changed:[],resources:[],sheets:[],scroll:[0,0]};};
  mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.tiles=async()=>[];mirror.markClosedHosts=async()=>{};
@@ -711,7 +712,7 @@ test('MP-08/MP-10 r47 GitHub storm: credits based before a reset still in flight
  const connection={isOpen:()=>true,send:async()=>({})};
  const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
  const stream={id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,resetAt:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
- const host={protection:policy,generation:1,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const host={protection:policy,generation:1,pageSize,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
  const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});let snapshots=0;
  mirror.evaluate=async(_,expression)=>{if(expression==='m.snapshot()'){snapshots++;return{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'main'}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true};}return {ops:[],changed:[],resources:[],sheets:[],scroll:[0,0]};};
  mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.tiles=async()=>[];mirror.markClosedHosts=async()=>{};
@@ -729,7 +730,7 @@ test('MP-08/MP-10 mirrorregion: full-viewport media stays a DOM copy without los
  const connection={isOpen:()=>true,send:async()=>({})};
  const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
  const stream={id:'s',chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
- const host={protection:policy,generation:1,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const host={protection:policy,generation:1,pageSize,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
  const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});
  let boxes=[],drain={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],opaque:false};
  const page={snapshot_complete:true,font_failures:[],scroll:[0,0],focused:null,selection:null,fragment:null};
@@ -764,7 +765,7 @@ test('MP-08/MP-10 mirrorregion: full-viewport media stays a DOM copy without los
 
 test('MP-08/MP-10/MP-11 a renderer that stays busy keeps the native preview waiting instead of failing the subscription',async()=>{
  const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',navigationPreview:true,previewDocument:'new',previewWaitedDocument:'new',issued:6,document_id:'old',resetAt:7};
- const host={generation:1,scales:new Map(),protection:{},browser:{},mirrorTarget:async()=>tab};
+ const host={generation:1,pageSize,scales:new Map(),protection:{},browser:{},mirrorTarget:async()=>tab};
  const mirror=new Mirror2({host,require:()=>stream,streams:new Map([['s',stream]])});let busy=true;
  mirror.world=async()=>{if(busy)throw Object.assign(Error('browser CDP method Page.getFrameTree timed out after 5000ms'),{code:'browser_cdp_timeout'});throw Error('observer reached')};
  const packet=await mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:6},'scope');
@@ -777,7 +778,7 @@ test('MP-08/MP-10/MP-11 a renderer that stays busy keeps the native preview wait
 
 test('MP-08/MP-10/MP-11 a busy renderer without a native preview still surfaces its timeout',async()=>{
  const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',issued:6,document_id:'old',resetAt:7};
- const mirror=new Mirror2({host:{generation:1,scales:new Map(),protection:{},browser:{},mirrorTarget:async()=>tab},require:()=>stream,streams:new Map([['s',stream]])});
+ const mirror=new Mirror2({host:{generation:1,pageSize,scales:new Map(),protection:{},browser:{},mirrorTarget:async()=>tab},require:()=>stream,streams:new Map([['s',stream]])});
  mirror.world=async()=>{throw Object.assign(Error('timed out'),{code:'browser_cdp_timeout'})};
  await assert.rejects(mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:6},'scope'),error=>error.code==='browser_cdp_timeout');
 });
@@ -787,7 +788,7 @@ function busyFixture(extra = {}) {
  const connection = { isOpen: () => true, send: async () => ({}) };
  const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
  const stream = { id: 's', wire: 2, chain: Promise.resolve(), tab_id: 't', world, issued: 0, document_id: null, policy: null, fallback: null, header: {}, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', ...extra };
- const host = { protection: policy, generation: 1, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab, mirrorTarget: async () => tab, browser: { connection, documentIdsByTarget: new Map([['T', 'D1']]), sessionsByTarget: new Map([['T', 'S']]) } };
+ const host = { protection: policy, generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab, mirrorTarget: async () => tab, browser: { connection, documentIdsByTarget: new Map([['T', 'D1']]), sessionsByTarget: new Map([['T', 'S']]) } };
  const mirror = new Mirror2({ host, require: () => stream, streams: new Map([['s', stream]]) });
  mirror.frames = { attach: async () => ({ records: [], ops: [], opaque: [] }), drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source, opaqueBoxes: async () => [] };
  mirror.materialize = async () => []; mirror.sheetOps = async () => []; mirror.tiles = async () => []; mirror.markClosedHosts = async () => {};
@@ -823,7 +824,7 @@ test('MP-08/MP-10/MP-11 a delta credit waits a little longer than the default fo
 
 test('MP-08/MP-10/MP-11 observer calls of a snapshot wait for a busy renderer, any other read keeps the short timeout',async()=>{
  const sent=[],world={contextId:1,sessionId:'S',connection:{send:async(method,params,session,options)=>{sent.push(options?.timeoutMs);return{result:{value:1}}}}};
- const mirror=new Mirror2({host:{generation:1,scales:new Map(),protection:{},browser:{}},require:()=>({}),streams:new Map()});
+ const mirror=new Mirror2({host:{generation:1,pageSize,scales:new Map(),protection:{},browser:{}},require:()=>({}),streams:new Map()});
  await mirror.evaluate(world,'1');
  world.patience=()=>17_000;
  await mirror.evaluate(world,'1');

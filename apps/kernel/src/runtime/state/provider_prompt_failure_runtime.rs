@@ -78,6 +78,7 @@ impl KernelRuntimeState {
             return Ok(false);
         }
         let guarded_prompt_id = active_prompt.id().to_string();
+        self.flush_provider_history(provider_run_id).await?;
         if self
             .try_provider_auth_recovery(&provider_run, message, expected_prompt_id)
             .await?

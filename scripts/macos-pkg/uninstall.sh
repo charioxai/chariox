@@ -28,6 +28,7 @@ INSTALLER="$PACKAGE/chariox-app-runtime-install"
 MANIFEST="$PACKAGE/bin.sha256"
 CONTEXT="$R/usr/local/share/chariox/slice-build-context"
 CONTEXT_MANIFEST="$PACKAGE/slice-build-context.sha256"
+IMAGE="$R/usr/local/share/chariox/slice-image"
 RUNTIMES="$SUPPORT/AppRuntimes"
 ENROLLMENT_DIR="$SUPPORT/AppRuntime"
 AGENT="$R/Library/LaunchAgents/$LABEL.plist"
@@ -149,6 +150,11 @@ if [ -d "$CONTEXT" ]; then
   act "remove the emptied directories of $CONTEXT" find "$CONTEXT" -type d -empty -delete
   [ ! -d "$CONTEXT" ] || [ "$dry_run" = 1 ] || say "kept $CONTEXT: it is not empty"
 fi
+# The slice image is the package's own pair of files, signed with it; its 1.4 GB are not hashed again here.
+for file in "$IMAGE/chariox-slice-linux.tar.gz" "$IMAGE/slice-image.json"; do
+  [ ! -f "$file" ] || [ -L "$file" ] || act "remove $file" rm -f -- "$file"
+done
+[ ! -d "$IMAGE" ] || act "remove the emptied $IMAGE" find "$IMAGE" -type d -empty -delete
 prune "$R/usr/local/share/chariox"
 
 # 4. The package itself. Keep /tmp admission lock inodes: another installation

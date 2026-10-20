@@ -17,6 +17,7 @@ import { buildHostedCloudViewUrl } from "./cloud-command-lifecycle.js"
 import { importExternalProviderAgent } from "./external-provider-session-api.js"
 import { openExternalUrl } from "./external-url.js"
 import type { ProviderLoginLinkOptions } from "./provider-login-link.js"
+import type { SessionSelection } from "./session-lifecycle.js"
 import { formatAgentLabel } from "./agent-label.js"
 import { grantAgentApp, revokeAgentApp } from "./app-binding-api.js"
 import {
@@ -185,9 +186,9 @@ import {
   restoreSliceBackup,
   saveSliceState,
   startSliceProviderLogin,
-  startSlice,
   stopSlice,
 } from "./slice-api.js"
+import { startSliceShowingProgress } from "./slice-start-progress.js"
 import {
   attachWorkspaceLink,
   createWorkspaceLink,
@@ -238,6 +239,7 @@ export type CliCommandActionCompositionDeps = {
   appendCloudNotice: AnyFn
   formatError: AnyFn
   attachBinding: AnyFn
+  beginSessionSelection?: (session: { id: string }) => SessionSelection | null
   transitionToNoSession: AnyFn
   applyProviderSelection: AnyFn
   applyAccountSelection: AnyFn
@@ -545,6 +547,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       createSessionInvite(client, sessionId, expiresInMs, maxUses, collaborationLevel),
     joinSessionInvite: (inviteToken, userId) => joinSessionInvite(client, inviteToken, userId),
     attachBinding: (session, createdSession) => attachBinding(session, createdSession),
+    beginSessionSelection: reference => deps.beginSessionSelection?.({ id: reference }) ?? null,
     resolveSession: (reference, workspace) => resolveSession(client, reference, workspace),
     listSessions: () => listSessions(client),
     deleteSessionByRef: (reference, workspace) => deleteSessionByRef(client, reference, workspace),
@@ -599,7 +602,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     storeProviderSetupToken: (profile, value, replace) => storeProviderSetupToken(client, profile, value, replace, {
       ...(isAttached() ? { sessionId: sessionState().id, agentId: focusedAgentId() } : {}),
     }),
-    logoutProvider: (provider, accountProfile) => logoutProvider(client, provider, accountProfile),
+    logoutProvider: (provider, accountProfile, endEverywhere) => logoutProvider(client, provider, accountProfile, endEverywhere),
     listProviderAccountProfiles: (provider) => listProviderAccountProfiles(client, provider),
     createProviderAccountProfile: (provider, label) => createProviderAccountProfile(client, provider, label),
     linkProviderAccountProfile: (provider, label, path) => linkProviderAccountProfile(client, provider, label, path),
@@ -680,7 +683,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     },
     getSlice: async (sliceRef) => getSlice(client, sliceRef),
     startSlice: async (sliceRef) => {
-      const slice = await startSlice(client, sliceRef)
+      const slice = await startSliceShowingProgress(client, sliceRef, (message) => flashFooter(message, "info"))
       setSlicesState(await listSlices(client))
       return slice
     },

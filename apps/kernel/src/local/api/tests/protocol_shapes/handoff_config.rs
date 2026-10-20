@@ -3,7 +3,10 @@ use super::*;
 
 #[test]
 fn populated_handoff_config_responses_have_versioned_shapes_and_hashes() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, crate::test_support::expected_local_protocol_version());
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let mut config = crate::config::CharioxUserConfig::default();
     config.history.handoff.codex_brief_model = Some("gpt-6-luna".into());
     config.history.handoff.claude_brief_model = Some("claude-haiku-5-5".into());

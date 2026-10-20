@@ -1,3 +1,4 @@
+import { workspaceLiveSyncUiEnabled } from "./workspace-live-sync-mode.js"
 import { resolve as resolvePath } from "node:path"
 
 import type {
@@ -46,6 +47,7 @@ export async function executeWorkspaceCommand(
 ): Promise<ShellCommandResult> {
   const [resource, action, ...args] = parsed.args
   if (resource === "sync") {
+    if (!workspaceLiveSyncUiEnabled) return { ok: false, message: "This command is unavailable" } // MP-08 OWNER-20: discontinued, implementation retained below.
     return executeWorkspaceSyncCommand(action, args, context, deps)
   }
   if (resource !== "link") {
@@ -98,7 +100,7 @@ export async function executeWorkspaceCommand(
       const payload = expectVariant<{ link: WorkspaceLinkDefinition; session: RuntimeSession }>(response, "WorkspaceLinkAttached")
       return {
         ok: true,
-        message: `attached ${repoRoot} to workspace link ${payload.link.name}; live sync mode is unchanged; choose \`workspace sync managed\` or \`workspace sync tracked\` to start syncing this session`,
+        message: `attached ${repoRoot} to workspace link ${payload.link.name}`,
         data: payload,
         contextUpdates: { sessionId: payload.session.id },
       }
@@ -272,7 +274,7 @@ async function executeWorkspaceSyncCommand(
     const payload = expectVariant<{ link: WorkspaceLinkDefinition; session: RuntimeSession }>(response, "WorkspaceLinkAttached")
     return {
       ok: true,
-      message: `linked ${repoRoot} for workspace live sync via ${payload.link.name}; live sync mode is unchanged; choose \`workspace sync managed\` or \`workspace sync tracked\` to start syncing this session`,
+      message: `linked ${repoRoot} for workspace live sync via ${payload.link.name}`,
       data: payload,
       contextUpdates: { sessionId: payload.session.id },
     }
@@ -288,7 +290,7 @@ function workspaceUsage(): string {
 }
 
 function workspaceSyncUsage(): string {
-  return "workspace sync status|doctor|targets|conflicts|ignore|audit|off|managed|tracked|default|link"
+  return "workspace link create|list|show|attach|detach"
 }
 
 function readNumberOption(args: string[], flag: string): number | null {
