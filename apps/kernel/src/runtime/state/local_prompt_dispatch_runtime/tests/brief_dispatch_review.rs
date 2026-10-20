@@ -626,6 +626,23 @@ async fn room_retirement_between_brief_chunks_never_replays_the_next_utility_inp
         // Haiku has a stable 200k window; default Sonnet grows to 1M in #919.
         "haiku",
     );
+    let history = fixture
+        .runtime
+        .owned
+        .operational_history_store
+        .load_session_events(&fixture.session_id, Some(&fixture.agent_id))
+        .unwrap();
+    assert_eq!(
+        history
+            .iter()
+            .filter(|event| event
+                .content
+                .as_deref()
+                .is_some_and(|text| text.starts_with("retire-this-transcript")))
+            .count(),
+        200,
+        "same-tick fixture transcripts must keep distinct history identities"
+    );
     fixture.prepare().await;
     {
         let _guard = fixture

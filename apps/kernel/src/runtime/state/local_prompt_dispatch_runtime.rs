@@ -2858,20 +2858,23 @@ pub(in crate::runtime::state) mod tests {
             } else {
                 format!("prior-{index}")
             };
+            let mut entry = crate::history::SessionHistoryEntry::user_prompt(
+                session.id(),
+                &prior_id,
+                agent.id(),
+                *prior,
+            );
+            // Fast fixture writes can share a clock tick. Their identity must
+            // come from the history allocator, as it does for real transcripts.
+            entry.timestamp_ms = 100;
             app.operational_history_store()
-                .append(&crate::history::HistoryEvent::transcript(
-                    100,
-                    &crate::history::SessionHistoryEntry::user_prompt(
-                        session.id(),
-                        &prior_id,
-                        agent.id(),
-                        *prior,
-                    ),
+                .append_transcript(
+                    &entry,
                     crate::history::HistoryEventTurnContext {
                         prompt_id: Some(prior_id),
                         ..Default::default()
                     },
-                ))
+                )
                 .unwrap();
         }
         let PromptSubmissionOutcome::Started { prompt } = app
