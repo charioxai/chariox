@@ -8,6 +8,16 @@ use zeroize::Zeroize;
 
 mod cache;
 pub(super) use cache::AssessmentResults;
+/// A leased turn's task carries the projected `leased:<lease>:<worker run>` id while the
+/// worker's output arrives under the plain worker run id.
+fn run_is_output_run(task_run: &str, output_run: &str) -> bool {
+    task_run == output_run
+        || task_run
+            .strip_prefix("leased:")
+            .and_then(|rest| rest.rsplit_once(':'))
+            .is_some_and(|(_, worker_run)| worker_run == output_run)
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn private_evidence_for_dispatch(
         &self,
@@ -73,7 +83,10 @@ impl KernelRuntimeOwnedState {
         if !tasks.iter().any(|task| {
             task.state == ExecutionState::Working
                 && task.prompt_id == prompt.id()
-                && task.provider_run_id.as_deref() == Some(&output.provider_run_id)
+                && task
+                    .provider_run_id
+                    .as_deref()
+                    .is_some_and(|run| run_is_output_run(run, &output.provider_run_id))
                 && goals::is_check(task, prompt.id())
         }) {
             return;
@@ -249,6 +262,14 @@ fn fence_private_assessment(value: &mut Assessment, live: &[String]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_leased_task_run_matches_the_workers_plain_output_run() {
+        assert!(run_is_output_run("run-1", "run-1"));
+        assert!(run_is_output_run("leased:lease-1:run-7", "run-7"));
+        assert!(!run_is_output_run("leased:lease-1:run-7", "run-8"));
+        assert!(!run_is_output_run("run-1", "run-2"));
+    }
+
     use super::*;
     #[test]
     fn mp11_private_assessment_fences_prose_and_rejects_unadmitted_fields() {
