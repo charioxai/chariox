@@ -45,7 +45,8 @@ pub(super) enum CancelledLocalPromptRestartOutcome {
 type DurableRestartRecoveryTarget = (String, String, String);
 type DurableRestartDispatchTarget = (String, String, String, String);
 const TRANSCRIPT_OBSERVATION_ATTEMPTS_BEFORE_REDISPATCH: u32 = 9;
-const RESTART_RECOVERY_ATTEMPTS: u32 = 300;
+// Wall clock, not attempts: one attempt can take seconds (a launch that waits on a locked Vault).
+const RESTART_RECOVERY_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
 const UNRECOVERABLE_PROMPT_REASON: &str = "The prompt could not be restored after the restart (the provider could not start, for example because the Chariox Vault stayed locked)";
 const RESTART_RECOVERY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -102,7 +103,7 @@ impl KernelRuntimeState {
                     &recovery_targets,
                     &queued_recovery_targets,
                     dispatch_targets,
-                    RESTART_RECOVERY_ATTEMPTS,
+                    RESTART_RECOVERY_WINDOW,
                     RESTART_RECOVERY_RETRY_DELAY,
                 )
                 .await;
@@ -131,9 +132,10 @@ impl KernelRuntimeState {
         recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
         queued_recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
         mut pending_dispatch_targets: BTreeSet<DurableRestartDispatchTarget>,
-        attempts: u32,
+        window: std::time::Duration,
         retry_delay: std::time::Duration,
     ) -> DurableRestartRecoverySummary {
+        let started = std::time::Instant::now();
         let mut attempt = 0_u32;
         loop {
             let mut summary = self
@@ -178,7 +180,7 @@ impl KernelRuntimeState {
             if summary.transcript_recovery_pending == 0 && summary.failed_reconciliations == 0 {
                 return summary;
             }
-            if attempt.saturating_add(1) >= attempts {
+            if started.elapsed() >= window {
                 self.cancel_unrecoverable_local_prompts_after_restart(&mut summary)
                     .await;
                 return summary;
@@ -1802,7 +1804,7 @@ mod tests {
                 &targets,
                 &BTreeSet::new(),
                 BTreeSet::new(),
-                2,
+                std::time::Duration::from_millis(20),
                 std::time::Duration::from_millis(1),
             )
             .await;
