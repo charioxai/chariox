@@ -878,7 +878,15 @@ impl KernelRuntimeOwnedState {
         };
         let claim_id =
             self.workflow_dispatch_claim_id(session_id, workflow_run_id, workflow_node_run_id);
-        if self.prompt_workspace_claims.contains(&claim_id) {
+        // The launch path keys the same node's claim by provider run, not by node.
+        let owner = format!("{workflow_run_id}:{workflow_node_run_id}");
+        if self.prompt_workspace_claims.contains(&claim_id)
+            || self.prompt_workspace_claims.any_matching(|claim| {
+                claim.session_id == session_id
+                    && claim.attachment_id.as_deref() == Some(owner.as_str())
+                    && claim.operation == "workflow_node_dispatch"
+            })
+        {
             return Ok(Some(false));
         }
         self.acquire_workflow_node_workspace_claim(

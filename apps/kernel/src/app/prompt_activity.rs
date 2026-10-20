@@ -444,6 +444,17 @@ impl PromptWorkspaceClaimStore {
             .contains_key(provider_run_id)
     }
 
+    pub(crate) fn any_matching(
+        &self,
+        mut predicate: impl FnMut(&WorkspaceOperationClaimSnapshot) -> bool,
+    ) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .any(|claim| claim.snapshot().is_some_and(|snapshot| predicate(&snapshot)))
+    }
+
     pub(crate) fn insert(&self, provider_run_id: String, claim: WorkspaceClaimGuard) {
         self.inner
             .lock()
