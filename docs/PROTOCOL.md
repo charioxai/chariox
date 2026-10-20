@@ -5041,3 +5041,19 @@ still running) and `close`.
   `ended: kernel restarted` and keeps the scrollback.
 - Peer 177 only re-binds the embedded local response union to local 569; no
   peer request is added.
+
+#### Terminal clients (TUI)
+
+`chariox terminal --session REF [--kernel-url URL] [list | new [TITLE] | close TERMINAL | TERMINAL]` and the TUI's
+`/room terminal [...]` attach the screen to a Room terminal (the newest running one, else a new one). Ctrl-] detaches;
+the terminal keeps running. The client resizes the terminal to its own size, draws `snapshot.screen_ansi_base64` on the
+outer terminal's alternate screen, then long-polls `read_output` from `snapshot.output_offset` and sends keystrokes
+as `input`. Rules every client follows:
+
+- A full-screen program inside the terminal never switches the outer screen: its alternate-screen switches are
+  turned into a clear (entering) or a fresh snapshot redraw (leaving).
+- A lost connection keeps the last screen; the client retries `read_output` from the same offset. `gap: true` means
+  the offset is no longer retained: redraw from a snapshot. Only a refusal by the kernel ends the attach.
+- Input that was in flight when the connection dropped is not replayed.
+- While a person types or output flows, the kernel looks at the PTY every 5 ms (every 100 ms when idle), so an echo
+  does not wait for the idle tick.

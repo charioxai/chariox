@@ -18,6 +18,20 @@ pub(super) struct Pumped {
 }
 
 impl Terminal {
+    /// Only what the PTY printed. Cheap enough to run every few milliseconds
+    /// while someone types; sampling the foreground program at that rate would
+    /// count the shell's own start-up helpers as programs.
+    pub(super) fn pump_output(&mut self, pty: &mut PtyManager, now: Instant) -> Pumped {
+        let mut pumped = Pumped {
+            output_changed: false,
+            fired: Fired::new(),
+        };
+        if let Some(run_id) = self.run_id.clone() {
+            pumped.output_changed = self.drain(pty, &run_id, now, &mut pumped.fired);
+        }
+        pumped
+    }
+
     pub(super) fn pump(&mut self, pty: &mut PtyManager, now: Instant) -> Pumped {
         let mut pumped = Pumped {
             output_changed: false,

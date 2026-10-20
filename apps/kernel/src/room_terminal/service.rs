@@ -625,8 +625,13 @@ impl RoomTerminalService {
         }
         let service = self.clone();
         tokio::spawn(async move {
+            let mut last_full = Instant::now();
             loop {
-                service.pump_once();
+                let full = last_full.elapsed() >= PUMP_INTERVAL;
+                if full {
+                    last_full = Instant::now();
+                }
+                service.pump_pass(full);
                 let interval = if service.pump_is_active() {
                     ACTIVE_PUMP_INTERVAL
                 } else {
@@ -667,6 +672,12 @@ impl RoomTerminalService {
     /// Move PTY output into screens, end terminals whose shell exited, track
     /// the driver, fire watches and persist what changed.
     pub(super) fn pump_once(&self) {
+        self.pump_pass(true);
+    }
+
+    /// `full` also looks at the foreground program and the process table;
+    /// the quick passes between full ones only move output.
+    fn pump_pass(&self, full: bool) {
         let mut output_changed = false;
         let mut notifications: Vec<RoomTerminalEvent> = Vec::new();
         let mut wakes: Vec<(oneshot::Sender<RoomTerminalEvent>, RoomTerminalEvent)> = Vec::new();
@@ -680,7 +691,11 @@ impl RoomTerminalService {
             } = &mut *state;
             let now = Instant::now();
             for terminal in terminals.values_mut() {
-                let pumped = terminal.pump(pty, now);
+                let pumped = if full {
+                    terminal.pump(pty, now)
+                } else {
+                    terminal.pump_output(pty, now)
+                };
                 output_changed |= pumped.output_changed;
                 if !pumped.fired.is_empty() {
                     let screen_text = terminal.screen.visible_text();
@@ -695,7 +710,9 @@ impl RoomTerminalService {
                 self.persist_if_due(terminal, now);
             }
         }
-        self.report_work();
+        if full {
+            self.report_work();
+        }
         if output_changed {
             self.extend_active_pump();
             self.inner.output_changed.notify_waiters();
