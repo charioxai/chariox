@@ -111,6 +111,41 @@ impl KernelRuntimeOwnedState {
             })?;
         Ok(())
     }
+    fn entries_answer_prompt(
+        entries: &[crate::history::SessionHistoryEntry],
+        prompt_id: &str,
+        answer_run: &str,
+    ) -> bool {
+        super::agent_task_projection::task_public_outputs(entries, prompt_id, Some(answer_run))
+            .iter()
+            .any(|text| !text.trim().is_empty())
+    }
+
+    /// A Working turn whose prompt already ended but whose end never reached
+    /// the ledger. When its run answered, assess it like a normal turn end.
+    pub(super) fn settle_answered_unsettled_turn(
+        &self,
+        task: &AgentTaskExecution,
+    ) -> Result<Option<(AgentTaskExecution, bool)>, DaemonError> {
+        let Some(run) = task.provider_run_id.as_deref() else {
+            return Ok(None);
+        };
+        let entries = self
+            .operational_history_store
+            .load_session_history_entries(&task.room_id, Some(&task.agent_id))?;
+        if !Self::entries_answer_prompt(&entries, &task.prompt_id, run) {
+            return Ok(None);
+        }
+        let prompt = crate::session::PromptQueueItem::new(
+            task.prompt_id.clone(),
+            "kernel-supervisor",
+            &task.agent_id,
+            "",
+            crate::session::PromptStatus::Completed,
+        );
+        self.settle_agent_task(&task.room_id, &task.agent_id, &prompt, run, false)
+    }
+
     pub(super) fn settle_agent_task(
         &self,
         room: &str,
@@ -156,13 +191,7 @@ impl KernelRuntimeOwnedState {
         let entries = self
             .operational_history_store
             .load_session_history_entries(room, Some(agent))?;
-        let has_answer = super::agent_task_projection::task_public_outputs(
-            &entries,
-            prompt.id(),
-            Some(answer_run),
-        )
-        .iter()
-        .any(|text| !text.trim().is_empty());
+        let has_answer = Self::entries_answer_prompt(&entries, prompt.id(), answer_run);
         if !cancelled {
             if let Some(task) = self
                 .durable_state_store
@@ -725,11 +754,27 @@ impl KernelRuntimeState {
                     .durable_state_store
                     .agent_has_live_wake_admission(&task, crate::session::unix_epoch_ms)?
             {
-                // A turn that answered but was never settled lands here; keep
-                // the facts that attribute the lost settlement edge.
+                // A turn that answered but was never settled lands here: assess
+                // it instead of blocking an answered task.
+                match self.owned.settle_answered_unsettled_turn(&task) {
+                    Ok(Some(settlement)) => {
+                        tracing::warn!(task_id=%task.task_id, prompt_id=%task.prompt_id, provider_run_id=?task.provider_run_id,
+                            "MP-08/MP-09/MP-10/MP-11 A03: supervisor assessed an answered turn whose end was never settled");
+                        let source = crate::session::PromptQueueItem::new(
+                            task.prompt_id.clone(),
+                            "kernel-supervisor",
+                            &task.agent_id,
+                            "",
+                            crate::session::PromptStatus::Completed,
+                        );
+                        Box::pin(self.finish_agent_task_settlement(Some(settlement), &source)).await?;
+                        continue;
+                    }
+                    Ok(None) => {}
+                    Err(error) => tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: unsettled turn assessment failed; blocking"),
+                }
                 tracing::warn!(task_id=%task.task_id, prompt_id=%task.prompt_id, provider_run_id=?task.provider_run_id,
-                    revision=task.revision, answered=self.owned.public_agent_task_answer(&task).ok().flatten().is_some(),
-                    "MP-08/MP-09/MP-10/MP-11 A03: supervisor blocked a working task with no live executor");
+                    revision=task.revision, "MP-08/MP-09/MP-10/MP-11 A03: supervisor blocked a working task with no live executor");
                 if let Outcome::Task(task) = self.owned.durable_state_store.agent_lifecycle(Operation::Block{task:task.task_id,prompt:task.prompt_id,reason:"No live provider turn or confirmed wake delivery; owner must reconcile and resume".into()})? {
                     blocked.push(task);
                 }
