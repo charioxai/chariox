@@ -10,6 +10,7 @@ import type {
 } from "./kernel-types.js"
 
 export type KernelEvent =
+  | { event: "client_catalog_changed"; revision: number }
   | { event: "kernel_browser_frame"; subscription_id: string; frame: Record<string, unknown> }
   | {
     event: "terminal_output"

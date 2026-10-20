@@ -7,6 +7,7 @@ import type {
   TerminalOutputRecord,
 } from "./cli-types.js"
 import { createKernelEventDispatchController } from "./kernel-event-dispatch-controller.js"
+import { clientInventoryEpoch } from "./client-inventory-cache.js"
 import type { SliceRecord } from "@chariox/kernel-client/kernel-types"
 import type { ProviderCatalog } from "./provider-catalog.js"
 
@@ -728,4 +729,13 @@ test("compact task event reaches the projection without history refresh", async 
   const harness=createHarness()
   await harness.controller.handleKernelEvent({event:"agent_task_updated",session_id:"session-1",task:{task_id:"task",revision:8} as never})
   assert.deepEqual(harness.calls,["activity:kernel_agent_task_updated","task:session-1:task:8"])
+})
+
+// MP-08 / MP-10 / MP-11: a pushed revision retires persisted catalog snapshots.
+test("kernel catalog changes invalidate client inventories", async () => {
+  const harness = createHarness()
+  const previous = clientInventoryEpoch()
+  await harness.controller.handleKernelEvent({ event: "client_catalog_changed", revision: 7 })
+  assert.equal(clientInventoryEpoch(), previous + 1)
+  assert.deepEqual(harness.calls, ["activity:kernel_client_catalog_changed"])
 })
