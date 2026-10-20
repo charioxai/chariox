@@ -377,12 +377,13 @@ fn kernel_websocket_rejects_requests_when_inbound_admission_is_full() {
         config.runtime_mcp_port = unused_tcp_port();
         config.kernel_websocket_queue_capacity = 64;
         let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+        // MP-11: production startup materializes the terminal credential.
+        drop(kernel_websocket_listener);
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let server = tokio::spawn(async move {
-            run_kernel_websocket_server_on_listener(
+            chariox_kernel::runtime_transport::run_kernel_websocket_server(
                 std::sync::Arc::new(tokio::sync::Mutex::new(app)),
-                kernel_websocket_listener,
                 async {
                     let _ = shutdown_rx.await;
                 },
@@ -390,7 +391,7 @@ fn kernel_websocket_rejects_requests_when_inbound_admission_is_full() {
             .await
         });
 
-        let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+        let mut socket = connect_terminal_with_retry(&config.kernel_websocket_url()).await;
         let cwd = std::env::current_dir()
             .expect("current directory should be available")
             .to_string_lossy()
@@ -451,7 +452,7 @@ fn kernel_websocket_rejects_requests_when_inbound_admission_is_full() {
             Some(true)
         );
 
-        let mut health_socket = connect_with_retry(&config.kernel_websocket_url()).await;
+        let mut health_socket = connect_terminal_with_retry(&config.kernel_websocket_url()).await;
         // The saturated connection's shell commands are still running; its
         // load must not refuse another connection's health request.
         let health = send_request(
