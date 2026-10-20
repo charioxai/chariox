@@ -40,6 +40,7 @@ export type CliPrimaryTranscriptCompositionDeps = {
   entryCounter: AnyFn
   setEntryCounter: AnyFn
   setHistoryLoadingState: AnyFn
+  setSessionHydratingState: AnyFn
   setEntries: AnyFn
   setPromptHistoryEntries: AnyFn
   setPromptHistoryIndex: AnyFn
@@ -327,6 +328,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
     applyWaitingRoomDefaults: bootstrapDefaultsController.apply,
     applyAttachedProviderRun: deps.applyAttachedProviderRun,
     currentAttachmentSessionId: () => deps.attachmentState()?.session_id ?? null,
+    currentAttachmentId: () => deps.attachmentState()?.id ?? null,
     currentTranscriptEntryCount: () => deps.transcriptEntryProjectionController.renderableEntries().length,
     entryCounter: deps.entryCounter,
     setProviderCatalog: deps.setProviderCatalogState,
@@ -346,6 +348,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
       }))
     },
     setAgentPanePreview: deps.setAgentPanePreview,
+    setSessionHydratingState: deps.setSessionHydratingState,
     replaceTranscriptEntries,
     prependTranscriptEntries,
     logWarning: (message, fields) => {

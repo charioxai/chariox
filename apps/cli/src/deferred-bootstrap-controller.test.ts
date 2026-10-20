@@ -57,6 +57,73 @@ test("deferred bootstrap controller replaces matching attached history", async (
   assert.deepEqual(harness.prependCalls, [])
 })
 
+test("deferred bootstrap controller keeps the session hydrating until attached history settles", async () => {
+  let resolveHistory!: (value: Awaited<NonNullable<BootstrapDeferredState["attachedHistory"]>>) => void
+  const harness = bootstrapHarness({
+    attachmentSessionId: "session-1",
+    deferred: {
+      attachedHistory: new Promise((resolve) => {
+        resolveHistory = resolve
+      }),
+    },
+  })
+
+  harness.controller.apply()
+  await flushPromises()
+  assert.deepEqual(harness.hydrating, [])
+
+  resolveHistory({
+    sessionId: "session-1",
+    visibleAgentId: "agent-1",
+    agentEntries: { "agent-1": [entry(1, "assistant", "hello")] },
+    historyEntries: [entry(1, "assistant", "hello")],
+    promptHistoryEntries: [],
+    nextHistoryCursor: null,
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(harness.replaceCalls, [{ agentId: "agent-1", entries: ["hello"] }])
+  assert.deepEqual(harness.hydrating, [false])
+
+  const failed = bootstrapHarness({
+    attachmentSessionId: "session-1",
+    deferred: { attachedHistory: Promise.reject(new Error("offline")) },
+  })
+  failed.controller.apply()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(failed.hydrating, [false])
+})
+
+// MP-08 / MP-10 (panes R1 review): a startup history that settles after the
+// user attached elsewhere must not clear the newer attach's hydrating state.
+test("deferred bootstrap controller leaves hydration to a newer attachment", async () => {
+  let resolveHistory!: (value: Awaited<NonNullable<BootstrapDeferredState["attachedHistory"]>>) => void
+  const harness = bootstrapHarness({
+    attachmentSessionId: "session-a",
+    attachmentId: "attachment-a",
+    deferred: {
+      attachedHistory: new Promise((resolve) => {
+        resolveHistory = resolve
+      }),
+    },
+  })
+
+  harness.controller.apply()
+  harness.attachmentSessionId = "session-b"
+  harness.attachmentId = "attachment-b"
+  resolveHistory({
+    sessionId: "session-a",
+    visibleAgentId: "agent-1",
+    agentEntries: { "agent-1": [entry(1, "assistant", "stale")] },
+    historyEntries: [entry(1, "assistant", "stale")],
+    promptHistoryEntries: [],
+    nextHistoryCursor: null,
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.deepEqual(harness.replaceCalls, [])
+  assert.deepEqual(harness.hydrating, [])
+})
+
 test("deferred bootstrap controller prepends attached history when transcript already exists", async () => {
   const harness = bootstrapHarness({
     attachmentSessionId: "session-1",
@@ -124,12 +191,14 @@ test("deferred bootstrap controller applies the attach-time launch once it settl
 function bootstrapHarness(options: {
   deferred?: BootstrapDeferredState
   attachmentSessionId?: string | null
+  attachmentId?: string | null
   currentTranscriptEntryCount?: number
   entryCounter?: number
 } = {}) {
   const harness = {
     deferred: options.deferred,
     attachmentSessionId: options.attachmentSessionId ?? null,
+    attachmentId: options.attachmentId ?? null,
     currentTranscriptEntryCount: options.currentTranscriptEntryCount ?? 0,
     entryCounter: options.entryCounter ?? 0,
     providerCatalog: null as ProviderCatalog | null,
@@ -145,6 +214,7 @@ function bootstrapHarness(options: {
     replaceCalls: [] as Array<{ agentId: string | null; entries: string[] }>,
     prependCalls: [] as Array<Array<{ id: number; text: string }>>,
     warnings: [] as string[],
+    hydrating: [] as boolean[],
     controller: null as ReturnType<typeof createDeferredBootstrapController> | null,
   }
   harness.controller = createDeferredBootstrapController({
@@ -153,6 +223,7 @@ function bootstrapHarness(options: {
       harness.attachedProviderRuns.push({ run: run?.id ?? null, statusLine })
     },
     currentAttachmentSessionId: () => harness.attachmentSessionId,
+    currentAttachmentId: () => harness.attachmentId,
     currentTranscriptEntryCount: () => harness.currentTranscriptEntryCount,
     entryCounter: () => harness.entryCounter,
     setProviderCatalog: (catalog) => {
@@ -178,6 +249,9 @@ function bootstrapHarness(options: {
     },
     setAgentPaneEntries: (agentId, entries) => {
       harness.agentPaneEntries[agentId] = entries
+    },
+    setSessionHydratingState: (next) => {
+      harness.hydrating.push(next)
     },
     setAgentPanePreview: (agentId, preview) => {
       harness.agentPanePreviews[agentId] = preview
