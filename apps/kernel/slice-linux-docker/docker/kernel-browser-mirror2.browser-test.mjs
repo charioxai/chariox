@@ -313,6 +313,30 @@ test("MP-10: review #941-3 typing and checkbox changes inside an open shadow roo
   assert.equal(forms.get(field)?.value, "hi"); assert.equal(forms.get(box)?.checked, true);
 }));
 
+// UX-first (r72): a person's click is delivered where they clicked; the native page decides who receives it (as in Chrome).
+test("MP-11: a click on a node the native page covers with an overlay lands on the overlay, not a refusal", () => mirrored(
+  '<button id="b" style="position:absolute;left:10px;top:10px;width:80px;height:30px">b</button><div id="o" style="position:fixed;inset:0"></div><script>window.hits=[];addEventListener("click",e=>hits.push(e.target.id),true)</script>', async ({ next, evaluate, input }) => {
+    const snapshot = await next(), [button] = elements(snapshot).find(([, , attrs]) => attrs.id === "b");
+    await input(snapshot.sequence, { kind: "click", node_id: button, x: 5, y: 5 });
+    assert.deepEqual(await evaluate("hits"), ["o"]);
+  }));
+
+test("MP-11: a click inside a transformed same-origin frame is delivered at the frame's bounding box", () => mirrored(
+  '<iframe id="f" style="position:absolute;left:20px;top:20px;width:200px;height:100px;border:0;transform:translate(7px,3px)" srcdoc="<button id=b style=\'width:80px;height:30px\' onclick=hit=(window.hit||0)+1>b</button>"></iframe>', async ({ next, evaluate, input }) => {
+    await evaluate("new Promise(resolve => f.contentDocument?.getElementById('b') ? resolve(true) : f.addEventListener('load', () => resolve(true)))");
+    const snapshot = await next(600), [button] = elements(snapshot).find(([, tag, attrs]) => tag === "button" && attrs.id === "b") ?? [];
+    assert(button, "the frame's button is mirrored");
+    await input(snapshot.sequence, { kind: "click", node_id: button, x: 5, y: 5 });
+    assert.equal(await evaluate("f.contentWindow.hit"), 1);
+  }));
+
+test("MP-11: a click on a node that lost its box since the viewer's frame lands on its nearest boxed ancestor", () => mirrored(
+  '<div id="p" style="position:absolute;left:200px;top:100px;width:100px;height:40px;background:#ccc">box<span id="z" style="display:contents"></span></div><script>window.hits=[];addEventListener("click",e=>hits.push(e.target.id),true)</script>', async ({ next, evaluate, input }) => {
+    const snapshot = await next(), [collapsed] = elements(snapshot).find(([, , attrs]) => attrs.id === "z");
+    await input(snapshot.sequence, { kind: "click", node_id: collapsed, x: 1, y: 1 });
+    assert.deepEqual(await evaluate("hits"), ["p"]);
+  }));
+
 test("MP-10: review #941-4 property-only changes of unfocused controls reach the viewer (value, checked, radio group, select, form reset)", () => mirrored(
   '<form id="f"><input id="q" value="a"><input id="c" type="checkbox"><input type="radio" name="t" id="r1" checked><input type="radio" name="t" id="r2"><select id="s"><option>x</option><option>y</option></select></form><button id="b">b</button>', async ({ next, evaluate }) => {
     const snapshot = await next();

@@ -920,42 +920,42 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let x = 0, y = 0;
       for (let view = node.ownerDocument.defaultView; view !== window; view = view.parent) {
         const owner = view.frameElement; if (!owner) throw new Error('mirror2 frame unavailable');
-        if (getComputedStyle(owner).transform !== 'none') throw new Error('mirror2 transformed frame');
         const b = owner.getBoundingClientRect(), style = getComputedStyle(owner);
         x += b.x + owner.clientLeft + (parseFloat(style.paddingLeft) || 0); y += b.y + owner.clientTop + (parseFloat(style.paddingTop) || 0);
       }
       return [x, y];
     };
-    // A point inside the live element at the viewer's offset (clamped), hit-tested.
+    // A point inside the live element at the viewer's offset (clamped). A node that lost its box since the
+    // viewer's frame is clicked at the centre of its nearest boxed ancestor. Like Chrome, the click goes to whatever
+    // the native page has at that point (an overlay included); only a protected target is refused.
     const point = request => {
-      const node = live(request.node_id);
+      let node = live(request.node_id);
       if (node.nodeType !== 1) throw new Error('mirror2 element required');
-      const [bx, by, width, height] = box(node);
+      let [bx, by, width, height] = box(node), moved = false;
+      for (let up = 0; !(width > 0 && height > 0) && node.parentElement && up < 32; up++) { node = node.parentElement; [bx, by, width, height] = box(node); moved = true; }
       if (!(width > 0 && height > 0)) throw new Error('mirror2 invisible node');
-      const ox = Number.isFinite(request.x) ? Math.min(Math.max(request.x, 0.5), width - 0.5) : width / 2;
-      const oy = Number.isFinite(request.y) ? Math.min(Math.max(request.y, 0.5), height - 0.5) : height / 2;
+      const ox = !moved && Number.isFinite(request.x) ? Math.min(Math.max(request.x, 0.5), width - 0.5) : width / 2;
+      const oy = !moved && Number.isFinite(request.y) ? Math.min(Math.max(request.y, 0.5), height - 0.5) : height / 2;
       let x = bx + ox, y = by + oy;
       let hit = node.ownerDocument.elementFromPoint(x, y);
       for (let shadow = 0; shadow < 128 && hit?.shadowRoot; shadow++) { const child = hit.shadowRoot.elementFromPoint(x, y); if (!child || child === hit) break; hit = child; }
-      if (!hit || hit !== node && !node.contains(hit) && !(node.shadowRoot?.contains(hit))) throw new Error('mirror2 occluded node');
-      protectedAncestor(hit);
+      if (hit) protectedAncestor(hit);
       const [fx, fy] = frameOffset(node); x += fx; y += fy;
       if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) throw new Error('mirror2 offscreen node');
       return { x: Math.floor(x), y: Math.floor(y) };
     };
-    // Re-validates at dispatch time: the same live target is still at the point.
+    // Re-validates at dispatch time: nothing protected is at the point now.
     const hitCheck = (pt, id) => {
-      const node = live(id); let owner = document, x = pt.x, y = pt.y, hit;
+      live(id); let owner = document, x = pt.x, y = pt.y, hit;
       for (let depth = 0; depth < 128; depth++) {
         hit = owner.elementFromPoint(x, y);
         for (let shadow = 0; shadow < 128 && hit?.shadowRoot; shadow++) { const child = hit.shadowRoot.elementFromPoint(x, y); if (!child || child === hit) break; hit = child; }
         if (hit?.localName !== 'iframe') break;
         let nested = null; try { nested = hit.contentDocument; } catch {} if (!nested) break;
-        const r = hit.getBoundingClientRect(), style = getComputedStyle(hit); if (style.transform !== 'none') throw new Error('mirror2 transformed frame');
+        const r = hit.getBoundingClientRect(), style = getComputedStyle(hit);
         x -= r.x + hit.clientLeft + (parseFloat(style.paddingLeft) || 0); y -= r.y + hit.clientTop + (parseFloat(style.paddingTop) || 0); owner = nested;
       }
-      if (!hit || hit !== node && !node.contains(hit) && !(node.shadowRoot?.contains(hit))) throw new Error('mirror2 changed live target');
-      protectedAncestor(hit);
+      if (hit) protectedAncestor(hit);
       return true;
     };
     const activeTarget = (editable = true) => {
@@ -1015,7 +1015,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // Content-box origin of a cross-origin frame element in this viewport.
     const frameOrigin = id => {
       const node = live(id); if (node.localName !== 'iframe' || !foreign.has(id)) throw new Error('mirror2 frame required');
-      const style = getComputedStyle(node); if (style.transform !== 'none') throw new Error('mirror2 transformed frame');
+      const style = getComputedStyle(node);
       const r = node.getBoundingClientRect(), [fx, fy] = frameOffset(node);
       return [r.x + node.clientLeft + (parseFloat(style.paddingLeft) || 0) + fx, r.y + node.clientTop + (parseFloat(style.paddingTop) || 0) + fy];
     };
