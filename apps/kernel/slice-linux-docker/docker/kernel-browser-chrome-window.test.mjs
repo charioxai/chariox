@@ -1003,7 +1003,7 @@ const publishFixture=async()=>{
  const connection={subscribe(fn){listener=fn;return()=>{listener=null}},isOpen:()=>true,async send(method,params){
   if(method==='Target.getTargets')return {targetInfos:[{type:'service_worker',targetId:'worker',url:`chrome-extension://${TAB_GROUPS_EXTENSION_ID}/sw.js`}]};
   if(method==='Target.attachToTarget')return {sessionId:'worker-session'};
-  if(method==='Runtime.evaluate'){reads++;return {result:{value:viewport}};}
+  if(method==='Runtime.evaluate'){if(params.expression==='charioxTabs.revision === 2')return{result:{value:true}};reads++;return {result:{value:viewport}};}
   if(method==='Browser.getWindowForTarget')return {windowId:1,bounds:{left:0,top:0,width:1280,height:887,windowState:'normal'}};
   return {};
  }};
