@@ -4319,6 +4319,17 @@ on it is refused (the mirror and the band own input). `browser-window-display-56
 shape (Rust hash test `mp08_mp10_mp11_browser_window_display_560_snapshot`). Older kernels refuse
 the target; viewers feature-detect 560.
 
+MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
+`layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.
+A viewer narrower than the canonical desktop (a phone) sends its page area; the kernel lays that
+Tab out at the size through per-target device metrics (width 320-8192, at or above the canonical
+width means canonical, height clamped to the canonical height) and the mirror packets carry the
+laid-out size as `css_width`/`css_height`. The newest subscription owns the layout; a subscribe
+without the fields, or closing the owning subscription, restores the canonical page. Older
+kernels ignore nothing: they refuse unknown fields, so viewers send them only on 560+.
+`browser-mirror2-layout-560.json` pins the shape (Rust hash test
+`browser_mirror2_layout_560_shape_is_pinned`).
+
 MP-08 / MP-10 / MP-11: the 535 browser delivery client also negotiates the
 existing relay-96 `chariox-relay-binary-v96` capability. Bounded CXR1 routing
 metadata enters the same sender-authenticated display decrypt/binding path;
