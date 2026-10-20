@@ -15,7 +15,7 @@ type ConnectFuture<'a> =
 // Keep construction out of callers' poll frames, including their timeout and
 // cancellation wrappers. The normal relay connection remains deferred.
 #[inline(never)]
-pub(super) fn connect(relay_url: &str) -> ConnectFuture<'_> {
+pub(crate) fn connect(relay_url: &str) -> ConnectFuture<'_> {
     Box::pin(connect_async_with_config(
         chariox_relay::frame_transport::transport_url(relay_url),
         None,

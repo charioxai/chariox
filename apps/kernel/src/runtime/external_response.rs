@@ -167,6 +167,7 @@ response_policies! {
         KernelAccessGranted,
         KernelAccessGrantsListed,
         KernelAccessRevoked,
+        GatewayMachinesListed,
         RoomBrowserArtifact,
         AppPublisherEnrollmentStatus,
         AppInstallOperationStatus,

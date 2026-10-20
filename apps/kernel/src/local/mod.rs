@@ -277,7 +277,7 @@ pub use api::{
     RoomEnvironmentScreenshotArtifact, RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,
 };
 pub use api::{
-    ExtendKernelSudoRequest, KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest,
+    ExtendKernelSudoRequest, KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest, GatewayMachine, GatewayMachineStatus, GatewayMachineVia, ListGatewayMachinesRequest, OnBehalfOf,
     RequestKernelAccessRequest, RequestKernelSudoRequest, RevokeKernelAccessGrantRequest,
 };
 pub use api::{

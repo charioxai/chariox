@@ -617,6 +617,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RequestKernelAccess(_)
         | LocalDaemonRequest::ListKernelAccessGrants(_)
         | LocalDaemonRequest::RevokeKernelAccessGrant(_)
+        | LocalDaemonRequest::ListGatewayMachines(_)
         | LocalDaemonRequest::BeginAppPublisherEnrollment(_)
         | LocalDaemonRequest::GetAppPublisherEnrollment(_)
         | LocalDaemonRequest::CancelAppPublisherEnrollment(_)

@@ -32,6 +32,13 @@ pub(super) async fn admit_frame(
     };
     if let Some(turn) = sudo {
         let verdict = match frame {
+            // A sudo window is one turn on this kernel; it does not reach other machines.
+            KernelIncomingFrame::Request {
+                machine: Some(_), ..
+            }
+            | KernelIncomingFrame::Subscribe {
+                machine: Some(_), ..
+            } => Err(Refusal::NotCovered),
             KernelIncomingFrame::Request { request, .. } => runtime_state
                 .authorize_sudo_request(&turn.entry_id, request)
                 .map(|_| ())
@@ -213,6 +220,18 @@ pub(super) async fn admit_frame(
             None if runtime_state.access_ended_for(peer) => Err(Refusal::Ended),
             None => Err(Refusal::NotCovered),
             Some(grant) => match frame {
+                // The target kernel owns the interaction and the session; the
+                // origin checks the grant and the request shape only.
+                KernelIncomingFrame::Request {
+                    request,
+                    machine: Some(_),
+                    ..
+                } => runtime_state
+                    .authorize_gateway_request(&grant.summary.grant_id, request)
+                    .map_err(|error| Refusal::of(&error)),
+                KernelIncomingFrame::Subscribe {
+                    machine: Some(_), ..
+                } => Ok(()),
                 KernelIncomingFrame::Request { request, .. } => runtime_state
                     .authorize_external_request(&grant.summary.grant_id, request)
                     .map_err(|error| Refusal::of(&error)),
@@ -368,4 +387,101 @@ pub(super) fn command_cache_id(peer: &ProcessIdentity, command: &KernelCommand) 
         command.command_id,
     ])
     .to_string()
+}
+
+/// Forwards an admitted request through the machine gateway and answers on the
+/// same connection. The permit bounds concurrent forwards like any other request.
+pub(super) fn forward_to_machine(
+    connection: &IncomingConnection<'_>,
+    caller: &KernelCaller,
+    request_id: String,
+    command_id: Option<String>,
+    machine: String,
+    request: crate::local::LocalDaemonRequest,
+) {
+    let IncomingConnection {
+        runtime,
+        router,
+        inbound_request_admission,
+        connection_inbound_request_permits,
+        outgoing_tx,
+        close_tx,
+        close_requested,
+        ..
+    } = *connection;
+    let permit = match inbound_request_admission
+        .try_acquire(connection_inbound_request_permits, &KernelCommandPriority::Normal)
+    {
+        Ok(permit) => permit,
+        Err(error) => {
+            runtime.transport_health.record_inbound_overload_rejection();
+            let _ = try_send_outgoing_frame(
+                outgoing_tx,
+                close_tx,
+                close_requested,
+                &runtime.transport_health,
+                KernelOutgoingFrame::Response {
+                    request_id,
+                    response: Box::new(None),
+                    error: Some(KernelTransportError {
+                        code: "kernel_request_overloaded".into(),
+                        message: format!("kernel request admission queue overloaded: {error}"),
+                        retryable: true,
+                    }),
+                },
+                None,
+                None,
+            );
+            return;
+        }
+    };
+    let grant_id = caller.caller_id.clone();
+    let harness = router
+        .runtime_state()
+        .access_grant_summary(&grant_id)
+        .map(|grant| {
+            std::path::Path::new(&grant.holder_executable)
+                .file_name()
+                .map_or_else(|| grant.holder_executable.clone(), |n| n.to_string_lossy().into())
+        })
+        .unwrap_or_else(|| "unknown".into());
+    let router = Arc::clone(router);
+    let health = runtime.transport_health.clone();
+    let (outgoing_tx, close_tx, close_requested) = (
+        outgoing_tx.clone(),
+        close_tx.clone(),
+        Arc::clone(close_requested),
+    );
+    tokio::spawn(async move {
+        let _permit = permit;
+        let command_id = command_id.unwrap_or_else(|| request_id.clone());
+        let origin = crate::runtime::machine_gateway::Origin { grant_id, harness };
+        let outcome = router
+            .machine_gateway()
+            .forward(
+                &machine,
+                &origin,
+                &command_id,
+                &request,
+                crate::runtime::machine_gateway::REQUEST_DEADLINE,
+            )
+            .await;
+        let (response, error) = match outcome {
+            Ok(value) => (Some(value), None),
+            Err(failure) => (None, Some(failure.transport_error())),
+        };
+        let _ = try_send_outgoing_frame(
+            &outgoing_tx,
+            &close_tx,
+            &close_requested,
+            &health,
+            KernelOutgoingFrame::Response {
+                request_id,
+                response: Box::new(response),
+                error,
+            },
+            None,
+            None,
+        );
+    });
 }

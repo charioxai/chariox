@@ -207,6 +207,16 @@ impl KernelRuntimeState {
             .is_some_and(|grant| grant.holder.contains(peer))
     }
 
+    pub(crate) fn access_grant_summary(&self, id: &str) -> Option<KernelAccessGrant> {
+        self.owned
+            .kernel_access
+            .lock()
+            .expect("access state poisoned")
+            .grants
+            .get(id)
+            .map(|grant| grant.summary.clone())
+    }
+
     pub(crate) fn list_kernel_access(&self, owner: &str) -> Vec<KernelAccessGrant> {
         self.sweep_kernel_access();
         self.owned

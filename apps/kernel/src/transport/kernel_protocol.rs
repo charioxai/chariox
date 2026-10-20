@@ -43,6 +43,9 @@ pub(crate) enum KernelIncomingFrame {
         causation_id: Option<String>,
         #[serde(default)]
         correlation_id: Option<String>,
+        /// Protocol 568: forward this request through the machine gateway.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machine: Option<String>,
         request: LocalDaemonRequest,
     },
     Subscribe {
@@ -53,6 +56,9 @@ pub(crate) enum KernelIncomingFrame {
         subscription_scope: Option<String>,
         #[serde(default)]
         resume_from_event_id: Option<u64>,
+        /// Protocol 568: subscribe on this machine through the gateway.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machine: Option<String>,
     },
     Unsubscribe {
         request_id: String,

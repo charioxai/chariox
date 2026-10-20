@@ -239,6 +239,7 @@ pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
         | LocalDaemonRequest::RequestKernelAccess(_)
             | LocalDaemonRequest::ListKernelAccessGrants(_)
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)
+            | LocalDaemonRequest::ListGatewayMachines(_)
             | LocalDaemonRequest::ManageCredentialVault(_)
             | LocalDaemonRequest::GetCredential(_)
             | LocalDaemonRequest::SetCredentialSecret(_)

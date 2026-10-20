@@ -23,6 +23,7 @@ pub enum LocalDaemonResponse {
     KernelAccessGranted { grant: KernelAccessGrant, },
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },
     KernelAccessRevoked { revoked: usize, },
+    GatewayMachinesListed { machines: Vec<GatewayMachine>, },
     RoomBrowserArtifact { result: crate::transport::runtime_tools::RuntimeToolResult },
     /// Protocol 477: the safe outcome of the owner's hand-off action.
     HandoffResolved { outcome: HandoffOutcome },

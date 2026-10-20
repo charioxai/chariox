@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::CommandRouter;
 use crate::error::DaemonError;
 use crate::local::{KernelConnectionClass, LocalDaemonRequest, LocalDaemonResponse};
@@ -76,6 +78,30 @@ impl CommandRouter {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn machine_gateway(&self) -> &Arc<crate::runtime::machine_gateway::MachineGateway> {
+        &self.machine_gateway
+    }
+
+    pub(super) async fn list_gateway_machines(
+        &self,
+        command: &KernelCommand,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        if !matches!(
+            command.caller.connection_class,
+            Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
+        ) {
+            return Err(error(
+                "only a Chariox terminal or local grant holder can list machines",
+            ));
+        }
+        let machines = self
+            .machine_gateway
+            .machines()
+            .await
+            .map_err(|failure| error(format!("{}: {}", failure.code(), failure.message())))?;
+        Ok(LocalDaemonResponse::GatewayMachinesListed { machines })
     }
 
     pub(super) fn dispatch_kernel_access(

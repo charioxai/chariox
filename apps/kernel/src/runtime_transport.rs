@@ -1312,9 +1312,42 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
             command_id,
             causation_id,
             correlation_id,
+            machine,
             request,
         } => {
             runtime.transport_health.record_incoming_request();
+            if let Some(machine) = machine {
+                match external_caller.as_ref() {
+                    Some(caller) => unix_access::forward_to_machine(
+                        &connection,
+                        caller,
+                        request_id,
+                        command_id,
+                        machine,
+                        request,
+                    ),
+                    None => {
+                        let _ = try_send_outgoing_frame(
+                            outgoing_tx,
+                            close_tx,
+                            close_requested,
+                            &runtime.transport_health,
+                            KernelOutgoingFrame::Response {
+                                request_id,
+                                response: Box::new(None),
+                                error: Some(KernelTransportError {
+                                    code: "machine_not_available".into(),
+                                    message: "machine routing is only available to a local access grant holder".into(),
+                                    retryable: false,
+                                }),
+                            },
+                            None,
+                            None,
+                        );
+                    }
+                }
+                return;
+            }
             let caller = match external_caller {
                 Some(caller) => caller,
                 None if connection_class == KernelConnectionClass::Terminal => {
@@ -1611,7 +1644,28 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
             attachment_id,
             subscription_scope,
             resume_from_event_id,
+            machine,
         } => {
+            if machine.is_some() {
+                let _ = try_send_outgoing_frame(
+                    outgoing_tx,
+                    close_tx,
+                    close_requested,
+                    &runtime.transport_health,
+                    KernelOutgoingFrame::Response {
+                        request_id,
+                        response: Box::new(None),
+                        error: Some(KernelTransportError {
+                            code: "machine_not_available".into(),
+                            message: "event subscriptions on another machine are not available yet; poll the session state".into(),
+                            retryable: false,
+                        }),
+                    },
+                    None,
+                    None,
+                );
+                return;
+            }
             let scope = kernel_subscription_scope(subscription_scope.as_deref());
             crate::logging::info_with_fields(
                 "daemon.runtime_transport",

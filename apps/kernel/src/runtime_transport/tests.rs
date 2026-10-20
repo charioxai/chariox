@@ -158,6 +158,7 @@ async fn fd_exhaustion_transport_child() {
         command_id: None,
         causation_id: None,
         correlation_id: None,
+        machine: None,
         request: LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest),
     };
     socket
@@ -281,6 +282,7 @@ async fn connection_closing_for_backpressure_admits_no_more_requests() {
         command_id: None,
         causation_id: None,
         correlation_id: None,
+        machine: None,
         request: LocalDaemonRequest::GetDaemonHealth(crate::local::GetDaemonHealthRequest),
     })
     .expect("transport request should encode");
@@ -2237,6 +2239,7 @@ async fn dispatch_transport_test_request_on_connection(
         command_id: Some(command_id.to_string()),
         causation_id: None,
         correlation_id: Some("slice-save-ack-loss-drill".to_string()),
+        machine: None,
         request,
     })
     .expect("transport request should encode");

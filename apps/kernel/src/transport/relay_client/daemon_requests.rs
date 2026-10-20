@@ -170,15 +170,32 @@ pub(super) async fn handle_prepared_daemon_request(
             };
             let request_kind = relay_request_kind(&request.request);
             let bind_import_response = is_browser_import_request(&request.request);
-            let mut result = dispatch_relay_client_request(
-                router,
-                command_sequence,
-                caller,
-                request.request,
-                request.command_id.clone(),
-                command_result_cache,
-            )
-            .await;
+            let mut result = match request.on_behalf_of {
+                Some(on_behalf_of) => {
+                    dispatch_on_behalf_of(
+                        router,
+                        command_sequence,
+                        caller,
+                        request.request,
+                        request.command_id.clone(),
+                        command_result_cache,
+                        &on_behalf_of,
+                        &client_public_key,
+                    )
+                    .await
+                }
+                None => {
+                    dispatch_relay_client_request(
+                        router,
+                        command_sequence,
+                        caller,
+                        request.request,
+                        request.command_id.clone(),
+                        command_result_cache,
+                    )
+                    .await
+                }
+            };
             if let Some(id) = poll {
                 if matches!(&result, RelayDispatchOutcome::Response(_))
                     && !super::browser_display::refresh_admitted_display_poll(
@@ -704,6 +721,8 @@ struct LocalBrowserConnectEnvelope {
 struct ParsedRelayClientRequest {
     command_id: Option<String>,
     request: LocalDaemonRequest,
+    /// Protocol 568: set by a machine gateway forwarding for an external agent.
+    on_behalf_of: Option<crate::local::OnBehalfOf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -712,6 +731,8 @@ struct RelayClientRequestEnvelope {
     #[serde(default)]
     command_id: Option<String>,
     request: LocalDaemonRequest,
+    #[serde(default)]
+    on_behalf_of: Option<crate::local::OnBehalfOf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -753,6 +774,7 @@ fn parse_relay_client_request(bytes: &[u8]) -> Result<ParsedRelayClientMessage, 
                     .command_id
                     .filter(|command_id| !command_id.trim().is_empty()),
                 request: envelope.request,
+                on_behalf_of: envelope.on_behalf_of,
             },
         ));
     }
@@ -760,6 +782,7 @@ fn parse_relay_client_request(bytes: &[u8]) -> Result<ParsedRelayClientMessage, 
         ParsedRelayClientRequest {
             command_id: None,
             request: serde_json::from_slice(bytes)?,
+            on_behalf_of: None,
         },
     ))
 }
@@ -767,6 +790,107 @@ fn parse_relay_client_request(bytes: &[u8]) -> Result<ParsedRelayClientMessage, 
 enum RelayDispatchOutcome {
     Response(Value),
     RelayError(RelayError),
+}
+
+/// A request a machine gateway forwarded for an external agent. This kernel
+/// decides for itself from `on_behalf_of`: the human-only set is refused here,
+/// and a state-changing request is reserved durably before it runs so a retry
+/// of an interrupted one is answered "outcome unknown" instead of run again.
+#[allow(clippy::too_many_arguments, reason = "One dispatch seam shared with ordinary requests")]
+async fn dispatch_on_behalf_of(
+    router: &CommandRouter,
+    command_sequence: &AtomicU64,
+    caller: KernelCaller,
+    request: LocalDaemonRequest,
+    command_id: Option<String>,
+    command_result_cache: &CommandResultCache,
+    on_behalf_of: &crate::local::OnBehalfOf,
+    gateway_public_key: &str,
+) -> RelayDispatchOutcome {
+    use crate::runtime::machine_gateway::ledger::{is_read_only, Failure, Settled};
+    if let Err(error) = router
+        .runtime_state()
+        .authorize_on_behalf_of_request(on_behalf_of, &request)
+    {
+        let refusal = crate::runtime::kernel_access::Refusal::of(&error);
+        return RelayDispatchOutcome::RelayError(relay_error(
+            refusal.code(),
+            refusal.message(),
+            false,
+        ));
+    }
+    if is_read_only(&request) {
+        return dispatch_relay_client_request(
+            router,
+            command_sequence,
+            caller,
+            request,
+            command_id,
+            command_result_cache,
+        )
+        .await;
+    }
+    let Some(command_id) = command_id else {
+        return RelayDispatchOutcome::RelayError(relay_error(
+            "command_id_required",
+            "a state-changing request through the gateway needs a command id",
+            false,
+        ));
+    };
+    let command = KernelCommand::from_local_request_with_caller(
+        command_id.clone(),
+        KernelCommandSource::RelayClient,
+        caller.clone(),
+        None,
+        None,
+        &request,
+    );
+    let fingerprint = CommandFingerprint::for_app_control(&command, &request);
+    let key = serde_json::json!([gateway_public_key, &command_id]).to_string();
+    let settled = router
+        .machine_gateway()
+        .ledger()
+        .run(&key, fingerprint, async {
+            match dispatch_relay_client_request(
+                router,
+                command_sequence,
+                caller,
+                request,
+                Some(command_id.clone()),
+                command_result_cache,
+            )
+            .await
+            {
+                RelayDispatchOutcome::Response(value) => Ok(value),
+                RelayDispatchOutcome::RelayError(error) => Err(Failure {
+                    code: error.code,
+                    message: error.message,
+                    retryable: error.retryable,
+                }),
+            }
+        })
+        .await;
+    match settled {
+        Settled::Done(Ok(value)) => RelayDispatchOutcome::Response(value),
+        Settled::Done(Err(failure)) => RelayDispatchOutcome::RelayError(relay_error(
+            &failure.code,
+            &failure.message,
+            failure.retryable,
+        )),
+        Settled::OutcomeUnknown => RelayDispatchOutcome::RelayError(relay_error(
+            "machine_outcome_unknown",
+            "This request may or may not have run on this machine. Check the state (for example list the sessions) before asking again; it is not run a second time.",
+            false,
+        )),
+        Settled::Conflict => RelayDispatchOutcome::RelayError(relay_error(
+            "duplicate_command_conflict",
+            &format!("command_id `{command_id}` was already used for a different request"),
+            false,
+        )),
+        Settled::Unavailable(reason) => {
+            RelayDispatchOutcome::RelayError(relay_error("ledger_unavailable", &reason, true))
+        }
+    }
 }
 
 async fn dispatch_relay_client_request(

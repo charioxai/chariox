@@ -13,6 +13,7 @@ pub enum LocalDaemonRequest {
     ExtendKernelSudo(ExtendKernelSudoRequest),
     ListKernelAccessGrants(ListKernelAccessGrantsRequest),
     RevokeKernelAccessGrant(RevokeKernelAccessGrantRequest),
+    ListGatewayMachines(ListGatewayMachinesRequest),
     KernelBrowser(KernelBrowserRequest),
     Notes(NotesRequest),
     CaptureVisibleRegion(CaptureVisibleRegionRequest),

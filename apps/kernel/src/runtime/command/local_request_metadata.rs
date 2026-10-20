@@ -594,6 +594,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ExtendKernelSudo(_) => "kernel_access.sudo_extend",
         LocalDaemonRequest::ListKernelAccessGrants(_) => "kernel_access.list",
         LocalDaemonRequest::RevokeKernelAccessGrant(_) => "kernel_access.revoke",
+        LocalDaemonRequest::ListGatewayMachines(_) => "machine_gateway.list",
         LocalDaemonRequest::KernelBrowser(_) => "kernel_browser",
         LocalDaemonRequest::Notes(_) => "notes",
         LocalDaemonRequest::CaptureVisibleRegion(_) => "screenshot.capture",
