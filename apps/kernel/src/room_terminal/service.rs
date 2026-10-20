@@ -16,6 +16,7 @@ use tokio::sync::{oneshot, Notify};
 use super::driver::Admission;
 use super::events::{CompletionEvents, WatchOwner};
 use super::managed_work::ManagedWork;
+use super::session_sweep::SessionSweep;
 use super::shell::login_shell;
 use super::shell_marks::ShellIntegration;
 use super::store::{TerminalRecord, TerminalStore};
@@ -555,15 +556,25 @@ impl RoomTerminalService {
         self.inner.managed.link(gate, work_changed);
     }
 
-    /// Whether any terminal runs a command: a program holds its foreground,
-    /// the shell reports a command in flight, or a line was just submitted.
+    /// Whether any terminal runs work: a program holds its foreground, the
+    /// shell reports a command in flight, a line was just submitted, or a
+    /// background job still runs in the shell's session.
     pub fn has_running_work(&self) -> bool {
-        let mut state = self.lock();
-        let State { pty, terminals, .. } = &mut *state;
-        let now = Instant::now();
-        terminals.values().any(|terminal| {
-            terminal.is_running() && (terminal.is_busy(pty) || terminal.driver.launching(now))
-        })
+        let sweeps = {
+            let mut state = self.lock();
+            let State { pty, terminals, .. } = &mut *state;
+            let now = Instant::now();
+            let mut sweeps = Vec::new();
+            for terminal in terminals.values().filter(|terminal| terminal.is_running()) {
+                if terminal.is_busy(pty) || terminal.driver.launching(now) {
+                    return true;
+                }
+                sweeps.extend(terminal.session_sweep);
+            }
+            sweeps
+        };
+        // Looking through the process table needs no terminal lock.
+        sweeps.iter().any(SessionSweep::has_jobs)
     }
 
     fn report_work(&self) {

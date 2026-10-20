@@ -191,3 +191,63 @@ async fn a_command_typed_at_the_prompt_counts_as_work_until_it_ends() {
     }
     assert!(fixture.reserve(), "the stop can be reserved once it ended");
 }
+
+#[tokio::test]
+async fn a_background_job_keeps_the_stop_back_after_the_prompt_returns() {
+    let fixture = fixture("terminal-background-job");
+    let shell = fixture.open(None).await.expect("shell opens");
+    fixture
+        .terminal(input(&shell, "sleep 30 >/dev/null 2>&1 &\n"))
+        .await
+        .expect("input");
+    // Past the launch window the shell owns the foreground again.
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    assert_eq!(
+        fixture.runtime.managed_running_agent_count(),
+        1,
+        "the job still runs in the terminal's session"
+    );
+    assert!(!fixture.reserve());
+
+    // Closing the terminal sweeps the job.
+    fixture
+        .terminal(RoomTerminalOperation::Close { terminal_id: shell })
+        .await
+        .expect("close");
+    assert_eq!(fixture.runtime.managed_running_agent_count(), 0);
+    assert!(fixture.reserve());
+}
+
+#[tokio::test]
+async fn a_finished_background_job_stops_counting() {
+    let fixture = fixture("terminal-job-finished");
+    let shell = fixture.open(None).await.expect("shell opens");
+    fixture
+        .terminal(input(&shell, "sleep 2 >/dev/null 2>&1 &\n"))
+        .await
+        .expect("input");
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    assert_eq!(fixture.runtime.managed_running_agent_count(), 1);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while fixture.runtime.managed_running_agent_count() != 0 {
+        assert!(std::time::Instant::now() < deadline, "job never ended");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(fixture.reserve());
+}
+
+#[tokio::test]
+async fn an_ended_room_admits_no_new_terminal() {
+    let fixture = fixture("terminal-ended-room");
+    fixture.open(None).await.expect("shell opens");
+    fixture
+        .runtime
+        .end_session(&fixture.session_id)
+        .await
+        .expect("room ends");
+    assert!(
+        fixture.open(None).await.is_err(),
+        "an ended Room must not gain a shell"
+    );
+    assert!(fixture.open(sleep_command()).await.is_err());
+}

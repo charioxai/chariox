@@ -131,8 +131,9 @@ impl KernelRuntimeState {
                 rows,
                 title,
                 command,
-            } => RoomTerminalResult::Opened {
-                terminal: service.open(OpenRoomTerminal {
+            } => {
+                self.ensure_room_running(session_id)?;
+                let terminal = service.open(OpenRoomTerminal {
                     session_id: session_id.to_string(),
                     working_directory,
                     cols,
@@ -140,8 +141,16 @@ impl KernelRuntimeState {
                     title,
                     opened_by: actor,
                     command,
-                })?,
-            },
+                })?;
+                // A Room that ended while this opened has already swept its
+                // terminals: ending is recorded before the sweep, so an open
+                // that raced it sees the end here and removes its own shell.
+                if let Err(ended) = self.ensure_room_running(session_id) {
+                    service.end_session(session_id);
+                    return Err(ended);
+                }
+                RoomTerminalResult::Opened { terminal }
+            }
             RoomTerminalOperation::List => RoomTerminalResult::Listed {
                 terminals: service.list(session_id),
             },
@@ -337,6 +346,16 @@ impl KernelRuntimeState {
             Ok(agent) if agent.session_id() == session_id => Ok(()),
             _ => Err(refused(format!("this Room has no agent `{agent_id}`"))),
         }
+    }
+
+    fn ensure_room_running(&self, session_id: &str) -> Result<(), DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        if session.status() == crate::session::SessionStatus::Ended {
+            return Err(refused(format!(
+                "Room `{session_id}` has ended; reopen it before opening a terminal"
+            )));
+        }
+        Ok(())
     }
 
     /// Where the Room's agents run their commands on this machine.
