@@ -2099,6 +2099,7 @@ fn kernel_restart_reconciliation_clears_agent_decisions_without_authorizing_them
     assert!(
         !restored.reconcile_after_kernel_restart().changed(),
         "restart cleanup is idempotent"
+    );
 }
 
 #[test]

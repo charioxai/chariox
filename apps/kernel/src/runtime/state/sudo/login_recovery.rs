@@ -16,19 +16,20 @@ impl KernelRuntimeState {
             .lock()
             .expect("recovery claims poisoned")
             .contains(run)
-            && self.external_sudo_grant_live(turn)
+            && self.owned.sudo_end_reason(turn).is_none()
             && self
                 .owned
                 .session_store
                 .get_session(&turn.session_id)
                 .is_ok_and(|session| {
                     session.status() != SessionStatus::Ended
-                        && self.owned.prompt_state_owner.sudo_turn_live(
-                            &session,
-                            &turn.agent_id,
-                            prompt,
-                            &turn.entry_id,
-                        )
+                        && self
+                            .owned
+                            .prompt_state_owner
+                            .sudo_bound_prompt(&session, &turn.agent_id)
+                            .is_some_and(|(entry, active)| {
+                                entry == turn.entry_id && active == prompt
+                            })
                 })
     }
 

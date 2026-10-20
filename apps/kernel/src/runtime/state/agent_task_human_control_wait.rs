@@ -24,9 +24,13 @@ fn describes_human_control_wait(reason: &str) -> bool {
 // ownership refusal authorizes continuation without a current human owner.
 fn describes_released_human_control_wait(reason: &str) -> bool {
     let reason = reason.to_ascii_lowercase();
-    reason.contains("environment_input_owned") || reason.contains("human_takeover")
-        || (describes_human_control_wait(&reason) && reason.contains("computer")
-            && ["owned", "belongs", "stopped", "refused", "rejected"].iter().any(|word| reason.contains(word)))
+    reason.contains("environment_input_owned")
+        || reason.contains("human_takeover")
+        || (describes_human_control_wait(&reason)
+            && reason.contains("computer")
+            && ["owned", "belongs", "stopped", "refused", "rejected"]
+                .iter()
+                .any(|word| reason.contains(word)))
 }
 
 impl KernelRuntimeState {
@@ -91,13 +95,14 @@ impl KernelRuntimeState {
             // becomes an owner interaction after Release; only a control wait
             // is eligible for automatic continuation.
             let control_wait = recorded || describes_human_control_wait(&task.reason);
-            let fresh = control_wait && self
-                .owned
-                .human_control_task_waits
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(task.task_id.clone(), task.blocked_revision)
-                .is_none();
+            let fresh = control_wait
+                && self
+                    .owned
+                    .human_control_task_waits
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(task.task_id.clone(), task.blocked_revision)
+                    .is_none();
             if fresh {
                 self.owned.record_notice_for_agent(
                     &task.room_id,
@@ -120,7 +125,10 @@ impl KernelRuntimeState {
             if !describes_released_human_control_wait(&task.reason) {
                 return false;
             }
-            self.owned.human_control_task_waits.lock().unwrap_or_else(|e| e.into_inner())
+            self.owned
+                .human_control_task_waits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
                 .insert(task.task_id.clone(), task.blocked_revision);
         }
         // The native turn may still be settling after its Blocked event. Never

@@ -733,7 +733,13 @@ mod tests {
         let cache = Arc::new(CommandResultCache::default());
         let gate = Arc::new(RelayReconnectGate::default());
         let (_shutdown, shutdown) = watch::channel(false);
-        let local_browser = LocalBrowserDirect::new(router.clone(), sequence.clone(), events.clone(), cache.clone(), shutdown);
+        let local_browser = LocalBrowserDirect::new(
+            router.clone(),
+            sequence.clone(),
+            events.clone(),
+            cache.clone(),
+            shutdown,
+        );
         let (outgoing, mut priority, mut event_lane) = RelayOutgoingSender::channel(4);
         if draining {
             assert!(gate.begin_daemon_request());

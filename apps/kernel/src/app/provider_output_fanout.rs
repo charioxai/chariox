@@ -194,6 +194,7 @@ impl ProviderOutputFanout {
                 session_id: session_id.to_string(),
                 provider_run_id: provider_run_id.to_string(),
                 agent_id: agent_id.map(str::to_string),
+                prompt_id: prompt_metadata.prompt_id,
                 prompt_origin: prompt_metadata.prompt_origin,
                 source_attachment_id: prompt_metadata.source_attachment_id,
                 kind,

@@ -89,7 +89,8 @@ impl KernelRuntimeState {
                 crate::account_profile::provider_account_authority_owner_user_id(&config, user);
             if !session.members().iter().any(|member| {
                 crate::account_profile::provider_account_authority_owner_user_id(
-                    &config, member.user_id(),
+                    &config,
+                    member.user_id(),
                 ) == owner
             }) {
                 return Err(host_error("MD-N2: Room membership required".into()));
@@ -152,12 +153,11 @@ mod owner_alias_tests {
             (None, "local", "local", true),
         ] {
             let mut config = crate::config::DaemonConfig::for_tests();
-            config.cloud_relay = configured_owner.map(|owner| {
-                crate::config::PersistedCloudRelayProfile {
+            config.cloud_relay =
+                configured_owner.map(|owner| crate::config::PersistedCloudRelayProfile {
                     user_id: owner.into(),
                     ..Default::default()
-                }
-            });
+                });
             let app = crate::app::DaemonApp::bootstrap(config).unwrap();
             let mut room = RuntimeSession::new(
                 format!("notes-alias-{:016x}", rand::random::<u64>()),

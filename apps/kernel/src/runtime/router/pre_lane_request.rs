@@ -222,6 +222,8 @@ impl CommandRouter {
                     .map(Some)
             })),
             request @ (LocalDaemonRequest::GetProviderCatalog(_)
+            | LocalDaemonRequest::GetClientCatalogSnapshot(_)
+            | LocalDaemonRequest::GetClientCatalogRevisions(_)
             | LocalDaemonRequest::GetProviderCommandCatalogs(_)) => Some(Box::pin(async move {
                 execute_provider_catalog_request(
                     &self.provider_catalog_projection,
@@ -246,6 +248,8 @@ impl CommandRouter {
             | LocalDaemonRequest::ObserveEventConnectionAuthorization(_)
             | LocalDaemonRequest::RefreshEventConnection(_)
             | LocalDaemonRequest::TestEventConnection(_)
+            | LocalDaemonRequest::ListEventConnectionEvents(_)
+            | LocalDaemonRequest::ReplayEventConnectionEvent(_)
             | LocalDaemonRequest::ReconnectEventConnection(_)
             | LocalDaemonRequest::ListEventConnectionResources(_)
             | LocalDaemonRequest::ListEventConnectionDependencies(_)

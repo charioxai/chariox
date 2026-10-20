@@ -541,7 +541,8 @@ impl ProviderCatalogProjectionStore {
     }
 
     fn changed(&self) {
-        self.revision.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.revision
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         self.changes.notify_waiters();
     }
 
@@ -550,19 +551,35 @@ impl ProviderCatalogProjectionStore {
             let notified = self.changes.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if self.change_sequence() != sequence { return; }
+            if self.change_sequence() != sequence {
+                return;
+            }
             notified.await;
         }
     }
 
     pub(crate) fn update_scoped(&self, cache_key: &str, catalog: OpenCodeProviderCatalog) {
         let changed = {
-            let mut catalogs = self.catalogs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let changed = catalogs.get(cache_key).is_none_or(|previous| previous.catalog != catalog);
-            catalogs.insert(cache_key.to_string(), CachedProviderCatalogProjection { cached_at: Instant::now(), generation: self.invalidation_generation(), catalog });
+            let mut catalogs = self
+                .catalogs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let changed = catalogs
+                .get(cache_key)
+                .is_none_or(|previous| previous.catalog != catalog);
+            catalogs.insert(
+                cache_key.to_string(),
+                CachedProviderCatalogProjection {
+                    cached_at: Instant::now(),
+                    generation: self.invalidation_generation(),
+                    catalog,
+                },
+            );
             changed
         };
-        if changed { self.changed(); }
+        if changed {
+            self.changed();
+        }
     }
 
     pub(crate) fn cached(&self) -> Option<OpenCodeProviderCatalog> {
@@ -601,7 +618,9 @@ impl ProviderCatalogProjectionStore {
         if self.generation.load(std::sync::atomic::Ordering::Acquire) != generation {
             return false;
         }
-        let changed = cached.get(cache_key).is_none_or(|previous| previous.catalog != catalog);
+        let changed = cached
+            .get(cache_key)
+            .is_none_or(|previous| previous.catalog != catalog);
         cached.insert(
             cache_key.to_string(),
             CachedProviderCatalogProjection {
@@ -611,16 +630,35 @@ impl ProviderCatalogProjectionStore {
             },
         );
         drop(cached);
-        if changed { self.changed(); }
+        if changed {
+            self.changed();
+        }
         true
     }
 
     /// A discovery that an invalidation overtook is still the best known model
     /// metadata for a scope that has none: keep it as stale, never fresh.
-    pub(crate) fn update_scoped_stale_if_absent(&self, cache_key: &str, catalog: OpenCodeProviderCatalog, generation: u64) {
-        let mut cached = self.catalogs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if cached.contains_key(cache_key) { return; }
-        cached.insert(cache_key.to_string(), CachedProviderCatalogProjection { cached_at: Instant::now(), generation, catalog });
+    pub(crate) fn update_scoped_stale_if_absent(
+        &self,
+        cache_key: &str,
+        catalog: OpenCodeProviderCatalog,
+        generation: u64,
+    ) {
+        let mut cached = self
+            .catalogs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cached.contains_key(cache_key) {
+            return;
+        }
+        cached.insert(
+            cache_key.to_string(),
+            CachedProviderCatalogProjection {
+                cached_at: Instant::now(),
+                generation,
+                catalog,
+            },
+        );
         drop(cached);
         self.changed();
     }
@@ -632,7 +670,9 @@ impl ProviderCatalogProjectionStore {
             .remove(cache_key);
         // A change during discovery needs one fresh attempt after this gate
         // opens. Ordinary completion/failure never creates a polling loop.
-        if generation != self.invalidation_generation() { self.changed(); }
+        if generation != self.invalidation_generation() {
+            self.changed();
+        }
     }
 
     pub(crate) fn invalidate(&self) {
@@ -709,9 +749,23 @@ mod provider_catalog_projection_tests {
         let sequence = store.change_sequence();
         store.invalidate();
         assert!(store.change_sequence() > sequence);
-        assert!(store.get_scoped("owner-a:claude:work:local", Duration::from_secs(3600)).is_none(), "invalidated models are never fresh");
-        assert_eq!(store.cached_scoped("owner-a:claude:work:local").expect("stale model metadata must not block fresh account labels").connected, vec!["claude"]);
-        assert!(store.cached_scoped("owner-b:claude:work:local").is_none(), "stale data stays in its owner/profile/location scope");
+        assert!(
+            store
+                .get_scoped("owner-a:claude:work:local", Duration::from_secs(3600))
+                .is_none(),
+            "invalidated models are never fresh"
+        );
+        assert_eq!(
+            store
+                .cached_scoped("owner-a:claude:work:local")
+                .expect("stale model metadata must not block fresh account labels")
+                .connected,
+            vec!["claude"]
+        );
+        assert!(
+            store.cached_scoped("owner-b:claude:work:local").is_none(),
+            "stale data stays in its owner/profile/location scope"
+        );
     }
 
     #[test]
@@ -726,7 +780,13 @@ mod provider_catalog_projection_tests {
 
         assert!(!store.update_scoped_if_generation("", catalog("opencode"), generation));
         assert!(store.get(Duration::from_secs(3600)).is_none());
-        assert_eq!(store.cached().expect("only the previous scoped metadata remains").connected, vec!["codex"]);
+        assert_eq!(
+            store
+                .cached()
+                .expect("only the previous scoped metadata remains")
+                .connected,
+            vec!["codex"]
+        );
         store.finish_refresh("", generation);
         assert!(store.begin_refresh("").is_some());
     }
@@ -736,15 +796,27 @@ mod provider_catalog_projection_tests {
         let store = ProviderCatalogProjectionStore::default();
         let generation = store.begin_refresh("owner-a:claude:work:local").unwrap();
         assert!(store.begin_refresh("owner-a:claude:work:local").is_none());
-        let other = store.begin_refresh("owner-a:claude:personal:local").expect("one scope must not suppress another scope's refresh");
+        let other = store
+            .begin_refresh("owner-a:claude:personal:local")
+            .expect("one scope must not suppress another scope's refresh");
         let sequence = store.change_sequence();
         store.finish_refresh("owner-a:claude:personal:local", other);
-        assert_eq!(store.change_sequence(), sequence, "ordinary completion does not poll");
+        assert_eq!(
+            store.change_sequence(),
+            sequence,
+            "ordinary completion does not poll"
+        );
         store.invalidate();
         let sequence = store.change_sequence();
         store.finish_refresh("owner-a:claude:work:local", generation);
-        assert!(store.change_sequence() > sequence, "a newer invalidation is retried after the old job releases its scope");
-        assert_eq!(store.begin_refresh("owner-a:claude:work:local"), Some(store.invalidation_generation()));
+        assert!(
+            store.change_sequence() > sequence,
+            "a newer invalidation is retried after the old job releases its scope"
+        );
+        assert_eq!(
+            store.begin_refresh("owner-a:claude:work:local"),
+            Some(store.invalidation_generation())
+        );
     }
 
     #[test]
@@ -787,12 +859,27 @@ mod client_catalog_change_tests {
         let sequence = store.change_sequence();
         let changed = store.wait_for_change_after(sequence);
         store.invalidate();
-        tokio::time::timeout(Duration::from_millis(50), changed).await.expect("invalidation wakes even without a warmed catalog");
-        let catalog = OpenCodeProviderCatalog { all: vec![], default: Default::default(), connected: vec![] };
+        tokio::time::timeout(Duration::from_millis(50), changed)
+            .await
+            .expect("invalidation wakes even without a warmed catalog");
+        let catalog = OpenCodeProviderCatalog {
+            all: vec![],
+            default: Default::default(),
+            connected: vec![],
+        };
         store.update_scoped("owner", catalog.clone());
         let sequence = store.change_sequence();
         store.update_scoped("owner", catalog);
-        assert_eq!(store.change_sequence(), sequence, "an unchanged refresh must not create an event/fetch loop");
-        assert!(tokio::time::timeout(Duration::from_millis(10), store.wait_for_change_after(sequence)).await.is_err());
+        assert_eq!(
+            store.change_sequence(),
+            sequence,
+            "an unchanged refresh must not create an event/fetch loop"
+        );
+        assert!(tokio::time::timeout(
+            Duration::from_millis(10),
+            store.wait_for_change_after(sequence)
+        )
+        .await
+        .is_err());
     }
 }

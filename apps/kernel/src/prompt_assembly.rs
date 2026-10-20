@@ -919,7 +919,8 @@ impl PromptAssemblyService {
         {
             hidden_fragments.push(additional_hidden_context.to_string());
         }
-        let (attachments, notes_context) = crate::prompt_notes::split_for_provider(attachments, run.agent_instance_id());
+        let (attachments, notes_context) =
+            crate::prompt_notes::split_for_provider(attachments, run.agent_instance_id());
         hidden_fragments.extend(notes_context);
         if additional_hidden_context.is_some_and(|context| {
             context.contains("<workflow-runtime-instructions>")
@@ -1361,8 +1362,16 @@ mod tests {
             .unwrap();
         assert_eq!(envelope.visible_user_prompt, "Please help");
         assert_eq!(envelope.attachments, vec![image]);
-        for expected in ["<user-notes>", "Room: Design review", "the selected sentence", "rewrite it"] {
-            assert!(envelope.hidden_system_context.contains(expected), "{expected}");
+        for expected in [
+            "<user-notes>",
+            "Room: Design review",
+            "the selected sentence",
+            "rewrite it",
+        ] {
+            assert!(
+                envelope.hidden_system_context.contains(expected),
+                "{expected}"
+            );
         }
         fs::remove_dir_all(root).unwrap();
     }

@@ -156,10 +156,6 @@ impl KernelRuntimeState {
         self.sudo_for_run(run.id())
     }
 
-    pub(in crate::runtime::state) fn sudo_for_provider_run(&self, run_id: &str) -> Result<KernelSudoTurn, DaemonError> {
-        self.sudo_for_run(run_id)
-    }
-
     /// MP-08/MP-11: test wait probe; catalog discovery persists without a window.
     #[cfg(test)]
     pub(crate) fn sudo_window_open_for_auth_token(&self, token: &str) -> bool {

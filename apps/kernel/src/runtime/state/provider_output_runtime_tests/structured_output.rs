@@ -528,14 +528,26 @@ async fn panes_stream_batch_reaches_an_attachment_registered_after_the_recipient
         )
         .await
         .unwrap();
-    assert_eq!(records.into_iter().flat_map(|r| r.bytes).collect::<Vec<_>>(), b"LATE");
+    assert_eq!(
+        records
+            .into_iter()
+            .flat_map(|r| r.bytes)
+            .collect::<Vec<_>>(),
+        b"LATE"
+    );
     let crate::runtime_transport::WatchResult::Ok { records, .. } = runtime
         .watch_relay_subscription_state(session.id(), late.id(), false, None, 0)
         .await
     else {
         panic!("late attachment cannot watch");
     };
-    assert_eq!(records.into_iter().flat_map(|r| r.bytes).collect::<Vec<_>>(), b"LATE");
+    assert_eq!(
+        records
+            .into_iter()
+            .flat_map(|r| r.bytes)
+            .collect::<Vec<_>>(),
+        b"LATE"
+    );
 }
 
 #[test]

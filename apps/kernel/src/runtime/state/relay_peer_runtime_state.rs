@@ -683,7 +683,7 @@ impl KernelRuntimeState {
         let prepared = match self
             .with_app_side_effect(move |app| {
                 let mut runtime = RemoteLeaseRuntime::new(app);
-                runtime.require_leased_agent_authenticated(&leased_agent_for_prepare)?;
+                runtime.require_leased_prompt_account(&leased_agent_for_prepare)?;
                 runtime.prepare_leased_prompt_submission(
                     &leased_agent_for_prepare,
                     &prompt_for_prepare,

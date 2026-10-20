@@ -355,7 +355,7 @@ export function replaceSessionHistoryBlobPlaceholder(
   }
   const hydrated = hydrateHistoryPlaceholder(placeholder, content)
   const activeTurnId = transcriptHistoryTurnIsOpen(placeholder) ? placeholder.turnId ?? null : null
-  const replaced = entries.flatMap((entry) => entry.id === entryId ? hydrated : [entry])
+  const replaced = entries.flatMap((entry) => entry === placeholder ? hydrated : [entry])
   return applyTranscriptDisplayState(
     reindexTranscriptEntries(replaced, 0),
     collapsedTurnIds,
@@ -403,12 +403,7 @@ function hydrateHistoryPlaceholder(placeholder: SessionHistoryTranscriptEntry, c
       promptMetadata,
     )
   })
-  const replaced = entries.flatMap((entry) => entry === placeholder ? hydrated : [entry])
-  return applyTranscriptDisplayState(
-    reindexTranscriptEntries(replaced, 0),
-    collapsedTurnIds,
-    activeTurnId,
-  ) as SessionHistoryTranscriptEntry[]
+  return hydrated
 }
 
 export function markSessionHistoryBlobLoading(

@@ -172,7 +172,8 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("session.attach", Interactive).session(&request.session_id)
         }
         LocalDaemonRequest::AttachSessionView(request) => {
-            LocalRequestMetadata::new("session.view.attach", Interactive).session(&request.session_id)
+            LocalRequestMetadata::new("session.view.attach", Interactive)
+                .session(&request.session_id)
         }
         LocalDaemonRequest::DetachFromSession(request) => {
             LocalRequestMetadata::new("session.detach", Interactive)

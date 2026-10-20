@@ -1942,7 +1942,10 @@ mod tests {
         .await
         .expect("slow build should still produce a relay");
 
-        let minted_ms: u128 = relay.relay_token.parse().expect("test token is its mint time");
+        let minted_ms: u128 = relay
+            .relay_token
+            .parse()
+            .expect("test token is its mint time");
         assert!(
             start.elapsed().as_millis() - minted_ms < ttl.as_millis(),
             "the container token must be minted after the build, not before it"

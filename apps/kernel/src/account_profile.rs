@@ -1279,8 +1279,16 @@ impl ProviderAccountProfileRegistry {
         agent: &crate::agent::AgentInstance,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
-        let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else { return Ok(()); };
-        let owner = provider_account_authority_owner_for_profile(config, self, agent.owner_user_id(), provider, agent.provider_account_profile())?;
+        let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
+            return Ok(());
+        };
+        let owner = provider_account_authority_owner_for_profile(
+            config,
+            self,
+            agent.owner_user_id(),
+            provider,
+            agent.provider_account_profile(),
+        )?;
         self.require_agent_authenticated_with(&owner, agent, operation, true)
     }
 

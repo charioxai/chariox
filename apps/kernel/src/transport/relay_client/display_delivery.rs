@@ -54,7 +54,7 @@ mod tests {
                 relay_subscription_id: relay.into(),
                 client_public_key: "viewer".into(),
                 display_id: Some("lease".into()),
-                display_pump: Some(super::super::display_pump::DisplayPump::new(1)),
+                display_pump: Some(super::super::display_pump::DisplayPump::new(1, "test")),
                 handle: tokio::spawn(std::future::pending()),
             },
         );

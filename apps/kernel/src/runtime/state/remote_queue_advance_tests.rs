@@ -464,6 +464,7 @@ async fn assert_app_dispatch_private_collector(prebind_like_runtime: bool) {
     second_runtime.owned.collect_private_assessment(
         &fixture.session_id,
         &super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+            sequence: None,
             provider_run_id: run.into(),
             agent_id: Some(fixture.agent_id.clone()),
             kind: crate::terminal::TerminalOutputKind::ProviderOutput,

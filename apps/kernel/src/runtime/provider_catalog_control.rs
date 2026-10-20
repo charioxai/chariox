@@ -26,8 +26,13 @@ pub(crate) async fn execute_provider_catalog_request(
         }
         LocalDaemonRequest::GetClientCatalogSnapshot(request) => {
             super::client_catalog_revisions::catalog_snapshot(
-                provider_catalog_projection, config_projection, account_profiles, owner_user_id, request,
-            ).await
+                provider_catalog_projection,
+                config_projection,
+                account_profiles,
+                owner_user_id,
+                request,
+            )
+            .await
         }
         LocalDaemonRequest::GetClientCatalogRevisions(request) => {
             super::client_catalog_revisions::catalog_revisions(
@@ -87,9 +92,21 @@ pub(super) async fn load_catalog(
     request: crate::local::GetProviderCatalogRequest,
     allow_stale: bool,
 ) -> Result<crate::provider::OpenCodeProviderCatalog, DaemonError> {
-    match read_catalog(provider_catalog_projection, config_projection, account_profiles, owner_user_id, request, allow_stale, false).await? {
+    match read_catalog(
+        provider_catalog_projection,
+        config_projection,
+        account_profiles,
+        owner_user_id,
+        request,
+        allow_stale,
+        false,
+    )
+    .await?
+    {
         CatalogRead::Loaded(catalog) => Ok(catalog),
-        CatalogRead::Revalidating => unreachable!("only a caller holding a catalog may be answered while revalidating"),
+        CatalogRead::Revalidating => {
+            unreachable!("only a caller holding a catalog may be answered while revalidating")
+        }
     }
 }
 
@@ -171,9 +188,17 @@ pub(super) async fn read_catalog(
             "connected_provider_count": catalog.connected.len(),
         }),
     );
-    if !provider_catalog_projection.update_scoped_if_generation(&cache_key, catalog.clone(), generation) {
+    if !provider_catalog_projection.update_scoped_if_generation(
+        &cache_key,
+        catalog.clone(),
+        generation,
+    ) {
         // An account change during discovery must not fail the read.
-        provider_catalog_projection.update_scoped_stale_if_absent(&cache_key, catalog.clone(), generation);
+        provider_catalog_projection.update_scoped_stale_if_absent(
+            &cache_key,
+            catalog.clone(),
+            generation,
+        );
     }
     Ok(CatalogRead::Loaded(catalog))
 }
@@ -206,10 +231,13 @@ fn refresh_provider_catalog_in_background(
                         "connected_provider_count": catalog.connected.len(),
                     }),
                 );
-                if !provider_catalog_projection
-                    .update_scoped_if_generation(&cache_key, catalog.clone(), generation)
-                {
-                    provider_catalog_projection.update_scoped_stale_if_absent(&cache_key, catalog, generation);
+                if !provider_catalog_projection.update_scoped_if_generation(
+                    &cache_key,
+                    catalog.clone(),
+                    generation,
+                ) {
+                    provider_catalog_projection
+                        .update_scoped_stale_if_absent(&cache_key, catalog, generation);
                     crate::logging::info(
                         "daemon.startup",
                         "provider catalog refresh overtaken by an invalidation; kept only as stale metadata",

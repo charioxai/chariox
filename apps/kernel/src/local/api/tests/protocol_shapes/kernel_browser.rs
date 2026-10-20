@@ -535,10 +535,16 @@ fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
 #[test]
 fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
-    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "30553a86ec7f8e0d98844a5dce6ef4b05250cc0ad35eeb64b771dffc8cec3bb1");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "30553a86ec7f8e0d98844a5dce6ef4b05250cc0ad35eeb64b771dffc8cec3bb1"
+    );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
-    assert_eq!(value["peer_protocol"], crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION);
+    assert_eq!(
+        value["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
     for name in ["completion_delta", "inherited_delta"] {
         let wire = serde_json::json!({"KernelBrowser": {"result": value[name]}});
         let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
@@ -552,15 +558,23 @@ fn mp08_mp10_mp11_browser_visible_page_536_snapshot() {
     assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 536);
     assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 144);
     let bytes = include_bytes!("browser-visible-page-536.json");
-    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "867f99b3a87658e32c893b7030ac6c0d20b05ab001e336563081b8ab5892e588");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "867f99b3a87658e32c893b7030ac6c0d20b05ab001e336563081b8ab5892e588"
+    );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     for value in snapshot["requests"].as_array().unwrap() {
         let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), *value);
     }
-    let response: LocalDaemonResponse = serde_json::from_value(snapshot["response"].clone()).unwrap();
-    assert_eq!(serde_json::to_value(response).unwrap(), snapshot["response"]);
-    let ack: LocalDaemonResponse = serde_json::from_value(snapshot["ack_response"].clone()).unwrap();
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
+    let ack: LocalDaemonResponse =
+        serde_json::from_value(snapshot["ack_response"].clone()).unwrap();
     assert_eq!(serde_json::to_value(ack).unwrap(), snapshot["ack_response"]);
 }
 
@@ -570,7 +584,10 @@ fn mp08_mp10_mp11_browser_parked_input_552_snapshot() {
     assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 552);
     assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 160);
     let bytes = include_bytes!("browser-parked-input-552.json");
-    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "e52a88111dc29c63dbddf377c8a797b264bca205ff89176d596abebf5e99906e");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "e52a88111dc29c63dbddf377c8a797b264bca205ff89176d596abebf5e99906e"
+    );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let response: LocalDaemonResponse =
         serde_json::from_value(snapshot["response"].clone()).unwrap();
@@ -586,7 +603,10 @@ fn mp08_mp10_mp11_browser_window_display_560_snapshot() {
     assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 560);
     assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 168);
     let bytes = include_bytes!("browser-window-display-560.json");
-    assert_eq!(format!("{:x}", Sha256::digest(bytes)), "18b0226af9d413a8abc9e74585da22398232b5f1b744bfd7cf59afb34662a174");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "18b0226af9d413a8abc9e74585da22398232b5f1b744bfd7cf59afb34662a174"
+    );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
     assert_eq!(serde_json::to_value(request).unwrap(), snapshot["request"]);

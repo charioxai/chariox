@@ -1,11 +1,11 @@
 //! MP-08 / MP-10 / MP-11: conditional public catalogs; ordinary kernel authority.
+use super::provider_catalog_control::CatalogRead;
 use crate::error::DaemonError;
 use crate::local::{
     ClientCatalogRevisions, ClientCatalogSnapshot, GetClientCatalogSnapshotRequest,
     GetProviderCatalogRequest, LocalDaemonResponse,
 };
 use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
-use super::provider_catalog_control::CatalogRead;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -30,7 +30,16 @@ pub(super) async fn catalog_snapshot(
     request: GetClientCatalogSnapshotRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let known = request.known;
-    let mut snapshot = load(providers, config, accounts, owner, request.scope, true, known.as_ref()).await?;
+    let mut snapshot = load(
+        providers,
+        config,
+        accounts,
+        owner,
+        request.scope,
+        true,
+        known.as_ref(),
+    )
+    .await?;
     if let Some(known) = known {
         if known.provider_accounts == snapshot.revisions.provider_accounts {
             snapshot.provider_accounts = None;
@@ -83,7 +92,9 @@ async fn load(
     let (catalog_revision, catalog) = match (catalog, known) {
         (CatalogRead::Loaded(catalog), _) => (revision(&catalog)?, Some(catalog)),
         (CatalogRead::Revalidating, Some(known)) => (known.provider_catalog.clone(), None),
-        (CatalogRead::Revalidating, None) => unreachable!("only a caller holding a catalog may be answered while revalidating"),
+        (CatalogRead::Revalidating, None) => {
+            unreachable!("only a caller holding a catalog may be answered while revalidating")
+        }
     };
     Ok(ClientCatalogSnapshot {
         revisions: ClientCatalogRevisions {

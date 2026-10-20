@@ -273,6 +273,13 @@ async fn run_case(recovery: RecoveryCase) {
             requester: None,
             prompt_id: Some(prompt.id().into()),
             provider_run_id: Some(run.id().into()),
+            task_id: None,
+            duration_minutes: 60,
+            expires_at_ms: Some(crate::session::unix_epoch_ms() + 3_600_000),
+            revision: 1,
+            warning_sent: false,
+            deadline: Some(std::time::Instant::now() + std::time::Duration::from_secs(3600)),
+            placement: None,
         };
         assert!(runtime.owned.prompt_state_owner.bind_sudo_turn(
             &session,

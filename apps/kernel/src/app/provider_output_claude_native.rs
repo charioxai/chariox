@@ -21,8 +21,8 @@ mod attachments;
 mod context_delivery;
 mod hidden_context;
 mod permission;
-mod session_start;
 mod readiness;
+mod session_start;
 mod startup_exit;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -59,7 +59,9 @@ use permission::{
     write_claude_permission_input, write_claude_permission_passthrough,
     write_claude_permission_response, write_claude_workspace_trust_selection_marker,
 };
-use readiness::{CLAUDE_HEADLESS_RETRY_MS, CLAUDE_INITIAL_COMPOSER_WAIT_MS, CLAUDE_STARTUP_SETTLE_MS};
+use readiness::{
+    CLAUDE_HEADLESS_RETRY_MS, CLAUDE_INITIAL_COMPOSER_WAIT_MS, CLAUDE_STARTUP_SETTLE_MS,
+};
 #[cfg(test)]
 use transcript::{drain_claude_transcript_file, drain_claude_transcript_file_since};
 use transcript::{
@@ -236,7 +238,8 @@ fn claude_typed_prompt(prompt: &ClaudeNativePromptInjection<'_>, context_file: &
         .filter(|attachment| !crate::prompt_notes::is_note(attachment))
         .cloned()
         .collect();
-    let native_attachment_suffix = format_claude_native_attachment_prompt_suffix(&files, context_file);
+    let native_attachment_suffix =
+        format_claude_native_attachment_prompt_suffix(&files, context_file);
     let visible = redact_native_hidden_instructions(prompt.prompt)
         .trim()
         .to_string();
@@ -1741,13 +1744,25 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
     ) -> Result<(), DaemonError> {
         // MP-08 / MP-10: a phase transition must carry its own readiness hint.
         // Preserve the existing prompt path, PTY input and permission decisions.
-        let result = self.inject_prompt_once(session_id, provider_run_id, agent_id,
-            context_file, provider_run, prompt);
+        let result = self.inject_prompt_once(
+            session_id,
+            provider_run_id,
+            agent_id,
+            context_file,
+            provider_run,
+            prompt,
+        );
         if result.is_ok() {
             if let Some(delay) = readiness::next_prompt_revisit_delay_ms(
-                context_file, prompt.id, provider_run, unix_epoch_ms(),
+                context_file,
+                prompt.id,
+                provider_run,
+                unix_epoch_ms(),
             ) {
-                self.app.providers.output_ready_signal().record_after(provider_run_id, delay);
+                self.app
+                    .providers
+                    .output_ready_signal()
+                    .record_after(provider_run_id, delay);
             }
         }
         result
@@ -1857,7 +1872,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }
         if provider_run.provider() == "claude-headless"
             && marker.is_none()
-            && unix_epoch_ms().saturating_sub(provider_run.started_at_ms()) < CLAUDE_INITIAL_COMPOSER_WAIT_MS
+            && unix_epoch_ms().saturating_sub(provider_run.started_at_ms())
+                < CLAUDE_INITIAL_COMPOSER_WAIT_MS
         {
             append_claude_headless_debug(context_file, "inject_wait", prompt.id);
             return Ok(());
@@ -1889,7 +1905,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             if !force_post_stop_ready
                 && !prompt_typed_for_headless
                 && !claude_headless_composer_visible(&recent)
-                && unix_epoch_ms().saturating_sub(provider_run.started_at_ms()) < CLAUDE_INITIAL_COMPOSER_WAIT_MS
+                && unix_epoch_ms().saturating_sub(provider_run.started_at_ms())
+                    < CLAUDE_INITIAL_COMPOSER_WAIT_MS
             {
                 append_claude_headless_debug(context_file, "inject_wait_composer", prompt.id);
                 return Ok(());
@@ -2076,10 +2093,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             // Like prompt submission, let the provider register the selection
             // before Enter, between short app-lock holds.
             write_claude_workspace_trust_selection_marker(context_file);
-            self.app.providers.output_ready_signal().record_after(
-                provider_run_id,
-                CLAUDE_SUBMIT_DELAY_MS,
-            );
+            self.app
+                .providers
+                .output_ready_signal()
+                .record_after(provider_run_id, CLAUDE_SUBMIT_DELAY_MS);
             clear_claude_permission_recent(context_file);
             Ok(None)
         } else if input == b"\r" {

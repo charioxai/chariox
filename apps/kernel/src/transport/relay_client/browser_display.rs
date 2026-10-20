@@ -378,7 +378,11 @@ mod tests {
 /// MP-08/MP-10: a 535 resume, and a 540 viewer that holds frames pushed before its registration
 /// response (PERF_AUDIT 4.2.3), get their first frame at registration; others on their first ACK.
 fn registration_credit(recover: bool, binding: &serde_json::Value) -> bool {
-    recover || binding.get("initial_push").and_then(serde_json::Value::as_bool) == Some(true)
+    recover
+        || binding
+            .get("initial_push")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
 }
 
 // MP-08/MP-10/MP-11: metadata must retain the RPC's terminal actor.
@@ -427,9 +431,15 @@ mod resumed_delivery_tests {
     #[test]
     fn mp08_mp10_an_initial_push_viewer_is_credited_at_registration() {
         assert!(registration_credit(true, &json!({})));
-        assert!(registration_credit(false, &json!({"attached": true, "initial_push": true})));
+        assert!(registration_credit(
+            false,
+            &json!({"attached": true, "initial_push": true})
+        ));
         assert!(!registration_credit(false, &json!({"attached": true})));
-        assert!(!registration_credit(false, &json!({"attached": true, "initial_push": "yes"})));
+        assert!(!registration_credit(
+            false,
+            &json!({"attached": true, "initial_push": "yes"})
+        ));
     }
     // Review #1016 @52a7bb1ee P3: a rejected binding without a numeric generation (or id) is
     // still released, with the pre-attach id/generation the attach was admitted under.

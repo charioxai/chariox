@@ -82,9 +82,22 @@ pub(super) async fn run_subscription_loop(
         let client_catalog_sequence = router.client_catalog_change_sequence();
         if previous_catalog_revision != Some(client_catalog_sequence) {
             previous_catalog_revision = Some(client_catalog_sequence);
-            if !emit_kernel_event(&runtime, &outgoing_tx, &close_tx, &close_requested,
-                KernelEvent::ClientCatalogChanged { revision: client_catalog_sequence },
-                Some(&event_stream_id), Some(&subscription.session_id), Some(&subscription.attachment_id)).await { break; }
+            if !emit_kernel_event(
+                &runtime,
+                &outgoing_tx,
+                &close_tx,
+                &close_requested,
+                KernelEvent::ClientCatalogChanged {
+                    revision: client_catalog_sequence,
+                },
+                Some(&event_stream_id),
+                Some(&subscription.session_id),
+                Some(&subscription.attachment_id),
+            )
+            .await
+            {
+                break;
+            }
         }
         let terminal_attachment_change_sequence = router.terminal_attachment_change_sequence(
             &subscription.session_id,
@@ -269,107 +282,7 @@ pub(super) async fn run_subscription_loop(
                         break;
                     }
                 }
-                if let Some(snapshot) = *snapshot {
-                    let previous_snapshot_ref = previous_snapshot.as_ref();
-                    // A terminal run update is the authoritative replacement for the
-                    // archived run. Treat it as a projection delta so the fallback full
-                    // hot-session snapshot cannot immediately erase it in the client.
-                    let mut emitted_projection_delta = emitted_terminal_workflow_run_update;
-                    let mut emit_failed = false;
-                    for event in
-                        crate::transport::kernel_protocol::session_projection_changed_events(
-                            &snapshot,
-                            previous_snapshot_ref,
-                        )
-                    {
-                        emitted_projection_delta = true;
-                        if !emit_kernel_event(
-                            &runtime,
-                            &outgoing_tx,
-                            &close_tx,
-                            &close_requested,
-                            event,
-                            Some(&event_stream_id),
-                            Some(&subscription.session_id),
-                            Some(&subscription.attachment_id),
-                        )
-                        .await
-                        {
-                            emit_failed = true;
-                            break;
-                        }
-                    }
-                    if emit_failed {
-                        break;
-                    }
-                    let workflow_run_events =
-                        workflow_run_updated_events(&snapshot, previous_snapshot_ref)
-                            .into_iter()
-                            .chain(
-                                crate::transport::kernel_protocol::room_workflows_changed_event(
-                                    &snapshot,
-                                    previous_snapshot_ref,
-                                ),
-                            )
-                            .collect::<Vec<_>>();
-                    let workflow_run_only =
-                        workflow_run_only_changed(&snapshot, previous_snapshot_ref)
-                            && !workflow_run_events.is_empty();
-                    for event in workflow_run_events {
-                        // Inventory is an additional read model. Definition changes still
-                        // need the existing full snapshot for canvas and other consumers.
-                        if !matches!(&event, KernelEvent::RoomWorkflowsChanged { .. }) {
-                            emitted_projection_delta = true;
-                        }
-                        if !emit_kernel_event(
-                            &runtime,
-                            &outgoing_tx,
-                            &close_tx,
-                            &close_requested,
-                            event,
-                            Some(&event_stream_id),
-                            Some(&subscription.session_id),
-                            Some(&subscription.attachment_id),
-                        )
-                        .await
-                        {
-                            return;
-                        }
-                    }
-                    let skip_snapshot = can_skip_session_snapshot(
-                        &snapshot,
-                        previous_snapshot_ref,
-                        emitted_projection_delta || workflow_run_only,
-                    );
-                    previous_snapshot = Some(snapshot.clone());
-                    if skip_snapshot {
-                        continue;
-                    }
-                    if !emit_kernel_event(
-                        &runtime,
-                        &outgoing_tx,
-                        &close_tx,
-                        &close_requested,
-                        KernelEvent::SessionSnapshot {
-                            room_workflows: snapshot.room_workflows,
-                            session: Box::new(snapshot.session),
-                            provider_run: Box::new(
-                                snapshot
-                                    .provider_run
-                                    .map(crate::provider::PublicProviderRun::from),
-                            ),
-                            agent_activity: Box::new(snapshot.agent_activity),
-                            agent_activity_revision: snapshot.metadata.last_event_id,
-                        },
-                        Some(&event_stream_id),
-                        Some(&subscription.session_id),
-                        Some(&subscription.attachment_id),
-                    )
-                    .await
-                    {
-                        break;
-                    }
-                }
+
                 if Instant::now() >= next_heartbeat_at {
                     if !emit_kernel_event(
                         &runtime,
@@ -938,9 +851,22 @@ async fn run_waiting_room_inventory_subscription_loop(
         let client_catalog_sequence = router.client_catalog_change_sequence();
         if previous_catalog_revision != Some(client_catalog_sequence) {
             previous_catalog_revision = Some(client_catalog_sequence);
-            if !emit_kernel_event(&runtime, &outgoing_tx, &close_tx, &close_requested,
-                KernelEvent::ClientCatalogChanged { revision: client_catalog_sequence },
-                Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE), None, None).await { break; }
+            if !emit_kernel_event(
+                &runtime,
+                &outgoing_tx,
+                &close_tx,
+                &close_requested,
+                KernelEvent::ClientCatalogChanged {
+                    revision: client_catalog_sequence,
+                },
+                Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                None,
+                None,
+            )
+            .await
+            {
+                break;
+            }
         }
         let waiting_room_change_sequence = router.waiting_room_change_sequence();
         let session_projection_change_sequence = router.session_projection_change_sequence();

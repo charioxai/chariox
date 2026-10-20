@@ -527,6 +527,7 @@ async fn mp11_protected_completion_reads_private_result_and_keeps_history_withhe
         &room,
         vec![
             crate::runtime::state::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+                sequence: None,
                 provider_run_id: "run".into(),
                 agent_id: Some(agent.clone()),
                 kind: TerminalOutputKind::ProviderOutput,
@@ -638,6 +639,7 @@ async fn mp11_neutral_assessment_uses_private_work_result_without_public_or_dura
         &room,
         vec![
             crate::runtime::state::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+                sequence: None,
                 provider_run_id: "run".into(),
                 agent_id: Some(agent.clone()),
                 kind: TerminalOutputKind::ProviderOutput,

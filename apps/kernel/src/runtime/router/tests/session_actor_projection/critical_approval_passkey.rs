@@ -760,11 +760,31 @@ async fn a_passkey_from_a_refused_class_is_neither_verified_nor_counted() {
     // other class by the passkey gate.
     let not_accepted = "PASSKEY_NOT_ACCEPTED";
     let refused = [
-        (cli.clone(), local_caller(KernelConnectionClass::Unauthenticated), not_accepted),
-        (cli.clone(), local_caller(KernelConnectionClass::Host), not_accepted),
-        (cli.clone(), local_caller(KernelConnectionClass::KernelAgent), "agents cannot answer approvals"),
-        (cli.clone(), local_caller(KernelConnectionClass::ExternalAgent), crate::runtime::kernel_access::Refusal::HumanOnly.message()),
-        (KernelCommandSource::RelayClient, relay_caller(RelaySubjectKind::Kernel), not_accepted),
+        (
+            cli.clone(),
+            local_caller(KernelConnectionClass::Unauthenticated),
+            not_accepted,
+        ),
+        (
+            cli.clone(),
+            local_caller(KernelConnectionClass::Host),
+            not_accepted,
+        ),
+        (
+            cli.clone(),
+            local_caller(KernelConnectionClass::KernelAgent),
+            "agents cannot answer approvals",
+        ),
+        (
+            cli.clone(),
+            local_caller(KernelConnectionClass::ExternalAgent),
+            crate::runtime::kernel_access::Refusal::HumanOnly.message(),
+        ),
+        (
+            KernelCommandSource::RelayClient,
+            relay_caller(RelaySubjectKind::Kernel),
+            not_accepted,
+        ),
     ];
     // Far more wrong passkeys than the owner's free failures, and the right
     // one: none is verified, audited or counted.

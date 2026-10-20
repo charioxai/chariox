@@ -25,6 +25,9 @@ fn rendered_then_delta(kind: &str, completed: bool, metadata_only: bool) -> Stri
             .completed_assistant_message_ids
             .insert("message-1".into());
     }
+    state
+        .streamed_text_by_part
+        .insert("part-1".into(), "answer".into());
     let mut chunks = snapshot.chunks;
     handle_message_part_delta(
         &mut state,
@@ -61,7 +64,7 @@ fn completion_metadata_without_completed_snapshot_preserves_delta() {
 }
 
 #[test]
-fn completed_empty_snapshot_keeps_later_delta_buffered() {
+fn completed_empty_snapshot_does_not_fence_later_authoritative_text() {
     let mut state = OpenCodeRuntimeState::new(
         "http://localhost:1".into(),
         "session-1".into(),
@@ -86,9 +89,20 @@ fn completed_empty_snapshot_keeps_later_delta_buffered() {
         &mut chunks,
     )
     .unwrap();
-    assert_eq!(
-        state.buffered_text_deltas.get("part-1").unwrap(),
-        &["answer"]
-    );
+    assert!(!state.finalized_text_part_ids.contains("part-1"));
     assert!(chunks.is_empty());
+    super::parts::emit_authoritative_part_text(
+        &mut state,
+        "part-1",
+        "answer",
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        &mut chunks,
+    );
+    assert_eq!(
+        chunks
+            .iter()
+            .flat_map(|c| c.bytes.clone())
+            .collect::<Vec<_>>(),
+        b"answer"
+    );
 }

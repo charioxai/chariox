@@ -78,7 +78,5 @@ pub struct NotesRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NoteResult {
-    SelectionChanged {
-        selection: Option<NoteSelection>,
-    },
+    SelectionChanged { selection: Option<NoteSelection> },
 }

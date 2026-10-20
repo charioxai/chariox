@@ -62,6 +62,7 @@ fn zero_recipient_outputs_and_completions_are_not_retained() {
         b"detached prompt",
     );
     let batch = terminal.fan_out_outputs(vec![TerminalOutputAppend {
+        prompt_id: None,
         session_id: "session-1".to_string(),
         provider_run_id: "provider-run-1".to_string(),
         agent_id: Some("agent-1".to_string()),
@@ -368,6 +369,7 @@ fn batch_output_coalescing_keeps_reused_merge_keys_in_separate_prompts() {
                 provider_run_id: "provider-run-1".to_string(),
                 agent_id: Some("agent-1".to_string()),
                 prompt_id: Some(prompt_id.to_string()),
+                sequence: None,
                 prompt_origin: Some(crate::session::PromptOrigin::Chariox),
                 source_attachment_id: Some("attachment-owner".to_string()),
                 kind: TerminalOutputKind::ProviderOutput,
@@ -1290,7 +1292,11 @@ fn workflow_run_updates_are_bounded_per_attachment() {
 #[test]
 fn goal_completion_check_turn_is_not_delivered_to_clients() {
     let mut terminal = TerminalStreamService::new();
-    for origin in [None, Some(crate::session::PromptOrigin::Chariox), Some(crate::session::PromptOrigin::CompletionCheck)] {
+    for origin in [
+        None,
+        Some(crate::session::PromptOrigin::Chariox),
+        Some(crate::session::PromptOrigin::CompletionCheck),
+    ] {
         terminal.fan_out_prompt_output(
             "session-1",
             "run-1",
@@ -1347,6 +1353,7 @@ fn stalled_attachment_retains_six_thousand_history_deltas() {
     let mut terminal = TerminalStreamService::new();
     for sequence in 1..=6000 {
         terminal.fan_out_outputs(vec![TerminalOutputAppend {
+            prompt_id: None,
             session_id: "session-1".into(),
             provider_run_id: "run-1".into(),
             agent_id: Some("agent-1".into()),
@@ -1381,6 +1388,7 @@ fn stalled_attachment_retains_six_thousand_history_deltas() {
 #[test]
 fn output_records_preserve_distinct_history_sequences() {
     let append = |sequence: Option<u64>, bytes: &[u8]| TerminalOutputAppend {
+        prompt_id: None,
         session_id: "session-1".to_string(),
         provider_run_id: "provider-run-1".to_string(),
         agent_id: Some("agent-1".to_string()),

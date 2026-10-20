@@ -855,9 +855,10 @@ impl PtyManager {
     /// useful Bubblewrap/provider diagnostic.
     pub(crate) fn early_exit_diagnostic(&mut self, provider_run_id: &str) -> Option<String> {
         self.exited_output_diagnostic(provider_run_id).or_else(|| {
-            self.poll_process_state(provider_run_id).ok()?.is_exited().then(|| {
-                "managed provider process exited before endpoint readiness".to_string()
-            })
+            self.poll_process_state(provider_run_id)
+                .ok()?
+                .is_exited()
+                .then(|| "managed provider process exited before endpoint readiness".to_string())
         })
     }
 

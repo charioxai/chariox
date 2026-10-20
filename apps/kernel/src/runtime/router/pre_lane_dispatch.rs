@@ -20,14 +20,17 @@ impl CommandRouter {
         caller_user_id: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
         super::retired_cloud_controls::require_kernel_authority(request)?;
-        if let LocalDaemonRequest::AttachSessionView(request) = request {
-            return self.attach_session_view(command, request.clone()).await.map(Some);
-        }
         if let Some(actor) = command.caller.metaagent_id.as_deref() {
             self.runtime_state
                 .authorize_room_provider_epoch(Some(actor), command.provider_run_id.as_deref())?;
             self.runtime_state
                 .authorize_room_agent_request(actor, request)?;
+        }
+        if let LocalDaemonRequest::AttachSessionView(request) = request {
+            return self
+                .attach_session_view(command, request.clone())
+                .await
+                .map(Some);
         }
         if let Some(response) = self
             .dispatch_app_pre_lane(command, request, caller_user_id)
@@ -81,12 +84,6 @@ impl CommandRouter {
                 Some(request.connection_id.clone())
             }
             LocalDaemonRequest::TestEventConnection(request) => Some(request.connection_id.clone()),
-            LocalDaemonRequest::ListEventConnectionEvents(request) => {
-                Some(request.connection_id.clone())
-            }
-            LocalDaemonRequest::ReplayEventConnectionEvent(request) => {
-                Some(request.connection_id.clone())
-            }
             LocalDaemonRequest::ReconnectEventConnection(request) => {
                 Some(request.connection_id.clone())
             }
@@ -139,210 +136,6 @@ impl CommandRouter {
             if let Some(response) = handler.await? {
                 return Ok(Some(response));
             }
-            LocalDaemonRequest::GetTerminalCommandCatalog(_) => {
-                return terminal_command_catalog_response().map(Some);
-            }
-            LocalDaemonRequest::ListProviderProcesses(request) => {
-                if let Some(processes) = self
-                    .provider_process_projection
-                    .list(request.provider.as_deref())
-                {
-                    let processes = provider_processes_visible_to_user_from_projection(
-                        processes,
-                        &self.provider_run_projection,
-                        caller_user_id,
-                    );
-                    return Ok(Some(LocalDaemonResponse::ProviderProcessesListed {
-                        processes,
-                    }));
-                }
-            }
-            request @ LocalDaemonRequest::RelayStatus(_) => {
-                return execute_relay_config_request(
-                    &self.runtime_state,
-                    Arc::clone(&self.relay_state),
-                    &self.config_projection,
-                    &self.provider_catalog_projection,
-                    request.clone(),
-                )
-                .await
-                .map(Some);
-            }
-            request @ (LocalDaemonRequest::ListRemoteMachines(_)
-            | LocalDaemonRequest::ListRemoteMachineKernels(_)
-            | LocalDaemonRequest::QueryFreshRemoteMachineKernels(_)) => {
-                return execute_remote_relay_inventory_request(
-                    Arc::clone(&self.relay_state),
-                    self.config_projection.clone(),
-                    self.remote_relay_inventory_projection.clone(),
-                    request.clone(),
-                )
-                .await
-                .map(Some);
-            }
-            request @ (LocalDaemonRequest::SearchWorkspaceDirectories(_)
-            | LocalDaemonRequest::CreateWorkspaceDirectory(_)
-            | LocalDaemonRequest::ListWorkspaceWorktrees(_)
-            | LocalDaemonRequest::CreateWorkspaceWorktree(_)
-            | LocalDaemonRequest::DeleteWorkspaceWorktree(_)
-            | LocalDaemonRequest::CreateWorkspacePullRequest(_)
-            | LocalDaemonRequest::GetWorkspaceGitOverview(_)
-            | LocalDaemonRequest::ListWorkspaceFiles(_)
-            | LocalDaemonRequest::GetWorkspaceFileContent(_)
-            | LocalDaemonRequest::CommitWorkspaceChanges(_)
-            | LocalDaemonRequest::PushWorkspaceBranch(_)
-            | LocalDaemonRequest::CommitAndPushWorkspaceChanges(_)) => {
-                return execute_workspace_command_request(
-                    &self.runtime_state,
-                    &self.session_projection,
-                    request.clone(),
-                )
-                .await
-                .map(Some);
-            }
-            request @ (LocalDaemonRequest::RunAgentUtility(_)
-            | LocalDaemonRequest::GenerateWorkspaceCommitMessage(_)) => {
-                return execute_agent_utility_request(
-                    &self.runtime_state,
-                    &self.config_projection,
-                    request.clone(),
-                )
-                .await
-                .map(Some);
-            }
-            LocalDaemonRequest::AdjustProjectEnvironment(request) => {
-                return self
-                    .runtime_state
-                    .start_project_environment_adjustment(request.clone(), caller_user_id)
-                    .await
-                    .map(Some);
-            }
-            request if request.unsupported_environment_capability().is_some() => {
-                return Ok(Some(LocalDaemonResponse::EnvironmentUnsupportedFeature {
-                    feature: request
-                        .unsupported_environment_capability()
-                        .expect("matched unsupported feature"),
-                    supported_schema: 1,
-                }));
-            }
-            LocalDaemonRequest::GetProjectEnvironment(request) => {
-                return self
-                    .runtime_state
-                    .get_project_environment(request.clone(), caller_user_id)
-                    .map(Some);
-            }
-            LocalDaemonRequest::GetProjectEnvironmentManifest(request) => {
-                return self
-                    .runtime_state
-                    .get_project_environment_manifest(request.clone(), caller_user_id)
-                    .await
-                    .map(Some);
-            }
-            request @ (LocalDaemonRequest::StartProjectEnvironmentSetup(_)
-            | LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_)
-            | LocalDaemonRequest::CancelProjectEnvironmentSetup(_)
-            | LocalDaemonRequest::RetryProjectEnvironmentSetup(_)) => {
-                return self
-                    .runtime_state
-                    .execute_project_environment_setup_request(request.clone(), caller_user_id)
-                    .await
-                    .map(Some);
-            }
-            request @ (LocalDaemonRequest::GetProviderCatalog(_)
-            | LocalDaemonRequest::GetClientCatalogSnapshot(_)
-            | LocalDaemonRequest::GetClientCatalogRevisions(_)
-            | LocalDaemonRequest::GetProviderCommandCatalogs(_)) => {
-                return execute_provider_catalog_request(
-                    &self.provider_catalog_projection,
-                    &self.config_projection,
-                    self.runtime_state.provider_account_profile_registry(),
-                    caller_user_id,
-                    request.clone(),
-                )
-                .await
-                .map(Some);
-            }
-            request @ (LocalDaemonRequest::GetEventGeneratorCatalogLanding(_)
-            | LocalDaemonRequest::SearchEventGeneratorCatalog(_)
-            | LocalDaemonRequest::BrowseEventGeneratorCategory(_)
-            | LocalDaemonRequest::GetEventGeneratorDetail(_)
-            | LocalDaemonRequest::BrowseEventGeneratorEvents(_)
-            | LocalDaemonRequest::StartEventGeneratorAuthorization(_)
-            | LocalDaemonRequest::ListEventGeneratorResources(_)
-            | LocalDaemonRequest::ListEventConnections(_)
-            | LocalDaemonRequest::GetEventConnection(_)
-            | LocalDaemonRequest::InstallEventConnection(_)
-            | LocalDaemonRequest::ObserveEventConnectionAuthorization(_)
-            | LocalDaemonRequest::RefreshEventConnection(_)
-            | LocalDaemonRequest::TestEventConnection(_)
-            | LocalDaemonRequest::ListEventConnectionEvents(_)
-            | LocalDaemonRequest::ReplayEventConnectionEvent(_)
-            | LocalDaemonRequest::ReconnectEventConnection(_)
-            | LocalDaemonRequest::ListEventConnectionResources(_)
-            | LocalDaemonRequest::ListEventConnectionDependencies(_)
-            | LocalDaemonRequest::GetEventDeliveryStatus(_)) => {
-                return execute_event_catalog_request_with_client(
-                    &self.runtime_state,
-                    &self.config_projection,
-                    &self.aegs_management_http_client,
-                    caller_user_id,
-                    request.clone(),
-                )
-                .await
-                .map(Some);
-            }
-            request @ (LocalDaemonRequest::InstallMcpServer(_)
-            | LocalDaemonRequest::UpdateMcpServer(_)
-            | LocalDaemonRequest::UninstallMcpServer(_)
-            | LocalDaemonRequest::ImportMcpServers(_)
-            | LocalDaemonRequest::ImportProviderCapabilities(_)
-            | LocalDaemonRequest::GetMcpServer(_)
-            | LocalDaemonRequest::ListMcpServers(_)
-            | LocalDaemonRequest::RegisterEnvironment(_)
-            | LocalDaemonRequest::RemoveEnvironment(_)
-            | LocalDaemonRequest::GetEnvironment(_)
-            | LocalDaemonRequest::ListEnvironments(_)
-            | LocalDaemonRequest::ValidateScript(_)
-            | LocalDaemonRequest::RegisterScript(_)
-            | LocalDaemonRequest::RemoveScript(_)
-            | LocalDaemonRequest::GetScript(_)
-            | LocalDaemonRequest::ListScripts(_)
-            | LocalDaemonRequest::RegisterCredential(_)
-            | LocalDaemonRequest::UpsertCredential(_)
-            | LocalDaemonRequest::RemoveCredential(_)
-            | LocalDaemonRequest::GetCredential(_)
-            | LocalDaemonRequest::ListCredentials(_)
-            | LocalDaemonRequest::RegisterConnector(_)
-            | LocalDaemonRequest::UpsertConnector(_)
-            | LocalDaemonRequest::RegisterConnectorAdapter(_)
-            | LocalDaemonRequest::RemoveConnectorAdapter(_)
-            | LocalDaemonRequest::GetConnectorAdapter(_)
-            | LocalDaemonRequest::ListConnectorAdapters(_)
-            | LocalDaemonRequest::RemoveConnector(_)
-            | LocalDaemonRequest::GetConnector(_)
-            | LocalDaemonRequest::ListConnectors(_)
-            | LocalDaemonRequest::TestConnector(_)
-            | LocalDaemonRequest::UpsertSkill(_)
-            | LocalDaemonRequest::InstallSkill(_)
-            | LocalDaemonRequest::UpdateSkill(_)
-            | LocalDaemonRequest::UninstallSkill(_)
-            | LocalDaemonRequest::ImportSkills(_)
-            | LocalDaemonRequest::GetSkill(_)
-            | LocalDaemonRequest::ListSkills(_)) => {
-                let credential_vault = self
-                    .config_projection
-                    .snapshot()
-                    .user_config
-                    .credential_vault;
-                return execute_capability_registry_request(
-                    &self.runtime_state,
-                    request.clone(),
-                    credential_vault,
-                )
-                .await
-                .map(Some);
-            }
-            _ => {}
         }
         if let Some(response) = projected_session_inspection_response(
             &self.session_projection,

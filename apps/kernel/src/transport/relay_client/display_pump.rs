@@ -93,7 +93,9 @@ impl PumpState {
     }
     fn admit(&mut self, now: Instant) -> Gate {
         // MP-08/MP-10/MP-11: private fixed-label timings, no peer or payload.
-        self.mark("push_rtt_floor", now.checked_sub(self.rtt_floor()).unwrap_or(now),
+        self.mark(
+            "push_rtt_floor",
+            now.checked_sub(self.rtt_floor()).unwrap_or(now),
         );
         if let Some(&(_, oldest)) = self.sent.front() {
             let age = now.saturating_duration_since(oldest);
@@ -169,7 +171,9 @@ impl PumpState {
                             self.rtt.clear();
                         }
                         self.timed_ack = true;
-                        self.mark("push_ack_rtt", Instant::now().checked_sub(sample).unwrap_or(now),
+                        self.mark(
+                            "push_ack_rtt",
+                            Instant::now().checked_sub(sample).unwrap_or(now),
                         );
                     }
                     self.rtt.push_back((now, sample));
@@ -198,7 +202,14 @@ impl DisplayPump {
     pub(super) fn new(generation: u64, display_id: &str) -> Arc<Self> {
         Arc::new(Self {
             state: std::sync::Mutex::new(PumpState {
-                display: display_id.chars().rev().take(8).collect::<Vec<_>>().into_iter().rev().collect(),
+                display: display_id
+                    .chars()
+                    .rev()
+                    .take(8)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect(),
                 generation,
                 reset: true,
                 ..Default::default()

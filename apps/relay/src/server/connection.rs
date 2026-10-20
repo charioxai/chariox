@@ -1025,7 +1025,10 @@ pub(crate) async fn handle_connection(
     )
     .await;
     if connection_result.is_err()
-        || !matches!(end_reason, "peer_closed" | "peer_stream_ended" | "message_handling")
+        || !matches!(
+            end_reason,
+            "peer_closed" | "peer_stream_ended" | "message_handling"
+        )
         || registered_daemon_key.is_some()
         || !disconnect_errors.is_empty()
         || !disconnect_peer_errors.is_empty()

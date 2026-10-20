@@ -915,7 +915,9 @@ async fn computer_release_before_blocked_event_does_not_open_an_owner_modal() {
         )
         .unwrap();
     // The human released after the tool refusal, before the provider's Blocked event.
-    f.state.release_room_environment_input(&f.session, "human-view", &InputTarget::Desktop).unwrap();
+    f.state
+        .release_room_environment_input(&f.session, "human-view", &InputTarget::Desktop)
+        .unwrap();
     let store = &f.state.owned.durable_state_store;
     let id = f.id("computer-wait");
     store
@@ -937,7 +939,6 @@ async fn computer_release_before_blocked_event_does_not_open_an_owner_modal() {
         f.active_ids().is_empty(),
         "a human-control wait must keep Release clickable"
     );
-
 }
 
 // MP-08/MP-10/MP-11: takeover is a wait, never a modal over Release.
@@ -977,7 +978,17 @@ async fn computer_task_decision_leaves_release_accessible_until_human_releases()
             now: 1,
         })
         .unwrap();
-    let Outcome::Task(blocked) = store.agent_lifecycle(Operation::Block {task:id.clone(),prompt:id,reason:"Goal evaluation timed out; inspect the receipt and choose whether to resume".into()}).unwrap() else {panic!()};
+    let Outcome::Task(blocked) = store
+        .agent_lifecycle(Operation::Block {
+            task: id.clone(),
+            prompt: id,
+            reason: "Goal evaluation timed out; inspect the receipt and choose whether to resume"
+                .into(),
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
     f.state
         .ensure_task_owner_interaction(blocked.clone())
         .await
@@ -986,7 +997,16 @@ async fn computer_task_decision_leaves_release_accessible_until_human_releases()
         f.active_ids().is_empty(),
         "a human-control wait must keep Release clickable"
     );
-    f.state.release_room_environment_input(&f.session, "human-view", &InputTarget::Desktop).unwrap();
-    f.state.ensure_task_owner_interaction(blocked).await.unwrap();
-    assert_eq!(f.active_ids().len(), 1, "genuine decisions remain available after Release");
+    f.state
+        .release_room_environment_input(&f.session, "human-view", &InputTarget::Desktop)
+        .unwrap();
+    f.state
+        .ensure_task_owner_interaction(blocked)
+        .await
+        .unwrap();
+    assert_eq!(
+        f.active_ids().len(),
+        1,
+        "genuine decisions remain available after Release"
+    );
 }

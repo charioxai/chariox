@@ -307,10 +307,16 @@ fn mp08_mp10_mp11_initial_view_is_a_bounded_latest_turn_not_a_blob_download() {
         assert!(blobs[0]
             .entries
             .iter()
-            .any(|entry| serde_json::from_str::<serde_json::Value>(&entry.entry.text)
-                .ok()
-                .and_then(|value| value.get("output").and_then(|output| output.as_str()).map(str::to_owned))
-                .as_deref() == Some(tool_body.as_str())));
+            .any(
+                |entry| serde_json::from_str::<serde_json::Value>(&entry.entry.text)
+                    .ok()
+                    .and_then(|value| value
+                        .get("output")
+                        .and_then(|output| output.as_str())
+                        .map(str::to_owned))
+                    .as_deref()
+                    == Some(tool_body.as_str())
+            ));
         let LocalDaemonResponse::SessionHistoryOutline { agents: older } = harness
             .dispatch(LocalDaemonRequest::GetSessionHistoryOutline(
                 crate::local::GetSessionHistoryOutlineRequest {

@@ -203,7 +203,9 @@ fn eligible(pending: &VecDeque<Queued>, index: usize, active: &VecDeque<Transfer
     // unknown lifecycle envelopes are barriers. Correlated replies may pass
     // them to avoid catalog deadlock.
     let same = |lane: Lane, key: &Option<String>| lane == current && *key == pending[index].key;
-    !active.iter().any(|t| same(t.lane, &t.key) || t.lane == Lane::Ordered)
+    !active
+        .iter()
+        .any(|t| same(t.lane, &t.key) || t.lane == Lane::Ordered)
         && !pending
             .iter()
             .take(index)
@@ -382,7 +384,9 @@ where
                         if transfer.small {
                             credit.small += bytes;
                         }
-                        credit.pending.push_back((transfer.id, end as u32, bytes, transfer.small));
+                        credit
+                            .pending
+                            .push_back((transfer.id, end as u32, bytes, transfer.small));
                         small_streak = if transfer.small { small_streak + 1 } else { 0 };
                         transfer.offset = end;
                         transfer.waiting += 1;
@@ -606,7 +610,10 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(150), client.next()).await
         {
             wire += message.len();
-            assert!(wire <= WINDOW_BYTES + SMALL_RESERVE_BYTES, "combined byte credit exceeded");
+            assert!(
+                wire <= WINDOW_BYTES + SMALL_RESERVE_BYTES,
+                "combined byte credit exceeded"
+            );
             match message {
                 Message::Binary(bytes) => {
                     let (h, _) = crate::binary_event::decode(&bytes).unwrap();
@@ -662,10 +669,13 @@ mod tests {
     #[tokio::test]
     async fn s1_large_message_completes_in_two_round_trips() {
         let (wire_tx, mut wire) = mpsc::unbounded_channel();
-        let sink = Box::pin(futures_util::sink::unfold(wire_tx, |tx, message: Message| async move {
-            let _ = tx.send(message);
-            Ok::<_, std::convert::Infallible>(tx)
-        }));
+        let sink = Box::pin(futures_util::sink::unfold(
+            wire_tx,
+            |tx, message: Message| async move {
+                let _ = tx.send(message);
+                Ok::<_, std::convert::Infallible>(tx)
+            },
+        ));
         let (tx, rx) = mpsc::channel(4);
         let (ack_tx, ack_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
         let (_ct, cr) = mpsc::channel(8);
@@ -687,11 +697,15 @@ mod tests {
             }
             flights += 1;
             for message in flight {
-                let Message::Text(text) = message else { panic!("unexpected frame") };
+                let Message::Text(text) = message else {
+                    panic!("unexpected frame")
+                };
                 let (complete, receipt) = receiver.receive(&text).unwrap();
                 done = done.or(complete);
-                let TransportFrame::TransportAck { transfer_id, offset } =
-                    serde_json::from_str(&receipt.unwrap()).unwrap()
+                let TransportFrame::TransportAck {
+                    transfer_id,
+                    offset,
+                } = serde_json::from_str(&receipt.unwrap()).unwrap()
                 else {
                     panic!("receipt expected")
                 };
@@ -923,9 +937,13 @@ mod tests {
         let (at, ar) = mpsc::channel(256);
         let (_ct, cr) = mpsc::channel(8);
         for id in 1..=3 {
-            tx.send(display_event("page", id, "p".repeat(60_000))).await.unwrap();
+            tx.send(display_event("page", id, "p".repeat(60_000)))
+                .await
+                .unwrap();
         }
-        tx.send(display_event("band", 1, "band".into())).await.unwrap();
+        tx.send(display_event("band", 1, "band".into()))
+            .await
+            .unwrap();
         drop(tx);
         let task = tokio::spawn(run_writer(socket, rx, true, false, ar, cr, |_| true));
         let mut receiver = crate::frame_transport::FrameReceiver::default();
@@ -940,20 +958,33 @@ mod tests {
                 panic!()
             };
             let (complete, ack) = receiver.receive(&text).unwrap();
-            let TransportFrame::TransportAck { transfer_id, offset } =
-                serde_json::from_str(&ack.unwrap()).unwrap()
+            let TransportFrame::TransportAck {
+                transfer_id,
+                offset,
+            } = serde_json::from_str(&ack.unwrap()).unwrap()
             else {
                 panic!()
             };
             at.send((transfer_id, offset)).await.unwrap();
             if let Some(text) = complete {
                 let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-                done.push(format!("{}{}", value["subscription_id"].as_str().unwrap(), value["event_id"]));
+                done.push(format!(
+                    "{}{}",
+                    value["subscription_id"].as_str().unwrap(),
+                    value["event_id"]
+                ));
             }
         }
-        assert!(done.iter().position(|d| d == "band1").unwrap() <= 1, "band frame waited behind page frames: {done:?}");
+        assert!(
+            done.iter().position(|d| d == "band1").unwrap() <= 1,
+            "band frame waited behind page frames: {done:?}"
+        );
         let pages: Vec<_> = done.iter().filter(|d| d.starts_with("page")).collect();
-        assert_eq!(pages, ["page1", "page2", "page3"], "one subscription stays FIFO");
+        assert_eq!(
+            pages,
+            ["page1", "page2", "page3"],
+            "one subscription stays FIFO"
+        );
         task.await.unwrap();
         let _ = client.close(None).await;
     }
@@ -965,7 +996,9 @@ mod tests {
         let (tx, rx) = mpsc::channel(16);
         let (_at, ar) = mpsc::channel(256);
         let (_ct, cr) = mpsc::channel(8);
-        tx.send(display_event("page", 1, "p".repeat(400_000))).await.unwrap();
+        tx.send(display_event("page", 1, "p".repeat(400_000)))
+            .await
+            .unwrap();
         let task = tokio::spawn(run_writer(socket, rx, true, false, ar, cr, |_| true));
         let mut wire = 0;
         while let Ok(Some(Ok(message))) =
@@ -973,15 +1006,21 @@ mod tests {
         {
             wire += message.len();
         }
-        assert!(wire >= WINDOW_BYTES - CHUNK_BYTES, "bulk must fill the window first");
-        tx.send(display_event("band", 1, "band".into())).await.unwrap();
+        assert!(
+            wire >= WINDOW_BYTES - CHUNK_BYTES,
+            "bulk must fill the window first"
+        );
+        tx.send(display_event("band", 1, "band".into()))
+            .await
+            .unwrap();
         let mut receiver = crate::frame_transport::FrameReceiver::default();
         let band = loop {
-            let Message::Text(text) = tokio::time::timeout(Duration::from_millis(500), client.next())
-                .await
-                .expect("a small frame must not wait for a receipt round trip")
-                .unwrap()
-                .unwrap()
+            let Message::Text(text) =
+                tokio::time::timeout(Duration::from_millis(500), client.next())
+                    .await
+                    .expect("a small frame must not wait for a receipt round trip")
+                    .unwrap()
+                    .unwrap()
             else {
                 panic!()
             };
@@ -1001,14 +1040,19 @@ mod tests {
         let (at, ar) = mpsc::channel(256);
         let (_ct, cr) = mpsc::channel(8);
         let reply = serde_json::json!({"kind":"client_response","request_id":"catalog","payload":"x".repeat(400_000)});
-        tx.send(Message::Text(reply.to_string().into())).await.unwrap();
+        tx.send(Message::Text(reply.to_string().into()))
+            .await
+            .unwrap();
         let task = tokio::spawn(run_writer(socket, rx, true, false, ar, cr, |_| true));
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = stop.clone();
         let producer = tokio::spawn(async move {
             for id in 1..200_000u64 {
                 if flag.load(std::sync::atomic::Ordering::Relaxed)
-                    || tx.send(display_event("band", id, "b".repeat(300))).await.is_err()
+                    || tx
+                        .send(display_event("band", id, "b".repeat(300)))
+                        .await
+                        .is_err()
                 {
                     break;
                 }
@@ -1030,12 +1074,17 @@ mod tests {
                     panic!()
                 };
                 let (complete, ack) = receiver.receive(&text).unwrap();
-                let TransportFrame::TransportAck { transfer_id, offset } =
-                    serde_json::from_str(&ack.unwrap()).unwrap()
+                let TransportFrame::TransportAck {
+                    transfer_id,
+                    offset,
+                } = serde_json::from_str(&ack.unwrap()).unwrap()
                 else {
                     panic!()
                 };
-                let _ = due_tx.send((tokio::time::Instant::now() + ack_delay, (transfer_id, offset)));
+                let _ = due_tx.send((
+                    tokio::time::Instant::now() + ack_delay,
+                    (transfer_id, offset),
+                ));
                 if complete.is_some_and(|t| t.contains("catalog")) {
                     break;
                 }
@@ -1065,31 +1114,41 @@ mod tests {
         let (_at, ar) = mpsc::channel(256);
         let (_ct, cr) = mpsc::channel(8);
         for sub in ["s1", "s2", "s3", "s4"] {
-            tx.send(display_event(sub, 1, "p".repeat(300_000))).await.unwrap();
+            tx.send(display_event(sub, 1, "p".repeat(300_000)))
+                .await
+                .unwrap();
         }
         let task = tokio::spawn(run_writer(socket, rx, true, false, ar, cr, |_| true));
         while let Ok(Some(Ok(_))) =
             tokio::time::timeout(Duration::from_millis(200), client.next()).await
         {}
-        tx.send(Message::Text(r#"{"kind":"client_response","request_id":"reply","payload":"ok"}"#.into()))
-            .await
-            .unwrap();
-        tx.send(Message::Text(r#"{"kind":"daemon_request","relay_request_id":"R"}"#.into()))
-            .await
-            .unwrap();
+        tx.send(Message::Text(
+            r#"{"kind":"client_response","request_id":"reply","payload":"ok"}"#.into(),
+        ))
+        .await
+        .unwrap();
+        tx.send(Message::Text(
+            r#"{"kind":"daemon_request","relay_request_id":"R"}"#.into(),
+        ))
+        .await
+        .unwrap();
         let mut receiver = crate::frame_transport::FrameReceiver::default();
         let mut seen = Vec::new();
         while seen.len() < 2 {
-            let Message::Text(text) = tokio::time::timeout(Duration::from_millis(500), client.next())
-                .await
-                .expect("a request or reply waited for a whole bulk event")
-                .unwrap()
-                .unwrap()
+            let Message::Text(text) =
+                tokio::time::timeout(Duration::from_millis(500), client.next())
+                    .await
+                    .expect("a request or reply waited for a whole bulk event")
+                    .unwrap()
+                    .unwrap()
             else {
                 panic!()
             };
             if let Some(done) = receiver.receive(&text).unwrap().0 {
-                assert!(!done.contains("subscription_id"), "a bulk event finished first");
+                assert!(
+                    !done.contains("subscription_id"),
+                    "a bulk event finished first"
+                );
                 seen.push(done);
             }
         }

@@ -678,7 +678,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetProviderRun(_)
         | LocalDaemonRequest::GetProviderCatalog(_)
         | LocalDaemonRequest::GetClientCatalogSnapshot(_)
-            | LocalDaemonRequest::GetClientCatalogRevisions(_)
+        | LocalDaemonRequest::GetClientCatalogRevisions(_)
         | LocalDaemonRequest::GetProviderCommandCatalogs(_)
         | LocalDaemonRequest::ListProviderAccountProfiles(_)
         | LocalDaemonRequest::GetProviderAccountProfile(_)

@@ -1821,8 +1821,12 @@ fn workspace_trust_approval_frame(choices: &str, expected_input: &str, frame_mod
     while output_ready.sequence() == before_reply && std::time::Instant::now() < wake_deadline {
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
-    assert!(output_ready.take_ready_provider_run_ids().contains(run.id()),
-        "MP-08 / MP-10: a resolved workspace trust mailbox must wake this run's shared pump");
+    assert!(
+        output_ready
+            .take_ready_provider_run_ids()
+            .contains(run.id()),
+        "MP-08 / MP-10: a resolved workspace trust mailbox must wake this run's shared pump"
+    );
 
     if frame_mode == 2 {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);

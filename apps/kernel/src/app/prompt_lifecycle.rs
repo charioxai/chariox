@@ -948,7 +948,10 @@ mod remote_note_tests {
         let other = PromptAttachment::new("chariox-terminal://x", "text/plain", None)
             .with_contents_base64("aGk=");
         let sent = serialize_remote_prompt_attachments(&[note, other]).unwrap();
-        assert_eq!(sent[0].contents_base64.as_deref(), Some("eyJxdW90ZSI6ImEifQ=="));
+        assert_eq!(
+            sent[0].contents_base64.as_deref(),
+            Some("eyJxdW90ZSI6ImEifQ==")
+        );
         assert_eq!(sent[1].contents_base64, None);
     }
 }

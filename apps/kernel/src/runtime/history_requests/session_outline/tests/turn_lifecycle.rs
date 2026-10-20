@@ -52,6 +52,7 @@ async fn failed_turn_history_request_preserves_settlement_after_store_reopen() {
             include_prefetched_content: false,
             agent_ids: Some(vec!["agent-1".into()]),
             latest_prompt_count: Some(4),
+            include_prefetched_content: false,
             cursor: None,
         },
     )
@@ -2346,6 +2347,7 @@ async fn outline_hides_goal_completion_check_turn() {
             session_id: "session-1".into(),
             agent_ids: Some(vec!["agent-1".into()]),
             latest_prompt_count: Some(4),
+            include_prefetched_content: false,
             cursor: None,
         },
     )

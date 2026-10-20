@@ -391,7 +391,8 @@ pub struct ClientCatalogSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_catalog: Option<crate::provider::OpenCodeProviderCatalog>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_commands: Option<std::collections::BTreeMap<String, crate::provider::ProviderCommandCatalog>>,
+    pub provider_commands:
+        Option<std::collections::BTreeMap<String, crate::provider::ProviderCommandCatalog>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_commands: Option<super::TerminalCommandCatalog>,
 }

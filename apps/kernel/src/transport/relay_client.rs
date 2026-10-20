@@ -35,13 +35,13 @@ use crate::transport::relay_discovery;
 use crate::transport::relay_peer::RelayPeerEvent;
 
 mod browser_display;
-mod display_admission;
-mod display_delivery;
 mod browser_input_order;
 mod connection_config;
 mod connection_state;
 mod connector;
 mod daemon_requests;
+mod display_admission;
+mod display_delivery;
 mod display_ingress;
 mod display_pump;
 mod display_tunnel;
@@ -61,7 +61,9 @@ use connection_config::{relay_config_continuity, RelayConfigContinuity};
 use connection_state::{
     publish_offline_and_set_disconnected, set_connected, spawn_cloud_presence_publish,
 };
-use daemon_requests::{handle_daemon_request, handle_prepared_daemon_request, prepare_daemon_request};
+use daemon_requests::{
+    handle_daemon_request, handle_prepared_daemon_request, prepare_daemon_request,
+};
 use display_tunnel::handle_display_tunnel_open;
 use envelope_io::{
     encrypt_json_response, encrypt_peer_payload, send_outgoing_envelope,

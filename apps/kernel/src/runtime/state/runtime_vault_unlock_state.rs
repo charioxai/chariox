@@ -522,7 +522,7 @@ impl KernelRuntimeState {
             )
             .await?
         else {
-            return Ok(VaultUnlockGuard::unlocked_until_expiry());
+            return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path.clone()));
         };
         let passphrase = vault_passphrase_from_resolution(resolution, operation)?;
         let choice_id = if matches!(
@@ -540,7 +540,7 @@ impl KernelRuntimeState {
                 )
                 .await?
             else {
-                return Ok(VaultUnlockGuard::unlocked_until_expiry());
+                return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path.clone()));
             };
             vault_lease_choice_from_resolution(resolution, operation)?
         } else if matches!(
@@ -557,7 +557,7 @@ impl KernelRuntimeState {
         let unlock_request_lock = vault_unlock_request_lock(&vault_path);
         let _mutation = unlock_request_lock.lock().await;
         if !force_prompt && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
-            return Ok(VaultUnlockGuard::unlocked_until_expiry());
+            return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path.clone()));
         }
         let status =
             crate::secret::unlock_chariox_encrypted_vault(&vault_path, passphrase.as_str(), lease)?;

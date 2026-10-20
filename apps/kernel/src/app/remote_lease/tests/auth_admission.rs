@@ -121,13 +121,13 @@ async fn unobserved_claude_replica_is_admitted_but_a_signed_out_one_is_refused()
         )
         .unwrap();
     RemoteLeaseRuntime::new(&mut app)
-        .require_leased_agent_authenticated(&leased.id)
+        .require_leased_prompt_account(&leased.id)
         .expect("an unobserved Claude replica waits for the home's launch credential");
     app.provider_account_profile_registry()
         .mark_needs_sign_in(crate::session::DEFAULT_LOCAL_USER_ID, "claude", "default")
         .unwrap();
     let error = RemoteLeaseRuntime::new(&mut app)
-        .require_leased_agent_authenticated(&leased.id)
+        .require_leased_prompt_account(&leased.id)
         .expect_err("a Claude replica that needs sign-in refuses the prompt");
     assert!(
         error.to_string().contains("is not authenticated"),

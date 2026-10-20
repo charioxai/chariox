@@ -8,13 +8,12 @@ use super::*;
 
 mod managed_slice_activation;
 mod writer;
-use managed_slice_activation::{socket_has_current_token, ManagedSliceActivationConfirmation};
 #[cfg(test)]
 use managed_slice_activation::{
     managed_slice_token_confirmation_matches,
     spawn_pending_managed_slice_activation_confirmation_after_connect,
 };
-
+use managed_slice_activation::{socket_has_current_token, ManagedSliceActivationConfirmation};
 
 #[cfg(test)]
 pub async fn run_daemon_relay_connector(

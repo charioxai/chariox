@@ -83,8 +83,12 @@ pub(super) fn settle_unstarted_delegates(
             && o.dispatch_state == "accepted"
             && o.resource_id.as_deref() != Some(source)
     }) {
-        let Some(id) = other.resource_id.as_deref() else { continue };
-        let Some(run) = load_run(tx, owner_id, &task.room_id, id)? else { continue };
+        let Some(id) = other.resource_id.as_deref() else {
+            continue;
+        };
+        let Some(run) = load_run(tx, owner_id, &task.room_id, id)? else {
+            continue;
+        };
         if !run_terminated(&run) {
             kept.extend(unfinished_agents(&run));
         }
@@ -95,7 +99,10 @@ pub(super) fn settle_unstarted_delegates(
             || obligation.status != "open"
             || obligation.dispatch_state != "accepted"
             || obligation.completion_task_id.is_some()
-            || obligation.resource_id.as_deref().is_some_and(|a| kept.contains(a))
+            || obligation
+                .resource_id
+                .as_deref()
+                .is_some_and(|a| kept.contains(a))
         {
             continue;
         }

@@ -228,6 +228,8 @@ impl KernelRuntimeOwnedState {
                 session_id: room.into(),
                 provider_run_id: run.into(),
                 agent_id: Some(agent.into()),
+                prompt_id: None,
+                sequence: None,
                 prompt_origin: origin,
                 source_attachment_id: source.clone(),
                 kind: crate::terminal::TerminalOutputKind::ProviderOutput,

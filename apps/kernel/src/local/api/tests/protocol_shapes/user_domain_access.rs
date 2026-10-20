@@ -109,8 +109,11 @@ fn mdaccess_protocol_462_grant_shapes_and_hash() {
 // MP-08/MP-11: keep the typed desktop grant separate from Room browser packets.
 #[test]
 fn mp11_leased_computer_protocol_507_115_snapshot() {
-    use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION};
-    let expected: serde_json::Value = serde_json::from_str(include_str!("leased-computer-507.json")).unwrap();
+    use crate::transport::relay_peer::{
+        RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
+    };
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("leased-computer-507.json")).unwrap();
     assert_eq!(expected["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
     assert_eq!(expected["peer_protocol"], RELAY_PEER_PROTOCOL_VERSION);
     for value in expected["local"].as_array().unwrap() {
@@ -125,5 +128,11 @@ fn mp11_leased_computer_protocol_507_115_snapshot() {
         let response: RelayPeerResponse = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(response).unwrap(), *value);
     }
-    assert_eq!(format!("{:x}", Sha256::digest(serde_json::to_vec(&expected).unwrap())), "2a9fa9c22e35fc01aea5b1da36c24314fda3d4fd4ef87790c6aeb13c95af5cc5");
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&expected).unwrap())
+        ),
+        "2a9fa9c22e35fc01aea5b1da36c24314fda3d4fd4ef87790c6aeb13c95af5cc5"
+    );
 }

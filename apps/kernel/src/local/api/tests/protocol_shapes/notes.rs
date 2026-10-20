@@ -77,14 +77,12 @@ fn notes_protocol_443_response_snapshots() {
             suffix: "after".into(),
         },
     };
-    let results = vec![
-        NoteResult::SelectionChanged {
-            selection: Some(NoteSelection {
-                anchor,
-                box_css: None,
-            }),
-        },
-    ];
+    let results = vec![NoteResult::SelectionChanged {
+        selection: Some(NoteSelection {
+            anchor,
+            box_css: None,
+        }),
+    }];
     let values = results
         .into_iter()
         .map(|result| serde_json::to_value(LocalDaemonResponse::Notes { result }).unwrap())
@@ -113,6 +111,9 @@ fn prompt_notes_566_snapshot() {
     let crate::local::LocalDaemonRequest::SubmitPrompt(submit) = request else {
         panic!("expected SubmitPrompt")
     };
-    assert_eq!(submit.attachments[0].mime(), crate::prompt_notes::NOTE_ATTACHMENT_MIME);
+    assert_eq!(
+        submit.attachments[0].mime(),
+        crate::prompt_notes::NOTE_ATTACHMENT_MIME
+    );
     crate::prompt_notes::admit(submit.prompt, &submit.attachments).unwrap();
 }

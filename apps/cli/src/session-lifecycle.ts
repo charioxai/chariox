@@ -100,11 +100,7 @@ type SessionLifecycleDeps = {
   tryGetProviderRun: (
     providerRunId: string,
   ) => Promise<RuntimeProviderRun | null>
-  setProviderCatalogState: (catalog: ProviderCatalog) => void
-  setTerminalCommandCatalogState: (catalog: TerminalCommandCatalog) => void
   syncCliProviderSelection: (selection: ProviderSelectionState) => void
-  getProviderCatalog: () => Promise<ProviderCatalog>
-  getTerminalCommandCatalog: () => Promise<TerminalCommandCatalog>
   primeAttachedSessionBinding?: (session: RuntimeSession, owned: () => boolean) => Promise<void>
   hydrateAttachedSessionBinding: (
     sessionId: string,
@@ -512,8 +508,6 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     attachedSession = providerSettlement.session
     if (!current()) return
     switch (providerSettlement.action) {
-      case "deferred":
-        throw new Error("attach after mount cannot defer provider launch")
       case "launched": {
         deps.cliOptions.provider = providerSettlement.launch.provider
         deps.cliOptions.model = providerSettlement.launch.model

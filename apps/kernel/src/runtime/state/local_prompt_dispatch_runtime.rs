@@ -3259,10 +3259,12 @@ pub(in crate::runtime::state) mod tests {
                     .expect("a replacement prompt should be admitted");
             }
             drop(held);
-            assert!(!task
-                .await
-                .unwrap()
-                .expect("settled prompt is a stale dispatch, not a provider failure"));
+            assert_eq!(
+                task.await
+                    .unwrap()
+                    .expect("settled prompt is a stale dispatch, not a provider failure"),
+                PromptDispatchAcceptance::Dropped
+            );
             let session = runtime
                 .owned
                 .session_store

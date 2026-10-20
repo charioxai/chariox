@@ -243,7 +243,6 @@ export async function bootstrapSession(
       session: hydratedSession,
       attachment,
       providerRun: settled?.providerRun ?? null,
-      providerLaunchIssue: settled?.issue ?? null,
       createdSession,
       historyEntries: [],
       promptHistoryEntries: [],

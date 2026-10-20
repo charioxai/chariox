@@ -311,7 +311,10 @@ impl Drop for DisplayPackets {
                 for entry in entries.flatten() {
                     let name = entry.file_name().to_string_lossy().into_owned();
                     self.reclaim_rasters(&name);
-                    if matches!(name.as_str(), "display-timing.jsonl" | "display-hardware.jsonl") {
+                    if matches!(
+                        name.as_str(),
+                        "display-timing.jsonl" | "display-hardware.jsonl"
+                    ) {
                         Self::reclaim_private_files(&self.directory, &[&name], 64 * 1024 * 1024);
                     }
                     if name == "display.xauth" {
