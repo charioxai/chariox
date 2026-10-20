@@ -30,6 +30,8 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             wire: None,
             navigation_preview: None,
             font_requirements: None,
+            layout_width: None,
+            layout_height: None,
         },
         C::MirrorNext {
             subscription_id: "s".into(),
@@ -48,6 +50,8 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             wire: Some(2),
             navigation_preview: None,
             font_requirements: None,
+            layout_width: None,
+            layout_height: None,
         },
         C::MirrorNext {
             subscription_id: "s".into(),
@@ -284,4 +288,15 @@ fn browser_mirror2_document_font_requirements_550_shape_is_pinned() {
         let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(typed).unwrap(), wire);
     }
+}
+
+#[test]
+fn browser_mirror2_layout_560_shape_is_pinned() {
+    // MP-08/MP-10/MP-11: allocated 560/168 lets the viewer name its display size for the Tab layout.
+    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 560);
+    let bytes = include_bytes!("browser-mirror2-layout-560.json");
+    assert_eq!(format!("{:x}", sha2::Sha256::digest(bytes)), "bed6489de9b231481fbc972031702ebcd80460fa52422aca33420cbe69ebc741");
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let subscribe: LocalDaemonRequest = serde_json::from_value(fixture["subscribe"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(subscribe).unwrap(), fixture["subscribe"]);
 }
