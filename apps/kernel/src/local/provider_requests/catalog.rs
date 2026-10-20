@@ -482,7 +482,7 @@ fn claude_profile_auth_status(
             auth_state: "not_logged_in".into(),
             identity_summary: None,
             plan: None,
-            detected_version: profile.detected_version.clone(),
+            detected_version: profile.detected_provider_version.clone(),
             login_hint: Some("Log in through Provider Accounts".into()),
         });
     }
