@@ -211,7 +211,7 @@ export function createRunner({ repoRoot, children }) {
 }
 
 function terminateGroup(child, signal) {
-  if (!child?.pid || child.exitCode !== null) return
+  if (!Number.isSafeInteger(child?.pid) || child.pid <= 1 || child.exitCode !== null) return
   try {
     signalOwnedProcessGroup(child, signal)
   } catch {
