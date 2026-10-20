@@ -181,12 +181,15 @@ export class KernelBrowserHost {
     const recovering = this.recovery.enabled;
     this.recovery.enabled = true;
     this.recovery.disarm();
+    // MP-08/MP-10: attribution/state reads can arrive during teardown. Keep
+    // their empty live inventory from replacing the durable recovery snapshot.
+    this.restoring = true;
     // Recovery belongs to the shared browser, not the viewer whose read first
     // notices the loss. Its caller still checks cancellation after this wait.
     this.starting = this.startNow({ signal: recovering ? undefined : signal });
     try { return await this.starting; }
     catch (error) { this.recovery.schedule(); throw error; }
-    finally { this.starting = null; }
+    finally { this.starting = null; this.restoring = false; }
   }
   async startNow({ signal } = {}) {
     // MP-08/MP-10: settle the last durable tab snapshot before replacing CDP.
@@ -236,7 +239,6 @@ export class KernelBrowserHost {
     this.generation = saved.generation + 1;
     this.chromeWindows.retire('browser_generation');
     // Publish the new generation before any restoration, so old references never revive.
-    this.restoring = true;
     try {
       const connection = await this.browser.ensureConnection();
       await this.lockdown(connection);
@@ -274,7 +276,6 @@ export class KernelBrowserHost {
       this.recovery.watch(connection);
       this.stateSignal.notify();
     } catch (error) { await this.stop({ recovering: true, preserveDesktop }); throw error; }
-    finally { this.restoring = false; }
   }
   // MP-08/MP-10/MP-11: native binding changes stay on the host mutation lane.
   async rebindWindows() {

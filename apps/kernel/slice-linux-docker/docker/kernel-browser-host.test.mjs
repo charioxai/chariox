@@ -2402,3 +2402,16 @@ test('retired tab reads do not revoke an owner grant',async()=>{
  const command={generation:1,tab_id:'retired-tab'};
  for(const read of [()=>host.target(command),()=>host.mirrorTarget(command),()=>resolveDisplayTarget(host,command)])await assert.rejects(read(),e=>e.code==='user_domain_stale_reference'&&e.race==='display_retired');
 });
+
+// MP-08/MP-10: a state request carries agent groups while teardown has no live
+// targets. That attribution update must not replace the last durable inventory.
+test('group synchronization during recovery cannot save an empty registry',()=>using(async({host,chromium})=>{
+ const first=await host.request({op:'open',url:'https://www.wikipedia.org/'});
+ const second=await host.request({op:'open',url:'https://github.com/charioxai/chariox'});
+ const groups=[{tab_id:second.tab_id,label:'Agent'}];await host.syncTabGroups(groups);
+ const ids=[...host.tabs.keys()],old=host.browser;
+ old.close=async()=>{host.tabs.clear();await host.syncTabGroups(groups)};
+ chromium.child.signalCode='SIGSEGV';await host.request({op:'start'});
+ assert.deepEqual([...host.tabs.keys()],ids);
+ assert.deepEqual(host.savedGroups,groups);assert.equal(host.restoring,false);
+}));
