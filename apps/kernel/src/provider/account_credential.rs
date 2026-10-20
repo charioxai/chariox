@@ -77,6 +77,7 @@ pub(crate) fn resolve_provider_account_credentials_for_launch(
 ) -> Result<ProviderCredentialEnvironment, DaemonError> {
     if crate::provider::canonical_provider_family(provider) != Some("claude")
         || client_interface == crate::provider::ProviderClientInterface::NativeTui
+        || provider_account_credential_registered(owner_user_id, provider, profile_id)?
     {
         return resolve_provider_account_credentials(config, owner_user_id, provider, profile_id);
     }
@@ -108,21 +109,15 @@ fn claude_login_runs_agents(
 }
 
 /// Whether a launch reads the account's Chariox-vault credential, by the same
-/// rule as `resolve_provider_account_credentials_for_launch`: never when the
-/// account's own Claude login runs the agent, so it needs no vault unlock.
+/// rule as `resolve_provider_account_credentials_for_launch`: an enrolled
+/// credential is resolved first, including when a native login is available.
 pub(crate) fn launch_uses_vault_credential(
-    profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    _profiles: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
     provider: &str,
     profile_id: &str,
-    client_interface: crate::provider::ProviderClientInterface,
+    _client_interface: crate::provider::ProviderClientInterface,
 ) -> Result<bool, DaemonError> {
-    if crate::provider::canonical_provider_family(provider) == Some("claude")
-        && client_interface != crate::provider::ProviderClientInterface::NativeTui
-        && claude_login_runs_agents(profiles, owner_user_id, profile_id)?
-    {
-        return Ok(false);
-    }
     provider_account_credential_uses_vault(owner_user_id, provider, profile_id)
 }
 

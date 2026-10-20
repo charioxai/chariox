@@ -307,13 +307,16 @@ impl RoomSecretObservations {
             rooms.insert(room.into(), self.initial(room)?);
         }
         let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
-        protection.history_boundary_bytes = None;
-        // Set the memory fence even if persisting the marker fails. Input must then abort.
-        protection.revision = protection.revision.saturating_add(1);
         let has = |values: &[Zeroizing<String>]| values.iter().any(|v| v.as_str() == value);
         let live_known = has(&protection.values);
         let known = live_known || has(&protection.retired_values) || has(&protection.stored_values);
-        if value.is_empty() || (!known && protection.value_count() >= 256) {
+        let invalid = value.is_empty() || (!known && protection.value_count() >= 256);
+        if invalid || (live && !live_known) || (!live && !known) {
+            protection.history_boundary_bytes = None;
+            // Fence actual changes before persistence; a repeated value keeps prepared handoffs valid.
+            protection.revision = protection.revision.saturating_add(1);
+        }
+        if invalid {
             protection.unknown = true;
             return Err(protection_error());
         }

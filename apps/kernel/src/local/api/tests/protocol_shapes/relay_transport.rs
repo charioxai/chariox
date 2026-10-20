@@ -19,21 +19,25 @@ fn mp08_mp10_mp11_relay_transport_532_140_snapshot() {
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(snapshot["local"], 532);
     assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 532);
-    assert_eq!(
-        snapshot["peer"],
-        140
-    );
+    assert_eq!(snapshot["peer"], 140);
     assert_eq!(snapshot["capability"], TRANSPORT_QUERY);
     assert_eq!(snapshot["bypass_scope"], DISPLAY_EVENT_SCOPE);
     for (name, value) in [
         ("chunk_bytes", CHUNK_BYTES),
-        ("window_bytes", WINDOW_BYTES),
         ("max_message_bytes", MAX_MESSAGE_BYTES),
         ("max_transfers", MAX_TRANSFERS),
         ("max_assembly_bytes", MAX_ASSEMBLY_BYTES),
     ] {
         assert_eq!(snapshot[name], value);
     }
+    // The old byte window is historical; new senders retain its receipt-count bound.
+    let historical_window = snapshot["window_bytes"].as_u64().unwrap() as usize;
+    assert_eq!(historical_window, 64 * 1024);
+    assert!(WINDOW_BYTES >= historical_window);
+    assert_eq!(
+        PEER_RECEIPT_FRAMES,
+        (historical_window + SMALL_RESERVE_BYTES) / MIN_FRAME_BYTES
+    );
     for name in ["chunk", "binary_checkpoint", "ack"] {
         let typed: TransportFrame = serde_json::from_value(snapshot[name].clone()).unwrap();
         assert_eq!(serde_json::to_value(typed).unwrap(), snapshot[name]);

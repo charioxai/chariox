@@ -659,7 +659,7 @@ exit 90
 
 // MP-08/MP-10/MP-11: supplementary regression seams; never live acceptance.
 #[tokio::test]
-async fn setup_token_unchecked_rejection_opens_shared_oauth_without_terminal_commands() {
+async fn setup_token_unchecked_rejection_reports_definitive_recovery() {
     first_use_fixture("rejected").await;
 }
 
@@ -669,12 +669,12 @@ async fn setup_token_inconclusive_first_use_checks_once_without_asking_for_login
 }
 
 #[tokio::test]
-async fn setup_token_previously_expired_account_uses_the_same_oauth_interaction() {
+async fn setup_token_previously_expired_account_reports_definitive_recovery() {
     first_use_fixture("expired").await;
 }
 
 #[tokio::test]
-async fn setup_token_oauth_does_not_hold_an_operation_vault_lease() {
+async fn setup_token_recovery_does_not_hold_an_operation_vault_lease() {
     first_use_fixture("expired-locked").await;
 }
 
@@ -686,6 +686,16 @@ async fn setup_token_expired_observation_overrides_cached_first_use_success() {
 #[tokio::test]
 async fn setup_token_account_enrollment_projects_the_shared_oauth_interaction() {
     first_use_fixture("enrollment").await;
+}
+
+#[tokio::test]
+async fn valid_enrolled_token_wins_over_working_native_login() {
+    first_use_fixture("valid-native").await;
+}
+
+#[tokio::test]
+async fn refused_enrolled_token_uses_native_login_with_renewal_notice() {
+    first_use_fixture("stale-native").await;
 }
 
 async fn first_use_fixture(mode: &str) {
@@ -722,6 +732,14 @@ async fn first_use_fixture(mode: &str) {
 if [ "$1" = --version ]; then echo 2.2.0; exit 0; fi
 if [ "$1" = -p ]; then
   echo check >> '{root}/checks'
+  if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+    echo native >> '{root}/native-checks'
+    if [ '{mode}' = stale-native ] || [ '{mode}' = valid-native ]; then
+      echo '{{"type":"result","subtype":"success","is_error":false,"num_turns":1,"usage":{{"output_tokens":7}},"result":"CHARIOX_AUTH_OK"}}'; exit 0
+    fi
+  elif [ '{mode}' = valid-native ]; then
+    echo '{{"type":"result","subtype":"success","is_error":false,"num_turns":1,"usage":{{"output_tokens":7}},"result":"CHARIOX_AUTH_OK"}}'; exit 0
+  fi
   [ '{mode}' = network ] && exit 3
   if [ '{mode}' = expired-cached ] && [ ! -f '{root}/expired' ]; then
     echo '{{"type":"result","subtype":"success","is_error":false,"num_turns":1,"usage":{{"output_tokens":7}},"result":"CHARIOX_AUTH_OK"}}'; exit 0
@@ -818,6 +836,47 @@ exit 1
         "claude-sonnet",
     )
     .with_agent_id(agent.id());
+    if mode.ends_with("-native") {
+        let prepared = router
+            .runtime_state
+            .prepare_provider_launch_request_with_vault(request, "test credential precedence")
+            .await
+            .unwrap();
+        let notices = router
+            .app
+            .lock()
+            .await
+            .terminal_stream_store()
+            .notice_records();
+        if mode == "valid-native" {
+            assert!(
+                !prepared.provider_credential_env.is_empty(),
+                "enrolled token must win"
+            );
+            assert!(
+                !root.join("native-checks").exists(),
+                "native login must not replace a valid enrollment"
+            );
+            assert!(!notices
+                .iter()
+                .any(|notice| notice.message.contains("Renew the enrolled token")));
+        } else {
+            assert!(
+                prepared.provider_credential_env.is_empty(),
+                "native fallback must omit refused enrollment"
+            );
+            assert!(root.join("native-checks").exists());
+            assert!(notices
+                .iter()
+                .any(|notice| notice.message.contains("native Claude login")
+                    && notice.message.contains("Renew the enrolled token")));
+        }
+        assert!(
+            !root.join("logins").exists(),
+            "launch must never wait for a new login"
+        );
+        return;
+    }
     if mode == "network" {
         for _ in 0..2 {
             router
@@ -884,7 +943,17 @@ exit 1
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let interaction = loop {
         tokio::select! {
-            result = &mut prepared => panic!("MP-08/MP-10/MP-11 rejected token did not await OAuth: {}", result.is_ok()),
+            result = &mut prepared => {
+                assert_ne!(mode, "enrollment", "explicit enrollment must retain its interaction");
+                let error = result.expect_err("refused token without native login must fail").to_string();
+                assert!(error.contains("no working native Claude login"), "{error}");
+                assert!(error.contains("Provider Accounts"), "recovery must be actionable");
+                assert!(!root.join("logins").exists(), "launch must not wait for interactive login");
+                if mode.ends_with("-locked") {
+                    assert!(!crate::secret::chariox_encrypted_vault_status(&vault_path).unwrap().unlocked);
+                }
+                return;
+            },
             _ = tokio::time::sleep(Duration::from_millis(50)) => {}
         }
         let current = router

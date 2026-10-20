@@ -290,6 +290,9 @@ fn run_claude_capture(
         label,
     )?;
     command.current_dir(root.path());
+    if !environment.contains_key(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
+        command.env_remove(crate::provider::CLAUDE_OAUTH_TOKEN_ENV);
+    }
     for name in [
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",

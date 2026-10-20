@@ -904,7 +904,7 @@ impl KernelRuntimeState {
                         &finish_leased_agent_id,
                         home_prompt_id,
                         WorkerPromptReceiptPhase::Rejected,
-                        None,
+                        Some(String::new()),
                     )
                     .await?;
                 }

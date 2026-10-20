@@ -34,9 +34,6 @@ impl KernelRuntimeState {
             self.owned
                 .provider_account_profiles
                 .get(&owner, "claude", &request.account_profile)?;
-        if profile.auth_state == ProviderAccountAuthState::Authenticated {
-            return Ok(credentials);
-        }
         let credential_id =
             crate::provider::provider_account_credential_id(&owner, "claude", &profile.profile_id);
         let checked = if profile.auth_state == ProviderAccountAuthState::Expired {
@@ -82,20 +79,18 @@ impl KernelRuntimeState {
             Err(ClaudeCredentialCheckError::Inconclusive(_)) => Ok(credentials),
             Err(ClaudeCredentialCheckError::Rejected) => {
                 drop(credentials);
-                let _login_lane = self
-                    .provider_runtime_lanes
-                    .acquire(&format!("claude-account-login:{credential_id}"))
-                    .await;
-                if self
-                    .owned
-                    .provider_account_profiles
-                    .get(&owner, "claude", &profile.profile_id)?
-                    .auth_state
-                    == ProviderAccountAuthState::Authenticated
-                {
-                    return self
-                        .resolve_signed_in_claude_credentials(request, &owner, &profile.profile_id)
-                        .await;
+                let native = crate::runtime::claude_setup_token_login::check_native(
+                    self,
+                    &owner,
+                    &profile.profile_id,
+                )
+                .await;
+                if native.is_ok() {
+                    self.owned.record_notice_for_agent(
+                        &request.session_id, None, request.agent_id.as_deref(), Vec::new(),
+                        "The enrolled Claude token was refused. This run is using your native Claude login. Renew the enrolled token in Provider Accounts.",
+                    );
+                    return Ok(ProviderCredentialEnvironment::default());
                 }
                 let _ = self.owned.provider_account_profiles.update_observation(
                     &owner,
@@ -107,39 +102,10 @@ impl KernelRuntimeState {
                     None,
                     None,
                 );
-                let agent_id = self
-                    .vault_prompt_agent(
-                        &request.session_id,
-                        request.agent_id.as_deref(),
-                        "Claude authorization",
-                    )
-                    .await?;
-                let response =
-                    crate::runtime::provider_auth_control::execute_start_provider_login_request(
-                        self,
-                        &owner,
-                        crate::local::StartProviderLoginRequest {
-                            provider: "claude".into(),
-                            account_profile: profile.profile_id.clone(),
-                            method: Some("setup_token".into()),
-                        },
-                    )
-                    .await?;
-                let LocalDaemonResponse::ProviderLoginStarted { login } = response else {
-                    return Err(login_cancelled());
-                };
-                let id = format!(
-                    "provider-auth-recovery:{}",
-                    login.login_id.as_deref().unwrap_or_default()
-                );
-                if !self
-                    .wait_for_account_login(&request.session_id, &agent_id, &owner, &id, &login)
-                    .await?
-                {
-                    return Err(login_cancelled());
-                }
-                self.resolve_signed_in_claude_credentials(request, &owner, &profile.profile_id)
-                    .await
+                Err(DaemonError::LocalTransport {
+                    operation: "Claude authorization",
+                    message: "The enrolled Claude token is expired or refused, and no working native Claude login could be verified. Open Provider Accounts to renew the token or sign in, then retry.".into(),
+                })
             }
         }
     }
@@ -171,14 +137,5 @@ impl KernelRuntimeState {
             "claude",
             profile,
         )
-    }
-}
-
-fn login_cancelled() -> DaemonError {
-    DaemonError::LocalTransport {
-        operation: "Claude authorization",
-        message:
-            "Claude sign-in did not complete. Choose Log in in Provider Accounts to try again."
-                .into(),
     }
 }

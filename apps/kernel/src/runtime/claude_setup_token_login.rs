@@ -312,20 +312,45 @@ pub(in crate::runtime) async fn check(
     account_profile: &str,
     token: &Zeroizing<String>,
 ) -> Result<(), ClaudeCredentialCheckError> {
+    check_credential(
+        runtime_state,
+        owner_user_id,
+        account_profile,
+        Some(token.clone()),
+    )
+    .await
+}
+
+pub(in crate::runtime) async fn check_native(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    account_profile: &str,
+) -> Result<(), ClaudeCredentialCheckError> {
+    check_credential(runtime_state, owner_user_id, account_profile, None).await
+}
+
+async fn check_credential(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    account_profile: &str,
+    token: Option<Zeroizing<String>>,
+) -> Result<(), ClaudeCredentialCheckError> {
     let registry = runtime_state.provider_account_profile_registry().clone();
     let owner_user_id = owner_user_id.to_string();
     let account_profile = account_profile.to_string();
-    let token = token.clone();
     tokio::task::spawn_blocking(move || {
         let mut environment = registry
             .resolve_environment(&owner_user_id, "claude", &account_profile)
             .map_err(|error| ClaudeCredentialCheckError::Inconclusive(error.to_string()))?;
         let executable = crate::provider::resolve_claude_executable()
             .map_err(|error| ClaudeCredentialCheckError::Inconclusive(error.to_string()))?;
-        environment.insert(
-            crate::provider::CLAUDE_OAUTH_TOKEN_ENV.to_string(),
-            token.to_string(),
-        );
+        environment.remove(crate::provider::CLAUDE_OAUTH_TOKEN_ENV);
+        if let Some(token) = token {
+            environment.insert(
+                crate::provider::CLAUDE_OAUTH_TOKEN_ENV.to_string(),
+                token.to_string(),
+            );
+        }
         let checked = crate::provider::verify_claude_account_credential(&executable, &environment);
         if let Some(value) = environment.get_mut(crate::provider::CLAUDE_OAUTH_TOKEN_ENV) {
             zeroize::Zeroize::zeroize(value);
