@@ -2,17 +2,14 @@
 use std::{ffi::OsString, os::unix::fs::PermissionsExt};
 
 pub(crate) struct TestClaudeExecutable {
-    _root: tempfile::TempDir,
+    _root: super::TestWorktree,
     previous: Option<OsString>,
 }
 
 impl TestClaudeExecutable {
     pub(crate) fn new() -> Self {
         assert!(super::environment_test_isolated());
-        let root = tempfile::Builder::new()
-            .prefix("chariox-claude-executable-")
-            .tempdir()
-            .unwrap();
+        let root = super::TestWorktree::new("claude-executable");
         let executable = root.path().join("claude");
         std::fs::write(&executable, r#"#!/bin/sh
 if [ "$1" = --version ]; then echo 2.2.0; exit 0; fi

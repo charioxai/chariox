@@ -130,6 +130,9 @@ impl KernelRuntimeState {
         request: &crate::provider::LaunchProviderRequest,
         operation: &'static str,
     ) -> Result<VaultUnlockGuard, DaemonError> {
+        if self.owned.claude_enrollment_is_rejected(request)? {
+            return Ok(VaultUnlockGuard::not_required());
+        }
         let config = self.owned.config_projection.snapshot();
         if config.user_config.credential_vault.backend
             != crate::config::CredentialVaultBackend::CharioxEncrypted
@@ -236,12 +239,16 @@ impl KernelRuntimeState {
         }
         let config = self.owned.config_projection.snapshot();
         let account_owner_user_id = self.resolved_provider_account_owner_for_run(run).await?;
-        let credentials = crate::provider::resolve_provider_account_credentials(
-            &config,
-            &account_owner_user_id,
-            run.provider(),
-            run.account_profile(),
-        )?;
+        let credentials = if self.owned.claude_enrollment_is_rejected(&request)? {
+            crate::provider::ProviderCredentialEnvironment::default()
+        } else {
+            crate::provider::resolve_provider_account_credentials(
+                &config,
+                &account_owner_user_id,
+                run.provider(),
+                run.account_profile(),
+            )?
+        };
         drop(_vault_unlock);
         self.checked_claude_credentials(&request, credentials).await
     }
@@ -307,6 +314,12 @@ impl KernelRuntimeState {
         let request = self
             .resolve_provider_launch_account_authority(request)
             .await?;
+        if self.owned.claude_enrollment_is_rejected(&request)? {
+            return Err(DaemonError::InvalidConfig {
+                field: "provider account credential",
+                message: "Remote Claude execution needs a renewed portable credential; open Provider Accounts on the home kernel to renew it.",
+            });
+        }
         let _vault_unlock = self
             .ensure_provider_account_vault_unlocked_for_launch(&request, operation)
             .await?;

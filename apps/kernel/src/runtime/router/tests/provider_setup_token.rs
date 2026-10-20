@@ -698,6 +698,16 @@ async fn refused_enrolled_token_uses_native_login_with_renewal_notice() {
     first_use_fixture("stale-native").await;
 }
 
+#[tokio::test]
+async fn expired_enrollment_uses_native_without_unlocking_a_locked_vault() {
+    first_use_fixture("expired-native-locked").await;
+}
+
+#[tokio::test]
+async fn refused_enrollment_keeps_using_native_after_the_vault_relocks() {
+    first_use_fixture("stale-native-relocked").await;
+}
+
 async fn first_use_fixture(mode: &str) {
     crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
@@ -734,7 +744,7 @@ if [ "$1" = -p ]; then
   echo check >> '{root}/checks'
   if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
     echo native >> '{root}/native-checks'
-    if [ '{mode}' = stale-native ] || [ '{mode}' = valid-native ]; then
+    if [ '{mode}' = stale-native ] || [ '{mode}' = valid-native ] || [ '{mode}' = expired-native-locked ] || [ '{mode}' = stale-native-relocked ]; then
       echo '{{"type":"result","subtype":"success","is_error":false,"num_turns":1,"usage":{{"output_tokens":7}},"result":"CHARIOX_AUTH_OK"}}'; exit 0
     fi
   elif [ '{mode}' = valid-native ]; then
@@ -759,7 +769,7 @@ exit 1
     config.user_config.credential_vault.backend =
         crate::config::CredentialVaultBackend::ProcessMemory;
     let vault_path = root.join("vault.enc");
-    if mode.ends_with("-locked") {
+    if mode.ends_with("-locked") || mode.ends_with("-relocked") {
         config.user_config.credential_vault.backend =
             crate::config::CredentialVaultBackend::CharioxEncrypted;
         config.user_config.credential_vault.unlock_policy =
@@ -836,12 +846,48 @@ exit 1
         "claude-sonnet",
     )
     .with_agent_id(agent.id());
-    if mode.ends_with("-native") {
+    if mode.ends_with("-native")
+        || mode == "expired-native-locked"
+        || mode == "stale-native-relocked"
+    {
         let prepared = router
             .runtime_state
-            .prepare_provider_launch_request_with_vault(request, "test credential precedence")
+            .prepare_provider_launch_request_with_vault(
+                request.clone(),
+                "test credential precedence",
+            )
             .await
             .unwrap();
+        if mode == "stale-native-relocked" {
+            crate::secret::lock_chariox_encrypted_vault(&vault_path).unwrap();
+            crate::secret::clear_vault_secret_process_cache().unwrap();
+            let second = router
+                .runtime_state
+                .prepare_provider_launch_request_with_vault(
+                    request,
+                    "test refused enrollment after relock",
+                )
+                .await
+                .unwrap();
+            assert!(second.provider_credential_env.is_empty());
+        }
+        if mode.ends_with("-locked") || mode.ends_with("-relocked") {
+            assert!(
+                !crate::secret::chariox_encrypted_vault_status(&vault_path)
+                    .unwrap()
+                    .unlocked,
+                "known rejection must not ask to unlock the Vault"
+            );
+            assert!(router
+                .app
+                .lock()
+                .await
+                .sessions()
+                .get_session(session.id())
+                .unwrap()
+                .active_interactions()
+                .is_empty());
+        }
         let notices = router
             .app
             .lock()

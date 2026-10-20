@@ -353,11 +353,43 @@ impl KernelRuntimeOwnedState {
         )
     }
 
+    pub(super) fn claude_enrollment_is_rejected(
+        &self,
+        request: &crate::provider::LaunchProviderRequest,
+    ) -> Result<bool, DaemonError> {
+        if crate::provider::canonical_provider_family(&request.provider) != Some("claude") {
+            return Ok(false);
+        }
+        let owner = crate::account_profile::provider_account_authority_for_launch(
+            &self.config_projection.snapshot(),
+            &self.provider_account_profiles,
+            request,
+        )?;
+        let profile =
+            self.provider_account_profiles
+                .get(&owner, "claude", &request.account_profile)?;
+        if !crate::provider::provider_account_credential_registered(
+            &owner,
+            "claude",
+            &profile.profile_id,
+        )? {
+            return Ok(false);
+        }
+        let id =
+            crate::provider::provider_account_credential_id(&owner, "claude", &profile.profile_id);
+        Ok(
+            profile.auth_state == crate::account_profile::ProviderAccountAuthState::Expired
+                || self.claude_token_checks.is_rejected(&id),
+        )
+    }
+
     fn attach_provider_account_credentials(
         &self,
         mut request: crate::provider::LaunchProviderRequest,
     ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
-        if !request.provider_credential_env.is_empty() {
+        if !request.provider_credential_env.is_empty()
+            || self.claude_enrollment_is_rejected(&request)?
+        {
             return Ok(request);
         }
         if crate::provider::canonical_provider_family(&request.provider)
@@ -390,6 +422,9 @@ impl KernelRuntimeOwnedState {
         &self,
         request: &crate::provider::LaunchProviderRequest,
     ) -> Result<bool, DaemonError> {
+        if self.claude_enrollment_is_rejected(request)? {
+            return Ok(false);
+        }
         let config = self.config_projection.snapshot();
         if config.user_config.credential_vault.backend
             != crate::config::CredentialVaultBackend::CharioxEncrypted
