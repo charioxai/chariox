@@ -66,6 +66,13 @@ impl KernelRuntimeState {
 
         if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
             let provider_run = provider_run.clone();
+            let native_tui = provider_run.client_interface()
+                == crate::provider::ProviderClientInterface::NativeTui;
+            if native_tui {
+                // Remember the admitted turn before the bridge can start and Stop it in one pass.
+                self.settle_finished_native_tui_turn(session_id, &provider_run)
+                    .await;
+            }
             // Keep registration/retirement out of the final protected hook replay.
             let room_guard = owned
                 .room_secret_observations
@@ -127,9 +134,7 @@ impl KernelRuntimeState {
                 })
                 .await?;
             }
-            if provider_run.client_interface()
-                == crate::provider::ProviderClientInterface::NativeTui
-            {
+            if native_tui {
                 self.settle_finished_native_tui_turn(session_id, &provider_run)
                     .await;
             }
