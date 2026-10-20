@@ -94,7 +94,8 @@ Its `request` argument is one serialized
 ```
 
 External agents holding a process-bound local-kernel grant can request a window
-over that kernel's Unix socket:
+over that kernel's Unix socket. A sudo window is one turn on that kernel: it does
+not reach other machines, and a request with `--machine` is refused:
 
 ```sh
 chariox sudo request --agent <agent-id> --prompt "<full prompt>" [--socket /absolute/kernel.sock]

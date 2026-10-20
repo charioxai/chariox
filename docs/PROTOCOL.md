@@ -3408,8 +3408,10 @@ Workflow trigger and deployment direction:
   their ancestor. Normal ownership and membership checks still apply.
   The holder cannot answer critical/passkey-required approvals or payments,
   mint/extend grants, change the passkey/access configuration, read/export
-  secrets, attach to a REMOTE kernel or issue kernel-peer requests. Internal
-  leased-worker execution remains the local kernel’s responsibility.
+  secrets, or issue kernel-peer requests. Protocol 568 lets the holder reach the
+  user's other machines through this kernel's gateway (below); it never receives a
+  relay token, key or Cloud credential. Internal leased-worker execution remains
+  the local kernel’s responsibility.
   A holder may request `/sudo` for a local agent in any local session; each
   request requires a fresh terminal popup confirmation. No remember window
   applies and the holder never submits the passkey or becomes a sudoagent.
@@ -4645,6 +4647,40 @@ are admitted as for every grant. `kernel_access.grant` audit events carry the te
 grants or draw the popup need 568.
 Relay peer 176 carries the same shapes. The Rust hash test
 `local_kernel_access_protocol_451_has_no_session_scope_or_bearer` pins them.
+
+Machine gateway (same provisional 568/176). A grant holder names another machine and the local kernel
+forwards the request over the relay, as a terminal-class client of the target kernel; the target stays the
+authority for its own sessions, agents, terminals and files.
+- Unix-socket frames: `request` frames take an optional `machine` (kernel id, kernel alias or machine alias).
+  The response frame echoes it (`machine`, absent for local answers). `subscribe` frames with `machine` are
+  refused (`machine_not_available`) until forwarded subscriptions exist. A frame with `machine` on a connection
+  that is not a grant holder's is refused; a machine request is never answered locally.
+- `ListGatewayMachines {}` -> `GatewayMachinesListed { machines: [{name, kernel_id, machine_id, machine_alias,
+  status: online|offline, last_seen_ms, gateway_ready, via: hosted|self_hosted}] }`. The list comes from one
+  inventory source (the relay inventory, filtered to the account's fresh Cloud targets when hosted). An offline
+  machine stays listed with its last-seen time.
+- Origin decision: the local kernel checks that the grant is live and that the request shape is not human-only
+  (`authorize_gateway_request`; the same shape set as a local request: credentials, pairing, relay and Cloud
+  identity, protected configuration, any answer carrying a passkey). Interactions belong to the target.
+- Forwarding: one relay client connection per target (key-bound 5-minute client token from the kernel's Cloud
+  credential when hosted, replaced before it expires, closed after 5 idle minutes). The gateway key pair is made
+  by the kernel on first use and never returned by any request. The encrypted request is
+  `{command_id, request, on_behalf_of: {origin_kernel, grant_id, harness}}`. A target that advertises the
+  `machine_gateway_v1` capability (in `RelayStatus.capabilities` and relay presence) refuses the human-only set for
+  any request that carries `on_behalf_of`, classifies `RespondToInteraction` from its own pending interactions and
+  never needs the origin's grant. A target without it rejects the envelope; the gateway then sends a plain
+  request for everything except `RespondToInteraction`, which is refused with `machine_incompatible`.
+- At most once: every non-read request (read-only means a variant that starts with List, Get, Search or Stat)
+  is reserved in the target's durable gateway ledger (`gateway-ledger.jsonl`, at-most-once receipts, 512 entries)
+  before it runs and settled after. A retry with the same `command_id` returns the original result; a retry of an
+  interrupted reservation returns `machine_outcome_unknown` and never runs again; a different request under the same
+  id is `duplicate_command_conflict`; a full or unreadable ledger is `ledger_unavailable` and nothing ran.
+- Errors (code, one sentence, next step): `machine_unknown`, `machine_ambiguous`, `machine_offline`,
+  `machine_unreachable`, `machine_unpaired`, `machine_incompatible`, `machine_request_timeout` (30 s),
+  `machine_connection_lost`, `machine_outcome_unknown`, `machine_not_available`. Nothing falls back to local or to
+  another machine. Grant revoke, expiry and holder exit stop forwarding at once; work already started on the
+  target keeps running.
+The Rust hash test `machine_gateway_protocol_568_shapes_and_hash` pins the shapes.
 
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
 `layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.
