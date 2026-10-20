@@ -31,8 +31,8 @@ async function mirrored(html, run, routes = {}) {
     // about:blank is "complete" too: wait for the fixture document itself.
     for (let i = 0; i < 400 && await evaluate("location.protocol === 'http:' && document.readyState === 'complete'").catch(() => false) !== true; i++) await new Promise(resolve => setTimeout(resolve, 25));
     await host.request({ op: "state" });
-    const subscribe = async () => {
-      const { subscription_id } = await host.request({ op: "mirror_subscribe", tab_id: opened.tab_id, generation: opened.generation, device_scale_factor: 1, wire: 2 });
+    const subscribe = async (extra = {}) => {
+      const { subscription_id } = await host.request({ op: "mirror_subscribe", tab_id: opened.tab_id, generation: opened.generation, device_scale_factor: 1, wire: 2, ...extra });
       // Protocol 489: bodies may be deflated in the subscription's context (in order, fresh per reset).
       let applied = 0, context = Buffer.alloc(0);
       const next = async (wait_ms = 0, reset = false) => {
@@ -45,7 +45,7 @@ async function mirrored(html, run, routes = {}) {
       return { next, input, subscription_id, generation: opened.generation };
     };
     const { next, input, subscription_id, generation } = await subscribe();
-    await run({ next, evaluate, host, input, subscribe, subscription_id, generation });
+    await run({ next, evaluate, host, input, subscribe, subscription_id, generation, tab_id: opened.tab_id });
   } finally {
     await host.stop();
     await new Promise(resolve => server.close(resolve));
@@ -1492,4 +1492,25 @@ test('MP-10/MP-11 M2: a published subtree moved into an unvisited parent during 
       }
     }
     assert(section, 'the continuation reaches the section'); assert(restored, 'the moved paragraph is mirrored under its new parent');
+  }));
+
+test("protocol 560/168: a layout change resets the Tab's existing mirror streams and the failed registration releases it", () => mirrored(
+  "<p>page</p>", async ({ subscribe, host, evaluate, tab_id, generation }) => {
+    const innerWidth = () => evaluate("innerWidth");
+    const a = await subscribe({ layout_width: 400, layout_height: 700 }), first = await a.next();
+    assert.deepEqual([first.reset, first.css_width, await innerWidth()], [true, 400, 400]);
+    const b = await subscribe({ layout_width: 600, layout_height: 700 });
+    assert.equal((await b.next()).css_width, 600);
+    const moved = await a.next();
+    assert.deepEqual([moved.reset, moved.css_width], [true, 600], "the owner changed: the other viewer re-bases at the new page size");
+    await host.request({ op: "mirror_close", subscription_id: b.subscription_id, generation });
+    const restored = await a.next();
+    assert.deepEqual([restored.reset, restored.css_width, await innerWidth()], [true, 1280, 1280], "releasing the layout re-bases the remaining viewer");
+    assert.notEqual((await a.next()).reset, true, "a steady page keeps its stream");
+    // A registration that fails after the metrics override leaves no resized page behind.
+    const hold = host.browser.inputCapture.hold;
+    host.browser.inputCapture.hold = async () => { throw new Error("registration failed"); };
+    await assert.rejects(subscribe({ layout_width: 400, layout_height: 700 }), /registration failed/);
+    host.browser.inputCapture.hold = hold;
+    assert.equal(await innerWidth(), 1280, "the failed registration did not leave the Tab resized");
   }));

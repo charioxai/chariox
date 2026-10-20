@@ -226,6 +226,8 @@ export class Mirror2 {
   }
   // A closed subscription's observers stop (best effort: a gone world has none).
   // MP-11: nothing built under the old protection (early packet, cached replies, resend history) reaches the viewer.
+  // Protocol 560/168: the page size a packet describes; a stream whose last packet described another one resets.
+  layoutKey(tabId) { const size = this.host.pageSize?.(tabId); return size ? `${size.width}x${size.height}` : ''; }
   invalidate(stream) { stream.policy = null; stream.early = null; stream.replies = null; stream.history = null; stream.historyBytes = 0; stream.resources.clear(); }
   dispose(stream) {
     this.regions.retireStream(stream);
@@ -266,7 +268,7 @@ export class Mirror2 {
    * for its first credit; that credit takes the packet in flight instead of starting one. */
   begin(stream, scope, generation) {
     const early = this.next(stream, { subscription_id: stream.id, generation, after_sequence: 0, wait_ms: 0 }, scope);
-    stream.early = early; stream.earlyPolicy = this.host.protection;
+    stream.early = early; stream.earlyPolicy = this.host.protection; stream.earlyLayout = this.layoutKey(stream.tab_id);
     early.catch(() => { if (stream.early === early) stream.early = null; });
   }
   async next(stream, command, scope, { signal } = {}) {
@@ -292,7 +294,7 @@ export class Mirror2 {
     const lost = this.lost(stream, command, scope, resend);
     if (lost) return lost;
     // MP-11: a packet built before a protection change never reaches the viewer.
-    if (stream.early && stream.earlyPolicy !== this.host.protection) stream.early = null;
+    if (stream.early && (stream.earlyPolicy !== this.host.protection || stream.earlyLayout !== this.layoutKey(stream.tab_id))) stream.early = null;
     if (stream.early && command.after_sequence === 0 && command.resend === undefined) {
       const run = stream.early; stream.early = null;
       if (replayKey) { const entry = { run, done: false }; run.finally(() => { entry.done = true; }).catch(() => {}); (stream.replies ??= new Map()).set(replayKey, entry); }
@@ -398,7 +400,8 @@ export class Mirror2 {
     if (stream.acked > (stream.prunedAt ?? 0)) { stream.prunedAt = stream.acked; for (const entry of stream.resources.values()) if (entry.sent && entry.sentAt <= stream.acked && entry.resource) { entry.resource = entry.preview = null; entry.url = ''; } }
     // A viewer whose base predates the newest reset has that reset on its way (a large one crossing a slow link
     // while small credits are answered): a second reset only queues behind it (r47: a 420 KB reset storm).
-    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 && after >= stream.resetAt ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
+    const layoutKey = this.layoutKey(tab.tab_id);
+    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 && after >= stream.resetAt ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : (stream.layoutKey ?? layoutKey) !== layoutKey ? 'layout' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
     let reset = resetReason !== null;
     // A snapshot waits for a busy renderer in every call it makes (the viewer's reset has 30 s). Any other credit waits
     // somewhat longer than the default, but answers before the viewer's own 8 s request timeout.
@@ -574,7 +577,7 @@ export class Mirror2 {
     dedupeMirrorSheets(packet, stream.sheetRefs ??= new Set());
     if (packet.nodes) packet.nodes = encodeMirrorRecords(packet.nodes, null);
     if (packet.ops) packet.ops = packet.ops.map(op => op.op === 'children' ? { ...op, nodes: encodeMirrorRecords(op.nodes, op.id) } : op);
-    stream.issued = sequence; stream.document_id = tab.document_id; stream.policy = policy; stream.fallback = fallback;
+    stream.issued = sequence; stream.document_id = tab.document_id; stream.policy = policy; stream.layoutKey = layoutKey; stream.fallback = fallback;
     if (reset) { stream.resetAt = sequence; stream.attrSequence.clear(); }
     stream.header = sent; stream.sentScroll = header.scroll;
     // A position the viewer did not set has reached it: echoes count again.

@@ -69,6 +69,8 @@ export class MirrorService {
     // attached mirror is an observer and must never resize the shared page.
     this.host.scales.set(tab.tab_id,scale);
     const subscription_id=`host-mirror-${randomUUID()}`;
+    // Protocol 560/168: a registration that fails after the layout was set must not leave the Tab resized for nobody.
+    try {
     await this.host.setLayout?.(tab,subscription_id,layoutFor(command,this.host.viewport()));
     if(command.wire===2){
       // MP-08/MP-10: like an attached video view, a live DOM view keeps its
@@ -85,6 +87,7 @@ export class MirrorService {
       return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale,wire:2,...(command.font_requirements===true?{font_requirements:true}:{})};}
     this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,epochs:[],previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
     return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale};
+    } catch(error) {await this.host.releaseLayout?.(tab.tab_id,subscription_id);throw error;}
   }
   async next(command,scope,options={}) {
     const stream=this.require(command.subscription_id,scope,command.generation);
