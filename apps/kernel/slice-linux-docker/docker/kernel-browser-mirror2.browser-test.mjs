@@ -293,26 +293,22 @@ test("MP-10: opaque-region stills never ride on a DOM-change packet and an uncha
   assert.equal(changed.length, 1, "MP-10: a changed still reaches the viewer");
 }));
 
-test("MP-11: review #941-1(P1) text/keys are refused for a focused field the viewer has not applied (delayed packet, programmatic focus)", () => mirrored(
+test("MP-08/MP-10/MP-11: user keys follow a page-created editor before its mirror packet arrives", () => mirrored(
   '<input id="a"><p id="x">page</p>', async ({ next, evaluate, input }) => {
     const snapshot = await next();
     await input(snapshot.sequence, { kind: "focus", node_id: elements(snapshot).find(([, tag, attrs]) => tag === "input" && attrs.id === "a")[0] });
-    // The page inserts and focuses another input; credit 2 serializes it, but that reply never reached the viewer.
     await evaluate("const b=document.createElement('input');b.id='b';document.body.append(b);b.focus()");
     const unseen = await next(600);
-    assert(unseen.ops.some(op => op.op === "children"), "MP-10: the new input is serialized in a later packet");
-    await assert.rejects(input(snapshot.sequence, { kind: "text", text: "secret" }), /changed mirror input target/);
-    await assert.rejects(input(snapshot.sequence, { kind: "key", key: "Enter" }), /changed mirror input target/);
-    assert.equal(await evaluate("document.querySelector('#b').value"), "", "MP-11: nothing reached the unseen field");
-    // Once applied, the same focus is admitted.
-    await input(unseen.sequence, { kind: "text", text: "ok" });
-    assert.equal(await evaluate("document.querySelector('#b').value"), "ok");
-    // An identity change of the focused field (text -> password) after the viewer's epoch is refused too.
+    assert(unseen.ops.some(op => op.op === "children"));
+    // Input is the person's choice, not model-visible observation. A page-created
+    // editor must accept keys while its DOM packet is still crossing the relay.
+    await input(snapshot.sequence, { kind: "text", text: "label" });
+    await input(snapshot.sequence, { kind: "key", key: "Enter" });
+    assert.equal(await evaluate("document.querySelector('#b').value"), "label");
     await evaluate("document.querySelector('#b').type='search'");
-    const swapped = await next(600);
-    await assert.rejects(input(unseen.sequence, { kind: "text", text: "x" }), /changed mirror input target/);
-    await input(swapped.sequence, { kind: "text", text: "!" });
-    assert.equal(await evaluate("document.querySelector('#b').value"), "ok!");
+    await next(600);
+    await input(unseen.sequence, { kind: "text", text: "!" });
+    assert.equal(await evaluate("document.querySelector('#b').value"), "label!");
   }));
 
 test("MP-10: review #941-2 a resource whose final packet the viewer never applied is sent again after its reset (applied ones are not)", () => mirrored(
@@ -481,7 +477,7 @@ test("MP-10: review #941-6 previews respect the packet budget while the viewer m
 
 // Typeahead inside a cross-origin frame: the top page asks it (postMessage) to rebuild its list with the same shape.
 const frameTypeahead = '<!doctype html><div id="s"></div><script>const render=items=>{document.querySelector("#s").innerHTML=items.map(t=>`<a href="#x" style="display:block;height:20px"><b>${t}</b></a>`).join("")};render(["Ada","Adams"]);onmessage=e=>{render(e.data);document.querySelector("a").focus()}</script>';
-test("MP-11: review #941-1(P1) a morphed child-frame node refuses clicks and keys from before the morph reached the viewer", () => mirrored(
+test("MP-11: review #941-1(P1) a morphed child-frame node keeps click identity while user keys follow live focus", () => mirrored(
   '<p>top</p><iframe src="http://localhost:PORT/list" style="width:300px;height:100px"></iframe>', async ({ next, evaluate, input }) => {
     await new Promise(resolve => setTimeout(resolve, 800));
     const snapshot = await next();
@@ -492,7 +488,7 @@ test("MP-11: review #941-1(P1) a morphed child-frame node refuses clicks and key
     let morphed = null; for (let i = 0; i < 4 && !morphed; i++) { const packet = await next(1000); if (packet.ops.some(op => op.op === "text" && op.text === "Bob")) morphed = packet; }
     assert(morphed && !morphed.ops.some(op => op.op === "children" && op.nodes.length), "MP-10: the rebuilt list travels as a morph (same ids, new text)");
     await assert.rejects(input(snapshot.sequence, { kind: "click", node_id: link, x: 5, y: 5 }), /changed mirror input target/);
-    await assert.rejects(input(snapshot.sequence, { kind: "key", key: "Enter" }), /changed mirror input target/);
+    await input(snapshot.sequence, { kind: "key", key: "Enter" });
     // Once the viewer applied the morph, the same target is admitted.
     await input(morphed.sequence, { kind: "key", key: "Enter" });
   }, { "/list": { type: "text/html", body: frameTypeahead } }));

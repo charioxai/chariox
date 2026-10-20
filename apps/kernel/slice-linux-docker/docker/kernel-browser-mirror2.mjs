@@ -995,25 +995,18 @@ export class Mirror2 {
       } };
     }
     if (action.kind === 'selection') { const entry = frameOf(action.anchor_id); return { perform: async () => { if (entry) await inFrame(entry, `${m}.select(${JSON.stringify({ ...action, anchor_id: localId(action.anchor_id), focus_id: localId(action.focus_id) })})`); else await call(`${m}.select(${JSON.stringify(action)})`); } }; }
-    // Live focus inside a mirrored cross-origin frame is validated in that frame.
-    const activeTarget = async editable => {
-      // MP-08/MP-10/MP-11: read the leaf and its foreign-frame binding in one
-      // task. Keep the same live ancestry/epoch proof before physical dispatch.
-      const [owner, ids] = await call(`(()=>{const owner=${m}.activeForeign();return [owner,owner?null:${m}.activeTarget(${editable})]})()`);
-      const entry = owner && stream.frames.get(owner); if (owner && !entry) throw new Error('MP-11: unavailable native text focus');
-      if (!entry) return seen(ids);
-      seen((await inFrame(entry, `${m}.activeTarget(${editable})`)).map(id => rebaseId(id, entry.slot))); seen(await call(`${m}.ancestry(${JSON.stringify(owner)})`));
-    };
+    // MP-08/MP-10/MP-11: user input follows Chromium's live focus. A canvas
+    // editor may focus a new field before its mirror packet reaches the viewer.
+    // Observation protection stays on model-bound output; input is not a leak.
     if (action.kind === 'key') {
-      let checked = false;
-      const guard = async () => { assertEpoch(); assertNotCancelled(signal); if (checked) return; await activeTarget(false); checked = true; };
+      const guard = async () => { assertEpoch(); assertNotCancelled(signal); };
       // Protocol 530 (review #1016 P2): undo/redo keep this mirror admission (observed frames, live
       // focus, epoch) as the editor's own Linux Chromium chords: Control=2, Shift=8.
       const history = HISTORY_CHORDS.get(action.key);
       return { input: history ? { kind: 'key', key: 'z', modifiers: history } : { kind: 'key', key: action.key }, guard };
     }
     if (action.kind === 'text') {
-      const guard = async () => { assertEpoch(); assertNotCancelled(signal); await activeTarget(true); };
+      const guard = async () => { assertEpoch(); assertNotCancelled(signal); };
       const entry = frameOf(action.node_id);
       return { guard, perform: async send => {
         if (action.node_id) { if (entry) await inFrame(entry, `${m}.focus(${JSON.stringify({ node_id: localId(action.node_id) })})`); else await call(`${m}.focus(${JSON.stringify({ node_id: action.node_id })})`); }
