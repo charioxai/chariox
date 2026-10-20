@@ -34,6 +34,14 @@ impl DriverTracker {
         }
     }
 
+    /// A command was just submitted at the prompt and may not be the
+    /// foreground program yet.
+    pub(super) fn launching(&self, now: Instant) -> bool {
+        self.last_submit
+            .as_ref()
+            .is_some_and(|(_, at)| now.duration_since(*at) < LAUNCH_SETTLE)
+    }
+
     pub(super) fn observe(&mut self, shell_is_foreground: bool) -> RoomTerminalDriver {
         if shell_is_foreground {
             self.program_owner = None;

@@ -170,6 +170,24 @@ impl KernelRuntimeState {
     }
 }
 
+impl KernelRuntimeState {
+    /// Terminal commands are work: they keep a managed kernel from stopping,
+    /// and the stop fence refuses new ones.
+    pub(super) fn link_room_terminals_to_managed_kernel(&self) {
+        let Some(gate) = self.owned.managed_kernel_quiescence.clone() else {
+            return;
+        };
+        let owned = self.owned.clone();
+        self.owned.room_terminals.link_managed_kernel(
+            gate,
+            Arc::new(move || {
+                owned.begin_managed_activity_mutation().record();
+                owned.runtime_projection_changes.record_change();
+            }),
+        );
+    }
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn managed_running_agent_count_unlocked(&self) -> u8 {
         let active_turn_count = self.active_turns.snapshot().len();
@@ -177,6 +195,7 @@ impl KernelRuntimeOwnedState {
             .session_store
             .list_non_ended_sessions_including_hidden();
         running_agent_count(active_turn_count, sessions)
+            .max(u8::from(self.room_terminals.has_running_work()))
     }
 
     pub(super) fn record_managed_activity_transition(&self) {

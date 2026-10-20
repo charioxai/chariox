@@ -2,6 +2,7 @@
 
 mod driver;
 mod events;
+mod managed_work;
 mod output_log;
 mod plain_text;
 mod pump;

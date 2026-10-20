@@ -15,6 +15,7 @@ use tokio::sync::{oneshot, Notify};
 
 use super::driver::Admission;
 use super::events::{CompletionEvents, WatchOwner};
+use super::managed_work::ManagedWork;
 use super::shell::login_shell;
 use super::shell_marks::ShellIntegration;
 use super::store::{TerminalRecord, TerminalStore};
@@ -26,6 +27,7 @@ use super::types::{
 };
 use crate::error::DaemonError;
 use crate::pty::{PtyManager, PtySpawnRequest};
+use crate::runtime::state::ManagedKernelQuiescenceGate;
 use crate::session::unix_epoch_ms;
 
 const MAX_TERMINALS_PER_ROOM: usize = 16;
@@ -66,6 +68,7 @@ struct Inner {
     store: TerminalStore,
     events: Arc<dyn CompletionEvents>,
     shell_integration: ShellIntegration,
+    managed: ManagedWork,
     output_changed: Notify,
     pump_started: AtomicBool,
 }
@@ -110,6 +113,7 @@ impl RoomTerminalService {
                 store,
                 events,
                 shell_integration,
+                managed: ManagedWork::default(),
                 output_changed: Notify::new(),
                 pump_started: AtomicBool::new(false),
             }),
@@ -142,6 +146,16 @@ impl RoomTerminalService {
                 }
                 (argv[0].clone(), argv[1..].to_vec())
             }
+        };
+        // A program started now is work: it is admitted only while a managed
+        // kernel is not being stopped. A shell alone is not work.
+        let _admission = match spec.command {
+            Some(_) => self
+                .inner
+                .managed
+                .admission()
+                .map_err(|error| refuse_fenced(&error))?,
+            None => None,
         };
         let user_interacted = spec.opened_by == TerminalActor::User;
         let terminal_id = random_terminal_id();
@@ -209,6 +223,7 @@ impl RoomTerminalService {
         let summary = terminal.summary(RoomTerminalDriver::Free);
         state.terminals.insert(terminal_id, terminal);
         drop(state);
+        self.report_work();
         self.start_pump();
         Ok(summary)
     }
@@ -254,8 +269,12 @@ impl RoomTerminalService {
                 "terminal input must be 1 to {MAX_INPUT_BYTES} bytes"
             )));
         }
+        let submits = input.iter().any(|byte| matches!(byte, b'\r' | b'\n'));
         loop {
             {
+                // Held until the input is written and the kernel knows about
+                // the command it starts.
+                let admission = submits.then(|| self.inner.managed.admission());
                 let mut state = self.lock();
                 let State { pty, terminals, .. } = &mut *state;
                 let terminal = find(terminals, session_id, terminal_id)?;
@@ -266,6 +285,10 @@ impl RoomTerminalService {
                 let now = Instant::now();
                 match terminal.driver.admit(actor, shell_foreground, now) {
                     Admission::Admit => {
+                        // Only a line submitted at the prompt starts a command.
+                        if let (true, Some(Err(error))) = (shell_foreground, &admission) {
+                            return Err(refuse_fenced(error));
+                        }
                         // Queue it: waiting for the child to read would hold
                         // this lock, and with it every Room terminal, for as
                         // long as a program ignores its input.
@@ -286,6 +309,8 @@ impl RoomTerminalService {
                             .driver
                             .record_write(actor, shell_foreground, input, now);
                         let driver = terminal.driver.observe(shell_foreground);
+                        drop(state);
+                        self.report_work();
                         return Ok(RoomTerminalInputResult {
                             accepted: true,
                             driver,
@@ -384,6 +409,8 @@ impl RoomTerminalService {
             )));
         }
         self.remove(&mut state, terminal_id);
+        drop(state);
+        self.report_work();
         Ok(())
     }
 
@@ -399,6 +426,8 @@ impl RoomTerminalService {
         for id in ids {
             self.remove(&mut state, &id);
         }
+        drop(state);
+        self.report_work();
     }
 
     /// Ask to be told when the terminal finishes a program, prints a text or
@@ -516,6 +545,31 @@ impl RoomTerminalService {
         }
     }
 
+    /// Let a managed kernel see terminal commands as work: they hold its stop
+    /// back and are refused once a stop is reserved.
+    pub(crate) fn link_managed_kernel(
+        &self,
+        gate: Arc<ManagedKernelQuiescenceGate>,
+        work_changed: Arc<dyn Fn() + Send + Sync>,
+    ) {
+        self.inner.managed.link(gate, work_changed);
+    }
+
+    /// Whether any terminal runs a command: a program holds its foreground,
+    /// the shell reports a command in flight, or a line was just submitted.
+    pub fn has_running_work(&self) -> bool {
+        let mut state = self.lock();
+        let State { pty, terminals, .. } = &mut *state;
+        let now = Instant::now();
+        terminals.values().any(|terminal| {
+            terminal.is_running() && (terminal.is_busy(pty) || terminal.driver.launching(now))
+        })
+    }
+
+    fn report_work(&self) {
+        self.inner.managed.report(|| self.has_running_work());
+    }
+
     fn remove(&self, state: &mut State, terminal_id: &str) {
         state
             .waiters
@@ -583,6 +637,7 @@ impl RoomTerminalService {
                 self.persist_if_due(terminal, now);
             }
         }
+        self.report_work();
         if output_changed {
             self.inner.output_changed.notify_waiters();
         }
@@ -622,6 +677,8 @@ impl RoomTerminalService {
             self.persist(terminal);
         }
         waiters.clear();
+        drop(state);
+        self.report_work();
     }
 
     fn persist_if_due(&self, terminal: &mut Terminal, now: Instant) {
@@ -754,4 +811,11 @@ fn refused(message: String) -> DaemonError {
         operation: "room terminal",
         message,
     }
+}
+
+/// The managed kernel is about to stop: say why a command cannot start.
+fn refuse_fenced(error: &DaemonError) -> DaemonError {
+    refused(format!(
+        "this kernel is stopping, so it starts no commands: {error}"
+    ))
 }

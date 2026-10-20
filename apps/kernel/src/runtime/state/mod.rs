@@ -902,6 +902,7 @@ impl KernelRuntimeState {
                 project_environment_setups,
             },
         };
+        runtime.link_room_terminals_to_managed_kernel();
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
         runtime
