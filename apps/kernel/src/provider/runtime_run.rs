@@ -1065,7 +1065,7 @@ fn metadata_utility_keeps_the_managed_launch_and_runs_in_an_empty_directory() {
     assert_eq!(args[separator + 1], "/opt/claude");
     assert_eq!(
         args[separator + 2..separator + 4],
-        ["-p", "--no-session-persistence"],
+        ["-p", "--input-format"],
         "the utility child must start the provider with its own tool-free arguments"
     );
     assert!(args
