@@ -1369,7 +1369,7 @@ active stream may finish after a later one. Unknown/reused IDs, changed totals,
 overlapping offsets, unknown fields, nested transport frames and invalid
 checkpoints close the connection without including payloads in errors.
 
-All data shares one 64 KiB unacknowledged wire window, including frame metadata,
+All data shares one 256 KiB unacknowledged wire window, including frame metadata,
 small replies, binary envelopes and checkpoints. A single-chunk message (at most
 16 KiB) may additionally use a 32 KiB reserve, so an interactive frame never
 waits a round trip behind a window full of bulk data. Receipts must match the

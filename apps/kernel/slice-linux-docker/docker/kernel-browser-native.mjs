@@ -9,7 +9,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {ownsDisplay} from './kernel-browser-owned-display.mjs';
 import {startNativeReadback,nativeReadbackFailure} from './kernel-browser-native-readback.mjs';
 import {decodePng,maskNativeRaster} from './kernel-browser-pixels.mjs';
-import {NativeRegionProtection,regionProtectionChanged} from './kernel-browser-region-protection.mjs';
+import {NativeRegionProtection,regionProtectionChanged,hasProtectedTarget} from './kernel-browser-region-protection.mjs';
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 import {NativeWorkerControl,nativeWorkerResource} from './kernel-browser-native-worker.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
@@ -114,10 +114,20 @@ export class LinuxCapture {
  // MP-08/MP-11: exact RGB proves this window binding shows the target's surface. A new document of the
  // same binding (target, window, page rect, metrics, scales, crop) reuses that proof: a parsing renderer
  // answers no screenshot (WHATWG 15.8 MB), and a screenshot in flight fences every native frame.
+ // r41: exact RGB exists so Vault masks line up on the stream. Without a kernel-known protected
+ // target the binding is admitted by identity and geometry alone (the owned window, the live active
+ // Tab and the sample size); a Vault fill that appears later retires such a source (publish), and its
+ // next start proves the pixels exactly.
  async admitSurface(){
-  if(this.attestation?.proven()===true){this.timing('native_attestation_reused',performance.timeOrigin+performance.now());return;}
-  await this.attest();this.attestation?.prove();
+  if(this.attestation?.proven()===true){this.pixelProven=true;this.timing('native_attestation_reused',performance.timeOrigin+performance.now());return;}
+  if(!hasProtectedTarget(this.policy,this.browser)){
+   const raw=this.latest?.raw,[width,height]=this.expectedSize();
+   if(!raw||raw.width!==width||raw.height!==height){this.timing(`native_attestation_geometry ${width}x${height} ${raw?.width}x${raw?.height}`,performance.timeOrigin+performance.now());throw Error('native attestation RGB differed');}
+   this.pixelProven=false;this.timing('native_admitted_geometry',performance.timeOrigin+performance.now());return;
+  }
+  await this.attest();this.pixelProven=true;this.attestation?.prove();
  }
+ expectedSize(){return [geometry.width*this.scale,geometry.height*this.scale];}
  async attest(){
   let matched=false;
   // Chromium may finish a viewport paint after the first shared readback.
@@ -162,6 +172,8 @@ export class LinuxCapture {
    }
    if(!this.valid())break;
    if(revision!==this.regionRevision){this.rejected('region_revision');raw.release?.();this.publishingRaw=null;continue;}
+   // MP-11: a source admitted without pixel proof cannot carry a Vault mask; retire it, the next start attests exactly.
+   if(this.pixelProven===false&&hasProtectedTarget(this.policy,this.browser)){this.timing('native_unproven_fill',performance.timeOrigin+performance.now());this.fence();break;}
    // MP-08/MP-10/MP-11: every readback checks live Vault-filled field type
    // and geometry. Document changes also retire the source through onCdp.
    let at=performance.timeOrigin+performance.now();let regions;

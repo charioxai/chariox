@@ -107,3 +107,13 @@ test('A-L13 visible-page capture is served at the Tab scale inside the kernel vi
  host.displayScreenshot=async()=>({width:1,height:1,[displayMaskRegions]:[]});
  await assert.rejects(captureVisiblePage(host,tab,{width:2544,height:1416}),{code:'capture_view_resized'},'a shot that is not the frame size is refused');
 });
+
+// r41: a refused pixel attestation degrades the subscription to the CDP display; other refusals pass through.
+test('MP-11 an attestation refusal serves the page from the CDP display, any other refusal propagates',async()=>{
+ const {pngFallbackCommand}=await import('./kernel-browser-page-display.mjs');
+ const command={op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033','chariox-video-dependencies-v1','chariox-relay-binary-v96'],bitrate:8_000_000,device_scale_factor:2};
+ const png=pngFallbackCommand(Error('native attestation RGB differed'),command);
+ assert.deepEqual(png.codecs,['png','chariox-video-dependencies-v1','chariox-relay-binary-v96']);assert.equal(png.tab_id,'t');
+ assert.deepEqual(pngFallbackCommand(Error('MD-DISPLAY: native readback unavailable'),command).codecs,png.codecs,'a readback that never starts degrades too');
+ for(const message of ['MP-11: visible page binding retired','native attestation retired','Capture protection unavailable','stale_document_reference'])assert.equal(pngFallbackCommand(Error(message),command),null,message);
+});

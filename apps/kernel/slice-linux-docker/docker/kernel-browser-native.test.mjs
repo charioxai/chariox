@@ -372,13 +372,58 @@ test('MP-08/MP-10/MP-11 closing native capture cancels its pending restoration w
 test('MP-08/MP-11 a proven window binding admits a new document without a renderer screenshot',async()=>{
  const {LinuxCapture}=await import('./kernel-browser-native.mjs');
  let proven=false,proofs=0,attests=0;const attestation={proven:()=>proven,prove:()=>{proofs++;proven=true}};
- const source=new LinuxCapture({tab:{target_id:'t'},attestation});
+ const protectedPolicy={targets:[{}],values:[]};
+ const source=new LinuxCapture({tab:{target_id:'t'},attestation,policy:protectedPolicy});
  source.screenshot=()=>assert.fail('a proven binding takes no screenshot');
  source.attest=async()=>{attests++;if(attests===1)throw Error('native attestation RGB differed');};
  await assert.rejects(source.admitSurface(),/RGB differed/);assert.equal(proofs,0,'a failed attestation proves nothing');
  await source.admitSurface();assert.deepEqual([attests,proofs],[2,1]);
  await source.admitSurface();assert.deepEqual([attests,proofs],[2,1],'the proven binding is reused');
- const unbound=new LinuxCapture({tab:{target_id:'t'}});unbound.attest=async()=>{attests++};await unbound.admitSurface();assert.equal(attests,3,'no binding, fresh attestation');
+ const unbound=new LinuxCapture({tab:{target_id:'t'},policy:protectedPolicy});unbound.attest=async()=>{attests++};await unbound.admitSurface();assert.equal(attests,3,'no binding, fresh attestation');
+});
+
+// r41: pixel attestation exists so Vault masks line up on the native stream. Without a
+// kernel-known protected fill target the window binding is admitted by identity and
+// geometry alone; an animating page must not be refused for lack of a pixel match.
+const unprotected=()=>new LinuxCapture({connection:{},tab:{target_id:'t',tab_id:'tab',document_id:'d'},scale:2,policy:{targets:[],values:[]},browser:{fillTargets:new Map()},timing:()=>{}});
+test('MP-11 a page without a protected fill target is admitted by geometry, no pixel attestation',async()=>{
+ const {displayGeometry:geometry}=await import('./kernel-browser-geometry.mjs');
+ const source=unprotected(),events=[];source.timing=label=>events.push(label);
+ source.attest=async()=>assert.fail('no pixel attestation without a protected target');
+ source.latest={raw:{width:geometry.width*2,height:geometry.height*2}};
+ await source.admitSurface();
+ assert.equal(source.pixelProven,false);assert(events.includes('native_admitted_geometry'));
+});
+test('MP-11 geometry admission refuses a sample of another size',async()=>{
+ const source=unprotected();source.attest=async()=>assert.fail('no pixel attestation');
+ source.latest={raw:{width:10,height:10}};
+ await assert.rejects(source.admitSurface(),/native attestation RGB differed/);
+});
+for(const [label,policy,browser] of [['policy target',{targets:[{}],values:[]},{fillTargets:new Map()}],['recorded fill',{targets:[],values:[]},{fillTargets:new Map([['t:1',{}]])}]])
+ test(`MP-11 a ${label} keeps the exact pixel attestation`,async()=>{
+  const source=unprotected();source.policy=policy;source.browser=browser;let attested=0;
+  source.attest=async()=>{attested++};await source.admitSurface();
+  assert.equal(attested,1);assert.equal(source.pixelProven,true);
+ });
+test('MP-11 a Vault fill that appears on a geometry-admitted source retires it before publishing',async()=>{
+ const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
+ const source=unprotected(),published=[];source.valid=()=>!source.closed;source.attested=true;source.pixelProven=false;source.allowed=()=>true;
+ source.regions=new NativeRegionProtection({},'s',{policy:source.policy,browser:source.browser});source.regions.measure=async()=>[];await source.regions.refresh();
+ source.validateCurrent=async()=>true;source.subscribe(sample=>published.push(sample.serial));
+ const readback=serial=>({width:64,height:32,length:64*32*4,pixels:Buffer.alloc(64*32*4,serial),serial,format:'bgr0',captured_ms:performance.timeOrigin+performance.now(),release(){}});
+ source.pending=readback(1);await source.publish();assert.deepEqual(published,[1],'no target: frames flow');
+ source.browser.fillTargets.set('t:1',{});
+ source.pending=readback(2);await source.publish();
+ assert.deepEqual(published,[1],'the frame after the fill never publishes');assert.equal(source.closed,true,'the unproven source retires so the next start attests exactly');
+});
+test('MP-11 a pixel-proven source keeps publishing when a Vault fill appears',async()=>{
+ const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
+ const source=unprotected(),published=[];source.valid=()=>!source.closed;source.attested=true;source.pixelProven=true;source.allowed=()=>true;
+ source.regions=new NativeRegionProtection({},'s',{policy:source.policy,browser:source.browser});source.regions.measure=async()=>[];await source.regions.refresh();
+ source.validateCurrent=async()=>true;source.subscribe(sample=>published.push(sample.serial));
+ source.browser.fillTargets.set('t:1',{});
+ source.pending={width:64,height:32,length:64*32*4,pixels:Buffer.alloc(64*32*4,1),serial:1,format:'bgr0',captured_ms:performance.timeOrigin+performance.now(),release(){}};
+ await source.publish();assert.deepEqual(published,[1]);assert.equal(source.closed,false);
 });
 
 // r61 UX-09: a source fenced by a navigation must not spend a screenshot (700 ms on a loading page) attesting a surface nobody will admit.

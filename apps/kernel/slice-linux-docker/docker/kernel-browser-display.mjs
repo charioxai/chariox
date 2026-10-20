@@ -210,11 +210,13 @@ export { losslessRegion } from './kernel-browser-pixels.mjs';
 
 export const exactPatchLimit=bitrate=>Math.floor(Math.min(192_000,Math.max(24_000,bitrate/8*.5*.75-4096)));
 
+const LEASE_GAP_MS = 60, LEASE_STREAK = 30;
 export class DisplayStream {
-  // L3 stage 2b is parked: every lease end costs a key frame (adoptLease invalidates the
-  // codec chain) and a retire storm ends leases about twice a second on real pages, so
-  // leased frames ran ~26 % larger with no CPU gain. Production never passes `leases`.
-  constructor(binding, { encoder = new PortableEncoder(), now = () => performance.now(), wait = delay, timing = () => {}, leases = false } = {}) {
+  // L3 stage 2b: a lease takes Node off the frame path, but its end costs a key frame
+  // (adoptLease invalidates the codec chain). It is offered only to sustained motion
+  // (video, canvas, a long scroll): `leaseStreak` consecutive frames at most LEASE_GAP_MS apart.
+  constructor(binding, { encoder = new PortableEncoder(), now = () => performance.now(), wait = delay, timing = () => {}, leases = true, leaseStreak = LEASE_STREAK } = {}) {
+    this.leaseStreak = leaseStreak;this.streak = 0;this.streakAt = -Infinity;
     this.leases = leases;
     this.pixels=new PixelWorker();Object.assign(this, binding); this.encoder = encoder; this.now = now; this.wait = wait;
     this.sequence = 0; this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null;
@@ -285,7 +287,7 @@ export class DisplayStream {
   // Returns how many frames the worker sent under it.
   adoptLease(afterSequence){
     if(!this.leased)return 0;
-    this.endLease();this.leased=false;
+    this.endLease();this.leased=false;this.streak=0;
     if(!Number.isSafeInteger(afterSequence)||afterSequence<=this.sequence)return 0;
     const frames=afterSequence-this.sequence;this.sequence=afterSequence;this.invalidate();return frames;
   }
@@ -452,7 +454,8 @@ export class DisplayStream {
     if(!['video','stripes'].includes(payload.kind))this.producer?.retireUnsent();
     // L3 stage 2b: only a push-delivered whole video frame from the worker's
     // unprotected auto packet, with references on and no repair owed.
-    if(this.leases&&offer&&payload.kind==='video'&&payload.native_packet&&source.push_delivery===true&&this.dependencies&&!this.repair&&(!this.regionTarget||['visible_page','browser_chrome'].includes(this.regionTarget.kind))){
+    if(payload.kind==='video'){const at=this.now();this.streak=at-this.streakAt<=LEASE_GAP_MS?this.streak+1:1;this.streakAt=at;}
+    if(this.leases&&this.streak>=this.leaseStreak&&offer&&payload.kind==='video'&&payload.native_packet&&source.push_delivery===true&&this.dependencies&&!this.repair&&(!this.regionTarget||['visible_page','browser_chrome'].includes(this.regionTarget.kind))){
       const {key,sequence,native_packet,...template}=packet;
       packet[directLease]=()=>{
         if(!offer.current()||!currentBinding())return null;

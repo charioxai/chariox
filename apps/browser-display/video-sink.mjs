@@ -1,10 +1,11 @@
 // MP-08/MP-10/MP-11: whole video goes to the compositor; repairs keep an
 // canvas overlay until the next complete decoded video image (key or delta).
 // No producer or protection-policy changes.
+const SUSTAINED_FRAMES=8,SUSTAINED_MS=250,SUSTAINED_WAITING=3;
 export class VideoSink {
- constructor(canvas,onTiming,{direct=false}={}){
-  this.canvas=canvas;this.onTiming=onTiming;this.direct=direct;this.pending=[];this.closed=false;this.overlayActive=false;this.presentationJobs=new Map();this.presentationMarks=new Map();this.lastPresentedTimestamp=-Infinity;
-  this.visibility=()=>{if(canvas.ownerDocument?.hidden){if(this.raf!==undefined)this.cancelRaf?.(this.raf);this.commitPending(false);}};
+ constructor(canvas,onTiming,{direct=false,paced=false}={}){
+  this.canvas=canvas;this.onTiming=onTiming;this.direct=direct;this.paced=paced&&direct;this.frameDrawn=false;this.pending=[];this.closed=false;this.overlayActive=false;this.presentationJobs=new Map();this.presentationMarks=new Map();this.lastPresentedTimestamp=-Infinity;
+  this.visibility=()=>{if(canvas.ownerDocument?.hidden){if(this.raf!==undefined)this.cancelRaf?.(this.raf);this.endFrame();this.commitPending(false);}};
   canvas.ownerDocument?.addEventListener?.('visibilitychange',this.visibility);
  }
  setup(decoder){
@@ -99,12 +100,49 @@ export class VideoSink {
    if(this.canvas.ownerDocument?.hidden){this.commitPending(false);return;}
    // MP-08/MP-10/MP-11: an intermediate region canvas is copied into a
    // visible surface by onPresented; only that surface needs a paint boundary.
+   if(this.paced&&this.direct){this.commitPaced(view);return;}
    if(this.direct||this.canvas.isConnected===false){this.commitPending(true);return;}
    this.cancelRaf=view.cancelAnimationFrame?.bind(view)??clearTimeout;
    const commit=()=>this.commitPending(!this.canvas.ownerDocument?.hidden);
    this.raf=view.requestAnimationFrame?view.requestAnimationFrame(commit):setTimeout(commit,0);
   });
  }
+ // vidlat r39: a page crop shows one decoded frame per compositor frame. Frames that arrive within
+ // one frame used to overwrite each other (~15 % of the draws never reached the screen); each later
+ // one now waits for the next frame. Decode-ahead hands over several at once: only the newest of them waits.
+ commitPaced(view){
+  // Sparse updates (typing) keep one waiting frame, so a burst never queues the page up behind the compositor. Sustained motion
+  // (video, a long scroll) delivers near the display rate and its jitter must not cost frames: up to three may wait.
+  const waiting=this.sustained()?SUSTAINED_WAITING:1;
+  while(this.frameDrawn&&this.pending.length>waiting){const job=this.pending.shift();job.resolve({drawn:false,decodedAt:job.decodedAt});this.onTiming('client_present_drop',job.decodedAt);}
+  if(!this.frameDrawn){this.frameDrawn=true;this.armFrame(view);this.commitOldest();return;}
+  this.armFrame(view);
+ }
+ // At least SUSTAINED_FRAMES commits within SUSTAINED_MS: the page is in continuous motion.
+ sustained(){
+  const now=performance.now(),recent=this.recent??=[];
+  recent.push(now);if(recent.length>SUSTAINED_FRAMES)recent.shift();
+  return recent.length===SUSTAINED_FRAMES&&now-recent[0]<SUSTAINED_MS;
+ }
+ armFrame(view){
+  if(this.frameRaf!==undefined||!view.requestAnimationFrame)return;
+  this.cancelFrame=view.cancelAnimationFrame?.bind(view);
+  // A document whose animation frames do not run (throttled or detached) must not hold decoded frames: a timer ends the frame too.
+  let ended=false,timer;
+  const end=()=>{
+   if(ended)return;ended=true;clearTimeout(timer);
+   this.frameRaf=undefined;this.frameDrawn=false;
+   if(this.closed||!this.pending.length)return;
+   // The waiting frame is drawn after this frame's commit, so the next compositor frame shows it.
+   this.frameDrawn=true;this.armFrame(view);
+   setTimeout(()=>{if(!this.closed)this.commitOldest();},0);
+  };
+  this.frameRaf=view.requestAnimationFrame(end);
+  timer=setTimeout(()=>{if(!ended){this.cancelFrame?.(this.frameRaf);end();}},50);
+  this.frameTimer=()=>{ended=true;clearTimeout(timer);};
+ }
+ endFrame(){if(this.frameRaf!==undefined)this.cancelFrame?.(this.frameRaf);this.frameTimer?.();this.frameRaf=undefined;this.frameDrawn=false;}
+ commitOldest(){const job=this.pending.shift();if(!job)return;const rest=this.pending;this.pending=[job];this.commitPending(true);this.pending=rest;}
  commitPending(visible){
   this.raf=undefined;const jobs=this.pending.splice(0),latest=jobs.at(-1);
   if(!latest)return;
@@ -150,7 +188,7 @@ export class VideoSink {
  }
  close({preserveFrame=false}={}){
   if(preserveFrame)this.freeze();
-  this.closed=true;this.canvas.ownerDocument?.removeEventListener?.('visibilitychange',this.visibility);if(this.raf!==undefined)this.cancelRaf?.(this.raf);this.raf=undefined;commitHidden(this.pending);
+  this.closed=true;this.canvas.ownerDocument?.removeEventListener?.('visibilitychange',this.visibility);if(this.raf!==undefined)this.cancelRaf?.(this.raf);this.raf=undefined;this.endFrame();commitHidden(this.pending);
   this.last?.close();this.last=null;this.stopTrack();
  }
 }

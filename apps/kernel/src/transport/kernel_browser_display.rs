@@ -4,16 +4,23 @@ use serde_json::Value;
 
 // MD-DISPLAY-02/04: local diagnostics contain only a fixed stage and times.
 pub(crate) fn timing(stage: &'static str, started: std::time::Instant) {
+    timing_for(stage, None, started)
+}
+
+/// A pump mark names its display (the band and the page are separate displays), so the gate
+/// state of each surface can be read apart.
+pub(crate) fn timing_for(stage: &'static str, display: Option<&str>, started: std::time::Instant) {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if *ENABLED
         .get_or_init(|| std::env::var("CHARIOX_BROWSER_DISPLAY_TIMING").as_deref() == Ok("1"))
     {
         let duration = started.elapsed().as_secs_f64() * 1000.0;
         let ended = crate::session::unix_epoch_ms() as f64;
-        eprintln!(
-            "MD-DISPLAY-TIMING {}",
-            serde_json::json!({"stage":stage,"started_ms":ended-duration,"ended_ms":ended,"duration_ms":duration})
-        );
+        let mut mark = serde_json::json!({"stage":stage,"started_ms":ended-duration,"ended_ms":ended,"duration_ms":duration});
+        if let Some(display) = display {
+            mark["display"] = display.into();
+        }
+        eprintln!("MD-DISPLAY-TIMING {mark}");
     }
 }
 

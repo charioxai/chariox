@@ -1,7 +1,7 @@
 //! MP-08 / MP-10 / MP-11: bounded opaque multiplexing (532 / peer 140).
 use crate::frame_transport::{
     TransportFrame, CHUNK_BYTES, MAX_ASSEMBLY_BYTES, MAX_MESSAGE_BYTES, MAX_TRANSFERS,
-    SMALL_RESERVE_BYTES, WINDOW_BYTES,
+    PEER_RECEIPT_FRAMES, SMALL_RESERVE_BYTES, WINDOW_BYTES,
 };
 use futures_util::{Sink, SinkExt};
 use std::collections::VecDeque;
@@ -366,13 +366,14 @@ where
                     let bytes = message.len() + transfer.binary.as_ref().map_or(0, Message::len);
                     // While bulk is active, small traffic may hold only its reserve,
                     // so it can never keep the window above what a bulk chunk needs.
-                    let fits = if transfer.small {
-                        credit.bytes + bytes <= WINDOW_BYTES + SMALL_RESERVE_BYTES
-                            && (active.iter().all(|t| t.small)
-                                || credit.small + bytes <= SMALL_RESERVE_BYTES)
-                    } else {
-                        credit.bytes + bytes <= WINDOW_BYTES
-                    };
+                    let fits = credit.pending.len() < PEER_RECEIPT_FRAMES
+                        && if transfer.small {
+                            credit.bytes + bytes <= WINDOW_BYTES + SMALL_RESERVE_BYTES
+                                && (active.iter().all(|t| t.small)
+                                    || credit.small + bytes <= SMALL_RESERVE_BYTES)
+                        } else {
+                            credit.bytes + bytes <= WINDOW_BYTES
+                        };
                     if fits {
                         if starting {
                             next_id = transfer.id;
@@ -624,10 +625,82 @@ mod tests {
             "small messages stalled on receipt/assembly slots: {ids:?}"
         );
         assert!(
-            ids.len() < 24,
+            ids.len() < (WINDOW_BYTES + SMALL_RESERVE_BYTES) / 4096 + 2,
             "byte window must stop an unacknowledged stream"
         );
         assert_eq!(ids, (1..=ids.len() as u64).collect::<Vec<_>>());
+    }
+    // An older peer's receipt queue holds PEER_RECEIPT_FRAMES entries: tiny
+    // events must never put more frames than that on the wire unacknowledged,
+    // whatever the byte window is.
+    #[tokio::test]
+    async fn tiny_events_never_exceed_the_peer_receipt_queue() {
+        let (socket, mut client) = sockets().await;
+        let (tx, rx) = mpsc::channel(4096);
+        let (_ack_tx, ack_rx) = mpsc::channel(32);
+        let (_ct, cr) = mpsc::channel(8);
+        for _ in 0..4000 {
+            tx.send(Message::Text("{}".into())).await.unwrap();
+        }
+        let task = tokio::spawn(run_writer(socket, rx, true, false, ack_rx, cr, |_| true));
+        let mut frames = 0;
+        while let Ok(Some(Ok(_))) =
+            tokio::time::timeout(Duration::from_millis(300), client.next()).await
+        {
+            frames += 1;
+        }
+        task.abort();
+        let _ = task.await;
+        assert!(frames > 0, "nothing was sent");
+        assert!(
+            frames <= PEER_RECEIPT_FRAMES,
+            "{frames} unacknowledged frames exceed the peer receipt queue"
+        );
+    }
+    // S1: a large message waits one round trip per window. 480 KB (a mirror
+    // first packet) must need at most two flights, not one per 64 KiB.
+    #[tokio::test]
+    async fn s1_large_message_completes_in_two_round_trips() {
+        let (wire_tx, mut wire) = mpsc::unbounded_channel();
+        let sink = Box::pin(futures_util::sink::unfold(wire_tx, |tx, message: Message| async move {
+            let _ = tx.send(message);
+            Ok::<_, std::convert::Infallible>(tx)
+        }));
+        let (tx, rx) = mpsc::channel(4);
+        let (ack_tx, ack_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
+        let (_ct, cr) = mpsc::channel(8);
+        let reply = serde_json::json!({"kind":"client_response","request_id":"mirror","payload":"y".repeat(480_000)}).to_string();
+        tx.send(Message::Text(reply.clone().into())).await.unwrap();
+        let task = tokio::spawn(run_writer(sink, rx, true, true, ack_rx, cr, |_| true));
+        let mut receiver = crate::frame_transport::FrameReceiver::default();
+        let (mut flights, mut done) = (0, None);
+        loop {
+            // A flight is everything the writer sends before it must wait for receipts.
+            let mut flight = Vec::new();
+            while let Ok(Some(message)) =
+                tokio::time::timeout(Duration::from_millis(40), wire.recv()).await
+            {
+                flight.push(message);
+            }
+            if flight.is_empty() {
+                break;
+            }
+            flights += 1;
+            for message in flight {
+                let Message::Text(text) = message else { panic!("unexpected frame") };
+                let (complete, receipt) = receiver.receive(&text).unwrap();
+                done = done.or(complete);
+                let TransportFrame::TransportAck { transfer_id, offset } =
+                    serde_json::from_str(&receipt.unwrap()).unwrap()
+                else {
+                    panic!("receipt expected")
+                };
+                ack_tx.send((transfer_id, offset)).await.unwrap();
+            }
+        }
+        task.abort();
+        assert_eq!(done, Some(reply));
+        assert!(flights <= 2, "480 KB needed {flights} round trips");
     }
     // MP-08/MP-10: queued mirror credits answer back-to-back. A written reply
     // must not hold one of the two reply slots until its WAN receipt returns

@@ -64,10 +64,10 @@ test('MP-11 every retire event writes the retire pipe synchronously and spends t
  assert.deepEqual(killed,['SIGKILL']);assert.equal(d.closed,true);
 });
 
-function stream(kind,leases=true){
+function stream(kind,leases=true,leaseStreak=1,now=()=>0){
  const retired=[];
  const encoder={close:async()=>{},nativeSession:'motion',nativeRetireState:e=>retired.push(e)};
- const s=new DisplayStream({subscription_id:'s',tab_id:'t',device_scale_factor:1,bitrate:8000000,codec:'avc1.420033',dependencies:true},{encoder,now:()=>0,wait:async()=>{},leases});
+ const s=new DisplayStream({subscription_id:'s',tab_id:'t',device_scale_factor:1,bitrate:8000000,codec:'avc1.420033',dependencies:true},{encoder,now,wait:async()=>{},leases,leaseStreak});
  if(kind)s.regionTarget={kind};
  return {s,retired};
 }
@@ -122,10 +122,27 @@ test('L3 a retire storm neither re-arms nor grants until the retires have been q
  assert.equal(r.bridge.arm(record),null,'a refused grant counts as a retire');
 });
 
-test('L3 Node offers no lease unless leases are enabled (parked: every lease end costs a key frame)',async()=>{
+test('L3 Node offers no lease when leases are disabled',async()=>{
  const {s}=stream(undefined,false);const granted=[];
  try{
   const first=await s.frame(source(offer(granted),true,true),'d',0);
   assert.equal(first[directLease],undefined);assert.deepEqual(granted,[]);
  }finally{await s.close()}
+});
+
+test('L3 only sustained motion is offered a lease; a lease end starts the count again',async()=>{
+ let clock=0;const defaults=new DisplayStream({subscription_id:'s',tab_id:'t',device_scale_factor:1,bitrate:8000000,codec:'avc1.420033',dependencies:true},{encoder:{close:async()=>{},nativeSession:'motion',nativeRetireState:()=>{}},now:()=>clock,wait:async()=>{}});
+ const granted=[];
+ try{
+  let sequence=0,offered=0;
+  const frame=async()=>{const f=await defaults.frame(source(offer(granted),true,true),'d',sequence++);if(f[directLease])offered++;return f;};
+  for(let n=0;n<29;n++){clock+=16;await frame();}
+  assert.equal(offered,0,'29 consecutive frames are not yet sustained motion (a typed key, a scroll notch)');
+  clock+=16;await frame();assert.equal(offered,1,'the 30th consecutive frame is');
+  clock+=500;await frame();assert.equal(offered,1,'a pause restarts the count');
+  for(let n=0;n<29;n++){clock+=16;await frame();}
+  assert.equal(offered,2,'30 consecutive frames after the pause');
+  defaults.adoptLease(0);defaults.leased=true;
+  defaults.adoptLease(sequence);clock+=16;await frame();assert.equal(offered,2,'the end of a lease restarts the count');
+ }finally{await defaults.close()}
 });

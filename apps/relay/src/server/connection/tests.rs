@@ -1505,17 +1505,20 @@ async fn burst_of_small_frame_receipts_keeps_the_connection() {
             break peer.sender.clone();
         }
     };
-    const FRAMES: usize = 700;
-    for n in 0..FRAMES {
-        let request = format!(r#"{{"kind":"daemon_request","relay_request_id":"small-{n}"}}"#);
-        sender.send(Message::Text(request.into())).await.unwrap();
-    }
-    sender
-        .send(Message::Text(
-            r#"{"kind":"daemon_request","relay_request_id":"after-burst"}"#.into(),
-        ))
-        .await
-        .unwrap();
+    // More small frames than the wire window admits, sent without blocking the reader.
+    const FRAMES: usize = 4000;
+    tokio::spawn(async move {
+        for n in 0..FRAMES {
+            let request = format!(r#"{{"kind":"daemon_request","relay_request_id":"small-{n}"}}"#);
+            sender.send(Message::Text(request.into())).await.unwrap();
+        }
+        sender
+            .send(Message::Text(
+                r#"{"kind":"daemon_request","relay_request_id":"after-burst"}"#.into(),
+            ))
+            .await
+            .unwrap();
+    });
     let mut receiver = crate::frame_transport::FrameReceiver::default();
     let mut receipts = Vec::new();
     // The wire window admits many small frames; read until it stalls on credit.
