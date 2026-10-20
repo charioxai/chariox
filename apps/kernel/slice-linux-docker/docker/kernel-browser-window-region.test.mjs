@@ -223,3 +223,15 @@ test('MP-11 overlay startup admits only a readback of the attested projection',a
  source.regionRevision++;
  assert.equal(source.currentSample(),false,'a frame of the previous projection does not satisfy startup');
 });
+
+test('MP-08/MP-10/MP-11 region pixel comparison waits for a Vault-filled target, while the frame-mask owner remains installed',async()=>{
+ for(const target of ['none','policy','browser']){
+  let compared=0,closed=0;
+  const source=new NativeWindowRegionCapture({surface:'page',window:{id:42,width:1280,height:888},rect:{left:0,top:88,width:100,height:50},contentHeight:800,contentRect:{left:0,top:88,width:1280,height:800},scale:1,
+   isCurrent:()=>true,allowed:()=>true,connection:{subscribe:()=>()=>{}},policy:{targets:target==='policy'?[{}]:[],values:[]},browser:{fillTargets:new Map(target==='browser'?[['fill',{}]]:[])},
+   attestationState:async()=>{compared++;throw Error('comparison reached')}});
+  source.valid=()=>true;source.close=async()=>{closed++};source.createRasterPool=async()=>{throw Error('readback reached')};
+  await assert.rejects(source.start(),target==='none'?/readback reached/:/comparison reached/);
+  assert.equal(compared,target==='none'?0:1);assert.equal(closed,1);assert.equal(typeof source.regions.regions,'function','every readback still uses the existing Vault mask owner');
+ }
+});
