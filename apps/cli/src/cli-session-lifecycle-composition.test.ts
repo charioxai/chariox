@@ -169,6 +169,7 @@ test("a stale attachment subscription failure runs session-unavailable recovery"
     setStatusLine: () => {},
     appendNotice: () => {},
     updateSessionChrome: () => {},
+    onKernelTransportClosed: () => {},
     handleSessionUnavailable: (message: string) => { recoveries.push(message) },
   } as unknown as CliSessionLifecycleCompositionDeps
 
