@@ -64,7 +64,7 @@ impl KernelRuntimeOwnedState {
                             e.kind == crate::history::SessionHistoryEntryKind::UserPrompt
                                 && e.merge_key.as_deref() == Some(original_key.as_str())
                         })
-                        .map(|e| e.text.clone())
+                        .map(|e| crate::prompt_notes::objective_with_notes(&e.text, &e.attachments))
                 })
                 .ok_or_else(|| {
                     ledger::error(

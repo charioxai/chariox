@@ -67,6 +67,38 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
         .unwrap()
         .get("ActivePromptSteered")
         .is_some());
+    // Notes steer like any prompt: malformed ones are refused and a note-only message gets
+    // the request line instead of an empty prompt.
+    let note = |contents: &str| {
+        serde_json::json!({
+            "url": "chariox-terminal://note/1", "mime": crate::prompt_notes::NOTE_ATTACHMENT_MIME,
+            "contents_base64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, contents), "filename": "Note",
+        })
+    };
+    let steer_note = |contents: &str| {
+        serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+            "SteerActivePrompt": {
+                "session_id": session.id(), "attachment_id": attachment.id(),
+                "target_agent_id": agent.id(), "expected_active_prompt_id": active.id(),
+                "prompt": " ", "attachments": [note(contents)]
+            }
+        }))
+        .expect("a steering request may carry a note attachment")
+    };
+    let error = harness.dispatch(steer_note("not json")).unwrap_err();
+    assert!(
+        error.to_string().contains("validate prompt note"),
+        "{error}"
+    );
+    match harness
+        .dispatch(steer_note(r#"{"quote":"x","source":{"kind":"panel"}}"#))
+        .unwrap()
+    {
+        LocalDaemonResponse::ActivePromptSteered { prompt } => {
+            assert_eq!(prompt.prompt(), "Please read the attached notes.");
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
     harness.with_app_mut(|app| {
         let current = app
             .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())

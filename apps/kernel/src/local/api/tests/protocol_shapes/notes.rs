@@ -114,5 +114,5 @@ fn prompt_notes_566_snapshot() {
         panic!("expected SubmitPrompt")
     };
     assert_eq!(submit.attachments[0].mime(), crate::prompt_notes::NOTE_ATTACHMENT_MIME);
-    crate::prompt_notes::validate(&submit.attachments).unwrap();
+    crate::prompt_notes::admit(submit.prompt, &submit.attachments).unwrap();
 }
