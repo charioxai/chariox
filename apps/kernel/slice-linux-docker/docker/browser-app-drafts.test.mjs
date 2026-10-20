@@ -21,18 +21,21 @@ function storage() {
   }); return request; } } };
   return store;
 }
-function page(store, readyState = 'complete') {
+function page(store, readyState = 'complete', selection = 'normal') {
   const listeners = new Map(), form = { id: 'todo', getAttribute: () => null };
   const title = { tagName: 'INPUT', type: 'text', id: 'title', name: 'title', value: '', defaultValue: '', form, getAttribute: () => null };
   const secret = { ...title, id: 'password', type: 'password', value: 'private-password' };
   const apiKey = { ...title, id: 'api_key', name: 'api_key', value: 'private-api-key' };
   const protectedField = { ...title, id: 'private-notice', name: 'notice', value: 'private-protected-value', closest: () => ({}) };
   const optOut = { ...title, id: 'optout', value: 'private-opt-out', getAttribute: () => 'OFF' };
-  const context = { document: { readyState, querySelectorAll: () => [title, secret, apiKey, protectedField, optOut], addEventListener: (name, fn) => { const previous=listeners.get(name); listeners.set(name, previous ? (...args) => { previous(...args); fn(...args); } : fn); } },
+  const priority = { ...title, tagName: 'SELECT', type: 'select-one', id: 'priority', name: 'priority', value: selection,
+    defaultValue: undefined, options: [{ value: 'normal', defaultSelected: true }, { value: 'high', defaultSelected: false }] };
+  const notices = [];
+  const context = { document: { readyState, body: { append: node => notices.push(node) }, createElement: () => ({ setAttribute() {}, style: {}, remove() { notices.splice(notices.indexOf(this), 1); } }), querySelectorAll: () => [title, secret, apiKey, protectedField, optOut, priority], addEventListener: (name, fn) => { const previous=listeners.get(name); listeners.set(name, previous ? (...args) => { previous(...args); fn(...args); } : fn); } },
     location: { pathname: '/' }, indexedDB: store.indexedDB, localStorage: { getItem: () => null, removeItem() {} },
     MutationObserver: class { observe() {} }, queueMicrotask };
   vm.runInNewContext(`(${installAppDrafts.toString()})()`, context);
-  return { context, title, loaded() { context.document.readyState='interactive'; listeners.get('DOMContentLoaded')?.(); }, input(value) { title.value = value; listeners.get('input')({ target: title }); },
+  return { context, title, priority, notices, change(value) { priority.value = value; listeners.get('change')({ target: priority }); }, loaded() { context.document.readyState='interactive'; listeners.get('DOMContentLoaded')?.(); }, input(value) { title.value = value; listeners.get('input')({ target: title }); },
     reset() { title.value = ''; listeners.get('reset')(); } };
 }
 const turn = () => new Promise(resolve => setImmediate(resolve));
@@ -78,20 +81,45 @@ test('App publication waits for document readiness and restored fields', async (
  current.loaded();await ready;assert.equal(current.title.value,'recovered draft');
 });
 
-// MP-08/MP-10/MP-11: one aborted write (for example quota) must not wedge later drafts.
-test('a draft write that aborts is retried by the next edit', async () => {
+// MP-08/MP-10/MP-11: mirror polls keep publishing while storage retries without another edit.
+test('failed draft writes do not freeze mirror polls and recover without another edit', async () => {
   const store = storage(), first = page(store);
   await first.context.__charioxAppDraftFlushed();
-  first.input('lost write');
+  first.input('kept after storage recovers');
   const failed = first.context.__charioxAppDraftFlushed();
   await turn(); store.commits.shift().abort();
-  await assert.rejects(failed, /commit failed/);
-  first.input('kept after storage recovers');
-  const recovering = first.context.__charioxAppDraftFlushed();
-  await turn(); store.commits.shift()();
-  assert.equal(await recovering, true);
+  assert.equal(await failed, true, 'failed storage must not block mirror publication');
+  assert.match(first.notices[0]?.textContent ?? '', /not saved/i);
+  for (let n = 0; n < 3; n++) {
+    assert.equal(await first.context.__charioxAppDraftFlushed(), true);
+    await turn();
+    assert.equal(await first.context.__charioxAppDraftFlushed(), true, 'a pending retry must not block a poll');
+    assert.equal(store.commits.length, 1, 'only one retry at a time');
+    store.commits.shift().abort(); await turn();
+  }
+  assert.equal(first.title.value, 'kept after storage recovers');
+  assert.equal(await first.context.__charioxAppDraftFlushed(), true);
+  await turn(); store.commits.shift()(); await turn();
+  assert.equal(first.notices.length, 0, 'successful recovery clears the unsaved notice');
   const recovered = page(store); await recovered.context.__charioxAppDraftFlushed();
   assert.equal(recovered.title.value, 'kept after storage recovers');
+});
+
+// MP-08/MP-10/MP-11: selects have option defaults, not an input defaultValue.
+test('dropdown drafts restore a nonempty default and preserve later user edits', async () => {
+  const store = storage(), first = page(store);
+  await first.context.__charioxAppDraftFlushed();
+  first.change('high');
+  const flush = first.context.__charioxAppDraftFlushed();
+  await turn(); store.commits.shift()(); await flush;
+  const restored = page(store); await restored.context.__charioxAppDraftFlushed();
+  assert.equal(restored.priority.value, 'high');
+  const appSelected = page(store, 'complete', 'low');
+  await appSelected.context.__charioxAppDraftFlushed();
+  assert.equal(appSelected.priority.value, 'low', 'a value already changed by the App is retained');
+  const edited = page(store); edited.change('normal');
+  await turn(); store.commits.shift()(); await edited.context.__charioxAppDraftFlushed();
+  assert.equal(edited.priority.value, 'normal');
 });
 
 // MP-08/MP-10/MP-11: a failed first open of draft storage must not freeze publication or later drafts.
@@ -106,4 +134,20 @@ test('draft storage that fails to open lets the App publish and recovers on the 
   assert.equal(await flush, true);
   const recovered = page(store); await recovered.context.__charioxAppDraftFlushed();
   assert.equal(recovered.title.value, 'kept after storage returns');
+});
+
+// MP-08/MP-10/MP-11: retrying an old draft never displaces a newer edit.
+test('the newest edit wins while an unsaved draft retry is in flight', async () => {
+  const store = storage(), first = page(store);
+  await first.context.__charioxAppDraftFlushed(); first.input('old edit');
+  const initial = first.context.__charioxAppDraftFlushed();
+  await turn(); store.commits.shift().abort(); await initial;
+  await first.context.__charioxAppDraftFlushed(); await turn();
+  first.input('new edit');
+  store.commits.shift()(); await turn();
+  assert.equal(first.notices.length, 1, 'old success cannot clear the newer unsaved edit');
+  store.commits.shift()(); await turn();
+  assert.equal(first.notices.length, 0);
+  const restored = page(store); await restored.context.__charioxAppDraftFlushed();
+  assert.equal(restored.title.value, 'new edit');
 });
