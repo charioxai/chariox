@@ -3368,12 +3368,12 @@ Workflow trigger and deployment direction:
   Every use checks the process identity again to prevent PID reuse.
 
   An unapproved Unix peer can only send `RequestKernelAccess` with
-  `holder_pid` and optional `lifetime_minutes` (protocol 451 removes `session_id`; old session-bearing requests are rejected). The holder
+  `holder_pid` and optional `term` (protocol 568 replaces `lifetime_minutes`; protocol 451 removes `session_id`; old session-bearing requests are rejected). The holder
   must be the peer or an OS-verified ancestor. The kernel raises an owner-only
   passkey popup. Its copy is one short kernel-written question (grant: "<name> (an external agent) wants access to Chariox. Allow?"; extension: "<name>'s access ends in N minutes. Extend?"); `<name>` is only a harness recognised by exact configured path, otherwise "An external agent". The popup shows no pid, path, process start, version or scope; those stay in `requester` and the audit stream. No session must exist. Access popups use the kernel-wide interaction routing id `kernel-access`; this is not a session or grant scope.
   `RespondToInteraction` on this routing id returns `KernelAccessDecisionResponded { interaction_id }`, with no session projection.
   Grant and extension prompts have kind `access_grant` or `access_extension`,
-  `lifetime_minutes`, and `max_lifetime_minutes`. Protocol 470 adds an optional
+  `term` (protocol 568), and `max_lifetime_minutes`. Protocol 470 adds an optional
   `requester` object to both `RuntimeInteraction` and `PasskeyPrompt` for grant
   and extension decisions, established from the same OS-verified holder:
   `executable` (full path), `pid`, `process_start_id` (opaque decimal string,
@@ -3444,7 +3444,7 @@ Workflow trigger and deployment direction:
   transport can use a grant. Existing TCP token and tokenless log-mode
   behavior remains until enforcement. `LocalIpcClient` supports
   `ws+unix:///absolute/socket`. `chariox access request
-  [--holder-pid <pid>] [--minutes <minutes>] [--socket <path>]` waits for
+  [--holder-pid <pid>] [--until-exit | --minutes <minutes>] [--socket <path>]` waits for
   the popup and prints public grant metadata. MP-08 / MP-10 / MP-11: the default
   holder is the nearest installed official provider in the CLI launcher's
   OS-verified ancestry, including native Codex behind its npm launcher. Unknown
@@ -4630,6 +4630,21 @@ page's did, instead of landing on a family only the viewer installed. A `fonts` 
 clears the list. `browser-mirror2-font-absent-567.json` pins the shape (Rust hash test
 `browser_mirror2_font_absent_567_shape_is_pinned`). Older kernels never send the field; older
 viewers refuse it, so they must stay below 567 or negotiate the same wire.
+
+External agents v2 (provisional 568/176, renumbered by landing order): an access grant has a typed
+`term`, `{"minutes": n}` or `"until_holder_exits"`, replacing `lifetime_minutes` on
+`RequestKernelAccess`, on `KernelAccessGrant` and on access popups (`PasskeyPrompt.term`, the term the
+popup starts on; sudo popups keep `lifetime_minutes`). A request without a term gets the configured
+default (`grant_default_minutes`, 8 hours); `lifetime_minutes` is now an unknown field and is refused.
+The approve answer's `custom_reply` chooses the term: a number of minutes, or `until_exit` (access
+grants only; an extension adds minutes and refuses it). An unrecognised reply is refused. A grant of
+`until_holder_exits` has no `expires_at_ms`, no "extend?" notice and no deadline; it ends when the
+holder process exits or its identity no longer matches (a reused PID never inherits it), on revoke,
+on passkey rotation, or when the kernel restarts (grants are memory-only). Descendants of the holder
+are admitted as for every grant. `kernel_access.grant` audit events carry the term. Clients that list
+grants or draw the popup need 568.
+Relay peer 176 carries the same shapes. The Rust hash test
+`local_kernel_access_protocol_451_has_no_session_scope_or_bearer` pins them.
 
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
 `layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.

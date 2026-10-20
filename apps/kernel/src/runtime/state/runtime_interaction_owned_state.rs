@@ -386,19 +386,33 @@ impl KernelRuntimeOwnedState {
                     .is_some_and(|id| id.starts_with("access-"))
                     && choice.requires_passkey()
                 {
-                    let minutes = reply
-                        .parse::<u32>()
-                        .map_err(|_| interaction_error("Access lifetime must be whole minutes"))?;
-                    if minutes == 0
-                        || minutes
-                            > self
-                                .config_projection
-                                .snapshot()
-                                .user_config
-                                .kernel_access
-                                .grant_max_minutes
-                    {
-                        return Err(interaction_error("Access lifetime exceeds kernel policy"));
+                    let term =
+                        crate::local::KernelAccessTerm::from_reply(reply).ok_or_else(|| {
+                            interaction_error("Access term must be whole minutes or until_exit")
+                        })?;
+                    match term {
+                        crate::local::KernelAccessTerm::Minutes(minutes)
+                            if minutes == 0
+                                || minutes
+                                    > self
+                                        .config_projection
+                                        .snapshot()
+                                        .user_config
+                                        .kernel_access
+                                        .grant_max_minutes =>
+                        {
+                            return Err(interaction_error("Access lifetime exceeds kernel policy"));
+                        }
+                        crate::local::KernelAccessTerm::UntilHolderExits
+                            if interaction
+                                .kernel_operation_id()
+                                .is_some_and(|id| id.starts_with("access-extension:")) =>
+                        {
+                            return Err(interaction_error(
+                                "An extension adds time; it cannot last until the agent exits",
+                            ));
+                        }
+                        _ => {}
                     }
                     reply.to_owned()
                 } else {

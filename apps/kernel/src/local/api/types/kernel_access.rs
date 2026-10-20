@@ -43,6 +43,29 @@ pub enum PasskeyPromptKind {
     Sudo,
 }
 
+/// Protocol 568: how long an access grant lasts. `UntilHolderExits` has no
+/// deadline: the grant ends with the approved harness process, an explicit
+/// revoke, a passkey rotation or a kernel restart (grants live in memory).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KernelAccessTerm {
+    Minutes(u32),
+    UntilHolderExits,
+}
+
+impl KernelAccessTerm {
+    /// The approve answer's `custom_reply` that chooses `UntilHolderExits`.
+    pub const UNTIL_EXIT_REPLY: &'static str = "until_exit";
+
+    /// Reads the term an approve answer chose: minutes, or `until_exit`.
+    pub fn from_reply(reply: &str) -> Option<Self> {
+        if reply == Self::UNTIL_EXIT_REPLY {
+            return Some(Self::UntilHolderExits);
+        }
+        reply.parse().ok().map(Self::Minutes)
+    }
+}
+
 /// Protocol 403: a kernel-owned pending interaction that needs the Chariox
 /// passkey, projected as a popup to every terminal connected as its owner,
 /// attached to the session or not. Every field is what the kernel itself
@@ -67,7 +90,11 @@ pub struct PasskeyPrompt {
     pub refuse_choice_id: String,
     pub requested_at_ms: u64,
     pub expires_at_ms: u64,
-    /// Present only for access decisions. The terminal may choose a different term.
+    /// Protocol 568: present for access_grant/access_extension, the term the popup
+    /// starts on; the terminal may choose a different one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub term: Option<KernelAccessTerm>,
+    /// Sudo windows only since protocol 568.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifetime_minutes: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -101,8 +128,9 @@ pub enum KernelAccessProviderHarness {
 #[serde(deny_unknown_fields)]
 pub struct RequestKernelAccessRequest {
     pub holder_pid: u32,
+    /// Protocol 568 replaces `lifetime_minutes`. None means the kernel's default.
     #[serde(default)]
-    pub lifetime_minutes: Option<u32>,
+    pub term: Option<KernelAccessTerm>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,8 +151,11 @@ pub struct KernelAccessGrant {
     pub owner_user_id: String,
     pub holder_pid: u32,
     pub holder_executable: String,
-    pub lifetime_minutes: u32,
-    pub expires_at_ms: u64,
+    /// Protocol 568 replaces `lifetime_minutes`.
+    pub term: KernelAccessTerm,
+    /// Absent for `UntilHolderExits`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
 }
 
 /// Protocol 415: a grant holder requests a human-authorized turn. Identity and

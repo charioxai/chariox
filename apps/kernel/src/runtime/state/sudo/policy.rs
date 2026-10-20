@@ -343,8 +343,7 @@ pub(super) fn requester_grant_live(
     turn.requester.as_ref().is_none_or(|requester| {
         access.grants.get(&requester.grant_id).is_some_and(|grant| {
             grant.summary.owner_user_id == turn.owner_user_id
-                && std::time::Instant::now() < grant.deadline
-                && grant.holder.alive()
+                && grant.ended_reason(std::time::Instant::now()).is_none()
         })
     })
 }

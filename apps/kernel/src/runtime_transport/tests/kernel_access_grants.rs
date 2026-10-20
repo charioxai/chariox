@@ -628,12 +628,21 @@ impl Kernel {
         .unwrap()
     }
     async fn answer(&mut self, id: &str, passkey: Option<&str>, minutes: Option<u32>) -> Value {
+        self.answer_with(id, passkey, minutes.map(|m| m.to_string()))
+            .await
+    }
+    async fn answer_with(
+        &mut self,
+        id: &str,
+        passkey: Option<&str>,
+        reply: Option<String>,
+    ) -> Value {
         let scope = if id.ends_with("-grant") || id.ends_with("-extension") {
             crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE
         } else {
             SESSION
         };
-        self.request(serde_json::json!({"RespondToInteraction": {"session_id":scope, "interaction_id":id, "choice_id":"approve", "passkey":passkey, "custom_reply":minutes.map(|m|m.to_string())}})).await
+        self.request(serde_json::json!({"RespondToInteraction": {"session_id":scope, "interaction_id":id, "choice_id":"approve", "passkey":passkey, "custom_reply":reply}})).await
     }
     async fn control(&self, action: &str) {
         let _ = std::fs::remove_file(self.root.join("ack"));
@@ -691,6 +700,9 @@ async fn grant_for_holder(kernel: &mut Kernel, holder: &mut Client, holder_pid: 
         "An external agent wants access to Chariox. Allow?"
     );
     assert_eq!(prompt["title"], "External agent access");
+    // The popup starts on the kernel default; pre-568 clients read the minutes too.
+    assert_eq!(prompt["term"], serde_json::json!({"minutes": 480}));
+    assert_eq!(prompt["lifetime_minutes"], 480);
     assert!(prompt["requester"]["pid"].is_u64());
     kernel.control("guest").await;
     let missing = kernel.answer(&id, None, None).await;
@@ -708,8 +720,8 @@ async fn grant_for_holder(kernel: &mut Kernel, holder: &mut Client, holder_pid: 
     let result = holder.result();
     assert!(result["error"].is_null(), "{result}");
     assert_eq!(
-        result["response"]["KernelAccessGranted"]["grant"]["lifetime_minutes"],
-        15
+        result["response"]["KernelAccessGranted"]["grant"]["term"],
+        serde_json::json!({"minutes": 15})
     );
     result["response"]["KernelAccessGranted"]["grant"]["grant_id"]
         .as_str()
@@ -896,7 +908,8 @@ async fn kernel_access_grants_authorize_all_local_sessions_and_refuse_siblings_a
             let listed = kernel
                 .request(serde_json::json!({"ListKernelAccessGrants":{}}))
                 .await;
-            if listed["response"]["KernelAccessGrantsListed"]["grants"][0]["lifetime_minutes"] == 45
+            if listed["response"]["KernelAccessGrantsListed"]["grants"][0]["term"]
+                == serde_json::json!({"minutes": 45})
             {
                 break;
             }
@@ -1157,4 +1170,103 @@ async fn unix_mutation_response_loss_retries_once_with_live_grant_and_refuses_re
             .len(),
         before_count + 2
     );
+}
+
+async fn grant_until_exit(kernel: &mut Kernel, holder: &mut Client) -> Value {
+    holder.send(
+        serde_json::json!({"RequestKernelAccess":{"holder_pid":0, "term":"until_holder_exits"}}),
+    );
+    let prompt = kernel.access_popup("-grant").await;
+    assert_eq!(prompt["term"], "until_holder_exits", "{prompt}");
+    assert!(prompt.get("lifetime_minutes").is_none(), "{prompt}");
+    let id = prompt["interaction_id"].as_str().unwrap().to_owned();
+    kernel.control("guest").await;
+    let approved = kernel
+        .answer_with(&id, Some(PASSKEY), Some("until_exit".into()))
+        .await;
+    assert!(approved["error"].is_null(), "{approved}");
+    let result = holder.result();
+    assert!(result["error"].is_null(), "{result}");
+    result["response"]["KernelAccessGranted"]["grant"].clone()
+}
+
+// EA2-01 / EA2-02: the until-exit term has no deadline, is listed as such, and
+// ends with its holder or a reused PID, like every other grant.
+#[tokio::test]
+async fn until_exit_grant_has_no_deadline_and_ends_with_its_holder() {
+    for action in ["exit", "reuse"] {
+        let mut kernel = Kernel::start().await;
+        let mut holder = Client::start(&kernel.root);
+        let grant = grant_until_exit(&mut kernel, &mut holder).await;
+        assert_eq!(grant["term"], "until_holder_exits", "{grant}");
+        assert!(
+            grant.get("expires_at_ms").is_none_or(Value::is_null),
+            "{grant}"
+        );
+        // Passing the deadline of every timed grant leaves it alone.
+        kernel.control("expire").await;
+        let alive = holder.request(serde_json::json!({"GetSessionState":{"session_id":SESSION}}));
+        assert!(alive["error"].is_null(), "{action}: {alive}");
+        let list = kernel
+            .request(serde_json::json!({"ListKernelAccessGrants":{}}))
+            .await;
+        let listed = &list["response"]["KernelAccessGrantsListed"]["grants"];
+        assert_eq!(listed[0]["term"], "until_holder_exits", "{list}");
+        let started = std::time::Instant::now();
+        if action == "reuse" {
+            kernel.control("reuse").await;
+        } else {
+            drop(holder);
+        }
+        timeout(Duration::from_secs(2), async {
+            loop {
+                let list = kernel
+                    .request(serde_json::json!({"ListKernelAccessGrants":{}}))
+                    .await;
+                if list["response"]["KernelAccessGrantsListed"]["grants"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+                {
+                    break;
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "{action}: grant outlived its holder by {:?}",
+                started.elapsed()
+            )
+        });
+        let mut stranger = Client::start(&kernel.root);
+        assert_eq!(
+            stranger.request(serde_json::json!({"GetSessionState":{"session_id":SESSION}}))
+                ["error"]["code"],
+            "kernel_access_not_covered"
+        );
+    }
+}
+
+#[tokio::test]
+async fn access_request_refuses_out_of_policy_and_unknown_terms() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    for term in [
+        serde_json::json!({"minutes": 0}),
+        serde_json::json!({"minutes": 100000}),
+        serde_json::json!("forever"),
+    ] {
+        let refused = holder
+            .request(serde_json::json!({"RequestKernelAccess":{"holder_pid":0, "term":term}}));
+        assert!(refused["error"].is_object(), "{term}: {refused}");
+    }
+    // Nothing was left pending by the refusals.
+    assert!(kernel
+        .request(serde_json::json!({"ListKernelAccessGrants":{}}))
+        .await["response"]["KernelAccessGrantsListed"]["grants"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 }

@@ -288,8 +288,8 @@ pub use api::{
 };
 pub use api::{
     HandoffOutcome, HandoffResponseAction, HandoffStatus, HandoffValue,
-    KernelAccessProviderHarness, KernelAccessRequester, KernelConnectionClass, PasskeyPrompt,
-    PasskeyPromptKind,
+    KernelAccessProviderHarness, KernelAccessRequester, KernelAccessTerm, KernelConnectionClass,
+    PasskeyPrompt, PasskeyPromptKind,
 };
 pub use api::{
     KernelBrowserCommand, KernelBrowserDisplayTarget, KernelBrowserInput,

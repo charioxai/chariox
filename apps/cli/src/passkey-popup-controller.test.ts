@@ -270,7 +270,7 @@ test("access grants and extensions require a fresh passkey and let the owner cho
   h.popup.handleKey(key("return"))
   h.resolve(); await settle()
   for (const kind of ["access_grant", "access_extension"] as const) {
-    const access = { ...prompt(kind), kind, lifetime_minutes: 30, max_lifetime_minutes: 45 }
+    const access = { ...prompt(kind), kind, term: { minutes: 30 }, max_lifetime_minutes: 45 }
     h.popup.apply([access])
     h.popup.show()
     const count = h.requests.length
@@ -280,12 +280,37 @@ test("access grants and extensions require a fresh passkey and let the owner cho
     assert.match(h.popup.view().error!, /Enter your Chariox passkey/)
     h.popup.handleKey(key("tab"))
     assert.equal(h.popup.view().passkey.rememberMinutes, 0)
-    assert.equal(h.popup.view().passkey.accessLifetimeMinutes, 45)
+    assert.equal(h.popup.view().passkey.lifetime, 45)
     type(h, "fresh")
     h.popup.handleKey(key("return"))
-    assert.deepEqual(h.requests.at(-1), [kind, "approve", { passkey: "fresh", rememberMinutes: null, accessLifetimeMinutes: 45 }])
+    assert.deepEqual(h.requests.at(-1), [kind, "approve", { passkey: "fresh", rememberMinutes: null, accessLifetime: 45 }])
     h.resolve(); await settle()
   }
+})
+
+test("only a new access grant can last until the agent exits", async () => {
+  for (const [kind, afterMax] of [["access_grant", "until_exit"], ["access_extension", 5]] as const) {
+    const h = harness()
+    h.popup.apply([{ ...prompt(kind), kind, term: { minutes: 480 }, max_lifetime_minutes: 1440 }])
+    h.popup.show()
+    assert.equal(h.popup.view().passkey.lifetime, 480)
+    h.popup.handleKey(key("tab"))
+    assert.equal(h.popup.view().passkey.lifetime, 1440)
+    h.popup.handleKey(key("tab"))
+    assert.equal(h.popup.view().passkey.lifetime, afterMax, kind)
+    if (kind === "access_grant") {
+      type(h, "fresh")
+      h.popup.handleKey(key("return"))
+      assert.deepEqual(h.requests.at(-1), [kind, "approve", { passkey: "fresh", rememberMinutes: null, accessLifetime: "until_exit" }])
+    }
+  }
+})
+
+test("a request that asked for until-exit opens the popup on it", () => {
+  const h = harness()
+  h.popup.apply([{ ...prompt("access_grant"), kind: "access_grant", term: "until_holder_exits", max_lifetime_minutes: 1440 }])
+  h.popup.show()
+  assert.equal(h.popup.view().passkey.lifetime, "until_exit")
 })
 
 test("MP-08/MP-10/MP-11 A04 sudo asks for a fresh passkey and offers a 1-8 hour window", async () => {
@@ -305,17 +330,17 @@ test("MP-08/MP-10/MP-11 A04 sudo asks for a fresh passkey and offers a 1-8 hour 
   await settle()
   assert.equal(h.requests.length, count, "the remembered critical passkey never mints sudo")
   assert.match(h.popup.view().error!, /Enter your Chariox passkey/)
-  assert.equal(h.popup.view().passkey.accessLifetimeMinutes, 60)
-  const offered = [60]
+  assert.equal(h.popup.view().passkey.lifetime, 60)
+  const offered: Array<number | string> = [60]
   for (let i = 0; i < 4; i++) {
     h.popup.handleKey(key("tab"))
-    offered.push(h.popup.view().passkey.accessLifetimeMinutes!)
+    offered.push(h.popup.view().passkey.lifetime!)
   }
   assert.deepEqual(offered, [60, 120, 240, 480, 60])
   assert.equal(h.popup.view().passkey.rememberMinutes, 0)
   h.popup.handleKey(key("tab"))
   type(h, "fresh")
   h.popup.handleKey(key("return"))
-  assert.deepEqual(h.requests.at(-1), ["sudo", "approve", { passkey: "fresh", rememberMinutes: null, accessLifetimeMinutes: 120 }])
+  assert.deepEqual(h.requests.at(-1), ["sudo", "approve", { passkey: "fresh", rememberMinutes: null, accessLifetime: 120 }])
   h.resolve(); await settle()
 })

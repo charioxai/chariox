@@ -225,7 +225,7 @@ grant_extend_notice_minutes = 5
 request_timeout_minutes = 10
 ```
 
-The owner set external-agent grants to 8 hours by default and 24 hours at most; out-of-range older configs are clamped at load with a warning. The user picks a grant's lifetime in the popup, up to `grant_max_minutes`. Each extension starts a new term under the same limit. A grant also ends when its bound process exits. Sudo uses owner-authorized windows; see KERNEL_SUDO.md.
+The owner set external-agent grants to 8 hours by default and 24 hours at most; out-of-range older configs are clamped at load with a warning. The user picks a grant's lifetime in the popup, up to `grant_max_minutes`, or "until the agent exits" (protocol 568; opt-in, never the default, no deadline and no extension popup: it ends with the bound process, a revoke, a passkey rotation or a kernel restart). Each extension starts a new term under the same limit. A grant also ends when its bound process exits. Sudo uses owner-authorized windows; see KERNEL_SUDO.md.
 
 ### 5.6 Revocation
 

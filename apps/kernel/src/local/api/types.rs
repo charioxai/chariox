@@ -338,4 +338,7 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: allocated 556 adds `KernelBrowser` `state_wait`: a parked state read
 /// replacing the viewer's 250 ms poll.
 /// MP-08/MP-10/MP-11: allocated 567 adds the mirror v2 `fonts` op's `absent` (stack families the native machine lacks).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 567;
+/// External agents v2 (provisional, the coordinator renumbers by landing order): 568 replaces
+/// `lifetime_minutes` on access requests, grants and popups with a typed term that can be
+/// `until_holder_exits`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 568;

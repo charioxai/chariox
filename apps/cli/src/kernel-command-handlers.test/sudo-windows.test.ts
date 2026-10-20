@@ -49,3 +49,22 @@ test("MP-08/MP-10/MP-11 A04 /sudo extend and revoke target the named or only liv
   assert.match(notices.join("\n"), /sudo:01 extended/)
   assert.match(notices.join("\n"), /sudo · agent-1 · .* left/)
 })
+
+test("EA2-01 /kernel access list says when a grant ends: a time, or when its agent exits", async () => {
+  const notices: string[] = []
+  const grant = { grant_id: "access-1", owner_user_id: "local", holder_pid: 42, holder_executable: "/opt/codex" }
+  const deps = {
+    isAttached: () => true,
+    sessionState: () => makeSession(),
+    appendNotice: (message: string) => { notices.push(message) },
+    flashFooter: () => {},
+    transitionToNoSession: () => {},
+    listKernelAccessGrants: async () => ({ grants: [
+      { ...grant, term: { minutes: 480 } as const, expires_at_ms: Date.parse("2026-10-20T20:00:00Z") },
+      { ...grant, grant_id: "access-2", term: "until_holder_exits" as const },
+    ] }),
+  }
+  await handleKernelSlashCommand(deps, { kind: "kernel", raw: "/kernel access list", args: ["access", "list"] })
+  assert.match(notices[0]!, /access-1: .*expires 2026-10-20T20:00:00.000Z/)
+  assert.match(notices[0]!, /access-2: .*until the agent exits/)
+})

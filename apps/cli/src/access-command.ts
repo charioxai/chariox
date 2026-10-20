@@ -9,23 +9,27 @@ function parentPid(pid: number): number {
   return parent
 }
 
+const ACCESS_USAGE = "Usage: chariox access request [--holder-pid <pid>] [--until-exit | --minutes <minutes>] [--socket <absolute-path>]"
+
 export function parseAccessRequest(argv: string[], defaultHolder: () => number) {
   const values = new Map<string, string>()
-  for (let i = 0; i < argv.length; i += 2) {
+  let untilExit = false
+  for (let i = 0; i < argv.length; i++) {
     const key = argv[i]!
-    const value = argv[i + 1]
-    if (!["--holder-pid", "--minutes", "--socket"].includes(key) || !value || values.has(key)) {
-      throw new Error("Usage: chariox access request [--holder-pid <pid>] [--minutes <minutes>] [--socket <absolute-path>]")
-    }
+    if (key === "--until-exit" && !untilExit) { untilExit = true; continue }
+    const value = argv[++i]
+    if (!["--holder-pid", "--minutes", "--socket"].includes(key) || !value || values.has(key)) throw new Error(ACCESS_USAGE)
     values.set(key, value)
   }
+  if (untilExit && values.has("--minutes")) throw new Error("Choose --until-exit or --minutes, not both")
   const holder_pid = values.has("--holder-pid") ? Number(values.get("--holder-pid")) : defaultHolder()
-  const lifetime_minutes = values.has("--minutes") ? Number(values.get("--minutes")) : undefined
+  const minutes = values.has("--minutes") ? Number(values.get("--minutes")) : undefined
   if (!Number.isSafeInteger(holder_pid) || holder_pid <= 1
-    || (lifetime_minutes !== undefined && (!Number.isSafeInteger(lifetime_minutes) || lifetime_minutes < 1))) {
+    || (minutes !== undefined && (!Number.isSafeInteger(minutes) || minutes < 1))) {
     throw new Error("Access requires a positive integer holder pid and lifetime")
   }
-  return { request: { RequestKernelAccess: { holder_pid, lifetime_minutes } }, socket: values.get("--socket") }
+  const term = untilExit ? "until_holder_exits" as const : minutes !== undefined ? { minutes } : undefined
+  return { request: { RequestKernelAccess: { holder_pid, ...(term ? { term } : {}) } }, socket: values.get("--socket") }
 }
 
 export async function runAccessCommand(argv: string[]): Promise<boolean> {
@@ -50,7 +54,7 @@ export async function runAccessCommand(argv: string[]): Promise<boolean> {
       const result = await client.send<KernelAccessRevokedResponse>({ RevokeKernelAccessGrant: { grant_id: argv[2] === "--all" ? null : argv[2] } })
       console.log(`Revoked ${result.KernelAccessRevoked.revoked} grants`)
     } else {
-      throw new Error("Usage: chariox access request [--holder-pid <pid>] [--minutes <minutes>] [--socket <path>] | access list | access revoke <id|--all>")
+      throw new Error(`${ACCESS_USAGE.replace("<absolute-path>", "<path>")} | access list | access revoke <id|--all>`)
     }
   } finally { await client.close() }
   return true

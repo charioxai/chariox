@@ -303,8 +303,8 @@ async fn kernel_access_targeted_revocation_preserves_other_owners_pending_reques
         owner_user_id: owner.into(),
         holder_pid: 1,
         holder_executable: "fixture".into(),
-        lifetime_minutes: 30,
-        expires_at_ms: 0,
+        term: crate::local::KernelAccessTerm::Minutes(30),
+        expires_at_ms: None,
     };
     {
         let mut access = state.owned.kernel_access.lock().unwrap();
