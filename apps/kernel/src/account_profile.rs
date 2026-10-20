@@ -924,6 +924,8 @@ struct RegistryDocument {
     version: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     credential_copy_notices: Vec<copy_notice::CredentialCopyNotice>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    credential_copies_issued: Vec<copy_notice::IssuedCredentialCopy>,
     #[serde(default)]
     profiles: Vec<StoredProviderAccountProfile>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -943,6 +945,7 @@ impl Default for RegistryDocument {
         Self {
             version: REGISTRY_VERSION,
             credential_copy_notices: Vec::new(),
+            credential_copies_issued: Vec::new(),
             profiles: Vec::new(),
             pending_replica_cleanup: Vec::new(),
         }
@@ -1265,9 +1268,41 @@ impl ProviderAccountProfileRegistry {
         agent: &crate::agent::AgentInstance,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
+        self.require_agent_authenticated_with(owner_user_id, agent, operation, false)
+    }
+
+    /// Worker-side admission of a leased prompt: a Claude replica carries no credentials, so an
+    /// unobserved one is admitted and the home's per-launch credential is checked at launch.
+    pub(crate) fn require_leased_agent_authenticated(
+        &self,
+        config: &crate::config::DaemonConfig,
+        agent: &crate::agent::AgentInstance,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else { return Ok(()); };
+        let owner = provider_account_authority_owner_for_profile(config, self, agent.owner_user_id(), provider, agent.provider_account_profile())?;
+        self.require_agent_authenticated_with(&owner, agent, operation, true)
+    }
+
+    fn require_agent_authenticated_with(
+        &self,
+        owner_user_id: &str,
+        agent: &crate::agent::AgentInstance,
+        operation: &'static str,
+        launch_credential_may_follow: bool,
+    ) -> Result<(), DaemonError> {
         let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
             return Ok(());
         };
+        if launch_credential_may_follow && provider == "claude" {
+            let profile = self.get(owner_user_id, provider, agent.provider_account_profile())?;
+            if matches!(
+                profile.auth_state,
+                ProviderAccountAuthState::Unknown | ProviderAccountAuthState::NotConfigured
+            ) {
+                return Ok(());
+            }
+        }
         self.require_authenticated(
             owner_user_id,
             provider,
@@ -1373,6 +1408,25 @@ impl ProviderAccountProfileRegistry {
             refresh_automatic_label(&mut document, profile_index, previous_identity.as_deref());
         }
         let result = document.profiles[profile_index].public.clone();
+        self.persist_locked(&document)?;
+        Ok(result)
+    }
+
+    /// The provider refused this machine's stored login. Keep who it was and
+    /// what it covered so the user can see which account to sign in to again.
+    pub fn mark_needs_sign_in(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<ProviderAccountProfile, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let mut document = self.write_document()?;
+        let profile =
+            resolve_stored_profile_mut(&mut document, owner_user_id, provider, profile_id)?;
+        profile.public.auth_state = ProviderAccountAuthState::Expired;
+        profile.public.last_validated_at_ms = Some(crate::session::unix_epoch_ms());
+        let result = profile.public.clone();
         self.persist_locked(&document)?;
         Ok(result)
     }

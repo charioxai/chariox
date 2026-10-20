@@ -100,11 +100,12 @@ export function cancelProviderLoginRequest(loginId: string) {
   return { CancelProviderLogin: { login_id: loginId } }
 }
 
-export function logoutProviderRequest(provider: string, accountProfile = "default") {
+export function logoutProviderRequest(provider: string, accountProfile = "default", endEverywhere = false) {
   return {
     LogoutProvider: {
       provider,
       account_profile: accountProfile,
+      ...(endEverywhere ? { end_everywhere: true } : {}),
     },
   }
 }

@@ -572,6 +572,9 @@ pub struct LeasedPromptReceipt {
     pub target_home_prompt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_lease_id: Option<String>,
+    /// Why the worker refused the prompt; set only for a rejected admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1876,6 +1879,7 @@ mod tests {
 
         let active = RelayPeerResponse::LeasedPromptReceiptQueried {
             receipt: Some(LeasedPromptReceipt {
+                rejection_reason: None,
                 home_prompt_id: "home-prompt-1".to_string(),
                 worker_provider_run_id: "worker-run-1".to_string(),
                 phase: LeasedPromptReceiptPhase::Active,
@@ -1903,6 +1907,7 @@ mod tests {
 
         let completed = RelayPeerResponse::LeasedPromptReceiptQueried {
             receipt: Some(LeasedPromptReceipt {
+                rejection_reason: None,
                 home_prompt_id: "home-prompt-1".to_string(),
                 worker_provider_run_id: "worker-run-1".to_string(),
                 phase: LeasedPromptReceiptPhase::Completed,
@@ -1938,6 +1943,7 @@ mod tests {
         ] {
             let original_prompt = RelayPeerResponse::LeasedPromptReceiptQueried {
                 receipt: Some(LeasedPromptReceipt {
+                    rejection_reason: None,
                     home_prompt_id: "home-prompt-1".to_string(),
                     worker_provider_run_id: String::new(),
                     phase,
@@ -1989,6 +1995,7 @@ mod tests {
         for (phase, phase_wire) in steer_receipts {
             let response = RelayPeerResponse::LeasedPromptReceiptQueried {
                 receipt: Some(LeasedPromptReceipt {
+                    rejection_reason: None,
                     home_prompt_id: "queued-steer-1".to_string(),
                     worker_provider_run_id: "worker-run-1".to_string(),
                     phase,
