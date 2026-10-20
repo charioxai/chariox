@@ -98,15 +98,11 @@ fn merge(into: &mut RelayEnvelope, next: RelayEnvelope) -> Result<(), DaemonErro
             }
         }
     }
-    if let Some(candidate) = more_kernel {
-        if kernel
-            .as_ref()
-            .is_some_and(|existing| existing.kernel_id != candidate.kernel_id)
-        {
-            return Err(invalid("kernel alias is ambiguous"));
-        }
-        *kernel = Some(candidate);
+    // Preserve the relay's existing first matching alias; batching adds no input admission rule.
+    if kernel.is_none() {
+        *kernel = more_kernel;
     }
+
     Ok(())
 }
 
@@ -121,6 +117,32 @@ fn invalid(message: &str) -> DaemonError {
 mod tests {
     use super::*;
     use chariox_relay::protocol::{RelayMachinePresence, RelayProviderAccountSummary};
+
+    #[test]
+    fn split_lookup_preserves_the_relays_first_match() {
+        let response = |id: &str| RelayEnvelope::ClientMetadataResponse {
+            request_id: "inventory".into(),
+            machines: None,
+            kernels: None,
+            error: None,
+            kernel: Some(
+                serde_json::from_value(serde_json::json!({
+                    "kernel_id": id, "machine_id": "machine", "public_key": "synthetic-public"
+                }))
+                .unwrap(),
+            ),
+        };
+        let mut first = response("first");
+        merge(&mut first, response("second")).unwrap();
+        let RelayEnvelope::ClientMetadataResponse {
+            kernel: Some(kernel),
+            ..
+        } = first
+        else {
+            panic!("missing kernel")
+        };
+        assert_eq!(kernel.kernel_id, "first");
+    }
 
     #[test]
     fn split_machine_inventory_preserves_relay_account_identity() {
