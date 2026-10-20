@@ -2209,6 +2209,7 @@ async fn internal_turn_outline_rehydrates_replies_without_instruction_text() {
         "agent-event-1",
         "task-correction-1",
         "task-resume-1",
+        "goal-check-task-1-1-1",
         "user-1",
     ] {
         let path = std::env::temp_dir().join(format!(

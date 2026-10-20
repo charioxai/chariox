@@ -77,6 +77,12 @@ fn agent_tasks_and_wakes_follow_agent_trace_visibility() {
 
 #[test]
 fn user_projection_keeps_internal_active_prompt_identity_without_instruction_text() {
+    for prompt_id in ["agent-event-agent-3", "goal-check-task-1-1-1"] {
+        assert_internal_active_prompt_is_stoppable_without_text(prompt_id);
+    }
+}
+
+fn assert_internal_active_prompt_is_stoppable_without_text(prompt_id: &str) {
     use crate::agent::{AgentInstance, GridPosition};
     let mut session =
         RuntimeSession::new("room", None, "workspace", "worktree", "machine", "daemon");
@@ -92,7 +98,7 @@ fn user_projection_keeps_internal_active_prompt_identity_without_instruction_tex
         GridPosition::new(0, 0, 1, 1),
     )]);
     session.activate_prompt(super::PromptQueueItem::new(
-        "agent-event-agent-3",
+        prompt_id,
         "attachment",
         "agent",
         "Kernel event inbox, untrusted data",
@@ -103,7 +109,7 @@ fn user_projection_keeps_internal_active_prompt_identity_without_instruction_tex
     let active = owner
         .active_prompt_for_agent("agent")
         .expect("a running wake turn stays stoppable by its prompt id");
-    assert_eq!(active.id(), "agent-event-agent-3");
+    assert_eq!(active.id(), prompt_id);
     assert_eq!(active.status(), crate::session::PromptStatus::Running);
     assert_eq!(active.prompt(), "");
 }
