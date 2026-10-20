@@ -287,6 +287,74 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
+    // EA2-09/EA2-10: an approval answered through the gateway is on the ledger
+    // like any state-changing request, and the ledger still loads after a restart.
+    #[tokio::test]
+    async fn an_answered_approval_keeps_the_ledger_loadable_after_a_restart() {
+        let path = journal();
+        let answer: LocalDaemonRequest = serde_json::from_value(json!({"RespondToInteraction":
+            {"session_id":"s","interaction_id":"i","choice_id":"allow"}}))
+        .unwrap();
+        let ledger = GatewayLedger::open(path.clone());
+        let first = ledger
+            .run("k1", fingerprint(&answer), async {
+                Ok(json!({"InteractionResponded": 1}))
+            })
+            .await;
+        assert!(matches!(first, Settled::Done(Ok(_))));
+        drop(ledger);
+        let ledger = GatewayLedger::open(path.clone());
+        let next = ledger
+            .run("k2", fingerprint(&create()), async {
+                Ok(json!({"SessionCreated": 2}))
+            })
+            .await;
+        assert!(
+            matches!(next, Settled::Done(Ok(ref v)) if v == &json!({"SessionCreated": 2})),
+            "the ledger loads after the restart"
+        );
+        let again = ledger
+            .run("k1", fingerprint(&answer), async {
+                Ok(json!({"InteractionResponded": 2}))
+            })
+            .await;
+        assert!(
+            matches!(again, Settled::Done(Ok(ref v)) if v == &json!({"InteractionResponded": 1}))
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    // EA2-09: a forwarded request that ended in a failure keeps the ledger
+    // loadable; after a restart its retry gets the same failure, a new id runs.
+    #[tokio::test]
+    async fn a_failed_request_survives_a_restart_of_the_ledger() {
+        let path = journal();
+        let failed = || async {
+            Err(Failure {
+                code: "attachment_not_found".into(),
+                message: "no attachment".into(),
+                retryable: false,
+            })
+        };
+        let ledger = GatewayLedger::open(path.clone());
+        let first = ledger.run("k1", fingerprint(&create()), failed()).await;
+        assert!(matches!(first, Settled::Done(Err(ref f)) if f.code == "attachment_not_found"));
+        drop(ledger);
+        let ledger = GatewayLedger::open(path.clone());
+        let again = ledger
+            .run("k1", fingerprint(&create()), async { Ok(json!({})) })
+            .await;
+        assert!(
+            matches!(again, Settled::Done(Err(ref f)) if f.code == "attachment_not_found"),
+            "the ledger reloads and answers the original failure"
+        );
+        let other = ledger
+            .run("k2", fingerprint(&create()), async { Ok(json!({"ok": 2})) })
+            .await;
+        assert!(matches!(other, Settled::Done(Ok(_))));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
     #[test]
     fn only_reads_skip_the_ledger() {
         assert!(is_read_only(&LocalDaemonRequest::ListSessions(

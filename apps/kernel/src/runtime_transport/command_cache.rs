@@ -919,10 +919,10 @@ fn read_persistent_results_with_receipt_fence(
             compact_after_load = true;
             continue;
         };
-        if !should_persist_completed_result(&entry.result.fingerprint) {
-            if retention.at_most_once {
-                return Err(io::Error::other("unexpected at-most-once receipt type"));
-            }
+        // An at-most-once journal keeps a receipt for every request it reserved
+        // (the machine gateway ledger also answers approvals); the exclusion
+        // list only trims ordinary result caches.
+        if !retention.at_most_once && !should_persist_completed_result(&entry.result.fingerprint) {
             compact_after_load = true;
             continue;
         }
