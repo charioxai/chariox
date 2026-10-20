@@ -1514,3 +1514,37 @@ test("protocol 560/168: a layout change resets the Tab's existing mirror streams
     host.browser.inputCapture.hold = hold;
     assert.equal(await innerWidth(), 1280, "the failed registration did not leave the Tab resized");
   }));
+
+test("protocol 560/168: a protected capture is the size of the laid-out page and the canonical page again after the layout is released", () => mirrored(
+  "<p>page</p>", async ({ subscribe, host, tab_id, generation }) => {
+    const scale = host.scales.get(tab_id) ?? host.viewport().device_scale_factor;
+    const capture = async (width, height) => {
+      const shot = await host.request({ op: "screenshot", tab_id, generation, bound_frames: true, _capture_protection: true, _capture_viewport: { width: width * scale, height: height * scale } });
+      const png = Buffer.from(shot.data_base64, "base64");
+      return [png.readUInt32BE(16), png.readUInt32BE(20)];
+    };
+    const narrow = await subscribe({ layout_width: 400, layout_height: 700 });
+    await narrow.next();
+    assert.deepEqual(await capture(400, 700), [400 * scale, 700 * scale], "the capture matches the mirror frame at the laid-out size");
+    const wide = await subscribe({ layout_width: 1440, layout_height: 900 });
+    await wide.next();
+    assert.deepEqual(await capture(1280, 800), [1280 * scale, 800 * scale], "the newest viewer asks for the canonical page");
+    const again = await subscribe({ layout_width: 400, layout_height: 700 });
+    await again.next();
+    assert.deepEqual(await capture(400, 700), [400 * scale, 700 * scale], "400 -> 1440 -> 400 captures at the laid-out size");
+    await host.request({ op: "mirror_close", subscription_id: again.subscription_id, generation });
+    await host.request({ op: "mirror_close", subscription_id: narrow.subscription_id, generation });
+    assert.deepEqual(await capture(1280, 800), [1280 * scale, 800 * scale], "closing the layout owners restores the canonical capture");
+  }));
+
+test("protocol 560/168: a layout released while its override is still in flight does not leave the Tab resized", () => mirrored(
+  "<p>page</p>", async ({ subscribe, host, evaluate }) => {
+    for (let i = 0; i < 5; i++) {
+      const [narrow, wide] = await Promise.all([subscribe({ layout_width: 400, layout_height: 700 }), subscribe({ layout_width: 1440, layout_height: 900 })]);
+      await new Promise(resolve => setTimeout(resolve, 150));
+      const owner = host.layouts.size ? "narrow" : "canonical", width = await evaluate("innerWidth");
+      assert.equal(width, owner === "narrow" ? 400 : 1280, `round ${i}: the page width follows the layout owner (${owner})`);
+      for (const s of [narrow, wide]) await host.request({ op: "mirror_close", subscription_id: s.subscription_id, generation: (await host.request({ op: "state" })).generation });
+      assert.equal(await evaluate("innerWidth"), 1280, `round ${i}: closing restores the page`);
+    }
+  }));

@@ -34,8 +34,9 @@ export async function capturePageScreenshot(host,tab,clip=null,protectedCapture=
         return data;
       }, scale, clip);
     await current();
-    const width = Math.round((clip?.width ?? geometry.width) * scale * (clip?.scale ?? 1));
-    const height = Math.round((clip?.height ?? geometry.height) * scale * (clip?.scale ?? 1));
+    const page = host.layouts?.get(tab.tab_id) ?? geometry;
+    const width = Math.round((clip?.width ?? page.width) * scale * (clip?.scale ?? 1));
+    const height = Math.round((clip?.height ?? page.height) * scale * (clip?.scale ?? 1));
     const protected_regions = protectedCapture ? await regionMasks.afterCapture({ width, height }) : undefined;
     host.timing('protected_capture', started);
     if (typeof data !== "string" || data.length > 4 * 1024 * 1024) throw new Error("MD-2: frame exceeds limit");

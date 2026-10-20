@@ -882,8 +882,9 @@ export class KernelBrowserHost {
       return result;
     }
     if (command.op === "screenshot") {
-      const hint=command._capture_viewport,scale=this.scales.get(tab.tab_id)??this.viewport().device_scale_factor;
-      const crop=hint&&(hint.width!==geometry.width*scale||hint.height!==geometry.height*scale);
+      // A frame laid out at the viewer's size (protocol 560/168) is the whole page; any other size is a crop of it.
+      const hint=command._capture_viewport,scale=this.scales.get(tab.tab_id)??this.viewport().device_scale_factor,page=this.layouts.get(tab.tab_id)??geometry;
+      const crop=hint&&(hint.width!==page.width*scale||hint.height!==page.height*scale);
       const frame = command._capture_protection===true?(crop?await captureVisiblePage(this,tab,hint,scope):await this.screenshot(tab,null,true)):await this.displayScreenshot(tab);
       // MD-3: explicit binding is an internal display/MCP seam. Legacy 417
       // still emits its existing frame shape until the coordinator adapter lands.
