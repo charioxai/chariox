@@ -55,6 +55,16 @@ test("a machine request is never written when the local kernel cannot forward", 
   }
 })
 
+test("a grant refusal on the preflight is the answer, not an outdated kernel", async () => {
+  for (const code of ["kernel_access_ended", "kernel_access_not_covered"]) {
+    const kernel = await startFakeKernel((socket, frame) => replyWith(socket, frame, refusal(code)))
+    try {
+      await assert.rejects(sendRequest({ Ping: {} }, { socket: kernel.path, machine: "b3", timeoutSeconds: 5 }), (error: unknown) => failureOf(error).code === code)
+      assert.deepEqual(requestNames(kernel.frames), ["RelayStatus"])
+    } finally { await kernel.close() }
+  }
+})
+
 test("a machine request preflights the gateway capability on a client without machine; local requests skip it", async () => {
   const kernel = await startFakeKernel((socket, frame) => replyWith(socket, frame, "RelayStatus" in frame.request ? relayStatus(["machine_gateway_v1"]) : { response: { Pong: {} } }))
   try {
@@ -92,7 +102,12 @@ test("an unreachable kernel is not an in-flight loss and sends no probe", async 
 test("no answer within the timeout is machine_request_timeout", async () => {
   const kernel = await startFakeKernel(() => {})
   try {
-    await assert.rejects(sendRequest({ Ping: {} }, { socket: kernel.path, timeoutSeconds: 0.2 }), (error: unknown) => failureOf(error).code === "machine_request_timeout")
+    await assert.rejects(sendRequest({ Ping: {} }, { socket: kernel.path, timeoutSeconds: 0.2 }), (error: unknown) => {
+      const failure = failureOf(error)
+      assert.equal(failure.code, "machine_request_timeout")
+      assert.match(failure.message, /retry once with the same --command-id/, "the message names the next step")
+      return true
+    })
   } finally { await kernel.close() }
 })
 

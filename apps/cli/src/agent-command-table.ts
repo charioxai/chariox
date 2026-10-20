@@ -78,6 +78,7 @@ export function guideText(): string {
     "Chariox guide for agents. You talk only to your local kernel; nothing is installed in your harness.",
     "",
     "1. Ask once: chariox access request --until-exit",
+    "   It waits while the user decides; exit 0 and a printed grant mean approved: go on to step 2.",
     "   If a command prints a pointer or says the user must approve, show it to the user verbatim and wait.",
     "   If your tool calls time out, add --no-wait (exit 6), then poll chariox access status.",
     "2. List machines: chariox machines",

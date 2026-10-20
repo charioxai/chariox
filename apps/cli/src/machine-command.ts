@@ -58,7 +58,7 @@ function parseTimeout(value: string | true | undefined): number {
 async function sendWithin<T>(send: Promise<T>, seconds: number): Promise<T> {
   let timer: NodeJS.Timeout | undefined
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new CommandFailure("machine_request_timeout", `no answer within ${seconds} seconds; the request may or may not have run`)), seconds * 1000)
+    timer = setTimeout(() => reject(new CommandFailure("machine_request_timeout", `no answer within ${seconds} seconds; the request may or may not have run. For a state-changing request retry once with the same --command-id`)), seconds * 1000)
   })
   try { return await Promise.race([send, timeout]) } finally { clearTimeout(timer) }
 }
@@ -72,7 +72,9 @@ async function requireMachineGateway(socket: string | undefined, timeoutSeconds:
     const capabilities = response.RelayStatus?.status?.capabilities
     if (!Array.isArray(capabilities) || !capabilities.includes("machine_gateway_v1")) throw unsupported
   } catch (error) {
-    throw error instanceof LocalIpcError && error.operation !== CONNECT_OPERATION ? unsupported : error
+    // A grant refusal is the answer itself; only an older kernel's failure means "update it".
+    const refusal = error instanceof LocalIpcError && error.code?.startsWith("kernel_access_")
+    throw error instanceof LocalIpcError && error.operation !== CONNECT_OPERATION && !refusal ? unsupported : error
   } finally { await client.close() }
 }
 

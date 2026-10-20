@@ -15,6 +15,7 @@ test("the guide mentions exactly the commands and flags the parser knows", () =>
   for (const flag of knownFlags) assert.ok(flags.has(flag), `guide omits flag ${flag}`)
   assert.ok(guide.split("\n").length <= 40)
   assert.match(guide, /show it to the user verbatim and wait/)
+  assert.match(guide, /exit 0 and a printed grant mean approved: go on to step 2/, "an agent must not mistake the waiting note for a pending approval")
 })
 
 test("the parser accepts every flag the table lists and refuses anything else", () => {
