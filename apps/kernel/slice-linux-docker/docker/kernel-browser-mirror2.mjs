@@ -552,6 +552,8 @@ export class Mirror2 {
     if (this.host.protection !== policy || this.host.generation !== command.generation || this.service.streams.get(command.subscription_id) !== stream) {
       stream.policy = null; throw new Error('MP-11: stale mirror protection policy or subscription');
     }
+    // Another viewer's layout change during the observation: this packet describes the old page size.
+    if (this.layoutKey(tab.tab_id) !== layoutKey) throw new Error('MP-11: mirror layout changed during observation');
     const sequence = stream.issued + 1;
     // Protocol 489 compact delta: the binding, base (sequence - 1) and every
     // header field equal to the base packet's are implied; empty lists omitted.
@@ -588,6 +590,7 @@ export class Mirror2 {
     if (this.host.protection !== policy || stream.policy !== policy || this.service.streams.get(command.subscription_id) !== stream) {
       stream.policy = null; throw new Error('MP-11: stale mirror protection policy or subscription');
     }
+    if (this.layoutKey(tab.tab_id) !== layoutKey) throw new Error('MP-11: mirror layout changed during observation');
     this.remember(stream, sequence, wire, reset);
     mark('serialize'); this.host.timing?.('mirror2_total', started);
     return wire;

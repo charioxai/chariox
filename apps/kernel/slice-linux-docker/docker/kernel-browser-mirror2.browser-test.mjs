@@ -1548,3 +1548,17 @@ test("protocol 560/168: a layout released while its override is still in flight 
       assert.equal(await evaluate("innerWidth"), 1280, `round ${i}: closing restores the page`);
     }
   }));
+
+test("protocol 560/168: a credit whose page size changed while it was observed publishes nothing", () => mirrored(
+  "<p id='p'>page</p>", async ({ subscribe, host, evaluate }) => {
+    const a = await subscribe({ layout_width: 400, layout_height: 700 });
+    await a.next();
+    // Another viewer resizes the Tab after this credit read the size but before it published.
+    const v2 = host.mirror.v2, real = v2.layoutKey.bind(v2);
+    let reads = 0;
+    v2.layoutKey = tabId => (++reads > 1 ? "600x700" : real(tabId));
+    await evaluate("document.getElementById('p').textContent='changed'");
+    await assert.rejects(a.next(2000), /layout changed during observation/);
+    v2.layoutKey = real;
+    assert.notEqual((await a.next(2000)).reset, true, "the next credit answers at the size the Tab really has");
+  }));
