@@ -22,7 +22,6 @@ import {
   type ProviderAccountCredentialRequestContext,
   cancelProviderLoginRequest,
   listProviderAccountProfilesRequest,
-  getProviderAccountProfileRequest,
   createProviderAccountProfileRequest,
   linkProviderAccountProfileRequest,
   importNativeProviderAccountProfileRequest,

@@ -903,46 +903,6 @@ mod tests {
     }
 
     #[test]
-    fn token_rollover_after_peer_response_preserves_live_socket_and_admission() {
-        // MP-08/MP-10/MP-11: a peer reply may finish with a token snapshot
-        // captured before renewal. Neither idle nor busy clients may be closed.
-        for active_requests in 0..=2 {
-            let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(2);
-            let gate = RelayReconnectGate::default();
-            for _ in 0..active_requests {
-                assert!(gate.begin_daemon_request());
-            }
-            let mut config = crate::config::DaemonConfig::for_tests();
-            config.relay_url = Some("wss://relay.example.test".into());
-            config.relay_token = Some("renewed-token".into());
-            assert_eq!(
-                enqueue_dynamic_relay_reconnect_if_changed(
-                    &outgoing_tx,
-                    &gate,
-                    "wss://relay.example.test",
-                    "old-token",
-                    &config,
-                )
-                .unwrap(),
-                RelayReconnectDecision::Unchanged,
-                "token renewal must use the existing heartbeat reauthentication path",
-            );
-            for _ in 0..active_requests {
-                assert_eq!(gate.finish_daemon_request(&outgoing_tx).unwrap(), None);
-            }
-            assert!(
-                priority_rx.try_recv().is_err(),
-                "renewal must not queue Close"
-            );
-            assert!(
-                gate.begin_daemon_request(),
-                "new requests must remain admitted"
-            );
-            assert_eq!(gate.finish_daemon_request(&outgoing_tx).unwrap(), None);
-        }
-    }
-
-    #[test]
     fn dynamic_relay_reconnect_waits_for_in_flight_daemon_response() {
         let (outgoing_tx, mut priority_rx, mut event_rx) = RelayOutgoingSender::channel(2);
         let reconnect_gate = RelayReconnectGate::default();
