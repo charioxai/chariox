@@ -1061,8 +1061,15 @@ impl OperationalHistoryStore {
         &self,
         response: Receiver<Result<(), String>>,
     ) -> Result<(), DaemonError> {
-        response
-            .recv()
+        let await_commit = || response.recv();
+        let reply = if tokio::runtime::Handle::try_current().is_ok_and(|handle| {
+            handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
+        }) {
+            tokio::task::block_in_place(await_commit)
+        } else {
+            await_commit()
+        };
+        reply
             .map_err(|error| history_writer_error(error.to_string()))?
             .map_err(history_writer_error)
     }
