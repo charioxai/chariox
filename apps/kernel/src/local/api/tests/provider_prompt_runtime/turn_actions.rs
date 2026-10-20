@@ -1116,3 +1116,75 @@ fn fork_agent_clones_config_and_launches_provider_inner() {
 
     let _ = fs::remove_dir_all(root);
 }
+
+// Clearing the typed text of a queued prompt that carries a note keeps the note request line.
+#[test]
+fn editing_a_queued_note_prompt_to_empty_text_keeps_the_note_request() {
+    let worktree = crate::test_support::TestWorktree::new("queued-note-edit");
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree
+                .session_request()
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        other => panic!("unexpected response: {other:?}"),
+    };
+    harness.launch_workflow_test_provider(session.id(), agent.id());
+    let attachment = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().into(),
+                client_id: "queued-note".into(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let submit = |prompt: &str, attachments: serde_json::Value| {
+        serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+            "SubmitPrompt": {
+                "session_id": session.id(), "attachment_id": attachment.id(),
+                "target_agent_id": agent.id(), "prompt": prompt, "attachments": attachments
+            }
+        }))
+        .unwrap()
+    };
+    harness
+        .dispatch(submit("original work", serde_json::json!([])))
+        .unwrap();
+    let note = serde_json::json!([{
+        "url": "chariox-terminal://note/1", "mime": crate::prompt_notes::NOTE_ATTACHMENT_MIME,
+        "contents_base64": base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            r#"{"quote":"x","source":{"kind":"panel"}}"#,
+        ),
+        "filename": "Note",
+    }]);
+    let queued = match harness.dispatch(submit("with note", note)).unwrap() {
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Queued { prompt },
+            ..
+        } => prompt,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let update = serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+        "UpdateQueuedPrompt": {
+            "session_id": session.id(), "attachment_id": attachment.id(),
+            "target_agent_id": agent.id(), "prompt_id": queued.id(), "prompt": "  "
+        }
+    }))
+    .unwrap();
+    match harness.dispatch(update).unwrap() {
+        LocalDaemonResponse::QueuedPromptUpdated { prompt, .. } => {
+            assert_eq!(prompt.prompt(), "Please read the attached notes.");
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+}

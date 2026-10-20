@@ -1467,7 +1467,10 @@ impl PromptStateOwner {
             .queued_prompts
             .iter_mut()
             .find(|queued| queued.id() == prompt_id)?;
-        queued.set_prompt(prompt);
+        queued.set_prompt(crate::prompt_notes::with_note_request(
+            prompt.into(),
+            queued.attachments(),
+        ));
         // MP-08/MP-11 R1: text and acquisition provenance change under one
         // queue lock. An automated edit cannot keep a human owner's request.
         *queued = queued.clone().with_source_attachment(editor);

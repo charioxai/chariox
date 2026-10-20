@@ -421,6 +421,7 @@ fn session_history_load_rehydrates_file_image_attachment_previews() {
         mime: "image/png".to_string(),
         filename: Some("file-screenshot.png".to_string()),
         preview_url: None,
+        contents_base64: None,
     }];
 
     store
@@ -793,6 +794,7 @@ fn canonical_history_events_rehydrate_file_image_attachment_previews() {
         mime: "image/png".to_string(),
         filename: Some("file-screenshot.png".to_string()),
         preview_url: None,
+        contents_base64: None,
     }];
     let event = HistoryEvent::transcript(7, &entry, HistoryEventTurnContext::default());
     let round_tripped = event
