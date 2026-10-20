@@ -173,11 +173,15 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   regions, stills at most 1 Hz until video regions land: a canvas bitmap or a
   video frame travels as the element's own pixels (overlays above it stay
   mirrored DOM); tainted media, plugins, closed roots and unattached frames are
-  masked screenshot crops, and such a crop under any transform beyond a
-  translation (also size-preserving ones such as `rotate(180deg)`,
-  `scaleX(-1)`, the `rotate`/`scale` properties), a filter, or opacity/blending
-  on it or an ancestor hands the page to labelled video (`region_transform`):
-  the crop already holds that compositing. Region and
+  masked screenshot crops. A region under any transform beyond a translation
+  (also size-preserving ones such as `rotate(180deg)`, `scaleX(-1)`, the
+  `rotate`/`scale` properties), a filter, or opacity/blending on it or an
+  ancestor, and a region over most of the view, never hand the page to video:
+  the kernel sends no still for it and its region video lease (a viewport crop
+  that already holds the compositing, clipped to the viewport) is shown by the
+  viewer as a patch at the region's on-screen rect, outside the transformed
+  element so the transform and opacity are not applied twice. Only a failing
+  document copy (snapshot/observer failure) selects whole-page video. Region and
   mask records carry their layout size; sizes and a mask's display are
   reconciled every drain.
 - **UA state (492).** State without an attribute footprint is sampled from a

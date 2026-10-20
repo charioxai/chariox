@@ -11,6 +11,16 @@ import { KernelBrowserHost } from "./kernel-browser-host.mjs";
 
 assert(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "MP-11: explicit disposable drill root required");
 
+
+// mirrorregion: the lease a viewer would open for the page's first opaque (tile) region at this packet.
+async function regionLease({ host, subscription_id, generation }, sequence) {
+  const stream = host.mirror.streams.get(subscription_id);
+  const region_id = [...stream.regionRecords].find(([, r]) => r.kind === "tile")[0];
+  return host.mirror.v2.regions.resolve({ mirror_subscription_id: subscription_id, generation, document_id: stream.document_id, sequence, region_id }, stream.scope);
+}
+const settle = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function stayDom(next, ms, label) { const until = Date.now() + ms; let packet, tiles = 0; while (Date.now() < until) { packet = await next(300); tiles += packet.tiles.length; assert.equal(packet.fallback, undefined, label); } return { ...packet, tiles: packet.tiles, seenTiles: tiles }; }
+
 async function mirrored(html, run, routes = {}) {
   const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "mirror2-"));
   const server = createServer((request, response) => {
@@ -838,15 +848,20 @@ test("MP-10: a canvas region is its own pixels: an overlay above it is not baked
   assert.deepEqual([tiles.get(scaled.id).width, tiles.get(scaled.id).height, b.red === b.width * b.height], [200, 100, true]);
 }));
 
-test("MP-10: a tainted canvas falls back to a screenshot crop, and under a filter (doubly applied) hands the page to labelled video", () => mirrored(
-  '<div id="wrap"><canvas id="c" width="120" height="60"></canvas></div><script>const i=new Image();i.onload=()=>{document.getElementById("c").getContext("2d").drawImage(i,0,0);window.drawn=true};i.src="http://localhost:PORT/tile.svg"</script>', async ({ next, evaluate }) => {
+test("MP-10: a tainted canvas falls back to a screenshot crop; under a filter (doubly applied) the page stays DOM and the region gets a video lease", () => mirrored(
+  '<div id="wrap"><canvas id="c" width="120" height="60"></canvas></div><script>const i=new Image();i.onload=()=>{document.getElementById("c").getContext("2d").drawImage(i,0,0);window.drawn=true};i.src="http://localhost:PORT/tile.svg"</script>', async ctx => {
+    const { next, evaluate } = ctx;
     for (let i = 0; i < 100 && await evaluate("window.drawn === true") !== true; i++) await new Promise(resolve => setTimeout(resolve, 20));
     const plain = await next();
     assert.equal(plain.fallback, undefined); assert.equal(plain.tiles.length, 1, "MP-10: the tainted canvas still shows (screenshot crop)");
     await evaluate("document.getElementById('wrap').style.filter='grayscale(1)';true");
-    await new Promise(resolve => setTimeout(resolve, 1100));
-    let packet = await next(1000); for (let i = 0; i < 6 && packet.fallback === undefined; i++) packet = await next(1000);
-    assert.equal(packet.fallback, "region_transform");
+    await settle(1100);
+    let crop = 0;
+    const filtered = await next(1000); crop += filtered.tiles.length;
+    const packet = await stayDom(next, 3500, "MP-10: a filtered region never hands the page to video");
+    assert.equal(crop + packet.seenTiles, 0, "MP-10: a filtered region's screenshot already holds the filter, as a background it would be filtered again: no still");
+    const lease = await regionLease(ctx, packet.sequence);
+    assert.equal(lease.rect.width, 120); assert.equal(lease.rect.height, 60);
   }, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="rgb(255,0,0)"/></svg>' } }));
 
 test("MP-11: a Vault-filled plain field that changes its own display is re-serialized as a mask with the new display", () => mirrored('<form><input id="v" value="filled"><p>after</p></form>', async ({ next, evaluate, host }) => {
@@ -1052,40 +1067,42 @@ test("MP-10: a fully transparent opaque element never hands the page to video", 
 
 // r61 DuckDuckGo: a fade or slide distorts a region only while it runs. The page stays mirrored through a short
 // distortion; only a lasting one hands it to video, and the cause is named.
-test("MP-10: a transient distortion of a screenshot-crop region keeps the page mirrored; a lasting one names its cause", () => mirrored(
-  '<div id="wrap"><canvas id="c" width="120" height="60"></canvas></div><script>const i=new Image();i.onload=()=>{document.getElementById("c").getContext("2d").drawImage(i,0,0);window.drawn=true};i.src="http://localhost:PORT/tile.svg"</script>', async ({ next, evaluate, host }) => {
+test("MP-10: a transient or lasting distortion of a screenshot-crop region keeps the page mirrored (video patch, no whole-page fallback)", () => mirrored(
+  '<div id="wrap"><canvas id="c" width="120" height="60"></canvas></div><script>const i=new Image();i.onload=()=>{document.getElementById("c").getContext("2d").drawImage(i,0,0);window.drawn=true};i.src="http://localhost:PORT/tile.svg"</script>', async ctx => {
+    const { next, evaluate, host } = ctx;
     const marks = []; const timing = host.timing; host.timing = (name, ...rest) => { marks.push(name); return timing?.call(host, name, ...rest); };
     for (let i = 0; i < 100 && await evaluate("window.drawn === true") !== true; i++) await new Promise(resolve => setTimeout(resolve, 20));
     assert.equal((await next()).fallback, undefined);
     await evaluate("wrap.style.opacity='0.5';true");
-    const until = Date.now() + 1800;
-    while (Date.now() < until) assert.equal((await next(300)).fallback, undefined, "MP-10: a distortion shorter than the settle window never hands the page to video");
+    await stayDom(next, 1800, "MP-10: a short distortion never hands the page to video");
     await evaluate("wrap.style.opacity='';true");
-    await new Promise(resolve => setTimeout(resolve, 1100));
+    await settle(1100);
     for (let i = 0; i < 3; i++) assert.equal((await next(500)).fallback, undefined);
     await evaluate("wrap.style.filter='grayscale(1)';true");
-    let packet = await next(1000); for (let i = 0; i < 8 && packet.fallback === undefined; i++) packet = await next(1000);
-    assert.equal(packet.fallback, "region_transform");
-    assert(marks.includes("mirror2_fallback_region_transform filter_ancestor canvas"), `MP-10: the cause is recorded: ${marks.filter(m => /fallback/.test(m))}`);
+    const packet = await stayDom(next, 5000, "MP-10: a lasting distortion never hands the page to video either");
+    assert(!marks.some(m => /fallback/.test(m)), `MP-10: no fallback recorded: ${marks.filter(m => /fallback/.test(m))}`);
+    assert.equal((await regionLease(ctx, packet.sequence)).rect.width, 120);
   }, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="rgb(255,0,0)"/></svg>' } }));
 
 // Review #941 @36a395b05 finding 5: rotate(180deg), scaleX(-1) and the rotate property keep the bounding size, and a
 // translucent ancestor composites too: a viewport crop already holds that compositing, which the mirrored DOM applies
 // again. Such regions hand the page to labelled video (it returns once the transform goes).
-test("MP-10: review #941@36a395b05-5 a screenshot-crop region under a size-preserving transform or a translucent ancestor hands the page to labelled video, and returns after", () => mirrored(
-  '<div id="wrap"><canvas id="c" width="120" height="60"></canvas></div><script>const i=new Image();i.onload=()=>{document.getElementById("c").getContext("2d").drawImage(i,0,0);window.drawn=true};i.src="http://localhost:PORT/tile.svg"</script>', async ({ next, evaluate }) => {
+test("MP-10: review #941@36a395b05-5 a screenshot-crop region under a size-preserving transform or a translucent ancestor stays a DOM copy with a region lease at the on-screen rect", () => mirrored(
+  '<div id="wrap"><canvas id="c" width="120" height="60"></canvas></div><script>const i=new Image();i.onload=()=>{document.getElementById("c").getContext("2d").drawImage(i,0,0);window.drawn=true};i.src="http://localhost:PORT/tile.svg"</script>', async ctx => {
+    const { next, evaluate } = ctx;
     for (let i = 0; i < 100 && await evaluate("window.drawn === true") !== true; i++) await new Promise(resolve => setTimeout(resolve, 20));
     const plain = await next();
     assert.equal(plain.fallback, undefined); assert.equal(plain.tiles.length, 1, "MP-10: the tainted canvas shows as a screenshot crop");
-    for (const [element, style] of [["c", "transform:rotate(180deg)"], ["wrap", "transform:scaleX(-1)"], ["c", "rotate:180deg"], ["wrap", "opacity:0.5"]]) {
+    for (const [element, style] of [["c", "transform:rotate(180deg)"], ["wrap", "transform:scaleX(-1)"], ["c", "rotate:180deg"], ["wrap", "opacity:0.5"], ["c", "transform:rotate(90deg)"]]) {
       await evaluate(`${element}.style.cssText=${JSON.stringify(style)};true`);
-      await new Promise(resolve => setTimeout(resolve, 1100));
-      let packet = await next(1000); for (let i = 0; i < 6 && packet.fallback === undefined; i++) packet = await next(1000);
-      assert.equal(packet.fallback, "region_transform", `MP-10: ${element} ${style}`);
+      await settle(1100);
+      const packet = await stayDom(next, 3000, `MP-10: ${element} ${style} never hands the page to video`);
+      const lease = await regionLease(ctx, packet.sequence);
+      // A quarter turn about the centre leaves the top of the viewport (clipped to the visible part).
+      if (/rotate\(90deg\)/.test(style)) assert.equal(lease.rect.width, 60, `MP-10: ${element} ${style}`); else assert.equal(lease.rect.width * lease.rect.height, 120 * 60, `MP-10: ${element} ${style}: the lease covers the on-screen bounding box`);
       await evaluate(`${element}.style.cssText='';true`);
-      await new Promise(resolve => setTimeout(resolve, 1100));
-      let back = await next(1000); for (let i = 0; i < 3 && back.fallback !== undefined; i++) back = await next(1000);
-      assert.equal(back.fallback, undefined, `MP-10: the mirror returns after ${style}`);
+      await settle(1100);
+      assert.equal((await next(1000)).fallback, undefined, `MP-10: still a DOM copy after ${style}`);
     }
   }, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="60" height="60" fill="rgb(255,0,0)"/><rect x="60" width="60" height="60" fill="rgb(0,0,255)"/></svg>' } }));
 
@@ -1197,22 +1214,85 @@ test("MP-10: protocol 501 an external <use> sprite travels as a sanitized resour
 
 // Review #941 @f6fb77245 finding 4: the compositing check walks the frame-owner chain too (a screenshot-only region
 // inside a same-origin child frame whose owner element is translucent or rotated).
-test("MP-10: review #941@f6fb77245-4 a screenshot-crop region inside a same-origin frame under a translucent or rotated frame owner hands the page to labelled video", () => mirrored(
-  `<iframe id="f" width="200" height="100" srcdoc='<canvas id="c" width="120" height="60"></canvas><script>const i=new Image();i.onload=()=>{c.getContext("2d").drawImage(i,0,0);parent.drawn=true};i.src="http://localhost:PORT/tile.svg"</script>'></iframe>`, async ({ next, evaluate }) => {
+test("MP-10: review #941@f6fb77245-4 a screenshot-crop region inside a same-origin frame under a translucent or rotated frame owner stays a DOM copy with a region lease", () => mirrored(
+  `<iframe id="f" width="200" height="100" srcdoc='<canvas id="c" width="120" height="60"></canvas><script>const i=new Image();i.onload=()=>{c.getContext("2d").drawImage(i,0,0);parent.drawn=true};i.src="http://localhost:PORT/tile.svg"</script>'></iframe>`, async ctx => {
+    const { next, evaluate } = ctx;
     for (let i = 0; i < 100 && await evaluate("window.drawn === true") !== true; i++) await new Promise(resolve => setTimeout(resolve, 20));
     const plain = await next();
     assert.equal(plain.fallback, undefined); assert.equal(plain.tiles.length, 1, "MP-10: the tainted canvas in the frame shows as a crop");
-    for (const style of ["opacity:0.5", "transform:rotate(180deg)"]) {
+    for (const style of ["opacity:0.5", "transform:rotate(180deg)", "filter:grayscale(1);transform:rotate(180deg)"]) {
       await evaluate(`f.style.cssText=${JSON.stringify(style)};true`);
       await new Promise(resolve => setTimeout(resolve, 1100));
-      let packet = await next(1000); for (let i = 0; i < 6 && packet.fallback === undefined; i++) packet = await next(1000);
-      assert.equal(packet.fallback, "region_transform", `MP-10: frame owner ${style}`);
+      const packet = await stayDom(next, 3000, `MP-10: frame owner ${style} never hands the page to video`);
+      // A translucent owner moves nothing; a rotated one would misplace the crop (translation-only mapping): no lease.
+      if (/rotate/.test(style)) await assert.rejects(regionLease(ctx, packet.sequence), /region_target/);
+      else { const lease = await regionLease(ctx, packet.sequence); assert.equal(lease.rect.width, 120); assert.equal(lease.rect.height, 60); }
       await evaluate("f.style.cssText='';true");
       await new Promise(resolve => setTimeout(resolve, 1100));
-      let back = await next(1000); for (let i = 0; i < 3 && back.fallback !== undefined; i++) back = await next(1000);
-      assert.equal(back.fallback, undefined, `MP-10: the mirror returns after ${style}`);
+      assert.equal((await next(1000)).fallback, undefined, `MP-10: still a DOM copy after ${style}`);
     }
   }, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="60" height="60" fill="rgb(255,0,0)"/><rect x="60" width="60" height="60" fill="rgb(0,0,255)"/></svg>' } }));
+
+
+// mirrorregion: Miguel 2026-10-19 "areas that cannot be mirrored are sent as video, and only when all fails the whole page".
+const bigCanvas = '<style>body{margin:0}</style><canvas id="c" width="1280" height="600" style="display:block"></canvas><p id="t">text under the canvas</p><script>const i=new Image();i.onload=()=>{c.getContext("2d").drawImage(i,0,0);window.drawn=true};i.src="http://localhost:PORT/tile.svg"</script>';
+test("MP-10 mirrorregion: an oversized opaque region (>60 % of the view) stays a DOM copy; its lease is the visible part", () => mirrored(bigCanvas, async ctx => {
+  const { next, evaluate } = ctx;
+  for (let i = 0; i < 100 && await evaluate("window.drawn === true") !== true; i++) await settle(20);
+  const first = await next();
+  assert.equal(first.fallback, undefined, "MP-10: a large region does not hand the page to video"); assert.equal(first.reset, true); assert(first.nodes.length > 3);
+  const packet = await stayDom(next, 3000, "MP-10: stays DOM");
+  const lease = await regionLease(ctx, packet.sequence);
+  assert.deepEqual(lease.rect, { x: 0, y: 0, width: 1280, height: 600 });
+}, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="600"><rect width="1280" height="600" fill="rgb(255,0,0)"/></svg>' } }));
+
+// vimeo.com: an attached foreign frame whose owner has no box (a 0x0 iframe in a closed dialog) made regionBoxes
+// throw for the whole page, so no region lease (the hero video) could ever be measured.
+test("MP-10 mirrorregion: a zero-size frame owner does not stop other regions from leasing", () => mirrored(
+  '<style>body{margin:0}</style><canvas id="c" width="200" height="100" style="display:block"></canvas><iframe src="http://localhost:PORT/child" style="width:0;height:0;border:0"></iframe><script>const i=new Image();i.onload=()=>{c.getContext("2d").drawImage(i,0,0);window.drawn=true};i.src="http://localhost:PORT/tile.svg"</script>', async ctx => {
+    const { next, evaluate, host } = ctx;
+    for (let i = 0; i < 100 && await evaluate("window.drawn === true") !== true; i++) await settle(20);
+    await next();
+    const packet = await stayDom(next, 3000, "MP-10: stays DOM");
+    const stream = host.mirror.streams.get(ctx.subscription_id);
+    assert(stream.frames.size > 0, "MP-10: the clipped foreign frame is attached");
+    const lease = await regionLease(ctx, packet.sequence);
+    assert.deepEqual(lease.rect, { x: 0, y: 0, width: 200, height: 100 });
+  }, { "/child": { type: "text/html", body: "<!doctype html><p>child</p>" }, "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="rgb(255,0,0)"/></svg>' } }));
+
+// Reviewer #1056 P2-3: the crop of a region inside a frame owner maps by translation only, so a rotated owner admits none.
+const framedCanvas = async (transform, wrap = "") => { let count; await mirrored(
+  '<style>body{margin:0}</style><canvas id="c" width="200" height="100" style="display:block"></canvas><div style="' + wrap + '"><iframe src="http://localhost:PORT/child" style="width:200px;height:100px;border:0;' + transform + '"></iframe></div>', async ctx => {
+    const { next, host } = ctx;
+    await next(); await stayDom(next, 3000, "MP-10: stays DOM");
+    const stream = host.mirror.streams.get(ctx.subscription_id);
+    assert(stream.frames.size > 0, "MP-10: the foreign frame is attached");
+    count = (await host.mirror.v2.regionBoxes(stream, host.tabs.get(stream.tab_id))).length;
+  }, { "/child": { type: "text/html", body: '<!doctype html><body style="margin:0"><canvas id="k" width="120" height="60" style="display:block"></canvas><script>const x=document.getElementById("k").getContext("2d");x.fillStyle="red";x.fillRect(0,0,60,60)</script>' } }); return count; };
+test("MP-10 mirrorregion: a region inside a rotated frame owner is not admitted with a wrong crop", async () => {
+  assert.equal(await framedCanvas(""), 2, "control: the top canvas and the frame's canvas are regions");
+  assert.equal(await framedCanvas("transform:rotate(180deg)"), 1, "only the top canvas: the rotated owner's children are not boxed");
+  // distorted() names one cause only: a filter or opacity nearer than the rotation must not hide it.
+  assert.equal(await framedCanvas("filter:grayscale(1);transform:rotate(180deg)"), 1, "a filter on a rotated owner");
+  assert.equal(await framedCanvas("", "opacity:.5;transform:rotate(90deg)"), 1, "a rotated ancestor behind a nearer opacity");
+  assert.equal(await framedCanvas("", "opacity:.5"), 2, "control: opacity alone moves no pixel");
+});
+
+// DuckDuckGo results: many result videos faded in and out (opacity animation) next to a hidden carousel.
+test("MP-10 mirrorregion: many hidden or fading videos and a carousel with a fading tainted canvas never hand the page to video", () => mirrored(
+  '<style>body{margin:0}.f{animation:fade 600ms linear infinite alternate;width:120px;height:68px;display:inline-block}@keyframes fade{from{opacity:.05}to{opacity:1}}</style><div id="row">' +
+  '<video class="f" preload="none"></video>'.repeat(12) + '<video preload="none" style="opacity:0;width:120px;height:68px"></video>'.repeat(6) +
+  '<div class="f"><canvas id="c" width="120" height="60"></canvas></div></div><script>const i=new Image();i.onload=()=>{c.getContext("2d").drawImage(i,0,0);window.drawn=true};i.src="http://localhost:PORT/tile.svg"</script>', async ctx => {
+    const { next, evaluate, host } = ctx;
+    const marks = []; const timing = host.timing; host.timing = (name, ...rest) => { marks.push(name); return timing?.call(host, name, ...rest); };
+    for (let i = 0; i < 100 && await evaluate("window.drawn === true") !== true; i++) await settle(20);
+    assert.equal((await next()).fallback, undefined);
+    const packet = await stayDom(next, 6000, "MP-10: fading media never hands the page to video");
+    assert(!marks.some(m => /fallback/.test(m)), `MP-10: no fallback recorded: ${marks.filter(m => /fallback/.test(m))}`);
+    const stream = host.mirror.streams.get(ctx.subscription_id), leases = [];
+    for (const [region_id, r] of stream.regionRecords) if (r.kind === "tile") try { leases.push(await host.mirror.v2.regions.resolve({ mirror_subscription_id: ctx.subscription_id, generation: ctx.generation, document_id: stream.document_id, sequence: packet.sequence, region_id }, stream.scope)); } catch (error) { assert.match(String(error.message), /region_/, "MP-10: an unavailable region refuses with a region reason"); }
+    assert(leases.length >= 13, `MP-10: the visible faded regions lease (${leases.length})`);
+  }, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="rgb(255,0,0)"/></svg>' } }));
 
 // MP-08/MP-10/MP-11 review r19: closed custom roots in open roots, same-origin documents and later child lists.
 test('MP-10: review r19 closed custom roots remain opaque in every mirrored tree and after insertion',()=>mirrored(
@@ -1294,7 +1374,9 @@ test('MP-08/MP-10/MP-11: opaque leases remeasure actual canvas bounds, protectio
     assert.equal(replacement.rect.x,10);
     await evaluate('document.querySelector("canvas").style.transform="rotate(180deg)"');
     assert.equal(await replacement.isCurrent(),false);
-    await assert.rejects(host.mirror.v2.regions.resolve(target,stream.scope),/region_transform/);
+    const rotated=await host.mirror.v2.regions.resolve(target,stream.scope);
+    assert.deepEqual(rotated.rect,{x:10,y:0,width:200,height:100},'a rotated region leases its on-screen rect');
+    for(const proof of (await rotated.attestationState()).media){assert.equal(proof.id,region_id);assert.deepEqual(proof.box,[10,0,200,100],'a composited region is excluded from the native attestation by its on-screen box')}
   }
 ));
 test('MP-11: a child opaque lease clips to the actual cross-origin frame viewport', () => mirrored(
@@ -1608,3 +1690,24 @@ for (const [name, html, fillAndFlip] of [
   for (const form of secretForms(secret)) assert(!seen.some(text => text.includes(form)), `MP-11: the fill never travels (${form.slice(0, 6)}…)`);
   assert(seen.some(text => JSON.parse(text).nodes?.some?.(row => row[2] === 4) || JSON.parse(text).ops?.some?.(op => op.op === "children" && op.nodes.some(row => row[2] === 4))) || JSON.parse(seen.at(-1)).nodes.some(row => row[2] === 4), "MP-11: the flipped field ends as a mask");
 }));
+
+// MP-08/MP-10/MP-11: a viewport crop includes the page's overlaid controls. The pointer belongs to the person.
+test("MP-08/MP-10 mirrorregion: pointer over a media patch reaches the real overlaid control", () => mirrored(
+  '<style>body{margin:0}canvas{position:absolute;left:100px;top:100px;width:400px;height:200px}button{position:absolute;left:200px;top:150px;width:120px;height:50px}</style><canvas id="media" width="400" height="200"></canvas><button onclick="this.textContent=\'clicked\'">cookie choice</button>',
+  async ({next,input,evaluate,host,subscription_id}) => {
+    const packet=await next(),node_id=[...host.mirror.streams.get(subscription_id).regionRecords].find(([,r])=>r.kind==='tile')[0];
+    await input(packet.sequence,{kind:'click',node_id,x:150,y:70});
+    assert.equal(await evaluate('document.querySelector("button").textContent'),'clicked','the real pointer hits the overlaid control, not the video underneath');
+  }
+));
+
+test("MP-08/MP-10 mirrorregion: pointer beside media reaches an overlaid control on an ordinary node", () => mirrored(
+  '<style>body{margin:0}canvas{position:absolute;left:100px;top:100px;width:400px;height:200px}#under{position:absolute;left:100px;top:310px;width:400px;height:100px}button{position:absolute;left:200px;top:330px;width:120px;height:50px}</style><canvas width="400" height="200"></canvas><div id="under">page copy</div><button onclick="this.textContent=\'clicked\'">cookie choice</button>',
+  async ({next,input,evaluate,host,subscription_id}) => {
+    const packet=await next(),stream=host.mirror.streams.get(subscription_id),world=stream.world;
+    const node_id=await host.mirror.v2.evaluate(world,`${world.ref}.idOfNode.call(document.getElementById("under"))`);
+    assert.equal(stream.regionRecords.get(node_id).kind,'element');
+    await input(packet.sequence,{kind:'click',node_id,x:150,y:40});
+    assert.equal(await evaluate('document.querySelector("button").textContent'),'clicked');
+  }
+));

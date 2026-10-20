@@ -713,7 +713,7 @@ test('MP-08/MP-10 r47 GitHub storm: credits based before a reset still in flight
  assert.equal((await credit(reset.sequence)).reset,true,'a viewer that applied the reset and is still far behind resets');
 });
 
-test('MP-08/MP-10 decision (a): theater mode (opaque media over 60% of the view) hands the page to video on the next quiet packet', async () => {
+test('MP-08/MP-10 mirrorregion: full-viewport media stays a DOM copy without lossless stills', async () => {
  const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
  const connection={isOpen:()=>true,send:async()=>({})};
  const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
@@ -736,10 +736,19 @@ test('MP-08/MP-10 decision (a): theater mode (opaque media over 60% of the view)
  drain={ops:[{op:'children',id:'n1',nodes:[{id:'n9',parent:'n1',kind:'tile'}]}],changed:[],resources:[],sheets:[],scroll:[0,0],opaque:true};
  const echo=await credit(first.sequence);assert.equal(echo.fallback,undefined,'the click echo is not held for a region measurement');
  stream.inputAt=Date.now()-2000;stream.tilesAt=0;
- const handoff=await credit(echo.sequence);
- assert.equal(handoff.fallback,'region_area','a media-dominated view hands off to protected video');
- assert.equal(handoff.reset,true);assert.equal(handoff.document_id,'D1');
- assert(!handoff.nodes&&!handoff.root&&!handoff.tiles,'the handoff carries no partial DOM or stills');
+ // No non-media anchor budget can turn an opaque region into a page-level fallback.
+ for(const box of [[0,0,1280,800],[0,0,1280,790]]){
+  boxes=[{id:'n9',box}];stream.tilesAt=0;
+  const packet=await credit(echo.sequence);assert.equal(packet.fallback,undefined,'full-viewport media keeps the page copy');
+ }
+ // A player that fills 75 % of the view stays a DOM copy; the region video serves it, no lossless still rides ahead.
+ stream.fallback=null;boxes=[{id:'n9',box:[0,0,1280,600]}];
+ for(let i=0;i<5;i++){stream.tilesAt=0;stream.tileHashes=new Map();const packet=await credit(0);assert.equal(packet.fallback,undefined,'75 % media stays a DOM copy');}
+ // The document copy itself failing is the one page-level fallback that remains.
+ connection.send=async method=>method==='Page.getFrameTree'?{frameTree:{frame:{loaderId:'D1'}}}:{};
+ mirror.evaluate=async(_,expression)=>{if(expression==='m.snapshot()')throw new Error('snapshot failed');return{};};
+ const failed=await credit(0);
+ assert.equal(failed.fallback,'observer_unavailable');assert.equal(failed.reset,true);assert(!failed.nodes&&!failed.root);
 });
 
 test('MP-08/MP-10/MP-11 a renderer that stays busy keeps the native preview waiting instead of failing the subscription',async()=>{

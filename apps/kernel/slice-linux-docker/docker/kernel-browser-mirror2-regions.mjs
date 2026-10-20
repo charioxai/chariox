@@ -62,8 +62,9 @@ export class Mirror2Regions {
     this.check(target,scope,stream); assertNotCancelled(signal);
     const box = boxes.find(b => b.id === target.region_id);
     if (!box) refuse('region_target');
-    if (box.distorted) refuse('region_transform');
-    return {box:box.box,rect:clipped(box.clip ?? box.box)};
+    // A change of compositing (a fade, a rotation starting or ending) retires the lease: the viewer places a patch
+    // over a composited region differently from one inside an untransformed element.
+    return {box:box.box,rect:clipped(box.clip ?? box.box),composited:Boolean(box.distorted)};
   }
   async resolve(target, scope, {signal} = {}) {
     if (!target || Object.keys(target).some(k => !fields.has(k)) || !id(target.region_id) || typeof target.document_id !== 'string' ||

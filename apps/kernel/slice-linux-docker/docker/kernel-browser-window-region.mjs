@@ -125,7 +125,9 @@ export class NativeWindowRegionCapture extends LinuxCapture {
    const region=this.region;
    if(this.surface==='page'){
     this.regions=regionProtection(this,region.pageLeft,region.pageTop);
-    await attestNativeRegion(this);
+    // Ordinary page animation must not hold a person's video patch behind pixel equality.
+    // Only a product-filled target needs this extra comparison; every frame still has its Vault mask fence.
+    if(this.regions.tracker().targets)await attestNativeRegion(this);
    }else this.regions=this.protection();
    await this.regions.refresh();
    this.poolRoot=await this.createRasterPool();
