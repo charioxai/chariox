@@ -349,19 +349,11 @@ impl KernelRuntimeState {
                 .is_leased_provider_run(&dispatch.provider_run_id)
         {
             if !dispatch.steering {
-                owned.durable_state_store.agent_lifecycle(
-                    crate::durable_state::agent_lifecycle::Operation::Begin {
-                        owner: owned
-                            .session_store
-                            .get_session(&dispatch.session_id)?
-                            .owner_user_id()
-                            .into(),
-                        room: dispatch.session_id.clone(),
-                        agent: dispatch.agent_id.clone(),
-                        prompt: dispatch.prompt_id.clone(),
-                        run: Some(dispatch.provider_run_id.clone()),
-                        now: crate::session::unix_epoch_ms(),
-                    },
+                owned.bind_agent_task_run(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    &dispatch.prompt_id,
+                    &dispatch.provider_run_id,
                 )?;
             }
             if let Some(hint) = owned.agent_task_context_hint(

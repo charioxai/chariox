@@ -2397,6 +2397,89 @@ fn invoke_single_node_workflow(
     (run, node_run_id)
 }
 
+// MP-08 / MP-10 / MP-11: a prompt (for example a completion check) that waited behind another turn
+// is admitted without a run; promotion must bind the run that carries it, or the check's private
+// result is dropped and its verdict is lost.
+#[tokio::test]
+async fn promoted_queued_prompt_binds_its_task_to_the_provider_run() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    let worktree = crate::test_support::TestWorktree::new("promotion-binds-task-run");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "promotion-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "slow-structured",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+    for prompt in ["active turn", "queued turn"] {
+        app.submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            prompt,
+            Vec::new(),
+        )
+        .expect("prompt should be admitted");
+    }
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let queued = runtime
+        .owned
+        .prompt_state_owner
+        .peek_next_queued_prompt(
+            &runtime
+                .owned
+                .session_store
+                .get_session(session.id())
+                .unwrap(),
+            agent.id(),
+        )
+        .expect("the second prompt should be queued");
+    runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: session.owner_user_id().into(),
+            room: session.id().into(),
+            agent: agent.id().into(),
+            prompt: queued.id().into(),
+            run: None,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .expect("the queued prompt is admitted without a run");
+
+    settle_and_promote_next_queued_prompt(&runtime, session.id(), agent.id(), run.id()).await;
+
+    let task = runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap()
+        .into_iter()
+        .find(|task| task.prompt_id == queued.id())
+        .expect("the promoted prompt keeps its task");
+    assert_eq!(task.provider_run_id.as_deref(), Some(run.id()));
+}
+
 async fn settle_and_promote_next_queued_prompt(
     runtime: &KernelRuntimeState,
     session_id: &str,

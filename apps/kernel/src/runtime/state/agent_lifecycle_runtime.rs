@@ -104,6 +104,26 @@ impl KernelRuntimeOwnedState {
         })?;
         Ok(())
     }
+    /// Binds the provider run that carries a dispatched prompt to its task. A prompt that waited in
+    /// the queue is admitted without a run, so every dispatch path (including queue promotion)
+    /// binds it here; the completion check keys its private result on that run.
+    pub(super) fn bind_agent_task_run(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+        run: &str,
+    ) -> Result<(), DaemonError> {
+        self.durable_state_store.agent_lifecycle(Operation::Begin {
+            owner: self.session_store.get_session(room)?.owner_user_id().into(),
+            room: room.into(),
+            agent: agent.into(),
+            prompt: prompt.into(),
+            run: Some(run.into()),
+            now: crate::session::unix_epoch_ms(),
+        })?;
+        Ok(())
+    }
     /// The provider-visible task identity and retained task context, shared by
     /// local and leased dispatch (A10 placement parity).
     pub(super) fn agent_task_context_hint(
