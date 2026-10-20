@@ -263,19 +263,16 @@ impl KernelRuntimeState {
                         }
                     }
                     "timer" | "process" => {
-                        if let Err(error) =
-                            self.owned
-                                .durable_state_store
-                                .agent_lifecycle(Operation::CancelWake {
-                                    id: resource.clone(),
-                                    task: task.task_id.clone(),
-                                    prompt: None,
-                                })
-                        {
-                            first_error.get_or_insert(error);
-                            continue;
-                        }
-                        if let Err(error) = self.cancel_agent_watched_process(resource).await {
+                        let cancelled = match self.owned.durable_state_store.agent_wake(resource) {
+                            Ok(Some(wake)) => {
+                                self.cancel_agent_wake(&wake, &task.task_id, None).await
+                            }
+                            Ok(None) => Err(crate::durable_state::agent_lifecycle::error(
+                                "wake unavailable",
+                            )),
+                            Err(error) => Err(error),
+                        };
+                        if let Err(error) = cancelled {
                             first_error.get_or_insert(error);
                         }
                     }
@@ -298,8 +295,8 @@ impl KernelRuntimeState {
                     _ => {}
                 }
             }
-            // A matched output may have satisfied its obligation while the
-            // process still runs. Cancellation owns that resource too.
+            // A source may have satisfied its obligation while it still runs.
+            // Cancellation owns that resource too.
             for wake in self
                 .owned
                 .durable_state_store
@@ -313,20 +310,8 @@ impl KernelRuntimeState {
                         )
                 })
             {
-                if let Err(error) =
-                    self.owned
-                        .durable_state_store
-                        .agent_lifecycle(Operation::CancelWake {
-                            id: wake.id.clone(),
-                            task: task.task_id.clone(),
-                            prompt: None,
-                        })
-                {
+                if let Err(error) = self.cancel_agent_wake(&wake, &task.task_id, None).await {
                     first_error.get_or_insert(error);
-                } else {
-                    if let Err(error) = self.cancel_agent_watched_process(&wake.id).await {
-                        first_error.get_or_insert(error);
-                    }
                 }
             }
             if !physical_pending && !self.owned.agent_task_resources_unsettled(&task)? {

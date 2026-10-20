@@ -1,8 +1,6 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A03: agent timers and watched processes.
 use super::*;
-use crate::durable_state::agent_lifecycle::{
-    self as ledger, AgentTaskExecution, AgentWake, Operation,
-};
+use crate::durable_state::agent_lifecycle::{self as ledger, AgentTaskExecution, AgentWake};
 
 const MAX_DELAY_MS: u64 = 7 * 86_400_000;
 
@@ -40,6 +38,8 @@ fn new_wake(task: &AgentTaskExecution, kind: &str, label: String, now: u64) -> A
         verified_at_ms: None,
         next_due_ms: None,
         interval_ms: None,
+        summary: String::new(),
+        detail: serde_json::Value::Null,
         command: vec![],
         match_text: None,
         matched_at_ms: None,
@@ -92,13 +92,10 @@ impl KernelRuntimeState {
                     ),
                 };
                 let mut wake = new_wake(task, "timer", label(args)?, now);
+                wake.state = "scheduled".into();
                 wake.next_due_ms = Some(now + delay);
                 wake.interval_ms = interval;
-                store.agent_lifecycle(Operation::CreateWake {
-                    task: task.task_id.clone(),
-                    prompt: task.prompt_id.clone(),
-                    wake: wake.clone(),
-                })?;
+                self.arm_wake_source(task, &wake)?;
                 let verified = self.await_wake_verification(&wake.id).await;
                 if verified.is_none() {
                     self.wake_notice(&wake, format!("Wake alert: '{}' was created but the wake scheduler did not confirm it within 5 s; the kernel sweep fires it when due", wake.label));
@@ -219,18 +216,17 @@ impl KernelRuntimeState {
                 let id = args["wake_id"]
                     .as_str()
                     .ok_or_else(|| ledger::error("wake_id required"))?;
-                store.agent_lifecycle(Operation::CancelWake {
-                    id: id.into(),
-                    task: task.task_id.clone(),
-                    prompt: Some(task.prompt_id.clone()),
-                })?;
-                let terminated = self.cancel_agent_watched_process(id).await?;
-                self.refresh_wake_projection(&task.room_id);
                 let wake = store
-                    .agent_wakes(Some(&task.room_id), Some(&task.agent_id))?
-                    .into_iter()
-                    .find(|w| w.id == id);
-                serde_json::json!({"cancel_requested":id,"process_signalled":terminated,"settled":wake.is_some_and(|w| w.state == "cancelled")})
+                    .agent_wake(id)?
+                    .ok_or_else(|| ledger::error("wake unavailable"))?;
+                let terminated = self
+                    .cancel_agent_wake(&wake, &task.task_id, Some(&task.prompt_id))
+                    .await?;
+                self.refresh_wake_projection(&wake.room_id);
+                let settled = store
+                    .agent_wake(id)?
+                    .is_some_and(|w| w.state == "cancelled");
+                serde_json::json!({"cancel_requested":id,"process_signalled":terminated,"settled":settled})
             }
             _ => return Err(ledger::error("unknown wake tool")),
         })
@@ -240,6 +236,7 @@ impl KernelRuntimeState {
 #[cfg(test)]
 mod security_tests {
     use super::*;
+    use crate::durable_state::agent_lifecycle::Operation;
 
     #[test]
     fn security_f13_wake_label_strips_terminal_controls() {

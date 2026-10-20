@@ -5,6 +5,7 @@ use crate::local::{
     TerminalCommandCatalogNodeKind, TerminalCommandCatalogSurface,
 };
 
+mod agent_lifecycle;
 mod agent_workflow;
 mod aggregate_agent_model;
 mod app_events;
@@ -102,7 +103,6 @@ fn history_page_entry(
     }
 }
 
-mod agent_lifecycle;
 mod owner_handoff;
 mod relay_transport;
 mod room_workflows;

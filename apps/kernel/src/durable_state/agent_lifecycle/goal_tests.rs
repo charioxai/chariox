@@ -904,6 +904,8 @@ fn a12_check_preserves_an_earlier_registered_timer_deadline() {
             matched_at_ms: None,
             pid: None,
             exit_code: None,
+            summary: String::new(),
+            detail: serde_json::Value::Null,
             fire_count: 0,
             missed_fires: 0,
             last_fired_at_ms: None,

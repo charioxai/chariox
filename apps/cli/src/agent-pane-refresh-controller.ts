@@ -18,7 +18,7 @@ import { sessionFocusedAgentId } from "@chariox/kernel-client/session-runtime-tr
 import { sessionAgentHasTurnWork } from "@chariox/kernel-client/session-prompt-work"
 import { formatTranscriptPreview } from "@chariox/kernel-client/session-history-preview"
 import { reindexTranscriptEntries } from "@chariox/kernel-client/transcript-entry-state"
-import { retainRoomActivityNotices } from "./room-activity-notice-state.js"
+import { retainKernelProjectionNotices } from "./kernel-projection-notice-state.js"
 
 type AgentPaneRefreshControllerDeps = {
   getCurrentAgents: () => readonly AgentInstance[]
@@ -93,7 +93,7 @@ export function createAgentPaneRefreshController(
 
     // Read current notices after history I/O: events may arrive while it loads.
     const paneEntries = Object.fromEntries(Object.entries(nextPaneState.paneEntries).map(([agentId, entries]) => [
-      agentId, retainRoomActivityNotices(entries, deps.currentAgentPaneEntries(agentId), session.id),
+      agentId, retainKernelProjectionNotices(entries, deps.currentAgentPaneEntries(agentId), session.id),
     ]))
     return { ...nextPaneState, paneEntries,
       visibleEntries: nextPaneState.visibleAgentId ? paneEntries[nextPaneState.visibleAgentId] ?? [] : [],

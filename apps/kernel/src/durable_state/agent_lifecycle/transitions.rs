@@ -99,11 +99,29 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if run.is_some() && task.state != ExecutionState::Working {
                 return Err(error("non-working task cannot dispatch a provider turn"));
             }
+            // A rejected local wake retries with the same prompt id, so the
+            // existing-task lookup can also carry a new continuation intent.
+            if task.pending_prompt_id.as_deref() == Some(task.prompt_id.as_str()) {
+                task.pending_prompt_id = None;
+                task.provider_run_id = None;
+                task.revision += 1;
+            }
             // The retained wait is consumed only by an actual provider dispatch;
-            // a refused wake before that returns the task to this wait.
+            // a refused wake before that returns the task to this wait. A named
+            // run proves admission, not provider I/O: a wake still unsubmitted
+            // keeps its wait until BindSubmission.
             if run.is_some() && !super::goals::is_check(&task, &task.prompt_id) {
                 super::goals::clock(&mut task, now);
-                task.wait = None;
+                if task.wait.is_some() {
+                    let unsubmitted_wake: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.prompt_id')=?3 AND json_extract(payload,'$.state')='submitting' AND json_extract(payload,'$.submit_epoch') IS NULL ELSE 0 END)",
+                        params![task.room_id, task.agent_id, task.prompt_id],
+                        |row| row.get(0),
+                    ).map_err(sql)?;
+                    if !unsubmitted_wake {
+                        task.wait = None;
+                    }
+                }
             }
             if task.owner_user_id.is_empty() {
                 task.owner_user_id = owner;
@@ -397,9 +415,13 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     "yield sources must cover every unresolved obligation",
                 ));
             }
-            let deadline = deadline.min(now.saturating_add(
-                t.goal.as_ref().map_or(60, |g| g.check_in_minutes) as u64 * 60_000,
-            ));
+            // A goal checks in at its owner's interval. Any other admitted
+            // deadline is honoured: shortening it would spend no-progress
+            // wakes before a long timer is due, and the sweep still checks
+            // source liveness.
+            let deadline = t.goal.as_ref().map_or(deadline, |g| {
+                deadline.min(now.saturating_add(g.check_in_minutes as u64 * 60_000))
+            });
             t.wait = Some(AgentWait {
                 registration_ids: ids,
                 deadline_ms: deadline,
@@ -559,8 +581,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::CancelTask { .. }
         | Operation::OwnerResponse { .. }) => super::supervision::apply(tx, op),
         op @ (Operation::CreateWake { .. }
+        | Operation::ArmWake { .. }
         | Operation::VerifyWakes { .. }
         | Operation::FireWakes { .. }
+        | Operation::WakeVerified { .. }
+        | Operation::WakeOccurred { .. }
         | Operation::ProcessStarted { .. }
         | Operation::ProcessMatched { .. }
         | Operation::ProcessExited { .. }

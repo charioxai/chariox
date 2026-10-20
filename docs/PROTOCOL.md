@@ -5006,3 +5006,28 @@ Both are served by the generator's `POST /v1/events/query` and `/v1/events/repla
 management routes (docs/AEGS_SDK.md). Clients need kernel protocol ≥551 for either
 request (`integrationReceivedEventsMinimumProtocolVersion`); other minimums stay.
 Relay peer 159 only pairs the embedded local response union with local 551.
+
+### Agent task and wake ledger projection — allocated 561 / 169 on the event-core line, carried by the merged local 567 / relay peer 175 (MP-08 / MP-09 / MP-10 / MP-11)
+
+The kernel keeps one durable task per provider turn and one durable wake per
+kernel-owned wake source (`kind` names the driver, for example `timer`). Both are
+additive; no client minimum is raised, and an old client simply ignores them.
+
+- `RuntimeSession.agent_tasks` is the session's `AgentTaskExecution` list: every
+  unfinished task plus the 32 most recent finished ones. A task has a `state`
+  (`working`, `waiting`, `blocked`, `done`, `cancelled`), its open `obligations`,
+  its `wait` (registration ids and finite `deadline_ms`), a monotonic `revision`
+  and a redacted `reason`.
+- `RuntimeSession.agent_wakes` is the `AgentWake` list: every armed wake plus the 64
+  most recent finished ones from the last day, with the driver's one-line
+  `summary`, proof of life (`verified_at_ms`), `next_due_ms`, and the receipts of the
+  last occurrence (`last_fired_at_ms`, `last_delivery`, `last_delivered_at_ms`,
+  `last_acknowledged_at_ms`). A client shows them and never decides them.
+- Both lists follow agent trace visibility: a caller who cannot see an agent's
+  trace does not receive its tasks or wakes. Empty lists are omitted.
+- Kernel event `agent_task_updated` (`session_id`, `task`) carries one changed
+  task. A subscriber that receives it applies it by `task_id` and `revision` and
+  need not wait for the next full snapshot. A wake change, or a task leaving the
+  bounded list, still sends the full session snapshot, because no event carries it.
+- Relay peer 169 binds the peer-visible session projection to local 561. There is
+  no new peer message.

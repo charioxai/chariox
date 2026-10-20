@@ -183,6 +183,19 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             {
                 return Err(error("submission does not match the admitted event prompt"));
             }
+            // Provider I/O consumes the wait that Begin kept for this wake;
+            // a reconciled submission cannot consume a newer wait.
+            if e.submit_epoch.is_none() && e.state == "submitting" {
+                if let Some(mut task) = for_turn(tx, &room, &agent, &prompt)? {
+                    if task.state == ExecutionState::Working
+                        && !super::goals::is_check(&task, &prompt)
+                        && task.wait.take().is_some()
+                    {
+                        task.revision += 1;
+                        save(tx, &task)?;
+                    }
+                }
+            }
             if e.provider_run_id.as_deref() != Some(&run) || e.submit_epoch != Some(submit_epoch) {
                 e.provider_run_id = Some(run);
                 e.submit_epoch = Some(submit_epoch);

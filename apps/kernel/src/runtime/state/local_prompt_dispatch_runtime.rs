@@ -1022,7 +1022,21 @@ impl KernelRuntimeState {
         if dispatch_owns_active_prompt {
             // MP-08/MP-10/MP-11: offer owner retry/cancel now, rather than
             // waiting for the periodic lifecycle sweep after a failed request.
-            self.schedule_agent_lifecycle_sweep();
+            let restored_wait = self
+                .owned
+                .durable_state_store
+                .agent_tasks(Some(&dispatch.session_id), Some(&dispatch.agent_id))?
+                .iter()
+                .any(|task| {
+                    task.prompt_id == dispatch.prompt_id
+                        && task.state
+                            == crate::durable_state::agent_lifecycle::ExecutionState::Waiting
+                });
+            // A proven refusal retries on the periodic sweep. Rescheduling
+            // from every failed retry would spin until the provider recovers.
+            if !restored_wait {
+                self.schedule_agent_lifecycle_sweep();
+            }
         }
         if let Some(next_dispatch) = next_dispatch {
             self.spawn_prompt_dispatch(next_dispatch, self.provider_runtime_lanes.clone());

@@ -35,7 +35,9 @@ use transitions::apply;
 pub(super) use types::Request;
 pub use types::{AgentObligation, AgentTaskExecution, AgentWait, AgentWake, ExecutionState};
 mod wake_receipts;
-pub(crate) use types::{unresolved_source_outcome, InboxEvent, Operation, Outcome, Registration};
+pub(crate) use types::{
+    unresolved_source_outcome, InboxEvent, Operation, Outcome, Registration, WakeEnd,
+};
 pub(crate) const SWEEP_MS: u64 = 30_000;
 pub(crate) const DELIVERY_TIMEOUT_MS: u64 = 120_000;
 pub(crate) const LONG_WAIT_MS: u64 = 900_000;

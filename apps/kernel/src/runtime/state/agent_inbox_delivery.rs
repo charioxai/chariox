@@ -249,7 +249,11 @@ impl KernelRuntimeState {
                             .enqueue_prompt_dispatch_with_acceptance(&dispatch)
                             .await;
                         self.record_agent_event_dispatch_result(&dispatch, &result)?;
-                        result?;
+                        // The receipt above is exact; the shared failure path then
+                        // frees the active prompt the way a spawned dispatch does.
+                        if let Err(error) = result {
+                            self.fail_prompt_dispatch(dispatch, error).await?;
+                        }
                     }
                 }
                 Err(e) => {

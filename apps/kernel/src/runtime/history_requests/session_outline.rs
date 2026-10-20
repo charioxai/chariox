@@ -688,6 +688,18 @@ fn outline_turn_from_events_with_lifecycle(
     let external_identity = outline_turn_external_identity(&events);
     let prompt_origin = outline_turn_prompt_origin(prompt);
     let mut user_prompt = outline_page_entry_from_event(prompt.clone())?;
+    if prompt
+        .prompt_id
+        .as_deref()
+        .is_some_and(crate::session::is_internal_prompt_echo_id)
+    {
+        // Retain the turn and reply attribution without presenting kernel
+        // instructions as user input after a reconnect.
+        user_prompt.entry.text.clear();
+        user_prompt.fragment_start = 0;
+        user_prompt.fragment_end = 0;
+        user_prompt.total_chars = 0;
+    }
     project_workflow_user_prompt(&mut user_prompt, prompt_origin);
     if prompt.is_internal_prompt_echo() {
         // Preserve the agent's reply and turn identity without a user instruction row.

@@ -38,7 +38,7 @@ import {
 import {
   shouldRenderProviderStatus,
 } from "./transcript.js"
-import type { WorkflowDesignOpForwarded } from "@chariox/kernel-client/kernel-types"
+import type { AgentTaskExecution, WorkflowDesignOpForwarded } from "@chariox/kernel-client/kernel-types"
 import type {
   AgentRuntimeActivity,
   RuntimeInteraction,
@@ -517,6 +517,12 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
       deps.rebuildTranscript()
     }
   }
+  const applyAgentTaskUpdated = (
+    sessionId: string,
+    task: AgentTaskExecution,
+  ) => {
+    applyDeltaSessionState(sessionId, (session) => withAgentTaskUpdate(session, sessionId, task))
+  }
   const applyWorkflowDesignOp = (event: WorkflowDesignOpForwarded) => {
     const applied = applyDeltaSessionState(event.session_id, (session) => ({
       ...session,
@@ -572,8 +578,8 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     applyProviderRunChanged,
     applySessionMetadataChanged,
     applyRuntimeInteractionsChanged,
-    applyAgentTaskUpdated: (sessionId, task) => { applyDeltaSessionState(sessionId, session => withAgentTaskUpdate(session, sessionId, task)) },
     applyWorkflowRunUpdated,
+    applyAgentTaskUpdated,
     applyWorkflowDesignOp,
     scheduleSharedPromptInputHistoryRefresh: deps.scheduleSharedPromptInputHistoryRefresh,
     handleKernelSessionUnavailable,

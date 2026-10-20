@@ -404,13 +404,16 @@ export type AgentTaskExecution = {
   last_progress_at_ms: number; progress_sequence: number; no_progress_wakes: number
   correction_used: boolean; pending_prompt_id: string | null
 }
-// MP-08 / MP-09 / MP-10 / MP-11 A03: kernel-owned timer or watched process with its receipts.
+// MP-08 / MP-09 / MP-10 / MP-11 A03: one kernel-owned wake source with its receipts.
+// `kind` names the driver ("timer", "process", ...); `summary` is the driver's
+// redacted one-line description and `detail` its redacted driver-owned data.
 export type AgentWake = {
   id: string; task_id: string; room_id: string; agent_id: string; registration_id: string
-  kind: "timer" | "process"; label: string
+  kind: string; label: string
   state: "scheduled" | "starting" | "running" | "cancelling" | "fired" | "exited" | "lost" | "cancelled"
   created_at_ms: number; verified_at_ms: number | null; next_due_ms: number | null; interval_ms: number | null
   command: string[]; match_text: string | null; matched_at_ms: number | null; pid: number | null; exit_code: number | null
+  summary: string; detail: unknown
   fire_count: number; missed_fires: number; last_fired_at_ms: number | null; last_sequence: number | null
   last_delivery: string | null; last_delivered_at_ms: number | null; last_acknowledged_at_ms: number | null
   alerted_sequence: number | null

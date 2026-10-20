@@ -77,6 +77,33 @@ impl KernelRuntimeOwnedState {
         self.bind_agent_workflow_task(&task, &prepared.prompt)?;
         Ok(!existed)
     }
+    /// A turn that ends before its dispatch recorded a task still gets one, so
+    /// its outcome is never lost.
+    pub(super) fn ensure_agent_task(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+        run: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        if self
+            .durable_state_store
+            .agent_tasks(Some(room), Some(agent))?
+            .iter()
+            .any(|t| t.prompt_id == prompt)
+        {
+            return Ok(());
+        }
+        self.durable_state_store.agent_lifecycle(Operation::Begin {
+            owner: self.session_store.get_session(room)?.owner_user_id().into(),
+            room: room.into(),
+            agent: agent.into(),
+            prompt: prompt.into(),
+            run: run.map(str::to_owned),
+            now: crate::session::unix_epoch_ms(),
+        })?;
+        Ok(())
+    }
     /// The provider-visible task identity and retained task context, shared by
     /// local and leased dispatch (A10 placement parity).
     pub(super) fn agent_task_context_hint(
@@ -208,21 +235,7 @@ impl KernelRuntimeOwnedState {
         {
             return Ok(None);
         }
-        if !self
-            .durable_state_store
-            .agent_tasks(Some(room), Some(agent))?
-            .iter()
-            .any(|t| t.prompt_id == prompt.id())
-        {
-            self.durable_state_store.agent_lifecycle(Operation::Begin {
-                owner: self.session_store.get_session(room)?.owner_user_id().into(),
-                room: room.into(),
-                agent: agent.into(),
-                prompt: prompt.id().into(),
-                run: Some(run.into()),
-                now: crate::session::unix_epoch_ms(),
-            })?;
-        }
+        self.ensure_agent_task(room, agent, prompt.id(), Some(run))?;
         self.reconcile_workflow_delegation(room, agent, prompt)?;
         if prompt.prompt_origin() != crate::session::PromptOrigin::CompletionCheck {
             if cancelled {
@@ -981,6 +994,28 @@ impl KernelRuntimeState {
                     Ok(None) => {}
                     Err(error) => {
                         tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: unsettled turn assessment failed; blocking")
+                    }
+                }
+                if task.goal.is_none() && task.is_plain_turn() && task.pending_prompt_id.is_none() {
+                    // An unanswered ordinary turn whose settlement was lost has
+                    // nothing for the owner to decide; it ends as a stopped turn.
+                    let source = crate::session::PromptQueueItem::new(
+                        task.prompt_id.clone(),
+                        "kernel-supervisor",
+                        &task.agent_id,
+                        "",
+                        crate::session::PromptStatus::Cancelled,
+                    );
+                    let run = task.provider_run_id.as_deref().unwrap_or_default();
+                    if let Some(settled) = self.owned.settle_agent_task(
+                        &task.room_id,
+                        &task.agent_id,
+                        &source,
+                        run,
+                        true,
+                    )? {
+                        Box::pin(self.finish_agent_task_settlement(Some(settled), &source)).await?;
+                        continue;
                     }
                 }
                 tracing::warn!(task_id=%task.task_id, prompt_id=%task.prompt_id, provider_run_id=?task.provider_run_id,

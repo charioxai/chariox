@@ -460,6 +460,15 @@ Boundary:
 - the workflow console is not audit state
 - it is a shared presentation/output surface for one workflow
 
+### 4.2.2.1 Agent Task and Wake Ownership
+
+The kernel owns each agent's durable task ledger and its wake sources: what a
+turn is waiting for, the deadline, the wake that fires, and the receipt that it
+was delivered. A wake source is a kernel-owned driver (the kernel timer today;
+terminals and watchers plug in through `WakeDriver`) that only reports when its
+source occurs. Clients and relays display the ledger and never decide it; see
+`docs/AGENT_WAKES.md`.
+
 ### 4.2.3 Persistent Session and Deletion Ownership
 
 Chariox session lifetime should be explicit and daemon-owned.

@@ -240,6 +240,8 @@ async fn workflow_wait_cancellation(cancel_creator: bool) {
         matched_at_ms: None,
         pid: None,
         exit_code: None,
+        summary: String::new(),
+        detail: serde_json::Value::Null,
         fire_count: 0,
         missed_fires: 0,
         last_fired_at_ms: None,

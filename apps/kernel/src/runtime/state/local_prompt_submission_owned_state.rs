@@ -123,7 +123,11 @@ impl KernelRuntimeOwnedState {
         } else {
             prepared.prompt.clone()
         };
-        let prompt = if will_queue || self.config_projection.snapshot().room_agent_tools {
+        // Kernel-owned wake and correction turns keep the id their receipts name.
+        let prompt = if will_queue
+            || self.config_projection.snapshot().room_agent_tools
+            || crate::session::is_internal_prompt_echo_id(prompt.id())
+        {
             prompt
         } else {
             prompt.with_id(self.session_store.reserve_prompt_id())

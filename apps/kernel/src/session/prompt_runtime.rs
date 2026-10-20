@@ -276,20 +276,15 @@ impl PromptRuntimeState {
     }
 
     /// Client projections omit agent-only kernel instructions. A running
-    /// completion check keeps its identity and status so clients can stop it;
-    /// the other kernel instructions are omitted entirely.
+    /// internal turn keeps its identity and status so clients can stop it.
     pub(in crate::session) fn hide_internal_prompts(&mut self, focused_agent_id: Option<&str>) {
-        let check = |prompt: &PromptQueueItem| {
-            crate::session::is_internal_prompt_turn(Some(prompt.prompt_origin()), Some(prompt.id()))
-        };
         let internal = |prompt: &PromptQueueItem| {
-            check(prompt) || crate::session::is_internal_prompt_echo_id(prompt.id())
+            crate::session::is_internal_prompt_turn(Some(prompt.prompt_origin()), Some(prompt.id()))
+                || crate::session::is_internal_prompt_echo_id(prompt.id())
         };
         for state in self.prompt_states.values_mut() {
-            if let Some(active) = state.active_prompt.as_mut().filter(|p| check(p)) {
+            if let Some(active) = state.active_prompt.as_mut().filter(|p| internal(p)) {
                 active.clear_instruction();
-            } else if state.active_prompt.as_ref().is_some_and(internal) {
-                state.active_prompt = None;
             }
             state.queued_prompts.retain(|prompt| !internal(prompt));
         }

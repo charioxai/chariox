@@ -143,7 +143,12 @@ impl DaemonApp {
                 .prompt_state_owner
                 .active_prompt_for_agent(&session, &agent_id)
                 .is_some();
-        let prompt = if will_queue || preserve_native_identity || self.config().room_agent_tools {
+        // Kernel-owned wake and correction turns keep the id their receipts name.
+        let prompt = if will_queue
+            || preserve_native_identity
+            || self.config().room_agent_tools
+            || crate::session::is_internal_prompt_echo_id(prompt.id())
+        {
             prompt
         } else {
             prompt.with_id(self.sessions.reserve_prompt_id())
