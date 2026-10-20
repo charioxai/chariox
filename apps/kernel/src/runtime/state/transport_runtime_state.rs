@@ -31,12 +31,14 @@ impl KernelRuntimeState {
         Some(
             crate::durable_snapshot::DurableSnapshotScheduler::new_with_policy(
                 config.daemon_id,
-                self.owned.durable_state_store.clone(),
-                self.owned.session_store.clone(),
-                self.owned.agent_store.clone(),
-                self.owned.slice_store.clone(),
-                self.owned.metaagent_events.clone(),
-                self.owned.room_computer_revoked.clone(),
+                crate::durable_snapshot::DurableSnapshotSources {
+                    durable_state: self.owned.durable_state_store.clone(),
+                    sessions: self.owned.session_store.clone(),
+                    agents: self.owned.agent_store.clone(),
+                    slices: self.owned.slice_store.clone(),
+                    metaagent_events: self.owned.metaagent_events.clone(),
+                    room_computer_revoked: self.owned.room_computer_revoked.clone(),
+                },
                 policy,
             ),
         )

@@ -322,7 +322,9 @@ fn browser_mirror2_document_font_requirements_550_shape_is_pinned() {
 #[test]
 fn browser_mirror2_layout_560_shape_is_pinned() {
     // MP-08/MP-10/MP-11: allocated 560/168 lets the viewer name its display size for the Tab layout.
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 560);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 560);
+    };
     let bytes = include_bytes!("browser-mirror2-layout-560.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),

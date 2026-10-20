@@ -1584,10 +1584,12 @@ async fn launch_leased_room_provider(
         "target_directory": fixture.home_state.root.join("leased-browser-agent-worktree"),
         "from_ref": "HEAD",
     });
+    // The idle stub prints nothing, so the worker's quiet-output settlement can
+    // never end the retained turn while the cross-kernel tools are still running.
     let spawned = dispatch_json(
         &fixture.home,
         json!({"SpawnAgent": {
-            "session_id":room, "provider":"managed-dev-stub", "model":"runtime-mcp-idle",
+            "session_id":room, "provider":"managed-dev-stub", "model":"native-tui-idle",
             "kernel_ref":worker_kernel_id, "worktree_placement":placement
         }}),
     )

@@ -277,7 +277,9 @@ fn mp08_agent_tabs_protocol_491_snapshot_and_hash() {
 // local, remote and provider input. Legacy keys still omit the zero mask.
 #[test]
 fn kernel_browser_protocol_517_bounded_modifiers() {
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 517);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 517);
+    };
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
@@ -324,7 +326,9 @@ fn kernel_browser_protocol_517_bounded_modifiers() {
 
 #[test]
 fn mp08_mp10_mp11_browser_display_region_519_snapshot() {
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 519);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 519);
+    };
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
@@ -364,8 +368,12 @@ fn mp08_mp10_mp11_browser_display_region_519_snapshot() {
 // `browser_lockdown`. The host's state keys are pinned to this fixture by a Node test.
 #[test]
 fn mp08_mp10_mp11_browser_chrome_state_528_snapshot() {
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 528);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 136);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 528);
+    };
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 136);
+    };
     let bytes = include_bytes!("browser-chrome-state-528.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
@@ -447,8 +455,12 @@ fn mp08_mp10_mp11_browser_chrome_ui_530_snapshot() {
 // person's keys, so a viewer keeps its stream and the next list paints from it.
 #[test]
 fn mp08_mp10_mp11_browser_omnibox_warm_540_snapshot() {
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 540);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 148);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 540);
+    };
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 148);
+    };
     let bytes = include_bytes!("browser-omnibox-warm-540.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
@@ -473,8 +485,12 @@ fn mp08_mp10_mp11_browser_omnibox_warm_540_snapshot() {
 // state differs from the `revision` the caller holds; the reply is the state plus a new `revision`.
 #[test]
 fn mp08_mp10_browser_state_wait_556_snapshot() {
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 556);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 164);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 556);
+    };
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 164);
+    };
     let bytes = include_bytes!("browser-state-wait-556.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
@@ -505,8 +521,12 @@ fn mp08_mp10_browser_state_wait_556_snapshot() {
 
 #[test]
 fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 529);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 137);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 529);
+    };
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 137);
+    };
     let bytes = include_bytes!("browser-display-placement-529.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
@@ -555,8 +575,12 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
 // MP-08/MP-10/MP-11: default page capture uses the existing region lease shape.
 #[test]
 fn mp08_mp10_mp11_browser_visible_page_536_snapshot() {
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 536);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 144);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 536);
+    };
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 144);
+    };
     let bytes = include_bytes!("browser-visible-page-536.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
@@ -581,8 +605,12 @@ fn mp08_mp10_mp11_browser_visible_page_536_snapshot() {
 // MP-08/MP-10/MP-11: allocated 552/160 adds the Browser reply's `parked_input` count.
 #[test]
 fn mp08_mp10_mp11_browser_parked_input_552_snapshot() {
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 552);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 160);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 552);
+    };
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 160);
+    };
     let bytes = include_bytes!("browser-parked-input-552.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
@@ -600,8 +628,12 @@ fn mp08_mp10_mp11_browser_parked_input_552_snapshot() {
 // MP-08/MP-10/MP-11: allocated 560/168 adds the `browser_window` display target (owner window display).
 #[test]
 fn mp08_mp10_mp11_browser_window_display_560_snapshot() {
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 560);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 168);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 560);
+    };
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 168);
+    };
     let bytes = include_bytes!("browser-window-display-560.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),

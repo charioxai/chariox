@@ -89,11 +89,13 @@ pub(in crate::transport::relay_client) fn prepare_daemon_request(
     router: &CommandRouter,
     caller_identity: Option<RelayCallerIdentity>,
     encrypted_request: EncryptedRelayPayload,
-) -> Result<PreparedDaemonRequest, RelayRequestOutcome> {
-    let refusal = |error| RelayRequestOutcome {
-        display_event: None,
-        encrypted_response: None,
-        error: Some(error),
+) -> Result<PreparedDaemonRequest, Box<RelayRequestOutcome>> {
+    let refusal = |error| {
+        Box::new(RelayRequestOutcome {
+            display_event: None,
+            encrypted_response: None,
+            error: Some(error),
+        })
     };
     relay_crypto::validate_encrypted_payload_shape(
         &encrypted_request,
