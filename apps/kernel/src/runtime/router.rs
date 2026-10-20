@@ -224,7 +224,6 @@ mod tests {
     mod m16_runtime_extension_registration;
     mod m23_metaagent_runtime_tools;
     mod normal_stack;
-    mod notes;
     mod provider_projection;
     #[cfg(unix)]
     mod provider_setup_token;

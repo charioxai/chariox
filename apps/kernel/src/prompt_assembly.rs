@@ -915,6 +915,8 @@ impl PromptAssemblyService {
         {
             hidden_fragments.push(additional_hidden_context.to_string());
         }
+        let (attachments, notes_context) = crate::prompt_notes::split_for_provider(attachments, run.agent_instance_id());
+        hidden_fragments.extend(notes_context);
         if additional_hidden_context.is_some_and(|context| {
             context.contains("<workflow-runtime-instructions>")
                 || context.contains("Chariox workflow turn")
@@ -1218,6 +1220,10 @@ fn unescape_prompt_component_tag_delimiters(body: &str, tag: &str) -> String {
 }
 
 const CHARIOX_PROMPT_COMPONENT_TAGS: &[&str] = &[
+    "user-notes",
+    "note",
+    "selected-text",
+    "comment",
     "runtime-instructions",
     "workspace-live-sync-instructions",
     "workspace-live-sync-tracked-instructions",
@@ -1322,6 +1328,39 @@ mod tests {
                 structured_endpoint: Some("ws://127.0.0.1:43112".to_string()),
             },
         )
+    }
+
+    // Notes the user attached reach every provider as hidden context, not as files.
+    #[test]
+    fn user_notes_become_hidden_context_and_leave_provider_attachments() {
+        use base64::Engine;
+        let root = temp_prompt_root("user-notes");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry.materialize_bundled_defaults().unwrap();
+        let note = PromptAttachment::new(
+            "chariox-terminal://note/1",
+            crate::prompt_notes::NOTE_ATTACHMENT_MIME,
+            Some("Note".into()),
+        )
+        .with_contents_base64(base64::engine::general_purpose::STANDARD.encode(
+            r#"{"quote":"the selected sentence","comment":"rewrite it","source":{"kind":"room","room":"Design review"}}"#,
+        ));
+        let image = PromptAttachment::new("file:///a.png", "image/png", None);
+        let envelope = PromptAssemblyService::new(registry)
+            .assemble_provider_turn(
+                &test_run(false),
+                "Please help",
+                None,
+                vec![note, image.clone()],
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .unwrap();
+        assert_eq!(envelope.visible_user_prompt, "Please help");
+        assert_eq!(envelope.attachments, vec![image]);
+        for expected in ["<user-notes>", "Room: Design review", "the selected sentence", "rewrite it"] {
+            assert!(envelope.hidden_system_context.contains(expected), "{expected}");
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     // MP-08 / MP-10 / MP-11 S01: provider context agrees with the exposed room tools.

@@ -250,7 +250,6 @@ pub(crate) enum RoomBrowserControllerCommand {
     NoteObservation {
         target_id: String,
         document_id: String,
-        quote: Option<crate::local::NoteTextQuote>,
     },
     Acquire,
     Reconcile {

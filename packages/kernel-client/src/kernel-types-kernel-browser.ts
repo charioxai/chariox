@@ -55,7 +55,6 @@ export type UserDomainResource =
   | { kind: "desktop"; surface_id: string }
   | { kind: "browser_tab"; tab_id: string }
   | { kind: "app_view"; view_id: string }
-  | { kind: "note"; note_id: string }
   | { kind: "capture"; capture_id: string }
 export type UserDomainGrant = {
   agent_id: string; session_id: string; kernel_id: string; resources: UserDomainResource[];

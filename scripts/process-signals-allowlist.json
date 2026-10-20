@@ -133,13 +133,6 @@
       "text": "self.assertNotIn('pkill ', (ROOT / 'start-runtime.sh').read_text())",
       "count": 1,
       "reason": "MP-11 inert regression assertion that the slice runtime start script no longer signals by process name; the string is never executed."
-    },
-    {
-      "path": "apps/cli/scripts/user-domain-access-live-drill.mjs",
-      "kind": "node-group",
-      "text": "try { process.kill(-kernel.pid, signal); } catch {}",
-      "count": 1,
-      "reason": "MP-11 drill-owned kernel spawned with detached:true (its own process group); the helper refuses non-integer or <=1 PIDs and exited children before signalling that exact group."
     }
   ]
 }

@@ -850,9 +850,8 @@ async fn execute_local(
         Command::NoteObservation {
             target_id,
             document_id,
-            quote,
         } => processes
-            .note_observation(&session_id, &target_id, &document_id, quote.as_ref())
+            .note_observation(&session_id, &target_id, &document_id)
             .map(|observation| Response::NoteObservation { observation }),
         Command::Snapshot {
             target_id,

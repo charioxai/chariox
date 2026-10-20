@@ -3108,3 +3108,44 @@ fn approval_lifetime_refused_claude_dialog_receives_deny_while_displayed() {
         }
     }
 }
+
+fn note_attachment(quote: &str, comment: &str) -> PromptAttachment {
+    use base64::Engine as _;
+    let json = serde_json::json!({ "quote": quote, "comment": comment }).to_string();
+    PromptAttachment::new(
+        "chariox-terminal://note/1",
+        crate::prompt_notes::NOTE_ATTACHMENT_MIME,
+        Some("Note".into()),
+    )
+    .with_contents_base64(base64::engine::general_purpose::STANDARD.encode(json))
+}
+
+#[test]
+fn claude_types_the_prompt_and_never_the_note_text() {
+    let attachments = vec![note_attachment("secret quote", "secret comment")];
+    let typed = claude_typed_prompt(
+        &ClaudeNativePromptInjection {
+            id: "p",
+            origin_prompt_id: "p",
+            prompt: "fix it",
+            hidden_system_context: "",
+            attachments: &attachments,
+        },
+        "/nonexistent/context",
+    );
+    assert_eq!(typed, "fix it");
+}
+
+#[test]
+fn notes_reach_claude_hidden_context_once_and_fit_the_bridge_limit() {
+    let attachments = vec![note_attachment(&"q".repeat(12_000), &"c".repeat(12_000))];
+    let (files, notes) = crate::prompt_notes::split_for_provider(attachments, None);
+    assert!(files.is_empty());
+    let context = join_claude_context([
+        format_claude_attachment_context(&files, "/nonexistent/context"),
+        notes.unwrap_or_default(),
+    ]);
+    assert_eq!(context.matches(&"q".repeat(12_000)).count(), 1);
+    assert!(!context.contains("Attachment 1"));
+    assert!(context.len() < 48_000, "{}", context.len());
+}

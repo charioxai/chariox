@@ -1,5 +1,4 @@
 // MD-N3 / MP-08 / MP-11: shared trusted-host adapter. Cloud owns the overlay UI.
-import type { PromptAttachmentPart } from "./kernel-types-provider.js"
 
 export const notesMinimumProtocolVersion = 443
 export type NoteWindow =
@@ -10,26 +9,11 @@ export type NoteWindow =
 export type NoteTextQuote = { exact: string; prefix: string; suffix: string }
 export type NoteBox = { x: number; y: number; width: number; height: number }
 export type NoteAnchor = { window: NoteWindow; url: string | null; document_id: string | null; hint: string | null; quote: NoteTextQuote }
-export type NoteSelection = { selection_id: string; anchor: NoteAnchor; box_css: NoteBox | null }
-export type NoteSummary = { note_id: string; window: NoteWindow; resolved: boolean; anchor_state: string; updated_at_ms: number }
-export type NoteRecord = {
-  note_id: string; author: string; domain: "agent" | "user"; anchor: NoteAnchor; comment: string
-  replies: { author: string; comment: string; created_at_ms: number }[]
-  resolved: boolean; anchor_state: "attached" | "missing" | "ambiguous" | "unavailable"
-  box_css: NoteBox | null; created_at_ms: number; updated_at_ms: number
-}
+export type NoteSelection = { anchor: NoteAnchor; box_css: NoteBox | null }
 export type NoteCommand =
   | { op: "capture_selection"; window: NoteWindow }
   | { op: "report_selection"; anchor: NoteAnchor; box_css: NoteBox | null }
-  | { op: "create"; selection_id: string; comment: string }
-  | { op: "list"; window: NoteWindow }
-  | { op: "read" | "resolve" | "reanchor" | "ask"; note_id: string }
-  | { op: "reply"; note_id: string; comment: string }
-export type NoteResult =
-  | { event: "selection_changed"; selection: NoteSelection | null }
-  | { event: "note_changed"; note: NoteRecord }
-  | { event: "notes_listed"; notes: NoteSummary[] }
-  | { event: "prompt_draft"; note_id: string; text: string; attachment: PromptAttachmentPart }
+export type NoteResult = { event: "selection_changed"; selection: NoteSelection | null }
 export type NotesResponse = { Notes: { result: NoteResult } }
 
 export function notesRequest(command: NoteCommand, protocolVersion: number) {
@@ -49,13 +33,4 @@ export function noteOverlayBox(box: NoteBox, page: { width: number; height: numb
   if (right <= left || bottom <= top) return null
   const scaleX = rendered.width / page.width, scaleY = rendered.height / page.height
   return { x: rendered.x + left * scaleX, y: rendered.y + top * scaleY, width: (right - left) * scaleX, height: (bottom - top) * scaleY }
-}
-
-// The prompt editor inserts these two values locally. Only its ordinary user
-// Send action uses SubmitPrompt and the existing PromptAttachmentPart path.
-export function notePromptDraft(result: NoteResult): { text: string; attachments: PromptAttachmentPart[] } {
-  if (result.event !== "prompt_draft" || !result.text.startsWith("[Chariox note ") || result.attachment.mime !== "text/plain") {
-    throw new Error("MD-N3: expected a kernel note draft")
-  }
-  return { text: result.text, attachments: [result.attachment] }
 }

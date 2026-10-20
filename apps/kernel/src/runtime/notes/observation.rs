@@ -8,7 +8,6 @@ pub(crate) struct BrowserNoteObservation {
     pub(crate) document_id: String,
     pub(crate) url: String,
     pub(crate) selection: Option<BrowserNoteSelection>,
-    pub(crate) anchoring: Option<BrowserNoteAnchoring>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -16,14 +15,6 @@ pub(crate) struct BrowserNoteSelection {
     pub(crate) quote: NoteTextQuote,
     pub(crate) box_css: NoteBox,
     pub(crate) hint: String,
-}
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct BrowserNoteAnchoring {
-    pub(crate) anchor_state: String,
-    pub(crate) box_css: Option<NoteBox>,
-    #[serde(default)]
-    pub(crate) hint: Option<String>,
 }
 impl BrowserNoteObservation {
     pub(crate) fn validate(
@@ -47,17 +38,6 @@ impl BrowserNoteObservation {
             if s.hint.len() > 2048 {
                 return Err("MD-N2: invalid range hint".into());
             }
-        }
-        if let Some(a) = &self.anchoring {
-            if !["attached", "missing", "ambiguous"].contains(&a.anchor_state.as_str())
-                || a.hint.as_ref().is_some_and(|h| h.len() > 2048)
-            {
-                return Err("MD-N2: invalid anchoring result".into());
-            }
-            super::validate_box(a.box_css.as_ref())?;
-        }
-        if self.selection.is_some() && self.anchoring.is_some() {
-            return Err("MD-N2: invalid observation".into());
         }
         Ok(())
     }

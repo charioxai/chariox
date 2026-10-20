@@ -661,29 +661,6 @@ fn mdaccess_retained_browser_scope_allows_input_but_no_new_resources_or_vault() 
 }
 
 #[test]
-fn mdaccess_retained_notes_commits_share_grant_and_revoke_boundary() {
-    let host = KernelBrowserHost::new(PathBuf::from("/tmp/mdaccess-note-scope"));
-    host.set_focus("owner", Some("first"));
-    host.load_for("owner", "first", KernelBrowserCapability::Notes)
-        .unwrap();
-    let admission = host
-        .admit_for("owner", "first", KernelBrowserCapability::Notes)
-        .unwrap();
-    host.set_focus("owner", Some("second"));
-    assert_eq!(
-        host.note_operation("owner", Some(&admission), || Ok(42))
-            .unwrap(),
-        42
-    );
-    host.revoke_agent("first");
-    assert!(host
-        .note_operation::<()>("owner", Some(&admission), || panic!(
-            "MP-11: revoked note commit"
-        ))
-        .is_err());
-}
-
-#[test]
 fn mp11_global_stop_requires_focus_even_with_retained_tabs() {
     for owns_tab in [false, true] {
         let root = std::env::temp_dir().join(format!(
@@ -861,12 +838,6 @@ fn mdaccess_idle_lapse_refuses_retained_keys_text_clicks_and_note_commits() {
             crate::error::HostFailure::Refused(crate::error::UserDomainRefusalReason::NotGranted)
         ));
     }
-    assert!(host
-        .note_operation::<()>("owner", Some(&admission), || panic!(
-            "MP-11: expired commit"
-        ))
-        .unwrap_err()
-        .contains("not_granted"));
 }
 
 // MP-08/MP-11: deterministic post-controller/pre-registration revoke/refocus race.

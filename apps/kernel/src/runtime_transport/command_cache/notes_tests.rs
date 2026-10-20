@@ -3,8 +3,10 @@ use super::*;
 #[tokio::test]
 async fn notes_cached_response_cannot_cross_owner_or_client() {
     let request = LocalDaemonRequest::Notes(crate::local::NotesRequest {
-        command: crate::local::NoteCommand::Read {
-            note_id: "fixture-note".into(),
+        command: crate::local::NoteCommand::CaptureSelection {
+            window: crate::local::NoteWindow::Panel {
+                window_id: "fixture-panel".into(),
+            },
         },
     });
     let mut command = KernelCommand::from_local_request("MD-N3-replay", None, None, &request);
@@ -20,7 +22,7 @@ async fn notes_cached_response_cannot_cross_owner_or_client() {
         cache.reserve(&command.command_id, &fingerprint).await,
         CommandReservation::Dispatch
     ));
-    let response = serde_json::json!({"Notes":{"result":{"event":"note_changed","note":{"comment":"private fixture text"}}}});
+    let response = serde_json::json!({"Notes":{"result":{"event":"selection_changed","selection":{"anchor":{"quote":{"exact":"private fixture text"}}}}}});
     cache
         .complete(
             command.command_id.clone(),

@@ -139,19 +139,27 @@ fn claude_native_history_source_attachment_id(
         .unwrap_or_else(|| fallback_attachment_id.to_string())
 }
 
+/// The text typed into the Claude PTY: attachment mentions (never notes: those are hidden
+/// context) plus the visible prompt.
+fn claude_typed_prompt(prompt: &ClaudeNativePromptInjection<'_>, context_file: &str) -> String {
+    let files: Vec<PromptAttachment> = prompt
+        .attachments
+        .iter()
+        .filter(|attachment| !crate::prompt_notes::is_note(attachment))
+        .cloned()
+        .collect();
+    let native_attachment_suffix = format_claude_native_attachment_prompt_suffix(&files, context_file);
+    let visible = redact_native_hidden_instructions(prompt.prompt)
+        .trim()
+        .to_string();
+    join_claude_context([native_attachment_suffix, visible])
+}
+
 fn claude_headless_prompt_input(
     prompt: &ClaudeNativePromptInjection<'_>,
     context_file: &str,
 ) -> String {
-    let native_attachment_suffix =
-        format_claude_native_attachment_prompt_suffix(prompt.attachments, context_file);
-    let visible = redact_native_hidden_instructions(prompt.prompt)
-        .trim()
-        .to_string();
-    normalize_claude_visible_prompt_for_headless(&join_claude_context([
-        native_attachment_suffix,
-        visible,
-    ]))
+    normalize_claude_visible_prompt_for_headless(&claude_typed_prompt(prompt, context_file))
 }
 
 fn claude_headless_prompt_matches(expected: &str, observed: &str) -> bool {
@@ -1619,13 +1627,16 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         {
             return Ok(());
         }
-        let native_attachment_suffix =
-            format_claude_native_attachment_prompt_suffix(prompt.attachments, context_file);
+        // Notes are split out once: they become hidden context, never attachment files.
+        let (attachments, notes_context) = crate::prompt_notes::split_for_provider(
+            prompt.attachments.to_vec(),
+            provider_run.agent_instance_id(),
+        );
         let visible = redact_native_hidden_instructions(prompt.prompt)
             .trim()
             .to_string();
         let native_hidden = extract_native_hidden_instructions(prompt.prompt);
-        let attachment_context = format_claude_attachment_context(prompt.attachments, context_file);
+        let attachment_context = format_claude_attachment_context(&attachments, context_file);
         let origin_context =
             crate::prompt_assembly::agent_message_origin_context(prompt.origin_prompt_id);
         let hidden_context = if provider_run.provider() == "claude-headless" {
@@ -1634,7 +1645,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     provider_run,
                     &visible,
                     Some(prompt.hidden_system_context),
-                    prompt.attachments.to_vec(),
+                    attachments,
                     crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn,
                 )?;
             let skill_context =
@@ -1645,6 +1656,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 skill_context,
                 native_hidden,
                 attachment_context,
+                notes_context.unwrap_or_default(),
             ])
         } else {
             let scheduled_hidden =
@@ -1654,6 +1666,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 origin_context,
                 native_hidden,
                 attachment_context,
+                notes_context.unwrap_or_default(),
             ])
         };
         crate::provider::ensure_claude_native_hidden_context_fits(
@@ -1665,7 +1678,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             operation: "claude_hidden_context_write",
             message: error.to_string(),
         })?;
-        let visible = join_claude_context([native_attachment_suffix, visible]);
+        let visible = claude_typed_prompt(prompt, context_file);
         if !visible.is_empty() {
             let input = if provider_run.provider() == "claude-headless" {
                 normalize_claude_visible_prompt_for_headless(&visible)

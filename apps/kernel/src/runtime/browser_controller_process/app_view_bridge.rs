@@ -9,11 +9,7 @@ impl BrowserControllerProcessStore {
         session_id: &str,
         target_id: &str,
         document_id: &str,
-        quote: Option<&crate::local::NoteTextQuote>,
     ) -> Result<Option<crate::runtime::notes::observation::BrowserNoteObservation>, String> {
-        if let Some(quote) = quote {
-            crate::runtime::notes::validate_quote(quote)?;
-        }
         let Some(ownership) = &self.ownership else {
             return Ok(None);
         };
@@ -24,7 +20,7 @@ impl BrowserControllerProcessStore {
             ownership.require_lease(session_id)?;
             let supervisor = &mut ownership.supervisor;
             supervisor.prepare_unlocked_request()?;
-            (supervisor.backend.begin_observation_request("browser.notes.observe", serde_json::json!({"target_id":target_id,"document_id":document_id,"quote":quote}))?, supervisor.backend.timeout)
+            (supervisor.backend.begin_observation_request("browser.notes.observe", serde_json::json!({"target_id":target_id,"document_id":document_id}))?, supervisor.backend.timeout)
         };
         let observation: crate::runtime::notes::observation::BrowserNoteObservation = pending
             .wait(timeout)?

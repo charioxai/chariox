@@ -8,7 +8,6 @@ pub enum UserDomainResource {
     Desktop { surface_id: String },
     BrowserTab { tab_id: String },
     AppView { view_id: String },
-    Note { note_id: String },
     Capture { capture_id: String },
 }
 

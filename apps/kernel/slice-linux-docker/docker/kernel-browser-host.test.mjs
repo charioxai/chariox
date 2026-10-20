@@ -1271,7 +1271,7 @@ test('MP-08/MP-10 navigate reports the committed URL after a redirect', () => us
 
 // r55: a selection note names its Tab and reads only that Tab live. The all-tab reconcile behind it waited for a
 // parsing page's renderer (5 s CDP timeouts, 6-24 s per note) while the kernel held its backend for the request.
-for (const op of ['note_selection', 'note_reanchor']) test(`MP-08/MP-10/MP-11 ${op} reads only its own Tab`, () => using(async ({ host }) => {
+for (const op of ['note_selection']) test(`MP-08/MP-10/MP-11 ${op} reads only its own Tab`, () => using(async ({ host }) => {
   const opened = await host.request({ op: 'open', url: 'about:blank' });
   const browser = host.browser, reconcile = browser.reconcile;
   let reconciles = 0;
@@ -1977,7 +1977,7 @@ test('MP-08/MP-10 the Chrome window follow-up is a concurrent observation',()=>u
  assert.equal(scheduleHostRequest({method:'host.browser',params:{op:'chrome_window_follow',tab_id:'t',switches:false}}).kind,'bridge');
  assert.equal(scheduleHostRequest({method:'host.browser',params:{op:'input'}}).kind,'barrier');
  // r54 RED 2: a selection note waits for the page renderer (8 s on a parsing page); it must not hold every key behind it.
- for(const op of ['note_selection','note_reanchor'])assert.equal(scheduleHostRequest({method:'host.browser',params:{op,tab_id:'t'}}).kind,'bridge');
+ for(const op of ['note_selection'])assert.equal(scheduleHostRequest({method:'host.browser',params:{op,tab_id:'t'}}).kind,'bridge');
  await assert.rejects(host.request({op:'chrome_window_follow',tab_id:'t',switches:false}),/MP-11: user browser is stopped/);
 }));
 

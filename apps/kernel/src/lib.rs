@@ -31,6 +31,7 @@ pub mod mcp;
 pub(crate) mod process_spawn;
 pub mod project_environment;
 pub(crate) mod prompt_assembly;
+pub mod prompt_notes;
 pub mod prompt_transcript;
 pub mod provider;
 pub(crate) mod provider_output_policy;

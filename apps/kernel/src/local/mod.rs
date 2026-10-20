@@ -297,8 +297,8 @@ pub use api::{
     KernelComputerKeyState, KernelDesktopTarget,
 };
 pub use api::{
-    NoteAnchor, NoteBox, NoteCommand, NoteRecord, NoteReply, NoteResult, NoteSelection,
-    NoteSummary, NoteTextQuote, NoteWindow, NotesRequest,
+    NoteAnchor, NoteBox, NoteCommand, NoteResult, NoteSelection, NoteTextQuote, NoteWindow,
+    NotesRequest,
 };
 pub use api::{UserDomainGrant, UserDomainNotice, UserDomainResource, UserDomainWindowAccess};
 pub use client::LocalDaemonClient;

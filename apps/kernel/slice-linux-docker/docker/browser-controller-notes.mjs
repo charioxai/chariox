@@ -105,33 +105,9 @@ function installNoteObserver() {
     const rect = box(range); if (!rect) return null;
     return { quote: { exact, prefix:indexed.text.slice(before,start).toWellFormed(), suffix:indexed.text.slice(end,after).toWellFormed() }, box_css:rect, hint:JSON.stringify({start,end}) };
   };
-  const matchQuote = (quote,root,exactOnly) => {
-    const indexed = index(root);
-    if (!indexed) throw new Error('MD-N2: page text limit reached');
-    const positions=[];
-    for (let at=indexed.text.indexOf(quote.exact); at>=0; at=indexed.text.indexOf(quote.exact,at+1)) {
-      const end=at+quote.exact.length;
-      if (exactOnly || ((!quote.prefix || indexed.text.slice(Math.max(0,at-quote.prefix.length),at)===quote.prefix)
-          && (!quote.suffix || indexed.text.slice(end,end+quote.suffix.length)===quote.suffix))) positions.push(at);
-      if (positions.length>1) break;
-    }
-    if (positions.length!==1) return { anchor_state:positions.length?'ambiguous':'missing', box_css:null };
-    const start=positions[0], end=start+quote.exact.length;
-    const a=indexed.nodes.find(({node,start:at})=>at+node.length>start);
-    const b=indexed.nodes.find(({node,start:at})=>at+node.length>=end);
-    if (!a || !b) return { anchor_state:'missing', box_css:null };
-    const range=document.createRange(); range.setStart(a.node,start-a.start); range.setEnd(b.node,end-b.start);
-    return { anchor_state:'attached', box_css:box(range), hint:JSON.stringify({start,end}) };
-  };
-  const reanchor = (quote,exactOnly=false) => {
-    const matches=roots().map(root=>matchQuote(quote,root,exactOnly));
-    const attached=matches.filter(result=>result.anchor_state==='attached');
-    if (matches.some(result=>result.anchor_state==='ambiguous') || attached.length>1) return {anchor_state:'ambiguous',box_css:null};
-    return attached[0]??{anchor_state:'missing',box_css:null};
-  };
   document.addEventListener('selectionchange',()=>capture());
   new MutationObserver(()=>{ capture(); }).observe(document.documentElement,{subtree:true,childList:true,characterData:true});
-  globalThis.__charioxNotes=Object.freeze({capture,reanchor});
+  globalThis.__charioxNotes=Object.freeze({capture});
   return true;
 }
 
@@ -153,7 +129,6 @@ function noteObservationFailure(result) {
 
 export async function observeBrowserNote(browser, request) {
   if (typeof request?.target_id !== 'string' || typeof request?.document_id !== 'string') throw new Error('MD-N2: observed target/document required');
-  if (request.quote && (!request.quote.exact || new TextEncoder().encode(request.quote.exact).length>16384 || [request.quote.prefix,request.quote.suffix].some(s=>typeof s!=='string'||new TextEncoder().encode(s).length>512))) throw new Error('MD-N2: invalid quote');
   const connection=await browser.ensureConnection();
   const protectedVariants=observationProtectedVariants(browser.protectedValues??[]);
   const session=await browser.ensureTargetSession(connection,request.target_id);
@@ -206,22 +181,18 @@ export async function observeBrowserNote(browser, request) {
       }
       worlds.push({item,world});
     }
-    const candidates=[];let ambiguous=false;
-    // Context has priority across ALL owned frames and shadow roots. Only
-    // after none match may changed surroundings use a unique exact quote.
-    for (const exactOnly of request.quote?[false,true]:[false]) {
+    const candidates=[];
+    {
       for (const {item,world} of worlds) {
-        const expression=request.quote ? `globalThis.__charioxNotes.reanchor(${JSON.stringify(request.quote)}${exactOnly?',true':''})` : `globalThis.__charioxNotes.capture(${protectedVariants.length?JSON.stringify(protectedVariants):''})`;
+        const expression=`globalThis.__charioxNotes.capture(${protectedVariants.length?JSON.stringify(protectedVariants):''})`;
         const result=await connection.send('Runtime.evaluate',{expression,contextId:world.contextId,returnByValue:true,awaitPromise:false},item.sessionId);
         if (result.exceptionDetails || !Object.hasOwn(result.result??{},'value')) throw noteObservationFailure(result);
         const value=result.result.value;
-        if (value?.anchor_state==='ambiguous') ambiguous=true;
-        if (!value || (request.quote && value.anchor_state!=='attached')) continue;
+        if (!value) continue;
         if (value.box_css) value.box_css=await projectFrameBox(connection,item,value.box_css);
         if (value.hint) value.hint=JSON.stringify({frame_id:item.frame.id,document_id:item.frame.loaderId,range:value.hint});
         candidates.push({value,url:item.frame.url,item});
       }
-      if (candidates.length || ambiguous) break;
     }
     // Recheck the documents that own released text and their enclosing frames.
     // Unrelated advertising frames may change while the selected document stays
@@ -249,10 +220,9 @@ export async function observeBrowserNote(browser, request) {
     for(const candidate of candidates)if(!await frameExposed(candidate.item))throw new Error('MD-N2: frame changed during capture');
     const after=await readFrame();
     if (after?.loaderId!==frame.loaderId) throw new Error('MD-N2: document changed during capture');
-    const chosen=candidates.length===1 && !ambiguous?candidates[0]:null;
+    const chosen=candidates.length===1?candidates[0]:null;
     return { target_id:request.target_id,document_id:frame.loaderId,url:chosen?.url??frame.url,
-      selection:request.quote?null:chosen?.value??null,
-      anchoring:request.quote?(chosen?.value??{anchor_state:ambiguous||candidates.length>1?'ambiguous':'missing',box_css:null}):null };
+      selection:chosen?.value??null };
   });
 }
 
