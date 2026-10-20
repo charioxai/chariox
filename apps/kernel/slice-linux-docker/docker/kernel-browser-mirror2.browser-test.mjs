@@ -381,6 +381,37 @@ test("MP-11 review r72-2: a click on a node below its own frame's viewport revea
     assert.equal(await evaluate("f.contentWindow.hit"), 1);
   }));
 
+test("MP-11 review r74-1: a button already visible in a scaled, bordered scroll pane lands without scrolling the pane", () => mirrored(
+  '<div id="pane" style="position:absolute;left:10px;top:50px;width:300px;height:100px;border:4px solid #888;overflow:auto;transform-origin:0 0;transform:scale(2)"><button id="b" style="position:absolute;left:200px;top:10px;width:60px;height:30px">b</button></div><script>window.hits=[];addEventListener("click",e=>hits.push(e.target.id),true)</script>', async ({ next, evaluate, input }) => {
+    const snapshot = await next(), [button] = elements(snapshot).find(([, , attrs]) => attrs.id === "b");
+    await input(snapshot.sequence, { kind: "click", node_id: button, x: 5, y: 5 });
+    assert.deepEqual(await evaluate("hits"), ["b"]);
+    assert.equal(await evaluate("pane.scrollTop + pane.scrollLeft"), 0, "an already visible control is not scrolled");
+  }));
+
+test("MP-11 review r74-1: a click on a frame's button while the frame sits below its scroll pane's visible part reveals the frame and lands in it", () => mirrored(
+  '<div id="pane" style="position:absolute;left:20px;top:50px;width:300px;height:100px;overflow:auto"><div style="height:300px"></div><iframe id="f" style="width:200px;height:100px;border:0" srcdoc="<button id=b style=\'width:80px;height:30px\' onclick=hit=(window.hit||0)+1>b</button>"></iframe></div><div style="position:absolute;left:20px;top:340px;width:300px;height:80px" id="under">under</div><script>window.hits=[];addEventListener("click",e=>hits.push(e.target.id),true)</script>', async ({ next, evaluate, input }) => {
+    await evaluate("new Promise(resolve => f.contentDocument?.getElementById('b') ? resolve(true) : f.addEventListener('load', () => resolve(true)))");
+    const snapshot = await next(600), [button] = elements(snapshot).find(([, tag, attrs]) => tag === "button" && attrs.id === "b") ?? [];
+    assert(button, "the frame's button is mirrored");
+    await input(snapshot.sequence, { kind: "click", node_id: button, x: 5, y: 5 });
+    assert.deepEqual(await evaluate("hits"), [], "nothing under the clipped frame is clicked");
+    assert.equal(await evaluate("f.contentWindow.hit"), 1);
+    assert(await evaluate("pane.scrollTop") > 0, "the pane scrolled the frame into view");
+  }));
+
+test("MP-11 review r74-1: a click inside a separately mirrored frame clipped by its scroll pane reveals the frame, never lands on content under it", () => mirrored(
+  '<div id="pane" style="position:absolute;left:20px;top:50px;width:300px;height:100px;overflow:auto"><div style="height:300px"></div><iframe id="f" src="http://localhost:PORT/btn" style="width:200px;height:100px;border:0"></iframe></div><div style="position:absolute;left:20px;top:340px;width:300px;height:80px" id="under">under</div><script>window.hits=[];addEventListener("click",e=>hits.push(e.target.id),true)</script>', async ({ next, evaluate, input }) => {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const snapshot = await next(600), [button] = elements(snapshot).find(([id, tag, attrs]) => tag === "button" && attrs.id === "b" && Number(id.slice(1)) >= 1e9) ?? [];
+    assert(button, "the frame's button is mirrored");
+    await input(snapshot.sequence, { kind: "click", node_id: button, x: 5, y: 5 });
+    assert.deepEqual(await evaluate("hits"), [], "nothing under the clipped frame is clicked");
+    assert(await evaluate("pane.scrollTop") > 0, "the pane scrolled the frame into view");
+  }, {
+    "/btn": { type: "text/html", body: '<!doctype html><button id="b" style="width:80px;height:30px">b</button>' },
+  }));
+
 test("MP-11: a click on a node that lost its box since the viewer's frame lands on its nearest boxed ancestor", () => mirrored(
   '<div id="p" style="position:absolute;left:200px;top:100px;width:100px;height:40px;background:#ccc">box<span id="z" style="display:contents"></span></div><script>window.hits=[];addEventListener("click",e=>hits.push(e.target.id),true)</script>', async ({ next, evaluate, input }) => {
     const snapshot = await next(), [collapsed] = elements(snapshot).find(([, , attrs]) => attrs.id === "z");

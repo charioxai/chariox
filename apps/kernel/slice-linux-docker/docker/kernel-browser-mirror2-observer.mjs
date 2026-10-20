@@ -136,8 +136,16 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       for (let n = record.target, depth = 0; n && depth < DEPTH; depth++) { const id = mirrored(n); if (id) return n !== record.target && !['mask', 'tile'].includes(kindOf.get(id)); n = n.parentNode ?? n.host; }
       return true;
     };
+    // The families a document's stacks name only settle with the document: a class/style/lang/face change or inserted
+    // content marks the scan stale, and the next drain after a short settle sweeps again (never per keystroke).
+    let stacksDirty = false, stacksScannedAt = -Infinity, stacksTimer = 0;
+    const stacksDue = () => stacksDirty && performance.now() - stacksScannedAt >= 400;
+    const armStacks = () => { stacksTimer ||= setTimeout(() => { stacksTimer = 0; if (!stacksDirty) return; if (stacksDue()) wake(); else armStacks(); }, 400); };
     const observer = new MutationObserver(list => {
       revision++;
+      if (!stacksDirty && list.some(record => record.type === 'attributes' ? ['class', 'style', 'lang', 'face'].includes(record.attributeName) : record.type === 'childList' && record.addedNodes.length)) {
+        stacksDirty = true; armStacks();
+      }
       for (const record of list) {
         const last = records.at(-1);
         if (record.type === 'childList' && last?.type === 'childList' && last.target === record.target || moot(record)) continue;
@@ -261,7 +269,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const timed = new Set();
     const timing = new PerformanceObserver(list => { for (const entry of list.getEntries()) { timed.delete(entry.name); timed.add(entry.name); if (timed.size > 20000) timed.delete(timed.values().next().value); } });
     try { timing.observe({ type: 'resource', buffered: true }); } catch {}
-    const dispose = () => { continuation?.return(); continuation = null; open.clear(); deferred.clear(); progressive = false; observer.disconnect(); timing.disconnect(); listening.abort(); records = []; nodes.clear(); kids.clear(); wake(); return true; };
+    const dispose = () => { continuation?.return(); continuation = null; open.clear(); deferred.clear(); progressive = false; observer.disconnect(); timing.disconnect(); listening.abort(); clearTimeout(stacksTimer); records = []; nodes.clear(); kids.clear(); wake(); return true; };
     const changedForm = control => { dirty.form.add(control); if (control.multiple) for (const option of control.options ?? []) dirty.form.add(option); };
     const watch = (root, rootId) => {
       roots.set(rootId, root);
@@ -582,12 +590,14 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     let reportedFonts = '[]';
     const reportedRequirements = new Map(), absentKeys = new Map(), absentOf = new Map(), installedFamilies = new Map();
     const fontOps = (ops, force = false) => {
+      const due = stacksDue();
+      if (due || force) { stacksDirty = false; stacksScannedAt = performance.now(); }
       for (const [id, root] of roots) {
         if (root.nodeType !== 9) continue;
         const required = fontRequirements(root, fontDescriptor, sha256), signature = JSON.stringify(required);
         // The stacks in use only settle with the document: sweep again when the requirements or completeness change.
         const key = `${signature}|${complete()}`; let changed = false;
-        if (force || absentKeys.get(id) !== key) { absentKeys.set(id, key); const absent = absentFonts(root, installedFamilies); changed = JSON.stringify(absent) !== JSON.stringify(absentOf.get(id) ?? []); absentOf.set(id, absent); }
+        if (force || due || absentKeys.get(id) !== key) { absentKeys.set(id, key); const absent = absentFonts(root, installedFamilies); changed = JSON.stringify(absent) !== JSON.stringify(absentOf.get(id) ?? []); absentOf.set(id, absent); }
         if (force || changed || reportedRequirements.get(id) !== signature) { reportedRequirements.set(id, signature); const absent = absentOf.get(id); ops.push(absent.length ? { op: 'fonts', id, required, absent } : { op: 'fonts', id, required }); }
       }
       return ops;
@@ -948,19 +958,24 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       }
       return { tx, ty, sx, sy };
     };
-    // A point outside what the node's scrolling ancestors and its own frame show is not reachable as it stands: the page
-    // scrolls it into view first (reveal), as for a viewer that scrolled ahead.
+    // A point (in the node's own viewport) outside what its scrolling ancestors and every enclosing frame show is not
+    // reachable as it stands: the page scrolls it into view first (reveal), as for a viewer that scrolled ahead.
+    // Clip boxes are taken in viewport coordinates, so a CSS-scaled pane clips by its scaled padding box.
     const clipped = (node, x, y) => {
-      const view = node.ownerDocument.defaultView;
-      if (x < 0 || y < 0 || x >= view.innerWidth || y >= view.innerHeight) return true;
-      for (let el = node.parentElement ?? node.getRootNode()?.host; el && el !== el.ownerDocument.documentElement && el !== el.ownerDocument.body; el = el.parentElement ?? el.getRootNode()?.host) {
-        const style = getComputedStyle(el);
-        if (style.position === 'fixed') return false;
-        if (style.overflowX === 'visible' && style.overflowY === 'visible') continue;
-        const r = el.getBoundingClientRect(), left = r.x + el.clientLeft, top = r.y + el.clientTop;
-        if (x < left || y < top || x >= left + el.clientWidth || y >= top + el.clientHeight) return true;
+      for (let view = node.ownerDocument.defaultView; ; view = view.parent) {
+        if (x < 0 || y < 0 || x >= view.innerWidth || y >= view.innerHeight) return true;
+        for (let el = node.parentElement ?? node.getRootNode()?.host; el && el !== el.ownerDocument.documentElement && el !== el.ownerDocument.body; el = el.parentElement ?? el.getRootNode()?.host) {
+          const style = getComputedStyle(el);
+          if (style.position === 'fixed') break;
+          if (style.overflowX === 'visible' && style.overflowY === 'visible') continue;
+          const r = el.getBoundingClientRect(), sx = el.offsetWidth > 0 ? r.width / el.offsetWidth : 1, sy = el.offsetHeight > 0 ? r.height / el.offsetHeight : 1;
+          const left = r.x + el.clientLeft * sx, top = r.y + el.clientTop * sy;
+          if (x < left || y < top || x >= left + el.clientWidth * sx || y >= top + el.clientHeight * sy) return true;
+        }
+        if (view === window) return false;
+        node = view.frameElement; if (!node) throw new Error('mirror2 frame unavailable');
+        const step = frameStep(node); x = step.x + step.sx * x; y = step.y + step.sy * y;
       }
-      return false;
     };
     // A point inside the live element at the viewer's offset (clamped). A node that lost its box since the
     // viewer's frame is clicked at the centre of its nearest boxed ancestor. Like Chrome, the click goes to whatever
@@ -976,7 +991,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let x = bx + ox, y = by + oy;
       if (clipped(node, x, y)) throw new Error('mirror2 offscreen node');
       const map = frameMap(node); x = map.tx + map.sx * x; y = map.ty + map.sy * y;
-      if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) throw new Error('mirror2 offscreen node');
       return { x: Math.floor(x), y: Math.floor(y) };
     };
     // The viewer is scrolled ahead of the native page: bring the node into the native viewport and say where the page now is.
@@ -1045,9 +1059,11 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // Trusted-side (DOM.resolveNode): the mirror id of a frame owner element.
     const idOfNode = function () { return this && mirrored(this) || null; };
     // Content-box origin of a cross-origin frame element in this viewport.
-    const frameOrigin = id => {
+    // With the point the viewer clicked in that frame's own viewport, a frame clipped away at it is reported offscreen.
+    const frameOrigin = (id, local) => {
       const node = live(id); if (node.localName !== 'iframe' || !foreign.has(id)) throw new Error('mirror2 frame required');
       const up = frameMap(node), own = frameStep(node);
+      if (local && clipped(node, own.x + own.sx * local[0], own.y + own.sy * local[1])) throw new Error('mirror2 offscreen node');
       return [up.tx + up.sx * own.x, up.ty + up.sy * own.y, up.sx * own.sx, up.sy * own.sy];
     };
     // Live focus inside a cross-origin frame: the frame element's mirror id.
@@ -1108,7 +1124,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       wake(); return true;
     };
     // Credit long-poll: resolves on the next page change (or the bound).
-    const changed = () => fontsChanged() || complete() !== reportedComplete || JSON.stringify(fontFailures()) !== reportedFonts || continuation !== null || deferred.size > 0 || records.length > 0 || overflow || adoptedDirty || Object.values(dirty).some(set => set.size > 0);
+    const changed = () => fontsChanged() || stacksDue() || complete() !== reportedComplete || JSON.stringify(fontFailures()) !== reportedFonts || continuation !== null || deferred.size > 0 || records.length > 0 || overflow || adoptedDirty || Object.values(dirty).some(set => set.size > 0);
     // Credit long-poll. The delta is taken in the wake microtask, right after our
     // capture-phase listener or MutationObserver callback, so an echo does not
     // wait for the page's own handlers to finish their task. A change flagged
