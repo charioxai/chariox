@@ -1,3 +1,4 @@
+// MP-08 / MP-10: bounded leading batches from panes/08-ttft-handoff.
 type TerminalOutputRecordQueueOptions<TimerHandle, RecordValue> = {
   delayMs: number
   maxRecordsPerFlush?: number
@@ -5,6 +6,8 @@ type TerminalOutputRecordQueueOptions<TimerHandle, RecordValue> = {
   scheduleTimer: (callback: () => void, delayMs: number) => TimerHandle
   clearTimer: (timer: TimerHandle) => void
   processRecords: (records: RecordValue[]) => void
+  /** Process the first record after a quiet window at once; coalesce the rest. */
+  nowMs?: () => number
 }
 
 export type TerminalOutputRecordQueue<RecordValue> = {
@@ -21,6 +24,7 @@ export function createTerminalOutputRecordQueue<TimerHandle, RecordValue>(
 ): TerminalOutputRecordQueue<RecordValue> {
   let pendingTimer: TimerHandle | undefined
   let pendingRecords: RecordValue[] = []
+  let lastProcessedAtMs = Number.NEGATIVE_INFINITY
   const maxRecordsPerFlush = Math.max(1, options.maxRecordsPerFlush ?? Number.POSITIVE_INFINITY)
   const maxPendingRecords = Math.max(1, options.maxPendingRecords ?? Number.POSITIVE_INFINITY)
 
@@ -38,6 +42,7 @@ export function createTerminalOutputRecordQueue<TimerHandle, RecordValue>(
       return
     }
     const records = pendingRecords.splice(0, maxRecordsPerFlush)
+    lastProcessedAtMs = options.nowMs?.() ?? lastProcessedAtMs
     options.processRecords(records)
     if (pendingRecords.length > 0) {
       scheduleFlush()
@@ -48,6 +53,7 @@ export function createTerminalOutputRecordQueue<TimerHandle, RecordValue>(
     clearPendingTimer()
     while (pendingRecords.length > 0) {
       const records = pendingRecords.splice(0, maxRecordsPerFlush)
+      lastProcessedAtMs = options.nowMs?.() ?? lastProcessedAtMs
       options.processRecords(records)
       clearPendingTimer()
     }
@@ -73,6 +79,12 @@ export function createTerminalOutputRecordQueue<TimerHandle, RecordValue>(
       // the queue stays bounded without dropping transcript records.
       while (pendingRecords.length > maxPendingRecords) {
         flush()
+      }
+      // Leading edge: a quiet stream shows its first record without waiting
+      // for the coalescing window (time to first text).
+      if (options.nowMs && pendingTimer === undefined && options.nowMs() - lastProcessedAtMs >= options.delayMs) {
+        flush()
+        return
       }
       scheduleFlush()
     },

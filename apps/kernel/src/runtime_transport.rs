@@ -50,10 +50,12 @@ use command_cache::{
 };
 use local_auth::KernelLocalAuth;
 use outgoing::{try_send_outgoing_frame, KernelOutgoingSender};
+#[cfg(test)]
+pub(crate) use subscriptions::watch_subscription_state;
+pub(crate) use subscriptions::WatchResult;
 use subscriptions::{
     emit_replay_gap_snapshot, replay_recent_events, run_subscription_loop, ReplaySubscriptionResult,
 };
-pub(crate) use subscriptions::{watch_subscription_state, WatchResult};
 
 pub(crate) const WATCH_INTERVAL_MS: u64 = 100;
 pub(crate) const WAITING_ROOM_ROW_COALESCE_MS: u64 = 500;
@@ -667,14 +669,24 @@ where
     tokio::pin!(shutdown);
 
     let pump_router = Arc::clone(&router);
+    // MP-08 / MP-10: maintenance and one agent's settlement cannot hold every
+    // provider's already-readable output. Mutations still use the same lanes.
+    let provider_output_pump_task = {
+        let runtime = router.runtime_state().clone();
+        tokio::spawn(async move { runtime.run_provider_output_pump().await })
+    };
     let pump_task = tokio::spawn(async move {
+        let pump_state = pump_router.runtime_state();
         loop {
+            // MP-08 / MP-10: capture readiness before draining, so an arrival
+            // during the pump cannot be hidden by the post-pump sleep.
+            let output_ready_sequence = pump_state.provider_output_ready_sequence();
+            let provider_actor_completion_sequence =
+                pump_router.provider_run_actor_completion_sequence();
             pump_router.runtime_state().pump_kernel_access();
             pump_router.pump_transport_runtime().await;
             let change_sequence = pump_router.transport_runtime_pump_change_sequence();
             let pty_output_sequence = pump_router.pty_output_change_sequence();
-            let provider_actor_completion_sequence =
-                pump_router.provider_run_actor_completion_sequence();
             let delay_ms = pump_router.transport_runtime_pump_interval_ms(
                 PUMP_INTERVAL_MS,
                 IDLE_PUMP_INTERVAL_MS,
@@ -686,6 +698,7 @@ where
                 _ = pump_router.wait_for_pty_output_change_after(pty_output_sequence) => {}
                 _ = pump_router.wait_for_provider_run_actor_completion_after(provider_actor_completion_sequence) => {}
                 _ = pump_router.wait_for_started_app_refreshes() => {}
+                _ = pump_state.wait_for_provider_output_ready_after(output_ready_sequence) => {}
             }
         }
     });
@@ -734,6 +747,7 @@ where
                 drop(_restart_recovery_task);
                 wake_scheduler_task.abort();
                 pump_task.abort();
+                provider_output_pump_task.abort();
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 app_wake_task.abort();
                 if let Some(task) = durable_snapshot_task.take() {
@@ -785,6 +799,7 @@ struct EventWriteCoalescer<T> {
     delay_ms: u64,
     frames: VecDeque<T>,
     ready_at: Option<tokio::time::Instant>,
+    last_emitted_at: Option<tokio::time::Instant>,
 }
 
 impl<T> EventWriteCoalescer<T> {
@@ -793,6 +808,7 @@ impl<T> EventWriteCoalescer<T> {
             delay_ms,
             frames: VecDeque::new(),
             ready_at: None,
+            last_emitted_at: None,
         }
     }
 
@@ -801,18 +817,26 @@ impl<T> EventWriteCoalescer<T> {
     }
 
     fn push_event(&mut self, frame: T, now: tokio::time::Instant) -> Option<T> {
-        if self.delay_ms == 0 {
+        let window = Duration::from_millis(self.delay_ms);
+        if self.frames.is_empty()
+            && (self.delay_ms == 0
+                || self
+                    .last_emitted_at
+                    .is_none_or(|last| now.saturating_duration_since(last) >= window))
+        {
+            self.last_emitted_at = Some(now);
             return Some(frame);
         }
         self.frames.push_back(frame);
         if self.ready_at.is_none() {
-            self.ready_at = Some(now + Duration::from_millis(self.delay_ms));
+            self.ready_at = Some(self.last_emitted_at.unwrap_or(now) + window);
         }
         None
     }
 
-    fn drain_ready(&mut self) -> Vec<T> {
+    fn drain_ready(&mut self, now: tokio::time::Instant) -> Vec<T> {
         self.ready_at = None;
+        self.last_emitted_at = Some(now);
         self.frames.drain(..).collect()
     }
 }
@@ -972,17 +996,17 @@ where
                             break;
                         }
                     }
+                    _ = tokio::time::sleep_until(ready_at) => {
+                        for frame in event_write_coalescer.drain_ready(tokio::time::Instant::now()) {
+                            if !outbound.send(&mut writer, outbound::Payload::Frame(frame)).await {
+                                break 'writer_loop;
+                            }
+                        }
+                    }
                     Some(frame) = event_rx.recv() => {
                         if let Some(frame) = event_write_coalescer.push_event(frame, tokio::time::Instant::now()) {
                             if !outbound.send(&mut writer, outbound::Payload::Frame(frame)).await {
                                 break;
-                            }
-                        }
-                    }
-                    _ = tokio::time::sleep_until(ready_at) => {
-                        for frame in event_write_coalescer.drain_ready() {
-                            if !outbound.send(&mut writer, outbound::Payload::Frame(frame)).await {
-                                break 'writer_loop;
                             }
                         }
                     }

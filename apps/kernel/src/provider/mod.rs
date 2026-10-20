@@ -28,6 +28,7 @@ mod opencode;
 mod opencode_binding;
 mod opencode_client;
 mod opencode_runtime;
+pub(crate) mod output_ready;
 mod process_info;
 mod prompt_signals;
 mod public_run;

@@ -357,20 +357,25 @@ async fn background_output_pump_enters_provider_runtime_lane() {
         .provider_runtime_lanes
         .acquire(&provider_run_id)
         .await;
-    let pump_router = router.clone();
-    let pump_task = tokio::spawn(async move { pump_router.pump_transport_runtime().await });
-
-    tokio::task::yield_now().await;
-    assert!(
-        !pump_task.is_finished(),
-        "background output pumping must wait behind the provider-run runtime lane"
-    );
-
-    drop(permit);
-    timeout(Duration::from_secs(1), pump_task)
+    let probe = router
+        .provider_runtime_lanes
+        .notify_on_next_acquire_for_tests(&provider_run_id);
+    let runtime = router.runtime_state().clone();
+    let pump_task = tokio::spawn(async move { runtime.run_provider_output_pump().await });
+    timeout(Duration::from_secs(1), probe.notified())
         .await
-        .expect("background output pump should resume after the lane is released")
-        .expect("background output pump task should join");
+        .expect("independent scheduler should enter the provider lane");
+    assert!(!pump_task.is_finished());
+    drop(permit);
+    let drained = timeout(
+        Duration::from_secs(1),
+        router.provider_runtime_lanes.acquire(&provider_run_id),
+    )
+    .await
+    .expect("output pump should release the lane after draining");
+    drop(drained);
+    pump_task.abort();
+    let _ = pump_task.await;
 }
 
 #[tokio::test]

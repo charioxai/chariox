@@ -9,6 +9,8 @@ mod permission;
 mod retry_status_tests;
 mod snapshot;
 mod state;
+#[cfg(test)]
+mod streaming_latency_tests;
 mod transcript;
 
 pub(in crate::provider) use drain::drain_opencode_events;
@@ -418,6 +420,127 @@ mod tests {
             state.active_user_message_id.as_deref(),
             Some("msg_user_next")
         );
+    }
+
+    #[test]
+    fn live_empty_part_emits_the_first_delta_without_waiting_for_a_snapshot() {
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".into(),
+            "session-1".into(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(
+                std::sync::mpsc::channel().1,
+            ),
+        );
+        state.note_prompt_submitted("msg_user".into());
+        state.live_text_from_start = true;
+        state
+            .message_roles
+            .insert("message-1".into(), "assistant".into());
+        let mut chunks = Vec::new();
+        let mut part = OpenCodePart {
+            id: "part-1".into(),
+            session_id: "session-1".into(),
+            message_id: "message-1".into(),
+            kind: "text".into(),
+            text: String::new(),
+            tool: String::new(),
+            state: None,
+            time: None,
+        };
+        handle_message_part_updated(
+            &mut state,
+            "run",
+            &RemoteExtensionManifest::default(),
+            part.clone(),
+            &mut chunks,
+        )
+        .unwrap();
+        assert!(chunks.is_empty());
+        handle_message_part_delta(
+            &mut state,
+            "run",
+            "session-1".into(),
+            "message-1".into(),
+            "part-1".into(),
+            "text".into(),
+            "hello".into(),
+            &mut chunks,
+        )
+        .unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].bytes, b"hello");
+        part.text = "hello world".into();
+        handle_message_part_updated(
+            &mut state,
+            "run",
+            &RemoteExtensionManifest::default(),
+            part,
+            &mut chunks,
+        )
+        .unwrap();
+        assert_eq!(chunks[1].bytes, b" world");
+    }
+
+    #[test]
+    fn reconnect_before_the_first_delta_waits_for_the_authoritative_prefix() {
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".into(),
+            "session-1".into(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(
+                std::sync::mpsc::channel().1,
+            ),
+        );
+        state.note_prompt_submitted("msg_user".into());
+        state.live_text_from_start = true;
+        state
+            .message_roles
+            .insert("message-1".into(), "assistant".into());
+        let mut chunks = Vec::new();
+        let mut part = OpenCodePart {
+            id: "part-1".into(),
+            session_id: "session-1".into(),
+            message_id: "message-1".into(),
+            kind: "text".into(),
+            text: String::new(),
+            tool: String::new(),
+            state: None,
+            time: None,
+        };
+        handle_message_part_updated(
+            &mut state,
+            "run",
+            &RemoteExtensionManifest::default(),
+            part.clone(),
+            &mut chunks,
+        )
+        .unwrap();
+        state.live_text_from_start = false;
+        handle_message_part_delta(
+            &mut state,
+            "run",
+            "session-1".into(),
+            "message-1".into(),
+            "part-1".into(),
+            "text".into(),
+            " world".into(),
+            &mut chunks,
+        )
+        .unwrap();
+        assert!(
+            chunks.is_empty(),
+            "a reconnected suffix must not become a prefix"
+        );
+        part.text = "hello world".into();
+        handle_message_part_updated(
+            &mut state,
+            "run",
+            &RemoteExtensionManifest::default(),
+            part,
+            &mut chunks,
+        )
+        .unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].bytes, b"hello world");
     }
 
     #[test]
@@ -1055,6 +1178,16 @@ mod tests {
             },
         )
         .expect("idle status should send");
+        // MP-08 / MP-10: metadata reconciliation must not end the failure
+        // fence once idle has cleared the active prompt identity.
+        tx.send(OpenCodeEvent::MessagePartDelta {
+            session_id: "session-1".into(),
+            message_id: "metadata-not-yet-known".into(),
+            part_id: "unknown-part".into(),
+            field: "text".into(),
+            delta: "late part".into(),
+        })
+        .unwrap();
         tx.send(
             crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
                 info: serde_json::from_value(json!({

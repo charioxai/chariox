@@ -469,18 +469,33 @@ fn connection_admission_prevents_one_client_from_consuming_process_capacity() {
 }
 
 #[test]
+fn panes_stream_kernel_event_writer_sends_first_frame_without_a_hold() {
+    // MP-08 / MP-10: the first ready record must not wait for the burst window.
+    let mut writer = EventWriteCoalescer::new(35);
+    let now = TokioInstant::now();
+    assert_eq!(
+        writer.push_event("first assistant record", now),
+        Some("first assistant record")
+    );
+    assert_eq!(writer.ready_at(), None);
+}
+
+#[test]
 fn kernel_event_writer_coalesces_event_lane_with_stable_deadline() {
     let now = TokioInstant::now();
     let mut coalescer = EventWriteCoalescer::new(33);
 
-    assert!(coalescer.push_event("event-1", now).is_none());
-    assert_eq!(coalescer.ready_at(), Some(now + Duration::from_millis(33)));
+    assert_eq!(coalescer.push_event("event-1", now), Some("event-1"));
+    assert_eq!(coalescer.ready_at(), None);
     assert!(coalescer
         .push_event("event-2", now + Duration::from_millis(10))
         .is_none());
     assert_eq!(coalescer.ready_at(), Some(now + Duration::from_millis(33)));
 
-    assert_eq!(coalescer.drain_ready(), vec!["event-1", "event-2"]);
+    assert_eq!(
+        coalescer.drain_ready(now + Duration::from_millis(33)),
+        vec!["event-2"]
+    );
     assert_eq!(coalescer.ready_at(), None);
 }
 
@@ -491,7 +506,7 @@ fn kernel_event_writer_can_disable_event_coalescing_for_tests() {
 
     assert_eq!(coalescer.push_event("event-1", now), Some("event-1"));
     assert_eq!(coalescer.ready_at(), None);
-    assert!(coalescer.drain_ready().is_empty());
+    assert!(coalescer.drain_ready(now).is_empty());
 }
 
 #[tokio::test]

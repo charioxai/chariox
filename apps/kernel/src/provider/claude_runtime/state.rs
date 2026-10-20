@@ -38,6 +38,7 @@ pub struct ClaudeRuntimeState {
     pub(super) process_identity: crate::runtime::kernel_access::process::ProcessIdentitySlot,
     pub(super) stdin: ChildStdin,
     pub(super) receiver: Receiver<ClaudeRuntimeMessage>,
+    pub(in crate::provider) output_notifier: crate::provider::output_ready::ProviderEventNotifier,
     pub(super) active_model: String,
     pub(super) active_variant: Option<String>,
     pub(super) active_execution_mode: AgentExecutionMode,

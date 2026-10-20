@@ -28,6 +28,7 @@ pub(super) fn spawn_claude_child(
     env_remove: &[String],
     working_directory: Option<&PathBuf>,
     operation: &'static str,
+    output_notifier: &crate::provider::output_ready::ProviderEventNotifier,
 ) -> Result<(Child, ChildStdin, Receiver<ClaudeRuntimeMessage>), DaemonError> {
     let mut command = Command::new(program);
     command
@@ -93,37 +94,44 @@ pub(super) fn spawn_claude_child(
     let (tx, receiver) = mpsc::channel();
     {
         let tx = tx.clone();
+        let output_notifier = output_notifier.clone();
         thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
                 match line {
                     Ok(line) if line.trim().is_empty() => {}
                     Ok(line) => match serde_json::from_str::<Value>(&line) {
                         Ok(value) => {
-                            let _ = tx.send(ClaudeRuntimeMessage::Stdout(value));
+                            let _ = output_notifier.send(&tx, ClaudeRuntimeMessage::Stdout(value));
                         }
                         Err(error) => {
-                            let _ = tx.send(ClaudeRuntimeMessage::StdoutParseError(format!(
-                                "{error}: {line}"
-                            )));
+                            let _ = output_notifier.send(
+                                &tx,
+                                ClaudeRuntimeMessage::StdoutParseError(format!("{error}: {line}")),
+                            );
                         }
                     },
                     Err(error) => {
-                        let _ = tx.send(ClaudeRuntimeMessage::StdoutParseError(error.to_string()));
+                        let _ = output_notifier.send(
+                            &tx,
+                            ClaudeRuntimeMessage::StdoutParseError(error.to_string()),
+                        );
                         break;
                     }
                 }
             }
         });
     }
+    let output_notifier = output_notifier.clone();
     thread::spawn(move || {
         for line in BufReader::new(stderr).lines() {
             match line {
                 Ok(line) if line.trim().is_empty() => {}
                 Ok(line) => {
-                    let _ = tx.send(ClaudeRuntimeMessage::Stderr(line));
+                    let _ = output_notifier.send(&tx, ClaudeRuntimeMessage::Stderr(line));
                 }
                 Err(error) => {
-                    let _ = tx.send(ClaudeRuntimeMessage::Stderr(error.to_string()));
+                    let _ =
+                        output_notifier.send(&tx, ClaudeRuntimeMessage::Stderr(error.to_string()));
                     break;
                 }
             }

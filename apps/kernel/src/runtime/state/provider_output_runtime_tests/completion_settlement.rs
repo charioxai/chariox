@@ -2315,6 +2315,9 @@ async fn provider_output_records_carry_active_external_prompt_origin() {
         Some("external:claude")
     );
 
+    // Streaming delivery precedes writer acknowledgement; check persisted
+    // attribution after the same ordered barrier used by turn settlement.
+    runtime.flush_provider_history(run.id()).await.unwrap();
     let history_entries = runtime
         .owned
         .operational_history_store

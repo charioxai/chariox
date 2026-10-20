@@ -23,7 +23,7 @@ impl KernelRuntimeState {
         if !initial_liveness_already_checked
             && uses_structured_prompt_io
             && self
-                .reconcile_provider_run_exit(session_id, provider_run_id)
+                .reconcile_provider_run_exit_for_output(session_id, provider_run_id)
                 .await?
         {
             return Ok(owned
@@ -147,7 +147,7 @@ impl KernelRuntimeState {
                     return Ok(Vec::new());
                 }
                 if self
-                    .reconcile_provider_run_exit(session_id, provider_run_id)
+                    .reconcile_provider_run_exit_for_output(session_id, provider_run_id)
                     .await?
                 {
                     return Ok(owned
@@ -269,13 +269,15 @@ impl KernelRuntimeState {
         // Settlement can include cancellation, queue advancement, and remote
         // substitute reconciliation. Keep that future off enclosing
         // launch/dispatch/output stack frames.
-        if !Box::pin(self.reconcile_provider_run_exit(session_id, provider_run_id)).await?
-            && records.is_empty()
+        if !Box::pin(self.reconcile_provider_run_exit_for_output(session_id, provider_run_id))
+            .await?
         {
-            let _ = self
-                .settle_owned_pty_prompt_if_quiet(session_id, provider_run_id)
-                .await?;
-            owned.ensure_quiet_provider_recheck_scheduled(provider_run_id);
+            if records.is_empty() {
+                let _ = self
+                    .settle_owned_pty_prompt_if_quiet(session_id, provider_run_id)
+                    .await?;
+                owned.ensure_quiet_provider_recheck_scheduled(provider_run_id);
+            }
         }
         Ok(records)
     }

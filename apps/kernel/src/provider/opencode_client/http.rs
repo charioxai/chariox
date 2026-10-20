@@ -84,7 +84,23 @@ impl OpenCodeClient {
                 break;
             }
             attempts += 1;
-            match self.send_request_once(method, path, body, read_timeout) {
+            // MP-08 / MP-10: timings never include request paths or payloads.
+            let started = Instant::now();
+            crate::logging::debug_with_fields(
+                "daemon.provider.opencode.timing",
+                "http request started",
+                serde_json::json!({"provider_run_id": self.provider_run_id,
+                    "operation": method_to_operation(method, path), "attempt": attempt}),
+            );
+            let response = self.send_request_once(method, path, body, read_timeout);
+            crate::logging::debug_with_fields(
+                "daemon.provider.opencode.timing",
+                "http request finished",
+                serde_json::json!({"provider_run_id": self.provider_run_id,
+                    "operation": method_to_operation(method, path), "attempt": attempt,
+                    "elapsed_us": started.elapsed().as_micros(), "success": response.is_ok()}),
+            );
+            match response {
                 Ok(response) => return Ok(response),
                 Err(error) if is_retryable_opencode_http_error(method, path, &error) => {
                     last_error = Some(error.into_daemon_error(self, method, path));
@@ -307,6 +323,9 @@ fn method_to_operation(method: &str, path: &str) -> &'static str {
         ("GET", "/event") => "event_subscribe",
         ("POST", "/session") => "session_create",
         ("GET", "/session/status") => "session_status",
+        ("GET", "/provider") => "provider_catalog",
+        ("GET", "/config") => "configured_defaults",
+        _ if method == "PATCH" && path.starts_with("/session/") => "session_permissions",
         _ if method == "POST" && path.ends_with("/prompt_async") => "session_prompt",
         _ if method == "POST" && path.ends_with("/message") => "session_prompt",
         _ if method == "POST" && path.ends_with("/abort") => "session_abort",
