@@ -93,7 +93,7 @@ for(const name of ['bwrap','Xvfb','dbus-daemon','openbox','setxkbmap'])fixedReas
 const nativeStages=new Set('native_codec_unavailable x_extensions desktop_geometry window_tree_bound window_ambiguous window_not_found window_retired composite_redirect composite_pixmap native_admission native_pool_metadata native_pool_owner native_packet_root native_root_owner native_capture_unavailable native_window_retired native_config native_config_pipe native_config_bound'.split(' '));
 // MIRROR-ROBUST-STALE-REF: navigation and teardown races the viewer answers by rebinding are not host errors;
 // a binding that is really stale shows as the viewer failing to follow, never as one of these.
-const races=new Set(['region_retired','display_suspended']);
+const races=new Set(['region_retired','display_suspended','display_retired']);
 export function hostErrorLabel(error) {
  if(races.has(error?.race))return 'navigation_race '+error.race;
  if(error?.code==='stale_document_reference')return 'navigation_race stale_document';

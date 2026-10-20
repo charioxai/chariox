@@ -11,7 +11,7 @@ import {lateInputAck,markDispatched} from './kernel-browser-input-queue.mjs';
 import {popupActionId} from './kernel-browser-popup-evidence.mjs';
 import {slowMark} from './kernel-browser-timing.mjs';
 
-const refuse=()=>{throw new UserDomainRefusal('stale_reference');};
+const refuse=()=>{throw new UserDomainRefusal('stale_reference','region_retired');};
 // The kernel Chrome's own UI (band, popups): window leases, not page regions.
 const chromeUi=target=>target?.kind==='browser_chrome'||target?.kind==='browser_auxiliary';
 function checkedTarget(target) {

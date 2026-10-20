@@ -95,7 +95,7 @@ impl KernelBrowserActors {
             self.pointers.clear();
             self.pointer_tabs.clear();
             self.generation = generation;
-            self.tab_activity = BrowserTabActivity::default();
+            self.tab_activity.browser_restarted();
         }
         if let (Some(width), Some(height)) = (
             state["viewport"]["css_width"].as_u64(),
@@ -873,9 +873,11 @@ mod visible_tab_tests {
             .reconcile(&json!({"generation":1,"tabs":[{"tab_id":"host-a","document_id":"a"}]}))
             .unwrap();
         let action = completed(&mut model, "agent:a", "host-a");
+        model.opened_tab(actor("agent:a"), "host-a");
         let mut state = json!({"generation":2,"_tab_creation_actions":{"restored":action},"tabs":[{"tab_id":"host-a","document_id":"a"},{"tab_id":"restored","document_id":"restored"}]});
         model.reconcile(&state).unwrap();
         model.project_tabs(&mut state);
+        assert_eq!(state["tabs"][0]["opened_by"]["actor_id"], "agent:a");
         assert!(state["tabs"][1]["opened_by"].is_null());
         assert!(state["agent_activity"].is_null());
     }
