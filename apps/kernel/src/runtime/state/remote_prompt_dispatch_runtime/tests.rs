@@ -3428,8 +3428,12 @@ mod projection_drain {
             "test-model",
         )
         .with_agent_id(agent.id());
-        let mut home_run = crate::provider::RuntimeProviderRun::new(
+        let home_provider_run_id = crate::provider::projected_leased_provider_run_id(
+            &binding.leased_agent_id,
             &provider_run_id,
+        );
+        let mut home_run = crate::provider::RuntimeProviderRun::new(
+            &home_provider_run_id,
             &request,
             crate::provider::ProviderLaunchResult {
                 endpoint_mode: crate::provider::AgentEndpointMode::External,
@@ -3446,10 +3450,10 @@ mod projection_drain {
         home_run.mark_running();
         app.providers_mut().insert_run_for_test(home_run.clone());
         app.sessions_mut()
-            .set_active_provider_run(session.id(), Some(provider_run_id.clone()))
+            .set_active_provider_run(session.id(), Some(home_provider_run_id.clone()))
             .expect("home run should be selected for the pre-completion snapshot");
         app.update_provider_run_projection(home_run.clone());
-        crate::transport::flow_control::note_prompt_started(&mut app, &provider_run_id);
+        crate::transport::flow_control::note_prompt_started(&mut app, &home_provider_run_id);
 
         let initial_snapshot =
             crate::runtime::projection::SessionSnapshotProjection::from_daemon_app(

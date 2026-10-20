@@ -81,7 +81,7 @@ fn wait_for_launches(path: &std::path::Path, count: usize) -> String {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let contents = std::fs::read_to_string(path).unwrap_or_default();
-        if contents.lines().count() >= count {
+        if contents.ends_with('\n') && contents.lines().count() >= count {
             return contents;
         }
         assert!(Instant::now() < deadline, "child launch trace missing");

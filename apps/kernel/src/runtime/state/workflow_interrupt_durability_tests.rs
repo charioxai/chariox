@@ -1159,6 +1159,11 @@ fn interrupt_fixture_with_creator(
             .invoke_queued_workflow_endpoint(session.id(), &queued)
             .expect("workflow run should be created")
     };
+    if let Some(queue_id) = workflow_run.queue_item_id() {
+        app.sessions_mut()
+            .remove_queued_workflow_prompt(session.id(), queue_id)
+            .expect("the started invocation must not remain queued for a second dispatch");
+    }
     let node_run_id = workflow_run.node_runs()[0].id().to_string();
     app.sessions_mut()
         .prepare_workflow_turn(
