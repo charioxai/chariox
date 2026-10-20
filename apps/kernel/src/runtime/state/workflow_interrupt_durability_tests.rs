@@ -1143,7 +1143,7 @@ fn interrupt_fixture_with_creator(
     } else {
         let queued = app
             .sessions_mut()
-            .queue_workflow_endpoint_prompt(
+            .enqueue_workflow_prompt_by_agent(
                 session.id(),
                 workflow.id(),
                 endpoint.id(),
