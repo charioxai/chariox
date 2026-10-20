@@ -1,3 +1,5 @@
+#[cfg(test)]
+use super::super::api::ProviderCatalogExecutionLocation;
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::provider::{

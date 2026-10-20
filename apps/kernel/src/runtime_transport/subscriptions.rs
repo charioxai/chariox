@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 
+#[cfg(test)]
 use crate::error::DaemonError;
 use crate::local::{RelayStatus, RemoteMachineRecord};
 use crate::runtime::event_log::{LoggedEvent, ReplayGap, ReplayOutcome};

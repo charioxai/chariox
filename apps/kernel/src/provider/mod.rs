@@ -1,3 +1,5 @@
+#[cfg(test)]
+pub(crate) use account_credential::provider_account_credential_uses_vault;
 use std::time::Duration;
 
 mod utility_admission;

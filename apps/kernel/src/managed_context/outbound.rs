@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom};

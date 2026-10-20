@@ -1,4 +1,6 @@
 //! MD-2: kernel authority for Chromium running directly on the host.
+#[cfg(test)]
+use super::browser_controller_process::BrowserControllerProcessState;
 use super::browser_controller_process::{
     BrowserCancellation, BrowserControllerProcessBackend, BrowserControllerProcessStdioBackend,
     RetireLane,
