@@ -238,7 +238,20 @@ impl KernelRuntimeOwnedState {
                 .into_iter()
                 .find(|t| ledger::goals::is_check(t, prompt.id()))
             {
-                let result = self.take_private_assessment(room, agent, prompt.id(), answer_run);
+                let mut result = self.take_private_assessment(room, agent, prompt.id(), answer_run);
+                // A leased worker's output reaches the home as projected public history, never
+                // through the local private-result capture; unprotected rooms read it from there.
+                if result.is_empty()
+                    && run.starts_with("leased:")
+                    && !self.room_secret_observations.protects_bytes(room)
+                {
+                    result = super::agent_task_projection::task_public_outputs(
+                        &entries,
+                        prompt.id(),
+                        Some(answer_run),
+                    )
+                    .concat();
+                }
                 return match self
                     .durable_state_store
                     .agent_lifecycle(Operation::EvaluateGoal {
@@ -407,53 +420,56 @@ impl KernelRuntimeState {
             payload: serde_json::json!({"status":"durable","sequence":event.sequence,"urgent":event.urgent,"reply_requested":event.reply_requested}),
         })
     }
-    /// The prompt a native provider TUI is working on, if the run is a native TUI.
-    pub(super) fn native_tui_active_prompt(
+    /// Native TUI turns end at the provider Stop event, which completes the prompt without the
+    /// managed-provider settlement. Each output pass remembers the turn the TUI is on; once it is
+    /// no longer the active prompt, settle its task definitively. The person drives the provider
+    /// TUI, so there is no completion-check turn.
+    pub(super) async fn settle_finished_native_tui_turn(
         &self,
         session_id: &str,
         run: &crate::provider::RuntimeProviderRun,
-    ) -> Option<crate::session::PromptQueueItem> {
-        if run.client_interface() != crate::provider::ProviderClientInterface::NativeTui {
-            return None;
-        }
-        let session = self.owned.session_store.get_session(session_id).ok()?;
-        self.owned
-            .prompt_state_owner
-            .active_prompt_for_agent_snapshot(&session, run.agent_instance_id()?)
-    }
-    /// Native TUI turns end at the provider Stop event, which completes the prompt without
-    /// the managed-provider settlement. Settle the task here, definitively: the person drives
-    /// the provider TUI, so there is no completion-check turn.
-    pub(super) async fn settle_native_tui_turn_if_completed(
-        &self,
-        session_id: &str,
-        provider_run_id: &str,
-        turn: &crate::session::PromptQueueItem,
     ) {
-        let still_active = self
-            .owned
-            .session_store
-            .get_session(session_id)
-            .ok()
-            .is_some_and(|session| {
-                self.owned
-                    .prompt_state_owner
-                    .active_prompt_for_agent_snapshot(&session, turn.target_agent_id())
-                    .is_some_and(|active| active.id() == turn.id())
-            });
-        if still_active {
+        let Some(agent_id) = run.agent_instance_id() else {
             return;
-        }
-        let settled = match self.owned.settle_agent_task(
-            session_id,
-            turn.target_agent_id(),
-            turn,
-            provider_run_id,
-            false,
-        ) {
-            Ok(settlement) => self.finish_agent_task_settlement(settlement, turn).await,
-            Err(error) => Err(error),
         };
+        let Ok(session) = self.owned.session_store.get_session(session_id) else {
+            return;
+        };
+        let active = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent_snapshot(&session, agent_id);
+        let finished = {
+            let mut turns = self
+                .owned
+                .native_tui_turns
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let previous = turns
+                .get(run.id())
+                .filter(|turn| active.as_ref().is_none_or(|a| a.id() != turn.id()))
+                .cloned();
+            match &active {
+                Some(active) => {
+                    turns.insert(run.id().to_string(), active.clone());
+                }
+                None => {
+                    turns.remove(run.id());
+                }
+            }
+            previous
+        };
+        let Some(turn) = finished else {
+            return;
+        };
+        let settled =
+            match self
+                .owned
+                .settle_agent_task(session_id, agent_id, &turn, run.id(), false)
+            {
+                Ok(settlement) => self.finish_agent_task_settlement(settlement, &turn).await,
+                Err(error) => Err(error),
+            };
         if let Err(error) = settled {
             crate::logging::warn_with_fields(
                 "daemon.agent_lifecycle",
