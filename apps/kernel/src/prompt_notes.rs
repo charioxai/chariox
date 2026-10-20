@@ -111,11 +111,16 @@ pub(crate) fn admit(
             )));
         }
     }
-    Ok(if prompt.trim().is_empty() && count > 0 {
+    Ok(with_note_request(prompt, attachments))
+}
+
+/// A prompt that is blank but carries notes becomes the fixed request line.
+pub(crate) fn with_note_request(prompt: String, attachments: &[PromptAttachment]) -> String {
+    if prompt.trim().is_empty() && attachments.iter().any(is_note) {
         NOTE_ONLY_PROMPT.to_string()
     } else {
         prompt
-    })
+    }
 }
 
 fn field(value: &Option<String>) -> Option<&str> {
@@ -201,23 +206,30 @@ fn describe(source: &NoteSource) -> Option<String> {
     Some(text)
 }
 
-/// The request as the completion check sees it: the typed text plus a line saying notes came with
-/// it. The check reads only public history, where notes are chips without their content, so it
-/// must not ask the user to attach them again.
+/// The request as the completion check sees it: the typed text plus the notes that came with
+/// it, rendered like the hidden context the agent got, so a terse note-only answer is judged
+/// against what the notes ask.
 pub(crate) fn objective_with_notes(
     text: &str,
     attachments: &[crate::history::SessionHistoryPromptAttachment],
 ) -> String {
-    let notes = attachments
+    let notes: Vec<PromptAttachment> = attachments
         .iter()
         .filter(|attachment| attachment.mime == NOTE_ATTACHMENT_MIME)
-        .count();
-    if notes == 0 {
-        return text.to_string();
+        .map(|chip| {
+            let note = PromptAttachment::new(&chip.url, &chip.mime, chip.filename.clone());
+            match &chip.contents_base64 {
+                Some(contents) => note.with_contents_base64(contents.clone()),
+                None => note,
+            }
+        })
+        .collect();
+    match split_for_provider(notes, None).1 {
+        Some(context) => format!(
+            "{text}\n[The user attached notes to this request; they are part of it. Judge the answer against the request and these notes, and do not ask for the notes again.]\n{context}"
+        ),
+        None => text.to_string(),
     }
-    format!(
-        "{text}\n[The user also attached {notes} note(s): selected text with a comment, shown as chips in the transcript and given to the agent as hidden context. Their content is not repeated here; judge the answer against the request above and do not ask for the notes again.]"
-    )
 }
 
 /// Removes note attachments from the provider-bound list and renders them as hidden context.
@@ -349,25 +361,32 @@ mod tests {
     }
 
     #[test]
-    fn the_completion_check_objective_mentions_attached_notes_only_when_there_are_some() {
-        let chip = |mime: &str| crate::history::SessionHistoryPromptAttachment {
-            url: "chariox-terminal://x".into(),
-            mime: mime.into(),
-            filename: None,
-            preview_url: None,
-        };
+    fn the_completion_check_objective_carries_the_note_content_only_when_there_are_notes() {
+        let chip =
+            |mime: &str, contents: Option<&str>| crate::history::SessionHistoryPromptAttachment {
+                url: "chariox-terminal://x".into(),
+                mime: mime.into(),
+                filename: None,
+                preview_url: None,
+                contents_base64: contents
+                    .map(|json| base64::engine::general_purpose::STANDARD.encode(json)),
+            };
         assert_eq!(
-            objective_with_notes("fix it", &[chip("image/png")]),
+            objective_with_notes("fix it", &[chip("image/png", None)]),
             "fix it"
         );
         let objective = objective_with_notes(
-            "fix it",
-            &[chip(NOTE_ATTACHMENT_MIME), chip(NOTE_ATTACHMENT_MIME)],
+            "read the notes",
+            &[
+                chip(
+                    NOTE_ATTACHMENT_MIME,
+                    Some(r#"{"quote":"q1","comment":"rename the flag"}"#),
+                ),
+                chip(NOTE_ATTACHMENT_MIME, Some(r#"{"quote":"q2"}"#)),
+            ],
         );
-        assert!(
-            objective.starts_with("fix it\n[The user also attached 2 note(s)"),
-            "{objective}"
-        );
+        assert!(objective.starts_with("read the notes\n[The user attached notes"));
+        assert!(objective.contains("rename the flag") && objective.contains("q2"));
         assert!(objective.contains("do not ask for the notes again"));
     }
 

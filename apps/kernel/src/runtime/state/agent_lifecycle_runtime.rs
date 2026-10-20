@@ -56,7 +56,16 @@ impl KernelRuntimeOwnedState {
         };
         // A workflow node turn completes through its validated handoff or final
         // output; a plain check could only see that handoff after the node completes.
+        // A native provider TUI settles definitively at turn end: no completion-check turn
+        // would be typed into the TUI the person is driving.
+        let native_tui = self
+            .provider_store
+            .get_latest_run_for_agent(&prepared.session_id, prepared.prompt.target_agent_id())
+            .is_some_and(|run| {
+                run.client_interface() == crate::provider::ProviderClientInterface::NativeTui
+            });
         if !existed
+            && !native_tui
             && prepared.prompt.workflow_run_id().is_none()
             && super::agent_goal_runtime::parse_goal_prompt(prepared.prompt.prompt())?.is_none()
         {
@@ -212,7 +221,10 @@ impl KernelRuntimeOwnedState {
         let entries = self
             .operational_history_store
             .load_session_history_entries(room, Some(agent))?;
-        let has_answer = super::agent_task_projection::task_public_outputs(
+        // The answer of a native TUI turn is on the provider screen, not in the task projection.
+        let has_answer = self.provider_run_projection.get(run).is_some_and(|run| {
+            run.client_interface() == crate::provider::ProviderClientInterface::NativeTui
+        }) || super::agent_task_projection::task_public_outputs(
             &entries,
             prompt.id(),
             Some(answer_run),
@@ -394,6 +406,61 @@ impl KernelRuntimeState {
             ok: true,
             payload: serde_json::json!({"status":"durable","sequence":event.sequence,"urgent":event.urgent,"reply_requested":event.reply_requested}),
         })
+    }
+    /// The prompt a native provider TUI is working on, if the run is a native TUI.
+    pub(super) fn native_tui_active_prompt(
+        &self,
+        session_id: &str,
+        run: &crate::provider::RuntimeProviderRun,
+    ) -> Option<crate::session::PromptQueueItem> {
+        if run.client_interface() != crate::provider::ProviderClientInterface::NativeTui {
+            return None;
+        }
+        let session = self.owned.session_store.get_session(session_id).ok()?;
+        self.owned
+            .prompt_state_owner
+            .active_prompt_for_agent_snapshot(&session, run.agent_instance_id()?)
+    }
+    /// Native TUI turns end at the provider Stop event, which completes the prompt without
+    /// the managed-provider settlement. Settle the task here, definitively: the person drives
+    /// the provider TUI, so there is no completion-check turn.
+    pub(super) async fn settle_native_tui_turn_if_completed(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        turn: &crate::session::PromptQueueItem,
+    ) {
+        let still_active = self
+            .owned
+            .session_store
+            .get_session(session_id)
+            .ok()
+            .is_some_and(|session| {
+                self.owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent_snapshot(&session, turn.target_agent_id())
+                    .is_some_and(|active| active.id() == turn.id())
+            });
+        if still_active {
+            return;
+        }
+        let settled = match self.owned.settle_agent_task(
+            session_id,
+            turn.target_agent_id(),
+            turn,
+            provider_run_id,
+            false,
+        ) {
+            Ok(settlement) => self.finish_agent_task_settlement(settlement, turn).await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = settled {
+            crate::logging::warn_with_fields(
+                "daemon.agent_lifecycle",
+                "native TUI task settlement retained for sweep",
+                serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
+            );
+        }
     }
     pub(super) async fn finish_agent_task_settlement(
         &self,

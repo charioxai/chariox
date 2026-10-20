@@ -222,6 +222,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
         mime: "image/png".to_string(),
         filename: Some("Screenshot.png".to_string()),
         preview_url: Some("data:image/png;base64,aW1hZ2U=".to_string()),
+        contents_base64: None,
     }];
     user_prompt.entry.prompt_origin = Some(crate::session::PromptOrigin::External);
     let summary = history_page_entry(
