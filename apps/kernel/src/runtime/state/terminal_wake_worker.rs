@@ -16,7 +16,7 @@ const RETRY_AFTER: Duration = Duration::from_secs(2);
 
 /// One capped wait on the worker.
 pub(super) enum Step {
-    Waited(RoomTerminalWaitResult),
+    Waited(Box<RoomTerminalWaitResult>),
     /// The worker did not answer; the terminal may be fine.
     Unreachable(String),
     /// The terminal can no longer be reached by this agent (lease replaced).
@@ -24,7 +24,7 @@ pub(super) enum Step {
 }
 
 pub(super) enum Settled {
-    Fired(RoomTerminalWaitResult),
+    Fired(Box<RoomTerminalWaitResult>),
     Lost(String),
 }
 
@@ -150,9 +150,9 @@ mod tests {
     async fn capped_waits_repeat_from_the_last_offset_until_a_watch_fires() {
         let offsets = Arc::new(Mutex::new(Vec::new()));
         let mut script = vec![
-            Step::Waited(answer(None, 10)),
-            Step::Waited(answer(None, 25)),
-            Step::Waited(answer(finished(3), 40)),
+            Step::Waited(Box::new(answer(None, 10))),
+            Step::Waited(Box::new(answer(None, 25))),
+            Step::Waited(Box::new(answer(finished(3), 40))),
         ]
         .into_iter();
         let seen = offsets.clone();
@@ -192,7 +192,7 @@ mod tests {
         let mut script = vec![
             Step::Unreachable("blip".into()),
             Step::Unreachable("blip".into()),
-            Step::Waited(answer(finished(0), 7)),
+            Step::Waited(Box::new(answer(finished(0), 7))),
         ]
         .into_iter();
         let settled = supervise(None, |_| std::future::ready(script.next().unwrap())).await;

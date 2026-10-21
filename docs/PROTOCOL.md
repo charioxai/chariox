@@ -5019,10 +5019,15 @@ below the provider tool limit; on timeout `fired` is null and the program is
 still running) and `close`.
 
 A runtime tool `chariox.events.terminal` (`terminal_id`, `until` as for `wait`,
-`after_offset`) registers a notification in the wake registry as a `terminal`
-wake on a terminal of this kernel: yield on its registration and the kernel
-wakes the agent once with the exit code (`finished`) or the matched text and the
-screen, ending the wake. A terminal closed or ended first ends it as lost.
+`after_offset`, `host_agent` / `home_kernel` as for the other terminal tools,
+the agent's own machine by default) registers a notification in the wake
+registry as a `terminal` wake: yield on its registration and the kernel wakes
+the agent once with the exit code (`finished`) or the matched text and the
+screen, ending the wake. A terminal closed or ended first ends it as lost. For a
+terminal on a leased worker the worker runs the watch (the capped `wait` of the
+Room terminal peer request, repeated from the last output offset) and the home
+reports the one occurrence; a worker unreachable for 120 s, a replaced lease or
+a home restart ends the wake as lost, and the terminal itself is not affected.
 
 - Only the Room's owner may send it. A Room made before Cloud enrollment (owner
   `local`) stays usable by the enrolled terminal. `host_agent` and `acting_agent`

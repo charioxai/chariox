@@ -251,7 +251,7 @@ impl KernelRuntimeState {
             )
             .await
         {
-            Ok(RoomTerminalResult::Waited { waited }) => Step::Waited(waited),
+            Ok(RoomTerminalResult::Waited { waited }) => Step::Waited(Box::new(waited)),
             Ok(_) => Step::Gone("the worker answered a terminal wait with something else".into()),
             Err(error) => Step::Unreachable(error.to_string()),
         }
