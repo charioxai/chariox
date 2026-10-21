@@ -413,9 +413,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             .any(|r| r.obligation_id.as_deref() == Some(&o.id))
                     })
             {
-                return Err(error(
-                    "yield sources must cover every unresolved obligation",
-                ));
+                return Err(error(yield_refusal(tx, &t, &ids, &regs)?));
             }
             // A goal checks in at its owner's interval. Any other admitted
             // deadline is honoured: shortening it would spend no-progress
@@ -662,4 +660,37 @@ pub(super) fn recover_source(
         }
     }
     Ok(())
+}
+
+/// A02-S02: a message wakes a yielded agent in a new turn. Waiting again on
+/// the registrations of its earlier task is not this turn's wait: that task
+/// still waits, so the turn only has to end.
+fn yield_refusal(
+    tx: &Transaction<'_>,
+    t: &AgentTaskExecution,
+    ids: &[String],
+    own: &[Registration],
+) -> Result<String, DaemonError> {
+    let foreign: Vec<&String> = ids
+        .iter()
+        .filter(|id| !own.iter().any(|r| &r.id == *id))
+        .collect();
+    let unresolved = t
+        .obligations
+        .iter()
+        .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
+    if !foreign.is_empty() && !unresolved {
+        for other in tasks(tx)?.into_iter().filter(|o| {
+            o.task_id != t.task_id
+                && o.room_id == t.room_id
+                && o.agent_id == t.agent_id
+                && o.state == ExecutionState::Waiting
+        }) {
+            let theirs = registrations(tx, &other.task_id)?;
+            if foreign.iter().all(|id| theirs.iter().any(|r| &r.id == *id)) {
+                return Ok("Your earlier task is still waiting on these registrations; this turn has nothing of its own to wait on. Do not yield: finish this turn now (an answer is optional) and the earlier wait continues.".into());
+            }
+        }
+    }
+    Ok("yield sources must cover every unresolved obligation".into())
 }
