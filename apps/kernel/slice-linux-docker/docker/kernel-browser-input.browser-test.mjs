@@ -139,13 +139,13 @@ test("MP-11: retained/focused state reads cannot restart native Chromium after h
   assert.equal(restarted.generation,bound.generation+1); assert.equal(restarted.tabs[0].tab_id,bound.tab_id);
 },false));
 
-test("MP-11: retained input still checks revocation between paired native events", () => native(field, async ({input,events,host,bound}) => {
+test("MP-11: revoked retained input pairs the non-text release before reporting cancellation", () => native(field, async ({input,events,host,bound}) => {
   const cancellation=new AbortController();
   const {connection}=await host.browser.resolvePageTarget(host.tabs.get(bound.tab_id).target_id);
   const send=connection.send.bind(connection);
   connection.send=async(method,params,session)=>{const result=await send(method,params,session); if(method==='Input.dispatchKeyEvent'&&params.type==='keyDown')cancellation.abort(); return result;};
   await assert.rejects(host.request({op:'input',...bound,input:{kind:'key',key:'Tab'},_retained_agent:true},{signal:cancellation.signal}),{code:'browser_action_cancelled'});
-  assert.deepEqual(events.map(e=>e.type),['keyDown']);
+  assert.deepEqual(events.map(e=>e.type),['keyDown','keyUp']);
 }));
 
 
