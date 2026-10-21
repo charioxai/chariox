@@ -2823,8 +2823,23 @@ pub(in crate::runtime::state) mod tests {
         String,
         String,
     ) {
+        runtime_with_active_prompt_and_config(DaemonConfig::for_tests(), prior).await
+    }
+
+    async fn runtime_with_active_prompt_and_config(
+        config: DaemonConfig,
+        prior: &[&str],
+    ) -> (
+        crate::test_support::TestWorktree,
+        KernelRuntimeState,
+        String,
+        String,
+        String,
+        String,
+        String,
+    ) {
         let worktree = crate::test_support::TestWorktree::new("local-prompt-active");
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
         let (session, agent) = KernelSessionService::new(&mut app)
             .create_session(worktree.session_request())
             .expect("session should create");

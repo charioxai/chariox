@@ -829,3 +829,81 @@ async fn native_attachment_contents_are_protected_after_decoding() {
         }
     }
 }
+
+// MP-08 / MP-10 / MP-11: the user's own text reaches the agent as typed; only
+// product-held context is protected.
+#[tokio::test]
+async fn native_dispatch_passes_typed_prompt_text_and_protects_hidden_context() {
+    use crate::app::NativePromptHandoffPolicy;
+    let fixture = PausedBrief::new(true, false).await;
+    let typed = format!("please use {SECRET} as the password");
+    let mut dispatch = dispatch(
+        &fixture.session_id,
+        &fixture.agent_id,
+        &fixture.attachment_id,
+        fixture.run.id(),
+        &fixture.prompt_id,
+        &typed,
+        None,
+        false,
+    );
+    dispatch.hidden_system_context = format!("remembered {SECRET}");
+    let (protected, _) = fixture
+        .runtime
+        .owned
+        .protect_native_dispatch(&dispatch, None)
+        .unwrap();
+    assert_eq!(protected.prompt, typed);
+    assert!(!protected.hidden_system_context.contains(SECRET));
+    let (prompt, hidden, _) = fixture
+        .runtime
+        .owned
+        .protect_inputs(
+            &fixture.session_id,
+            typed.clone(),
+            format!("remembered {SECRET}"),
+            vec![],
+        )
+        .unwrap();
+    assert_eq!(prompt, typed);
+    assert!(!hidden.contains(SECRET));
+}
+
+// MP-08 / MP-10 / MP-11: a registered Vault value must not rewrite the
+// objective of an unrelated goal the owner starts afterwards.
+#[tokio::test]
+async fn goal_objective_survives_registered_room_values() {
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let (_root, runtime, session_id, agent_id, attachment_id, _, _) =
+        runtime_with_active_prompt_and_config(config, &[]).await;
+    runtime
+        .owned
+        .room_secret_observations
+        .register(&session_id, SECRET)
+        .unwrap();
+    let mut prepared = crate::app::KernelPreparedPromptSubmission {
+        session_id: session_id.clone(),
+        prompt: crate::session::PromptQueueItem::new(
+            "goal-prompt",
+            &attachment_id,
+            &agent_id,
+            "/goal ship the quarterly report",
+            crate::session::PromptStatus::Queued,
+        ),
+        force_queue: false,
+        refresh_projection: true,
+    };
+    runtime.owned.admit_agent_task(&prepared).unwrap();
+    runtime.owned.admit_goal_prompt(&mut prepared).unwrap();
+    let goals: Vec<_> = runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(&session_id), Some(&agent_id))
+        .unwrap()
+        .into_iter()
+        .filter_map(|task| task.goal)
+        .collect();
+    assert_eq!(goals.len(), 1);
+    assert_eq!(goals[0].objective, "ship the quarterly report");
+}
