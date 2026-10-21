@@ -378,6 +378,7 @@ pub fn codex_skill_candidates(
         .collect())
 }
 
+mod claude_plugins;
 mod details;
 pub use details::{NativeSkillDetails, NativeSkillProvenance};
 mod execution;

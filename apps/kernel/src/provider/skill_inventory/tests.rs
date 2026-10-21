@@ -153,32 +153,80 @@ fn codex_respects_actual_cwd_disabled_state_and_discovery_errors() {
     assert!(codex_skill_candidates(&response, std::path::Path::new("/other")).is_err());
 }
 #[test]
-fn claude_scoped_profile_additional_and_plugins_confirm_exposure() {
+fn claude_scoped_profile_project_and_enabled_plugins_confirm_exposure() {
     let temp = Scratch::new();
     let mut binding = temp.binding("claude");
-    binding.environment.insert(
-        "CLAUDE_CONFIG_DIR".into(),
-        temp.0.join("selected-profile").display().to_string(),
-    );
+    let profile = temp.0.join("selected-profile");
+    binding
+        .environment
+        .insert("CLAUDE_CONFIG_DIR".into(), profile.display().to_string());
     temp.skill("selected-profile/skills", "profile");
     temp.skill("home/.claude/skills", "ambient");
     temp.skill(".claude/skills", "project");
-    temp.skill("extra/.claude/skills", "extra");
-    temp.skill("plugin/skills", "plugin");
-    let candidates = filesystem_skill_candidates(
-        &binding,
-        &temp.0,
-        &[temp.0.join("extra")],
-        &[temp.0.join("plugin/skills")],
-        &[],
+    // The layout `claude plugin install` writes (Claude Code 2.1.296).
+    let cache = profile.join("plugins/cache/local");
+    temp.skill(
+        "selected-profile/plugins/cache/local/houseplug/1.0.0/skills",
+        "house-lint",
+    );
+    temp.skill(
+        "selected-profile/plugins/cache/local/houseplug/1.0.0/extra",
+        "house-docs",
+    );
+    temp.skill(
+        "selected-profile/plugins/cache/local/offplug/1.0.0/skills",
+        "off-lint",
+    );
+    temp.skill(
+        "selected-profile/plugins/cache/local/elsewhere/1.0.0/skills",
+        "other-lint",
+    );
+    fs::create_dir_all(cache.join("houseplug/1.0.0/.claude-plugin")).unwrap();
+    fs::write(
+        cache.join("houseplug/1.0.0/.claude-plugin/plugin.json"),
+        r#"{"name":"houseplug","skills":["./extra","../escape"]}"#,
     )
     .unwrap();
+    let install = |name: &str, extra: &str| {
+        format!(
+            r#"[{{"scope":"user","installPath":"{}","version":"1.0.0"{extra}}}]"#,
+            cache.join(name).join("1.0.0").display()
+        )
+    };
+    fs::write(
+        profile.join("plugins/installed_plugins.json"),
+        format!(
+            r#"{{"version":2,"plugins":{{"houseplug@local":{},"offplug@local":{},"elsewhere@local":{}}}}}"#,
+            install("houseplug", ""),
+            install("offplug", ""),
+            install("elsewhere", r#","projectPath":"/another/project""#),
+        ),
+    )
+    .unwrap();
+    fs::write(
+        profile.join("settings.json"),
+        r#"{"enabledPlugins":{"houseplug@local":true,"offplug@local":true,"elsewhere@local":true}}"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.0.join(".claude/settings.json"),
+        r#"{"enabledPlugins":{"offplug@local":false}}"#,
+    )
+    .unwrap();
+    let candidates = filesystem_skill_candidates(&binding, &temp.0, &[]).unwrap();
     let names: BTreeMap<_, _> = candidates
         .iter()
         .map(|c| (c.name.as_str(), &c.exposure))
         .collect();
-    assert_eq!(names.len(), 4);
-    assert!(!names.contains_key("ambient"));
+    assert_eq!(
+        names.keys().copied().collect::<Vec<_>>(),
+        [
+            "houseplug:house-docs",
+            "houseplug:house-lint",
+            "profile",
+            "project"
+        ]
+    );
     assert!(names
         .values()
         .all(|state| **state == NativeSkillExposure::Confirmed));
@@ -210,7 +258,7 @@ fn claude_settings_permission_deny_disables_the_native_skill() {
         r#"{"permissions":{"deny":["Skill(local-denied)"]}}"#,
     )
     .unwrap();
-    let candidates = filesystem_skill_candidates(&binding, &temp.0, &[], &[], &[]).unwrap();
+    let candidates = filesystem_skill_candidates(&binding, &temp.0, &[]).unwrap();
     let inventory = NativeSkillInventory::from_candidates(&binding, candidates).unwrap();
     let exposure = |name: &str| {
         inventory
@@ -244,14 +292,13 @@ fn opencode_scoped_xdg_compatibility_and_configured_roots_are_candidates() {
     temp.skill(".agents/skills", "agents");
     temp.skill("configured", "configured");
     let candidates =
-        filesystem_skill_candidates(&binding, &temp.0, &[], &[], &[temp.0.join("configured")])
-            .unwrap();
+        filesystem_skill_candidates(&binding, &temp.0, &[temp.0.join("configured")]).unwrap();
     assert_eq!(candidates.len(), 5);
     binding
         .environment
         .insert("OPENCODE_DISABLE_EXTERNAL_SKILLS".into(), "true".into());
     assert_eq!(
-        filesystem_skill_candidates(&binding, &temp.0, &[], &[], &[temp.0.join("configured")])
+        filesystem_skill_candidates(&binding, &temp.0, &[temp.0.join("configured")])
             .unwrap()
             .len(),
         3
@@ -385,8 +432,6 @@ fn opencode_configured_paths_include_nested_and_standalone_packages() {
     let candidates = filesystem_skill_candidates(
         &binding,
         &temp.0,
-        &[],
-        &[],
         &[temp.0.join("configured"), path.parent().unwrap().into()],
     )
     .unwrap();
@@ -401,7 +446,7 @@ fn candidate_enumeration_does_not_follow_skill_file_symlinks() {
     let destination = temp.0.join("home/.claude/skills/review/SKILL.md");
     fs::create_dir_all(destination.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(source, destination).unwrap();
-    let candidates = filesystem_skill_candidates(&binding, &temp.0, &[], &[], &[]).unwrap();
+    let candidates = filesystem_skill_candidates(&binding, &temp.0, &[]).unwrap();
     assert!(candidates.is_empty());
 }
 #[test]
@@ -494,7 +539,7 @@ fn claude_directory_selection_uses_native_slash_adapter_and_rechecks_digest() {
     let temp = Scratch::new();
     let binding = temp.binding("claude");
     let path = temp.skill(".claude/skills", "review");
-    let candidates = filesystem_skill_candidates(&binding, &temp.0, &[], &[], &[]).unwrap();
+    let candidates = filesystem_skill_candidates(&binding, &temp.0, &[]).unwrap();
     let inventory = NativeSkillInventory::from_candidates(&binding, candidates).unwrap();
     let selection = inventory.entries[0].selection.clone();
     let mut context = SkillTurnContext {
@@ -546,7 +591,7 @@ fn claude_account_skill_shadows_same_name_project_skill() {
         "---\nname: review\ndescription: Project review\n---\nProject body.\n",
     )
     .unwrap();
-    let candidates = filesystem_skill_candidates(&binding, &temp.0, &[], &[], &[]).unwrap();
+    let candidates = filesystem_skill_candidates(&binding, &temp.0, &[]).unwrap();
     let inventory = NativeSkillInventory::from_candidates(&binding, candidates).unwrap();
     assert_eq!(
         inventory.entries.len(),

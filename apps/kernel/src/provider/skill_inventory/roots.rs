@@ -7,15 +7,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Extra roots are already allowlisted, resolved settings/launch arguments:
-/// Claude --add-dir contributes <dir>/.claude/skills; plugins contribute their
-/// enabled <plugin>/skills root. OpenCode skills.paths contributes skill roots.
-/// Never read arbitrary provider settings/credential payloads here.
+/// Extra roots are already allowlisted, resolved settings: Claude's enabled
+/// plugins contribute their skill roots; OpenCode skills.paths contributes skill
+/// roots. Chariox never launches Claude with --add-dir, so added directories
+/// contribute nothing. Never read arbitrary provider settings/credential payloads here.
 pub fn filesystem_skill_candidates(
     binding: &SkillInventoryBinding,
     worktree_root: &Path,
-    additional_directories: &[PathBuf],
-    enabled_plugin_skill_roots: &[PathBuf],
     configured_skill_roots: &[PathBuf],
 ) -> Result<Vec<NativeSkillCandidate>, DaemonError> {
     binding.validate()?;
@@ -34,12 +32,6 @@ pub fn filesystem_skill_candidates(
         if let Some(config) = claude_config_dir(binding) {
             roots.push(config.join("skills"));
         }
-        roots.extend(
-            additional_directories
-                .iter()
-                .map(|p| p.join(".claude/skills")),
-        );
-        roots.extend_from_slice(enabled_plugin_skill_roots);
     } else {
         if let Some(config) = env_path("OPENCODE_CONFIG_DIR") {
             roots.extend([config.join("skills"), config.join("skill")]);
@@ -108,11 +100,14 @@ pub fn filesystem_skill_candidates(
             &mut candidates,
         )?;
     }
+    if binding.provider == "claude" {
+        collect_claude_plugin_candidates(binding, worktree_root, &mut candidates)?;
+    }
     // MP-08 / MP-10 / MP-11: owner decision 2026-10-18. Claude's resolved
     // skill directories are a supported exposure seam. from_candidates still
     // verifies the complete package and downgrades unreadable/invalid entries.
-    // Roots are in precedence order (account, added dirs, plugins, nearest
-    // project first): the first package of a name is the one `/name` runs, so
+    // Roots are in precedence order (account, nearest project first; plugin
+    // skills are namespaced): the first package of a name is the one `/name` runs, so
     // shadowed namesakes are never offered.
     if binding.provider == "claude" {
         let mut names = BTreeSet::new();
@@ -137,20 +132,57 @@ fn claude_config_dir(binding: &SkillInventoryBinding) -> Option<PathBuf> {
 /// Skills the account and project Claude settings deny with a `Skill(name)` or
 /// `Skill(name *)` permission rule. Claude refuses them to its model, so the native
 /// copy is not exposed. Nothing else in those files is read or kept.
-fn claude_denied_skills(binding: &SkillInventoryBinding, worktree_root: &Path) -> BTreeSet<String> {
+/// Account settings, then project settings from the outermost directory to the
+/// cwd: increasing precedence.
+fn claude_settings_files(binding: &SkillInventoryBinding, worktree_root: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = claude_config_dir(binding)
         .map(|config| config.join("settings.json"))
         .into_iter()
         .collect();
-    for ancestor in binding
+    let ancestors: Vec<&Path> = binding
         .cwd
         .ancestors()
         .take_while(|p| p.starts_with(worktree_root))
-    {
+        .collect();
+    for ancestor in ancestors.into_iter().rev() {
         files.push(ancestor.join(".claude/settings.json"));
         files.push(ancestor.join(".claude/settings.local.json"));
     }
     files
+}
+
+fn collect_claude_plugin_candidates(
+    binding: &SkillInventoryBinding,
+    worktree_root: &Path,
+    candidates: &mut Vec<NativeSkillCandidate>,
+) -> Result<(), DaemonError> {
+    let Some(config) = claude_config_dir(binding) else {
+        return Ok(());
+    };
+    let project_dirs: Vec<&Path> = binding
+        .cwd
+        .ancestors()
+        .take_while(|p| p.starts_with(worktree_root))
+        .collect();
+    let settings = claude_settings_files(binding, worktree_root);
+    for plugin in
+        super::claude_plugins::claude_plugin_skill_roots(&config, &settings, &project_dirs)
+    {
+        if !plugin.root.exists() {
+            continue;
+        }
+        let mut found = Vec::new();
+        collect_candidates(&plugin.root, 1, &mut 0, &mut found)?;
+        candidates.extend(found.into_iter().map(|mut candidate| {
+            candidate.name = format!("{}:{}", plugin.plugin, candidate.name);
+            candidate
+        }));
+    }
+    Ok(())
+}
+
+fn claude_denied_skills(binding: &SkillInventoryBinding, worktree_root: &Path) -> BTreeSet<String> {
+    claude_settings_files(binding, worktree_root)
         .iter()
         .filter_map(|file| std::fs::read(file).ok().filter(|raw| raw.len() <= 1 << 20))
         .filter_map(|raw| serde_json::from_slice::<serde_json::Value>(&raw).ok())

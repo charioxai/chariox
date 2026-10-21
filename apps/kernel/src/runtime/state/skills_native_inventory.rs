@@ -134,8 +134,6 @@ impl SkillInventories {
                 catalog_revision,
                 source_revision: 0,
                 worktree_root: &root,
-                additional_directories: &[],
-                enabled_plugin_skill_roots: &[],
                 configured_skill_roots: &[],
             },
             refresh,

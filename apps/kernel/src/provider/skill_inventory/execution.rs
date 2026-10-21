@@ -42,8 +42,6 @@ pub struct NativeSkillDiscoveryRequest<'a> {
     pub catalog_revision: u64,
     pub source_revision: u64,
     pub worktree_root: &'a std::path::Path,
-    pub additional_directories: &'a [PathBuf],
-    pub enabled_plugin_skill_roots: &'a [PathBuf],
     pub configured_skill_roots: &'a [PathBuf],
 }
 
@@ -78,8 +76,6 @@ pub fn inventory_for_run(
             filesystem_skill_candidates(
                 &binding,
                 request.worktree_root,
-                request.additional_directories,
-                request.enabled_plugin_skill_roots,
                 request.configured_skill_roots,
             )
         };
