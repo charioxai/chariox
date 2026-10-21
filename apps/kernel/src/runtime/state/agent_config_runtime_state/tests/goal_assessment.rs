@@ -834,7 +834,7 @@ async fn achieved_check_publishes_only_the_final_answer() {
         r#"{"status":"achieved","final_answer":"  ","evidence":["e"]}"#,
         "",
     ] {
-        owned.publish_check_answer(&room, &agent, "run", receipt);
+        owned.publish_check_answer(&room, &agent, "run", receipt, "");
     }
     assert!(history().is_empty());
     owned.prompt_state_owner.sync_external_active_prompt(
@@ -848,12 +848,12 @@ async fn achieved_check_publishes_only_the_final_answer() {
             crate::session::PromptStatus::Running,
         )),
     );
-    owned.publish_check_answer(
-        &room,
-        &agent,
-        "run",
-        r#"{"status":"achieved","final_answer":"Opened two tabs","evidence":["history:x"]}"#,
-    );
+    let achieved =
+        r#"{"status":"achieved","final_answer":"Opened two tabs","evidence":["history:x"]}"#;
+    // The work turn already showed this answer: the receipt must not repeat it.
+    owned.publish_check_answer(&room, &agent, "run", achieved, "Done. Opened two tabs.");
+    assert!(history().is_empty());
+    owned.publish_check_answer(&room, &agent, "run", achieved, "");
     let entries = history();
     assert_eq!(entries.len(), 1, "{entries:?}");
     assert_eq!(entries[0].text, "Opened two tabs");

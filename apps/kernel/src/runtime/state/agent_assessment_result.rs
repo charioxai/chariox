@@ -197,13 +197,23 @@ impl KernelRuntimeOwnedState {
     }
     /// The check turn is agent-only, but an achieved receipt's final answer is
     /// ordinary agent text for the owner. Protected rooms never publish it.
-    pub(super) fn publish_check_answer(&self, room: &str, agent: &str, run: &str, result: &str) {
+    pub(super) fn publish_check_answer(
+        &self,
+        room: &str,
+        agent: &str,
+        run: &str,
+        result: &str,
+        already_shown: &str,
+    ) {
         let Ok(Assessment::Achieved { final_answer, .. }) =
             serde_json::from_str::<Assessment>(result)
         else {
             return;
         };
-        if final_answer.trim().is_empty() || self.room_secret_observations.protects_bytes(room) {
+        if final_answer.trim().is_empty()
+            || already_shown.contains(final_answer.trim())
+            || self.room_secret_observations.protects_bytes(room)
+        {
             return;
         }
         let bytes = self

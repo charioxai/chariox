@@ -340,19 +340,24 @@ impl KernelRuntimeOwnedState {
                     )
                     .concat();
                 }
+                // What the owner already saw of the work turn; the receipt must not repeat it.
+                let work_output = ledger::completion::evaluation(&task)
+                    .map(|check| {
+                        super::agent_task_projection::task_public_outputs(
+                            &entries,
+                            &check.work_prompt_id,
+                            super::agent_task_projection::task_answer_history_run(
+                                check.work_provider_run_id.as_deref(),
+                            ),
+                        )
+                        .concat()
+                    })
+                    .unwrap_or_default();
                 return match self
                     .durable_state_store
                     .agent_lifecycle(Operation::EvaluateGoal {
-                        work_answer: ledger::completion::evaluation(&task).map(|check| {
-                            let output = super::agent_task_projection::task_public_outputs(
-                                &entries,
-                                &check.work_prompt_id,
-                                super::agent_task_projection::task_answer_history_run(
-                                    check.work_provider_run_id.as_deref(),
-                                ),
-                            )
-                            .concat();
-                            super::agent_task_projection::answer_tail(output.trim(), 1_024)
+                        work_answer: ledger::completion::evaluation(&task).map(|_| {
+                            super::agent_task_projection::answer_tail(work_output.trim(), 1_024)
                         }),
                         task: task.task_id,
                         prompt: prompt.id().into(),
@@ -360,8 +365,15 @@ impl KernelRuntimeOwnedState {
                         now: crate::session::unix_epoch_ms(),
                     })? {
                     Outcome::Settled { task, correction } => {
-                        if task.state == ExecutionState::Done {
-                            self.publish_check_answer(room, agent, answer_run, &result);
+                        // Only a goal's receipt can say more than its last work turn did.
+                        if task.state == ExecutionState::Done && task.goal.is_some() {
+                            self.publish_check_answer(
+                                room,
+                                agent,
+                                answer_run,
+                                &result,
+                                &work_output,
+                            );
                         }
                         Ok(Some((task, correction)))
                     }
@@ -577,6 +589,14 @@ impl KernelRuntimeState {
             );
         }
     }
+    /// Notices name the agent the way the owner does, never by task id.
+    fn agent_notice_name(&self, agent_id: &str) -> String {
+        self.owned
+            .agent_store
+            .get_agent(agent_id)
+            .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_string())
+            .unwrap_or_else(|_| "Agent".into())
+    }
     pub(super) async fn finish_agent_task_settlement(
         &self,
         settlement: Option<(AgentTaskExecution, bool)>,
@@ -585,12 +605,7 @@ impl KernelRuntimeState {
         let Some((task, correction)) = settlement else {
             return Ok(());
         };
-        let name = self
-            .owned
-            .agent_store
-            .get_agent(&task.agent_id)
-            .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_string())
-            .unwrap_or_else(|_| "Agent".into());
+        let name = self.agent_notice_name(&task.agent_id);
         let message = super::agent_task_projection::task_status_notice(&task, &name);
         self.owned.record_notice_for_agent(
             &task.room_id,
@@ -1096,11 +1111,15 @@ impl KernelRuntimeState {
                     .attachment_store
                     .list_session_attachment_ids(&task.room_id),
                 if task.state == ExecutionState::Blocked {
-                    format!("Blocked: {}", task.reason)
+                    format!(
+                        "{}: Needs your help. {}",
+                        self.agent_notice_name(&task.agent_id),
+                        task.reason
+                    )
                 } else {
                     format!(
-                        "Long wait: task {} has made no progress for 15 minutes",
-                        task.task_id
+                        "{}: Waiting for 15 minutes without progress.",
+                        self.agent_notice_name(&task.agent_id)
                     )
                 },
             );
