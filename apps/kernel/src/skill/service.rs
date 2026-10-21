@@ -260,6 +260,7 @@ impl SkillCatalogService {
             budget_percent,
             remaining_body_tokens,
             context_generation,
+            None,
         )
     }
     #[allow(
@@ -279,6 +280,7 @@ impl SkillCatalogService {
         budget_percent: f64,
         remaining_body_tokens: u64,
         context_generation: &str,
+        live_run_id: Option<&str>,
     ) -> Result<SkillTurnContext, DaemonError> {
         catalog.validate()?;
         let revision = catalog.revision;
@@ -356,6 +358,11 @@ impl SkillCatalogService {
             .into_iter()
             .rev()
         {
+            // The provider run still holds what it was given earlier; only a new run,
+            // a compaction or a profile switch loses it.
+            if live_run_id == Some(previous.run_id.as_str()) {
+                continue;
+            }
             if previous.agent_id == agent_id
                 && rows.iter().any(|r| {
                     r.skill.id == previous.skill_id && r.effective_state != SkillState::Off

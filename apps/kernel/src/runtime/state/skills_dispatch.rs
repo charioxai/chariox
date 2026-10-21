@@ -29,6 +29,7 @@ struct SkillDispatchService {
     prompts: crate::runtime::prompt_state::PromptStateOwner,
     runs: crate::runtime::projection::ProviderRunProjectionStore,
     inventories: Arc<super::skills_native_inventory::SkillInventories>,
+    history: crate::history::OperationalHistoryStore,
 }
 fn failure(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
@@ -56,6 +57,7 @@ fn service(state: &KernelRuntimeState) -> SkillDispatchService {
         prompts: owned.prompt_state_owner.clone(),
         runs: owned.provider_run_projection.clone(),
         inventories: owned.skill_inventories.clone(),
+        history: owned.operational_history_store.clone(),
     }
 }
 /// Home-side delivery for a leased worker: the exact packages the worker must hold
@@ -177,6 +179,26 @@ impl SkillDispatchService {
                 .any(|row| row.effective_state != SkillState::Off),
         )
     }
+    /// The run whose provider context still holds earlier skill loads. A compaction or
+    /// profile switch waiting for its recovery turn means that context is gone, so
+    /// every active load must be delivered again.
+    fn live_context_run_id<'a>(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        run: &'a RuntimeProviderRun,
+    ) -> Result<Option<&'a str>, DaemonError> {
+        let pending = self
+            .history
+            .load_agent_compaction_boundary(
+                session_id,
+                agent_id,
+                run.provider(),
+                run.account_profile(),
+                super::context_handoff::native_session_id(run),
+            )?;
+        Ok(pending.is_none().then(|| run.id()))
+    }
     fn prepare_remote(
         &self,
         session_id: &str,
@@ -225,6 +247,7 @@ impl SkillDispatchService {
             budget_percent,
             remaining,
             &generation,
+            None,
         )?;
         // Native duplicates retain home load authority, but never transfer a body/package.
         let auto_rows: Vec<_> = rows
@@ -608,6 +631,7 @@ impl SkillPromptBridge for SkillDispatchService {
             config.user_config.skills.metadata_budget_percent.get(),
             remaining,
             &generation,
+            self.live_context_run_id(session_id, agent_id, run)?,
         )?;
         let same_acknowledged_context = prompt.skill_turn_authority().is_some_and(|authority| {
             authority.provider_run_id == run.id() && authority.context_generation == generation

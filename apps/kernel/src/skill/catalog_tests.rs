@@ -928,6 +928,63 @@ fn skills_v2_review_manual_active_load_survives_other_agents_receipt_tail() {
 }
 
 #[test]
+fn skills_v2_loaded_skill_is_delivered_once_per_provider_run() {
+    let f = StorageFixture::new();
+    let (service, set) = service_install(&f, "---\nname: review\ndescription: review code\ndisable-model-invocation: true\n---\nMANUAL BODY\n");
+    let skill = &set.catalogs[0].skills[0];
+    f.storage
+        .record_load(&SkillLoadRecord {
+            skill_id: skill.id.clone(),
+            digest: skill.digest.clone(),
+            session_id: "s".into(),
+            agent_id: "a".into(),
+            run_id: "run-1".into(),
+            prompt_id: "p".into(),
+            reason: SkillLoadReason::Explicit,
+            context_generation: "g1".into(),
+            delivered_at_ms: 1,
+        })
+        .unwrap();
+    let turn = |prompt: &str, live_run_id: Option<&str>| {
+        service
+            .pinned_turn_from_snapshot(
+                &f.storage.snapshot().unwrap(),
+                None,
+                "a",
+                "s",
+                prompt,
+                &[],
+                &[],
+                Some(128_000),
+                1.0,
+                8192,
+                "g2",
+                live_run_id,
+            )
+            .unwrap()
+    };
+    assert!(
+        turn("next question", Some("run-1")).loaded.is_empty(),
+        "the same provider run already holds the body"
+    );
+    assert_eq!(
+        turn("next question", None).loaded.len(),
+        1,
+        "a compaction or profile switch re-attaches the body"
+    );
+    assert_eq!(
+        turn("next question", Some("run-2")).loaded.len(),
+        1,
+        "a restarted provider run has lost the body"
+    );
+    assert_eq!(
+        turn("again $review", Some("run-1")).loaded.len(),
+        1,
+        "an explicit selection always delivers"
+    );
+}
+
+#[test]
 fn skills_v2_review_model_load_becoming_manual_does_not_block_continuation() {
     let f = StorageFixture::new();
     let (service, set) = service_install(
@@ -1112,6 +1169,7 @@ fn skills_v2_running_turn_catalog_stays_pinned_when_the_turn_publishes_an_update
             1.0,
             8192,
             "turn1",
+            None,
         )
         .unwrap();
     assert!(old.loaded[0].body.contains("ORIGINAL TURN BODY"));
