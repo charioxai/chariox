@@ -19,6 +19,13 @@ struct TestDriver {
     fail_arm: AtomicBool,
     cancel_pending: AtomicBool,
     lost: AtomicBool,
+    /// Holds the next liveness probe until released, as a slow source would.
+    stall: StdMutex<
+        Option<(
+            std::sync::mpsc::SyncSender<()>,
+            std::sync::mpsc::Receiver<()>,
+        )>,
+    >,
 }
 
 impl WakeDriver for TestDriver {
@@ -45,6 +52,10 @@ impl WakeDriver for TestDriver {
         Recovery::Lost("test source does not survive a restart".into())
     }
     fn liveness(&self, _wake: &AgentWake) -> Liveness {
+        if let Some((entered, release)) = self.stall.lock().unwrap().take() {
+            let _ = entered.send(());
+            let _ = release.recv();
+        }
         if self.lost.load(Ordering::Acquire) {
             Liveness::Lost("test source vanished".into())
         } else {
@@ -121,6 +132,7 @@ async fn fixture(name: &str, running_prompt: bool) -> Fixture {
         fail_arm: AtomicBool::new(false),
         cancel_pending: AtomicBool::new(false),
         lost: AtomicBool::new(false),
+        stall: Default::default(),
     });
     runtime.register_wake_driver(driver.clone());
     Fixture {
@@ -915,4 +927,44 @@ async fn urgent_message_to_an_owner_stopped_agent_waits_for_the_owner() {
         "delivered after the owner's prompt: {:?}",
         inbox_state(&f)
     );
+}
+
+/// amsudo r1: a sweep that stalls on its sources commits a `now` older than a
+/// newer sweep's. That is not a clock rollback and must not wake a live wait
+/// whose deadline has not passed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stalled_sweep_does_not_wake_a_live_wait_early() {
+    let f = fixture("stalled-sweep", false).await;
+    let task = f.begin("turn-1");
+    let wake = f.arm(&task, "wake-a").unwrap();
+    f.wait_on(&task, &wake.registration_id);
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    *f.driver.stall.lock().unwrap() = Some((entered_tx, release_rx));
+    let runtime = f.runtime.clone();
+    let stalled = tokio::spawn(async move { runtime.sweep_agent_lifecycle().await });
+    tokio::task::spawn_blocking(move || {
+        entered_rx.recv_timeout(std::time::Duration::from_secs(20))
+    })
+    .await
+    .unwrap()
+    .expect("the sweep probes the source before it commits");
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    f.store()
+        .agent_lifecycle(Operation::Sweep {
+            now: crate::session::unix_epoch_ms(),
+            busy_recipients: Vec::new(),
+            held_work: Vec::new(),
+        })
+        .unwrap();
+    release_tx.send(()).unwrap();
+    stalled.await.unwrap().unwrap();
+    let early = f
+        .store()
+        .agent_inbox(&f.room, &f.agent, 0)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "deadline_reached")
+        .count();
+    assert_eq!(early, 0, "no deadline has passed");
 }

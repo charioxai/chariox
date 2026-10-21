@@ -378,6 +378,8 @@ impl KernelRuntimeOwnedState {
         }
     }
 }
+static SWEEP_COMMIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 impl KernelRuntimeState {
     pub(in crate::runtime::state) async fn send_durable_agent_message(
         &self,
@@ -1051,15 +1053,21 @@ impl KernelRuntimeState {
                 }
             }
         }
-        let Outcome::Swept(changed) =
+        // amsudo r1: this sweep awaited wake sources and relay round trips since
+        // `now` was read; a newer sweep may have committed meanwhile. Commit with
+        // the current clock, one sweep at a time, so an old `now` never reads as
+        // a clock rollback that wakes every waiting task early.
+        let swept = {
+            let _commit = SWEEP_COMMIT.lock().unwrap_or_else(|e| e.into_inner());
             self.owned
                 .durable_state_store
                 .agent_lifecycle(Operation::Sweep {
-                    now,
+                    now: crate::session::unix_epoch_ms(),
                     busy_recipients,
                     held_work,
                 })?
-        else {
+        };
+        let Outcome::Swept(changed) = swept else {
             unreachable!()
         };
         // Every transition is a notice so attached clients refresh the projection.
