@@ -386,30 +386,9 @@ def room_input_guard():
     return module.input_guard()
 
 
-def room_clipboard_guard():
-    import importlib.util
-    from pathlib import Path
-    def load(name):
-        spec=importlib.util.spec_from_file_location(name,Path(__file__).with_name(name+'.py'))
-        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
-    room=load('room-native-protection')
-    try:return load('native-clipboard').input_admission(room.binding(),room.accessibility())
-    except Exception as error:raise room.RoomInputDenied('native Room clipboard unavailable') from error
-
-
-def room_agent_guard():
-    """MP-11: every agent Room key/text press may reach a Paste control."""
-    admit_focus=room_input_guard()
-    admit_clipboard=room_clipboard_guard()
-    def guard():
-        admit_focus()
-        admit_clipboard()
-    return guard
-
-
 def main(args, stream):
     agent = os.environ.get('CHARIOX_COMPUTER_AGENT_INPUT') == '1'
-    guard = room_agent_guard() if agent and (not args or args[0] == 'key-repeat') else None
+    guard = room_input_guard() if agent and (not args or args[0] == 'key-repeat') else None
     if args == ['prepare-owned-keymap'] and not agent:
         prepare_owned_text_keymap()
     elif len(args) == 2 and args[0] == 'key-repeat':
@@ -419,14 +398,11 @@ def main(args, stream):
     elif len(args) == 5 and args[0] == 'hold-button':
         hold_input('button', args[1], int(args[2]), int(args[3]), int(args[4]))
     elif len(args) == 5 and args[0] == 'pointer-click' and agent:
-        # MP-11: every native click can activate a Paste control. Admit the
-        # clipboard owner once per click action; each press only fences it.
         if args[1] not in ('left','middle','right') or args[2] not in ('1','2'):
             raise ValueError('invalid admitted pointer click')
-        admit_clipboard=room_clipboard_guard()
         for index in range(int(args[2])):
             handlers={number:signal.getsignal(number) for number in (signal.SIGTERM,signal.SIGINT)}
-            try:hold_input('button',args[1],1,int(args[3]),int(args[4]),before_press=admit_clipboard)
+            try:hold_input('button',args[1],1,int(args[3]),int(args[4]))
             finally:
                 for number,handler in handlers.items():signal.signal(number,handler)
             if index+1<int(args[2]):time.sleep(0.08)

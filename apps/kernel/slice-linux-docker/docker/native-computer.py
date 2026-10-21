@@ -57,17 +57,12 @@ def input_action(action, processes=None, connection=None, browser_page=None):
     if processes is not None and kind=='keycode':
         raise ValueError('persistent physical keys require human input')
     if processes is not None and kind in ('text','key','click'):
-        # MP-11: any agent key, text or click may reach a Paste control
-        # (chord, menu mnemonic, focused button). Gate on clipboard owner.
         accessibility=load('native-accessibility')
-        clipboard=load('native-clipboard')
-        admit_clipboard=clipboard.input_admission(processes,accessibility)
         admit_focus=accessibility.input_guard(processes) if kind!='click' else lambda:None
         def guard():
             admit_focus()
-            admit_clipboard()
-            # MP-11: an empty clipboard does not authorize a popup-free extension
-            # action. Query the recipient after pointer motion, before the press.
+            # MP-11: query the recipient after pointer motion, before the press;
+            # a Chrome toolbar can run an owner-only extension without a page.
             if kind=='click':
                 connection.sync()
                 load('native-input-destination').input_destination(connection,processes,accessibility,(action['x'],action['y']),browser_page)
@@ -80,7 +75,7 @@ def input_action(action, processes=None, connection=None, browser_page=None):
         # by the owned channel. Unicode overlays still need the existing
         # delivery pace before recycling/restoring their two safe keycodes;
         # X sync alone does not mean Chromium has consumed each key event.
-        # Agent/Vault paths retain their pacing and fresh focus/clipboard fences.
+        # Agent/Vault paths retain their pacing and fresh focus fences.
         if connection is not None and processes is None:
             pace = 0 if action['text'].isascii() else 0.04
             keyboard.type_text(action['text'],pace_seconds=pace,connection=connection)

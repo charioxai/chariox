@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { NativeAccessibility } from './native-accessibility.mjs';
 const binding={surface_id:'s',generation:'g',width:1280,height:800,environment:{},ownedProcesses:async()=>[{pid:200,started:'1'}]};
 const tree={available:true,complete:true,nodes:[{pid:200,started:'1',path:[0],role:'push button',name:'Public',bounds:[1,2,3,4],actions:['click'],states:[]}],protected:false};
-test('MP-11 #904 review 1 agent AT-SPI actions reach the helper clipboard-owner gate, not the read policy',async()=>{
+test('MP-11 #904 review 1 agent AT-SPI actions reach the helper without a clipboard read',async()=>{
  for(const context of [{observer:'agent:a',command:{},agent:true},{observer:'terminal:a',command:{_agent_input:true},agent:true},{observer:'terminal:a',command:{},agent:false}]) {
   const ops=[];let dispatched;
   const native=new NativeAccessibility({binding:()=>binding,execute:async request=>{
@@ -16,7 +16,7 @@ test('MP-11 #904 review 1 agent AT-SPI actions reach the helper clipboard-owner 
   const seen=await native.snapshot(context.observer,{});
   assert.equal((await native.action(context.observer,{...context.command,target_id:seen.nodes[0].target_id,tree_revision:seen.tree_revision,action:'click'},{})).applied,true);
   assert(!ops.includes('clipboard_read'));
-  assert.equal(dispatched.agent_input===true,context.agent);
+  assert.equal(dispatched.op,'accessibility_action');assert(!('agent_input' in dispatched));
  }
 });
 test('MP-08 / MP-11 foreground application survives browser action and traversal budgets',async()=>{

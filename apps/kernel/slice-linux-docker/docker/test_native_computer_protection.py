@@ -86,7 +86,7 @@ class ProtectionTests(unittest.TestCase):
         self.assertEqual(result['browser_withheld'],1)
 
 class AgentInputClipboardTests(unittest.TestCase):
-    """MP-11 #904 review 1/3: every agent mutation is gated on CLIPBOARD owner provenance only."""
+    """MP-11: agent input is not gated on who owns the clipboard (reads stay masked)."""
     def run_input(self,action,owner_pid=None,owners=None,tree=None):
         tree=tree or {'available':True,'complete':False,'traversed':True,'protected':False,'uncovered':[[0,0,4,4]],
             'nodes':[{'pid':77,'protected':False},{'pid':90,'protected':True,'name':'[protected]'}]}
@@ -133,29 +133,28 @@ class AgentInputClipboardTests(unittest.TestCase):
                     module.input_action(action,[{'pid':77,'started':'1','browser':True}])
                 self.assertFalse(any(call.args[1]==module.X.ButtonPress for call in event.call_args_list))
 
-    def test_proved_public_owner_admits_clicks_while_other_windows_are_masked(self):
-        self.assertIn(module.X.ButtonPress,self.run_input({'kind':'click','x':5,'y':5},owner_pid=77))
-
-    def test_unproved_or_protected_owner_refuses_every_mutating_input_before_events(self):
-        for action in [{'kind':'click','x':5,'y':5},{'kind':'key','key':'p'},{'kind':'key','key':'Return'},
-                       {'kind':'key','key':'alt+e'},{'kind':'key','key':'shift+F10'},{'kind':'text','text':'p'}]:
+    def test_agent_written_clipboard_does_not_stop_click_key_text_and_paste(self):
+        # The owner is a headless xclip (no accessibility nodes), as after clipboard_write.
+        for action in [{'kind':'click','x':5,'y':5},{'kind':'key','key':'ctrl+v'},{'kind':'key','key':'Return'},
+                       {'kind':'key','key':'alt+e'},{'kind':'text','text':'p'}]:
             for pid in (90,123):
-                self.assertIsNone(self.run_input(action,owner_pid=pid),(action,pid))
+                self.assertIsNotNone(self.run_input(action,owner_pid=pid),(action,pid))
 
-    def test_mp11_review1_truncated_owner_walk_refuses_pointer_paste_before_events(self):
+    def test_clipboard_owner_change_between_presses_does_not_refuse_input(self):
+        owner=SimpleNamespace(id=55,get_full_property=lambda *args:None)
+        self.assertIsNotNone(self.run_input({'kind':'click','x':5,'y':5},owner_pid=123,owners=[0,owner]))
+        self.assertIsNotNone(self.run_input({'kind':'key','key':'p'},owner_pid=123,owners=[0,owner]))
+
+    def test_truncated_owner_walk_does_not_refuse_pointer_or_paste(self):
         tree={'available':True,'complete':False,'traversed':False,'protected':False,'uncovered':[],
             'nodes':[{'pid':77,'protected':False}]}
         for action in [{'kind':'click','x':5,'y':5},{'kind':'key','key':'ctrl+v'}]:
-            self.assertIsNone(self.run_input(action,owner_pid=77,tree=tree),action)
+            self.assertIsNotNone(self.run_input(action,owner_pid=77,tree=tree),action)
 
-    def test_owner_taken_after_admission_refuses_the_press(self):
-        owner=SimpleNamespace(id=55,get_full_property=lambda *args:None)
-        self.assertIsNone(self.run_input({'kind':'click','x':5,'y':5},owner_pid=123,owners=[0,owner]))
-        self.assertIsNone(self.run_input({'kind':'key','key':'p'},owner_pid=123,owners=[0,owner]))
 class AgentHoldTests(unittest.TestCase):
     def test_agent_pointer_and_key_holds_reach_the_hold_helper(self):
         accessibility=SimpleNamespace(input_guard=lambda _:lambda:None)
-        clipboard_guard=SimpleNamespace(input_admission=lambda *_:lambda:None,key_destinations=lambda *_:None)
+        clipboard_guard=SimpleNamespace(key_destinations=lambda *_:None)
         with patch.object(module.keyboard,'hold_input') as hold,patch.object(module,'load',side_effect=lambda name:accessibility if name=='native-accessibility' else clipboard_guard):
             module.main({'op':'input','agent_input':True,'processes':[],'input':{'kind':'pointer_hold','button':2,'x':5,'y':6,'duration_ms':100}})
             module.main({'op':'input','agent_input':True,'processes':[],'input':{'kind':'hold','key':'a','duration_ms':100}})
@@ -169,7 +168,7 @@ class WarmChannelTests(unittest.TestCase):
             self.assertEqual(text.call_args.kwargs.get('pace_seconds',0.04),0)
             self.assertIs(text.call_args.kwargs.get('connection'),connection)
             accessibility=SimpleNamespace(input_guard=lambda _:lambda:None)
-            clipboard_guard=SimpleNamespace(input_admission=lambda *_:lambda:None,key_destinations=lambda *_:None)
+            clipboard_guard=SimpleNamespace(key_destinations=lambda *_:None)
             with patch.object(module,'load',side_effect=lambda name:accessibility if name=='native-accessibility' else clipboard_guard):
                 module.main({'op':'input','agent_input':True,'processes':[],
                              'input':{'kind':'text','text':'public'}},connection)

@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { NativeComputer, nativeInput, executeNative } from './native-computer.mjs';
 import { LinuxOwnedDesktop } from './linux-owned-desktop.mjs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 const binding = {surface_id:'surface',generation:'generation',width:1280,height:800,environment:{DISPLAY:':999'}};
@@ -169,7 +169,7 @@ test('MP-11 an agent click carries the CDP-placed active page for the X11 hit te
  assert.equal(sent[2].browser_page,null,'an unplaceable page is browser UI to the helper');
 });
 
-test('MP-11 #904 review 1/3 agent clicks and keys reach the helper clipboard-owner gate, not the read policy',async()=>{
+test('MP-11 #904 review 1/3 agent clicks and keys reach the helper without a clipboard read',async()=>{
   const calls=[];
   const scoped={...binding,ownedProcesses:async()=>[{pid:200,started:'1'}]};
   const adapter=new NativeComputer({placement:'host',binding:()=>scoped,execute:async request=>{calls.push(request);return request.op==='clipboard_read'?{text:'[protected]'}:{applied:true};}});
@@ -177,6 +177,24 @@ test('MP-11 #904 review 1/3 agent clicks and keys reach the helper clipboard-own
     await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input},{});
   assert.deepEqual(calls.map(request=>request.op),Array(6).fill('input'));
   assert(calls.every(request=>request.agent_input===true && request.processes?.[0]?.pid===200));
+});
+
+test('MP-11 an agent clipboard write does not stop its next paste, typing or unrelated click',async()=>{
+  const dir=await mkdtemp(path.join(os.tmpdir(),'fake-xclip-'));
+  const calls=[];
+  try {
+    // A headless selection owner like the real xclip: no window, no accessibility nodes.
+    await writeFile(path.join(dir,'xclip'),'#!/bin/sh\ncat >/dev/null\nexec sleep 30\n',{mode:0o755});
+    const scoped={...binding,environment:{...binding.environment,PATH:`${dir}:${process.env.PATH}`},ownedProcesses:async()=>[{pid:200,started:'1'}]};
+    const adapter=new NativeComputer({placement:'host',binding:()=>scoped,execute:async request=>{calls.push(request);return {applied:true};}});
+    const send=input=>adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input},{});
+    assert.deepEqual(await send({kind:'clipboard_write',text:'ordinary agent text'}),{applied:true});
+    for(const input of [{kind:'key',key:'CTRL+V'},{kind:'text',text:'typed'},{kind:'click',button:1,x:10,y:10}])
+      assert.deepEqual(await send(input),{applied:true});
+    assert.deepEqual(calls.map(request=>request.input.kind),['key','text','click']);
+    assert(calls.every(request=>request.agent_input===true));
+    await adapter.close();
+  } finally {await rm(dir,{recursive:true,force:true});}
 });
 
 test('MP-08 / MP-10 / MP-11 human text and committed composition use the warm channel while every agent press keeps admission', async () => {

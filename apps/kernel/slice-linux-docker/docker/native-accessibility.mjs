@@ -63,9 +63,7 @@ export class NativeAccessibility {
     // MP-11: dispatch may apply an effect and then fail. Consume before sending.
     this.observers.delete(observer);
     const browser_processes=await binding.browserProcesses?.();
-    // MP-11: the helper gates agent doAction (which may Paste) on the clipboard owner.
-    const agent=Boolean(command._agent_input || observer.startsWith('agent:'));
-    const result=await this.execute({op:'accessibility_action',...(agent?{agent_input:true}:{}),processes,...(browser_processes?{browser_processes}:{}),path:target.path,pid:target.pid,started:target.started,action:command.action,expected_tree_digest:rawDigest},binding.environment,signal);
+    const result=await this.execute({op:'accessibility_action',processes,...(browser_processes?{browser_processes}:{}),path:target.path,pid:target.pid,started:target.started,action:command.action,expected_tree_digest:rawDigest},binding.environment,signal);
     if(signal?.aborted || this.binding()!==binding)throw new Error('MP-11: accessibility action cancelled');
     return result;
   }
