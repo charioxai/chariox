@@ -705,8 +705,9 @@ impl KernelRuntimeState {
                 return Ok(PromptDispatchAcceptance::Dropped);
             }
             owned_for_write.bind_agent_event_submission(&dispatch_for_write)?;
-            writer.write_input(&provider_pty_input)?;
-            Ok(PromptDispatchAcceptance::Submitted)
+            writer
+                .write_input(&provider_pty_input)
+                .map(|()| PromptDispatchAcceptance::Submitted)
         });
         let acceptance =
             match tokio::time::timeout(std::time::Duration::from_secs(15), write_task).await {
