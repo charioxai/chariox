@@ -414,6 +414,18 @@ fn external_response_tells_a_grant_holder_what_is_wrong_with_its_terminal() {
             crate::room_terminal::REFUSED_CODE
         );
     }
+    // The machine that relays a worker's refusal passes it on with its code and words.
+    let relayed =
+        crate::transport::kernel_protocol::map_kernel_error(&DaemonError::RelayTransport {
+            operation: "relay request",
+            code: crate::room_terminal::REFUSED_CODE.into(),
+            message: said.into(),
+            retryable: false,
+        });
+    assert_eq!(
+        (relayed.code.as_str(), relayed.message.as_str()),
+        (crate::room_terminal::REFUSED_CODE, said)
+    );
     // Any other failure keeps its details in the host terminal.
     for other in [
         DaemonError::LocalTransport {

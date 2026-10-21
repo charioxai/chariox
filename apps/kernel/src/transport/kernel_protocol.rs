@@ -985,6 +985,18 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         {
             kernel_error("credential_vault_locked", error, false)
         }
+        // A terminal on another machine refuses in the terminal service's own words; they
+        // are passed on as they came, so the caller that sent the id reads them.
+        DaemonError::RelayTransport {
+            code,
+            message,
+            retryable,
+            ..
+        } if crate::room_terminal::is_public_code(code) => KernelTransportError {
+            code: code.clone(),
+            message: message.clone(),
+            retryable: *retryable,
+        },
         // Keep the stable local transport code/message for CLI and app
         // clients, while preserving the relay's structured retryability.
         DaemonError::RelayTransport { retryable, .. } => {
