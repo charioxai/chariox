@@ -187,7 +187,7 @@ impl KernelRuntimeState {
     /// The Room agent whose machine a terminal tool runs on: the agent the
     /// arguments name (which must belong to this Room), else the calling
     /// agent. `None` is this kernel, the Room's home.
-    fn terminal_tool_host(
+    pub(in crate::runtime::state) fn terminal_tool_host(
         &self,
         session_id: &str,
         calling_agent: &str,

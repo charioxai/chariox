@@ -110,6 +110,20 @@ impl KernelRuntimeState {
                         .ok()
                         .filter(|u: &Vec<_>| (1..=8).contains(&u.len()))
                         .ok_or_else(|| ledger::error("1-8 conditions in until required"))?;
+                let host = crate::transport::runtime_tools::TerminalHost::from_arguments(
+                    args["host_agent"].as_str().map(str::to_string),
+                    args["home_kernel"].as_bool().unwrap_or(false),
+                )
+                .map_err(ledger::error)?;
+                let host_agent = self
+                    .terminal_tool_host(&task.room_id, &task.agent_id, &host)
+                    .map_err(|error| ledger::error(error.to_string()))?
+                    .filter(|agent| {
+                        self.owned
+                            .agent_store
+                            .get_agent(agent)
+                            .is_ok_and(|agent| agent.remote_execution().is_some())
+                    });
                 let detail = super::super::terminal_wake::TerminalWakeDetail {
                     terminal_id: args["terminal_id"]
                         .as_str()
@@ -118,9 +132,10 @@ impl KernelRuntimeState {
                         .to_string(),
                     until: super::terminal::watches(until),
                     after_offset: args["after_offset"].as_u64(),
+                    host_agent,
                 };
                 let wake = new_wake(task, super::super::terminal_wake::KIND, label(args)?, now);
-                self.arm_terminal_wake(task, wake, detail)?
+                self.arm_terminal_wake(task, wake, detail).await?
             }
             "chariox.events.process" => {
                 let agent = self.owned.agent_store.get_agent(&task.agent_id)?;

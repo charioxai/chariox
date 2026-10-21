@@ -1384,5 +1384,6 @@ mod agent_wake_scheduler;
 mod agent_workflow_tasks;
 mod room_dispatch_obligation;
 mod terminal_wake;
+mod terminal_wake_worker;
 // MD-3: typed internal seam for display integration; public protocol remains coordinator-owned.
 pub(crate) use kernel_browser_runtime::{KernelBrowserDisplayRequest, KernelBrowserPushCredit};

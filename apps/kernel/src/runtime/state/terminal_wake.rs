@@ -2,14 +2,16 @@
 //! that asked to be told when a terminal finishes, prints a text or waits for
 //! input is woken through the same wake registry as its timers; this driver
 //! only arms the terminal's watch and reports the one event that fired.
+use super::terminal_wake_worker::{self as worker, Settled, Step, WorkerWatches};
 use super::wake_driver::{Cancel, Liveness, Recovery, WakeDriver, WakeOccurrence, WakeSink};
 use super::*;
 use crate::durable_state::agent_lifecycle::{
     self as ledger, AgentTaskExecution, AgentWake, WakeEnd,
 };
+use crate::local::{RoomTerminalOperation, RoomTerminalResult};
 use crate::room_terminal::{
     CompletionEvents, RoomTerminalEvent, RoomTerminalEventKind, RoomTerminalService,
-    RoomTerminalStatus, RoomTerminalWatch, WatchOwner,
+    RoomTerminalStatus, RoomTerminalWatch, TerminalActor, WatchOwner, MAX_WAIT,
 };
 
 pub(super) const KIND: &str = "terminal";
@@ -22,11 +24,17 @@ pub(super) struct TerminalWakeDetail {
     pub terminal_id: String,
     pub until: Vec<RoomTerminalWatch>,
     pub after_offset: Option<u64>,
+    /// The Room agent whose leased machine runs the terminal; `None` is this
+    /// kernel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_agent: Option<String>,
 }
 
 pub(super) struct TerminalWakeDriver {
+    state: KernelRuntimeState,
     terminals: RoomTerminalService,
     sink: WakeSink,
+    workers: Arc<WorkerWatches>,
 }
 
 impl TerminalWakeDriver {
@@ -50,6 +58,11 @@ impl WakeDriver for TerminalWakeDriver {
 
     fn arm(&self, wake: &AgentWake) -> Result<(), DaemonError> {
         let detail = Self::detail(wake)?;
+        if detail.host_agent.is_some() {
+            self.sink.verified(&wake.id)?;
+            self.watch_on_worker(wake.clone(), detail);
+            return Ok(());
+        }
         if !self.terminal_is_running(wake, &detail.terminal_id) {
             return Err(ledger::error(
                 "no running terminal with that id in this Room on this kernel; use terminal_wait for a terminal on another machine",
@@ -70,19 +83,38 @@ impl WakeDriver for TerminalWakeDriver {
 
     fn cancel(&self, wake: &AgentWake) -> Result<Cancel, DaemonError> {
         let detail = Self::detail(wake)?;
+        if detail.host_agent.is_some() {
+            self.workers.stop(&wake.id);
+            return Ok(Cancel::Done);
+        }
         self.terminals
             .cancel_watch(&wake.room_id, &detail.terminal_id, &wake.id);
         Ok(Cancel::Done)
     }
 
     /// Terminals end with a kernel restart, so a watch armed before it has
-    /// nothing left to watch.
-    fn recover(&self, _wake: &AgentWake) -> Recovery {
-        Recovery::Lost("the terminal ended when the kernel restarted".into())
+    /// nothing left to watch. A worker's terminal survives the home, but the
+    /// home's supervision of it does not.
+    fn recover(&self, wake: &AgentWake) -> Recovery {
+        match Self::detail(wake) {
+            Ok(detail) if detail.host_agent.is_some() => Recovery::Lost(
+                "it stopped watching the terminal on the worker machine; the terminal may still be running there, read it with terminal_read".into(),
+            ),
+            _ => Recovery::Lost("the terminal ended when the kernel restarted".into()),
+        }
     }
 
     fn liveness(&self, wake: &AgentWake) -> Liveness {
         match Self::detail(wake) {
+            Ok(detail) if detail.host_agent.is_some() => {
+                if self.workers.is_supervised(&wake.id) {
+                    Liveness::Live
+                } else {
+                    Liveness::Lost(
+                        "this kernel no longer watches the terminal on the worker machine".into(),
+                    )
+                }
+            }
             Ok(detail) if self.terminal_is_running(wake, &detail.terminal_id) => Liveness::Live,
             _ => Liveness::Lost("the terminal was closed or ended".into()),
         }
@@ -91,23 +123,137 @@ impl WakeDriver for TerminalWakeDriver {
 
 impl CompletionEvents for TerminalWakeDriver {
     fn deliver(&self, event: RoomTerminalEvent) {
-        let (name, summary, mut payload) = describe(&event);
-        payload["terminal_id"] = event.terminal_id.clone().into();
-        payload["screen_text"] = tail_of(&event.screen_text, SCREEN_BYTES).into();
-        let occurrence = WakeOccurrence {
-            occurrence_id: format!("{}-{name}", event.wake_id),
-            wake_id: event.wake_id,
-            kind: format!("terminal_{name}"),
-            payload,
-            summary: Some(summary),
-            end: Some(WakeEnd::Succeeded),
+        report(&self.sink, event);
+    }
+}
+
+/// The one occurrence of a fired watch; it ends the wake.
+fn report(sink: &WakeSink, event: RoomTerminalEvent) {
+    let (name, summary, mut payload) = describe(&event);
+    payload["terminal_id"] = event.terminal_id.clone().into();
+    payload["screen_text"] = tail_of(&event.screen_text, SCREEN_BYTES).into();
+    let occurrence = WakeOccurrence {
+        occurrence_id: format!("{}-{name}", event.wake_id),
+        wake_id: event.wake_id,
+        kind: format!("terminal_{name}"),
+        payload,
+        summary: Some(summary),
+        end: Some(WakeEnd::Succeeded),
+    };
+    if let Err(error) = sink.occurred(occurrence) {
+        crate::logging::error_with_fields(
+            "room_terminal.event",
+            "a terminal event could not wake its agent",
+            serde_json::json!({ "terminal_id": event.terminal_id, "error": error.to_string() }),
+        );
+    }
+}
+
+impl TerminalWakeDriver {
+    /// Watches a terminal on the agent's leased machine: the worker waits,
+    /// the home reports what fired (or that the worker was lost).
+    fn watch_on_worker(&self, wake: AgentWake, detail: TerminalWakeDetail) {
+        let state = self.state.clone();
+        let sink = self.sink.clone();
+        self.workers.spawn(wake.id.clone(), async move {
+            let settled = worker::supervise(detail.after_offset, |offset| {
+                state.wait_on_worker_terminal(&wake, &detail, offset)
+            })
+            .await;
+            match settled {
+                Settled::Fired(waited) => report(
+                    &sink,
+                    RoomTerminalEvent {
+                        terminal_id: detail.terminal_id.clone(),
+                        session_id: wake.room_id.clone(),
+                        wake_id: wake.id.clone(),
+                        armed_by: wake.agent_id.clone(),
+                        kind: waited.fired.expect("a settled wait fired"),
+                        screen_text: waited.screen_text,
+                    },
+                ),
+                Settled::Lost(reason) => {
+                    let now = crate::session::unix_epoch_ms();
+                    if let Err(error) = state.report_lost_wake(&wake, now, &reason) {
+                        crate::logging::error_with_fields(
+                            "room_terminal.event",
+                            "a lost terminal watch could not be reported",
+                            serde_json::json!({ "wake_id": wake.id, "error": error.to_string() }),
+                        );
+                    }
+                }
+            }
+        });
+    }
+}
+
+impl KernelRuntimeState {
+    /// Refuses at once, like a local arm, a terminal the worker does not run.
+    async fn ensure_running_on_worker(
+        &self,
+        task: &AgentTaskExecution,
+        host: &str,
+        terminal_id: &str,
+    ) -> Result<(), DaemonError> {
+        let listed = self
+            .route_room_terminal(
+                &task.room_id,
+                TerminalActor::Agent(task.agent_id.clone()),
+                Some(host),
+                false,
+                RoomTerminalOperation::List,
+            )
+            .await
+            .map_err(|error| ledger::error(error.to_string()))?;
+        let running = matches!(listed, RoomTerminalResult::Listed { terminals }
+            if terminals.iter().any(|t| t.terminal_id == terminal_id && t.status == RoomTerminalStatus::Running));
+        if running {
+            Ok(())
+        } else {
+            Err(ledger::error(
+                "no running terminal with that id on the agent's worker machine; list the terminals to find its id and host_agent",
+            ))
+        }
+    }
+
+    /// One capped wait on the worker that runs the terminal.
+    async fn wait_on_worker_terminal(
+        &self,
+        wake: &AgentWake,
+        detail: &TerminalWakeDetail,
+        after_offset: Option<u64>,
+    ) -> Step {
+        let Some(host) = detail.host_agent.as_deref() else {
+            return Step::Gone("the terminal is not on a worker machine".into());
         };
-        if let Err(error) = self.sink.occurred(occurrence) {
-            crate::logging::error_with_fields(
-                "room_terminal.event",
-                "a terminal event could not wake its agent",
-                serde_json::json!({ "terminal_id": event.terminal_id, "error": error.to_string() }),
-            );
+        let leased = self
+            .owned
+            .agent_store
+            .get_agent(host)
+            .ok()
+            .is_some_and(|agent| agent.remote_execution().is_some());
+        if !leased {
+            return Step::Gone("the agent's worker machine lease ended".into());
+        }
+        let operation = RoomTerminalOperation::Wait {
+            terminal_id: detail.terminal_id.clone(),
+            watches: detail.until.clone(),
+            after_offset,
+            timeout_ms: MAX_WAIT.as_millis() as u64,
+        };
+        match self
+            .route_room_terminal(
+                &wake.room_id,
+                TerminalActor::Agent(wake.agent_id.clone()),
+                Some(host),
+                false,
+                operation,
+            )
+            .await
+        {
+            Ok(RoomTerminalResult::Waited { waited }) => Step::Waited(waited),
+            Ok(_) => Step::Gone("the worker answered a terminal wait with something else".into()),
+            Err(error) => Step::Unreachable(error.to_string()),
         }
     }
 }
@@ -156,6 +302,8 @@ impl KernelRuntimeState {
     /// receives the terminal's events.
     pub(super) fn register_terminal_wake_driver(&self) {
         let driver = Arc::new(TerminalWakeDriver {
+            state: self.clone(),
+            workers: Arc::default(),
             terminals: self.owned.room_terminals.clone(),
             sink: self.wake_sink(KIND),
         });
@@ -164,13 +312,17 @@ impl KernelRuntimeState {
     }
 
     /// Arms a terminal wake for the running turn of `task`.
-    pub(super) fn arm_terminal_wake(
+    pub(super) async fn arm_terminal_wake(
         &self,
         task: &AgentTaskExecution,
         mut wake: AgentWake,
         detail: TerminalWakeDetail,
     ) -> Result<serde_json::Value, DaemonError> {
         self.ensure_room_agent(&task.room_id, &task.agent_id)?;
+        if let Some(host) = &detail.host_agent {
+            self.ensure_running_on_worker(task, host, &detail.terminal_id)
+                .await?;
+        }
         wake.state = "starting".into();
         wake.detail = serde_json::to_value(&detail)
             .map_err(|_| ledger::error("terminal wake detail could not be encoded"))?;
