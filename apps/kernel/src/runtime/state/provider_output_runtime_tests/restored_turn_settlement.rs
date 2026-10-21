@@ -152,8 +152,12 @@ async fn assessment_after_source_client_left(reattach: bool) {
     begin(&runtime, &turn);
     append_answer(&runtime, &turn);
     store
-        .agent_lifecycle(Operation::EnableCompletionCheck {
+        .agent_lifecycle(Operation::StartGoal {
             task: turn.prompt.id().into(),
+            owner: "local".into(),
+            objective: "Answer the request".into(),
+            minutes: 1,
+            now: 1,
         })
         .unwrap();
     let Outcome::Settled { task, correction } = store
@@ -212,8 +216,12 @@ async fn sweep_queues_a_continuation_persisted_before_restart() {
     begin(&runtime, &turn);
     append_answer(&runtime, &turn);
     store
-        .agent_lifecycle(Operation::EnableCompletionCheck {
+        .agent_lifecycle(Operation::StartGoal {
             task: turn.prompt.id().into(),
+            owner: "local".into(),
+            objective: "Answer the request".into(),
+            minutes: 1,
+            now: 1,
         })
         .unwrap();
     store

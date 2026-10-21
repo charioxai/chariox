@@ -1386,7 +1386,13 @@ mod tests {
             })
             .unwrap();
         store
-            .agent_lifecycle(Operation::EnableCompletionCheck { task: "p".into() })
+            .agent_lifecycle(Operation::StartGoal {
+                task: "p".into(),
+                owner: "owner".into(),
+                objective: "Answer the request".into(),
+                minutes: 1,
+                now: 1,
+            })
             .unwrap();
         store
             .agent_lifecycle(Operation::Settle {

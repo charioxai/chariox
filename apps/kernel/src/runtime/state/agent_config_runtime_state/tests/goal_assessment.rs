@@ -623,8 +623,12 @@ async fn artifact_progress_never_targets_a_completion_check_turn() {
     };
     store.agent_lifecycle(begin("work-turn")).unwrap();
     store
-        .agent_lifecycle(Operation::EnableCompletionCheck {
+        .agent_lifecycle(Operation::StartGoal {
             task: "work-turn".into(),
+            owner: "local-user".into(),
+            objective: "Answer the request".into(),
+            minutes: 1,
+            now: 1,
         })
         .unwrap();
     let tasks = || store.agent_tasks(Some(&room), Some(&agent)).unwrap();

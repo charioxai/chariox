@@ -35,17 +35,6 @@ pub struct AgentTaskExecution {
     pub correction_used: bool,
     pub pending_prompt_id: Option<String>,
 }
-impl AgentTaskExecution {
-    /// A task with no open obligation and no wait is an ordinary turn: its end
-    /// is its whole outcome, so nothing needs the owner to decide.
-    pub(crate) fn is_plain_turn(&self) -> bool {
-        self.wait.is_none()
-            && !self
-                .obligations
-                .iter()
-                .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
-    }
-}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentObligation {
     pub id: String,

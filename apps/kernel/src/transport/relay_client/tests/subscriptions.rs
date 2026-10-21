@@ -1533,6 +1533,7 @@ async fn task_delta_encrypted_relay_subscription_preserves_prompt_completion_and
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("server task should join");
     result.expect("task delta must not swallow prompt completion or provider changes");
+}
 
 fn assert_empty_passkey_event(event: &serde_json::Value) {
     assert!(event["kernel_now_ms"].as_u64().is_some_and(|now| now > 0));
