@@ -933,7 +933,12 @@ impl SkillPromptBridge for SkillDispatchService {
                     delivered_at_ms: 0,
                 });
             }
-            if crate::provider::canonical_provider_family(run.provider()) == Some("codex") {
+            // Codex acknowledges the skill input item; Claude runs the selection as the
+            // `/name` command of the submitted prompt, which its prompt hook receipt confirms.
+            if matches!(
+                crate::provider::canonical_provider_family(run.provider()),
+                Some("codex" | "claude")
+            ) {
                 authority.prompt_delivery_skill_ids.insert(entry_id.clone());
             }
         }
