@@ -38,6 +38,9 @@ struct CommandResultRetentionPolicy {
     max_memory_bytes: u64,
     max_total_bytes: Option<u64>,
     max_age_ms: Option<u64>,
+    /// How long a settled at-most-once receipt is kept before its payload may be evicted;
+    /// the identity stays fenced for good.
+    receipt_window_ms: u64,
     at_most_once: bool,
 }
 
@@ -48,6 +51,7 @@ impl CommandResultRetentionPolicy {
             max_memory_bytes: COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES,
             max_total_bytes: None,
             max_age_ms: None,
+            receipt_window_ms: APP_RECEIPT_RETENTION_MS,
             at_most_once: false,
         }
     }
@@ -58,6 +62,7 @@ impl CommandResultRetentionPolicy {
             max_memory_bytes: COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES,
             max_total_bytes: Some(COMMAND_RESULT_CACHE_MAX_BYTES),
             max_age_ms: Some(COMMAND_RESULT_CACHE_MAX_AGE_MS),
+            receipt_window_ms: APP_RECEIPT_RETENTION_MS,
             at_most_once: false,
         }
     }
@@ -347,6 +352,26 @@ impl CommandResultCache {
             CommandResultRetentionPolicy {
                 at_most_once: true,
                 max_age_ms: None,
+                ..CommandResultRetentionPolicy::persistent()
+            },
+        )
+    }
+
+    /// An at-most-once journal for callers whose retries come soon after the request: a
+    /// settled receipt can be evicted `receipt_window_ms` later (a replay of its command
+    /// id is still refused, never run again), and `max_entries` receipts fit before then.
+    pub(crate) fn new_at_most_once_expiring(
+        path: impl Into<PathBuf>,
+        receipt_window_ms: u64,
+        max_entries: usize,
+    ) -> io::Result<Self> {
+        Self::new_with_persistent_path_and_retention(
+            path,
+            CommandResultRetentionPolicy {
+                at_most_once: true,
+                max_age_ms: None,
+                receipt_window_ms,
+                max_entries,
                 ..CommandResultRetentionPolicy::persistent()
             },
         )

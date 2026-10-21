@@ -375,6 +375,7 @@ async fn persistent_command_cache_compacts_by_age_on_load() {
         max_memory_bytes: COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES,
         max_total_bytes: None,
         max_age_ms: Some(1_000),
+        receipt_window_ms: APP_RECEIPT_RETENTION_MS,
     };
 
     let cache = CommandResultCache::new_with_persistent_path_and_retention(path.clone(), retention)
@@ -421,6 +422,7 @@ async fn persistent_command_cache_compacts_by_total_bytes() {
             persistent_result_jsonl_bytes(&second_entry).expect("entry should serialize"),
         ),
         max_age_ms: None,
+        receipt_window_ms: APP_RECEIPT_RETENTION_MS,
     };
     let cache = CommandResultCache::new_with_persistent_path_and_retention(path.clone(), retention)
         .expect("persistent cache should initialize");
@@ -591,6 +593,7 @@ async fn command_cache_byte_bounds_oversized_non_persisted_results_in_memory() {
         max_memory_bytes: 700_000,
         max_total_bytes: None,
         max_age_ms: None,
+        receipt_window_ms: APP_RECEIPT_RETENTION_MS,
     };
     let cache = CommandResultCache::new_with_persistent_path_and_retention(path.clone(), retention)
         .expect("cache should initialize");

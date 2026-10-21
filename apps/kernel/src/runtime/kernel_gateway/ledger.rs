@@ -29,6 +29,12 @@ pub(crate) enum Settled {
     Unavailable(String),
 }
 
+/// A retry of a forwarded request comes within a minute (the origin retries once, at
+/// once), so a settled receipt is kept 15 minutes. The ordinary 24 hours filled the ledger
+/// after 512 terminal inputs and locked an agent out of state-changing requests for a day.
+const RECEIPT_WINDOW_MS: u64 = 15 * 60 * 1_000;
+const LEDGER_ENTRIES: usize = 4096;
+
 pub(crate) struct GatewayLedger(Option<Arc<CommandResultCache>>);
 
 fn interrupted() -> Value {
@@ -37,7 +43,11 @@ fn interrupted() -> Value {
 
 impl GatewayLedger {
     pub(crate) fn open(path: PathBuf) -> Self {
-        match CommandResultCache::new_at_most_once(path) {
+        Self::open_expiring(path, RECEIPT_WINDOW_MS, LEDGER_ENTRIES)
+    }
+
+    fn open_expiring(path: PathBuf, receipt_window_ms: u64, max_entries: usize) -> Self {
+        match CommandResultCache::new_at_most_once_expiring(path, receipt_window_ms, max_entries) {
             Ok(cache) => Self(Some(Arc::new(cache))),
             Err(error) => {
                 crate::logging::warn_with_fields(
@@ -283,6 +293,47 @@ mod tests {
             1,
             "the effect ran exactly once"
         );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    // p8 finding: 512 terminal inputs filled the ledger and every state-changing request
+    // was refused for 24 hours. Settled receipts are evicted after the window; the evicted
+    // id stays fenced.
+    #[tokio::test]
+    async fn a_full_ledger_makes_room_once_a_receipt_is_older_than_the_window() {
+        let path = journal();
+        let runs = AtomicU32::new(0);
+        let ledger = GatewayLedger::open_expiring(path.clone(), 40, 3);
+        let run = |id: &'static str| {
+            let ledger = &ledger;
+            let runs = &runs;
+            async move {
+                ledger
+                    .run(id, fingerprint(&create()), async {
+                        runs.fetch_add(1, Ordering::SeqCst);
+                        Ok(json!({}))
+                    })
+                    .await
+            }
+        };
+        for id in ["k1", "k2", "k3"] {
+            assert!(matches!(run(id).await, Settled::Done(Ok(_))));
+        }
+        assert!(
+            matches!(run("k4").await, Settled::Unavailable(_)),
+            "inside the window nothing can be evicted"
+        );
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(
+            matches!(run("k4").await, Settled::Done(Ok(_))),
+            "an old receipt made room"
+        );
+        let runs_before = runs.load(Ordering::SeqCst);
+        assert!(
+            !matches!(run("k1").await, Settled::Done(_)),
+            "an evicted id is refused, never run again"
+        );
+        assert_eq!(runs.load(Ordering::SeqCst), runs_before);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

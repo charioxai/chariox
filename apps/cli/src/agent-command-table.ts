@@ -43,9 +43,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "terminal list", flags: [KERNEL, SESSION, TIMEOUT, SOCKET], summary: "the Room's terminals with their output offsets; a terminal that shows host_agent runs on that agent's machine: pass that id as --host-agent to send, read, wait and close" },
   {
     name: "terminal send",
-    flags: [KERNEL, SESSION, TERMINAL, HOST_AGENT, { name: "--no-enter" }, TIMEOUT, SOCKET],
+    flags: [KERNEL, SESSION, TERMINAL, HOST_AGENT, { name: "--no-enter" }, { name: "--since", value: "OFFSET" }, { name: "--wait-ms", value: "MS" }, TIMEOUT, SOCKET],
     args: ["TEXT"],
-    summary: "type TEXT and Enter; prints after_offset, the offset to read from",
+    summary: "type TEXT and Enter; prints after_offset, the offset to read from. With --wait-ms it also waits for the output (as read does) in the same call; pass --since (the next_offset of your last read) to make that one round trip",
   },
   {
     name: "terminal read",

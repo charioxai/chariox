@@ -31,6 +31,50 @@ test("send says why the terminal refused instead of printing success", async () 
   await assert.rejects(runTerminalVerb("send", ["ls"], flags(), send), (error: unknown) => error instanceof CommandFailure && error.code === "terminal_input_refused" && /driven by agent-a/.test(error.message))
 })
 
+// p8: typing then reading is two round trips, so a terminal echo missed the latency gate.
+test("send with --wait-ms and --since puts the input and the read in flight together, with no snapshot", async () => {
+  const sent: any[] = []
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const output = Buffer.from("\u001b[32mfiles\u001b[0m\r\n").toString("base64")
+  const send = async (body: Record<string, unknown>) => {
+    sent.push(body)
+    await gate
+    return (body as any).RoomTerminal.operation.operation === "input"
+      ? { RoomTerminal: { result: { result: "input", input: { accepted: true, driver: { state: "busy" } } } } }
+      : { RoomTerminal: { result: { result: "output", output: { terminal: summary(), data_base64: output, next_offset: 52, gap: false } } } }
+  }
+  const run = runTerminalVerb("send", ["ls"], flags({ since: "40", waitMs: "5000" }), send) as Promise<any>
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(sent.map(body => body.RoomTerminal.operation.operation), ["input", "read_output"], "both requests left before any answer")
+  assert.deepEqual(sent[1].RoomTerminal.operation, { operation: "read_output", terminal_id: "t1", after_offset: 40, wait_ms: 5000 })
+  release()
+  const result = await run
+  assert.deepEqual([result.accepted, result.text, result.next_offset, result.after_offset], [true, "files\r\n", 52, 40])
+})
+
+test("send with --wait-ms but no --since takes the offset first, then types and reads together", async () => {
+  const { sent, send } = recorder([
+    { RoomTerminal: { result: { result: "snapshot", snapshot: { terminal: summary(7), output_offset: 7, screen_text: "" } } } },
+    { RoomTerminal: { result: { result: "input", input: { accepted: true, driver: {} } } } },
+    { RoomTerminal: { result: { result: "output", output: { terminal: summary(), data_base64: "", next_offset: 7, gap: false } } } },
+  ])
+  const result = await runTerminalVerb("send", ["ls"], flags({ waitMs: "100" }), send) as any
+  assert.deepEqual(sent.map(body => body.RoomTerminal.operation.operation), ["snapshot", "input", "read_output"])
+  assert.equal(sent[2].RoomTerminal.operation.after_offset, 7)
+  assert.equal(result.after_offset, 7)
+})
+
+test("send with --wait-ms still says why the terminal refused, without waiting for the read", async () => {
+  const sent: any[] = []
+  const send = async (body: Record<string, unknown>) => {
+    sent.push(body)
+    if ((body as any).RoomTerminal.operation.operation === "read_output") return new Promise<never>(() => {})
+    return { RoomTerminal: { result: { result: "input", input: { accepted: false, driver: {}, refusal: "busy (driven by agent-a)" } } } }
+  }
+  await assert.rejects(runTerminalVerb("send", ["ls"], flags({ since: "1", waitMs: "60000" }), send), (error: unknown) => error instanceof CommandFailure && error.code === "terminal_input_refused")
+})
+
 test("read prints plain text without colour or title escapes and the next offset", async () => {
   const output = Buffer.from("\u001b]0;ops\u0007\u001b[32mok\u001b[0m done\r\n").toString("base64")
   const { sent, send } = recorder([{ RoomTerminal: { result: { result: "output", output: { terminal: summary(), data_base64: output, next_offset: 31, gap: false } } } }])

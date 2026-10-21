@@ -38,7 +38,7 @@ function wholeNumber(value: Flag, flag: string, fallback: number): number {
 /** The wait a command asks for, in milliseconds: a request to the machine must outlast it. */
 export function waitMsOf(verb: TerminalVerb, flags: TerminalFlags): number {
   if (verb === "wait") return wholeNumber(flags.timeout, "--timeout", 60) * 1000
-  if (verb === "read") return wholeNumber(flags.waitMs, "--wait-ms", 0)
+  if (verb === "read" || verb === "send") return wholeNumber(flags.waitMs, "--wait-ms", 0)
   return 0
 }
 
@@ -74,12 +74,26 @@ export async function runTerminalVerb(verb: TerminalVerb, positionals: readonly 
     return { closed: terminalId }
   }
   if (verb === "send") {
-    // Output read from `after_offset` shows what this input did, not what came before.
-    const { snapshot } = expectRoomTerminalResult(await send(roomTerminalSnapshotRequest(target, terminalId)), "snapshot")
     const text = (positionals[0] ?? "") + (flags.noEnter ? "" : ENTER)
-    const { input } = expectRoomTerminalResult(await send(roomTerminalInputRequest(target, terminalId, Buffer.from(text, "utf8"))), "input")
+    const keys = roomTerminalInputRequest(target, terminalId, Buffer.from(text, "utf8"))
+    const waitMs = waitMsOf(verb, flags)
+    // Output read from the offset before the input shows what this input did, not what came before.
+    // With --since the offset is known and typing and reading travel together: one round trip.
+    const offset = flags.since === undefined
+      ? expectRoomTerminalResult(await send(roomTerminalSnapshotRequest(target, terminalId)), "snapshot").snapshot.output_offset
+      : wholeNumber(flags.since, "--since", 0)
+    if (waitMs === 0) {
+      const { input } = expectRoomTerminalResult(await send(keys), "input")
+      if (!input.accepted) throw new CommandFailure("terminal_input_refused", input.refusal ?? "the terminal did not accept the input")
+      return { accepted: true, after_offset: offset, driver: input.driver }
+    }
+    const typing = send(keys)
+    const reading = send(readRoomTerminalOutputRequest(target, terminalId, offset, waitMs))
+    reading.catch(() => undefined)
+    const { input } = expectRoomTerminalResult(await typing, "input")
     if (!input.accepted) throw new CommandFailure("terminal_input_refused", input.refusal ?? "the terminal did not accept the input")
-    return { accepted: true, after_offset: snapshot.output_offset, driver: input.driver }
+    const { output } = expectRoomTerminalResult(await reading, "output")
+    return { accepted: true, after_offset: offset, driver: input.driver, text: plainText(output.data_base64), next_offset: output.next_offset, gap: output.gap, terminal: output.terminal }
   }
   const since = wholeNumber(flags.since, "--since", 0)
   if (verb === "read") {
