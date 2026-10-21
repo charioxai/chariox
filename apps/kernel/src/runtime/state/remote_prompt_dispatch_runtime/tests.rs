@@ -2806,6 +2806,132 @@ fn actual_worker_output_then_completion(
     (binding, provider_run_id, output_event, completion_event)
 }
 
+/// A real worker whose provider login recovery retired the run the home still names: the
+/// replacement run carries the retained home prompt, its output and its completion.
+struct WorkerAfterLoginRecovery {
+    app: DaemonApp,
+    leased_agent_id: String,
+    retired_run_id: String,
+    replacement_run_id: String,
+}
+
+fn worker_after_login_recovery(
+    home_session_id: &str,
+    home_agent_id: &str,
+    home_prompt_id: &str,
+) -> WorkerAfterLoginRecovery {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut worker = DaemonApp::bootstrap(config).expect("worker bootstrap should succeed");
+    let lease = crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .create_execution_lease(
+            "home-kernel-login-recovery",
+            home_session_id,
+            home_agent_id,
+            false,
+            "owner-login-recovery",
+        )
+        .expect("worker lease should be created");
+    let leased_agent = crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            "default",
+            Some("default".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("worker leased agent should be created");
+    let (retired_run_id, _) = crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .submit_leased_prompt_with_workflow_context(
+            &leased_agent.id,
+            "remote prompt\n",
+            Vec::new(),
+            None,
+            Some(crate::transport::relay_peer::RemoteGitTurnContext {
+                home_session_id: home_session_id.to_string(),
+                home_agent_id: home_agent_id.to_string(),
+                home_prompt_id: home_prompt_id.to_string(),
+                home_turn_id: home_prompt_id.to_string(),
+                source_attachment_id: None,
+                workspace_live_sync_mode: None,
+                prompt_origin: Some(crate::session::PromptOrigin::Chariox),
+                external_provider: None,
+                external_provider_session_id: None,
+                external_provider_turn_id: None,
+                prompt_summary: "remote prompt".to_string(),
+            }),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("worker prompt should submit");
+    crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .set_leased_agent_provider_for_test(&leased_agent.id, "codex");
+    let worker_run = |run_id: &str| {
+        let launch_request = crate::provider::LaunchProviderRequest::new(
+            &leased_agent.backing_session_id,
+            "codex",
+            "codex",
+            "default",
+            "gpt-5.4",
+        )
+        .with_agent_id(&leased_agent.backing_agent_id)
+        .with_client_interface(crate::provider::ProviderClientInterface::Chariox);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            run_id,
+            &launch_request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "codex:codex:gpt-5.4".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        run
+    };
+    let mut retired = worker_run(&retired_run_id);
+    worker.providers_mut().insert_run_for_test(retired.clone());
+    retired.mark_ended();
+    worker.providers_mut().insert_run_for_test(retired);
+    let replacement_run_id = "worker-run-after-login".to_string();
+    worker
+        .providers_mut()
+        .insert_run_for_test(worker_run(&replacement_run_id));
+    worker.fan_out_output_for_agent(
+        &leased_agent.backing_session_id,
+        &replacement_run_id,
+        Some(&leased_agent.backing_agent_id),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        Some("assistant-output".to_string()),
+        vec![leased_agent.backing_attachment_id.clone()],
+        b"AFTER_LOGIN_OUTPUT_ONCE",
+    );
+    worker
+        .complete_active_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+            Some(&replacement_run_id),
+        )
+        .expect("worker prompt should settle on the replacement run");
+    WorkerAfterLoginRecovery {
+        app: worker,
+        leased_agent_id: leased_agent.id,
+        retired_run_id,
+        replacement_run_id,
+    }
+}
+
 async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
     let (
         config_projection,
@@ -3128,6 +3254,205 @@ mod projection_drain {
         );
     }
 
+    /// After a provider sign-in the worker answers the retained prompt on a successor run: the
+    /// home follows it, but only from a reply about the run its delivered prompt is bound to.
+    #[tokio::test]
+    async fn home_follows_a_worker_successor_run_only_for_the_delivered_prompt() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-successor",
+                "worktree-successor",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-successor",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let prompt = crate::session::PromptQueueItem::new(
+            "prompt-successor",
+            attachment.id(),
+            agent.id(),
+            "remote prompt",
+            crate::session::PromptStatus::Queued,
+        );
+        let prompt_id = match app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("remote prompt should start")
+        {
+            crate::session::PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+            crate::session::PromptSubmissionOutcome::Queued { .. } => {
+                panic!("remote prompt should start")
+            }
+        };
+        let (binding, provider_run_id, output_event, _) =
+            actual_worker_output_then_completion(session.id(), agent.id(), &prompt_id);
+        let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+            provider_run: Some(worker_run),
+            ..
+        } = &output_event
+        else {
+            panic!("the worker projects its run");
+        };
+        let successor_event = |session_id: &str, run_id: &str| {
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: session_id.to_string(),
+                home_agent_id: agent.id().to_string(),
+                provider_run_id: run_id.to_string(),
+                provider_run: Some(worker_run.clone().projected_for_home_agent_with_id(
+                    run_id.to_string(),
+                    session_id.to_string(),
+                    agent.id().to_string(),
+                )),
+                prompts: Vec::new(),
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: Vec::new(),
+            }
+        };
+        let bound = crate::agent::RemoteAgentBinding {
+            active_worker_provider_run_id: Some(provider_run_id.clone()),
+            ..binding
+        };
+        app.agents
+            .bind_remote_execution(agent.id(), bound.clone())
+            .expect("agent should bind to the worker");
+        app.mark_active_prompt_delivery(
+            session.id(),
+            agent.id(),
+            &prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(provider_run_id.clone()),
+            None,
+        )
+        .expect("delivery metadata should persist");
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let rebind = |previous: &str, event: &crate::transport::relay_peer::RelayPeerEvent| {
+            runtime
+                .rebind_remote_prompt_to_successor_run(
+                    session.id(),
+                    agent.id(),
+                    &bound,
+                    previous,
+                    event,
+                )
+                .expect("rebind should not error")
+        };
+
+        assert_eq!(
+            rebind(
+                &provider_run_id,
+                &successor_event("other-session", "run-next")
+            ),
+            None,
+            "a reply about another session is not followed"
+        );
+        assert_eq!(
+            rebind(
+                &provider_run_id,
+                &successor_event(session.id(), &provider_run_id)
+            ),
+            None,
+            "the run the home already follows is not a successor"
+        );
+        assert_eq!(
+            rebind("some-older-run", &successor_event(session.id(), "run-next")),
+            None,
+            "only the run the delivered prompt is bound to may hand over"
+        );
+        assert_eq!(
+            rebind(&provider_run_id, &successor_event(session.id(), "run-next")),
+            Some("run-next".to_string())
+        );
+        let agent_binding = runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .unwrap()
+            .remote_execution()
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            agent_binding.active_worker_provider_run_id.as_deref(),
+            Some("run-next")
+        );
+        let session_now = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap();
+        let delivered_on = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session_now, agent.id())
+            .and_then(|prompt| {
+                prompt
+                    .durable_delivery_provider_run_id()
+                    .map(str::to_string)
+            });
+        assert_eq!(delivered_on.as_deref(), Some("run-next"));
+        assert_eq!(
+            rebind(
+                &provider_run_id,
+                &successor_event(session.id(), "run-again")
+            ),
+            None,
+            "the old run no longer owns the binding"
+        );
+
+        // A successor that fails during its first drain arrives already ended: follow it only with
+        // the completion it ended with.
+        let ended_event =
+            |completions: Vec<crate::transport::relay_peer::RelayProjectedCompletion>| {
+                let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    home_session_id,
+                    home_agent_id,
+                    provider_run_id,
+                    provider_run: Some(run),
+                    ..
+                } = successor_event(session.id(), "run-final")
+                else {
+                    unreachable!()
+                };
+                let mut run = run;
+                run.mark_ended();
+                crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    home_session_id,
+                    home_agent_id,
+                    provider_run_id,
+                    provider_run: Some(run),
+                    prompts: Vec::new(),
+                    output_chunks: Vec::new(),
+                    notices: Vec::new(),
+                    completions,
+                }
+            };
+        assert_eq!(
+            rebind("run-next", &ended_event(Vec::new())),
+            None,
+            "an ended successor without its completion is not followed"
+        );
+        assert_eq!(
+            rebind(
+                "run-next",
+                &ended_event(vec![
+                    crate::transport::relay_peer::RelayProjectedCompletion {
+                        message_id: "completion-final".to_string(),
+                        completed_at_ms: 1,
+                        home_prompt_id: Some(prompt_id.clone()),
+                        provider_termination: None,
+                    }
+                ])
+            ),
+            Some("run-final".to_string())
+        );
+    }
+
     #[tokio::test]
     async fn delivered_remote_prompt_uses_durable_run_for_live_projection_drain() {
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
@@ -3373,6 +3698,213 @@ mod projection_drain {
                     .get_session(session.id())
                     .expect("home session should remain available"),
                 agent.id(),
+            )
+            .is_none());
+    }
+
+    /// A worker provider login retires the run the home still names and finishes the retained
+    /// prompt on a replacement run: the home must show that run's output and one completion.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn home_shows_the_replacement_run_after_worker_provider_login_recovery() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let mut home_config = crate::config::DaemonConfig::for_tests();
+        home_config.relay_url = Some(relay_url);
+        home_config.relay_token = Some("login-recovery-home-token".to_string());
+        home_config.relay_request_timeout_ms = 3_000;
+        let home_public_key = home_config.relay_public_key.clone();
+        let worker_config = crate::config::DaemonConfig::for_tests();
+        let (worker_public_key, worker_private_key) = (
+            worker_config.relay_public_key.clone(),
+            worker_config.relay_private_key.clone(),
+        );
+        let (worker_id, worker_machine_id) = ("worker-login-recovery", "machine-login-recovery");
+        let mut app = crate::test_support::bootstrap_authenticated_app(home_config)
+            .expect("home app should bootstrap with authenticated Codex test profiles");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-login-recovery",
+                "worktree-login-recovery",
+            ))
+            .expect("home session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-login-recovery",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("home attachment should be created");
+        let prompt = crate::session::PromptQueueItem::new(
+            "prompt-login-recovery",
+            attachment.id(),
+            agent.id(),
+            "remote prompt",
+            crate::session::PromptStatus::Queued,
+        );
+        let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("remote prompt should start")
+        else {
+            panic!("remote prompt should start");
+        };
+        let prompt_id = prompt.id().to_string();
+        let worker = worker_after_login_recovery(session.id(), agent.id(), &prompt_id);
+        let binding = crate::agent::RemoteAgentBinding {
+            worker_kernel_id: worker_id.to_string(),
+            worker_machine_id: worker_machine_id.to_string(),
+            execution_lease_id: "lease-login-recovery".to_string(),
+            leased_agent_id: worker.leased_agent_id.clone(),
+            active_worker_provider_run_id: Some(worker.retired_run_id.clone()),
+            relay_url: None,
+            relay_token: None,
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
+        };
+        app.agents
+            .bind_remote_execution(agent.id(), binding)
+            .expect("home agent should bind to the worker");
+        app.mark_active_prompt_delivery(
+            session.id(),
+            agent.id(),
+            &prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(worker.retired_run_id.clone()),
+            None,
+        )
+        .expect("delivery metadata should persist");
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let (session_id, agent_id) = (session.id().to_string(), agent.id().to_string());
+
+        let drain = {
+            let runtime = runtime.clone();
+            let (session_id, agent_id) = (session_id.clone(), agent_id.clone());
+            tokio::spawn(async move {
+                runtime
+                    .drain_remote_prompt_projection_once(&session_id, &agent_id)
+                    .await
+            })
+        };
+        let drain_request = receive_fake_worker_peer_request(
+            &listener,
+            worker_id,
+            worker_machine_id,
+            &worker_public_key,
+            &worker_private_key,
+            None,
+        )
+        .await;
+        // The home still asks about the run it knew when the worker retired it.
+        assert!(matches!(
+            &drain_request.request,
+            RelayPeerRequest::DrainLeasedRuntimeProjection {
+                leased_agent_id,
+                provider_run_id,
+                ..
+            } if leased_agent_id == &worker.leased_agent_id
+                && provider_run_id == &worker.retired_run_id
+        ));
+        let mut worker_app = worker.app;
+        let (_, event) = crate::app::RemoteLeaseRuntime::new(&mut worker_app)
+            .drain_leased_runtime_projection_with_recovery(
+                &worker.leased_agent_id,
+                &worker.retired_run_id,
+                false,
+                true,
+            )
+            .expect("worker drain should succeed")
+            .expect("worker should project the replacement run");
+        send_fake_worker_peer_response(
+            drain_request,
+            worker_id,
+            &worker_private_key,
+            &home_public_key,
+            RelayPeerResponse::LeasedRuntimeProjectionDrained { event: Some(event) },
+        )
+        .await;
+        let observation_request = receive_fake_worker_peer_request(
+            &listener,
+            worker_id,
+            worker_machine_id,
+            &worker_public_key,
+            &worker_private_key,
+            None,
+        )
+        .await;
+        let RelayPeerRequest::ObserveLeasedGitAfter {
+            provider_run_id: observed_run_id,
+            ..
+        } = &observation_request.request
+        else {
+            panic!("the completion should observe the worker's git state");
+        };
+        let observed_run_id = observed_run_id.clone();
+        send_fake_worker_peer_response(
+            observation_request,
+            worker_id,
+            &worker_private_key,
+            &home_public_key,
+            RelayPeerResponse::LeasedGitObserved {
+                provider_run_id: observed_run_id.clone(),
+                git_observations: Vec::new(),
+                workspace_live_sync_change: None,
+            },
+        )
+        .await;
+        assert!(drain.await.unwrap().unwrap());
+
+        assert_eq!(observed_run_id, worker.replacement_run_id);
+        let output = runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(&session_id, attachment.id());
+        assert_eq!(
+            output
+                .iter()
+                .filter(|record| record.bytes == b"AFTER_LOGIN_OUTPUT_ONCE")
+                .count(),
+            1,
+            "the replacement run's output must reach the home once"
+        );
+        let watch_result = {
+            let mut app = runtime.app.lock().await;
+            crate::runtime_transport::watch_subscription_state(
+                &mut app,
+                &session_id,
+                attachment.id(),
+                false,
+                None,
+                0,
+            )
+        };
+        let crate::runtime_transport::WatchResult::Ok { completions, .. } = watch_result else {
+            panic!("home subscription should remain available");
+        };
+        assert_eq!(
+            completions.len(),
+            1,
+            "the home must settle the turn with exactly one completion"
+        );
+        assert_eq!(
+            completions[0].provider_run_id,
+            crate::provider::projected_leased_provider_run_id(
+                &worker.leased_agent_id,
+                &worker.replacement_run_id
+            )
+        );
+        assert!(runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(
+                &runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .expect("home session should remain available"),
+                &agent_id,
             )
             .is_none());
     }
