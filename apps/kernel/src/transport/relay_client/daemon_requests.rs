@@ -169,6 +169,40 @@ pub(super) async fn handle_prepared_daemon_request(
                 }) => Some(subscription_id.clone()),
                 _ => None,
             };
+            // A gateway of another kernel is listed with the paired clients; once the owner
+            // revoked it here, its key gets nothing, whether or not it names its origin.
+            let origin = request
+                .on_behalf_of
+                .as_ref()
+                .map(|c| c.origin_kernel.as_str());
+            match router
+                .machine_gateway()
+                .admit_origin(&client_public_key, origin)
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(relay_error(
+                            "authorization_denied",
+                            "this machine's owner revoked that gateway (unpaired or revoked)",
+                            false,
+                        )),
+                    }
+                }
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(relay_error(
+                            "gateway_origins_unavailable",
+                            &error.to_string(),
+                            true,
+                        )),
+                    }
+                }
+            }
             let request_kind = relay_request_kind(&request.request);
             let bind_import_response = is_browser_import_request(&request.request);
             let mut result = match request.on_behalf_of {

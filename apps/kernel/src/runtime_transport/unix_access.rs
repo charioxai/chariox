@@ -602,7 +602,7 @@ pub(super) fn serve_gateway(
                         &origin,
                         &command_id,
                         &request,
-                        crate::runtime::machine_gateway::REQUEST_DEADLINE,
+                        crate::runtime::machine_gateway::ledger::deadline_for(&request),
                     )
                     .await;
                 if let Ok(response) = &answered {

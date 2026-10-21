@@ -1,0 +1,69 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+import { CommandFailure } from "./agent-command-table.js"
+import { runTerminalVerb, waitMsOf, type TerminalFlags } from "./terminal-verbs.js"
+
+const summary = (offset = 0) => ({ terminal_id: "t1", session_id: "s1", title: "ops", output_offset: offset })
+const flags = (extra: Partial<TerminalFlags> = {}): TerminalFlags => ({ noEnter: false, session: "s1", terminal: "t1", ...extra })
+
+function recorder(answers: Record<string, unknown>[]) {
+  const sent: any[] = []
+  return { sent, send: async (body: Record<string, unknown>) => { sent.push(body); return answers.shift()! } }
+}
+
+test("send takes the current offset first, then types the text with Enter as one input", async () => {
+  const { sent, send } = recorder([
+    { RoomTerminal: { result: { result: "snapshot", snapshot: { terminal: summary(40), output_offset: 40, screen_text: "" } } } },
+    { RoomTerminal: { result: { result: "input", input: { accepted: true, driver: { state: "busy" } } } } },
+  ])
+  const result = await runTerminalVerb("send", ["make test"], flags(), send) as any
+  assert.equal(result.after_offset, 40)
+  assert.equal(sent[0].RoomTerminal.operation.operation, "snapshot")
+  assert.equal(sent[1].RoomTerminal.operation.operation, "input")
+  assert.equal(Buffer.from(sent[1].RoomTerminal.operation.data_base64, "base64").toString(), "make test\r")
+})
+
+test("send says why the terminal refused instead of printing success", async () => {
+  const { send } = recorder([
+    { RoomTerminal: { result: { result: "snapshot", snapshot: { terminal: summary(1), output_offset: 1, screen_text: "" } } } },
+    { RoomTerminal: { result: { result: "input", input: { accepted: false, driver: {}, refusal: "busy (driven by agent-a)" } } } },
+  ])
+  await assert.rejects(runTerminalVerb("send", ["ls"], flags(), send), (error: unknown) => error instanceof CommandFailure && error.code === "terminal_input_refused" && /driven by agent-a/.test(error.message))
+})
+
+test("read prints plain text without colour or title escapes and the next offset", async () => {
+  const output = Buffer.from("\u001b]0;ops\u0007\u001b[32mok\u001b[0m done\r\n").toString("base64")
+  const { sent, send } = recorder([{ RoomTerminal: { result: { result: "output", output: { terminal: summary(), data_base64: output, next_offset: 31, gap: false } } } }])
+  const result = await runTerminalVerb("read", [], flags({ since: "12", waitMs: "2000" }), send) as any
+  assert.equal(result.text, "ok done\r\n")
+  assert.equal(result.next_offset, 31)
+  assert.deepEqual(sent[0].RoomTerminal.operation, { operation: "read_output", terminal_id: "t1", after_offset: 12, wait_ms: 2000 })
+})
+
+test("open runs the program after -- with no shell, and a login shell without it", async () => {
+  const opened = { RoomTerminal: { result: { result: "opened", terminal: summary() } } }
+  const { sent, send } = recorder([opened, opened])
+  await runTerminalVerb("open", ["tail", "-f", "log"], flags({ title: "logs" }), send)
+  await runTerminalVerb("open", [], flags(), send)
+  assert.deepEqual(sent[0].RoomTerminal.operation, { operation: "open", cols: 120, rows: 30, title: "logs", command: ["tail", "-f", "log"] })
+  assert.equal("command" in sent[1].RoomTerminal.operation, false)
+})
+
+test("wait asks again in four-minute pieces until it fires or the time is up", async () => {
+  const waited = (fired: unknown, offset: number) => ({ RoomTerminal: { result: { result: "waited", waited: { fired, terminal: summary(offset), screen_text: "$ ", output_offset: offset } } } })
+  const { sent, send } = recorder([waited(null, 10), waited({ kind: "finished", exit_code: 0 }, 20)])
+  const result = await runTerminalVerb("wait", [], flags({ for: "finished", timeout: "600" }), send) as any
+  assert.deepEqual(result.fired, { kind: "finished", exit_code: 0 })
+  assert.equal(sent.length, 2)
+  assert.equal(sent[0].RoomTerminal.operation.timeout_ms, 240_000)
+  assert.equal(sent[1].RoomTerminal.operation.after_offset, 10, "the next piece continues from where the last one looked")
+  assert.deepEqual(sent[0].RoomTerminal.operation.watches, [{ kind: "finished" }])
+  assert.equal(waitMsOf("wait", flags({ timeout: "5" })), 5000)
+  await assert.rejects(runTerminalVerb("wait", [], flags({ for: "output_contains=" }), send), CommandFailure)
+})
+
+test("a command that needs a session or terminal names the missing flag", async () => {
+  const { send } = recorder([])
+  await assert.rejects(runTerminalVerb("list", [], { noEnter: false }, send), /--session/)
+  await assert.rejects(runTerminalVerb("close", [], { noEnter: false, session: "s1" }, send), /--terminal/)
+})

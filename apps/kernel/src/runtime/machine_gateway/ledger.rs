@@ -171,6 +171,18 @@ pub(crate) fn variant_name(request: &crate::local::LocalDaemonRequest) -> String
 /// may simply run again on a retry. Everything else is state-changing and goes
 /// through the ledger.
 pub(crate) fn is_repeatable(request: &crate::local::LocalDaemonRequest) -> bool {
+    use crate::local::{LocalDaemonRequest, RoomTerminalOperation};
+    // A terminal is read by listing, a snapshot, an offset or a wait; typing, opening,
+    // resizing and closing change it, so a retried `input` never types twice.
+    if let LocalDaemonRequest::RoomTerminal(terminal) = request {
+        return matches!(
+            terminal.operation,
+            RoomTerminalOperation::List
+                | RoomTerminalOperation::Snapshot { .. }
+                | RoomTerminalOperation::ReadOutput { .. }
+                | RoomTerminalOperation::Wait { .. }
+        );
+    }
     let variant = variant_name(request);
     [
         "List",
@@ -183,6 +195,22 @@ pub(crate) fn is_repeatable(request: &crate::local::LocalDaemonRequest) -> bool 
     ]
     .iter()
     .any(|prefix| variant.starts_with(prefix))
+}
+
+/// How long the origin waits for the machine's answer: a terminal wait or long read
+/// is answered when it ends, so its own wait comes first.
+pub(crate) fn deadline_for(request: &crate::local::LocalDaemonRequest) -> std::time::Duration {
+    use crate::local::{LocalDaemonRequest, RoomTerminalOperation};
+    let wait_ms = match request {
+        LocalDaemonRequest::RoomTerminal(terminal) => match terminal.operation {
+            RoomTerminalOperation::Wait { timeout_ms, .. } => timeout_ms,
+            RoomTerminalOperation::ReadOutput { wait_ms, .. } => wait_ms,
+            _ => 0,
+        },
+        _ => 0,
+    };
+    // The terminal service caps a wait at four minutes.
+    super::REQUEST_DEADLINE + std::time::Duration::from_millis(wait_ms.min(240_000))
 }
 
 #[cfg(test)]
@@ -375,6 +403,67 @@ mod tests {
             ListSessionsRequest
         )));
         assert!(!is_repeatable(&create()));
+        let terminal = |operation| {
+            LocalDaemonRequest::RoomTerminal(crate::local::RoomTerminalRequest {
+                session_id: "s".into(),
+                acting_agent: None,
+                host_agent: None,
+                operation,
+            })
+        };
+        use crate::local::RoomTerminalOperation as Op;
+        for repeats in [
+            Op::List,
+            Op::Snapshot {
+                terminal_id: "t".into(),
+            },
+            Op::ReadOutput {
+                terminal_id: "t".into(),
+                after_offset: 0,
+                wait_ms: 0,
+            },
+            Op::Wait {
+                terminal_id: "t".into(),
+                watches: vec![],
+                after_offset: None,
+                timeout_ms: 1,
+            },
+        ] {
+            assert!(is_repeatable(&terminal(repeats)));
+        }
+        for changes in [
+            Op::Open {
+                cols: 80,
+                rows: 24,
+                title: None,
+                command: None,
+            },
+            Op::Input {
+                terminal_id: "t".into(),
+                data_base64: "bHMK".into(),
+            },
+            Op::Resize {
+                terminal_id: "t".into(),
+                cols: 80,
+                rows: 24,
+            },
+            Op::Close {
+                terminal_id: "t".into(),
+            },
+        ] {
+            assert!(!is_repeatable(&terminal(changes)));
+        }
+        // A wait is given its own length on top of the usual deadline.
+        assert_eq!(deadline_for(&create()), super::super::REQUEST_DEADLINE);
+        assert_eq!(
+            deadline_for(&terminal(Op::Wait {
+                terminal_id: "t".into(),
+                watches: vec![],
+                after_offset: None,
+                timeout_ms: 60_000
+            })),
+            super::super::REQUEST_DEADLINE + Duration::from_secs(60)
+        );
         assert_eq!(variant_name(&create()), "DeleteSession");
         // A heartbeat and a file chunk name their own state, so a retry is safe.
         let beat =

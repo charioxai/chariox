@@ -18,7 +18,7 @@ test("the guide mentions exactly the commands and flags the parser knows", () =>
   const flags = new Set(guide.match(/--[a-z0-9-]+/g))
   for (const flag of flags) assert.ok(knownFlags.has(flag), `guide mentions unknown flag ${flag}`)
   for (const flag of knownFlags) assert.ok(flags.has(flag), `guide omits flag ${flag}`)
-  assert.ok(guide.split("\n").length <= 66)
+  assert.ok(guide.split("\n").length <= 82)
   assert.match(guide, /show it to the user verbatim and wait/)
   assert.match(guide, /exit 0 and a printed grant mean approved: go on to step 2/, "an agent must not mistake the waiting note for a pending approval")
 })
@@ -126,4 +126,10 @@ test("the guide teaches moving files and resuming a transfer", () => {
   assert.match(guide, /5\. Move files: chariox files put\|get\|stat\|ls --machine NAME/)
   assert.match(guide, /put and get resume after an interruption: run the same command again/)
   for (const verb of ["stat", "ls", "get", "put"]) assert.ok(COMMANDS.some(spec => spec.name === `files ${verb}`))
+})
+
+test("the guide teaches long-running commands in a terminal that outlives the agent", () => {
+  const guide = guideText()
+  assert.match(guide, /6\. Run long commands: chariox terminal open\|send\|read\|wait\|close/)
+  assert.match(guide, /keep running if you disconnect; read them later with --since/)
 })

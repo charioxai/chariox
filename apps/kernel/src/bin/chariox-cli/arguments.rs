@@ -42,6 +42,7 @@ pub fn help_requested(args: &[String]) -> Result<bool, String> {
                 | "request"
                 | "watch"
                 | "files"
+                | "terminal"
                 | "app"
                 | "context"
                 | "logs"
@@ -143,6 +144,18 @@ mod tests {
                 "a",
             ],
             vec!["files", "put", "--machine", "b3", "./a.bin", "/tmp/a.bin"],
+            vec![
+                "terminal",
+                "send",
+                "--machine",
+                "b3",
+                "--session",
+                "s",
+                "--terminal",
+                "t",
+                "--no-enter",
+                "ls",
+            ],
             vec![
                 "files",
                 "get",

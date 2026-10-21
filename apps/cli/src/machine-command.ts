@@ -2,6 +2,7 @@ import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import { CommandFailure, exitCodeFor, guideText, parseArguments, usageOf } from "./agent-command-table.js"
 import { kernelUnixClient } from "./kernel-unix-client.js"
 import { FILES_VERBS, runFilesVerb, type SendRequest } from "./machine-files.js"
+import { runTerminalVerb, TERMINAL_VERBS, waitMsOf, type TerminalFlags, type TerminalVerb } from "./terminal-verbs.js"
 
 const LOCAL_CONNECTION_LOSS = ["connection_closed", "outcome_unknown", "write_failed"]
 const CONNECT_OPERATION = "connect kernel websocket"
@@ -148,13 +149,19 @@ async function readStdin(): Promise<string> {
 
 export async function runMachineCommand(argv: string[]): Promise<boolean> {
   const [command, ...rest] = argv
-  if (command !== "guide" && command !== "machines" && command !== "request" && command !== "watch" && command !== "files") return false
+  // `chariox terminal --session ...` is the interactive attach for a person; a verb first is the agent's.
+  const terminalVerb = command === "terminal" ? TERMINAL_VERBS.find(name => name === rest[0]) : undefined
+  if (command !== "guide" && command !== "machines" && command !== "request" && command !== "watch" && command !== "files" && !terminalVerb) return false
   let machine: string | null = null
   try {
     // `files` is a command family: the verb is part of the table name.
     const verb = command === "files" ? FILES_VERBS.find(name => name === rest[0]) : undefined
     if (command === "files" && !verb) throw new CommandFailure("usage", `Usage: chariox files ${FILES_VERBS.join("|")} (chariox guide lists the arguments)`)
-    const { flags, positionals } = parseArguments(verb ? `files ${verb}` : command, verb ? rest.slice(1) : rest)
+    // What follows `--` of `terminal open` is the program to run, not options.
+    const split = terminalVerb === "open" ? rest.indexOf("--") : -1
+    const program = split < 0 ? [] : rest.slice(split + 1)
+    const options = split < 0 ? rest : rest.slice(0, split)
+    const { flags, positionals } = parseArguments(verb ? `files ${verb}` : terminalVerb ? `terminal ${terminalVerb}` : command, verb ? options.slice(1) : terminalVerb ? options.slice(1) : options)
     const socket = flags.get("--socket") as string | undefined
     if (command === "guide") {
       console.log(guideText())
@@ -169,6 +176,20 @@ export async function runMachineCommand(argv: string[]): Promise<boolean> {
       const attachmentId = flags.get("--attachment") as string | undefined
       if (machine === null || sessionId === undefined || attachmentId === undefined) throw new CommandFailure("usage", usageOf("watch"))
       await watchMachine({ socket, machine, sessionId, attachmentId, from: parseEventId(flags.get("--from")) }, line => console.log(line))
+    } else if (terminalVerb) {
+      machine = (flags.get("--machine") as string | undefined) ?? null
+      const terminalFlags: TerminalFlags = {
+        cols: flags.get("--cols"), rows: flags.get("--rows"), title: flags.get("--title"), session: flags.get("--session"),
+        terminal: flags.get("--terminal"), since: flags.get("--since"), waitMs: flags.get("--wait-ms"), for: flags.get("--for"),
+        timeout: flags.get("--timeout"), noEnter: flags.has("--no-enter"),
+      }
+      // A wait or long read is answered when it ends: the request may take that long, plus the usual margin.
+      const timeoutSeconds = terminalVerb === "wait" || terminalVerb === "read"
+        ? Math.ceil(waitMsOf(terminalVerb, terminalFlags) / 1000) + DEFAULT_TIMEOUT_SECONDS
+        : parseTimeout(flags.get("--timeout"))
+      const result = await withKernel({ socket, timeoutSeconds: Math.min(timeoutSeconds, 240 + DEFAULT_TIMEOUT_SECONDS), machine: machine ?? undefined }, send =>
+        runTerminalVerb(terminalVerb as TerminalVerb, terminalVerb === "open" ? program : positionals, terminalFlags, send))
+      console.log(JSON.stringify(result))
     } else if (command === "files" && verb) {
       machine = (flags.get("--machine") as string | undefined) ?? null
       const timeoutSeconds = parseTimeout(flags.get("--timeout"))

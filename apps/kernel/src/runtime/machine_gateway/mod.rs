@@ -12,6 +12,7 @@ mod join;
 mod keeper;
 pub(crate) mod ledger;
 mod link;
+pub(crate) mod origins;
 mod paired;
 mod self_hosted;
 mod subscription;
@@ -89,6 +90,21 @@ impl MachineGateway {
             paired,
             last_answer: std::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    /// A relay request reached this kernel with `client_public_key`; false when that
+    /// key is a gateway the owner revoked here.
+    pub(crate) fn admit_origin(
+        &self,
+        client_public_key: &str,
+        origin_kernel: Option<&str>,
+    ) -> Result<bool, crate::error::DaemonError> {
+        origins::admit(
+            &origins::path_in(&self.config.snapshot().private_runtime_state_root()),
+            client_public_key,
+            origin_kernel,
+            crate::session::unix_epoch_ms(),
+        )
     }
 
     /// The durable ledger a target keeps for requests forwarded to it.
