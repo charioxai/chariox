@@ -1,5 +1,6 @@
 //! Machine names to live kernels, kept current from the inventory source.
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -22,6 +23,8 @@ struct Seen {
 pub(super) struct Directory {
     source: Arc<dyn InventorySource>,
     seen: Mutex<BTreeMap<String, Seen>>,
+    /// A refresh behind a request is running; one at a time.
+    refreshing: Arc<AtomicBool>,
 }
 
 impl Directory {
@@ -29,6 +32,7 @@ impl Directory {
         Self {
             source,
             seen: Mutex::new(BTreeMap::new()),
+            refreshing: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -57,7 +61,22 @@ impl Directory {
 
     /// The one live kernel `name` means; unknown, ambiguous and offline are errors.
     pub(super) async fn resolve(&self, name: &str) -> Result<RelayKernelPresence, GatewayError> {
+        // A request is never held for the machine list: a machine the last list showed live is
+        // used at once and the list is renewed behind the request. Only an unknown or offline
+        // name, or no list at all, asks for a fresh list before answering.
+        if self.source.is_usable() {
+            self.merge();
+            if let Ok(kernel) = self.lookup(name) {
+                self.refresh_behind();
+                return Ok(kernel);
+            }
+        }
         self.refresh().await?;
+        self.lookup(name)
+    }
+
+    /// The one live kernel `name` means; unknown, ambiguous and offline are errors.
+    fn lookup(&self, name: &str) -> Result<RelayKernelPresence, GatewayError> {
         let seen = self.seen.lock().expect("directory poisoned");
         let matches: Vec<&Seen> = seen
             .values()
@@ -81,6 +100,18 @@ impl Directory {
         }
     }
 
+    fn refresh_behind(&self) {
+        if self.source.is_fresh() || self.refreshing.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let (source, refreshing) = (Arc::clone(&self.source), Arc::clone(&self.refreshing));
+        tokio::spawn(async move {
+            // A failed refresh leaves the last list in use; the next request tries again.
+            let _ = tokio::time::timeout(REFRESH_TIMEOUT, source.refresh()).await;
+            refreshing.store(false, Ordering::Release);
+        });
+    }
+
     async fn refresh(&self) -> Result<(), GatewayError> {
         if !self.source.is_fresh() {
             tokio::time::timeout(REFRESH_TIMEOUT, self.source.refresh())
@@ -90,6 +121,12 @@ impl Directory {
                 })?
                 .map_err(|error| unreachable_inventory(error.to_string()))?;
         }
+        self.merge();
+        Ok(())
+    }
+
+    /// Takes the source's latest list as what is live now.
+    fn merge(&self) {
         let now = crate::session::unix_epoch_ms();
         let live = self.source.kernels();
         let mut seen = self.seen.lock().expect("directory poisoned");
@@ -106,7 +143,6 @@ impl Directory {
                 },
             );
         }
-        Ok(())
     }
 }
 
@@ -161,7 +197,7 @@ pub(super) fn incompatibility(
             "it predates the {GATEWAY_CAPABILITY} contract that classifies approvals itself"
         )),
         LocalDaemonRequest::RoomTerminal(_) if !advertises(kernel, ROOM_TERMINAL_CAPABILITY) => {
-            Some("it predates Room terminals; update that machine's Chariox kernel".into())
+            Some("it predates Room terminals".into())
         }
         _ => None,
     }
@@ -184,6 +220,9 @@ mod tests {
             self.0.lock().unwrap().clone()
         }
         fn is_fresh(&self) -> bool {
+            true
+        }
+        fn is_usable(&self) -> bool {
             true
         }
         fn refresh(
@@ -223,6 +262,62 @@ mod tests {
     fn directory(kernels: Vec<RelayKernelPresence>) -> (Directory, Arc<Fixed>) {
         let source = Arc::new(Fixed(Mutex::new(kernels)));
         (Directory::new(source.clone()), source)
+    }
+
+    /// A list that is old but usable answers at once and is renewed behind the request.
+    struct Stale {
+        listed: Vec<RelayKernelPresence>,
+        refreshes: std::sync::atomic::AtomicU32,
+    }
+
+    impl InventorySource for Stale {
+        fn via(&self) -> GatewayMachineVia {
+            GatewayMachineVia::Hosted
+        }
+        fn kernels(&self) -> Vec<RelayKernelPresence> {
+            self.listed.clone()
+        }
+        fn is_fresh(&self) -> bool {
+            false
+        }
+        fn is_usable(&self) -> bool {
+            true
+        }
+        fn refresh(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::error::DaemonError>> + Send + '_>>
+        {
+            self.refreshes.fetch_add(1, Ordering::SeqCst);
+            // The Cloud answers slowly: a request that waited for this would stall.
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Ok(())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_is_not_held_for_the_machine_list() {
+        let source = Arc::new(Stale {
+            listed: vec![kernel("k-b3", Some("b3"), "ovh-b3", true)],
+            refreshes: std::sync::atomic::AtomicU32::new(0),
+        });
+        let directory = Directory::new(source.clone());
+        let found = tokio::time::timeout(Duration::from_secs(2), directory.resolve("b3"))
+            .await
+            .expect("a usable list answers without waiting for the refresh")
+            .unwrap();
+        assert_eq!(found.kernel_id, "k-b3");
+        // Only one refresh runs behind the requests, however many arrive.
+        for _ in 0..3 {
+            directory.resolve("b3").await.unwrap();
+        }
+        tokio::task::yield_now().await;
+        assert_eq!(source.refreshes.load(Ordering::SeqCst), 1);
+        // A name the list does not show still asks for a fresh list before saying no.
+        let unknown =
+            tokio::time::timeout(Duration::from_millis(300), directory.resolve("nope")).await;
+        assert!(unknown.is_err(), "an unknown name waits for the fresh list");
     }
 
     #[test]

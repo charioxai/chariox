@@ -1493,3 +1493,23 @@ async fn a_malformed_request_explains_itself_to_the_grant_holder() {
         "{message}"
     );
 }
+
+// EA2-06: a grant holder learns what is wrong with its terminal (an id it sent) from the
+// terminal service's own sentence, through the real socket, instead of "details are
+// available only in the host terminal".
+#[tokio::test]
+async fn an_unknown_terminal_is_explained_to_the_grant_holder() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let refused = holder.request(serde_json::json!({"RoomTerminal": {
+        "session_id": SESSION,
+        "operation": {"operation": "snapshot", "terminal_id": "t-missing"}
+    }}));
+    let message = refused["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("this Room has no terminal `t-missing`"),
+        "{refused}"
+    );
+    assert_eq!(refused["error"]["code"], "terminal_refused", "{refused}");
+}

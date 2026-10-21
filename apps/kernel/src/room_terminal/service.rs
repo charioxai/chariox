@@ -3,6 +3,7 @@
 //! The service is authority-free: callers have already decided who may
 //! reach a Room's terminals and which actor a request speaks for.
 
+use super::REFUSED_CODE;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -882,9 +883,11 @@ fn ended_error(terminal: &Terminal) -> DaemonError {
     ))
 }
 
-fn refused(message: String) -> DaemonError {
-    DaemonError::LocalTransport {
-        operation: "room terminal",
+/// The terminal service's own sentence about what it will not do. It names only the
+/// terminal id the caller sent, so a grant holder reads it as written (`is_public_code`).
+pub(super) fn refused(message: String) -> DaemonError {
+    DaemonError::MachineRequest {
+        code: REFUSED_CODE.into(),
         message,
     }
 }

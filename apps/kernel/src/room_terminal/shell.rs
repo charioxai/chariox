@@ -21,11 +21,11 @@ pub(super) fn login_shell() -> Result<String, DaemonError> {
             .find(|path| Path::new(path).is_file())
             .map(|path| path.to_string()),
     )
-    .ok_or_else(|| DaemonError::LocalTransport {
-        operation: "room terminal",
-        message:
+    .ok_or_else(|| {
+        super::service::refused(
             "no login shell: $SHELL is unset and the account lists none; set SHELL for the kernel"
                 .to_string(),
+        )
     })
 }
 

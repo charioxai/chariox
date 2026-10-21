@@ -13,11 +13,18 @@ use crate::runtime::projection::{
     DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore,
 };
 
+/// A machine list this old is still good to route a request by; a machine that went away
+/// meanwhile is reported by the relay as not connected.
+const USABLE_FOR_MS: u64 = 5 * 60 * 1000;
+
 pub(crate) trait InventorySource: Send + Sync {
     fn via(&self) -> GatewayMachineVia;
     /// The kernels the latest refresh listed as live; never this kernel itself.
     fn kernels(&self) -> Vec<RelayKernelPresence>;
     fn is_fresh(&self) -> bool;
+    /// Listed recently enough to answer a request from while a fresh list is fetched
+    /// behind it; a source that never listed is not usable.
+    fn is_usable(&self) -> bool;
     fn refresh(&self) -> Pin<Box<dyn Future<Output = Result<(), DaemonError>> + Send + '_>>;
 }
 
@@ -48,6 +55,11 @@ impl InventorySource for RelayInventory {
             .max(1_000);
         self.projection
             .is_fresh(crate::session::unix_epoch_ms(), stale_after_ms)
+    }
+
+    fn is_usable(&self) -> bool {
+        self.projection
+            .is_fresh(crate::session::unix_epoch_ms(), USABLE_FOR_MS)
     }
 
     fn refresh(&self) -> Pin<Box<dyn Future<Output = Result<(), DaemonError>> + Send + '_>> {

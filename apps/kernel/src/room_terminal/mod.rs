@@ -18,6 +18,14 @@ mod types;
 #[cfg(all(test, unix))]
 mod tests;
 
+/// The code of a terminal refusal; its message is the service's own sentence.
+pub(crate) const REFUSED_CODE: &str = "terminal_refused";
+
+/// Codes whose message the terminal service writes itself.
+pub(crate) fn is_public_code(code: &str) -> bool {
+    code == REFUSED_CODE
+}
+
 pub use events::{CompletionEvents, EventCoreNotWired, WatchOwner};
 pub use service::{OpenRoomTerminal, RoomTerminalService, MAX_WAIT};
 pub use types::*;
