@@ -507,9 +507,9 @@ impl KernelRuntimeState {
                     accept_shared_unlock,
                 )
                 .await?;
-            if !answer
+            if answer
                 .as_ref()
-                .is_some_and(|resolution| resolution.status == "timed_out")
+                .is_none_or(|resolution| resolution.status != "timed_out")
             {
                 return Ok(answer);
             }
