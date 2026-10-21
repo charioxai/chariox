@@ -185,6 +185,7 @@ fn opencode_skill_candidates(
                 discovery_error: observed_body
                     .is_none()
                     .then(|| "official native inventory did not provide its retained body".into()),
+                plugin: None,
             })
         })
         .collect())
@@ -265,6 +266,7 @@ mod tests {
             observed_body_digest: retained
                 .map(|body| format!("{:x}", Sha256::digest(body.trim().as_bytes()))),
             discovery_error: None,
+            plugin: None,
         };
         write("one", "One.\n");
         let listed = vec![candidate("one", Some("One.\n"))];

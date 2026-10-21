@@ -50,6 +50,7 @@ fn candidate(path: PathBuf) -> NativeSkillCandidate {
         supports_load_ack: true,
         observed_body_digest: None,
         discovery_error: None,
+        plugin: None,
     }
 }
 #[test]
@@ -214,9 +215,14 @@ fn claude_scoped_profile_project_and_enabled_plugins_confirm_exposure() {
     )
     .unwrap();
     let candidates = filesystem_skill_candidates(&binding, &temp.0, &[]).unwrap();
-    let names: BTreeMap<_, _> = candidates
+    let inventory = NativeSkillInventory::from_candidates(&binding, candidates).unwrap();
+    let names: BTreeMap<_, _> = inventory
+        .entries
         .iter()
-        .map(|c| (c.name.as_str(), &c.exposure))
+        .map(|entry| match &entry.selection {
+            SkillSelection::Native { name, .. } => (name.as_str(), entry),
+            SkillSelection::Chariox { .. } => unreachable!(),
+        })
         .collect();
     assert_eq!(
         names.keys().copied().collect::<Vec<_>>(),
@@ -227,9 +233,12 @@ fn claude_scoped_profile_project_and_enabled_plugins_confirm_exposure() {
             "project"
         ]
     );
+    // A plugin package verifies against its own SKILL.md name, so it can be selected.
     assert!(names
         .values()
-        .all(|state| **state == NativeSkillExposure::Confirmed));
+        .all(|entry| entry.exposure == NativeSkillExposure::Confirmed
+            && entry.complete_manifest
+            && entry.digest.is_some()));
 }
 #[test]
 fn claude_settings_permission_deny_disables_the_native_skill() {

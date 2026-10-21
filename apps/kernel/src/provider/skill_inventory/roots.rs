@@ -111,10 +111,10 @@ pub fn filesystem_skill_candidates(
     // shadowed namesakes are never offered.
     if binding.provider == "claude" {
         let mut names = BTreeSet::new();
-        candidates.retain(|candidate| names.insert(candidate.name.clone()));
+        candidates.retain(|candidate| names.insert(candidate.invocation_name()));
         let denied = claude_denied_skills(binding, worktree_root);
         for candidate in &mut candidates {
-            candidate.exposure = if denied.contains(&candidate.name) {
+            candidate.exposure = if denied.contains(&candidate.invocation_name()) {
                 NativeSkillExposure::Disabled
             } else {
                 NativeSkillExposure::Confirmed
@@ -174,7 +174,7 @@ fn collect_claude_plugin_candidates(
         let mut found = Vec::new();
         collect_candidates(&plugin.root, 1, &mut 0, &mut found)?;
         candidates.extend(found.into_iter().map(|mut candidate| {
-            candidate.name = format!("{}:{}", plugin.plugin, candidate.name);
+            candidate.plugin = Some(plugin.plugin.clone());
             candidate
         }));
     }
@@ -241,7 +241,7 @@ fn collect_candidates(
                     }
                     candidates.push(NativeSkillCandidate { name: metadata.name, description: metadata.description, skill_file: file,
                         exposure: NativeSkillExposure::Unverified, supports_load_ack: false, observed_body_digest: None,
-                        discovery_error: Some("directory candidate; effective harness exposure and precedence have not been confirmed".into()) });
+                        discovery_error: Some("directory candidate; effective harness exposure and precedence have not been confirmed".into()), plugin: None });
                 }
             }
         }

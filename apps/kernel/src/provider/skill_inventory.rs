@@ -40,6 +40,17 @@ pub struct NativeSkillCandidate {
     /// Hash of body actually retained by the harness (OpenCode inventory).
     pub observed_body_digest: Option<String>,
     pub discovery_error: Option<String>,
+    /// The Claude plugin that ships this skill; Claude invokes it as `<plugin>:<name>`.
+    pub plugin: Option<String>,
+}
+impl NativeSkillCandidate {
+    /// The name the harness invokes and the picker offers.
+    pub fn invocation_name(&self) -> String {
+        match &self.plugin {
+            Some(plugin) => format!("{plugin}:{}", self.name),
+            None => self.name.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -96,8 +107,9 @@ impl NativeSkillInventory {
         let mut paths = BTreeMap::new();
         let mut physical_digests = BTreeMap::new();
         for candidate in candidates {
+            let invocation_name = candidate.invocation_name();
             let entry_id =
-                hash(format!("{}\0{}", candidate.name, candidate.skill_file.display()).as_bytes());
+                hash(format!("{}\0{}", invocation_name, candidate.skill_file.display()).as_bytes());
             if paths.contains_key(&entry_id) {
                 continue;
             }
@@ -185,7 +197,7 @@ impl NativeSkillInventory {
             entries.push(NativeSkillEntry {
                 selection: SkillSelection::Native {
                     entry_id,
-                    name: candidate.name,
+                    name: invocation_name,
                     provider: binding.provider.clone(),
                     account_profile: binding.account_profile.clone(),
                     execution_id: binding.execution_id.clone(),
@@ -373,6 +385,7 @@ pub fn codex_skill_candidates(
                 observed_body_digest: None,
                 discovery_error: (!errors.is_empty())
                     .then(|| "Codex reported skill discovery errors".into()),
+                plugin: None,
             })
         })
         .collect())
