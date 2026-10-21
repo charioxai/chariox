@@ -403,7 +403,7 @@ A record is `{ cursor, kernel, machine, session_id, agent_id?, type, value, summ
 
 **Lifetime.** The subscription ends only when its grant ends (expiry, revoke, holder exit, and a restart of the agent's own kernel, which ends grants) or when the external agent cancels it. Nothing else ends it: no expiry of its own, not a session ending (that target reports `session ended` and leaves the list), not a target kernel restarting (its part is durable there and keeps collecting), not a dropped relay link (the gateway resumes the part from its last cursor), not days without reads. When it ends, a running wait returns `subscription_ended { reason }` and the gateway removes the parts on the other kernels; a part whose owner kernel never comes back is removed when that kernel's gateway reconnects without it.
 
-**Bounded inbox.** Unacknowledged records stay until acked. If more than 100 000 are pending (proposed), the oldest are dropped and replaced by one `gap { kernel, dropped, from, to }` record; the subscription continues. A cursor older than the oldest kept record is answered with `cursor_expired { oldest_cursor }`, never a silent jump.
+**Bounded inbox.** Unacknowledged records stay until acked. If more than 100 000 are pending (decided by Miguel, 2026-10-21), the oldest are dropped and replaced by one `gap { kernel, dropped, from, to }` record; the subscription continues. A cursor older than the oldest kept record is answered with `cursor_expired { oldest_cursor }`, never a silent jump.
 
 **Requests (external access path only).**
 - `SubscribeEvents { targets }` adds targets; `UnsubscribeEvents { targets | all }` removes them, and `all` cancels the subscription; `GetEventSubscription` lists targets and per-kernel health.
