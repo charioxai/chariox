@@ -902,8 +902,12 @@ export class Mirror2 {
     if (stream.tab_id !== tab.tab_id || stream.document_id !== tab.document_id) throw new Error('MP-11: stale mirror input document');
     if (stream.policy !== this.host.protection) throw new Error('MP-11: stale mirror protection policy');
     // Epochs are sequences of this document's current snapshot, never a wall clock.
-    if (stream.fallback || !Number.isSafeInteger(input.sequence) || input.sequence < stream.resetAt || input.sequence > stream.issued) throw new MirrorInputEpochRefusal();
     const action = input.action, generation = this.host.generation;
+    // Keys already in flight follow native focus on this same document. A
+    // reconstructed observation does not cancel them or let Enter overtake a
+    // refused letter's retry. Addressed input still needs its observed base.
+    const nativeFocus = action?.kind === 'key' || action?.kind === 'text' && action.node_id === undefined;
+    if (stream.fallback || !Number.isSafeInteger(input.sequence) || input.sequence < 1 || input.sequence > stream.issued || !nativeFocus && input.sequence < stream.resetAt) throw new MirrorInputEpochRefusal();
     const validId = id => typeof id === 'string' && /^n[1-9][0-9]{0,15}$/.test(id);
     if (!action || typeof action.kind !== 'string') throw new Error('MP-11: invalid mirror input');
     if (['click', 'focus', 'scroll', 'blur', 'set'].includes(action.kind) && !validId(action.node_id) || action.kind === 'selection' && (!validId(action.anchor_id) || !validId(action.focus_id))) throw new Error('MP-11: invalid mirror input');

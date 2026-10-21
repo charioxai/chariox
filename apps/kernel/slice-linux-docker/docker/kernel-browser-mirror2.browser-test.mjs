@@ -1869,3 +1869,20 @@ test("protocol 560/168: a credit whose page size changed while it was observed p
     assert.equal(next.reset, true, "the observer's consumed change is not delivered by a delta: the next credit re-snapshots");
     assert.match(JSON.stringify(next), /changed/, "the changed text reaches the viewer");
   }));
+
+test('MP-08/MP-10/MP-11: typing already sent survives a same-document mirror reset', () => mirrored(
+  '<input id="q" autofocus onkeydown="if(event.key===\'Enter\')window.submitted=this.value"><p id="status">ready</p>',
+  async ({ next, input, evaluate }) => {
+    const first = await next();
+    await evaluate("document.querySelector('#q').focus()");
+    await input(first.sequence, { kind: 'key', key: 'a' });
+    await evaluate("document.querySelector('#status').textContent='reconstructed'");
+    const replacement = await next(0, true);
+    assert(replacement.reset && replacement.sequence > first.sequence);
+    // These keys left the viewer before the reset packet arrived. No pointer,
+    // selection or field state is being re-addressed: native focus is current.
+    await input(first.sequence, { kind: 'key', key: 'b' });
+    await input(first.sequence, { kind: 'key', key: 'c' });
+    await input(first.sequence, { kind: 'key', key: 'Enter' });
+    assert.equal(await evaluate('window.submitted'), 'abc');
+  }));
