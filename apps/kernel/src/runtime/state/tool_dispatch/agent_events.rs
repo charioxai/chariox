@@ -183,6 +183,12 @@ impl KernelRuntimeState {
             "chariox.events.yield" => {
                 let ids: Vec<String> = serde_json::from_value(args["registration_ids"].clone())
                     .map_err(|_| ledger::error("registration_ids required"))?;
+                let deadline = args["deadline_ms"]
+                    .as_u64()
+                    .ok_or_else(|| ledger::error("finite deadline_ms required"))?;
+                if deadline <= now {
+                    return Err(ledger::error(format!("deadline_ms {deadline} is not in the future: it is an absolute Unix time in milliseconds, not a duration; now_ms is {now}, so a wait of N seconds is now_ms + N*1000")));
+                }
                 self.owned
                     .durable_state_store
                     .agent_lifecycle(Operation::Yield {
@@ -192,9 +198,7 @@ impl KernelRuntimeState {
                         cursor: args["inbox_cursor"]
                             .as_u64()
                             .ok_or_else(|| ledger::error("inbox_cursor required"))?,
-                        deadline: args["deadline_ms"]
-                            .as_u64()
-                            .ok_or_else(|| ledger::error("finite deadline_ms required"))?,
+                        deadline,
                         reason: args["reason"].as_str().unwrap_or_default().into(),
                         now,
                     })?;
