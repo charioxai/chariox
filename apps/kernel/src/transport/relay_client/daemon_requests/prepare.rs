@@ -85,6 +85,10 @@ impl PreparedDaemonRequest {
     }
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "Keep the existing typed transport error contract."
+)]
 pub(in crate::transport::relay_client) fn prepare_daemon_request(
     router: &CommandRouter,
     caller_identity: Option<RelayCallerIdentity>,
