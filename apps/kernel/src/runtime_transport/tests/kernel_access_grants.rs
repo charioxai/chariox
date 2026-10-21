@@ -456,9 +456,9 @@ impl Client {
         self.send(request);
         self.result()
     }
-    fn request_on(&mut self, machine: &str, request: Value) -> Value {
+    fn request_on(&mut self, kernel: &str, request: Value) -> Value {
         let mut frame = frame(request);
-        frame["machine"] = machine.into();
+        frame["kernel"] = kernel.into();
         writeln!(self.input, "{frame}").unwrap();
         self.result()
     }
@@ -476,8 +476,8 @@ impl Client {
             .unwrap()
             .to_string()
     }
-    fn subscribe_on(&mut self, machine: &str, attachment_id: &str) -> Value {
-        writeln!(self.input, "{}", serde_json::json!({"type":"subscribe", "request_id":"subscribe", "session_id":SESSION, "attachment_id":attachment_id, "machine":machine})).unwrap();
+    fn subscribe_on(&mut self, kernel: &str, attachment_id: &str) -> Value {
+        writeln!(self.input, "{}", serde_json::json!({"type":"subscribe", "request_id":"subscribe", "session_id":SESSION, "attachment_id":attachment_id, "kernel":kernel})).unwrap();
         self.result()
     }
     fn subscribe(&mut self) {
@@ -719,7 +719,7 @@ async fn grant_for_holder(kernel: &mut Kernel, holder: &mut Client, holder_pid: 
     // structured requester and the audit record.
     assert_eq!(
         prompt["message"],
-        "An external agent wants access to this kernel and your other machines. Allow?"
+        "An external agent wants access to this kernel and your other kernels. Allow?"
     );
     assert_eq!(prompt["title"], "External agent access");
     // The popup starts on the kernel default; pre-568 clients read the minutes too.
@@ -1307,7 +1307,7 @@ async fn access_request_refuses_out_of_policy_and_unknown_terms() {
 }
 
 // EA2-05 / EA2-12: a heartbeat for attachments says which of them are gone, and a
-// subscription on a machine is decided by the same machine lookup as a request.
+// subscription on a kernel is decided by the same kernel lookup as a request.
 #[tokio::test]
 async fn a_heartbeat_reports_the_lapsed_attachments_and_a_machine_subscription_names_its_outcome() {
     let mut kernel = Kernel::start().await;
@@ -1325,10 +1325,10 @@ async fn a_heartbeat_reports_the_lapsed_attachments_and_a_machine_subscription_n
         serde_json::json!(["gone", attachment]),
         "{beat}"
     );
-    // Pairing is a person's act at a terminal; a grant holder is refused, locally or on a machine.
+    // Pairing is a person's act at a terminal; a grant holder is refused, locally or on a kernel.
     for request in [
-        serde_json::json!({"JoinMachineLink":{"link":"chariox-terminal-pair-v1.x"}}),
-        serde_json::json!({"ForgetGatewayMachine":{"name":"b3"}}),
+        serde_json::json!({"JoinKernelLink":{"link":"chariox-terminal-pair-v1.x"}}),
+        serde_json::json!({"ForgetGatewayKernel":{"name":"b3"}}),
     ] {
         let refused = holder.request(request.clone());
         assert_eq!(
@@ -1343,10 +1343,10 @@ async fn a_heartbeat_reports_the_lapsed_attachments_and_a_machine_subscription_n
     }
     let subscribed = holder.subscribe_on("b3", &attachment);
     assert_eq!(
-        subscribed["error"]["code"], "machine_unknown",
+        subscribed["error"]["code"], "kernel_unknown",
         "{subscribed}"
     );
-    assert_eq!(subscribed["machine"], "b3", "{subscribed}");
+    assert_eq!(subscribed["kernel"], "b3", "{subscribed}");
 }
 
 // EA2-07 (target half): a grant holder moves a file in chunks through the kernel,
@@ -1358,12 +1358,12 @@ async fn a_grant_holder_moves_a_file_in_chunks_and_a_bad_request_says_what_to_do
     grant(&mut kernel, &mut holder).await;
     let target = kernel.root.join("moved.bin");
     let path = target.display().to_string();
-    let first = holder.request(serde_json::json!({"WriteMachineFile":{"path":path,"offset":0,"data_base64":"aGVsbG8g","total_size":11}}));
+    let first = holder.request(serde_json::json!({"WriteKernelFile":{"path":path,"offset":0,"data_base64":"aGVsbG8g","total_size":11}}));
     assert_eq!(
-        first["response"]["MachineFileWritten"]["complete"], false,
+        first["response"]["KernelFileWritten"]["complete"], false,
         "{first}"
     );
-    let skipped = holder.request(serde_json::json!({"WriteMachineFile":{"path":path,"offset":3,"data_base64":"d29ybGQ=","total_size":11}}));
+    let skipped = holder.request(serde_json::json!({"WriteKernelFile":{"path":path,"offset":3,"data_base64":"d29ybGQ=","total_size":11}}));
     assert_eq!(
         skipped["error"]["code"], "file_offset_mismatch",
         "{skipped}"
@@ -1375,20 +1375,20 @@ async fn a_grant_holder_moves_a_file_in_chunks_and_a_bad_request_says_what_to_do
             .contains("continue at offset 6"),
         "{skipped}"
     );
-    let last = holder.request(serde_json::json!({"WriteMachineFile":{"path":path,"offset":6,"data_base64":"d29ybGQ=","total_size":11}}));
+    let last = holder.request(serde_json::json!({"WriteKernelFile":{"path":path,"offset":6,"data_base64":"d29ybGQ=","total_size":11}}));
     assert_eq!(
-        last["response"]["MachineFileWritten"]["complete"], true,
+        last["response"]["KernelFileWritten"]["complete"], true,
         "{last}"
     );
     assert_eq!(std::fs::read(&target).unwrap(), b"hello world");
-    let read = holder
-        .request(serde_json::json!({"ReadMachineFile":{"path":path,"offset":6,"length":100}}));
+    let read =
+        holder.request(serde_json::json!({"ReadKernelFile":{"path":path,"offset":6,"length":100}}));
     assert_eq!(
-        read["response"]["MachineFileChunk"]["data_base64"], "d29ybGQ=",
+        read["response"]["KernelFileChunk"]["data_base64"], "d29ybGQ=",
         "{read}"
     );
-    assert_eq!(read["response"]["MachineFileChunk"]["eof"], true, "{read}");
-    let missing = holder.request(serde_json::json!({"StatMachineFile":{"path":"relative.txt"}}));
+    assert_eq!(read["response"]["KernelFileChunk"]["eof"], true, "{read}");
+    let missing = holder.request(serde_json::json!({"StatKernelFile":{"path":"relative.txt"}}));
     assert_eq!(missing["error"]["code"], "file_path_invalid", "{missing}");
     assert!(
         missing["error"]["message"]
@@ -1399,30 +1399,30 @@ async fn a_grant_holder_moves_a_file_in_chunks_and_a_bad_request_says_what_to_do
     );
 }
 
-// EA2-04 / EA2-10 (origin half): a request that names a machine is decided by the
-// local kernel first. Unknown machines and human-only shapes end here, with a
-// definitive code, before anything leaves the machine; nothing falls back to local.
+// EA2-04 / EA2-10 (origin half): a request that names a kernel is decided by the
+// local kernel first. Unknown kernels and human-only shapes end here, with a
+// definitive code, before anything leaves the kernel; nothing falls back to local.
 #[tokio::test]
 async fn machine_requests_are_decided_locally_before_any_machine_is_reached() {
     let mut kernel = Kernel::start().await;
     let mut holder = Client::start(&kernel.root);
     grant(&mut kernel, &mut holder).await;
-    let listed = holder.request(serde_json::json!({"ListGatewayMachines":{}}));
+    let listed = holder.request(serde_json::json!({"ListGatewayKernels":{}}));
     assert!(listed["error"].is_null(), "{listed}");
-    assert!(listed["machine"].is_null(), "{listed}");
+    assert!(listed["kernel"].is_null(), "{listed}");
     assert_eq!(
-        listed["response"]["GatewayMachinesListed"]["machines"],
+        listed["response"]["GatewayKernelsListed"]["kernels"],
         serde_json::json!([]),
-        "a kernel with no relay has no machines"
+        "a kernel with no relay has no kernels"
     );
     let unknown = holder.request_on(
         "b3",
         serde_json::json!({"GetSessionState":{"session_id":SESSION}}),
     );
-    assert_eq!(unknown["error"]["code"], "machine_unknown", "{unknown}");
+    assert_eq!(unknown["error"]["code"], "kernel_unknown", "{unknown}");
     assert_eq!(
-        unknown["machine"], "b3",
-        "the answer names the machine it concerns: {unknown}"
+        unknown["kernel"], "b3",
+        "the answer names the kernel it concerns: {unknown}"
     );
     assert!(
         unknown["response"].is_null(),
@@ -1444,7 +1444,7 @@ async fn machine_requests_are_decided_locally_before_any_machine_is_reached() {
         relay["error"]["code"], "kernel_access_human_only",
         "{relay}"
     );
-    // A stranger gets no machine reach: the grant is the only door.
+    // A stranger gets no kernel reach: the grant is the only door.
     let mut stranger = Client::start(&kernel.root);
     let refused = stranger.request_on(
         "b3",
@@ -1456,7 +1456,7 @@ async fn machine_requests_are_decided_locally_before_any_machine_is_reached() {
     );
 }
 
-// EA2-10: a grant request that names a machine is a gateway request, never a
+// EA2-10: a grant request that names a kernel is a gateway request, never a
 // local grant request: it raises no popup here and is human-only for a holder.
 #[tokio::test]
 async fn a_grant_request_naming_a_machine_is_not_a_local_grant_request() {

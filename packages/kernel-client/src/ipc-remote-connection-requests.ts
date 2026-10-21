@@ -43,17 +43,17 @@ export function renameRemoteMachineRequest(machineRef: string, alias: string) {
   }
 }
 
-export function listGatewayMachinesRequest() {
-  return { ListGatewayMachines: {} }
+export function listGatewayKernelsRequest() {
+  return { ListGatewayKernels: {} }
 }
 
 /** `relayToken` is the operator's client transport token; the kernel stores it and never returns it. */
-export function joinMachineLinkRequest(link: string, relayToken: string | null = null) {
-  return { JoinMachineLink: { link, ...(relayToken === null ? {} : { relay_token: relayToken }) } }
+export function joinKernelLinkRequest(link: string, relayToken: string | null = null) {
+  return { JoinKernelLink: { link, ...(relayToken === null ? {} : { relay_token: relayToken }) } }
 }
 
-export function forgetGatewayMachineRequest(name: string) {
-  return { ForgetGatewayMachine: { name } }
+export function forgetGatewayKernelRequest(name: string) {
+  return { ForgetGatewayKernel: { name } }
 }
 
 export function createPairingInviteRequest(

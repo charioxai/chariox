@@ -60,10 +60,10 @@ pub(crate) async fn execute_pairing_request(
             if let (Some(thumbprint), LocalDaemonResponse::TerminalPairingLinkJoined { .. }) =
                 (key_thumbprint, &joined)
             {
-                let path = super::machine_gateway::origins::path_in(
+                let path = super::kernel_gateway::origins::path_in(
                     &config_projection.snapshot().private_runtime_state_root(),
                 );
-                super::machine_gateway::origins::reinstate(&path, &thumbprint)?;
+                super::kernel_gateway::origins::reinstate(&path, &thumbprint)?;
             }
             Ok(joined)
         }
@@ -103,12 +103,12 @@ pub(crate) async fn execute_pairing_request(
         LocalDaemonRequest::RevokePairedClient(request)
             if request
                 .client_id
-                .starts_with(super::machine_gateway::origins::CLIENT_PREFIX) =>
+                .starts_with(super::kernel_gateway::origins::CLIENT_PREFIX) =>
         {
-            let path = super::machine_gateway::origins::path_in(
+            let path = super::kernel_gateway::origins::path_in(
                 &config_projection.snapshot().private_runtime_state_root(),
             );
-            let revoked = super::machine_gateway::origins::revoke(&path, &request.client_id)?
+            let revoked = super::kernel_gateway::origins::revoke(&path, &request.client_id)?
                 .ok_or_else(|| DaemonError::LocalTransport {
                     operation: "revoke paired client",
                     message: format!("no gateway {} reached this machine", request.client_id),
@@ -121,17 +121,19 @@ pub(crate) async fn execute_pairing_request(
         LocalDaemonRequest::RecordPairedClient(request)
             if request
                 .client_id
-                .starts_with(super::machine_gateway::origins::CLIENT_PREFIX) =>
+                .starts_with(super::kernel_gateway::origins::CLIENT_PREFIX) =>
         {
             let thumbprint =
-                &request.client_id[super::machine_gateway::origins::CLIENT_PREFIX.len()..];
-            let path = super::machine_gateway::origins::path_in(
+                &request.client_id[super::kernel_gateway::origins::CLIENT_PREFIX.len()..];
+            let path = super::kernel_gateway::origins::path_in(
                 &config_projection.snapshot().private_runtime_state_root(),
             );
-            let origin = super::machine_gateway::origins::reinstate(&path, thumbprint)?
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "record paired client",
-                    message: format!("no revoked gateway {} to pair again", request.client_id),
+            let origin =
+                super::kernel_gateway::origins::reinstate(&path, thumbprint)?.ok_or_else(|| {
+                    DaemonError::LocalTransport {
+                        operation: "record paired client",
+                        message: format!("no revoked gateway {} to pair again", request.client_id),
+                    }
                 })?;
             Ok(LocalDaemonResponse::PairedClientRecorded {
                 client: gateway_client_record(origin),
@@ -163,7 +165,7 @@ pub(crate) async fn execute_pairing_request(
 }
 
 fn gateway_client_record(
-    origin: super::machine_gateway::origins::GatewayOrigin,
+    origin: super::kernel_gateway::origins::GatewayOrigin,
 ) -> crate::local::PairedClientRecord {
     crate::local::PairedClientRecord {
         client_id: origin.client_id(),
@@ -179,10 +181,10 @@ fn gateway_client_record(
 fn gateway_clients(
     config_projection: &DaemonConfigProjectionStore,
 ) -> Result<Vec<crate::local::PairedClientRecord>, DaemonError> {
-    let path = super::machine_gateway::origins::path_in(
+    let path = super::kernel_gateway::origins::path_in(
         &config_projection.snapshot().private_runtime_state_root(),
     );
-    Ok(super::machine_gateway::origins::entries(&path)?
+    Ok(super::kernel_gateway::origins::entries(&path)?
         .into_iter()
         .map(gateway_client_record)
         .collect())

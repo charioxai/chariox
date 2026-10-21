@@ -1,6 +1,6 @@
-//! The machine gateway of the LOCAL kernel (External Agents v2).
+//! The kernel gateway of the LOCAL kernel (External Agents v2).
 //!
-//! An external agent holding a local grant names a machine on a request frame;
+//! An external agent holding a local grant names a kernel on a request frame;
 //! this kernel authorizes the request locally, then forwards it over the relay as
 //! a terminal-class client of the target kernel, which stays the authority for
 //! its own state. The agent never sees a relay token, key or Cloud credential.
@@ -13,6 +13,7 @@ mod join;
 mod keeper;
 pub(crate) mod ledger;
 mod link;
+mod names;
 pub(crate) mod origins;
 mod paired;
 mod self_hosted;
@@ -39,7 +40,7 @@ use inventory::RelayInventory;
 use link::{Link, LinkFailure, LinkParams};
 pub(crate) use subscription::{ForwardedSubscription, SubscribeRequest};
 
-/// The default time a forwarded request may take before `machine_request_timeout`.
+/// The default time a forwarded request may take before `kernel_request_timeout`.
 pub(crate) const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 const GATEWAY_CLIENT_ID: &str = "agent-gateway";
 const GRANTS_END_AFTER_REVOKE: Duration = Duration::from_secs(2);
@@ -51,7 +52,7 @@ pub(crate) struct Origin {
     pub(crate) harness: String,
 }
 
-pub(crate) struct MachineGateway {
+pub(crate) struct KernelGateway {
     directory: Directory,
     config: DaemonConfigProjectionStore,
     runtime_state: KernelRuntimeState,
@@ -60,22 +61,22 @@ pub(crate) struct MachineGateway {
     ledger: OnceLock<ledger::GatewayLedger>,
     keeper: keeper::Keeper,
     hosted: hosted::HostedClient,
-    paired: Arc<paired::PairedMachines>,
-    /// When each paired machine last answered, for the self-hosted list.
+    paired: Arc<paired::PairedKernels>,
+    /// When each paired kernel last answered, for the self-hosted list.
     last_answer: std::sync::Mutex<HashMap<String, u64>>,
 }
 
-impl MachineGateway {
+impl KernelGateway {
     pub(crate) fn new(
         runtime_state: KernelRuntimeState,
         config: DaemonConfigProjectionStore,
         projection: RemoteRelayInventoryProjectionStore,
     ) -> Self {
-        let paired = Arc::new(paired::PairedMachines::new(
+        let paired = Arc::new(paired::PairedKernels::new(
             config
                 .snapshot()
                 .private_runtime_state_root()
-                .join("gateway-machines.json"),
+                .join("gateway-kernels.json"),
         ));
         let source = Arc::new(RelayInventory {
             config: config.clone(),
@@ -122,21 +123,21 @@ impl MachineGateway {
         })
     }
 
-    /// Forwards `request` to `machine` and returns the target's response value.
+    /// Forwards `request` to `kernel` and returns the target's response value.
     pub(crate) async fn forward(
         &self,
-        machine: &str,
+        target: &str,
         origin: &Origin,
         command_id: &str,
         request: &LocalDaemonRequest,
         deadline: Duration,
     ) -> Result<Value, GatewayError> {
-        let kernel = self.resolve(machine).await?;
-        self.register_for(&origin.grant_id, machine).await?;
+        let kernel = self.resolve(target).await?;
+        self.register_for(&origin.grant_id, target).await?;
         let gateway_ready = is_gateway_ready(&kernel);
         if let Some(detail) = directory::incompatibility(&kernel, request) {
             return Err(GatewayError::Incompatible {
-                name: machine.into(),
+                name: target.into(),
                 detail,
             });
         }
@@ -150,7 +151,7 @@ impl MachineGateway {
             .expect("on_behalf_of serializes");
         }
         let plaintext = serde_json::to_vec(&envelope).expect("envelope serializes");
-        let link = self.link_for(machine, &kernel).await?;
+        let link = self.link_for(target, &kernel).await?;
         let request_id = format!(
             "gw-{}-{}",
             crate::session::unix_epoch_ms(),
@@ -159,7 +160,7 @@ impl MachineGateway {
         match link.request(request_id, &plaintext, deadline).await {
             Ok(bytes) => {
                 serde_json::from_slice(&bytes).map_err(|error| GatewayError::Unreachable {
-                    name: machine.into(),
+                    name: target.into(),
                     detail: format!("unreadable answer: {error}"),
                 })
             }
@@ -168,21 +169,21 @@ impl MachineGateway {
                 {
                     self.links.lock().await.remove(&kernel.kernel_id);
                 }
-                Err(map_failure(machine, failure))
+                Err(map_failure(target, failure))
             }
         }
     }
 
     async fn link_for(
         &self,
-        machine: &str,
+        target: &str,
         kernel: &chariox_relay::protocol::RelayKernelPresence,
     ) -> Result<Arc<Link>, GatewayError> {
         let mut links = self.links.lock().await;
         if let Some(link) = links.get(&kernel.kernel_id).filter(|link| link.usable()) {
             return Ok(Arc::clone(link));
         }
-        let link = self.open_link(machine, kernel).await?;
+        let link = self.open_link(target, kernel).await?;
         links.insert(kernel.kernel_id.clone(), Arc::clone(&link));
         Ok(link)
     }
@@ -190,7 +191,7 @@ impl MachineGateway {
     /// The hosted gateway is listed in the Cloud clients list for as long as an access
     /// grant the user approved uses it; each grant registers it, which also brings back
     /// a gateway the user revoked there while no grant was using it.
-    async fn register_for(&self, grant_id: &str, machine: &str) -> Result<(), GatewayError> {
+    async fn register_for(&self, grant_id: &str, target: &str) -> Result<(), GatewayError> {
         let Some(profile) = self.config.snapshot().cloud_relay else {
             return Ok(());
         };
@@ -201,20 +202,20 @@ impl MachineGateway {
                 GATEWAY_CLIENT_ID,
                 &identity.thumbprint,
                 grant_id,
-                machine,
+                target,
             )
             .await
     }
 
-    /// A fresh connection to `kernel`. A self-hosted machine is held to the key
+    /// A fresh connection to `kernel`. A self-hosted kernel is held to the key
     /// it had when it was paired, whatever the relay announces now.
     async fn open_link(
         &self,
-        machine: &str,
+        target: &str,
         kernel: &chariox_relay::protocol::RelayKernelPresence,
     ) -> Result<Arc<Link>, GatewayError> {
         let identity = self.identity()?;
-        let connection = self.connection(machine, kernel, &identity).await?;
+        let connection = self.connection(target, kernel, &identity).await?;
         let pinned = match self.config.snapshot().cloud_relay {
             None => self
                 .paired
@@ -230,13 +231,13 @@ impl MachineGateway {
             client_private_key: identity.private_key,
         })
         .await
-        .map_err(|failure| map_open_failure(machine, failure))?;
+        .map_err(|failure| map_open_failure(target, failure))?;
         Ok(Arc::new(link))
     }
 
     async fn connection(
         &self,
-        machine: &str,
+        target: &str,
         kernel: &chariox_relay::protocol::RelayKernelPresence,
         identity: &GatewayIdentity,
     ) -> Result<crate::local::KernelClientConnection, GatewayError> {
@@ -248,7 +249,7 @@ impl MachineGateway {
             &config.relay_url,
             self.paired
                 .find(&kernel.kernel_id)
-                .and_then(|machine| machine.relay_token),
+                .and_then(|target| target.relay_token),
         ) {
             return Ok(crate::local::KernelClientConnection {
                 relay_url: relay_url.clone(),
@@ -273,7 +274,7 @@ impl MachineGateway {
             Ok(connection) => Ok(connection),
             Err(error) if hosted::is_revoked(&error) => Err(self.gateway_revoked().await),
             Err(error) => Err(GatewayError::Unreachable {
-                name: machine.into(),
+                name: target.into(),
                 detail: error.to_string(),
             }),
         }
@@ -311,26 +312,26 @@ impl MachineGateway {
     }
 }
 
-/// Opening the link sends nothing to the machine, so a connect that does not
+/// Opening the link sends nothing to the kernel, so a connect that does not
 /// finish is "unreachable", never a request timeout that invites a retry.
-fn map_open_failure(machine: &str, failure: LinkFailure) -> GatewayError {
+fn map_open_failure(target: &str, failure: LinkFailure) -> GatewayError {
     match failure {
         LinkFailure::TimedOut => GatewayError::Unreachable {
-            name: machine.into(),
+            name: target.into(),
             detail: "the relay did not complete the connection in time".into(),
         },
-        failure => map_failure(machine, failure),
+        failure => map_failure(target, failure),
     }
 }
 
-fn map_failure(machine: &str, failure: LinkFailure) -> GatewayError {
-    let name = machine.to_string();
+fn map_failure(target: &str, failure: LinkFailure) -> GatewayError {
+    let name = target.to_string();
     match failure {
         LinkFailure::Closed => GatewayError::ConnectionLost { name },
         LinkFailure::TimedOut => GatewayError::RequestTimeout { name },
         LinkFailure::IdentityMismatch => GatewayError::Unreachable {
             name,
-            detail: "the machine answered with a different key than the one it registered".into(),
+            detail: "the kernel answered with a different key than the one it registered".into(),
         },
         LinkFailure::Relay(error) => match error.code.as_str() {
             "target_not_connected" => GatewayError::Offline { name },
@@ -339,12 +340,12 @@ fn map_failure(machine: &str, failure: LinkFailure) -> GatewayError {
             "authorization_denied" if error.message.contains("unpaired or revoked") => {
                 GatewayError::Unpaired { name }
             }
-            // The machine could not decrypt the request: it restarted with another key since
+            // The kernel could not decrypt the request: it restarted with another key since
             // this connection pinned the old one. A new connection checks the key again.
             "invalid_request" if error.message.starts_with("invalid relay request payload") => {
                 GatewayError::Unreachable {
                     name,
-                    detail: "the machine could not read the request; it may have restarted with a new key. Retry once".into(),
+                    detail: "the kernel could not read the request; it may have restarted with a new key. Retry once".into(),
                 }
             }
             "invalid_request" => GatewayError::Incompatible {
@@ -371,21 +372,21 @@ fn map_failure(machine: &str, failure: LinkFailure) -> GatewayError {
 mod tests {
     use super::*;
 
-    // EA2-09(c): with the relay stalled, a machine without an open link is
+    // EA2-09(c): with the relay stalled, a kernel without an open link is
     // unreachable within the connect bound; an open link that stalls times out.
     #[test]
     fn a_stalled_connect_is_unreachable_and_a_stalled_request_times_out() {
         assert_eq!(
             map_open_failure("b3", LinkFailure::TimedOut).code(),
-            "machine_unreachable"
+            "kernel_unreachable"
         );
         assert_eq!(
             map_failure("b3", LinkFailure::TimedOut).code(),
-            "machine_request_timeout"
+            "kernel_request_timeout"
         );
         assert_eq!(
             map_open_failure("b3", LinkFailure::Closed).code(),
-            "machine_connection_lost"
+            "kernel_connection_lost"
         );
         // A target that restarted with a new key cannot read an old pinned request: retry, not "update".
         let unreadable = chariox_relay::protocol::RelayError {
@@ -395,7 +396,7 @@ mod tests {
         };
         assert_eq!(
             map_failure("b3", LinkFailure::Relay(unreadable)).code(),
-            "machine_unreachable"
+            "kernel_unreachable"
         );
         // EA2-09(a): the target killed with a request in flight is a lost connection, not a raw relay code.
         let disconnected = chariox_relay::protocol::RelayError {
@@ -405,7 +406,7 @@ mod tests {
         };
         assert_eq!(
             map_failure("b3", LinkFailure::Relay(disconnected)).code(),
-            "machine_connection_lost"
+            "kernel_connection_lost"
         );
     }
 }

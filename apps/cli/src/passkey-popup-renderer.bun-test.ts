@@ -247,7 +247,7 @@ for (const kind of ["access_grant", "access_extension"] as const) {
 // EXT-UX-01 / EXT-UX-02: the owner sees one short question; pid, path, process
 // start and scope stay in the requester record and the kernel's audit.
 for (const [kind, title, message] of [
-  ["access_grant", "External agent access", "Claude Code (an external agent) wants access to this kernel and your other machines. Allow?"],
+  ["access_grant", "External agent access", "Claude Code (an external agent) wants access to this kernel and your other kernels. Allow?"],
   ["access_extension", "Extend external agent access", "Claude Code's access ends in 5 minutes. Extend?"],
 ] as const) {
   test(`EXT-UX ${kind} shows only the kernel's short question`, async () => {
@@ -281,7 +281,7 @@ test("EXT-UX-04 the pending status takes the hint row's place and no row moves",
   const rowOf = (frame: string, text: RegExp) => frame.split("\n").findIndex((line) => text.test(line))
   try {
     const access = { ...prompt, kind: "access_grant" as const, session_id: "kernel-access", session_alias: null,
-      title: "External agent access", message: "An external agent wants access to this kernel and your other machines. Allow?", term: { minutes: 30 }, max_lifetime_minutes: 1440 }
+      title: "External agent access", message: "An external agent wants access to this kernel and your other kernels. Allow?", term: { minutes: 30 }, max_lifetime_minutes: 1440 }
     const idle = { ...view, passkey: { length: 0, rememberMinutes: 0, lifetime: 30 }, prompt: access }
     surface.render(idle, { width: 100, height: 40 })
     await h.renderOnce()
@@ -415,7 +415,7 @@ test("EA2-01 the access popup names the until-exit choice in words", async () =>
   surface.assign(box)
   try {
     const access = { ...prompt, kind: "access_grant" as const, session_id: "kernel-access", session_alias: null,
-      title: "External agent access", message: "An external agent wants access to this kernel and your other machines. Allow?", term: "until_holder_exits" as const, max_lifetime_minutes: 1440 }
+      title: "External agent access", message: "An external agent wants access to this kernel and your other kernels. Allow?", term: "until_holder_exits" as const, max_lifetime_minutes: 1440 }
     surface.render({ ...view, passkey: { length: 0, rememberMinutes: 0, lifetime: "until_exit" }, prompt: access }, { width: 100, height: 40 })
     await h.renderOnce()
     assert.match(h.captureCharFrame(), /Access for: until the agent exits/)

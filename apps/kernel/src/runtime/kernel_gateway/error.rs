@@ -53,17 +53,17 @@ pub(crate) enum GatewayError {
 impl GatewayError {
     pub(crate) fn code(&self) -> &str {
         match self {
-            Self::Unknown { .. } => "machine_unknown",
-            Self::Ambiguous { .. } => "machine_ambiguous",
-            Self::Offline { .. } => "machine_offline",
-            Self::Unreachable { .. } => "machine_unreachable",
-            Self::Unpaired { .. } | Self::GatewayRevoked => "machine_unpaired",
-            Self::Incompatible { .. } => "machine_incompatible",
-            Self::RequestTimeout { .. } => "machine_request_timeout",
+            Self::Unknown { .. } => "kernel_unknown",
+            Self::Ambiguous { .. } => "kernel_ambiguous",
+            Self::Offline { .. } => "kernel_offline",
+            Self::Unreachable { .. } => "kernel_unreachable",
+            Self::Unpaired { .. } | Self::GatewayRevoked => "kernel_unpaired",
+            Self::Incompatible { .. } => "kernel_incompatible",
+            Self::RequestTimeout { .. } => "kernel_request_timeout",
             Self::ConnectionLost { .. } | Self::SubscriptionEnded { .. } => {
-                "machine_connection_lost"
+                "kernel_connection_lost"
             }
-            Self::JoinRefused { .. } => "machine_join_refused",
+            Self::JoinRefused { .. } => "kernel_join_refused",
             Self::Remote { code, .. } => code,
         }
     }
@@ -71,37 +71,37 @@ impl GatewayError {
     pub(crate) fn message(&self) -> String {
         match self {
             Self::Unknown { name } => format!(
-                "No machine is named \"{name}\". Run `chariox machines` to list the machines you can use."
+                "No kernel is named \"{name}\". Run `chariox kernels` to list the kernels you can use."
             ),
             Self::Ambiguous { name, candidates } => format!(
-                "\"{name}\" matches several machines ({}). Run `chariox machines` and use a kernel id.",
+                "\"{name}\" matches several kernels ({}). Run `chariox kernels` and use a kernel id.",
                 candidates.join(", ")
             ),
             Self::Offline { name } => format!(
-                "Machine \"{name}\" is offline. Start the Chariox kernel there; ssh is only a break-glass."
+                "Kernel \"{name}\" is offline. Start the Chariox kernel there; ssh is only a break-glass."
             ),
             Self::Unreachable { name, detail } => format!(
-                "Could not reach machine \"{name}\" ({detail}). Retry; check that the relay is reachable."
+                "Could not reach kernel \"{name}\" ({detail}). Retry; check that the relay is reachable."
             ),
             Self::Unpaired { name } => format!(
-                "Machine \"{name}\" does not accept this kernel. Pair it again from a Chariox terminal."
+                "Kernel \"{name}\" does not accept this kernel. Pair it again from a Chariox terminal."
             ),
             Self::GatewayRevoked => "This kernel's agent gateway was revoked in the Cloud clients list and the agent access grants ended. Ask the user to approve a new agent access request.".to_string(),
             Self::Incompatible { name, detail } => format!(
-                "Machine \"{name}\" cannot run this request ({detail}). Update the Chariox kernel on that machine."
+                "Kernel \"{name}\" cannot run this request ({detail}). Update the Chariox kernel on that machine."
             ),
             Self::RequestTimeout { name } => format!(
-                "Machine \"{name}\" did not answer in time. For a state-changing request retry once with the same --command-id; the machine never runs it twice."
+                "Kernel \"{name}\" did not answer in time. For a state-changing request retry once with the same --command-id; the kernel never runs it twice."
             ),
             Self::ConnectionLost { name } => format!(
-                "The connection to machine \"{name}\" ended while the request was in flight. Retry once with the same --command-id."
+                "The connection to kernel \"{name}\" ended while the request was in flight. Retry once with the same --command-id."
             ),
             Self::SubscriptionEnded { name, last_event_id } => {
                 let resume = last_event_id.map_or_else(
                     || "Subscribe again.".to_string(),
                     |id| format!("Subscribe again with resume_from_event_id {id}."),
                 );
-                format!("The subscription on machine \"{name}\" ended because the connection was lost or the machine stopped answering. {resume} If the machine restarted, expect a replay_gap and read its session state again.")
+                format!("The subscription on kernel \"{name}\" ended because the connection was lost or the kernel stopped answering. {resume} If the kernel restarted, expect a replay_gap and read its session state again.")
             }
             Self::JoinRefused { detail } => format!("Could not pair with that machine: {detail}"),
             Self::Remote { message, .. } => message.clone(),
@@ -133,17 +133,17 @@ impl GatewayError {
 pub(crate) fn is_public_code(code: &str) -> bool {
     matches!(
         code,
-        "machine_unknown"
-            | "machine_ambiguous"
-            | "machine_offline"
-            | "machine_unreachable"
-            | "machine_unpaired"
-            | "machine_incompatible"
-            | "machine_request_timeout"
-            | "machine_connection_lost"
-            | "machine_outcome_unknown"
-            | "machine_not_available"
-            | "machine_join_refused"
+        "kernel_unknown"
+            | "kernel_ambiguous"
+            | "kernel_offline"
+            | "kernel_unreachable"
+            | "kernel_unpaired"
+            | "kernel_incompatible"
+            | "kernel_request_timeout"
+            | "kernel_connection_lost"
+            | "kernel_outcome_unknown"
+            | "kernel_not_available"
+            | "kernel_join_refused"
             | "command_id_required"
             | "ledger_unavailable"
     )

@@ -38,7 +38,7 @@ pub fn help_requested(args: &[String]) -> Result<bool, String> {
             "access"
                 | "sudo"
                 | "guide"
-                | "machines"
+                | "kernels"
                 | "request"
                 | "watch"
                 | "files"
@@ -132,22 +132,22 @@ mod tests {
     fn agent_commands_reach_their_own_parser() {
         for args in [
             vec!["guide"],
-            vec!["machines", "--socket", "/tmp/kernel.sock"],
-            vec!["request", "--machine", "b3", "--command-id", "c-1"],
+            vec!["kernels", "--socket", "/tmp/kernel.sock"],
+            vec!["request", "--kernel", "b3", "--command-id", "c-1"],
             vec![
                 "watch",
-                "--machine",
+                "--kernel",
                 "b3",
                 "--session",
                 "s",
                 "--attachment",
                 "a",
             ],
-            vec!["files", "put", "--machine", "b3", "./a.bin", "/tmp/a.bin"],
+            vec!["files", "put", "--kernel", "b3", "./a.bin", "/tmp/a.bin"],
             vec![
                 "terminal",
                 "send",
-                "--machine",
+                "--kernel",
                 "b3",
                 "--session",
                 "s",
@@ -159,7 +159,7 @@ mod tests {
             vec![
                 "files",
                 "get",
-                "--machine",
+                "--kernel",
                 "b3",
                 "--overwrite",
                 "/tmp/a.bin",

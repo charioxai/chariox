@@ -1,4 +1,4 @@
-//! The one interface the gateway lists machines through. Sources today: the
+//! The one interface the gateway lists kernels through. Sources today: the
 //! relay inventory (hosted: filtered by the account's fresh Cloud targets) and
 //! the kernels this kernel paired with. A registry or gossip mesh can implement
 //! it later without touching the gateway or the CLI.
@@ -8,17 +8,17 @@ use std::pin::Pin;
 use chariox_relay::protocol::RelayKernelPresence;
 
 use crate::error::DaemonError;
-use crate::local::GatewayMachineVia;
+use crate::local::GatewayKernelVia;
 use crate::runtime::projection::{
     DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore,
 };
 
-/// A machine list this old is still good to route a request by; a machine that went away
+/// A kernel list this old is still good to route a request by; a kernel that went away
 /// meanwhile is reported by the relay as not connected.
 const USABLE_FOR_MS: u64 = 5 * 60 * 1000;
 
 pub(crate) trait InventorySource: Send + Sync {
-    fn via(&self) -> GatewayMachineVia;
+    fn via(&self) -> GatewayKernelVia;
     /// The kernels the latest refresh listed as live; never this kernel itself.
     fn kernels(&self) -> Vec<RelayKernelPresence>;
     fn is_fresh(&self) -> bool;
@@ -34,11 +34,11 @@ pub(crate) struct RelayInventory {
 }
 
 impl InventorySource for RelayInventory {
-    fn via(&self) -> GatewayMachineVia {
+    fn via(&self) -> GatewayKernelVia {
         if self.config.snapshot().cloud_relay.is_some() {
-            GatewayMachineVia::Hosted
+            GatewayKernelVia::Hosted
         } else {
-            GatewayMachineVia::SelfHosted
+            GatewayKernelVia::SelfHosted
         }
     }
 

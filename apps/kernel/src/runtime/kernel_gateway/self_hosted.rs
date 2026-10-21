@@ -1,4 +1,4 @@
-//! Self-hosted mode: the machines are the kernels this gateway paired with, and
+//! Self-hosted mode: the kernels are the kernels this gateway paired with, and
 //! one is online when it answers a status request over its relay link. This
 //! needs no inventory permission on the relay, so a scoped relay works with the
 //! CLIENT token given at pairing alone.
@@ -9,18 +9,19 @@ use chariox_relay::protocol::RelayKernelPresence;
 use futures_util::future::join_all;
 use serde_json::Value;
 
-use super::directory::{display_name, is_gateway_ready, names_of};
+use super::directory::is_gateway_ready;
 use super::error::GatewayError;
 use super::link::{Link, LinkFailure};
-use super::paired::PairedMachine;
-use super::{MachineGateway, REQUEST_COUNTER};
+use super::names;
+use super::paired::PairedKernel;
+use super::{KernelGateway, REQUEST_COUNTER};
 use crate::local::{
-    GatewayMachine, GatewayMachineStatus, GatewayMachineVia, LocalDaemonRequest, RelayStatusRequest,
+    GatewayKernel, GatewayKernelStatus, GatewayKernelVia, LocalDaemonRequest, RelayStatusRequest,
 };
 
 const PROBE_DEADLINE: Duration = Duration::from_secs(5);
 
-/// What a kernel advertises (for example `machine_gateway_v1`), from its status answer.
+/// What a kernel advertises (for example `kernel_gateway_v1`), from its status answer.
 pub(super) async fn capabilities_of(link: &Link) -> Result<Vec<String>, LinkFailure> {
     let request = serde_json::to_vec(
         &serde_json::json!({"request": LocalDaemonRequest::RelayStatus(RelayStatusRequest)}),
@@ -40,25 +41,12 @@ pub(super) async fn capabilities_of(link: &Link) -> Result<Vec<String>, LinkFail
 }
 
 /// The one paired kernel `name` means; unknown and ambiguous are errors.
-fn named(paired: &[PairedMachine], name: &str) -> Result<RelayKernelPresence, GatewayError> {
-    let matches: Vec<_> = paired
-        .iter()
-        .filter(|machine| names_of(&machine.presence).iter().any(|n| n == name))
-        .collect();
-    match matches.as_slice() {
-        [] => Err(GatewayError::Unknown { name: name.into() }),
-        [one] => Ok(one.presence.clone()),
-        several => Err(GatewayError::Ambiguous {
-            name: name.into(),
-            candidates: several
-                .iter()
-                .map(|machine| machine.presence.kernel_id.clone())
-                .collect(),
-        }),
-    }
+fn named(paired: &[PairedKernel], name: &str) -> Result<RelayKernelPresence, GatewayError> {
+    let known: Vec<&RelayKernelPresence> = paired.iter().map(|target| &target.presence).collect();
+    names::find(&known, name).cloned()
 }
 
-impl MachineGateway {
+impl KernelGateway {
     pub(super) fn is_self_hosted(&self) -> bool {
         self.config.snapshot().cloud_relay.is_none()
     }
@@ -72,17 +60,31 @@ impl MachineGateway {
         named(&self.paired.all()?, name)
     }
 
-    pub(crate) async fn machines(&self) -> Result<Vec<GatewayMachine>, GatewayError> {
+    pub(crate) async fn kernels(&self) -> Result<Vec<GatewayKernel>, GatewayError> {
         if !self.is_self_hosted() {
-            return self.directory.machines().await;
+            return self.directory.kernels().await;
         }
         let paired = self.paired.all()?;
-        Ok(join_all(paired.into_iter().map(|machine| self.probe(machine))).await)
+        let known: Vec<RelayKernelPresence> = paired
+            .iter()
+            .map(|target| target.presence.clone())
+            .collect();
+        let known: Vec<&RelayKernelPresence> = known.iter().collect();
+        let names: Vec<String> = known
+            .iter()
+            .map(|presence| names::display_name(presence, &known))
+            .collect();
+        Ok(join_all(
+            paired
+                .into_iter()
+                .zip(names)
+                .map(|(target, name)| self.probe(target, name)),
+        )
+        .await)
     }
 
-    async fn probe(&self, machine: PairedMachine) -> GatewayMachine {
-        let mut presence = machine.presence;
-        let name = display_name(&presence);
+    async fn probe(&self, target: PairedKernel, name: String) -> GatewayKernel {
+        let mut presence = target.presence;
         let answered = match self.link_for(&name, &presence).await {
             Ok(link) => capabilities_of(&link).await.ok(),
             Err(_) => None,
@@ -97,10 +99,10 @@ impl MachineGateway {
             if capabilities != presence.capabilities {
                 presence.capabilities = capabilities;
                 // The pairing stays valid whether or not the update could be stored.
-                let _ = self.paired.save(PairedMachine {
+                let _ = self.paired.save(PairedKernel {
                     presence: presence.clone(),
-                    relay_token: machine.relay_token,
-                    paired_at_ms: machine.paired_at_ms,
+                    relay_token: target.relay_token,
+                    paired_at_ms: target.paired_at_ms,
                 });
             }
         }
@@ -111,19 +113,20 @@ impl MachineGateway {
             .get(&presence.kernel_id)
             .copied()
             .unwrap_or(0);
-        GatewayMachine {
+        GatewayKernel {
             name,
+            label: names::label(&presence),
             kernel_id: presence.kernel_id.clone(),
             machine_id: presence.machine_id.clone(),
             machine_alias: presence.machine_alias.clone(),
             status: if online {
-                GatewayMachineStatus::Online
+                GatewayKernelStatus::Online
             } else {
-                GatewayMachineStatus::Offline
+                GatewayKernelStatus::Offline
             },
             last_seen_ms,
             gateway_ready: is_gateway_ready(&presence),
-            via: GatewayMachineVia::SelfHosted,
+            via: GatewayKernelVia::SelfHosted,
         }
     }
 }
@@ -132,11 +135,11 @@ impl MachineGateway {
 mod tests {
     use super::*;
 
-    fn paired(kernel_id: &str, alias: Option<&str>, machine_alias: Option<&str>) -> PairedMachine {
-        PairedMachine {
+    fn paired(kernel_id: &str, alias: Option<&str>, machine_alias: Option<&str>) -> PairedKernel {
+        PairedKernel {
             presence: RelayKernelPresence {
                 kernel_id: kernel_id.into(),
-                machine_id: format!("machine-{kernel_id}"),
+                machine_id: format!("machine-{}", machine_alias.unwrap_or(kernel_id)),
                 machine_alias: machine_alias.map(Into::into),
                 relay_alias: None,
                 kernel_alias: alias.map(Into::into),
@@ -156,19 +159,20 @@ mod tests {
     // EA2-08: a name means one paired kernel; being online is found out by talking to it.
     #[test]
     fn a_name_means_one_paired_kernel_and_every_other_case_is_a_typed_error() {
-        let machines = vec![
+        let kernels = vec![
             paired("k-b3", Some("b3"), Some("ovh")),
             paired("k-x", None, Some("shared")),
             paired("k-y", Some("y"), Some("shared")),
         ];
-        assert_eq!(named(&machines, "b3").unwrap().kernel_id, "k-b3");
-        assert_eq!(named(&machines, "k-x").unwrap().kernel_id, "k-x");
+        assert_eq!(named(&kernels, "b3").unwrap().kernel_id, "k-b3");
+        assert_eq!(named(&kernels, "k-x").unwrap().kernel_id, "k-x");
+        assert_eq!(named(&kernels, "shared/y").unwrap().kernel_id, "k-y");
         assert_eq!(
-            named(&machines, "nope").unwrap_err().code(),
-            "machine_unknown"
+            named(&kernels, "nope").unwrap_err().code(),
+            "kernel_unknown"
         );
-        let ambiguous = named(&machines, "shared").unwrap_err();
-        assert_eq!(ambiguous.code(), "machine_ambiguous");
+        let ambiguous = named(&kernels, "shared").unwrap_err();
+        assert_eq!(ambiguous.code(), "kernel_ambiguous");
         assert!(ambiguous.message().contains("k-x") && ambiguous.message().contains("k-y"));
     }
 }

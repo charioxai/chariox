@@ -32,12 +32,12 @@ pub(super) async fn admit_frame(
     };
     if let Some(turn) = sudo {
         let verdict = match frame {
-            // A sudo window is one turn on this kernel; it does not reach other machines.
+            // A sudo window is one turn on this kernel; it does not reach other kernels.
             KernelIncomingFrame::Request {
-                machine: Some(_), ..
+                kernel: Some(_), ..
             }
             | KernelIncomingFrame::Subscribe {
-                machine: Some(_), ..
+                kernel: Some(_), ..
             } => Err(Refusal::NotCovered),
             KernelIncomingFrame::Request { request, .. } => runtime_state
                 .authorize_sudo_request(&turn.entry_id, request)
@@ -101,12 +101,12 @@ pub(super) async fn admit_frame(
         );
         return Err(());
     }
-    // A grant request that names a machine is a gateway request: the gateway
+    // A grant request that names a kernel is a gateway request: the gateway
     // policy below refuses it, so it never raises a popup on this kernel.
     if let KernelIncomingFrame::Request {
         request_id,
         request: crate::local::LocalDaemonRequest::RequestKernelAccess(request),
-        machine: None,
+        kernel: None,
         ..
     } = frame
     {
@@ -149,7 +149,7 @@ pub(super) async fn admit_frame(
                     &close_requested,
                     &health,
                     KernelOutgoingFrame::Response {
-                        machine: None,
+                        kernel: None,
                         request_id,
                         response: Box::new(None),
                         error: Some(KernelTransportError {
@@ -199,7 +199,7 @@ pub(super) async fn admit_frame(
                 &close_requested,
                 &health,
                 KernelOutgoingFrame::Response {
-                    machine: None,
+                    kernel: None,
                     request_id,
                     response: Box::new(response),
                     error,
@@ -229,13 +229,13 @@ pub(super) async fn admit_frame(
                 // origin checks the grant and the request shape only.
                 KernelIncomingFrame::Request {
                     request,
-                    machine: Some(_),
+                    kernel: Some(_),
                     ..
                 } => runtime_state
                     .authorize_gateway_request(&grant.summary.grant_id, request)
                     .map_err(|error| Refusal::of(&error)),
                 KernelIncomingFrame::Subscribe {
-                    machine: Some(_), ..
+                    kernel: Some(_), ..
                 } => Ok(()),
                 KernelIncomingFrame::Request { request, .. } => runtime_state
                     .authorize_external_request(&grant.summary.grant_id, request)
@@ -303,7 +303,7 @@ fn deny_frame(
         close_requested,
         &runtime.transport_health,
         KernelOutgoingFrame::Response {
-            machine: None,
+            kernel: None,
             request_id,
             response: Box::new(None),
             error: Some(KernelTransportError {
@@ -395,25 +395,25 @@ pub(super) fn command_cache_id(peer: &ProcessIdentity, command: &KernelCommand) 
     .to_string()
 }
 
-/// What a grant holder asks of the machine gateway.
+/// What a grant holder asks of the kernel gateway.
 pub(super) enum GatewayRoute {
     List,
     Forward {
-        machine: String,
+        kernel: String,
         request: Box<crate::local::LocalDaemonRequest>,
     },
 }
 
 const SUBSCRIPTION_SILENCE: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Serves an admitted subscription on another machine: the target's events are
-/// relayed to this connection until the agent unsubscribes or the machine stops
+/// Serves an admitted subscription on another kernel: the target's events are
+/// relayed to this connection until the agent unsubscribes or the kernel stops
 /// answering, which the agent is told with the subscribe request's own id.
 pub(super) async fn serve_gateway_subscription(
     connection: &IncomingConnection<'_>,
     request_id: String,
-    machine: String,
-    request: crate::runtime::machine_gateway::SubscribeRequest,
+    kernel: String,
+    request: crate::runtime::kernel_gateway::SubscribeRequest,
 ) {
     let IncomingConnection {
         runtime,
@@ -424,7 +424,7 @@ pub(super) async fn serve_gateway_subscription(
         close_requested,
         ..
     } = *connection;
-    let gateway = Arc::clone(router.machine_gateway());
+    let gateway = Arc::clone(router.kernel_gateway());
     let health = runtime.transport_health.clone();
     let (outgoing_tx, close_tx, close_requested) = (
         outgoing_tx.clone(),
@@ -443,11 +443,11 @@ pub(super) async fn serve_gateway_subscription(
                 None,
             )
         };
-        let subscription = match gateway.subscribe(&machine, request).await {
+        let subscription = match gateway.subscribe(&kernel, request).await {
             Ok(subscription) => subscription,
             Err(failure) => {
                 send(KernelOutgoingFrame::Response {
-                    machine: Some(machine),
+                    kernel: Some(kernel),
                     request_id,
                     response: Box::new(None),
                     error: Some(failure.transport_error()),
@@ -455,11 +455,11 @@ pub(super) async fn serve_gateway_subscription(
                 return;
             }
         };
-        let crate::runtime::machine_gateway::ForwardedSubscription {
+        let crate::runtime::kernel_gateway::ForwardedSubscription {
             ack, mut events, ..
         } = subscription;
         if !send(KernelOutgoingFrame::Response {
-            machine: Some(machine.clone()),
+            kernel: Some(kernel.clone()),
             request_id: request_id.clone(),
             response: Box::new(Some(ack)),
             error: None,
@@ -467,7 +467,7 @@ pub(super) async fn serve_gateway_subscription(
             return;
         }
         let mut last_event_id = None;
-        // The machine sends a heartbeat every 5 s; silence for six of them means it is gone
+        // The kernel sends a heartbeat every 5 s; silence for six of them means it is gone
         // (the relay does not say so when a target dies with a subscription open).
         while let Ok(Some((event_id, body))) =
             tokio::time::timeout(SUBSCRIPTION_SILENCE, events.recv()).await
@@ -483,18 +483,18 @@ pub(super) async fn serve_gateway_subscription(
             }
             if !send(KernelOutgoingFrame::Event {
                 event_id,
-                machine: Some(machine.clone()),
+                kernel: Some(kernel.clone()),
                 event: Box::new(event),
             }) {
                 return;
             }
         }
-        let ended = crate::runtime::machine_gateway::GatewayError::SubscriptionEnded {
-            name: machine.clone(),
+        let ended = crate::runtime::kernel_gateway::GatewayError::SubscriptionEnded {
+            name: kernel.clone(),
             last_event_id,
         };
         send(KernelOutgoingFrame::Response {
-            machine: Some(machine),
+            kernel: Some(kernel),
             request_id,
             response: Box::new(None),
             error: Some(ended.transport_error()),
@@ -538,7 +538,7 @@ pub(super) fn serve_gateway(
                 close_requested,
                 &runtime.transport_health,
                 KernelOutgoingFrame::Response {
-                    machine: None,
+                    kernel: None,
                     request_id,
                     response: Box::new(None),
                     error: Some(KernelTransportError {
@@ -576,51 +576,51 @@ pub(super) fn serve_gateway(
     tokio::spawn(async move {
         let _permit = permit;
         let command_id = command_id.unwrap_or_else(|| request_id.clone());
-        let origin = crate::runtime::machine_gateway::Origin { grant_id, harness };
+        let origin = crate::runtime::kernel_gateway::Origin { grant_id, harness };
         let echoed = match &route {
-            GatewayRoute::Forward { machine, .. } => Some(machine.clone()),
+            GatewayRoute::Forward { kernel, .. } => Some(kernel.clone()),
             GatewayRoute::List => None,
         };
         let started = std::time::Instant::now();
         let audited = match &route {
-            GatewayRoute::Forward { machine, request }
-                if !crate::runtime::machine_gateway::ledger::is_repeatable(request) =>
+            GatewayRoute::Forward { kernel, request }
+                if !crate::runtime::kernel_gateway::ledger::is_repeatable(request) =>
             {
                 Some((
-                    machine.clone(),
-                    crate::runtime::machine_gateway::ledger::variant_name(request),
+                    kernel.clone(),
+                    crate::runtime::kernel_gateway::ledger::variant_name(request),
                 ))
             }
             _ => None,
         };
         let outcome = match route {
-            GatewayRoute::Forward { machine, request } => {
-                let gateway = router.machine_gateway();
+            GatewayRoute::Forward { kernel, request } => {
+                let gateway = router.kernel_gateway();
                 let answered = gateway
                     .forward(
-                        &machine,
+                        &kernel,
                         &origin,
                         &command_id,
                         &request,
-                        crate::runtime::machine_gateway::ledger::deadline_for(&request),
+                        crate::runtime::kernel_gateway::ledger::deadline_for(&request),
                     )
                     .await;
                 if let Ok(response) = &answered {
-                    gateway.note_forwarded(&machine, &origin, &request, response);
+                    gateway.note_forwarded(&kernel, &origin, &request, response);
                 }
                 answered
             }
-            GatewayRoute::List => router.machine_gateway().machines().await.map(|machines| {
-                serde_json::to_value(crate::local::LocalDaemonResponse::GatewayMachinesListed {
-                    machines,
+            GatewayRoute::List => router.kernel_gateway().kernels().await.map(|kernels| {
+                serde_json::to_value(crate::local::LocalDaemonResponse::GatewayKernelsListed {
+                    kernels,
                 })
-                .expect("machine list serializes")
+                .expect("kernel list serializes")
             }),
         };
-        if let Some((machine, kind)) = audited {
+        if let Some((kernel, kind)) = audited {
             router.runtime_state().audit_gateway_forward(
                 &origin.grant_id,
-                &machine,
+                &kernel,
                 &kind,
                 outcome
                     .as_ref()
@@ -638,7 +638,7 @@ pub(super) fn serve_gateway(
             &close_requested,
             &health,
             KernelOutgoingFrame::Response {
-                machine: echoed,
+                kernel: echoed,
                 request_id,
                 response: Box::new(response),
                 error,

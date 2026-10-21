@@ -93,10 +93,10 @@ mod kernel_browser_actors;
 mod kernel_browser_assets;
 mod kernel_browser_display_gate;
 pub(crate) mod kernel_browser_host;
+pub(crate) mod kernel_files;
 pub(crate) mod kernel_lifecycle_executor;
 pub(crate) mod kernel_process_identity;
 pub(crate) mod kernel_runtime_role_policy;
-pub(crate) mod machine_files;
 pub(crate) mod managed_bootstrap_observation_control;
 pub(crate) mod managed_context_outbound_control;
 pub(crate) mod managed_context_target_control;
@@ -170,7 +170,7 @@ pub(crate) mod workspace_search;
 pub(crate) mod workspace_worktrees;
 
 pub(crate) mod kernel_access;
-pub(crate) mod machine_gateway;
+pub(crate) mod kernel_gateway;
 
 pub(crate) mod relay_peer_authority;
 pub(crate) mod self_host_terminal_grants;

@@ -267,8 +267,8 @@ export type LocalIpcClientOptions = {
   controlResponseStallMs?: number | undefined
   relayIdentity?: RelayClientIdentity | undefined
   relayAuthorizationIssuer?: RelayAuthorizationIssuer | undefined
-  /** Another machine for the local kernel to forward requests and event subscriptions to; ignored in relay mode. */
-  machine?: string | undefined
+  /** Another kernel for the local kernel to forward requests and event subscriptions to; ignored in relay mode. */
+  kernel?: string | undefined
   /** Idempotency key sent as the request's command id; ignored in relay mode. */
   commandId?: string | undefined
   /** The kernel ended an acknowledged subscription by answering its request a second time with an error. */
@@ -342,7 +342,7 @@ export class LocalIpcClient {
   constructor(endpoint: string, options: LocalIpcClientOptions = {}) {
     this.transportObserver = options.onTransportDiagnostic
     this.subscriptionEndedObserver = options.onSubscriptionEnded
-    this.requestRoute = { machine: options.machine, commandId: options.commandId }
+    this.requestRoute = { kernel: options.kernel, commandId: options.commandId }
     if (!isWebSocketEndpoint(endpoint)) {
       if (endpoint.includes("://") && !endpoint.startsWith("unix://")) throw new Error("unsupported kernel endpoint")
       endpoint = `ws+unix://${endpoint.replace(/^unix:\/\//, "")}`
@@ -484,7 +484,7 @@ export class LocalIpcClient {
     return this.send<KernelResourceTelemetryResponse>(getKernelResourceTelemetryRequest(options))
   }
 
-  /** `resumeFromEventId` starts a new subscription after that event of the kernel's (or the routed machine's) stream. */
+  /** `resumeFromEventId` starts a new subscription after that event of the kernel's (or the routed kernel's) stream. */
   async subscribeToKernelEvents(sessionId: string, attachmentId: string, resumeFromEventId: number | null = null): Promise<void> {
     if (!this.supportsKernelEvents()) {
       return

@@ -14,22 +14,22 @@ test("normalizeWebSocketRequest wraps regular daemon requests", () => {
   })
 })
 
-test("normalizeWebSocketRequest carries a target machine and caller command id", () => {
-  assert.deepEqual(normalizeWebSocketRequest("request-3", { ListSessions: null }, { machine: "b3", commandId: "cmd-1" }), {
+test("normalizeWebSocketRequest carries a target kernel and caller command id", () => {
+  assert.deepEqual(normalizeWebSocketRequest("request-3", { ListSessions: null }, { kernel: "b3", commandId: "cmd-1" }), {
     type: "request",
     request_id: "request-3",
     command_id: "cmd-1",
     request: { ListSessions: null },
-    machine: "b3",
+    kernel: "b3",
   })
-  assert.deepEqual(normalizeWebSocketRequest("request-4", { ListSessions: null }, { machine: "b3" }), {
+  assert.deepEqual(normalizeWebSocketRequest("request-4", { ListSessions: null }, { kernel: "b3" }), {
     type: "request",
     request_id: "request-4",
     command_id: "request-4",
     request: { ListSessions: null },
-    machine: "b3",
+    kernel: "b3",
   })
-  assert.equal("machine" in normalizeWebSocketRequest("request-5", { ListSessions: null }, { commandId: "cmd-2" }), false)
+  assert.equal("kernel" in normalizeWebSocketRequest("request-5", { ListSessions: null }, { commandId: "cmd-2" }), false)
 })
 
 test("normalizeWebSocketRequest projects kernel subscribe controls", () => {

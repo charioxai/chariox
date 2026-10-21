@@ -1,5 +1,5 @@
-//! The machines this kernel's gateway paired with through a terminal pairing
-//! link (self-hosted mode): `gateway-machines.json`, readable by this user only.
+//! The kernels this kernel's gateway paired with through a terminal pairing
+//! link (self-hosted mode): `gateway-kernels.json`, readable by this user only.
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::error::GatewayError;
 
 #[derive(Clone, Serialize, Deserialize)]
-pub(super) struct PairedMachine {
+pub(super) struct PairedKernel {
     pub(super) presence: RelayKernelPresence,
     /// The operator's CLIENT transport token of a scoped relay; never returned by any request.
     #[serde(default)]
@@ -19,22 +19,22 @@ pub(super) struct PairedMachine {
 
 #[derive(Default, Serialize, Deserialize)]
 struct Stored {
-    machines: Vec<PairedMachine>,
+    kernels: Vec<PairedKernel>,
 }
 
-pub(super) struct PairedMachines {
+pub(super) struct PairedKernels {
     path: PathBuf,
     lock: Mutex<()>,
 }
 
 fn unavailable(detail: String) -> GatewayError {
     GatewayError::Unreachable {
-        name: "paired machines".into(),
+        name: "paired kernels".into(),
         detail,
     }
 }
 
-impl PairedMachines {
+impl PairedKernels {
     pub(super) fn new(path: PathBuf) -> Self {
         Self {
             path,
@@ -45,46 +45,46 @@ impl PairedMachines {
     fn read(&self) -> Result<Stored, GatewayError> {
         match std::fs::read(&self.path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
-                unavailable(format!("gateway-machines.json is unreadable: {error}"))
+                unavailable(format!("gateway-kernels.json is unreadable: {error}"))
             }),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Stored::default()),
             Err(error) => Err(unavailable(format!(
-                "cannot read gateway-machines.json: {error}"
+                "cannot read gateway-kernels.json: {error}"
             ))),
         }
     }
 
-    pub(super) fn all(&self) -> Result<Vec<PairedMachine>, GatewayError> {
-        let _guard = self.lock.lock().expect("paired machines poisoned");
-        Ok(self.read()?.machines)
+    pub(super) fn all(&self) -> Result<Vec<PairedKernel>, GatewayError> {
+        let _guard = self.lock.lock().expect("paired kernels poisoned");
+        Ok(self.read()?.kernels)
     }
 
-    pub(super) fn find(&self, kernel_id: &str) -> Option<PairedMachine> {
+    pub(super) fn find(&self, kernel_id: &str) -> Option<PairedKernel> {
         self.all()
             .ok()?
             .into_iter()
-            .find(|machine| machine.presence.kernel_id == kernel_id)
+            .find(|target| target.presence.kernel_id == kernel_id)
     }
 
-    /// Adds or replaces the machine with the same kernel id.
-    pub(super) fn save(&self, machine: PairedMachine) -> Result<(), GatewayError> {
-        let _guard = self.lock.lock().expect("paired machines poisoned");
+    /// Adds or replaces the kernel with the same kernel id.
+    pub(super) fn save(&self, target: PairedKernel) -> Result<(), GatewayError> {
+        let _guard = self.lock.lock().expect("paired kernels poisoned");
         let mut stored = self.read()?;
         stored
-            .machines
-            .retain(|existing| existing.presence.kernel_id != machine.presence.kernel_id);
-        stored.machines.push(machine);
+            .kernels
+            .retain(|existing| existing.presence.kernel_id != target.presence.kernel_id);
+        stored.kernels.push(target);
         self.write(&stored)
     }
 
     pub(super) fn remove(&self, kernel_id: &str) -> Result<bool, GatewayError> {
-        let _guard = self.lock.lock().expect("paired machines poisoned");
+        let _guard = self.lock.lock().expect("paired kernels poisoned");
         let mut stored = self.read()?;
-        let before = stored.machines.len();
+        let before = stored.kernels.len();
         stored
-            .machines
-            .retain(|machine| machine.presence.kernel_id != kernel_id);
-        let removed = stored.machines.len() != before;
+            .kernels
+            .retain(|target| target.presence.kernel_id != kernel_id);
+        let removed = stored.kernels.len() != before;
         if removed {
             self.write(&stored)?;
         }
@@ -92,9 +92,9 @@ impl PairedMachines {
     }
 
     fn write(&self, stored: &Stored) -> Result<(), GatewayError> {
-        let bytes = serde_json::to_vec_pretty(stored).expect("paired machines serialize");
+        let bytes = serde_json::to_vec_pretty(stored).expect("paired kernels serialize");
         crate::config::write_private_file(&self.path, &bytes)
-            .map_err(|error| unavailable(format!("cannot store gateway-machines.json: {error}")))
+            .map_err(|error| unavailable(format!("cannot store gateway-kernels.json: {error}")))
     }
 }
 
@@ -102,8 +102,8 @@ impl PairedMachines {
 mod tests {
     use super::*;
 
-    fn machine(id: &str, token: Option<&str>) -> PairedMachine {
-        PairedMachine {
+    fn target(id: &str, token: Option<&str>) -> PairedKernel {
+        PairedKernel {
             presence: RelayKernelPresence {
                 kernel_id: id.into(),
                 machine_id: format!("machine-{id}"),
@@ -130,17 +130,17 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("paired-{:08x}", rand::random::<u32>()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("gateway-machines.json");
-        let store = PairedMachines::new(path.clone());
+        let path = dir.join("gateway-kernels.json");
+        let store = PairedKernels::new(path.clone());
         assert!(store.all().unwrap().is_empty());
-        store.save(machine("b3", Some("client-token"))).unwrap();
-        store.save(machine("other", None)).unwrap();
-        store.save(machine("b3", None)).unwrap();
+        store.save(target("b3", Some("client-token"))).unwrap();
+        store.save(target("other", None)).unwrap();
+        store.save(target("b3", None)).unwrap();
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        let reopened = PairedMachines::new(path);
+        let reopened = PairedKernels::new(path);
         let all = reopened.all().unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(reopened.find("b3").unwrap().relay_token, None);

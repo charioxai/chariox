@@ -6,7 +6,7 @@ import { kernelSocketConfigRoot } from "@chariox/kernel-client/kernel-unix-socke
 import { LocalIpcClient, LocalIpcError } from "@chariox/kernel-client/ipc"
 import type { KernelAccessGrantedResponse, KernelAccessGrantsListedResponse, KernelAccessRevokedResponse } from "@chariox/kernel-client/kernel-types"
 import { CommandFailure, parseFlags, usageOf } from "./agent-command-table.js"
-import { probeKernel, reportFailure } from "./machine-command.js"
+import { probeKernel, reportFailure } from "./kernels-command.js"
 
 const WAITER_START_TIMEOUT_MS = 10_000
 // The kernel verifies the holder through the requester's live parent chain, so

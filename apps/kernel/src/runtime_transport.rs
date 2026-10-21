@@ -1247,7 +1247,7 @@ fn incoming_frame_decode_error(payload: &[u8], error: &serde_json::Error) -> Ker
         ),
     };
     KernelOutgoingFrame::Response {
-        machine: None,
+        kernel: None,
         request_id,
         response: Box::new(None),
         error: Some(KernelTransportError {
@@ -1343,17 +1343,17 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
             command_id,
             causation_id,
             correlation_id,
-            machine,
+            kernel,
             request,
         } => {
             runtime.transport_health.record_incoming_request();
-            let route = match (machine, &request) {
-                (Some(machine), _) => Some(unix_access::GatewayRoute::Forward {
-                    machine,
+            let route = match (kernel, &request) {
+                (Some(kernel), _) => Some(unix_access::GatewayRoute::Forward {
+                    kernel,
                     request: Box::new(request.clone()),
                 }),
                 // A terminal's listing is answered by the router like any request.
-                (None, crate::local::LocalDaemonRequest::ListGatewayMachines(_))
+                (None, crate::local::LocalDaemonRequest::ListGatewayKernels(_))
                     if external_caller.is_some() =>
                 {
                     Some(unix_access::GatewayRoute::List)
@@ -1376,12 +1376,12 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                             close_requested,
                             &runtime.transport_health,
                             KernelOutgoingFrame::Response {
-                                machine: None,
+                                kernel: None,
                                 request_id,
                                 response: Box::new(None),
                                 error: Some(KernelTransportError {
-                                    code: "machine_not_available".into(),
-                                    message: "machine routing is only available to a local access grant holder".into(),
+                                    code: "kernel_not_available".into(),
+                                    message: "kernel routing is only available to a local access grant holder".into(),
                                     retryable: false,
                                 }),
                             },
@@ -1449,7 +1449,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                         close_requested,
                         &runtime.transport_health,
                         KernelOutgoingFrame::Response {
-                            machine: None,
+                            kernel: None,
                             request_id,
                             response: Box::new(None),
                             error: Some(map_kernel_error(&error)),
@@ -1497,7 +1497,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                                     &close_requested,
                                     &transport_health,
                                     KernelOutgoingFrame::Response {
-                                        machine: None,
+                                        kernel: None,
                                         request_id,
                                         response: Box::new(None),
                                         error: Some(KernelTransportError {
@@ -1530,7 +1530,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                                 &close_requested,
                                 &transport_health,
                                 KernelOutgoingFrame::Response {
-                                    machine: None,
+                                    kernel: None,
                                     request_id,
                                     response,
                                     error,
@@ -1549,7 +1549,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                             close_requested,
                             &runtime.transport_health,
                             KernelOutgoingFrame::Response {
-                                machine: None,
+                                kernel: None,
                                 request_id,
                                 response: Box::new(None),
                                 error: Some(KernelTransportError {
@@ -1587,7 +1587,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                         close_requested,
                         &runtime.transport_health,
                         KernelOutgoingFrame::Response {
-                            machine: None,
+                            kernel: None,
                             request_id,
                             response: Box::new(None),
                             error: Some(KernelTransportError {
@@ -1647,7 +1647,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                                 &close_requested,
                                 &runtime.transport_health,
                                 KernelOutgoingFrame::Event {
-                                    machine: None,
+                                    kernel: None,
                                     // MD-DISPLAY-04: no durable replay cursor.
                                     // Per-display sequence lives inside frame.
                                     event_id: 0,
@@ -1660,14 +1660,14 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                             }
                         }
                         KernelOutgoingFrame::Response {
-                            machine: None,
+                            kernel: None,
                             request_id,
                             response: Box::new(Some(response)),
                             error: None,
                         }
                     }
                     Err(error) => KernelOutgoingFrame::Response {
-                        machine: None,
+                        kernel: None,
                         request_id,
                         response: Box::new(None),
                         error: Some(map_kernel_error(&error)),
@@ -1696,9 +1696,9 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
             attachment_id,
             subscription_scope,
             resume_from_event_id,
-            machine,
+            kernel,
         } => {
-            if let Some(machine) = machine {
+            if let Some(kernel) = kernel {
                 let Some(caller) = external_caller.as_ref() else {
                     let _ = try_send_outgoing_frame(
                         outgoing_tx,
@@ -1706,12 +1706,12 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                         close_requested,
                         &runtime.transport_health,
                         KernelOutgoingFrame::Response {
-                            machine: None,
+                            kernel: None,
                             request_id,
                             response: Box::new(None),
                             error: Some(KernelTransportError {
-                                code: "machine_not_available".into(),
-                                message: "machine routing is only available to a local access grant holder".into(),
+                                code: "kernel_not_available".into(),
+                                message: "kernel routing is only available to a local access grant holder".into(),
                                 retryable: false,
                             }),
                         },
@@ -1723,8 +1723,8 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 unix_access::serve_gateway_subscription(
                     &connection,
                     request_id,
-                    machine,
-                    crate::runtime::machine_gateway::SubscribeRequest {
+                    kernel,
+                    crate::runtime::kernel_gateway::SubscribeRequest {
                         grant_id: caller.caller_id.clone(),
                         session_id,
                         attachment_id,
@@ -1799,7 +1799,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 close_requested,
                 &runtime.transport_health,
                 KernelOutgoingFrame::Response {
-                    machine: None,
+                    kernel: None,
                     request_id,
                     response: Box::new(Some(serde_json::json!({
                         "ok": true,
@@ -1878,7 +1878,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 close_requested,
                 &runtime.transport_health,
                 KernelOutgoingFrame::Response {
-                    machine: None,
+                    kernel: None,
                     request_id,
                     response: Box::new(Some(serde_json::json!({ "ok": true }))),
                     error: None,

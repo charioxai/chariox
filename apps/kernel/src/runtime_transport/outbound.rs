@@ -55,7 +55,7 @@ impl OutboundBoundary {
                         Err(_) => match frame {
                             KernelOutgoingFrame::Response { request_id, .. } => {
                                 let refusal = KernelOutgoingFrame::Response {
-                                    machine: None,
+                                    kernel: None,
                                     request_id,
                                     response: Box::new(None),
                                     error: Some(withheld_error()),
@@ -174,10 +174,10 @@ fn project_error(value: &Value) -> KernelTransportError {
         projected.code = code.into();
         projected.message = message.into();
     }
-    // The gateway writes these messages itself, from the machine name the agent
+    // The gateway writes these messages itself, from the kernel name the agent
     // chose; they carry no provider or parser text.
-    if crate::runtime::machine_gateway::is_public_code(code)
-        || crate::runtime::machine_files::is_public_code(code)
+    if crate::runtime::kernel_gateway::is_public_code(code)
+        || crate::runtime::kernel_files::is_public_code(code)
         || crate::room_terminal::is_public_code(code)
     {
         projected.code = code.into();

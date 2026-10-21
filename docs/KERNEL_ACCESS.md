@@ -21,11 +21,11 @@ Protocol 478 adds the kernel pairing confirmation. Relay peer protocol is unchan
 An external agent (Claude Code, Codex) talks only to its local kernel over the Unix socket. Run `chariox guide` for the short, static agent guide; it is generated from the same command table the CLI parser uses and installs nothing into the agent's harness.
 
 - `chariox access request --until-exit` asks the user for access once. With `--no-wait` it exits 6 and a detached waiter keeps the request; `chariox access status` then prints `granted`, `pending`, `ended` or `not_requested`.
-- `chariox machines` lists the machines this kernel can reach. `chariox request [--machine M] [--command-id ID] [--timeout SECONDS]` sends one `LocalDaemonRequest` read from stdin to this kernel, or through it to machine `M`, and prints the response JSON.
-- `chariox watch --machine M --session ID --attachment ID [--from EVENT_ID]` prints one JSON line per event of that machine until the connection is lost; it then ends with `machine_connection_lost` naming the event to resume from. An attachment made through the gateway is kept alive by this kernel while the grant lasts, and ends with `DetachFromSession`.
-- `chariox files stat|ls|get|put --machine M ...` moves files in chunks of 256 KiB, resumable and verified by sha256 (2 GiB per file); run the same command again after an interruption.
-- A person pairs this kernel with a self-hosted machine with `/machine add <link>` in a Chariox terminal (`/machine linked`, `/machine unlink NAME`); agents cannot.
-- Output is one JSON document on stdout. Errors are `{"error":{"code","message","machine"}}` on stderr.
+- `chariox kernels` lists the kernels this kernel can reach, grouped by machine. A kernel's name is its machine's name when you have one kernel there and `<machine>/<label>` when the machine runs several (a name that fits two kernels is `kernel_ambiguous` and lists both). `chariox request [--kernel M] [--command-id ID] [--timeout SECONDS]` sends one `LocalDaemonRequest` read from stdin to this kernel, or through it to kernel `M`, and prints the response JSON.
+- `chariox watch --kernel M --session ID --attachment ID [--from EVENT_ID]` prints one JSON line per event of that kernel until the connection is lost; it then ends with `kernel_connection_lost` naming the event to resume from. An attachment made through the gateway is kept alive by this kernel while the grant lasts, and ends with `DetachFromSession`.
+- `chariox files stat|ls|get|put --kernel M ...` moves files in chunks of 256 KiB, resumable and verified by sha256 (2 GiB per file); run the same command again after an interruption.
+- A person pairs this kernel with a self-hosted kernel with `/kernel add <link>` in a Chariox terminal (`/kernel linked`, `/kernel unlink NAME`); agents cannot.
+- Output is one JSON document on stdout. Errors are `{"error":{"code","message","kernel"}}` on stderr.
 
 Exit codes and the error codes behind them:
 
@@ -34,9 +34,9 @@ Exit codes and the error codes behind them:
 | 0 | ok | |
 | 2 | usage | `usage` |
 | 3 | refused | `kernel_access_human_only`, `kernel_access_ended`, `kernel_access_not_covered`, `kernel_access_already_granted`, `command_id_required`, `duplicate_command_conflict` |
-| 4 | machine unavailable | `machine_unknown`, `machine_ambiguous`, `machine_offline`, `machine_unreachable`, `machine_unpaired`, `machine_incompatible`, `machine_not_available` |
-| 5 | timeout or unknown outcome | `machine_request_timeout`, `machine_connection_lost`, `machine_outcome_unknown` |
+| 4 | kernel unavailable | `kernel_unknown`, `kernel_ambiguous`, `kernel_offline`, `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_not_available` |
+| 5 | timeout or unknown outcome | `kernel_request_timeout`, `kernel_connection_lost`, `kernel_outcome_unknown` |
 | 6 | approval pending | |
 
-On `machine_request_timeout` or `machine_connection_lost`, retry once with the same `--command-id`. On `machine_outcome_unknown`, read the state first. When the local connection drops with a request in flight, the CLI probes the kernel once: `kernel_access_ended` means the grant ended during the request; anything else is `machine_connection_lost`.
+On `kernel_request_timeout` or `kernel_connection_lost`, retry once with the same `--command-id`. On `kernel_outcome_unknown`, read the state first. When the local connection drops with a request in flight, the CLI probes the kernel once: `kernel_access_ended` means the grant ended during the request; anything else is `kernel_connection_lost`.
 

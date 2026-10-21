@@ -68,7 +68,7 @@ impl KernelRuntimeState {
         request: &LocalDaemonRequest,
     ) -> Result<(), DaemonError> {
         if grant_id.starts_with("sudo:") {
-            return Err(error("a sudo window does not reach other machines"));
+            return Err(error("a sudo window does not reach other kernels"));
         }
         if carries_passkey(request) {
             return Err(Refusal::HumanOnly.error());
@@ -120,7 +120,7 @@ impl KernelRuntimeState {
     /// agents. Only who and what kind, never the payload.
     pub(crate) fn audit_gateway_request(&self, on_behalf_of: &OnBehalfOf, request_kind: &str) {
         let _ = self.owned.durable_state_store.append_event(
-            "machine_gateway.request",
+            "kernel_gateway.request",
             Some(format!(
                 "{}:{}",
                 on_behalf_of.origin_kernel, on_behalf_of.grant_id
@@ -133,11 +133,11 @@ impl KernelRuntimeState {
         );
     }
 
-    /// A state-changing request this kernel's agent sent to another machine.
+    /// A state-changing request this kernel's agent sent to another kernel.
     pub(crate) fn audit_gateway_forward(
         &self,
         grant_id: &str,
-        machine: &str,
+        kernel: &str,
         request_kind: &str,
         outcome: &str,
         latency_ms: u64,
@@ -146,7 +146,7 @@ impl KernelRuntimeState {
             "kernel_access.forward",
             Some(grant_id.to_string()),
             serde_json::json!({
-                "machine": machine,
+                "kernel": kernel,
                 "request": request_kind,
                 "outcome": outcome,
                 "latency_ms": latency_ms,
@@ -246,8 +246,8 @@ pub(crate) fn restricted_request(request: &LocalDaemonRequest) -> bool {
                 | LocalDaemonRequest::JoinPairingInvite(_)
                 | LocalDaemonRequest::CreateTerminalPairingLink(_)
                 | LocalDaemonRequest::JoinTerminalPairingLink(_)
-                | LocalDaemonRequest::JoinMachineLink(_)
-                | LocalDaemonRequest::ForgetGatewayMachine(_)
+                | LocalDaemonRequest::JoinKernelLink(_)
+                | LocalDaemonRequest::ForgetGatewayKernel(_)
                 | LocalDaemonRequest::RecordPairedClient(_)
                 | LocalDaemonRequest::ApproveRemoteMachine(_)
                 | LocalDaemonRequest::JoinSessionInvite(_)

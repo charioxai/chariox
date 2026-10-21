@@ -1,10 +1,5 @@
 import type { ParsedSlashCommand } from "./commands.js"
 import { remoteKernelReadiness } from "@chariox/kernel-client/shell-remote-format"
-import {
-  handleLinkedMachineSlashCommand,
-  isLinkedMachineAdd,
-  type LinkedMachineCommandHandlerDeps,
-} from "./linked-machine-command-handlers.js"
 
 type FooterTone = "info" | "error"
 
@@ -40,7 +35,8 @@ type RemoteMachineKernelSummary = {
   local_session_count?: number
 }
 
-export type RemoteMachineCommandHandlerDeps = LinkedMachineCommandHandlerDeps & {
+export type RemoteMachineCommandHandlerDeps = {
+  flashFooter: (message: string, tone: FooterTone, display?: "toast") => void
   addSshMachine?: (host: string, options: { install_id?: string; port?: number; release?: string }) => Promise<import("./remote-machine-api.js").SshMachineResult>
   removeSshMachine?: (installId: string) => Promise<import("./remote-machine-api.js").SshMachineResult>
   refreshWaitingRoomData?: () => Promise<void>
@@ -64,10 +60,6 @@ export async function handleRemoteMachineSlashCommand(
 ): Promise<void> {
   const args = command.args
   const subcommand = args[0]
-  if (isLinkedMachineAdd(args) || subcommand === "linked" || subcommand === "unlink") {
-    await handleLinkedMachineSlashCommand(deps, args)
-    return
-  }
   if (subcommand === "add" || subcommand === "remove") {
     await sshMachineCommand(deps, args)
     return

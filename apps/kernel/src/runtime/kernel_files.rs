@@ -1,7 +1,7 @@
-//! File access on this machine for the machine file requests (External Agents v2).
+//! File access on this machine for the kernel file requests (External Agents v2).
 //!
 //! The kernel runs as an OS user and can touch what that user can: these
-//! requests add no power over a terminal on the machine, only a transfer that
+//! requests add no power over a terminal on the kernel, only a transfer that
 //! is chunked, resumable and checked by sha256. Paths are absolute or `~/`.
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -12,9 +12,9 @@ use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
 use crate::local::{
-    ListMachineDirectoryRequest, LocalDaemonResponse, MachineDirectoryEntry, MachineFileKind,
-    MachineFileStat, ReadMachineFileRequest, StatMachineFileRequest, WriteMachineFileRequest,
-    MACHINE_FILE_MAX_BYTES, MACHINE_FILE_MAX_CHUNK_BYTES,
+    KernelDirectoryEntry, KernelFileKind, KernelFileStat, ListKernelDirectoryRequest,
+    LocalDaemonResponse, ReadKernelFileRequest, StatKernelFileRequest, WriteKernelFileRequest,
+    KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES,
 };
 
 /// Directory listings stop here and say so.
@@ -73,7 +73,7 @@ fn resolve(path: &str) -> Result<PathBuf, DaemonError> {
             .ok_or_else(|| {
                 fail(
                     "file_path_invalid",
-                    "This machine has no home directory; use an absolute path.",
+                    "This kernel has no home directory; use an absolute path.",
                 )
             })?
             .join(rest),
@@ -95,15 +95,15 @@ fn partial_of(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-fn kind_of(file_type: std::fs::FileType) -> MachineFileKind {
+fn kind_of(file_type: std::fs::FileType) -> KernelFileKind {
     if file_type.is_symlink() {
-        MachineFileKind::Symlink
+        KernelFileKind::Symlink
     } else if file_type.is_dir() {
-        MachineFileKind::Directory
+        KernelFileKind::Directory
     } else if file_type.is_file() {
-        MachineFileKind::File
+        KernelFileKind::File
     } else {
-        MachineFileKind::Other
+        KernelFileKind::Other
     }
 }
 
@@ -125,18 +125,18 @@ fn sha256_of(path: &Path) -> Result<String, DaemonError> {
     }
 }
 
-pub(crate) fn stat(request: &StatMachineFileRequest) -> Result<LocalDaemonResponse, DaemonError> {
+pub(crate) fn stat(request: &StatKernelFileRequest) -> Result<LocalDaemonResponse, DaemonError> {
     let path = resolve(&request.path)?;
     let partial_size = std::fs::metadata(partial_of(&path)).ok().map(|m| m.len());
     let stat = match std::fs::symlink_metadata(&path) {
         Ok(metadata) => {
             let followed = std::fs::metadata(&path).unwrap_or_else(|_| metadata.clone());
             let kind = kind_of(followed.file_type());
-            let hashed = request.with_sha256 && kind == MachineFileKind::File;
-            if hashed && followed.len() > MACHINE_FILE_MAX_BYTES {
+            let hashed = request.with_sha256 && kind == KernelFileKind::File;
+            if hashed && followed.len() > KERNEL_FILE_MAX_BYTES {
                 return Err(too_large(followed.len()));
             }
-            MachineFileStat {
+            KernelFileStat {
                 path: path.display().to_string(),
                 exists: true,
                 kind: Some(kind),
@@ -150,7 +150,7 @@ pub(crate) fn stat(request: &StatMachineFileRequest) -> Result<LocalDaemonRespon
                 partial_size,
             }
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => MachineFileStat {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => KernelFileStat {
             path: path.display().to_string(),
             exists: false,
             kind: None,
@@ -161,11 +161,11 @@ pub(crate) fn stat(request: &StatMachineFileRequest) -> Result<LocalDaemonRespon
         },
         Err(error) => return Err(io_failure(&path, &error)),
     };
-    Ok(LocalDaemonResponse::MachineFileStat { stat })
+    Ok(LocalDaemonResponse::KernelFileStat { stat })
 }
 
 pub(crate) fn list(
-    request: &ListMachineDirectoryRequest,
+    request: &ListKernelDirectoryRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let path = resolve(&request.path)?;
     let mut entries = Vec::new();
@@ -179,7 +179,7 @@ pub(crate) fn list(
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
-        entries.push(MachineDirectoryEntry {
+        entries.push(KernelDirectoryEntry {
             name: entry.file_name().to_string_lossy().into_owned(),
             kind: kind_of(metadata.file_type()),
             size: metadata.len(),
@@ -187,7 +187,7 @@ pub(crate) fn list(
         });
     }
     entries.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(LocalDaemonResponse::MachineDirectoryListed {
+    Ok(LocalDaemonResponse::KernelDirectoryListed {
         path: path.display().to_string(),
         entries,
         truncated,
@@ -197,15 +197,15 @@ pub(crate) fn list(
 fn too_large(size: u64) -> DaemonError {
     fail(
         "file_too_large",
-        format!("A file may be at most {MACHINE_FILE_MAX_BYTES} bytes; this one is {size}."),
+        format!("A file may be at most {KERNEL_FILE_MAX_BYTES} bytes; this one is {size}."),
     )
 }
 
-pub(crate) fn read(request: &ReadMachineFileRequest) -> Result<LocalDaemonResponse, DaemonError> {
-    if request.length > MACHINE_FILE_MAX_CHUNK_BYTES {
+pub(crate) fn read(request: &ReadKernelFileRequest) -> Result<LocalDaemonResponse, DaemonError> {
+    if request.length > KERNEL_FILE_MAX_CHUNK_BYTES {
         return Err(fail(
             "file_chunk_too_large",
-            format!("Read at most {MACHINE_FILE_MAX_CHUNK_BYTES} bytes per request."),
+            format!("Read at most {KERNEL_FILE_MAX_CHUNK_BYTES} bytes per request."),
         ));
     }
     let path = resolve(&request.path)?;
@@ -220,7 +220,7 @@ pub(crate) fn read(request: &ReadMachineFileRequest) -> Result<LocalDaemonRespon
             ),
         ));
     }
-    if metadata.len() > MACHINE_FILE_MAX_BYTES {
+    if metadata.len() > KERNEL_FILE_MAX_BYTES {
         return Err(too_large(metadata.len()));
     }
     file.seek(SeekFrom::Start(request.offset))
@@ -230,7 +230,7 @@ pub(crate) fn read(request: &ReadMachineFileRequest) -> Result<LocalDaemonRespon
         .read_to_end(&mut data)
         .map_err(|e| io_failure(&path, &e))?;
     let eof = request.offset.saturating_add(data.len() as u64) >= metadata.len();
-    Ok(LocalDaemonResponse::MachineFileChunk {
+    Ok(LocalDaemonResponse::KernelFileChunk {
         path: path.display().to_string(),
         offset: request.offset,
         data_base64: STANDARD.encode(&data),
@@ -239,17 +239,17 @@ pub(crate) fn read(request: &ReadMachineFileRequest) -> Result<LocalDaemonRespon
     })
 }
 
-pub(crate) fn write(request: &WriteMachineFileRequest) -> Result<LocalDaemonResponse, DaemonError> {
-    if request.total_size > MACHINE_FILE_MAX_BYTES {
+pub(crate) fn write(request: &WriteKernelFileRequest) -> Result<LocalDaemonResponse, DaemonError> {
+    if request.total_size > KERNEL_FILE_MAX_BYTES {
         return Err(too_large(request.total_size));
     }
     let data = STANDARD
         .decode(&request.data_base64)
         .map_err(|_| fail("file_path_invalid", "data_base64 is not valid base64."))?;
-    if data.len() as u64 > MACHINE_FILE_MAX_CHUNK_BYTES {
+    if data.len() as u64 > KERNEL_FILE_MAX_CHUNK_BYTES {
         return Err(fail(
             "file_chunk_too_large",
-            format!("Write at most {MACHINE_FILE_MAX_CHUNK_BYTES} bytes per request."),
+            format!("Write at most {KERNEL_FILE_MAX_CHUNK_BYTES} bytes per request."),
         ));
     }
     let path = resolve(&request.path)?;
@@ -306,7 +306,7 @@ pub(crate) fn write(request: &WriteMachineFileRequest) -> Result<LocalDaemonResp
     file.flush().map_err(|e| io_failure(&partial, &e))?;
     drop(file);
     if end < request.total_size {
-        return Ok(LocalDaemonResponse::MachineFileWritten {
+        return Ok(LocalDaemonResponse::KernelFileWritten {
             path: path.display().to_string(),
             received: end,
             complete: false,
@@ -347,7 +347,7 @@ pub(crate) fn write(request: &WriteMachineFileRequest) -> Result<LocalDaemonResp
         })?;
         std::fs::remove_file(&partial).map_err(|e| io_failure(&partial, &e))?;
     }
-    Ok(LocalDaemonResponse::MachineFileWritten {
+    Ok(LocalDaemonResponse::KernelFileWritten {
         path: path.display().to_string(),
         received: end,
         complete: true,
@@ -360,7 +360,7 @@ mod tests {
     use super::*;
 
     fn scratch() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("machine-files-{:08x}", rand::random::<u32>()));
+        let dir = std::env::temp_dir().join(format!("kernel-files-{:08x}", rand::random::<u32>()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -371,8 +371,8 @@ mod tests {
         bytes: &[u8],
         total: u64,
         sha: Option<&str>,
-    ) -> WriteMachineFileRequest {
-        WriteMachineFileRequest {
+    ) -> WriteKernelFileRequest {
+        WriteKernelFileRequest {
             path: path.display().to_string(),
             offset,
             data_base64: STANDARD.encode(bytes),
@@ -385,12 +385,12 @@ mod tests {
     fn code(error: DaemonError) -> String {
         match error {
             DaemonError::MachineRequest { code, .. } => code,
-            other => panic!("not a machine file error: {other}"),
+            other => panic!("not a kernel file error: {other}"),
         }
     }
 
     fn written(response: LocalDaemonResponse) -> (u64, bool, Option<String>) {
-        let LocalDaemonResponse::MachineFileWritten {
+        let LocalDaemonResponse::KernelFileWritten {
             received,
             complete,
             sha256,
@@ -417,7 +417,7 @@ mod tests {
             !target.exists(),
             "an unfinished upload is not presented as the file"
         );
-        let LocalDaemonResponse::MachineFileStat { stat } = stat(&StatMachineFileRequest {
+        let LocalDaemonResponse::KernelFileStat { stat } = stat(&StatKernelFileRequest {
             path: target.display().to_string(),
             with_sha256: false,
         })
@@ -491,12 +491,12 @@ mod tests {
         let dir = scratch();
         let file = dir.join("r.bin");
         std::fs::write(&file, b"0123456789").unwrap();
-        let LocalDaemonResponse::MachineFileChunk {
+        let LocalDaemonResponse::KernelFileChunk {
             data_base64,
             eof,
             size,
             ..
-        } = read(&ReadMachineFileRequest {
+        } = read(&ReadKernelFileRequest {
             path: file.display().to_string(),
             offset: 4,
             length: 4,
@@ -509,7 +509,7 @@ mod tests {
             (STANDARD.decode(data_base64).unwrap(), eof, size),
             (b"4567".to_vec(), false, 10)
         );
-        let LocalDaemonResponse::MachineFileChunk { eof, .. } = read(&ReadMachineFileRequest {
+        let LocalDaemonResponse::KernelFileChunk { eof, .. } = read(&ReadKernelFileRequest {
             path: file.display().to_string(),
             offset: 8,
             length: 100,
@@ -518,27 +518,27 @@ mod tests {
             panic!()
         };
         assert!(eof);
-        let too_big = ReadMachineFileRequest {
+        let too_big = ReadKernelFileRequest {
             path: file.display().to_string(),
             offset: 0,
-            length: MACHINE_FILE_MAX_CHUNK_BYTES + 1,
+            length: KERNEL_FILE_MAX_CHUNK_BYTES + 1,
         };
         assert_eq!(code(read(&too_big).unwrap_err()), "file_chunk_too_large");
-        let huge = chunk(&dir.join("h"), 0, b"", MACHINE_FILE_MAX_BYTES + 1, None);
+        let huge = chunk(&dir.join("h"), 0, b"", KERNEL_FILE_MAX_BYTES + 1, None);
         assert_eq!(code(write(&huge).unwrap_err()), "file_too_large");
-        let missing = ReadMachineFileRequest {
+        let missing = ReadKernelFileRequest {
             path: dir.join("nope").display().to_string(),
             offset: 0,
             length: 1,
         };
         assert_eq!(code(read(&missing).unwrap_err()), "file_not_found");
-        let relative = ReadMachineFileRequest {
+        let relative = ReadKernelFileRequest {
             path: "relative/file".into(),
             offset: 0,
             length: 1,
         };
         assert_eq!(code(read(&relative).unwrap_err()), "file_path_invalid");
-        let directory = ReadMachineFileRequest {
+        let directory = ReadKernelFileRequest {
             path: dir.display().to_string(),
             offset: 0,
             length: 1,
@@ -551,7 +551,7 @@ mod tests {
         let dir = scratch();
         std::fs::write(dir.join("b.txt"), b"abc").unwrap();
         std::fs::create_dir(dir.join("a-dir")).unwrap();
-        let LocalDaemonResponse::MachineFileStat { stat } = stat(&StatMachineFileRequest {
+        let LocalDaemonResponse::KernelFileStat { stat } = stat(&StatKernelFileRequest {
             path: dir.join("b.txt").display().to_string(),
             with_sha256: true,
         })
@@ -562,9 +562,9 @@ mod tests {
             stat.sha256.as_deref(),
             Some(format!("{:x}", Sha256::digest(b"abc")).as_str())
         );
-        let LocalDaemonResponse::MachineDirectoryListed {
+        let LocalDaemonResponse::KernelDirectoryListed {
             entries, truncated, ..
-        } = list(&ListMachineDirectoryRequest {
+        } = list(&ListKernelDirectoryRequest {
             path: dir.display().to_string(),
         })
         .unwrap()
@@ -573,6 +573,6 @@ mod tests {
         };
         let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!((names, truncated), (vec!["a-dir", "b.txt"], false));
-        assert_eq!(entries[0].kind, MachineFileKind::Directory);
+        assert_eq!(entries[0].kind, KernelFileKind::Directory);
     }
 }

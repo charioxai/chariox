@@ -50,7 +50,7 @@ test("access status reports granted, ended, pending and not_requested from a pro
   const dir = mkdtempSync(join(tmpdir(), "chx-status-"))
   const refusal = (code: string) => ({ error: { code, message: code, retryable: false } })
   try {
-    assert.equal((await statusOf({ response: { GatewayMachinesListed: { machines: [] } } }, dir, 4242)).out, '{"status":"granted"}')
+    assert.equal((await statusOf({ response: { GatewayKernelsListed: { kernels: [] } } }, dir, 4242)).out, '{"status":"granted"}')
     assert.equal((await statusOf(refusal("kernel_access_ended"), dir, 4242)).out, '{"status":"ended"}')
     assert.equal((await statusOf(refusal("kernel_access_not_covered"), dir, 4242)).out, '{"status":"not_requested"}')
     writeFileSync(join(dir, "access-waiter-4242.pid"), String(process.pid), { mode: 0o600 })

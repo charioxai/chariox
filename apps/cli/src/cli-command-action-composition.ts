@@ -139,14 +139,12 @@ import {
   addSshMachine,
   removeSshMachine,
   approveRemoteMachine,
-  forgetGatewayMachine,
   forgetRemoteMachine,
-  joinMachineLink,
-  listGatewayMachines,
   listRemoteMachineKernels,
   listRemoteMachines,
   renameRemoteMachine,
 } from "./remote-machine-api.js"
+import { forgetGatewayKernel, joinKernelLink, listGatewayKernels } from "./kernel-gateway-api.js"
 import {
   configureRelay,
   connectKernelCloudRelay,
@@ -676,9 +674,9 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     approveRemoteMachine: (machineRef) => approveRemoteMachine(client, machineRef),
     forgetRemoteMachine: (machineRef) => forgetRemoteMachine(client, machineRef),
     renameRemoteMachine: (machineRef, alias) => renameRemoteMachine(client, machineRef, alias),
-    joinMachineLink: (link, relayToken) => joinMachineLink(client, link, relayToken),
-    listGatewayMachines: () => listGatewayMachines(client),
-    forgetGatewayMachine: (name) => forgetGatewayMachine(client, name),
+    joinKernelLink: (link, relayToken) => joinKernelLink(client, link, relayToken),
+    listGatewayKernels: () => listGatewayKernels(client),
+    forgetGatewayKernel: (name) => forgetGatewayKernel(client, name),
     listSlices: async () => {
       const slices = await listSlices(client)
       setSlicesState(slices)

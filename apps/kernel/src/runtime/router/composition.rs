@@ -346,7 +346,7 @@ pub(super) fn compose_command_router(
         provider_run_projection.clone(),
         terminal_stream.clone(),
     );
-    let machine_gateway = Arc::new(crate::runtime::machine_gateway::MachineGateway::new(
+    let kernel_gateway = Arc::new(crate::runtime::kernel_gateway::KernelGateway::new(
         runtime_state.clone(),
         config_projection.clone(),
         remote_relay_inventory_projection.clone(),
@@ -386,6 +386,6 @@ pub(super) fn compose_command_router(
         terminal_output_executor,
         workspace_coordinator,
         provider_launch_pending,
-        machine_gateway,
+        kernel_gateway,
     }
 }

@@ -113,7 +113,7 @@ fn session_snapshot_frame_redacts_remote_relay_credentials() {
     }));
     projection.session.set_agents(vec![agent]);
     let frame = KernelOutgoingFrame::Event {
-        machine: None,
+        kernel: None,
         event_id: 1,
         event: Box::new(KernelEvent::SessionSnapshot {
             room_workflows: projection.room_workflows,

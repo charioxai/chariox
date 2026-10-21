@@ -88,8 +88,8 @@ impl CommandRouter {
         Ok(())
     }
 
-    pub(crate) fn machine_gateway(&self) -> &Arc<crate::runtime::machine_gateway::MachineGateway> {
-        &self.machine_gateway
+    pub(crate) fn kernel_gateway(&self) -> &Arc<crate::runtime::kernel_gateway::KernelGateway> {
+        &self.kernel_gateway
     }
 
     pub(super) async fn list_gateway_machines(
@@ -101,18 +101,18 @@ impl CommandRouter {
             Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
         ) {
             return Err(error(
-                "only a Chariox terminal or local grant holder can list machines",
+                "only a Chariox terminal or local grant holder can list kernels",
             ));
         }
-        let machines = self
-            .machine_gateway
-            .machines()
+        let kernels = self
+            .kernel_gateway
+            .kernels()
             .await
             .map_err(|failure| error(format!("{}: {}", failure.code(), failure.message())))?;
-        Ok(LocalDaemonResponse::GatewayMachinesListed { machines })
+        Ok(LocalDaemonResponse::GatewayKernelsListed { kernels })
     }
 
-    /// The gateway's own requests: attachment heartbeats, machine files and pairing.
+    /// The gateway's own requests: attachment heartbeats, kernel files and pairing.
     /// They follow the same role policy and command log as every public request.
     pub(super) async fn dispatch_machine_request(
         &self,
@@ -122,12 +122,12 @@ impl CommandRouter {
         if !matches!(
             request,
             LocalDaemonRequest::HeartbeatAttachments(_)
-                | LocalDaemonRequest::JoinMachineLink(_)
-                | LocalDaemonRequest::ForgetGatewayMachine(_)
-                | LocalDaemonRequest::StatMachineFile(_)
-                | LocalDaemonRequest::ListMachineDirectory(_)
-                | LocalDaemonRequest::ReadMachineFile(_)
-                | LocalDaemonRequest::WriteMachineFile(_)
+                | LocalDaemonRequest::JoinKernelLink(_)
+                | LocalDaemonRequest::ForgetGatewayKernel(_)
+                | LocalDaemonRequest::StatKernelFile(_)
+                | LocalDaemonRequest::ListKernelDirectory(_)
+                | LocalDaemonRequest::ReadKernelFile(_)
+                | LocalDaemonRequest::WriteKernelFile(_)
         ) {
             return None;
         }
@@ -142,8 +142,8 @@ impl CommandRouter {
                 LocalDaemonRequest::HeartbeatAttachments(heartbeat) => {
                     self.heartbeat_attachments(command, heartbeat).await
                 }
-                LocalDaemonRequest::JoinMachineLink(_)
-                | LocalDaemonRequest::ForgetGatewayMachine(_) => {
+                LocalDaemonRequest::JoinKernelLink(_)
+                | LocalDaemonRequest::ForgetGatewayKernel(_) => {
                     self.machine_pairing(command, request).await
                 }
                 _ => self.machine_file(command, request).await,
@@ -185,7 +185,7 @@ impl CommandRouter {
         Ok(LocalDaemonResponse::AttachmentsHeartbeated { lapsed })
     }
 
-    /// Pairing the gateway with a machine, or forgetting one, is a person's act at
+    /// Pairing the gateway with a kernel, or forgetting one, is a person's act at
     /// a Chariox terminal; a grant holder or a forwarded request never reaches it.
     async fn machine_pairing(
         &self,
@@ -196,19 +196,19 @@ impl CommandRouter {
             && command_caller_user_id(command) == self.config_projection.local_owner_user_id();
         if !owner {
             return Err(denied(
-                "only the kernel's owner at a Chariox terminal can pair or forget a machine",
+                "only the kernel's owner at a Chariox terminal can pair or forget a kernel",
             ));
         }
         let outcome = match request {
-            LocalDaemonRequest::JoinMachineLink(join) => self
-                .machine_gateway
+            LocalDaemonRequest::JoinKernelLink(join) => self
+                .kernel_gateway
                 .join(join.clone())
                 .await
-                .map(|machine| LocalDaemonResponse::GatewayMachineJoined { machine }),
-            LocalDaemonRequest::ForgetGatewayMachine(forget) => self
-                .machine_gateway
+                .map(|kernel| LocalDaemonResponse::GatewayKernelJoined { kernel }),
+            LocalDaemonRequest::ForgetGatewayKernel(forget) => self
+                .kernel_gateway
                 .forget(&forget.name)
-                .map(|kernel_id| LocalDaemonResponse::GatewayMachineForgotten { kernel_id }),
+                .map(|kernel_id| LocalDaemonResponse::GatewayKernelForgotten { kernel_id }),
             _ => unreachable!("filtered above"),
         };
         outcome.map_err(|failure| DaemonError::MachineRequest {
@@ -217,14 +217,14 @@ impl CommandRouter {
         })
     }
 
-    /// The machine file requests belong to the kernel's owner, at a Chariox terminal
+    /// The kernel file requests belong to the kernel's owner, at a Chariox terminal
     /// or as a local grant holder (or the gateway acting for one).
     async fn machine_file(
         &self,
         command: &KernelCommand,
         request: &LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        use crate::runtime::machine_files as files;
+        use crate::runtime::kernel_files as files;
         let owner = matches!(
             command.caller.connection_class,
             Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
@@ -232,20 +232,20 @@ impl CommandRouter {
             == self.config_projection.local_owner_user_id();
         if !owner {
             return Err(denied(
-                "only the kernel's owner at a Chariox terminal or as a local grant holder can use machine files",
+                "only the kernel's owner at a Chariox terminal or as a local grant holder can use kernel files",
             ));
         }
         let request = request.clone();
         // Hashing and copying a large file must not stall the request loop.
         let outcome = tokio::task::spawn_blocking(move || match &request {
-            LocalDaemonRequest::StatMachineFile(r) => files::stat(r),
-            LocalDaemonRequest::ListMachineDirectory(r) => files::list(r),
-            LocalDaemonRequest::ReadMachineFile(r) => files::read(r),
-            LocalDaemonRequest::WriteMachineFile(r) => files::write(r),
+            LocalDaemonRequest::StatKernelFile(r) => files::stat(r),
+            LocalDaemonRequest::ListKernelDirectory(r) => files::list(r),
+            LocalDaemonRequest::ReadKernelFile(r) => files::read(r),
+            LocalDaemonRequest::WriteKernelFile(r) => files::write(r),
             _ => unreachable!("filtered above"),
         })
         .await;
-        outcome.unwrap_or_else(|join| Err(error(format!("machine file task failed: {join}"))))
+        outcome.unwrap_or_else(|join| Err(error(format!("kernel file task failed: {join}"))))
     }
 
     pub(super) fn dispatch_kernel_access(

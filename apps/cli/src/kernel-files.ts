@@ -18,8 +18,8 @@ type RemoteStat = { path: string; exists: boolean; kind: string | null; size: nu
 type Transfer = { path: string; size: number; sha256: string; bytes_sent_or_received: number; resumed_from: number; elapsed_ms: number }
 
 async function remoteStat(send: SendRequest, path: string, withSha256: boolean): Promise<RemoteStat> {
-  const response = await send({ StatMachineFile: { path, with_sha256: withSha256 } }) as { MachineFileStat: { stat: RemoteStat } }
-  return response.MachineFileStat.stat
+  const response = await send({ StatKernelFile: { path, with_sha256: withSha256 } }) as { KernelFileStat: { stat: RemoteStat } }
+  return response.KernelFileStat.stat
 }
 
 async function statLocal(path: string): Promise<Stats | null> {
@@ -39,7 +39,7 @@ async function getFile(send: SendRequest, remotePath: string, localPath: string,
   const started = Date.now()
   if (!overwrite && await statLocal(localPath)) throw new CommandFailure("file_exists", `${localPath} already exists; pass --overwrite to replace it`)
   const source = await remoteStat(send, remotePath, true)
-  if (!source.exists) throw new CommandFailure("file_not_found", `${remotePath} does not exist on that machine`)
+  if (!source.exists) throw new CommandFailure("file_not_found", `${remotePath} does not exist on that kernel`)
   if (source.kind !== "file" || source.size === null || source.sha256 === null) throw new CommandFailure("file_not_a_file", `${remotePath} is not a regular file; use files ls for a directory`)
   const { size, sha256 } = source
   const partialPath = localPath + PARTIAL_SUFFIX
@@ -48,8 +48,8 @@ async function getFile(send: SendRequest, remotePath: string, localPath: string,
   const partial = await open(partialPath, resumedFrom > 0 ? "a" : "w")
   try {
     for (let offset = resumedFrom; offset < size;) {
-      const response = await send({ ReadMachineFile: { path: remotePath, offset, length: Math.min(CHUNK_BYTES, size - offset) } }) as { MachineFileChunk: { data_base64: string } }
-      const bytes = Buffer.from(response.MachineFileChunk.data_base64, "base64")
+      const response = await send({ ReadKernelFile: { path: remotePath, offset, length: Math.min(CHUNK_BYTES, size - offset) } }) as { KernelFileChunk: { data_base64: string } }
+      const bytes = Buffer.from(response.KernelFileChunk.data_base64, "base64")
       if (bytes.length === 0) throw new CommandFailure("file_io_failed", `${remotePath} ended at ${offset} of ${size} bytes; run the same command again to continue`)
       await partial.writeFile(bytes)
       offset += bytes.length
@@ -81,8 +81,8 @@ async function putFile(send: SendRequest, localPath: string, remotePath: string,
     do {
       const { bytesRead } = await source.read(buffer, 0, CHUNK_BYTES, offset)
       if (bytesRead === 0 && offset < size) throw new CommandFailure("file_io_failed", `${localPath} changed while it was being sent; run the same command again`)
-      const response = await send({ WriteMachineFile: { path: remotePath, offset, data_base64: buffer.subarray(0, bytesRead).toString("base64"), total_size: size, sha256, overwrite } }) as { MachineFileWritten: typeof written }
-      written = response.MachineFileWritten
+      const response = await send({ WriteKernelFile: { path: remotePath, offset, data_base64: buffer.subarray(0, bytesRead).toString("base64"), total_size: size, sha256, overwrite } }) as { KernelFileWritten: typeof written }
+      written = response.KernelFileWritten
       offset += bytesRead
     } while (offset < size)
   } finally { await source.close() }
@@ -98,7 +98,7 @@ export async function runFilesVerb(
 ): Promise<unknown> {
   switch (verb) {
     case "stat": return remoteStat(send, first!, flags.sha256)
-    case "ls": return (await send({ ListMachineDirectory: { path: first! } }) as { MachineDirectoryListed: unknown }).MachineDirectoryListed
+    case "ls": return (await send({ ListKernelDirectory: { path: first! } }) as { KernelDirectoryListed: unknown }).KernelDirectoryListed
     // The launcher runs from the repository; a relative local path means the agent's directory.
     case "get": return getFile(send, first!, resolve(terminalCwd(), second!), flags.overwrite)
     case "put": return putFile(send, resolve(terminalCwd(), first!), second!, flags.overwrite)

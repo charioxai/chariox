@@ -3498,7 +3498,7 @@ Workflow trigger and deployment direction:
   An unapproved Unix peer can only send `RequestKernelAccess` with
   `holder_pid` and optional `term` (protocol 568 replaces `lifetime_minutes`; protocol 451 removes `session_id`; old session-bearing requests are rejected). The holder
   must be the peer or an OS-verified ancestor. The kernel raises an owner-only
-  passkey popup. Its copy is one short kernel-written question (grant: "<name> (an external agent) wants access to this kernel and your other machines. Allow?"; extension: "<name>'s access ends in N minutes. Extend?"); `<name>` is only a harness recognised by exact configured path, otherwise "An external agent". The popup shows no pid, path, process start, version or scope; those stay in `requester` and the audit stream. No session must exist. Access popups use the kernel-wide interaction routing id `kernel-access`; this is not a session or grant scope.
+  passkey popup. Its copy is one short kernel-written question (grant: "<name> (an external agent) wants access to this kernel and your other kernels. Allow?"; extension: "<name>'s access ends in N minutes. Extend?"); `<name>` is only a harness recognised by exact configured path, otherwise "An external agent". The popup shows no pid, path, process start, version or scope; those stay in `requester` and the audit stream. No session must exist. Access popups use the kernel-wide interaction routing id `kernel-access`; this is not a session or grant scope.
   `RespondToInteraction` on this routing id returns `KernelAccessDecisionResponded { interaction_id }`, with no session projection.
   Grant and extension prompts have kind `access_grant` or `access_extension`,
   `term` (protocol 568), and `max_lifetime_minutes`. Protocol 470 adds an optional
@@ -4811,27 +4811,27 @@ grants or draw the popup need 568.
 Relay peer 176 carries the same shapes. The Rust hash test
 `local_kernel_access_protocol_451_has_no_session_scope_or_bearer` pins them.
 
-Machine gateway (same provisional 568/176). A grant holder names another machine and the local kernel
+Kernel gateway (same provisional 568/176). A grant holder names another kernel and the local kernel
 forwards the request over the relay, as a terminal-class client of the target kernel; the target stays the
 authority for its own sessions, agents, terminals and files.
-- Unix-socket frames: `request` frames take an optional `machine` (kernel id, kernel alias or machine alias).
-  The response frame echoes it (`machine`, absent for local answers). A frame with `machine` on a connection
-  that is not a grant holder's is refused; a machine request is never answered locally.
-- Subscriptions: a `subscribe` frame with `machine` starts the same event stream on that machine (a relay
+- Unix-socket frames: `request` frames take an optional `kernel` (the name `ListGatewayKernels` shows: the machine's name when the user has one kernel there, else `<machine>/<label>`; a kernel id, a kernel alias or a machine alias also works when it fits exactly one kernel, else `kernel_ambiguous` lists the candidates).
+  The response frame echoes it (`kernel`, absent for local answers). A frame with `kernel` on a connection
+  that is not a grant holder's is refused; a kernel request is never answered locally.
+- Subscriptions: a `subscribe` frame with `kernel` starts the same event stream on that kernel (a relay
   `ClientSubscribe` from the gateway key; the target heartbeats the attachment itself). The ack is the target's;
-  each `event` frame carries `machine`, and its `event_id` counts on the target's stream, so a resume sends
+  each `event` frame carries `kernel`, and its `event_id` counts on the target's stream, so a resume sends
   `resume_from_event_id` from the last one seen. The gateway renews the relay token in place before it expires.
-  If the connection to the machine ends, the agent receives a second `response` frame with the subscribe
-  request's id and error `machine_connection_lost` naming the last event id. One subscription per connection.
-- Attachments: an `AttachToSession` answered by a machine is kept alive by the origin kernel while the grant is
-  live and the machine answers: every 10 s it sends `HeartbeatAttachments { attachments: [{session_id,
+  If the connection to the kernel ends, the agent receives a second `response` frame with the subscribe
+  request's id and error `kernel_connection_lost` naming the last event id. One subscription per connection.
+- Attachments: an `AttachToSession` answered by a kernel is kept alive by the origin kernel while the grant is
+  live and the kernel answers: every 10 s it sends `HeartbeatAttachments { attachments: [{session_id,
   attachment_id}] }` -> `AttachmentsHeartbeated { lapsed: [attachment_id] }` (the target records a terminal
   heartbeat for the caller's own attachments; any other id is reported lapsed). A `DetachFromSession` stops it; a
   grant that ends or three missed beats stop it, and the target sweeps the attachment after 30 s.
-- `ListGatewayMachines {}` -> `GatewayMachinesListed { machines: [{name, kernel_id, machine_id, machine_alias,
+- `ListGatewayKernels {}` -> `GatewayKernelsListed { kernels: [{name, kernel_id, label, machine_id, machine_alias,
   status: online|offline, last_seen_ms, gateway_ready, via: hosted|self_hosted}] }`. The list comes from one
   inventory source (the relay inventory, filtered to the account's fresh Cloud targets when hosted). An offline
-  machine stays listed with its last-seen time.
+  kernel stays listed with its last-seen time.
 - Origin decision: the local kernel checks that the grant is live and that the request shape is not human-only
   (`authorize_gateway_request`; the same shape set as a local request: credentials, pairing, relay and Cloud
   identity, protected configuration, any answer carrying a passkey). Interactions belong to the target.
@@ -4839,20 +4839,20 @@ authority for its own sessions, agents, terminals and files.
   credential when hosted, replaced before it expires, closed after 5 idle minutes). The gateway key pair is made
   by the kernel on first use and never returned by any request. The encrypted request is
   `{command_id, request, on_behalf_of: {origin_kernel, grant_id, harness}}`. A target that advertises the
-  `machine_gateway_v1` capability (in `RelayStatus.capabilities` and relay presence) refuses the human-only set for
+  `kernel_gateway_v1` capability (in `RelayStatus.capabilities` and relay presence) refuses the human-only set for
   any request that carries `on_behalf_of`, classifies `RespondToInteraction` from its own pending interactions and
   never needs the origin's grant. A target without it rejects the envelope; the gateway then sends a plain
-  request for everything except `RespondToInteraction`, which is refused with `machine_incompatible`.
+  request for everything except `RespondToInteraction`, which is refused with `kernel_incompatible`.
 - Terminals: `RoomTerminal` is forwarded like any request. It is repeatable by `operation` (`list`, `snapshot`,
   `read_output`, `wait`); `open`, `input`, `resize` and `close` go through the ledger, so a retried `input` never types
   twice. The origin waits the usual 30 s plus the request's own `wait_ms` / `timeout_ms` (at most 240 s). A target
   advertises `room_terminal_v1` (in `RelayStatus.capabilities` and relay presence); the gateway refuses
-  `RoomTerminal` to a machine without it with `machine_incompatible`, before sending anything. A grant holder is told
+  `RoomTerminal` to a kernel without it with `kernel_incompatible`, before sending anything. A grant holder is told
   the terminal service's own sentence ("this Room has no terminal ...") instead of a withheld-detail message.
 - The gateway on the target: a request carrying `on_behalf_of` records its sender, keyed by the relay's
   authenticated client key (`gateway-origins.json`), and `ListPairedClients` lists it as `Agent gateway of <origin
   kernel>` with client id `agent-gateway:<thumbprint>`. `RevokePairedClient` on that id refuses the key from then on,
-  with or without `on_behalf_of` (the origin reports `machine_unpaired`). The owner lets it back in with
+  with or without `on_behalf_of` (the origin reports `kernel_unpaired`). The owner lets it back in with
   `RecordPairedClient` for that id, or by pairing it again with a link they just made (`JoinTerminalPairingLink`, the
   one request a revoked gateway may still send). An unreadable list refuses gateway
   requests only. `KernelAccessGrant.holder_harness` (`codex`, `claude`, `opencode`; absent when unknown) names the
@@ -4860,19 +4860,19 @@ authority for its own sessions, agents, terminals and files.
 - At most once: every non-read request (repeatable means a variant that starts with List, Get, Search, Stat or Heartbeat)
   is reserved in the target's durable gateway ledger (`gateway-ledger.jsonl`, at-most-once receipts, 512 entries)
   before it runs and settled after. A retry with the same `command_id` returns the original result; a retry of an
-  interrupted reservation returns `machine_outcome_unknown` and never runs again; a different request under the same
+  interrupted reservation returns `kernel_outcome_unknown` and never runs again; a different request under the same
   id is `duplicate_command_conflict`; a full or unreadable ledger is `ledger_unavailable` and nothing ran.
-- Errors (code, one sentence, next step): `machine_unknown`, `machine_ambiguous`, `machine_offline`,
-  `machine_unreachable`, `machine_unpaired`, `machine_incompatible`, `machine_request_timeout` (30 s),
-  `machine_connection_lost`, `machine_outcome_unknown`, `machine_not_available`. Nothing falls back to local or to
-  another machine. Grant revoke, expiry and holder exit stop forwarding at once; work already started on the
+- Errors (code, one sentence, next step): `kernel_unknown`, `kernel_ambiguous`, `kernel_offline`,
+  `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_request_timeout` (30 s),
+  `kernel_connection_lost`, `kernel_outcome_unknown`, `kernel_not_available`. Nothing falls back to local or to
+  another kernel. Grant revoke, expiry and holder exit stop forwarding at once; work already started on the
   target keeps running.
-- Machine files (kernel API requests, any machine, owner only: a Chariox terminal or a local grant holder, or the
-  gateway acting for one): `StatMachineFile { path, with_sha256 }` -> `MachineFileStat { stat: {path, exists, kind,
-  size, modified_ms, sha256, partial_size} }`; `ListMachineDirectory { path }` -> `MachineDirectoryListed { path,
-  entries, truncated }` (2000 entries); `ReadMachineFile { path, offset, length }` (length <= 256 KiB) ->
-  `MachineFileChunk { path, offset, data_base64, size, eof }`; `WriteMachineFile { path, offset, data_base64,
-  total_size, sha256?, overwrite }` (chunk <= 256 KiB, in order) -> `MachineFileWritten { path, received, complete,
+- Kernel files (kernel API requests, any kernel, owner only: a Chariox terminal or a local grant holder, or the
+  gateway acting for one): `StatKernelFile { path, with_sha256 }` -> `KernelFileStat { stat: {path, exists, kind,
+  size, modified_ms, sha256, partial_size} }`; `ListKernelDirectory { path }` -> `KernelDirectoryListed { path,
+  entries, truncated }` (2000 entries); `ReadKernelFile { path, offset, length }` (length <= 256 KiB) ->
+  `KernelFileChunk { path, offset, data_base64, size, eof }`; `WriteKernelFile { path, offset, data_base64,
+  total_size, sha256?, overwrite }` (chunk <= 256 KiB, in order) -> `KernelFileWritten { path, received, complete,
   sha256 }`. Paths are absolute or `~/`. An upload lives in `<path>.chariox-partial` and the file appears at `path`
   only when `total_size` is reached and `sha256`, if sent, matches (otherwise `file_hash_mismatch` and nothing is
   kept); a chunk at the wrong offset is `file_offset_mismatch` and the message names the offset to continue at.
@@ -4880,15 +4880,15 @@ authority for its own sessions, agents, terminals and files.
   skip the at-most-once ledger. Typed errors: `file_path_invalid`, `file_not_found`, `file_permission_denied`,
   `file_not_a_file`, `file_too_large`, `file_chunk_too_large`, `file_offset_mismatch`, `file_hash_mismatch`,
   `file_exists`, `file_io_failed`; each message already says what to do next.
-- Self-hosted machines (no Cloud profile): the machines are the kernels this kernel paired with. Human-only requests,
-  refused for grant holders and forwarded requests: `JoinMachineLink { link, relay_token? }` -> `GatewayMachineJoined
-  { machine }` (the gateway key asks the kernel that made a terminal pairing link, over the operator relay, to admit
+- Self-hosted kernels (no Cloud profile): the kernels are the kernels this kernel paired with. Human-only requests,
+  refused for grant holders and forwarded requests: `JoinKernelLink { link, relay_token? }` -> `GatewayKernelJoined
+  { kernel }` (the gateway key asks the kernel that made a terminal pairing link, over the operator relay, to admit
   it with `JoinTerminalPairingLink`; the link's relay must be this kernel's relay; a scoped relay also needs the
-  operator CLIENT token in `relay_token`) and `ForgetGatewayMachine { name }` -> `GatewayMachineForgotten
-  { kernel_id }`. Pairings are kept in `gateway-machines.json` (0600) with the target key learned at first contact
-  and pinned from then on (a connection that announces another key is refused). `ListGatewayMachines` asks each paired machine for its status over its own relay link: one that answers is online and its capabilities refresh, one that does not is offline with its last answer time. No relay inventory permission is needed, so a scoped relay works with the CLIENT token alone. Every state-changing request is audited as `kernel_access.forward` (machine, request kind, outcome, latency; no payload) on the sending kernel and `machine_gateway.request` (origin kernel, harness, request kind) on the receiving one. A refusal is
-  `machine_join_refused`. The grant on the other machine is revoked there; forgetting only drops it here.
-The Rust hash test `machine_gateway_protocol_568_shapes_and_hash` pins the shapes.
+  operator CLIENT token in `relay_token`) and `ForgetGatewayKernel { name }` -> `GatewayKernelForgotten
+  { kernel_id }`. Pairings are kept in `gateway-kernels.json` (0600) with the target key learned at first contact
+  and pinned from then on (a connection that announces another key is refused). `ListGatewayKernels` asks each paired kernel for its status over its own relay link: one that answers is online and its capabilities refresh, one that does not is offline with its last answer time. No relay inventory permission is needed, so a scoped relay works with the CLIENT token alone. Every state-changing request is audited as `kernel_access.forward` (kernel, request kind, outcome, latency; no payload) on the sending kernel and `kernel_gateway.request` (origin kernel, harness, request kind) on the receiving one. A refusal is
+  `kernel_join_refused`. The grant on the other kernel is revoked there; forgetting only drops it here.
+The Rust hash test `kernel_gateway_protocol_568_shapes_and_hash` pins the shapes.
 
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
 `layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.

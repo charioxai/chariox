@@ -1,3 +1,4 @@
+import { handleLinkedKernelSlashCommand, isLinkedKernelCommand, type LinkedKernelCommandHandlerDeps } from "./linked-kernel-command-handlers.js"
 import { sudoWindowLine } from "./sudo-window-line.js"
 import type { RuntimeSession } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
@@ -20,7 +21,7 @@ export {
 
 type FooterTone = "info" | "error"
 
-export type KernelCommandHandlerDeps = {
+export type KernelCommandHandlerDeps = LinkedKernelCommandHandlerDeps & {
   isAttached: () => boolean
   sessionState: () => RuntimeSession
   flashFooter: (message: string, tone: FooterTone) => void
@@ -48,6 +49,10 @@ export async function handleKernelSlashCommand(
   const [subcommand, ...args] = command.args
   if (subcommand === "sudo") {
     await handleSudoWindowCommand(deps, args)
+    return
+  }
+  if (isLinkedKernelCommand(command.args)) {
+    await handleLinkedKernelSlashCommand(deps, command.args)
     return
   }
   // MP-08/MP-11 BY-05: project the same kernel-owned outcome as Web.

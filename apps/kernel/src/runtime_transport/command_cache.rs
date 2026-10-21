@@ -183,7 +183,7 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::ExtendKernelSudo(_)
             // File contents are never kept in the result cache, and a heartbeat is
             // only ever fresh; a replay of either is safe to run again.
-            | LocalDaemonRequest::ReadMachineFile(_)
+            | LocalDaemonRequest::ReadKernelFile(_)
             | LocalDaemonRequest::HeartbeatAttachments(_)
             // The result carries a relay token that joins a terminal; it is
             // never kept in this cache, on disk or in memory.
@@ -928,7 +928,7 @@ fn read_persistent_results_with_receipt_fence(
             continue;
         };
         // An at-most-once journal keeps a receipt for every request it reserved
-        // (the machine gateway ledger also answers approvals); the exclusion
+        // (the kernel gateway ledger also answers approvals); the exclusion
         // list only trims ordinary result caches.
         if !retention.at_most_once && !should_persist_completed_result(&entry.result.fingerprint) {
             compact_after_load = true;

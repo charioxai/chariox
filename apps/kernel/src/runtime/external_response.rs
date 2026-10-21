@@ -20,7 +20,7 @@ pub(crate) fn finish_response(
 }
 
 fn protect_error(error: DaemonError) -> DaemonError {
-    // A machine file error says what to do next in words the kernel wrote from the
+    // A kernel file error says what to do next in words the kernel wrote from the
     // agent's own path; it carries no provider or parser text.
     if matches!(&error, DaemonError::MachineRequest { .. }) {
         return error;
@@ -193,14 +193,14 @@ response_policies! {
         KernelAccessGranted,
         KernelAccessGrantsListed,
         KernelAccessRevoked,
-        GatewayMachinesListed,
+        GatewayKernelsListed,
         AttachmentsHeartbeated,
-        GatewayMachineJoined,
-        GatewayMachineForgotten,
-        MachineFileStat,
-        MachineDirectoryListed,
-        MachineFileChunk,
-        MachineFileWritten,
+        GatewayKernelJoined,
+        GatewayKernelForgotten,
+        KernelFileStat,
+        KernelDirectoryListed,
+        KernelFileChunk,
+        KernelFileWritten,
         RoomBrowserArtifact,
         RoomTerminal,
         AppPublisherEnrollmentStatus,

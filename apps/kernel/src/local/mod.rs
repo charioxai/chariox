@@ -281,13 +281,13 @@ pub use api::{
     RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult,
 };
 pub use api::{
-    ExtendKernelSudoRequest, ForgetGatewayMachineRequest, GatewayAttachmentRef, GatewayMachine,
-    GatewayMachineStatus, GatewayMachineVia, HeartbeatAttachmentsRequest, JoinMachineLinkRequest,
-    KernelAccessGrant, KernelSudoTurn, ListGatewayMachinesRequest, ListKernelAccessGrantsRequest,
-    ListMachineDirectoryRequest, MachineDirectoryEntry, MachineFileKind, MachineFileStat,
-    OnBehalfOf, ReadMachineFileRequest, RequestKernelAccessRequest, RequestKernelSudoRequest,
-    RevokeKernelAccessGrantRequest, StatMachineFileRequest, WriteMachineFileRequest,
-    MACHINE_FILE_MAX_BYTES, MACHINE_FILE_MAX_CHUNK_BYTES,
+    ExtendKernelSudoRequest, ForgetGatewayKernelRequest, GatewayAttachmentRef, GatewayKernel,
+    GatewayKernelStatus, GatewayKernelVia, HeartbeatAttachmentsRequest, JoinKernelLinkRequest,
+    KernelAccessGrant, KernelDirectoryEntry, KernelFileKind, KernelFileStat, KernelSudoTurn,
+    ListGatewayKernelsRequest, ListKernelAccessGrantsRequest, ListKernelDirectoryRequest,
+    OnBehalfOf, ReadKernelFileRequest, RequestKernelAccessRequest, RequestKernelSudoRequest,
+    RevokeKernelAccessGrantRequest, StatKernelFileRequest, WriteKernelFileRequest,
+    KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES,
 };
 pub use api::{
     GetKernelResourceTelemetryRequest, KernelResourceTelemetryDisk, KernelResourceTelemetryLogs,

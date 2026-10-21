@@ -5,8 +5,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 import type { WebSocket } from "ws"
-import { runMachineCommand } from "./machine-command.js"
-import { fakeMachineFiles, serveMachineFiles, startFakeKernel, type FakeKernel, type FakeKernelFrame, type FakeMachineFiles } from "./fake-unix-kernel.test-support.js"
+import { runKernelsCommand } from "./kernels-command.js"
+import { fakeKernelFiles, serveKernelFiles, startFakeKernel, type FakeKernel, type FakeKernelFrame, type FakeKernelFiles } from "./fake-unix-kernel.test-support.js"
 
 const CHUNK = 256 * 1024
 const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex")
@@ -20,7 +20,7 @@ async function chariox(argv: string[]) {
   console.log = (line: string) => { stdout.push(line) }
   process.stderr.write = ((chunk: string) => { stderr.push(chunk); return true }) as typeof process.stderr.write
   process.exitCode = undefined
-  try { await runMachineCommand(argv) } finally {
+  try { await runKernelsCommand(argv) } finally {
     console.log = log
     process.stderr.write = write
   }
@@ -29,9 +29,9 @@ async function chariox(argv: string[]) {
   return { stdout: stdout.join("\n"), stderr: stderr.join(""), exit }
 }
 
-async function withRig(run: (rig: { kernel: FakeKernel; store: FakeMachineFiles; dir: string; socket: string[] }) => Promise<void>, wrap?: (serve: ReturnType<typeof serveMachineFiles>) => Parameters<typeof startFakeKernel>[0]) {
-  const store = fakeMachineFiles()
-  const serve = serveMachineFiles(store)
+async function withRig(run: (rig: { kernel: FakeKernel; store: FakeKernelFiles; dir: string; socket: string[] }) => Promise<void>, wrap?: (serve: ReturnType<typeof serveKernelFiles>) => Parameters<typeof startFakeKernel>[0]) {
+  const store = fakeKernelFiles()
+  const serve = serveKernelFiles(store)
   const kernel = await startFakeKernel(wrap ? wrap(serve) : serve)
   const dir = await mkdtemp(join(tmpdir(), "chx-files-"))
   try { await run({ kernel, store, dir, socket: ["--timeout", "5", "--socket", kernel.path] }) } finally {
@@ -49,7 +49,7 @@ test("put sends 256 KiB chunks in order on one connection, each carrying the tot
     const result = await chariox(["files", "put", ...socket, join(dir, "big.bin"), "/srv/big.bin"])
     assert.equal(result.exit, 0, result.stderr)
     assert.deepEqual(store.files.get("/srv/big.bin"), content)
-    const writes = requestsOf(kernel, "WriteMachineFile")
+    const writes = requestsOf(kernel, "WriteKernelFile")
     assert.deepEqual(writes.map(write => write.offset), [0, CHUNK, 2 * CHUNK])
     for (const write of writes) assert.deepEqual([write.total_size, write.sha256, write.overwrite], [content.length, sha256(content), false])
     const printed = JSON.parse(result.stdout)
@@ -66,7 +66,7 @@ test("put continues at the partial size the target reports and starts over when 
     store.partials.set("/srv/f.bin", content.subarray(0, CHUNK + 7))
     const resumed = await chariox(["files", "put", ...socket, join(dir, "f.bin"), "/srv/f.bin"])
     assert.equal(resumed.exit, 0, resumed.stderr)
-    assert.deepEqual(requestsOf(kernel, "WriteMachineFile").map(write => write.offset), [CHUNK + 7, 2 * CHUNK + 7])
+    assert.deepEqual(requestsOf(kernel, "WriteKernelFile").map(write => write.offset), [CHUNK + 7, 2 * CHUNK + 7])
     assert.deepEqual(store.files.get("/srv/f.bin"), content)
     assert.equal(JSON.parse(resumed.stdout).resumed_from, CHUNK + 7)
     assert.equal(JSON.parse(resumed.stdout).bytes_sent_or_received, content.length - CHUNK - 7)
@@ -75,7 +75,7 @@ test("put continues at the partial size the target reports and starts over when 
     store.partials.set("/srv/g.bin", randomBytes(content.length + 1))
     const restarted = await chariox(["files", "put", ...socket, join(dir, "f.bin"), "/srv/g.bin"])
     assert.equal(restarted.exit, 0, restarted.stderr)
-    assert.deepEqual(kernel.frames.slice(before).flatMap(frame => "WriteMachineFile" in frame.request ? [(frame.request.WriteMachineFile as { offset: number }).offset] : []), [0, CHUNK, 2 * CHUNK])
+    assert.deepEqual(kernel.frames.slice(before).flatMap(frame => "WriteKernelFile" in frame.request ? [(frame.request.WriteKernelFile as { offset: number }).offset] : []), [0, CHUNK, 2 * CHUNK])
     assert.deepEqual(store.files.get("/srv/g.bin"), content)
   })
 })
@@ -113,8 +113,8 @@ test("get downloads in 256 KiB chunks, verifies the sha256 of what it wrote and 
     assert.equal(result.exit, 0, result.stderr)
     assert.deepEqual(await readFile(join(dir, "big.bin")), content)
     assert.deepEqual(await readdir(dir), ["big.bin"])
-    assert.deepEqual(requestsOf(kernel, "StatMachineFile"), [{ path: "/srv/big.bin", with_sha256: true }])
-    assert.deepEqual(requestsOf(kernel, "ReadMachineFile").map(read => [read.offset, read.length]), [[0, CHUNK], [CHUNK, CHUNK], [2 * CHUNK, CHUNK / 2]])
+    assert.deepEqual(requestsOf(kernel, "StatKernelFile"), [{ path: "/srv/big.bin", with_sha256: true }])
+    assert.deepEqual(requestsOf(kernel, "ReadKernelFile").map(read => [read.offset, read.length]), [[0, CHUNK], [CHUNK, CHUNK], [2 * CHUNK, CHUNK / 2]])
     const printed = JSON.parse(result.stdout)
     assert.deepEqual([printed.path, printed.size, printed.sha256, printed.bytes_sent_or_received, printed.resumed_from], [join(dir, "big.bin"), content.length, sha256(content), content.length, 0])
     assert.equal(store.sockets.size, 1, "one connection for the whole transfer")
@@ -138,11 +138,11 @@ test("get refuses an existing local file unless --overwrite and asks nothing fir
 
 test("get keeps no final file and no partial when the bytes do not match the source's sha256", async () => {
   // A kernel that flips one bit of every chunk it sends.
-  const corrupting = (serve: ReturnType<typeof serveMachineFiles>) => (socket: WebSocket, frame: FakeKernelFrame) => {
+  const corrupting = (serve: ReturnType<typeof serveKernelFiles>) => (socket: WebSocket, frame: FakeKernelFrame) => {
     const send = socket.send.bind(socket)
     socket.send = ((text: string) => {
       const message = JSON.parse(text)
-      const chunk = message.response?.MachineFileChunk
+      const chunk = message.response?.KernelFileChunk
       if (chunk) {
         const bytes = Buffer.from(chunk.data_base64, "base64")
         bytes[0] = bytes[0]! ^ 1
@@ -168,7 +168,7 @@ test("get resumes an interrupted download from its .chariox-partial file", async
     await writeFile(join(dir, "f.bin.chariox-partial"), content.subarray(0, CHUNK + 5))
     const result = await chariox(["files", "get", ...socket, "/srv/f.bin", join(dir, "f.bin")])
     assert.equal(result.exit, 0, result.stderr)
-    assert.deepEqual(requestsOf(kernel, "ReadMachineFile").map(read => read.offset), [CHUNK + 5, 2 * CHUNK + 5])
+    assert.deepEqual(requestsOf(kernel, "ReadKernelFile").map(read => read.offset), [CHUNK + 5, 2 * CHUNK + 5])
     assert.deepEqual(await readFile(join(dir, "f.bin")), content)
     assert.deepEqual(await readdir(dir), ["f.bin"])
     assert.equal(JSON.parse(result.stdout).resumed_from, CHUNK + 5)
@@ -183,7 +183,7 @@ test("stat and ls print the kernel's objects and ask for the sha256 only when to
     assert.deepEqual(plain, { path: "/srv/a.txt", exists: true, kind: "file", size: 5, modified_ms: 1, sha256: null, partial_size: null })
     const hashed = JSON.parse((await chariox(["files", "stat", ...socket, "--sha256", "/srv/a.txt"])).stdout)
     assert.equal(hashed.sha256, sha256(Buffer.from("hello")))
-    assert.deepEqual(requestsOf(kernel, "StatMachineFile").map(stat => stat.with_sha256), [false, true])
+    assert.deepEqual(requestsOf(kernel, "StatKernelFile").map(stat => stat.with_sha256), [false, true])
     const listing = JSON.parse((await chariox(["files", "ls", ...socket, "/srv"])).stdout)
     assert.deepEqual(listing, { path: "/srv", entries: [{ name: "a.txt", kind: "file", size: 5, modified_ms: 1 }], truncated: false })
   })
@@ -196,12 +196,12 @@ test("a kernel error on stat arrives with its code", async () => {
   })
 })
 
-test("--machine goes through the gateway check and tags the requests", async () => {
+test("--kernel goes through the gateway check and tags the requests", async () => {
   await withRig(async ({ kernel, store, socket }) => {
     store.files.set("/srv/a.txt", Buffer.from("hello"))
-    const result = await chariox(["files", "stat", ...socket, "--machine", "b3", "/srv/a.txt"])
+    const result = await chariox(["files", "stat", ...socket, "--kernel", "b3", "/srv/a.txt"])
     assert.equal(result.exit, 0, result.stderr)
-    assert.deepEqual(kernel.frames.map(frame => [Object.keys(frame.request)[0], frame.machine]), [["RelayStatus", undefined], ["StatMachineFile", "b3"]])
+    assert.deepEqual(kernel.frames.map(frame => [Object.keys(frame.request)[0], frame.kernel]), [["RelayStatus", undefined], ["StatKernelFile", "b3"]])
   })
 })
 
@@ -209,7 +209,7 @@ test("a wrong command line is a usage error before anything connects", async () 
   const nowhere = ["--socket", "/nonexistent/k.sock"]
   for (const argv of [
     ["files"], ["files", "bogus"], ["files", "stat", ...nowhere], ["files", "stat", ...nowhere, "a", "b"], ["files", "ls", ...nowhere, "--sha256", "/p"],
-    ["files", "get", ...nowhere, "/remote"], ["files", "put", ...nowhere, "/a", "/b", "/c"], ["files", "put", ...nowhere, "--machine"],
+    ["files", "get", ...nowhere, "/remote"], ["files", "put", ...nowhere, "/a", "/b", "/c"], ["files", "put", ...nowhere, "--kernel"],
   ]) {
     const result = await chariox(argv)
     assert.equal(JSON.parse(result.stderr).error.code, "usage", argv.join(" "))

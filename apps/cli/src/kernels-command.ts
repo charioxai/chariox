@@ -1,7 +1,7 @@
 import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import { CommandFailure, exitCodeFor, guideText, parseArguments, usageOf } from "./agent-command-table.js"
 import { kernelUnixClient } from "./kernel-unix-client.js"
-import { FILES_VERBS, runFilesVerb, type SendRequest } from "./machine-files.js"
+import { FILES_VERBS, runFilesVerb, type SendRequest } from "./kernel-files.js"
 import { runTerminalVerb, TERMINAL_VERBS, waitMsOf, type TerminalFlags, type TerminalVerb } from "./terminal-verbs.js"
 
 const LOCAL_CONNECTION_LOSS = ["connection_closed", "outcome_unknown", "write_failed"]
@@ -17,28 +17,28 @@ export function failureOf(error: unknown): CommandFailure {
   if (error instanceof LocalIpcError) {
     const message = error.message.replace(/^kernel transport `[^`]*` failed: /, "")
     if (error.operation === CONNECT_OPERATION) return new CommandFailure("kernel_unreachable", `${message}; start the kernel or pass --socket PATH`)
-    if (lostInFlight(error)) return new CommandFailure("machine_connection_lost", message)
+    if (lostInFlight(error)) return new CommandFailure("kernel_connection_lost", message)
     return new CommandFailure(error.code ?? "cli_error", message)
   }
   return new CommandFailure("cli_error", error instanceof Error ? error.message : String(error))
 }
 
-export function reportFailure(error: unknown, machine: string | null = null): void {
+export function reportFailure(error: unknown, kernel: string | null = null): void {
   const failure = failureOf(error)
-  process.stderr.write(`${JSON.stringify({ error: { code: failure.code, message: failure.message, machine } })}\n`)
+  process.stderr.write(`${JSON.stringify({ error: { code: failure.code, message: failure.message, kernel } })}\n`)
   process.exitCode = exitCodeFor(failure.code)
 }
 
 export async function probeKernel(socket: string | undefined): Promise<unknown> {
   const client = kernelUnixClient(socket)
-  try { return await client.send({ ListGatewayMachines: {} }) } finally { await client.close() }
+  try { return await client.send({ ListGatewayKernels: {} }) } finally { await client.close() }
 }
 
 export function lostConnectionFailure(probeError: unknown): CommandFailure {
   if (probeError instanceof LocalIpcError && probeError.code === "kernel_access_ended") {
     return new CommandFailure("kernel_access_ended", "the access grant ended while this request was in flight; the request may or may not have run")
   }
-  return new CommandFailure("machine_connection_lost", "the connection to the local kernel was lost before the answer; the request may or may not have run")
+  return new CommandFailure("kernel_connection_lost", "the connection to the local kernel was lost before the answer; the request may or may not have run")
 }
 
 export function parseRequestBody(text: string): Record<string, unknown> {
@@ -60,19 +60,19 @@ function parseTimeout(value: string | true | undefined): number {
 async function sendWithin<T>(send: Promise<T>, seconds: number): Promise<T> {
   let timer: NodeJS.Timeout | undefined
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new CommandFailure("machine_request_timeout", `no answer within ${seconds} seconds; the request may or may not have run. For a state-changing request retry once with the same --command-id`)), seconds * 1000)
+    timer = setTimeout(() => reject(new CommandFailure("kernel_request_timeout", `no answer within ${seconds} seconds; the request may or may not have run. For a state-changing request retry once with the same --command-id`)), seconds * 1000)
   })
   try { return await Promise.race([send, timeout]) } finally { clearTimeout(timer) }
 }
 
-// An older kernel ignores `machine` and would run the request on this computer.
-async function requireMachineGateway(socket: string | undefined, timeoutSeconds: number): Promise<void> {
-  const unsupported = new CommandFailure("machine_not_available", "This computer's Chariox kernel cannot forward to other machines; update it.")
+// An older kernel ignores `kernel` and would run the request on this computer.
+async function requireKernelGateway(socket: string | undefined, timeoutSeconds: number): Promise<void> {
+  const unsupported = new CommandFailure("kernel_not_available", "This computer's Chariox kernel cannot forward to other kernels; update it.")
   const client = kernelUnixClient(socket)
   try {
     const response = await sendWithin(client.send<{ RelayStatus?: { status?: { capabilities?: unknown } } }>({ RelayStatus: null }), timeoutSeconds)
     const capabilities = response.RelayStatus?.status?.capabilities
-    if (!Array.isArray(capabilities) || !capabilities.includes("machine_gateway_v1")) throw unsupported
+    if (!Array.isArray(capabilities) || !capabilities.includes("kernel_gateway_v1")) throw unsupported
   } catch (error) {
     // A grant refusal is the answer itself; only an older kernel's failure means "update it".
     const refusal = error instanceof LocalIpcError && error.code?.startsWith("kernel_access_")
@@ -82,11 +82,11 @@ async function requireMachineGateway(socket: string | undefined, timeoutSeconds:
 
 // Every request of `use` shares one connection and its own timeout; a transfer is many requests.
 export async function withKernel<T>(
-  options: { socket: string | undefined; machine?: string | undefined; commandId?: string | undefined; timeoutSeconds: number },
+  options: { socket: string | undefined; kernel?: string | undefined; commandId?: string | undefined; timeoutSeconds: number },
   use: (send: SendRequest) => Promise<T>,
 ): Promise<T> {
-  if (options.machine !== undefined) await requireMachineGateway(options.socket, options.timeoutSeconds)
-  const client = kernelUnixClient(options.socket, { machine: options.machine, commandId: options.commandId })
+  if (options.kernel !== undefined) await requireKernelGateway(options.socket, options.timeoutSeconds)
+  const client = kernelUnixClient(options.socket, { kernel: options.kernel, commandId: options.commandId })
   try {
     return await use(body => sendWithin(client.send<unknown>(body), options.timeoutSeconds))
   } catch (error) {
@@ -97,21 +97,21 @@ export async function withKernel<T>(
 
 export function sendRequest(
   body: Record<string, unknown>,
-  options: { socket: string | undefined; machine?: string | undefined; commandId?: string | undefined; timeoutSeconds: number },
+  options: { socket: string | undefined; kernel?: string | undefined; commandId?: string | undefined; timeoutSeconds: number },
 ): Promise<unknown> {
   return withKernel(options, send => send(body))
 }
 
 // Ends only by failing: the stream has no end of its own, and a lost connection says where to resume.
-export async function watchMachine(
-  options: { socket: string | undefined; machine: string; sessionId: string; attachmentId: string; from: number | null },
+export async function watchKernel(
+  options: { socket: string | undefined; kernel: string; sessionId: string; attachmentId: string; from: number | null },
   print: (line: string) => void,
 ): Promise<never> {
-  await requireMachineGateway(options.socket, DEFAULT_TIMEOUT_SECONDS)
+  await requireKernelGateway(options.socket, DEFAULT_TIMEOUT_SECONDS)
   let lastEventId = options.from
   let lose!: (failure: unknown) => void
   const lost = new Promise<never>((_, reject) => { lose = reject })
-  const client = kernelUnixClient(options.socket, { machine: options.machine, onSubscriptionEnded: lose })
+  const client = kernelUnixClient(options.socket, { kernel: options.kernel, onSubscriptionEnded: lose })
   client.onKernelEvent((event, frame) => {
     if (frame) {
       lastEventId = frame.event_id
@@ -123,7 +123,7 @@ export async function watchMachine(
         if (probeError instanceof LocalIpcError && probeError.code === "kernel_access_ended") {
           lose(new CommandFailure("kernel_access_ended", "the access grant ended; this watch stopped"))
         } else {
-          lose(new CommandFailure("machine_connection_lost", `the connection to the local kernel was lost; events may have been missed. Run chariox watch again${lastEventId === null ? "" : ` with --from ${lastEventId}`}.`))
+          lose(new CommandFailure("kernel_connection_lost", `the connection to the local kernel was lost; events may have been missed. Run chariox watch again${lastEventId === null ? "" : ` with --from ${lastEventId}`}.`))
         }
       })
     }
@@ -147,13 +147,13 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8")
 }
 
-export async function runMachineCommand(argv: string[]): Promise<boolean> {
+export async function runKernelsCommand(argv: string[]): Promise<boolean> {
   const [command, ...rest] = argv
   if (command === undefined) return false
   // `chariox terminal --session ...` is the interactive attach for a person; a verb first is the agent's.
   const terminalVerb = command === "terminal" ? TERMINAL_VERBS.find(name => name === rest[0]) : undefined
-  if (command !== "guide" && command !== "machines" && command !== "request" && command !== "watch" && command !== "files" && !terminalVerb) return false
-  let machine: string | null = null
+  if (command !== "guide" && command !== "kernels" && command !== "request" && command !== "watch" && command !== "files" && !terminalVerb) return false
+  let kernel: string | null = null
   try {
     // `files` is a command family: the verb is part of the table name.
     const verb = command === "files" ? FILES_VERBS.find(name => name === rest[0]) : undefined
@@ -166,19 +166,19 @@ export async function runMachineCommand(argv: string[]): Promise<boolean> {
     const socket = flags.get("--socket") as string | undefined
     if (command === "guide") {
       console.log(guideText())
-    } else if (command === "machines") {
-      const listed = await sendRequest({ ListGatewayMachines: {} }, { socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS }) as { GatewayMachinesListed: unknown }
-      console.log(JSON.stringify(listed.GatewayMachinesListed))
+    } else if (command === "kernels") {
+      const listed = await sendRequest({ ListGatewayKernels: {} }, { socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS }) as { GatewayKernelsListed: unknown }
+      console.log(JSON.stringify(listed.GatewayKernelsListed))
     } else if (command === "watch") {
       // Stopping a watch is the normal way to end it, not a failure.
       for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => process.exit(0))
-      machine = (flags.get("--machine") as string | undefined) ?? null
+      kernel = (flags.get("--kernel") as string | undefined) ?? null
       const sessionId = flags.get("--session") as string | undefined
       const attachmentId = flags.get("--attachment") as string | undefined
-      if (machine === null || sessionId === undefined || attachmentId === undefined) throw new CommandFailure("usage", usageOf("watch"))
-      await watchMachine({ socket, machine, sessionId, attachmentId, from: parseEventId(flags.get("--from")) }, line => console.log(line))
+      if (kernel === null || sessionId === undefined || attachmentId === undefined) throw new CommandFailure("usage", usageOf("watch"))
+      await watchKernel({ socket, kernel, sessionId, attachmentId, from: parseEventId(flags.get("--from")) }, line => console.log(line))
     } else if (terminalVerb) {
-      machine = (flags.get("--machine") as string | undefined) ?? null
+      kernel = (flags.get("--kernel") as string | undefined) ?? null
       const terminalFlags: TerminalFlags = {
         cols: flags.get("--cols"), rows: flags.get("--rows"), title: flags.get("--title"), session: flags.get("--session"),
         terminal: flags.get("--terminal"), since: flags.get("--since"), waitMs: flags.get("--wait-ms"), for: flags.get("--for"),
@@ -188,25 +188,25 @@ export async function runMachineCommand(argv: string[]): Promise<boolean> {
       const timeoutSeconds = terminalVerb === "wait" || terminalVerb === "read"
         ? Math.ceil(waitMsOf(terminalVerb, terminalFlags) / 1000) + DEFAULT_TIMEOUT_SECONDS
         : parseTimeout(flags.get("--timeout"))
-      const result = await withKernel({ socket, timeoutSeconds: Math.min(timeoutSeconds, 240 + DEFAULT_TIMEOUT_SECONDS), machine: machine ?? undefined }, send =>
+      const result = await withKernel({ socket, timeoutSeconds: Math.min(timeoutSeconds, 240 + DEFAULT_TIMEOUT_SECONDS), kernel: kernel ?? undefined }, send =>
         runTerminalVerb(terminalVerb as TerminalVerb, terminalVerb === "open" ? program : positionals, terminalFlags, send))
       console.log(JSON.stringify(result))
     } else if (command === "files" && verb) {
-      machine = (flags.get("--machine") as string | undefined) ?? null
+      kernel = (flags.get("--kernel") as string | undefined) ?? null
       const timeoutSeconds = parseTimeout(flags.get("--timeout"))
-      const result = await withKernel({ socket, timeoutSeconds, machine: machine ?? undefined }, send =>
+      const result = await withKernel({ socket, timeoutSeconds, kernel: kernel ?? undefined }, send =>
         runFilesVerb(verb, positionals, { sha256: flags.has("--sha256"), overwrite: flags.has("--overwrite") }, send))
       console.log(JSON.stringify(result))
     } else {
-      machine = (flags.get("--machine") as string | undefined) ?? null
+      kernel = (flags.get("--kernel") as string | undefined) ?? null
       const body = parseRequestBody(await readStdin())
       const timeoutSeconds = parseTimeout(flags.get("--timeout"))
       const commandId = flags.get("--command-id") as string | undefined
-      const response = await sendRequest(body, { socket, timeoutSeconds, machine: machine ?? undefined, commandId })
+      const response = await sendRequest(body, { socket, timeoutSeconds, kernel: kernel ?? undefined, commandId })
       console.log(JSON.stringify(response))
     }
   } catch (error) {
-    reportFailure(error, machine)
+    reportFailure(error, kernel)
   }
   return true
 }

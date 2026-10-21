@@ -176,7 +176,7 @@ pub(super) async fn handle_prepared_daemon_request(
                 .as_ref()
                 .map(|c| c.origin_kernel.as_str());
             match router
-                .machine_gateway()
+                .kernel_gateway()
                 .admit_origin(&client_public_key, origin)
             {
                 Ok(true) => {}
@@ -773,7 +773,7 @@ struct LocalBrowserConnectEnvelope {
 struct ParsedRelayClientRequest {
     command_id: Option<String>,
     request: LocalDaemonRequest,
-    /// Protocol 568: set by a machine gateway forwarding for an external agent.
+    /// Protocol 568: set by a kernel gateway forwarding for an external agent.
     on_behalf_of: Option<crate::local::OnBehalfOf>,
 }
 
@@ -844,7 +844,7 @@ enum RelayDispatchOutcome {
     RelayError(RelayError),
 }
 
-/// A request a machine gateway forwarded for an external agent. This kernel
+/// A request a kernel gateway forwarded for an external agent. This kernel
 /// decides for itself from `on_behalf_of`: the human-only set is refused here,
 /// and a state-changing request is reserved durably before it runs so a retry
 /// of an interrupted one is answered "outcome unknown" instead of run again.
@@ -862,7 +862,7 @@ async fn dispatch_on_behalf_of(
     on_behalf_of: &crate::local::OnBehalfOf,
     gateway_public_key: &str,
 ) -> RelayDispatchOutcome {
-    use crate::runtime::machine_gateway::ledger::{is_repeatable, Failure, Settled};
+    use crate::runtime::kernel_gateway::ledger::{is_repeatable, Failure, Settled};
     if let Err(error) = router
         .runtime_state()
         .authorize_on_behalf_of_request(on_behalf_of, &request)
@@ -877,7 +877,7 @@ async fn dispatch_on_behalf_of(
     if !is_repeatable(&request) {
         router.runtime_state().audit_gateway_request(
             on_behalf_of,
-            &crate::runtime::machine_gateway::ledger::variant_name(&request),
+            &crate::runtime::kernel_gateway::ledger::variant_name(&request),
         );
     }
     if is_repeatable(&request) {
@@ -909,7 +909,7 @@ async fn dispatch_on_behalf_of(
     let fingerprint = CommandFingerprint::for_app_control(&command, &request);
     let key = serde_json::json!([gateway_public_key, &command_id]).to_string();
     let settled = router
-        .machine_gateway()
+        .kernel_gateway()
         .ledger()
         .run(&key, fingerprint, async {
             match dispatch_relay_client_request(
@@ -939,7 +939,7 @@ async fn dispatch_on_behalf_of(
             failure.retryable,
         )),
         Settled::OutcomeUnknown => RelayDispatchOutcome::RelayError(relay_error(
-            "machine_outcome_unknown",
+            "kernel_outcome_unknown",
             "This request may or may not have run on this machine. Check the state (for example list the sessions) before asking again; it is not run a second time.",
             false,
         )),
@@ -1057,14 +1057,14 @@ async fn dispatch_relay_client_request(
             let mut response = serde_json::to_value(response).unwrap_or(Value::Null);
             crate::local::redact_client_response_value(&mut response);
             KernelOutgoingFrame::Response {
-                machine: None,
+                kernel: None,
                 request_id: command_id.clone(),
                 response: Box::new(Some(response)),
                 error: None,
             }
         }
         Err(error) => KernelOutgoingFrame::Response {
-            machine: None,
+            kernel: None,
             request_id: command_id.clone(),
             response: Box::new(None),
             error: Some(map_kernel_error(&error)),
@@ -1114,13 +1114,13 @@ mod tests {
 
     #[test]
     fn the_largest_machine_file_chunk_fits_one_relayed_request() {
-        let request = crate::local::LocalDaemonRequest::WriteMachineFile(
-            crate::local::WriteMachineFileRequest {
+        let request = crate::local::LocalDaemonRequest::WriteKernelFile(
+            crate::local::WriteKernelFileRequest {
                 path: "p".repeat(4096),
                 offset: u64::MAX,
                 data_base64: base64::engine::general_purpose::STANDARD.encode(vec![
                     0u8;
-                    crate::local::MACHINE_FILE_MAX_CHUNK_BYTES
+                    crate::local::KERNEL_FILE_MAX_CHUNK_BYTES
                         as usize
                 ]),
                 total_size: u64::MAX,

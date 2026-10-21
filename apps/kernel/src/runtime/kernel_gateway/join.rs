@@ -1,6 +1,6 @@
 //! Pairing the gateway with a self-hosted kernel through the terminal pairing
 //! link that kernel made. The gateway acts as a terminal: it asks the kernel,
-//! over the operator relay, to admit the gateway key, then remembers the machine.
+//! over the operator relay, to admit the gateway key, then remembers the kernel.
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -9,11 +9,11 @@ use serde_json::Value;
 
 use super::error::GatewayError;
 use super::link::{Link, LinkParams};
-use super::paired::PairedMachine;
+use super::paired::PairedKernel;
 use super::self_hosted::capabilities_of;
-use super::{map_failure, map_open_failure, MachineGateway, REQUEST_COUNTER};
+use super::{map_failure, map_open_failure, KernelGateway, REQUEST_COUNTER};
 use crate::local::{
-    GatewayMachine, GatewayMachineStatus, GatewayMachineVia, JoinMachineLinkRequest,
+    GatewayKernel, GatewayKernelStatus, GatewayKernelVia, JoinKernelLinkRequest,
     JoinTerminalPairingLinkRequest, LocalDaemonRequest, TerminalType,
 };
 
@@ -27,15 +27,15 @@ fn refused(detail: impl Into<String>) -> GatewayError {
     }
 }
 
-impl MachineGateway {
+impl KernelGateway {
     pub(crate) async fn join(
         &self,
-        request: JoinMachineLinkRequest,
-    ) -> Result<GatewayMachine, GatewayError> {
+        request: JoinKernelLinkRequest,
+    ) -> Result<GatewayKernel, GatewayError> {
         let config = self.config.snapshot();
         if config.cloud_relay.is_some() {
             return Err(refused(
-                "this kernel is enrolled in Chariox Cloud, which lists your machines itself; pairing links are for self-hosted relays.",
+                "this kernel is enrolled in Chariox Cloud, which lists your kernels itself; pairing links are for self-hosted relays.",
             ));
         }
         let relay_url = config.relay_url.clone().ok_or_else(|| {
@@ -100,14 +100,14 @@ impl MachineGateway {
             .await
             .map_err(|failure| map_failure(&token.target_daemon_id, failure))?;
         let answer: Value = serde_json::from_slice(&answer)
-            .map_err(|error| refused(format!("the machine's answer was unreadable ({error}).")))?;
+            .map_err(|error| refused(format!("the kernel's answer was unreadable ({error}).")))?;
         let admitted = answer
             .pointer("/TerminalPairingLinkJoined/kernel_pairing")
             .and_then(Value::as_bool)
             .unwrap_or(false);
         if !admitted {
             return Err(refused(
-                "the machine did not admit this kernel's key; it may run an older Chariox kernel. Update it and make a new link.",
+                "the kernel did not admit this kernel's key; it may run an older Chariox kernel. Update it and make a new link.",
             ));
         }
         let presence = RelayKernelPresence {
@@ -124,50 +124,41 @@ impl MachineGateway {
             local_session_count: 0,
             public_key: link.target_public_key().to_string(),
         };
-        let machine = GatewayMachine {
-            name: super::directory::display_name(&presence),
+        let mut known: Vec<RelayKernelPresence> = self
+            .paired
+            .all()?
+            .into_iter()
+            .map(|target| target.presence)
+            .filter(|other| other.kernel_id != presence.kernel_id)
+            .collect();
+        known.push(presence.clone());
+        let known: Vec<&RelayKernelPresence> = known.iter().collect();
+        let target = GatewayKernel {
+            name: super::names::display_name(&presence, &known),
+            label: super::names::label(&presence),
             kernel_id: presence.kernel_id.clone(),
             machine_id: presence.machine_id.clone(),
             machine_alias: presence.machine_alias.clone(),
-            status: GatewayMachineStatus::Online,
+            status: GatewayKernelStatus::Online,
             last_seen_ms: crate::session::unix_epoch_ms(),
             gateway_ready: super::directory::is_gateway_ready(&presence),
-            via: GatewayMachineVia::SelfHosted,
+            via: GatewayKernelVia::SelfHosted,
         };
-        self.paired.save(PairedMachine {
+        self.paired.save(PairedKernel {
             presence,
             relay_token: client_token,
             paired_at_ms: crate::session::unix_epoch_ms(),
         })?;
-        Ok(machine)
+        Ok(target)
     }
 
-    /// Drops a paired machine; the machine keeps its grant until revoked there.
+    /// Drops a paired kernel; the kernel keeps its grant until revoked there.
     pub(crate) fn forget(&self, name: &str) -> Result<String, GatewayError> {
-        let matches: Vec<_> = self
-            .paired
-            .all()?
-            .into_iter()
-            .filter(|machine| {
-                super::directory::names_of(&machine.presence)
-                    .iter()
-                    .any(|n| n == name)
-            })
-            .collect();
-        match matches.as_slice() {
-            [] => Err(GatewayError::Unknown { name: name.into() }),
-            [one] => {
-                let id = one.presence.kernel_id.clone();
-                self.paired.remove(&id)?;
-                Ok(id)
-            }
-            several => Err(GatewayError::Ambiguous {
-                name: name.into(),
-                candidates: several
-                    .iter()
-                    .map(|m| m.presence.kernel_id.clone())
-                    .collect(),
-            }),
-        }
+        let paired = self.paired.all()?;
+        let known: Vec<&RelayKernelPresence> =
+            paired.iter().map(|target| &target.presence).collect();
+        let id = super::names::find(&known, name)?.kernel_id.clone();
+        self.paired.remove(&id)?;
+        Ok(id)
     }
 }

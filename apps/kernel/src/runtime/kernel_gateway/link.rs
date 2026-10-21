@@ -460,7 +460,7 @@ fn settle(
         }
         (None, None) => Err(relay_failure(
             "empty_response",
-            "the machine returned no payload".into(),
+            "the kernel returned no payload".into(),
         )),
     };
     let _ = reply.send(result);

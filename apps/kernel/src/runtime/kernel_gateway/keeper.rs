@@ -1,9 +1,9 @@
-//! Keeps alive the attachments a gateway opened on a machine for its agent.
+//! Keeps alive the attachments a gateway opened on a kernel for its agent.
 //!
 //! A terminal-class attachment on the target lapses after about 30 s without a
 //! heartbeat. The agent has no terminal connection to heartbeat with, so this
-//! kernel does it for as long as the agent's grant is live and the machine
-//! answers. The attachments end when the grant ends, the machine stops
+//! kernel does it for as long as the agent's grant is live and the kernel
+//! answers. The attachments end when the grant ends, the kernel stops
 //! answering, or the agent detaches.
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::{MachineGateway, Origin};
+use super::{KernelGateway, Origin};
 use crate::local::{GatewayAttachmentRef, HeartbeatAttachmentsRequest, LocalDaemonRequest};
 
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(10);
@@ -23,7 +23,7 @@ static HEARTBEAT_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Hash, PartialEq, Eq, Clone)]
 struct Held {
-    machine: String,
+    target: String,
     grant_id: String,
 }
 
@@ -80,17 +80,17 @@ impl Keeper {
     }
 }
 
-impl MachineGateway {
-    /// Remembers what a forwarded request opened or closed on `machine`.
+impl KernelGateway {
+    /// Remembers what a forwarded request opened or closed on `kernel`.
     pub(crate) fn note_forwarded(
         self: &Arc<Self>,
-        machine: &str,
+        target: &str,
         origin: &Origin,
         request: &LocalDaemonRequest,
         response: &Value,
     ) {
         let held = Held {
-            machine: machine.to_string(),
+            target: target.to_string(),
             grant_id: origin.grant_id.clone(),
         };
         match request {
@@ -139,7 +139,7 @@ impl MachineGateway {
             });
             match self
                 .forward(
-                    &held.machine,
+                    &held.target,
                     &origin,
                     &command_id,
                     &request,
@@ -194,7 +194,7 @@ mod tests {
 
     fn held() -> Held {
         Held {
-            machine: "b3".into(),
+            target: "b3".into(),
             grant_id: "grant-1".into(),
         }
     }

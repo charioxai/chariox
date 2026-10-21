@@ -1,4 +1,4 @@
-//! Machine names to live kernels, kept current from the inventory source.
+//! Kernel names to live kernels, kept current from the inventory source.
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -8,10 +8,11 @@ use chariox_relay::protocol::RelayKernelPresence;
 
 use super::error::GatewayError;
 use super::inventory::InventorySource;
-use crate::local::{GatewayMachine, GatewayMachineStatus};
+use super::names;
+use crate::local::{GatewayKernel, GatewayKernelStatus};
 
 /// The capability a kernel advertises when it enforces `on_behalf_of`.
-const GATEWAY_CAPABILITY: &str = "machine_gateway_v1";
+const GATEWAY_CAPABILITY: &str = "kernel_gateway_v1";
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct Seen {
@@ -36,21 +37,23 @@ impl Directory {
         }
     }
 
-    pub(super) async fn machines(&self) -> Result<Vec<GatewayMachine>, GatewayError> {
+    pub(super) async fn kernels(&self) -> Result<Vec<GatewayKernel>, GatewayError> {
         self.refresh().await?;
         let via = self.source.via();
         let seen = self.seen.lock().expect("directory poisoned");
+        let known: Vec<&RelayKernelPresence> = seen.values().map(|seen| &seen.kernel).collect();
         Ok(seen
             .values()
-            .map(|seen| GatewayMachine {
-                name: display_name(&seen.kernel),
+            .map(|seen| GatewayKernel {
+                name: names::display_name(&seen.kernel, &known),
+                label: names::label(&seen.kernel),
                 kernel_id: seen.kernel.kernel_id.clone(),
                 machine_id: seen.kernel.machine_id.clone(),
                 machine_alias: seen.kernel.machine_alias.clone(),
                 status: if seen.online {
-                    GatewayMachineStatus::Online
+                    GatewayKernelStatus::Online
                 } else {
-                    GatewayMachineStatus::Offline
+                    GatewayKernelStatus::Offline
                 },
                 last_seen_ms: seen.last_seen_ms,
                 gateway_ready: is_gateway_ready(&seen.kernel),
@@ -61,7 +64,7 @@ impl Directory {
 
     /// The one live kernel `name` means; unknown, ambiguous and offline are errors.
     pub(super) async fn resolve(&self, name: &str) -> Result<RelayKernelPresence, GatewayError> {
-        // A request is never held for the machine list: a machine the last list showed live is
+        // A request is never held for the kernel list: a kernel the last list showed live is
         // used at once and the list is renewed behind the request. Only an unknown or offline
         // name, or no list at all, asks for a fresh list before answering.
         if self.source.is_usable() {
@@ -78,25 +81,12 @@ impl Directory {
     /// The one live kernel `name` means; unknown, ambiguous and offline are errors.
     fn lookup(&self, name: &str) -> Result<RelayKernelPresence, GatewayError> {
         let seen = self.seen.lock().expect("directory poisoned");
-        let matches: Vec<&Seen> = seen
-            .values()
-            .filter(|seen| {
-                names_of(&seen.kernel)
-                    .iter()
-                    .any(|candidate| candidate == name)
-            })
-            .collect();
-        match matches.as_slice() {
-            [] => Err(GatewayError::Unknown { name: name.into() }),
-            [one] if one.online => Ok(one.kernel.clone()),
-            [_] => Err(GatewayError::Offline { name: name.into() }),
-            several => Err(GatewayError::Ambiguous {
-                name: name.into(),
-                candidates: several
-                    .iter()
-                    .map(|seen| seen.kernel.kernel_id.clone())
-                    .collect(),
-            }),
+        let known: Vec<&RelayKernelPresence> = seen.values().map(|seen| &seen.kernel).collect();
+        let kernel = names::find(&known, name)?;
+        if seen[&kernel.kernel_id].online {
+            Ok(kernel.clone())
+        } else {
+            Err(GatewayError::Offline { name: name.into() })
         }
     }
 
@@ -117,7 +107,7 @@ impl Directory {
             tokio::time::timeout(REFRESH_TIMEOUT, self.source.refresh())
                 .await
                 .map_err(|_| {
-                    unreachable_inventory("the machine list did not refresh in time".into())
+                    unreachable_inventory("the kernel list did not refresh in time".into())
                 })?
                 .map_err(|error| unreachable_inventory(error.to_string()))?;
         }
@@ -148,30 +138,9 @@ impl Directory {
 
 fn unreachable_inventory(detail: String) -> GatewayError {
     GatewayError::Unreachable {
-        name: "machine list".into(),
+        name: "kernel list".into(),
         detail,
     }
-}
-
-pub(super) fn display_name(kernel: &RelayKernelPresence) -> String {
-    kernel
-        .kernel_alias
-        .clone()
-        .or_else(|| kernel.relay_alias.clone())
-        .or_else(|| kernel.machine_alias.clone())
-        .unwrap_or_else(|| kernel.kernel_id.clone())
-}
-
-pub(super) fn names_of(kernel: &RelayKernelPresence) -> Vec<String> {
-    [
-        Some(kernel.kernel_id.clone()),
-        kernel.kernel_alias.clone(),
-        kernel.relay_alias.clone(),
-        kernel.machine_alias.clone(),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
 }
 
 pub(super) fn is_gateway_ready(kernel: &RelayKernelPresence) -> bool {
@@ -206,15 +175,15 @@ pub(super) fn incompatibility(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::local::GatewayMachineVia;
+    use crate::local::GatewayKernelVia;
     use std::future::Future;
     use std::pin::Pin;
 
     struct Fixed(Mutex<Vec<RelayKernelPresence>>);
 
     impl InventorySource for Fixed {
-        fn via(&self) -> GatewayMachineVia {
-            GatewayMachineVia::Hosted
+        fn via(&self) -> GatewayKernelVia {
+            GatewayKernelVia::Hosted
         }
         fn kernels(&self) -> Vec<RelayKernelPresence> {
             self.0.lock().unwrap().clone()
@@ -241,7 +210,7 @@ mod tests {
     ) -> RelayKernelPresence {
         RelayKernelPresence {
             kernel_id: id.into(),
-            machine_id: format!("machine-{id}"),
+            machine_id: format!("machine-{machine_alias}"),
             machine_alias: Some(machine_alias.into()),
             relay_alias: None,
             kernel_alias: kernel_alias.map(Into::into),
@@ -271,8 +240,8 @@ mod tests {
     }
 
     impl InventorySource for Stale {
-        fn via(&self) -> GatewayMachineVia {
-            GatewayMachineVia::Hosted
+        fn via(&self) -> GatewayKernelVia {
+            GatewayKernelVia::Hosted
         }
         fn kernels(&self) -> Vec<RelayKernelPresence> {
             self.listed.clone()
@@ -348,31 +317,46 @@ mod tests {
             kernel("k-x", None, "shared-host", true),
         ]);
         assert_eq!(directory.resolve("b3").await.unwrap().kernel_id, "k-b3");
+        assert_eq!(directory.resolve("ovh-b3").await.unwrap().kernel_id, "k-b3");
         assert_eq!(directory.resolve("k-b3").await.unwrap().kernel_id, "k-b3");
         assert_eq!(
             directory.resolve("nope").await.unwrap_err().code(),
-            "machine_unknown"
+            "kernel_unknown"
         );
+        // Two of the user's kernels on one machine: the machine's name fits both.
         let ambiguous = directory.resolve("shared-host").await.unwrap_err();
-        assert_eq!(ambiguous.code(), "machine_ambiguous");
-        assert!(ambiguous.message().contains("k-old") && ambiguous.message().contains("k-x"));
-        // The machine disappears from the live list: it stays known, offline, with its last-seen time.
+        assert_eq!(ambiguous.code(), "kernel_ambiguous");
+        let message = ambiguous.message();
+        assert!(
+            message.contains("shared-host/old") && message.contains("shared-host/k-x"),
+            "{message}"
+        );
+        assert_eq!(
+            directory
+                .resolve("shared-host/k-x")
+                .await
+                .unwrap()
+                .kernel_id,
+            "k-x"
+        );
+        // The kernel disappears from the live list: it stays known, offline, with its last-seen time.
         source.0.lock().unwrap().remove(0);
         assert_eq!(
             directory.resolve("b3").await.unwrap_err().code(),
-            "machine_offline"
+            "kernel_offline"
         );
-        let listed = directory.machines().await.unwrap();
-        let b3 = listed.iter().find(|m| m.name == "b3").unwrap();
-        assert_eq!(b3.status, GatewayMachineStatus::Offline);
+        let listed = directory.kernels().await.unwrap();
+        let b3 = listed.iter().find(|m| m.name == "ovh-b3").unwrap();
+        assert_eq!(b3.status, GatewayKernelStatus::Offline);
         assert!(b3.last_seen_ms > 0 && b3.gateway_ready);
-        let old = listed.iter().find(|m| m.name == "old").unwrap();
-        assert!(!old.gateway_ready && old.status == GatewayMachineStatus::Online);
+        assert_eq!(b3.label, "b3");
+        let old = listed.iter().find(|m| m.name == "shared-host/old").unwrap();
+        assert!(!old.gateway_ready && old.status == GatewayKernelStatus::Online);
         assert!(
             listed
                 .iter()
-                .any(|m| m.name == "shared-host" && m.kernel_id == "k-x"),
-            "no kernel alias falls back to the machine alias"
+                .any(|m| m.name == "shared-host/k-x" && m.kernel_id == "k-x"),
+            "a kernel without an alias is labelled by its id"
         );
     }
 }

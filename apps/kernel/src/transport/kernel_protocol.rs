@@ -43,9 +43,9 @@ pub(crate) enum KernelIncomingFrame {
         causation_id: Option<String>,
         #[serde(default)]
         correlation_id: Option<String>,
-        /// Protocol 568: forward this request through the machine gateway.
+        /// Protocol 568: forward this request through the kernel gateway.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        machine: Option<String>,
+        kernel: Option<String>,
         request: LocalDaemonRequest,
     },
     Subscribe {
@@ -58,7 +58,7 @@ pub(crate) enum KernelIncomingFrame {
         resume_from_event_id: Option<u64>,
         /// Protocol 568: subscribe on this machine through the gateway.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        machine: Option<String>,
+        kernel: Option<String>,
     },
     Unsubscribe {
         request_id: String,
@@ -77,19 +77,19 @@ pub(crate) struct KernelTransportError {
 pub(crate) enum KernelOutgoingFrame {
     Response {
         request_id: String,
-        /// Protocol 568: the machine that answered a forwarded request, so a
+        /// Protocol 568: the kernel that answered a forwarded request, so a
         /// client can tell a forwarded answer from a local one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        machine: Option<String>,
+        kernel: Option<String>,
         response: Box<Option<Value>>,
         error: Option<KernelTransportError>,
     },
     Event {
         event_id: u64,
-        /// Protocol 568: the machine whose subscription produced this event; its
+        /// Protocol 568: the kernel whose subscription produced this event; its
         /// `event_id` counts on that machine's stream. Absent for this kernel's own.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        machine: Option<String>,
+        kernel: Option<String>,
         event: Box<KernelEvent>,
     },
 }
@@ -985,7 +985,7 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         {
             kernel_error("credential_vault_locked", error, false)
         }
-        // A terminal on another machine refuses in the terminal service's own words; they
+        // A terminal on another kernel refuses in the terminal service's own words; they
         // are passed on as they came, so the caller that sent the id reads them.
         DaemonError::RelayTransport {
             code,

@@ -62,7 +62,7 @@ impl CommandRouter {
             )
             .await;
         }
-        if let LocalDaemonRequest::ListGatewayMachines(_) = &request {
+        if let LocalDaemonRequest::ListGatewayKernels(_) = &request {
             return self.list_gateway_machines(&command).await;
         }
         if let Some(response) = self.dispatch_machine_request(&command, &request).await {

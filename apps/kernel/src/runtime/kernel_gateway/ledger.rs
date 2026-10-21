@@ -41,7 +41,7 @@ impl GatewayLedger {
             Ok(cache) => Self(Some(Arc::new(cache))),
             Err(error) => {
                 crate::logging::warn_with_fields(
-                    "daemon.machine_gateway",
+                    "daemon.kernel_gateway",
                     "failed to load the gateway ledger",
                     json!({"error": error.to_string()}),
                 );
@@ -190,14 +190,14 @@ pub(crate) fn is_repeatable(request: &crate::local::LocalDaemonRequest) -> bool 
         "Search",
         "Stat",
         "Heartbeat",
-        "ReadMachineFile",
-        "WriteMachineFile",
+        "ReadKernelFile",
+        "WriteKernelFile",
     ]
     .iter()
     .any(|prefix| variant.starts_with(prefix))
 }
 
-/// How long the origin waits for the machine's answer: a terminal wait or long read
+/// How long the origin waits for the kernel's answer: a terminal wait or long read
 /// is answered when it ends, so its own wait comes first.
 pub(crate) fn deadline_for(request: &crate::local::LocalDaemonRequest) -> std::time::Duration {
     use crate::local::{LocalDaemonRequest, RoomTerminalOperation};
@@ -473,7 +473,7 @@ mod tests {
         assert!(is_repeatable(&beat));
         // Pairing is a person's act and never retried by the ledger's rule.
         let forget =
-            LocalDaemonRequest::ForgetGatewayMachine(crate::local::ForgetGatewayMachineRequest {
+            LocalDaemonRequest::ForgetGatewayKernel(crate::local::ForgetGatewayKernelRequest {
                 name: "b3".into(),
             });
         assert!(!is_repeatable(&forget));

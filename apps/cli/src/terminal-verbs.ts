@@ -4,7 +4,7 @@ import {
   type RoomTerminalTarget,
 } from "@chariox/kernel-client/ipc-requests"
 import { CommandFailure } from "./agent-command-table.js"
-import type { SendRequest } from "./machine-files.js"
+import type { SendRequest } from "./kernel-files.js"
 
 export const TERMINAL_VERBS = ["open", "list", "send", "read", "wait", "close"] as const
 export type TerminalVerb = typeof TERMINAL_VERBS[number]

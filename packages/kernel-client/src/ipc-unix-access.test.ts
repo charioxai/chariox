@@ -39,7 +39,7 @@ for (const explicit of [true, false]) test(`${explicit ? "ws+unix" : "bare Unix 
   }
 })
 
-test("a Unix client with machine and commandId puts both on every request frame", async () => {
+test("a Unix client with kernel and commandId puts both on every request frame", async () => {
   const root = await mkdtemp(join(tmpdir(), "chx-unix-"))
   await mkdir(join(root, "run"), { mode: 0o700 })
   const path = join(root, "run", "k.sock")
@@ -50,15 +50,15 @@ test("a Unix client with machine and commandId puts both on every request frame"
     socket.on("message", (bytes) => {
       const frame = JSON.parse(String(bytes))
       frames.push(frame)
-      socket.send(JSON.stringify({ type: "response", request_id: frame.request_id, response: { GatewayMachinesListed: { machines: [] } }, error: null }))
+      socket.send(JSON.stringify({ type: "response", request_id: frame.request_id, response: { GatewayKernelsListed: { kernels: [] } }, error: null }))
     })
   })
   await new Promise<void>(resolve => server.listen(path, resolve))
-  const client = new LocalIpcClient(`ws+unix://${path}`, { machine: "b3", commandId: "cmd-1" })
+  const client = new LocalIpcClient(`ws+unix://${path}`, { kernel: "b3", commandId: "cmd-1" })
   try {
-    await client.send({ ListGatewayMachines: {} })
+    await client.send({ ListGatewayKernels: {} })
     assert.equal(frames.length, 1)
-    assert.equal(frames[0]!.machine, "b3")
+    assert.equal(frames[0]!.kernel, "b3")
     assert.equal(frames[0]!.command_id, "cmd-1")
     assert.notEqual(frames[0]!.request_id, "cmd-1")
   } finally {

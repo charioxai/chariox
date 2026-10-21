@@ -33,7 +33,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "terminal_relay_authorization_renewal_v1",
             "exact_prompt_cancellation_v499",
             "owner_managed_context_transfer_v1",
-            "machine_gateway_v1",
+            "kernel_gateway_v1",
             "room_terminal_v1"
         ])
     );
@@ -42,7 +42,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
         ),
-        "16a18ad36f59cfa2a862b9ee43750e05ba62706d9c11d3f65c7a5cfdc7d79f1c"
+        "d68a9a30c1b614a0ae7e2fe487b5d29ae0ca645853e54ab4bd2bceb070cbdd51"
     );
 }
 

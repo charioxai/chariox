@@ -40,7 +40,7 @@ impl HostedClient {
         client_id: &str,
         thumbprint: &str,
         grant_id: &str,
-        machine: &str,
+        target: &str,
     ) -> Result<(), GatewayError> {
         let mut state = self.state.lock().await;
         if state.revoked {
@@ -63,7 +63,7 @@ impl HostedClient {
         )
         .await
         .map_err(|error| GatewayError::Unreachable {
-            name: machine.into(),
+            name: target.into(),
             detail: format!("could not register the agent gateway with Cloud: {error}"),
         })?;
         if state.registered_for.len() >= REMEMBERED_GRANTS {
@@ -165,7 +165,7 @@ mod tests {
         assert!(hosted.revoked().await);
         assert!(!hosted.revoked().await, "only the first finder acts");
         let refused = register(&hosted, &profile, "grant-1").await.unwrap_err();
-        assert_eq!(refused.code(), "machine_unpaired");
+        assert_eq!(refused.code(), "kernel_unpaired");
         assert_eq!(seen.load(Ordering::SeqCst), 1);
         hosted.reopen().await;
         register(&hosted, &profile, "grant-1").await.unwrap();
@@ -182,7 +182,7 @@ mod tests {
         let error = register(&hosted, &enrolled("http://127.0.0.1:9".into()), "grant-1")
             .await
             .unwrap_err();
-        assert_eq!(error.code(), "machine_unreachable");
+        assert_eq!(error.code(), "kernel_unreachable");
         assert!(error.message().contains("agent gateway"));
         assert!(hosted.state.lock().await.registered_for.is_empty());
     }

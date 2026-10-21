@@ -8,7 +8,7 @@ type CommandSpec = { name: string; flags: readonly Flag[]; args?: readonly strin
 
 const SOCKET: Flag = { name: "--socket", value: "PATH" }
 const HOLDER: Flag = { name: "--holder-pid", value: "PID" }
-const MACHINE: Flag = { name: "--machine", value: "NAME" }
+const KERNEL: Flag = { name: "--kernel", value: "NAME" }
 const TIMEOUT: Flag = { name: "--timeout", value: "SECONDS" }
 const OVERWRITE: Flag = { name: "--overwrite" }
 const SESSION: Flag = { name: "--session", value: "SESSION_ID" }
@@ -23,45 +23,45 @@ export const COMMANDS: readonly CommandSpec[] = [
     summary: "ask the user to approve access for you; prints the grant",
   },
   { name: "access status", flags: [HOLDER, SOCKET], summary: "granted, pending, ended or not_requested" },
-  { name: "machines", flags: [SOCKET], summary: "list the machines this kernel can reach" },
+  { name: "kernels", flags: [SOCKET], summary: "list the kernels this kernel can reach" },
   {
     name: "request",
-    flags: [MACHINE, { name: "--command-id", value: "ID" }, TIMEOUT, SOCKET],
+    flags: [KERNEL, { name: "--command-id", value: "ID" }, TIMEOUT, SOCKET],
     summary: "send the one JSON request on stdin; prints the JSON response",
   },
   {
     name: "watch",
-    // watch follows another machine's events; a local session is read with `request`.
-    flags: [{ ...MACHINE, required: true }, { name: "--session", value: "SESSION_ID", required: true }, { name: "--attachment", value: "ATTACHMENT_ID", required: true }, { name: "--from", value: "EVENT_ID" }, SOCKET],
+    // watch follows another kernel's events; a local session is read with `request`.
+    flags: [{ ...KERNEL, required: true }, { name: "--session", value: "SESSION_ID", required: true }, { name: "--attachment", value: "ATTACHMENT_ID", required: true }, { name: "--from", value: "EVENT_ID" }, SOCKET],
     summary: "print one JSON line per event of that machine's session until the connection is lost",
   },
   {
     name: "terminal open",
-    flags: [MACHINE, SESSION, HOST_AGENT, { name: "--cols", value: "N" }, { name: "--rows", value: "N" }, { name: "--title", value: "TITLE" }, TIMEOUT, SOCKET],
+    flags: [KERNEL, SESSION, HOST_AGENT, { name: "--cols", value: "N" }, { name: "--rows", value: "N" }, { name: "--title", value: "TITLE" }, TIMEOUT, SOCKET],
     summary: "open a terminal in that Room (a login shell, or the argv after --); it keeps running when you disconnect",
   },
-  { name: "terminal list", flags: [MACHINE, SESSION, TIMEOUT, SOCKET], summary: "the Room's terminals with their output offsets; a terminal that shows host_agent runs on that agent's machine: pass that id as --host-agent to send, read, wait and close" },
+  { name: "terminal list", flags: [KERNEL, SESSION, TIMEOUT, SOCKET], summary: "the Room's terminals with their output offsets; a terminal that shows host_agent runs on that agent's machine: pass that id as --host-agent to send, read, wait and close" },
   {
     name: "terminal send",
-    flags: [MACHINE, SESSION, TERMINAL, HOST_AGENT, { name: "--no-enter" }, TIMEOUT, SOCKET],
+    flags: [KERNEL, SESSION, TERMINAL, HOST_AGENT, { name: "--no-enter" }, TIMEOUT, SOCKET],
     args: ["TEXT"],
     summary: "type TEXT and Enter; prints after_offset, the offset to read from",
   },
   {
     name: "terminal read",
-    flags: [MACHINE, SESSION, TERMINAL, HOST_AGENT, { name: "--since", value: "OFFSET" }, { name: "--wait-ms", value: "MS" }, SOCKET],
+    flags: [KERNEL, SESSION, TERMINAL, HOST_AGENT, { name: "--since", value: "OFFSET" }, { name: "--wait-ms", value: "MS" }, SOCKET],
     summary: "the output after OFFSET as text and next_offset; gap true means it scrolled out: use list for a fresh offset",
   },
   {
     name: "terminal wait",
-    flags: [MACHINE, SESSION, TERMINAL, HOST_AGENT, { name: "--for", value: "finished|waiting_for_input|output_contains=TEXT" }, { name: "--since", value: "OFFSET" }, TIMEOUT, SOCKET],
+    flags: [KERNEL, SESSION, TERMINAL, HOST_AGENT, { name: "--for", value: "finished|waiting_for_input|output_contains=TEXT" }, { name: "--since", value: "OFFSET" }, TIMEOUT, SOCKET],
     summary: "block until that happens or --timeout seconds pass (default 60); prints fired (null on timeout) and the screen. Only output after OFFSET counts: pass send's after_offset as --since",
   },
-  { name: "terminal close", flags: [MACHINE, SESSION, TERMINAL, HOST_AGENT, TIMEOUT, SOCKET], summary: "end the terminal and everything running in it" },
-  { name: "files stat", flags: [MACHINE, { name: "--sha256" }, TIMEOUT, SOCKET], args: ["PATH"], summary: "kind, size, modified time and optionally sha256 of a file; partial_size is an unfinished upload" },
-  { name: "files ls", flags: [MACHINE, TIMEOUT, SOCKET], args: ["PATH"], summary: "list a directory" },
-  { name: "files get", flags: [MACHINE, OVERWRITE, TIMEOUT, SOCKET], args: ["REMOTE_PATH", "LOCAL_PATH"], summary: "download a file, verified by sha256; prints size, bytes received and resumed_from" },
-  { name: "files put", flags: [MACHINE, OVERWRITE, TIMEOUT, SOCKET], args: ["LOCAL_PATH", "REMOTE_PATH"], summary: "upload a file, verified by sha256; prints size, bytes sent and resumed_from" },
+  { name: "terminal close", flags: [KERNEL, SESSION, TERMINAL, HOST_AGENT, TIMEOUT, SOCKET], summary: "end the terminal and everything running in it" },
+  { name: "files stat", flags: [KERNEL, { name: "--sha256" }, TIMEOUT, SOCKET], args: ["PATH"], summary: "kind, size, modified time and optionally sha256 of a file; partial_size is an unfinished upload" },
+  { name: "files ls", flags: [KERNEL, TIMEOUT, SOCKET], args: ["PATH"], summary: "list a directory" },
+  { name: "files get", flags: [KERNEL, OVERWRITE, TIMEOUT, SOCKET], args: ["REMOTE_PATH", "LOCAL_PATH"], summary: "download a file, verified by sha256; prints size, bytes received and resumed_from" },
+  { name: "files put", flags: [KERNEL, OVERWRITE, TIMEOUT, SOCKET], args: ["LOCAL_PATH", "REMOTE_PATH"], summary: "upload a file, verified by sha256; prints size, bytes sent and resumed_from" },
 ]
 
 export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
@@ -82,14 +82,14 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
 ]
 
 const REFUSED = ["kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "command_id_required", "duplicate_command_conflict"]
-const MACHINE_UNAVAILABLE = ["machine_unknown", "machine_ambiguous", "machine_offline", "machine_unreachable", "machine_unpaired", "machine_incompatible", "machine_not_available"]
-const OUTCOME_UNCERTAIN = ["machine_request_timeout", "machine_connection_lost", "machine_outcome_unknown"]
+const KERNEL_UNAVAILABLE = ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_not_available"]
+const OUTCOME_UNCERTAIN = ["kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown"]
 
 export const EXIT_CODES: readonly { exit: number; meaning: string; codes: readonly string[] }[] = [
   { exit: 0, meaning: "ok", codes: [] },
   { exit: 2, meaning: "usage error", codes: ["usage", "file_path_invalid"] },
   { exit: 3, meaning: "refused: the user, the grant or the file permissions do not allow it", codes: [...REFUSED, "file_permission_denied"] },
-  { exit: 4, meaning: "machine unavailable", codes: MACHINE_UNAVAILABLE },
+  { exit: 4, meaning: "kernel unavailable", codes: KERNEL_UNAVAILABLE },
   { exit: 5, meaning: "timeout or unknown outcome: the request may have run", codes: OUTCOME_UNCERTAIN },
   { exit: 6, meaning: "approval pending (access request --no-wait)", codes: [] },
 ]
@@ -152,14 +152,14 @@ export function guideText(): string {
     "   It waits while the user decides; exit 0 and a printed grant mean approved: go on to step 2.",
     "   If a command prints a pointer or says the user must approve, show it to the user verbatim and wait.",
     "   If your tool calls time out, add --no-wait (exit 6), then poll chariox access status.",
-    "2. List machines: chariox machines",
-    "3. Send a request (one JSON object on stdin): chariox request --machine NAME < request.json",
-    "   Always pass --machine for another machine; without it the request runs on this one.",
-    "4. Watch events on a machine: chariox watch --machine NAME --session ID --attachment ID",
-    "   After machine_connection_lost run it again with --from N, the N in the message.",
-    "5. Move files: chariox files put|get|stat|ls --machine NAME ...",
+    "2. List kernels: chariox kernels (a name is the machine name, or <machine>/<label> when the machine runs several of your kernels)",
+    "3. Send a request (one JSON object on stdin): chariox request --kernel NAME < request.json",
+    "   Always pass --kernel for another kernel; without it the request runs on this one.",
+    "4. Watch events on a kernel: chariox watch --kernel NAME --session ID --attachment ID",
+    "   After kernel_connection_lost run it again with --from N, the N in the message.",
+    "5. Move files: chariox files put|get|stat|ls --kernel NAME ...",
     "   put and get resume after an interruption: run the same command again.",
-    "6. Run long commands: chariox terminal open|send|read|wait|close --machine NAME --session ID ...",
+    "6. Run long commands: chariox terminal open|send|read|wait|close --kernel NAME --session ID ...",
     "   Terminals belong to the Room and keep running if you disconnect; read them later with --since.",
     "   They need a session: take one from ListSessions or make one with CreateSession (see Requests below).",
     "",
@@ -170,14 +170,14 @@ export function guideText(): string {
     ...REQUEST_EXAMPLES.map(({ body, note }) => `  ${JSON.stringify(body)}  | ${note}`),
     "A request the kernel cannot parse comes back with a message naming the expected variants and fields: read it and fix the request.",
     "Give every request that changes state (CreateSession, SpawnAgent, SubmitPrompt, RunShellCommand, EndSession) its own --command-id ID; reuse one only to retry.",
-    "An AttachToSession you make on another machine is kept alive for you while your access lasts; send DetachFromSession when you are done with it.",
+    "An AttachToSession you make on another kernel is kept alive for you while your access lasts; send DetachFromSession when you are done with it.",
     "",
-    "Output is one JSON document on stdout. Errors are JSON on stderr: {\"error\":{\"code\",\"message\",\"machine\"}}.",
+    "Output is one JSON document on stdout. Errors are JSON on stderr: {\"error\":{\"code\",\"message\",\"kernel\"}}.",
     "Exit codes:",
     ...exits,
     "",
-    "Retry rule: on machine_request_timeout or machine_connection_lost retry ONCE with the same --command-id.",
-    "On machine_outcome_unknown read the state first; never retry blindly.",
+    "Retry rule: on kernel_request_timeout or kernel_connection_lost retry ONCE with the same --command-id.",
+    "On kernel_outcome_unknown read the state first; never retry blindly.",
     "Human-only, never attempted by you: passkey approvals, grants, sudo approvals, secrets and credentials, relay and pairing configuration.",
   ].join("\n")
 }

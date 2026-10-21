@@ -158,7 +158,7 @@ async fn fd_exhaustion_transport_child() {
         command_id: None,
         causation_id: None,
         correlation_id: None,
-        machine: None,
+        kernel: None,
         request: LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest),
     };
     socket
@@ -173,7 +173,7 @@ async fn fd_exhaustion_transport_child() {
                 Some(Ok(Message::Text(text))) => {
                     let frame: KernelOutgoingFrame = serde_json::from_str(&text).unwrap();
                     if let KernelOutgoingFrame::Response {
-                        machine: None,
+                        kernel: None,
                         request_id,
                         response,
                         error,
@@ -283,7 +283,7 @@ async fn connection_closing_for_backpressure_admits_no_more_requests() {
         command_id: None,
         causation_id: None,
         correlation_id: None,
-        machine: None,
+        kernel: None,
         request: LocalDaemonRequest::GetDaemonHealth(crate::local::GetDaemonHealthRequest),
     })
     .expect("transport request should encode");
@@ -2255,7 +2255,7 @@ async fn dispatch_transport_test_request_on_connection(
         command_id: Some(command_id.to_string()),
         causation_id: None,
         correlation_id: Some("slice-save-ack-loss-drill".to_string()),
-        machine: None,
+        kernel: None,
         request,
     })
     .expect("transport request should encode");
@@ -2441,7 +2441,7 @@ fn decode_error_reply(payload: serde_json::Value) -> (String, KernelTransportErr
         .expect_err("payload should fail typed decoding");
     match incoming_frame_decode_error(&payload, &error) {
         KernelOutgoingFrame::Response {
-            machine: None,
+            kernel: None,
             request_id,
             response,
             error,
@@ -2511,7 +2511,7 @@ fn undecodable_frame_without_request_id_replies_as_invalid_frame() {
     let error = serde_json::from_slice::<KernelIncomingFrame>(payload).expect_err("not json");
     match incoming_frame_decode_error(payload, &error) {
         KernelOutgoingFrame::Response {
-            machine: None,
+            kernel: None,
             request_id,
             error,
             ..

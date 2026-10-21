@@ -94,7 +94,7 @@ pub(crate) struct CommandRouter {
     terminal_output_executor: TerminalOutputExecutor,
     workspace_coordinator: WorkspaceCoordinator,
     provider_launch_pending: ProviderLaunchPendingTracker,
-    machine_gateway: Arc<crate::runtime::machine_gateway::MachineGateway>,
+    kernel_gateway: Arc<crate::runtime::kernel_gateway::KernelGateway>,
 }
 
 #[cfg(test)]

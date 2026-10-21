@@ -39,12 +39,12 @@ test("the parser accepts every flag the table lists and refuses anything else", 
   }
 })
 
-test("one table maps every machine error code to its exit code", () => {
+test("one table maps every kernel error code to its exit code", () => {
   const expected: Record<number, string[]> = {
     2: ["usage", "file_path_invalid"],
     3: ["kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "command_id_required", "duplicate_command_conflict", "file_permission_denied"],
-    4: ["machine_unknown", "machine_ambiguous", "machine_offline", "machine_unreachable", "machine_unpaired", "machine_incompatible", "machine_not_available"],
-    5: ["machine_request_timeout", "machine_connection_lost", "machine_outcome_unknown"],
+    4: ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_not_available"],
+    5: ["kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown"],
   }
   for (const [exit, codes] of Object.entries(expected)) for (const code of codes) assert.equal(exitCodeFor(code), Number(exit), code)
   for (const code of ["kernel_request_overloaded", "ledger_unavailable", "anything_else", "file_not_found", "file_exists", "file_hash_mismatch", "file_offset_mismatch", "file_io_failed"]) assert.equal(exitCodeFor(code), 1)
@@ -113,21 +113,21 @@ test("the guide tells the agent to read parse errors and to give state-changing 
   assert.match(guide, /changes state[^\n]*--command-id/)
 })
 
-test("the guide steps cover watching a machine and an attachment that is kept alive", () => {
+test("the guide steps cover watching a kernel and an attachment that is kept alive", () => {
   const guide = guideText()
-  assert.match(guide, /4\. Watch events on a machine: chariox watch --machine NAME --session ID --attachment ID/)
-  assert.match(guide, /An AttachToSession you make on another machine is kept alive for you while your access lasts; send DetachFromSession when you are done with it\./)
+  assert.match(guide, /4\. Watch events on a kernel: chariox watch --kernel NAME --session ID --attachment ID/)
+  assert.match(guide, /An AttachToSession you make on another kernel is kept alive for you while your access lasts; send DetachFromSession when you are done with it\./)
   assert.doesNotMatch(guide, /lapses/)
-  assert.deepEqual(COMMANDS.find(spec => spec.name === "watch")?.flags.map(flag => flag.name), ["--machine", "--session", "--attachment", "--from", "--socket"])
+  assert.deepEqual(COMMANDS.find(spec => spec.name === "watch")?.flags.map(flag => flag.name), ["--kernel", "--session", "--attachment", "--from", "--socket"])
 })
 
 test("watch's usage line shows the flags it cannot run without as required", () => {
-  assert.equal(usageOf("watch"), "Usage: chariox watch --machine NAME --session SESSION_ID --attachment ATTACHMENT_ID [--from EVENT_ID] [--socket PATH]")
+  assert.equal(usageOf("watch"), "Usage: chariox watch --kernel NAME --session SESSION_ID --attachment ATTACHMENT_ID [--from EVENT_ID] [--socket PATH]")
 })
 
 test("the guide teaches moving files and resuming a transfer", () => {
   const guide = guideText()
-  assert.match(guide, /5\. Move files: chariox files put\|get\|stat\|ls --machine NAME/)
+  assert.match(guide, /5\. Move files: chariox files put\|get\|stat\|ls --kernel NAME/)
   assert.match(guide, /put and get resume after an interruption: run the same command again/)
   for (const verb of ["stat", "ls", "get", "put"]) assert.ok(COMMANDS.some(spec => spec.name === `files ${verb}`))
 })

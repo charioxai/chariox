@@ -1,4 +1,4 @@
-//! An event subscription on another machine, held for an agent.
+//! An event subscription on another kernel, held for an agent.
 //!
 //! The target streams the events to this kernel exactly as it would to a remote
 //! terminal (its own heartbeats keep the attachment alive); this kernel relays
@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use super::link::{Link, SubscribeParams};
-use super::{map_failure, GatewayError, MachineGateway};
+use super::{map_failure, GatewayError, KernelGateway};
 
 const SUBSCRIBE_DEADLINE: Duration = Duration::from_secs(30);
 /// Hosted relay tokens last five minutes.
@@ -22,7 +22,7 @@ const RENEW_RETRIES: u32 = 2;
 const RENEW_RETRY_AFTER: Duration = Duration::from_secs(15);
 static SUBSCRIPTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-/// What the agent asked to watch on the machine.
+/// What the agent asked to watch on the kernel.
 pub(crate) struct SubscribeRequest {
     pub(crate) grant_id: String,
     pub(crate) session_id: String,
@@ -53,17 +53,17 @@ impl Drop for Hold {
     }
 }
 
-impl MachineGateway {
+impl KernelGateway {
     pub(crate) async fn subscribe(
         self: &Arc<Self>,
-        machine: &str,
+        target: &str,
         request: SubscribeRequest,
     ) -> Result<ForwardedSubscription, GatewayError> {
-        let kernel = self.resolve(machine).await?;
-        self.register_for(&request.grant_id, machine).await?;
+        let kernel = self.resolve(target).await?;
+        self.register_for(&request.grant_id, target).await?;
         // Its own connection: the relay token it renews is the one it was opened with,
         // not one shared with requests that may be minutes older.
-        let link = self.open_link(machine, &kernel).await?;
+        let link = self.open_link(target, &kernel).await?;
         let subscription_id = format!(
             "gw-sub-{}-{}",
             crate::session::unix_epoch_ms(),
@@ -81,13 +81,13 @@ impl MachineGateway {
                 SUBSCRIBE_DEADLINE,
             )
             .await
-            .map_err(|failure| map_failure(machine, failure))?;
+            .map_err(|failure| map_failure(target, failure))?;
         let ack = serde_json::from_slice(&ack).map_err(|error| GatewayError::Unreachable {
-            name: machine.into(),
+            name: target.into(),
             detail: format!("unreadable acknowledgement: {error}"),
         })?;
         let renewal = tokio::spawn(Arc::clone(self).renew_tokens(
-            machine.to_string(),
+            target.to_string(),
             kernel,
             Arc::clone(&link),
         ));
@@ -104,7 +104,7 @@ impl MachineGateway {
 
     async fn renew_tokens(
         self: Arc<Self>,
-        machine: String,
+        target: String,
         kernel: chariox_relay::protocol::RelayKernelPresence,
         link: Arc<Link>,
     ) {
@@ -116,7 +116,7 @@ impl MachineGateway {
                     return;
                 }
                 let renewed = match self.identity() {
-                    Ok(identity) => self.connection(&machine, &kernel, &identity).await,
+                    Ok(identity) => self.connection(&target, &kernel, &identity).await,
                     Err(error) => Err(error),
                 };
                 if let Ok(connection) = renewed {
@@ -126,7 +126,7 @@ impl MachineGateway {
                 }
                 // Retried within the token's remaining minute; if it still fails the
                 // relay closes the connection at expiry and the agent hears
-                // `machine_connection_lost`, then subscribes again.
+                // `kernel_connection_lost`, then subscribes again.
                 if attempts >= RENEW_RETRIES {
                     return;
                 }

@@ -23,17 +23,17 @@ pub enum LocalDaemonResponse {
     KernelAccessGranted { grant: KernelAccessGrant, },
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },
     KernelAccessRevoked { revoked: usize, },
-    GatewayMachinesListed { machines: Vec<GatewayMachine>, },
+    GatewayKernelsListed { kernels: Vec<GatewayKernel>, },
     /// Protocol 568: the attachments that no longer exist on this kernel.
     AttachmentsHeartbeated { lapsed: Vec<String>, },
     /// Protocol 568: the gateway paired with a self-hosted kernel.
-    GatewayMachineJoined { machine: GatewayMachine, },
-    GatewayMachineForgotten { kernel_id: String, },
+    GatewayKernelJoined { kernel: GatewayKernel, },
+    GatewayKernelForgotten { kernel_id: String, },
     /// Protocol 568: the machine file requests.
-    MachineFileStat { stat: MachineFileStat, },
-    MachineDirectoryListed { path: String, entries: Vec<MachineDirectoryEntry>, truncated: bool, },
-    MachineFileChunk { path: String, offset: u64, data_base64: String, size: u64, eof: bool, },
-    MachineFileWritten { path: String, received: u64, complete: bool, sha256: Option<String>, },
+    KernelFileStat { stat: KernelFileStat, },
+    KernelDirectoryListed { path: String, entries: Vec<KernelDirectoryEntry>, truncated: bool, },
+    KernelFileChunk { path: String, offset: u64, data_base64: String, size: u64, eof: bool, },
+    KernelFileWritten { path: String, received: u64, complete: bool, sha256: Option<String>, },
     RoomBrowserArtifact { result: crate::transport::runtime_tools::RuntimeToolResult },
     /// Protocol 477: the safe outcome of the owner's hand-off action.
     HandoffResolved { outcome: HandoffOutcome },
