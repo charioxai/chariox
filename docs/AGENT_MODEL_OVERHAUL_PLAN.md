@@ -101,7 +101,7 @@ remain visible and cannot be promoted by changing the advertised tool list.
 
 ## MP-08 / MP-11 — regular-agent surface and enforcement
 
-Add `chariox.events.yield`, `chariox.process.start/watch/cancel`,
+Add `chariox.events.yield`, `chariox.events.process`,
 `chariox.history.search` and `chariox.handoff.request` alongside the mapped
 tools. Preserve existing `chariox.send_agent_message`; regular messaging
 already has active-turn and remote-origin regressions in

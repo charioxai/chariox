@@ -167,7 +167,7 @@ focus for a retained grant. See [Sudo windows](KERNEL_SUDO.md).
 
 ### MP-08 / MP-10 / MP-11: A05 capability acquisition (local 462)
 
-With `CHARIOX_ROOM_AGENT_TOOLS=1`, a running prompt submitted by the owner
+A running prompt submitted by the owner
 through a human attachment supplies acquisition causation. Agent messages,
 workflows, schedules and continuations do not. A new App binding or kernel
 browser grant also requires the owner's resource-specific `RuntimeInteraction`
@@ -699,7 +699,7 @@ the event status and retry path rather than being silently dropped.
 
 ## 3.3.4 Regular Agent Room Tools (MP-08 / MP-10 / MP-11, A01)
 
-PR1 is enabled with `CHARIOX_ROOM_AGENT_TOOLS=1`. Ordinary provider runs receive
+PR1 is always enabled. Ordinary provider runs receive
 `chariox.room.*`, command/guide discovery, public room history/trace, and the
 existing workflow-code/registry tools. Legacy `/meta` remains available during
 migration. Aliases share the kernel admission path; they do not create another
@@ -825,7 +825,7 @@ Older workers fail admission before creating a launch. Kernel-managed cwd,
 permission approval, output protection and pinned process signals apply on worker.
 
 
-With `CHARIOX_ROOM_AGENT_TOOLS=1`, local protocol 452 projects independent
+Local protocol 452 projects independent
 `agent_tasks` in the shared session snapshot. The kernel owns their SQLite
 ledger, attributed inbox, obligations and exact provider acceptance receipts.
 Task prompt IDs stay stable through admission, queueing, promotion and replay;
@@ -4113,7 +4113,7 @@ or multiple active workflow runs. Subscribers always belong to workflows.
 ### MP-08 / MP-09 / MP-10 / MP-11 — transitional durable agent lifecycle (A02)
 
 Local daemon protocol **452** adds `RuntimeSession.agent_tasks`; relay82 is inherited
-from #885. The transitional `CHARIOX_ROOM_AGENT_TOOLS=1` surface publishes
+from #885. The room agent tools surface publishes
 `chariox.events.subscribe/subscriptions/inbox/ack/yield/blocked`. Tools require the
 current task and prompt IDs; hidden turn context supplies both. Independent
 user prompts retain separate task records. Work can be working, waiting on
