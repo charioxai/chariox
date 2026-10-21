@@ -4829,9 +4829,9 @@ authority for its own sessions, agents, terminals and files.
   heartbeat for the caller's own attachments; any other id is reported lapsed). A `DetachFromSession` stops it; a
   grant that ends or three missed beats stop it, and the target sweeps the attachment after 30 s.
 - `ListGatewayKernels {}` -> `GatewayKernelsListed { kernels: [{name, kernel_id, label, machine_id, machine_alias,
-  status: online|offline, last_seen_ms, gateway_ready, via: hosted|self_hosted}] }`. The list comes from one
+  status: online|offline|unpaired, last_seen_ms, gateway_ready, via: hosted|self_hosted}] }`. The list comes from one
   inventory source (the relay inventory, filtered to the account's fresh Cloud targets when hosted). An offline
-  kernel stays listed with its last-seen time.
+  kernel stays listed with its last-seen time. A self-hosted kernel that answers but refuses this gateway (its owner revoked it there) is `unpaired`, not `offline`; hosted lists cannot tell and keep `online` until a call answers `kernel_unpaired`.
 - Origin decision: the local kernel checks that the grant is live and that the request shape is not human-only
   (`authorize_gateway_request`; the same shape set as a local request: credentials, pairing, relay and Cloud
   identity, protected configuration, any answer carrying a passkey). Interactions belong to the target.
