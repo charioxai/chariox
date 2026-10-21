@@ -41,6 +41,7 @@ mod request;
 mod resource_telemetry;
 mod response;
 mod room_environment;
+mod room_terminal;
 mod screenshot;
 mod session_control;
 mod slice;
@@ -84,6 +85,7 @@ pub use request::*;
 pub use resource_telemetry::*;
 pub use response::*;
 pub use room_environment::*;
+pub use room_terminal::*;
 pub use screenshot::*;
 pub use session_control::*;
 pub use slice::*;
@@ -341,6 +343,7 @@ pub use workspace::*;
 /// Agent-model line (537, relay peer 145) contracts are merged into this number until the coordinator allocates the final one:
 /// task/wake, completion, leased-watcher, paired-display and historical-workflow projections, owner-only 520/128 direct carriers
 /// and owner-managed contexts (MP-08/MP-10/MP-11).
+/// Room terminal service (`RoomTerminal`, formerly provisional 569) rides this number until the coordinator allocates the final one.
 /// The event-core line (561, relay peer 169) is merged too: task/wake driver sources (`AgentWake.summary`/`detail`) and the
 /// `agent_task_updated` delta event (MP-08/MP-10/MP-11).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 570;

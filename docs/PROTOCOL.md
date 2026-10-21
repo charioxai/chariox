@@ -4985,3 +4985,93 @@ additive; no client minimum is raised, and an old client simply ignores them.
   bounded list, still sends the full session snapshot, because no event carries it.
 - Relay peer 169 binds the peer-visible session projection to local 561. There is
   no new peer message.
+
+`ListEventConnectionEvents { connection_id, limit }` returns
+`EventConnectionEvents` with the webhooks the integration's generator received for
+the calling owner (delivery id, event/action, `repo#PR` subject, received and
+published times, status; never prompt or reply context).
+`ReplayEventConnectionEvent { connection_id, delivery_id }` re-publishes one stored
+event and returns `EventConnectionEventReplayed`; AEDS dedupes on the occurrence id,
+so a replay of an already published event is acknowledged without a second run.
+Both are served by the generator's `POST /v1/events/query` and `/v1/events/replay`
+management routes (docs/AEGS_SDK.md). Clients need kernel protocol ≥551 for either
+request (`integrationReceivedEventsMinimumProtocolVersion`); other minimums stay.
+Relay peer 159 only pairs the embedded local response union with local 551.
+
+### Room terminals — carried by local 570 / relay peer 178 (formerly provisional 569 / 177)
+
+Numbering: the terminal shapes below were written at 562/170 and are carried by
+the provisional pair local 569 / peer 177 (568/176 is provisional for external
+agents); the final pair is fixed by landing order. The "170 re-binds ..." wording
+below means the peer version that carries them.
+
+A Room has kernel-owned terminals: real PTYs running the user's login shell
+(`$SHELL -l -i`, else the account's shell; bash instead of a bare `sh` account shell,
+as in a slice) in the Room's project folder, or a given program (argv, no shell). One request, `RoomTerminal { session_id,
+acting_agent?, operation }`, answers with `RoomTerminal { result }`.
+
+Operations: `open` (cols, rows, title?, command?), `list`, `snapshot`
+(screen text, scrollback text, redraw ANSI, cursor, output offset), `input`
+(base64 keystrokes written as one unit), `resize`, `read_output`
+(`after_offset`, `wait_ms`; `gap: true` means resync from a snapshot), `wait`
+(`finished`, `output_contains`, `waiting_for_input` conditions, capped at 240 s
+below the provider tool limit; on timeout `fired` is null and the program is
+still running) and `close`.
+
+- Only the Room's owner may send it. A Room made before Cloud enrollment (owner
+  `local`) stays usable by the enrolled terminal. `host_agent` and `acting_agent`
+  must belong to the request's Room. Invited members get
+  `OwnershipAccessDenied`; people outside the Room never pass membership.
+- `acting_agent` names a Room agent to type as (the runtime tool bridge sets
+  it). Without it the actor is the user.
+- One driver: at the prompt any Room agent can type. A foreground program
+  (foreground process group is not the shell) belongs to the actor who
+  submitted it until it exits; other agents get `accepted: false` with
+  `refusal: "busy (driven by <actor>)"` and can still read. The user can
+  always type. The state is `driver: free | busy { driven_by }` in every
+  summary.
+- A tab the user typed in, resized or opened can be closed only by the user.
+- Closing a terminal, or its shell exiting, ends every process left in the shell's
+  session (background jobs included). The shell keeps the kernel user's SSH agent and
+  Git settings and does not inherit the kernel's own relay and local-auth tokens.
+- An operation for an agent that is leased to a worker (leased worker or slice) runs
+  on that worker as `RelayPeerRequest::RoomTerminal`, keyed by the lease; `host_agent`
+  names the agent whose machine hosts the terminal when the actor is the user.
+  Every summary of a worker's terminal carries `host_agent`, to send back on later
+  requests about it. A `list` without `host_agent` or `acting_agent` is Room-wide:
+  this kernel's terminals plus those of every worker the Room's agents are leased
+  to; a worker that cannot be reached fails the list instead of hiding its tabs.
+- `wait` and `finished` use the shell's own report. For bash and zsh the kernel hands
+  the shell prompt hooks through its environment (no rc file is edited): OSC 133 `C`
+  before a command line runs and `D;<status>` after it, so a builtin or an instant
+  command is reported finished with its exit code. Nested shells do not repeat the
+  marks. A shell that cannot report (any other shell, a profile that replaces the
+  hooks) falls back to sampling the foreground process group, which reports no exit code.
+- An agent uses the terminals through the runtime tools `chariox.terminal_open`,
+  `_list`, `_send` (returns the `after_offset` to pass to `_wait`), `_read`, `_wait`
+  and `_close`, typed as the calling agent. Typing follows the agent's own permission
+  level in the Room: `yolo` asks nothing; `required` asks per `open` with a command and
+  per `_send` through the Room's `RuntimeInteraction`. Terminal output is untrusted data.
+- Tearing down a leased agent's backing Room (destroying the lease, expiry) ends its
+  terminals.
+- A terminal survives client disconnects. It ends on close, when its shell or
+  command exits, or with its Room. A kernel restart ends it as
+  `ended: kernel restarted` and keeps the scrollback.
+- Peer 177 only re-binds the embedded local response union to local 569; no
+  peer request is added.
+
+#### Terminal clients (TUI)
+
+`chariox terminal --session REF [--kernel-url URL] [list | new [TITLE] | close TERMINAL | TERMINAL]` and the TUI's
+`/room terminal [...]` attach the screen to a Room terminal (the newest running one, else a new one). Ctrl-] detaches;
+the terminal keeps running. The client resizes the terminal to its own size, draws `snapshot.screen_ansi_base64` on the
+outer terminal's alternate screen, then long-polls `read_output` from `snapshot.output_offset` and sends keystrokes
+as `input`. Rules every client follows:
+
+- A full-screen program inside the terminal never switches the outer screen: its alternate-screen switches are
+  turned into a clear (entering) or a fresh snapshot redraw (leaving).
+- A lost connection keeps the last screen; the client retries `read_output` from the same offset. `gap: true` means
+  the offset is no longer retained: redraw from a snapshot. Only a refusal by the kernel ends the attach.
+- Input that was in flight when the connection dropped is not replayed.
+- While a person types or output flows, the kernel looks at the PTY every 5 ms (every 100 ms when idle), so an echo
+  does not wait for the idle tick.

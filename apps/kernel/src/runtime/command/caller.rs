@@ -168,7 +168,13 @@ impl KernelCommand {
     /// This identity was supplied by the local transport or authenticated relay
     /// admission. It is never read from an interaction's response payload.
     pub(crate) fn is_terminal_caller(&self) -> bool {
-        self.caller.metaagent_id.is_none()
-            && self.caller.connection_class == Some(KernelConnectionClass::Terminal)
+        self.caller.is_terminal_caller()
+    }
+}
+
+impl KernelCaller {
+    pub(crate) fn is_terminal_caller(&self) -> bool {
+        self.metaagent_id.is_none()
+            && self.connection_class == Some(KernelConnectionClass::Terminal)
     }
 }

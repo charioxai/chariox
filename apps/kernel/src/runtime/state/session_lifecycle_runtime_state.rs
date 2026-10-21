@@ -910,6 +910,41 @@ impl KernelRuntimeState {
         Ok(destroyed)
     }
 
+    fn agents_leased_to_workers(&self, session_id: &str) -> Vec<crate::agent::AgentInstance> {
+        self.session_agents(session_id)
+            .into_iter()
+            .filter(|agent| agent.remote_execution().is_some())
+            .collect()
+    }
+
+    /// A Room that is gone no longer needs the machines its agents ran on:
+    /// destroying each lease ends the worker's backing Room and, with it, the
+    /// terminals it hosts. A worker that cannot be reached keeps its lease
+    /// until the lease expires; the failure is logged, never raised, because
+    /// the Room is already gone.
+    async fn release_worker_leases(&self, agents: Vec<crate::agent::AgentInstance>) {
+        for agent in agents {
+            let released = self
+                .with_app_side_effect(|app| {
+                    crate::app::KernelSessionService::new(app)
+                        .destroy_agent_worker_execution_authorized(&agent, &|| {
+                            self.authorize_current_external_command()
+                        })
+                })
+                .await;
+            if let Err(error) = released {
+                crate::logging::error_with_fields(
+                    "daemon.room_workers",
+                    "failed to release a worker lease of an ended Room; its terminals stay until the lease expires",
+                    serde_json::json!({
+                        "agent_id": agent.id(),
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+    }
+
     fn remove_destroyed_agent_provider_processes(&self, provider_run_ids: Vec<String>) {
         if provider_run_ids.is_empty() {
             return;
@@ -985,7 +1020,10 @@ impl KernelRuntimeState {
         for agent in owned.agent_store.get_session_agents(session_id) {
             self.revoke_agent_app_capability_grants(&agent).await?;
         }
+        let worker_agents = self.agents_leased_to_workers(session_id);
         let (session, terminated_run_ids) = owned.end_session(session_id)?;
+        self.end_room_terminals(session_id);
+        self.release_worker_leases(worker_agents).await;
         self.sweep_kernel_access();
         owned.clear_session_prompt_runtime_state(session_id);
         let session = owned.publish_session_after_durable_mutation(session);
@@ -1044,8 +1082,13 @@ impl KernelRuntimeState {
         }
         self.stop_managed_environment_for_session_lifecycle(&session_id)
             .await;
+        let worker_agents = self.agents_leased_to_workers(&session_id);
         let (session, terminated_run_ids, removed_project) =
             owned.delete_session(owned.session_store.get_session(&session_id)?)?;
+        // Swept only now: the Room is gone, so an open that raced the delete
+        // fails its own Room check instead of outliving this sweep.
+        self.end_room_terminals(&session_id);
+        self.release_worker_leases(worker_agents).await;
         self.sweep_kernel_access();
         debug_assert_eq!(
             removed_project.as_ref().map(|project| project.id()),
