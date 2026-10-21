@@ -26,6 +26,8 @@ mod history;
 mod kernel_access;
 mod kernel_browser;
 mod kernel_computer;
+mod machine_files;
+mod machine_gateway;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
@@ -70,6 +72,8 @@ pub use history::*;
 pub use kernel_access::*;
 pub use kernel_browser::*;
 pub use kernel_computer::*;
+pub use machine_files::*;
+pub use machine_gateway::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
@@ -340,5 +344,7 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: allocated 556 adds `KernelBrowser` `state_wait`: a parked state read
 /// replacing the viewer's 250 ms poll.
 /// MP-08/MP-10/MP-11: allocated 567 adds the mirror v2 `fonts` op's `absent` (stack families the native machine lacks).
-/// Provisional 569 carries the Room terminal service (`RoomTerminal`).
+/// Provisional 569 (the coordinator renumbers by landing order) carries the Room terminal
+/// service (`RoomTerminal`) and External agents v2: the typed access term
+/// (`until_holder_exits`) and the machine gateway.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 569;

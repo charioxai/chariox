@@ -24,6 +24,8 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
     for request in [
         serde_json::json!({"OpenUserAppView":{"installation_id":"todo","host":"client_native"}}),
         serde_json::json!({"CallUserAppView":{"view_id":"user-app-fixture","method":"increment","input":{}}}),
+        // The result carries a relay token; a replay creates another link.
+        serde_json::json!({"CreateTerminalPairingLink":{}}),
         // MP-11 A07: owner hand-off input is physical and never replayed.
         serde_json::json!({"RespondToHandoff":{"session_id":"s","interaction_id":"handoff-o","action":{"kind":"enter_value","value":"fixture"}}}),
     ] {
@@ -49,7 +51,8 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
             "UninstallApp",
             "OpenUserAppView",
             "CallUserAppView",
-            "RespondToHandoff"
+            "RespondToHandoff",
+            "CreateTerminalPairingLink"
         ]
     );
 }
@@ -128,6 +131,40 @@ fn interaction_requests_use_volatile_command_deduplication() {
     assert!(request_is_cacheable(&LocalDaemonRequest::ListSessions(
         ListSessionsRequest,
     )));
+}
+
+#[tokio::test]
+async fn result_file_is_owner_only_when_created_and_when_loaded() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &PathBuf| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    let path = temp_cache_path("owner-only");
+    let cache = CommandResultCache::new_with_persistent_path(path.clone())
+        .expect("persistent cache should initialize");
+    let request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+    let fingerprint = CommandResultCache::fingerprint_for_test(&request);
+    assert!(matches!(
+        cache.reserve("one", &fingerprint).await,
+        CommandReservation::Dispatch
+    ));
+    cache
+        .complete(
+            "one".into(),
+            fingerprint,
+            &KernelOutgoingFrame::Response {
+                machine: None,
+                request_id: "one".into(),
+                response: Box::new(Some(serde_json::json!({"ok": true}))),
+                error: None,
+            },
+        )
+        .await;
+    assert_eq!(mode(&path), 0o600);
+
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    drop(cache);
+    CommandResultCache::new_with_persistent_path(path.clone()).expect("cache reloads");
+    assert_eq!(mode(&path), 0o600);
+    let _ = fs::remove_file(path);
 }
 
 #[tokio::test]

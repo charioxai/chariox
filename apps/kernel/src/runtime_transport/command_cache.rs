@@ -185,6 +185,9 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             // only ever fresh; a replay of either is safe to run again.
             | LocalDaemonRequest::ReadMachineFile(_)
             | LocalDaemonRequest::HeartbeatAttachments(_)
+            // The result carries a relay token that joins a terminal; it is
+            // never kept in this cache, on disk or in memory.
+            | LocalDaemonRequest::CreateTerminalPairingLink(_)
             // MP-11 A07: physical owner input carrying a value is never
             // fingerprinted, cached or replayed.
             | LocalDaemonRequest::RespondToHandoff(_)
@@ -387,6 +390,7 @@ impl CommandResultCache {
             ReceiptRetention::default()
         };
         let mut retained = read_persistent_results(&path, retention)?;
+        restrict_to_owner(&path)?;
         let count = retained.entries.len();
         retained
             .entries
@@ -1045,11 +1049,22 @@ fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
     )
 }
 
+/// Results can carry secrets a client asked for, so only the kernel's user reads the file.
+fn restrict_to_owner(path: &std::path::Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    match fs::set_permissions(path, fs::Permissions::from_mode(0o600)) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
 fn append_persistent_result(path: &PathBuf, entry: &PersistentCommandResult) -> io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
     let mut file = BufWriter::new(
         fs::OpenOptions::new()
             .create(true)
             .append(true)
+            .mode(0o600)
             .open(path)?,
     );
     serde_json::to_writer(&mut file, entry).map_err(io::Error::other)?;
@@ -1061,11 +1076,19 @@ fn rewrite_persistent_results(
     path: &PathBuf,
     entries: &[PersistentCommandResult],
 ) -> io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let tmp_path = path.with_extension("jsonl.tmp");
-    let mut file = BufWriter::new(fs::File::create(&tmp_path)?);
+    let mut file = BufWriter::new(
+        fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp_path)?,
+    );
     // A downgraded kernel must not treat a missing expired identity as new.
     // Preserve this fail-closed fence through every payload compaction.
     match fs::metadata(ReceiptRetention::marker_path(path)) {
