@@ -66,6 +66,7 @@ function fixture(root) {
     navigate: async ({ target_id, url }) => { pages.set(target_id, { url }); },
     snapshot: async () => ({ text: "fixture" }),
     resolvePageTarget: async target => ({ connection, sessionId: `session-${target}` }),
+    clearViewport: async target => connection.send('Emulation.clearDeviceMetricsOverride', {}, `session-${target}`),
     inputCapture: { hold: async()=>async()=>{}, run: async (_connection, _session, operation) => operation() },
   });
   return { host: new KernelBrowserHost(root, { chromium, browserFactory }), chromium, handlers, sent, pages, connection };

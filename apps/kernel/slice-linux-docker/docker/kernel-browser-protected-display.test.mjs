@@ -7,6 +7,11 @@ import {CompositorSource} from './kernel-browser-compositor.mjs';
 
 const region={x:900,y:200,width:150,height:80};
 const raw=()=>({width:1280,height:800,format:'bgr0',pixels:Buffer.alloc(1280*800*4,255),shared:{path:'/never-open-unmasked',length:1280*800*4},readRegion(){throw Error('unmasked region read');}});
+for(const scale of [1,2])for(const [cssWidth,cssHeight] of [[400,250],[1272,709]])test(`MP-08/MP-10/MP-11 full native PNG dimensions ${cssWidth}x${cssHeight} DPR${scale}`,()=>{
+ const width=cssWidth*scale,height=cssHeight*scale,data=encodePng(width,height,Buffer.alloc(width*height*4,255));
+ const frame=cropProtectedPng(data,null,scale);
+ assert.deepEqual([frame.width,frame.height],[width,height]);assert.equal(frame.data_base64,data,'the visible raster is neither expanded nor rescaled');
+});
 test('MP-08/MP-10 admitted masked motion uses a source serial hint while exact pixels stay protected',()=>{
  const before=maskNativeRaster({...raw(),serial:1},[region]);
  const after=maskNativeRaster({...raw(),serial:2},[region],[region]);
