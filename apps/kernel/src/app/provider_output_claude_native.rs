@@ -661,6 +661,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                                     dispatch_prompt_id,
                                     active.id(),
                                     true,
+                                    Vec::new(),
                                 )?;
                                 write_claude_hook_context_response(
                                     context_file,
@@ -740,18 +741,21 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     prompt,
                     attachments,
                 )?;
-                let hook_context = match (&outcome, hook_context) {
+                let (hook_context, typed_skills) = match (&outcome, hook_context) {
                     (
                         crate::session::PromptSubmissionOutcome::Started { prompt: started },
                         Some(context),
-                    ) => Some(self.typed_skill_context(
-                        session_id,
-                        &agent_id,
-                        provider_run,
-                        started,
-                        context,
-                    )?),
-                    (_, context) => context,
+                    ) => {
+                        let typed = self.typed_skill_context(
+                            session_id,
+                            &agent_id,
+                            provider_run,
+                            started,
+                            context,
+                        )?;
+                        (Some(typed.context), typed.loads)
+                    }
+                    (_, context) => (context, Vec::new()),
                 };
                 let native_started = matches!(
                     &outcome,
@@ -796,6 +800,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             prompt_id,
                             prompt_id,
                             false,
+                            typed_skills,
                         )?;
                         write_claude_hook_context_response(context_file, request_id, context)?;
                         continue;

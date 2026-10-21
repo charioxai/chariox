@@ -725,6 +725,25 @@ impl ProviderProcessServiceStore {
         Ok(())
     }
 
+    pub(crate) fn acknowledge_typed_leased_skills(
+        &self,
+        provider_run_id: &str,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        prompt_id: &str,
+        skills: &[crate::provider::skill_delivery::TypedSkillLoad],
+    ) -> Result<(), DaemonError> {
+        let bridge = self
+            .skill_prompt_bridge
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(bridge) = bridge {
+            let run = self.get_run(provider_run_id)?;
+            bridge.acknowledge_typed_leased(&run, context, prompt_id, skills)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn apply_prompt_submit_acknowledgement(
         &self,
         provider_run_id: &str,

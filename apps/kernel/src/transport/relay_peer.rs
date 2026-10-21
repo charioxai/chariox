@@ -1112,6 +1112,10 @@ pub enum RelayPeerRequest {
         manifest: crate::skill::v2::SkillTransferManifest,
         context: RemoteSkillSyncContext,
         packages: Vec<CharioxSkillPackage>,
+        /// Names a `$name` typed in the worker's native composer may select, from
+        /// the packages above. Omitted when no transferred skill can be typed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        skill_names: Option<crate::skill::leased_names::LeasedSkillNames>,
     },
     /// MP-08 / MP-10 / MP-11: home asks the leased worker for its harness-native skills.
     ReadLeasedSkillNativeInventory {

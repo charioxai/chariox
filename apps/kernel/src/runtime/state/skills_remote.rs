@@ -176,6 +176,74 @@ impl KernelRuntimeState {
         }
     }
 
+    /// A native composer on a leased worker takes `$name` before the home dispatches
+    /// any turn, so the lease receives its skills when the provider launches. A
+    /// failed transfer refuses the launch rather than leaving typed skills unresolved.
+    pub(super) async fn ensure_native_launch_skills(
+        &self,
+        config: &crate::config::DaemonConfig,
+        agent: &crate::agent::AgentInstance,
+        remote: &crate::agent::RemoteAgentBinding,
+    ) -> Result<(), DaemonError> {
+        let Some(set) =
+            super::skills_dispatch::prepare_remote_launch_skills(self, agent.session_id())?
+        else {
+            return Ok(());
+        };
+        let context = RemoteSkillSyncContext {
+            home_kernel_id: config.daemon_id.clone(),
+            home_session_id: agent.session_id().into(),
+            home_agent_id: agent.id().into(),
+            leased_agent_id: remote.leased_agent_id.clone(),
+        };
+        self.ensure_remote_skill_set(config, remote, &context, &set)
+            .await
+            .map(|_| ())
+    }
+
+    /// Home side: send what the lease's worker must hold and return its verified
+    /// receipt. `config` already carries the lease's relay override.
+    pub(super) async fn ensure_remote_skill_set(
+        &self,
+        config: &crate::config::DaemonConfig,
+        remote: &crate::agent::RemoteAgentBinding,
+        context: &RemoteSkillSyncContext,
+        set: &super::skills_dispatch::RemoteSkillSet,
+    ) -> Result<Vec<crate::transport::relay_peer::RemoteSkillMaterialization>, DaemonError> {
+        let request = RelayPeerRequest::EnsureRemoteSkillPackages {
+            execution_lease_id: remote.execution_lease_id.clone(),
+            manifest: set.manifest.clone(),
+            context: context.clone(),
+            packages: set.packages.clone(),
+            skill_names: set.names.clone(),
+        };
+        let target = chariox_relay::protocol::ClientTarget {
+            daemon_id: Some(remote.worker_kernel_id.clone()),
+            daemon_alias: None,
+        };
+        let timeout = std::time::Duration::from_millis(config.relay_request_timeout_ms);
+        let response = match self.connected_relay_state_for_config(config).await {
+            Some(state) => {
+                crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                    config, &state, target, request, timeout,
+                )
+                .await
+            }
+            None => {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                    config, target, request, timeout,
+                )
+                .await
+            }
+        }?;
+        crate::skill::transfer::verify_transfer_receipt(
+            context,
+            &remote.execution_lease_id,
+            &set.manifest,
+            response,
+        )
+    }
+
     /// Worker side: only the authenticated home of this lease may ask.
     pub(crate) async fn read_leased_skill_native_inventory(
         &self,

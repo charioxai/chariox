@@ -328,9 +328,16 @@ pub(crate) async fn ensure_relay_remote_skill_packages(
     execution_lease_id: String,
     manifest: crate::skill::v2::SkillTransferManifest,
     packages: Vec<CharioxSkillPackage>,
+    skill_names: Option<crate::skill::leased_names::LeasedSkillNames>,
 ) -> Result<Vec<RemoteSkillMaterialization>, DaemonError> {
     runtime_state
-        .ensure_relay_remote_skill_packages(context, execution_lease_id, manifest, packages)
+        .ensure_relay_remote_skill_packages(
+            context,
+            execution_lease_id,
+            manifest,
+            packages,
+            skill_names,
+        )
         .await
 }
 

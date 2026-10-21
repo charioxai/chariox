@@ -1,5 +1,6 @@
 //! MP-08 / MP-10 / MP-11: acknowledge hidden context only after official hooks flush it.
 use super::*;
+use crate::provider::skill_delivery::TypedSkillLoad;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
@@ -10,6 +11,9 @@ struct PendingDelivery {
     managed: bool,
     #[serde(default)]
     active_prompt_id: Option<String>,
+    /// Skills the worker put into this hook context for a `$name` the user typed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    typed_skills: Vec<TypedSkillLoad>,
 }
 
 pub(super) fn stage(
@@ -19,6 +23,7 @@ pub(super) fn stage(
     prompt_id: &str,
     active_prompt_id: &str,
     managed: bool,
+    typed_skills: Vec<TypedSkillLoad>,
 ) -> Result<(), DaemonError> {
     permission::validate_context_request_id(request_id)?;
     let pending = PendingDelivery {
@@ -27,6 +32,7 @@ pub(super) fn stage(
         prompt_id: prompt_id.into(),
         managed,
         active_prompt_id: Some(active_prompt_id.into()),
+        typed_skills,
     };
     fs::write(
         format!("{context_file}.context-delivery"),
@@ -153,6 +159,7 @@ impl ProviderOutputClaudeNativeBridge<'_> {
             dispatch_id,
             dispatch_id,
             true,
+            Vec::new(),
         )
     }
 
@@ -222,15 +229,16 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         else {
             return Ok(());
         };
-        self.app.providers.acknowledge_skill_hook_delivery(
-            session_id,
-            agent_id,
-            pending
-                .active_prompt_id
-                .as_deref()
-                .unwrap_or(&pending.prompt_id),
-            run_id,
-        )?;
+        let prompt_id = pending
+            .active_prompt_id
+            .as_deref()
+            .unwrap_or(&pending.prompt_id);
+        self.app
+            .providers
+            .acknowledge_skill_hook_delivery(session_id, agent_id, prompt_id, run_id)?;
+        if !pending.typed_skills.is_empty() {
+            self.acknowledge_typed_skills(session_id, run_id, prompt_id, &pending.typed_skills)?;
+        }
         if pending.managed {
             write_claude_native_marker(context_file, &format!("accepted:{}", pending.prompt_id));
             self.consume_accepted_failed_request_context(session_id, agent_id, context_file)?;

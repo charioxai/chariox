@@ -218,8 +218,10 @@ async fn leased_skill_native_duplicate_retains_manual_receipt_and_next_turn_load
     )
     .unwrap()
     .unwrap();
-    assert!(remote.manifest.skills.is_empty());
-    assert!(remote.packages.is_empty());
+    assert!(remote.set.manifest.skills.is_empty());
+    assert!(remote.set.packages.is_empty());
+    // A skill the worker's harness provides is neither transferred nor named for typing.
+    assert!(remote.set.names.is_none());
     assert_eq!(remote.native_selections, vec![native.selection.clone()]);
     let prompt = runtime
         .owned
@@ -677,7 +679,20 @@ async fn leased_follow_up_turn_does_not_repeat_a_load_the_worker_run_holds() {
     };
     project_run("worker-run-1");
     let first = turn("load-turn", "$review inspect source", vec![selection]);
-    assert_eq!(remote(first.id()).unwrap().packages.len(), 1);
+    // The Manual skill is transferred with every turn; only its body rides a load.
+    let roots = |turn: &super::super::skills_dispatch::RemoteSkillTurn| {
+        let skill = &turn.set.manifest.skills[0];
+        turn.hidden_context(&[crate::transport::relay_peer::RemoteSkillMaterialization {
+            skill_id: skill.skill_id.clone(),
+            name: "review".into(),
+            version_hash: skill.digest.clone(),
+            materialized_root: "/worker/review".into(),
+        }])
+        .unwrap()
+    };
+    let first_turn = remote(first.id()).unwrap();
+    assert_eq!(first_turn.set.packages.len(), 1);
+    assert!(roots(&first_turn).contains("Review source."));
     let session = runtime
         .owned
         .session_store
@@ -704,7 +719,7 @@ async fn leased_follow_up_turn_does_not_repeat_a_load_the_worker_run_holds() {
         .complete_active_prompt_only(&session, &agent_id);
     let second = turn("follow-up", "continue reviewing", vec![]);
     assert!(
-        remote(second.id()).is_none_or(|turn| turn.packages.is_empty()),
+        remote(second.id()).is_none_or(|turn| !roots(&turn).contains("Review source.")),
         "the worker run already holds the load"
     );
     runtime
@@ -713,9 +728,221 @@ async fn leased_follow_up_turn_does_not_repeat_a_load_the_worker_run_holds() {
         .complete_active_prompt_only(&session, &agent_id);
     project_run("worker-run-2");
     let third = turn("after-restart", "continue reviewing", vec![]);
-    assert_eq!(
-        remote(third.id()).unwrap().packages.len(),
-        1,
+    assert!(
+        roots(&remote(third.id()).unwrap()).contains("Review source."),
         "a new worker run lost the load"
+    );
+}
+
+async fn manual_review_fixture() -> (
+    KernelRuntimeState,
+    crate::skill::service::SkillCatalogService,
+    SkillRecord,
+    RemoteWorkspaceLiveSyncContext,
+    String,
+    String,
+) {
+    use crate::skill::service::SkillCatalogService;
+    let (runtime, session_id, agent_id, attachment, binding) =
+        super::tests::mp11_fixture(crate::DaemonConfig::for_tests()).await;
+    let config = runtime.owned.config_projection.snapshot();
+    let service = SkillCatalogService::new(
+        SkillCatalogStorage::new(
+            config.user_config_path.parent().unwrap(),
+            runtime.owned.durable_state_store.clone(),
+        )
+        .unwrap(),
+    );
+    let mutation = SkillCatalogMutation {
+        scope: SkillScope::Chariox, expected_revision: 0,
+        actions: vec![SkillCatalogAction::Install {
+            source: SkillInstallSource::Content { skill_md: "---\nname: review\ndescription: Review safely\ndisable-model-invocation: true\n---\nReview source.\n".into() },
+            collision: SkillCollisionAction::Reject, package_id: None,
+        }],
+    };
+    let prepared = service.prepare(&mutation).unwrap();
+    let catalog = service.publish_authorized(&mutation, &prepared).unwrap();
+    let skill = catalog.catalogs[0].skills[0].clone();
+    let submission = runtime
+        .owned
+        .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+            session_id: session_id.clone(),
+            prompt: crate::session::PromptQueueItem::new(
+                "plain-turn",
+                &attachment,
+                &agent_id,
+                "continue",
+                crate::session::PromptStatus::Queued,
+            ),
+            force_queue: false,
+            refresh_projection: true,
+        })
+        .unwrap()
+        .unwrap();
+    runtime
+        .owned
+        .settle_remote_dispatch_if_current(
+            &submission.remote_dispatch.unwrap(),
+            Some("worker-run-1"),
+        )
+        .unwrap();
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    // Text typed on the worker has no dispatched home turn.
+    let context = RemoteWorkspaceLiveSyncContext {
+        home_kernel_id: config.daemon_id.clone(),
+        home_session_id: session_id.clone(),
+        home_agent_id: agent_id.clone(),
+        home_prompt_id: None,
+        leased_agent_id: binding.leased_agent_id,
+        worker_kernel_id: binding.worker_kernel_id,
+        worker_machine_id: binding.worker_machine_id,
+        worker_provider_run_id: "worker-run-1".into(),
+        worker_worktree_path: session.worktree_id().into(),
+        worker_workspace_identity: crate::io::WorkspaceIdentity::local("fixture"),
+    };
+    (runtime, service, skill, context, session_id, agent_id)
+}
+
+// MP-08 / MP-10: a Manual skill must be on the worker before the user types its
+// name there, and the home names it; the turn's own context still never lists it.
+#[tokio::test]
+async fn leased_turn_transfers_manual_skills_and_names_them_without_advertising_them() {
+    let (runtime, _service, skill, _context, session_id, agent_id) = manual_review_fixture().await;
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let prompt = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &agent_id)
+        .unwrap();
+    let binding = runtime
+        .owned
+        .agent_store
+        .get_agent(&agent_id)
+        .unwrap()
+        .remote_execution()
+        .cloned()
+        .unwrap();
+    let turn = super::super::skills_dispatch::prepare_remote_turn(
+        &runtime,
+        &session_id,
+        &agent_id,
+        prompt.id(),
+        &binding.leased_agent_id,
+        &[],
+    )
+    .unwrap()
+    .expect("a Manual skill is transferred with the turn");
+    assert_eq!(turn.set.manifest.skills.len(), 1);
+    assert_eq!(turn.set.manifest.skills[0].state, SkillState::Manual);
+    assert_eq!(turn.set.packages.len(), 1);
+    assert_eq!(
+        turn.set.names,
+        Some(crate::skill::leased_names::LeasedSkillNames {
+            catalog_revision: turn.catalog_revision,
+            skills: vec![crate::skill::leased_names::LeasedSkillName {
+                skill_id: skill.id.clone(),
+                name: "review".into(),
+                digest: skill.digest.clone(),
+            }],
+        })
+    );
+    let advertised = turn
+        .hidden_context(&[crate::transport::relay_peer::RemoteSkillMaterialization {
+            skill_id: skill.id,
+            name: "review".into(),
+            version_hash: skill.digest,
+            materialized_root: "/worker/review".into(),
+        }])
+        .unwrap();
+    assert!(
+        advertised.is_empty(),
+        "a Manual skill was advertised: {advertised:?}"
+    );
+}
+
+// MP-08 / MP-10: a native composer types `$name` before the home dispatches any turn,
+// so the launch itself names and carries every effective skill.
+#[tokio::test]
+async fn leased_native_launch_carries_the_manual_skill_before_any_turn() {
+    let (runtime, _service, skill, _context, session_id, _agent_id) = manual_review_fixture().await;
+    let set = super::super::skills_dispatch::prepare_remote_launch_skills(&runtime, &session_id)
+        .unwrap()
+        .expect("the launch carries the catalog's skills");
+    assert_eq!(set.manifest.skills.len(), 1);
+    assert_eq!(set.manifest.skills[0].skill_id, skill.id);
+    assert_eq!(set.packages.len(), 1);
+    assert_eq!(
+        set.names.map(|names| names.skills.len()),
+        Some(1),
+        "the launch left the worker without the name view"
+    );
+}
+
+// MP-08 / MP-10: the home never trusts the worker's name or digest for a typed load.
+#[tokio::test]
+async fn leased_typed_skill_load_is_recorded_only_for_a_current_effective_skill() {
+    let (runtime, service, skill, context, session_id, agent_id) = manual_review_fixture().await;
+    let typed = |skill_id: &str, digest: &str| {
+        serde_json::json!({
+            "delivery": "typed", "prompt_id": "worker-native-prompt",
+            "skill_id": skill_id, "digest": digest,
+        })
+    };
+    assert!(
+        acknowledge(&runtime, &context, typed(&skill.id, &"b".repeat(64)))
+            .await
+            .is_err(),
+        "a stale digest was recorded"
+    );
+    assert!(
+        acknowledge(&runtime, &context, typed("skill-foreign", &skill.digest))
+            .await
+            .is_err(),
+        "a foreign skill was recorded"
+    );
+    assert!(service.storage.loads(&session_id).unwrap().is_empty());
+    acknowledge(&runtime, &context, typed(&skill.id, &skill.digest))
+        .await
+        .unwrap();
+    let loads = service.storage.loads(&session_id).unwrap();
+    assert_eq!(loads.len(), 1);
+    assert_eq!(
+        (
+            &loads[0].skill_id,
+            &loads[0].digest,
+            &loads[0].agent_id,
+            &loads[0].prompt_id
+        ),
+        (
+            &skill.id,
+            &skill.digest,
+            &agent_id,
+            &"worker-native-prompt".to_string()
+        )
+    );
+    assert_eq!(loads[0].reason, SkillLoadReason::Explicit);
+    let off = SkillCatalogMutation {
+        scope: SkillScope::Chariox,
+        expected_revision: service.storage.snapshot().unwrap().revision,
+        actions: vec![SkillCatalogAction::SetState {
+            skill_id: skill.id.clone(),
+            state: Some(SkillState::Off),
+        }],
+    };
+    let prepared = service.prepare(&off).unwrap();
+    service.publish_authorized(&off, &prepared).unwrap();
+    assert!(
+        acknowledge(&runtime, &context, typed(&skill.id, &skill.digest))
+            .await
+            .is_err(),
+        "an Off skill was recorded"
     );
 }

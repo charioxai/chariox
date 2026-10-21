@@ -987,31 +987,9 @@ impl KernelRuntimeState {
                             home_agent_id: agent.id().to_string(),
                             leased_agent_id: remote_execution.leased_agent_id.clone(),
                         };
-                        let lease_id = remote_execution.execution_lease_id.clone();
-                        let request = RelayPeerRequest::EnsureRemoteSkillPackages {
-                            execution_lease_id: lease_id.clone(),
-                            manifest: turn.manifest.clone(),
-                            context: context.clone(),
-                            packages: turn.packages.clone(),
-                        };
-                        let timeout = std::time::Duration::from_millis(config.relay_request_timeout_ms);
-                        let response = match &relay_state {
-                            Some(relay_state) => {
-                                crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
-                                    &config, relay_state, target.clone(), request, timeout,
-                                )
-                                .await?
-                            }
-                            None => {
-                                crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
-                                    &config, target.clone(), request, timeout,
-                                )
-                                .await?
-                            }
-                        };
-                        let materialized = crate::skill::transfer::verify_transfer_receipt(
-                            &context, &lease_id, &turn.manifest, response,
-                        )?;
+                        let materialized = callback_state
+                            .ensure_remote_skill_set(&config, &remote_execution, &context, &turn.set)
+                            .await?;
                         super::skills_dispatch::bind_remote_roots(
                             &callback_state,
                             &skill_session_id,
@@ -1020,7 +998,9 @@ impl KernelRuntimeState {
                             &materialized,
                         )?;
                         let skills = turn.hidden_context(&materialized)?;
-                        let hidden = if hidden_system_context.is_empty() {
+                        let hidden = if skills.is_empty() {
+                            hidden_system_context
+                        } else if hidden_system_context.is_empty() {
                             skills
                         } else {
                             format!("{skills}\n{hidden_system_context}")

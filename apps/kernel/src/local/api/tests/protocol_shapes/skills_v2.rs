@@ -300,3 +300,31 @@ fn skills_v2_leased_native_inventory_peer_162_shape_and_hash() {
     let not_started = serde_json::json!({"kind":"leased_skill_native_inventory","inventory":null});
     assert!(serde_json::from_value::<RelayPeerResponse>(not_started).is_ok());
 }
+
+#[test]
+fn skills_v2_ensure_remote_skill_packages_name_view_is_an_additive_peer_179_field() {
+    assert_eq!(
+        RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
+    let mut wire = serde_json::json!({
+        "kind":"ensure_remote_skill_packages","execution_lease_id":"lease",
+        "manifest":{"catalog_revision":3,"project_id":null,"skills":[]},
+        "context":{"home_kernel_id":"home","home_session_id":"s","home_agent_id":"a","leased_agent_id":"lease-agent"},
+        "packages":[]
+    });
+    // A transfer without typable skills is byte-identical to the one older peers know.
+    let request: RelayPeerRequest = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&request).unwrap(), wire);
+    wire["skill_names"] = serde_json::json!({"catalog_revision":3,"skills":[
+        {"skill_id":"s1","name":"review","digest":"a".repeat(64)}
+    ]});
+    let request: RelayPeerRequest = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&request).unwrap(), wire);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+        "f41b15493aea5d3ae9721861dd0317e95783d111510ba9ed3986c159edeff857"
+    );
+    wire["skill_names"]["skills"][0]["path"] = serde_json::json!("/worker/skill");
+    assert!(serde_json::from_value::<RelayPeerRequest>(wire).is_err());
+}

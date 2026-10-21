@@ -33,6 +33,15 @@ pub(crate) trait SkillPromptBridge: Send + Sync {
         run: &crate::provider::RuntimeProviderRun,
         batch: &crate::provider::ProviderPromptSignalBatch,
     ) -> Result<(), DaemonError>;
+    /// Skills typed in the native composer of a leased worker had no pending load
+    /// there: the home validates each against its own catalog and records the load.
+    fn acknowledge_typed_leased(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        prompt_id: &str,
+        skills: &[TypedSkillLoad],
+    ) -> Result<(), DaemonError>;
     fn prepare(
         &self,
         run: &crate::provider::RuntimeProviderRun,
@@ -42,6 +51,13 @@ pub(crate) trait SkillPromptBridge: Send + Sync {
         origin_prompt_id: &str,
         envelope: &crate::prompt_assembly::PromptEnvelope,
     ) -> Result<Option<ProviderSkillDelivery>, DaemonError>;
+}
+
+/// One skill a user typed and the worker delivered, by full identity.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TypedSkillLoad {
+    pub skill_id: String,
+    pub digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

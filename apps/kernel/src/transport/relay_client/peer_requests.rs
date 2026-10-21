@@ -2085,6 +2085,7 @@ pub(super) async fn handle_daemon_peer_request(
             context,
             packages,
             manifest,
+            skill_names,
         } => {
             let ensured = router
                 .relay_ensure_remote_skill_packages(
@@ -2092,6 +2093,7 @@ pub(super) async fn handle_daemon_peer_request(
                     execution_lease_id.clone(),
                     manifest.clone(),
                     packages,
+                    skill_names,
                 )
                 .await;
             match ensured {

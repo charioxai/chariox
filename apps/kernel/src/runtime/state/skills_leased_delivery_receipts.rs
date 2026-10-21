@@ -10,7 +10,17 @@ pub(in crate::runtime::state) const LEASED_SKILL_DELIVERY_ACK: &str = "_chariox_
 #[serde(tag = "delivery", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum LeasedSkillAcknowledgement {
     Prompt,
-    Tool { skill_id: String, digest: String },
+    Tool {
+        skill_id: String,
+        digest: String,
+    },
+    /// A `$name` typed in the worker's native composer: the home never prepared a
+    /// pending load for it and validates the full identity against its catalog.
+    Typed {
+        prompt_id: String,
+        skill_id: String,
+        digest: String,
+    },
 }
 impl LeasedSkillAcknowledgement {
     fn admits(&self, authority: &SkillTurnAuthority, record: &SkillLoadRecord) -> bool {
@@ -21,6 +31,7 @@ impl LeasedSkillAcknowledgement {
             Self::Tool { skill_id, digest } => {
                 &record.skill_id == skill_id && &record.digest == digest
             }
+            Self::Typed { .. } => false,
         }
     }
 }
@@ -34,12 +45,21 @@ pub(in crate::runtime::state) fn acknowledge_leased_delivery(
     // and committing receipts; record_pending_loads separately holds prompt ownership.
     {
         state.authorize_forwarded_workspace_context(context)?;
+        let acknowledgement: LeasedSkillAcknowledgement = serde_json::from_value(arguments)
+            .map_err(|_| failure("invalid leased skill delivery acknowledgement"))?;
+        if let LeasedSkillAcknowledgement::Typed {
+            prompt_id,
+            skill_id,
+            digest,
+        } = &acknowledgement
+        {
+            service(state).record_typed_load(context, prompt_id, skill_id, digest)?;
+            return Ok(acknowledged());
+        }
         let prompt_id = context
             .home_prompt_id
             .as_deref()
             .ok_or_else(|| failure("skill delivery requires the exact home turn"))?;
-        let acknowledgement: LeasedSkillAcknowledgement = serde_json::from_value(arguments)
-            .map_err(|_| failure("invalid leased skill delivery acknowledgement"))?;
         service(state).record_pending_loads(
             &leased_run_id(&context.leased_agent_id),
             &crate::provider::projected_leased_provider_run_id(
@@ -51,14 +71,86 @@ pub(in crate::runtime::state) fn acknowledge_leased_delivery(
             prompt_id,
             |authority, record| acknowledgement.admits(authority, record),
         )?;
-        Ok(crate::transport::runtime_tools::RuntimeToolResult {
-            ok: true,
-            payload: serde_json::json!({ "acknowledged": true }),
-        })
+        Ok(acknowledged())
+    }
+}
+
+fn acknowledged() -> crate::transport::runtime_tools::RuntimeToolResult {
+    crate::transport::runtime_tools::RuntimeToolResult {
+        ok: true,
+        payload: serde_json::json!({ "acknowledged": true }),
     }
 }
 
 impl SkillDispatchService {
+    /// A typed skill is current only if its ID and complete digest are an effective
+    /// row of the home catalog now; a stale, foreign or Off claim records nothing.
+    fn record_typed_load(
+        &self,
+        context: &RemoteWorkspaceLiveSyncContext,
+        prompt_id: &str,
+        skill_id: &str,
+        digest: &str,
+    ) -> Result<(), DaemonError> {
+        let service = self.catalog()?;
+        let catalog = service.storage.snapshot()?;
+        let project_id = self
+            .sessions
+            .get_session(&context.home_session_id)?
+            .project_id()
+            .to_string();
+        let current = crate::skill::resolver::projections(&catalog, Some(&project_id), &[])
+            .into_iter()
+            .any(|row| {
+                row.skill.id == skill_id
+                    && row.skill.digest == digest
+                    && row.effective_state != SkillState::Off
+            });
+        if !current {
+            return Err(failure(
+                "typed skill is stale, foreign or Off in the home catalog; refresh Skills",
+            ));
+        }
+        service.storage.record_load_at_revision(
+            &SkillLoadRecord {
+                skill_id: skill_id.into(),
+                digest: digest.into(),
+                session_id: context.home_session_id.clone(),
+                agent_id: context.home_agent_id.clone(),
+                run_id: crate::provider::projected_leased_provider_run_id(
+                    &context.leased_agent_id,
+                    &context.worker_provider_run_id,
+                ),
+                prompt_id: prompt_id.into(),
+                reason: SkillLoadReason::Explicit,
+                context_generation: format!("{prompt_id}:typed"),
+                delivered_at_ms: crate::session::unix_epoch_ms().max(1),
+            },
+            Some(&project_id),
+            catalog.revision,
+        )?;
+        self.changes.record_change();
+        Ok(())
+    }
+
+    pub(super) fn forward_typed_delivery(
+        &self,
+        context: &RemoteWorkspaceLiveSyncContext,
+        prompt_id: &str,
+        skills: &[crate::provider::skill_delivery::TypedSkillLoad],
+    ) -> Result<(), DaemonError> {
+        skills.iter().try_for_each(|skill| {
+            self.send_leased_acknowledgement(
+                context.clone(),
+                LeasedSkillAcknowledgement::Typed {
+                    prompt_id: prompt_id.into(),
+                    skill_id: skill.skill_id.clone(),
+                    digest: skill.digest.clone(),
+                },
+            )
+        })
+    }
+
     pub(super) fn forward_leased_delivery(
         &self,
         run: &RuntimeProviderRun,
@@ -88,6 +180,14 @@ impl SkillDispatchService {
         else {
             return Ok(());
         };
+        self.send_leased_acknowledgement(context.clone(), acknowledgement)
+    }
+
+    fn send_leased_acknowledgement(
+        &self,
+        context: RemoteWorkspaceLiveSyncContext,
+        acknowledgement: LeasedSkillAcknowledgement,
+    ) -> Result<(), DaemonError> {
         let config = self.config.snapshot();
         let request = RelayPeerRequest::ForwardCapabilityRuntimeTool {
             context: context.clone(),

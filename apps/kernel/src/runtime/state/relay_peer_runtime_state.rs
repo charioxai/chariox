@@ -1004,12 +1004,19 @@ impl KernelRuntimeState {
         execution_lease_id: String,
         manifest: crate::skill::v2::SkillTransferManifest,
         packages: Vec<CharioxSkillPackage>,
+        skill_names: Option<crate::skill::leased_names::LeasedSkillNames>,
     ) -> Result<Vec<RemoteSkillMaterialization>, DaemonError> {
         let leased_agent_id = context.leased_agent_id.clone();
         self.with_app_side_effect(move |app| {
             let mut runtime = RemoteLeaseRuntime::new(app);
             runtime.consume_leased_agent_authorization(&leased_agent_id)?;
-            runtime.ensure_remote_skill_packages(context, execution_lease_id, manifest, packages)
+            runtime.ensure_remote_skill_packages(
+                context,
+                execution_lease_id,
+                manifest,
+                packages,
+                skill_names,
+            )
         })
         .await
     }

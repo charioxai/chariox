@@ -1,6 +1,7 @@
 //! MP-08 / MP-10 / MP-11: assemble current managed hook context before handoff rendering.
 use super::*;
 
+use crate::provider::skill_delivery::TypedSkillLoad;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
@@ -120,7 +121,18 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         provider_run: &RuntimeProviderRun,
         prompt: &crate::session::PromptQueueItem,
         context: String,
-    ) -> Result<String, DaemonError> {
+    ) -> Result<TypedSkillContext, DaemonError> {
+        if let Some(leased_agent_id) = crate::app::RemoteLeaseRuntime::new(self.app)
+            .leased_agent_id_for_backing(session_id, agent_id)
+        {
+            return self.leased_typed_skill_context(
+                session_id,
+                &leased_agent_id,
+                provider_run,
+                prompt,
+                context,
+            );
+        }
         let envelope = crate::prompt_assembly::PromptEnvelope::new(
             prompt.prompt(),
             "",
@@ -137,21 +149,137 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         ) {
             Ok(envelope) => envelope.skill_delivery,
             Err(error) => {
-                self.app.record_notice(
-                    session_id,
-                    Some(provider_run.id()),
-                    self.app.attachments.list_session_attachment_ids(session_id),
-                    format!("Skills were not delivered to this turn: {error}"),
-                );
-                return Ok(context);
+                self.skills_not_delivered(session_id, provider_run, &error);
+                return Ok(TypedSkillContext::plain(context));
             }
         };
         let Some(delivery) = delivery.filter(|delivery| !delivery.hidden_context.is_empty()) else {
-            return Ok(context);
+            return Ok(TypedSkillContext::plain(context));
         };
-        crate::provider::fit_claude_native_hidden_context(
-            provider_run.id(),
-            join_claude_context([context, delivery.hidden_context]),
-        )
+        Ok(TypedSkillContext::plain(
+            crate::provider::fit_claude_native_hidden_context(
+                provider_run.id(),
+                join_claude_context([context, delivery.hidden_context]),
+            )?,
+        ))
+    }
+
+    /// The worker owns no catalog: the home's name view for this lease selects the
+    /// packages already verified in the lease's cache, and the home records the load
+    /// once the hook confirms delivery.
+    fn leased_typed_skill_context(
+        &mut self,
+        session_id: &str,
+        leased_agent_id: &str,
+        provider_run: &RuntimeProviderRun,
+        prompt: &crate::session::PromptQueueItem,
+        context: String,
+    ) -> Result<TypedSkillContext, DaemonError> {
+        let skills = match crate::app::RemoteLeaseRuntime::new(self.app)
+            .typed_leased_skills(leased_agent_id, prompt.prompt())
+        {
+            Ok(skills) => skills,
+            Err(error) => {
+                self.skills_not_delivered(session_id, provider_run, &error);
+                return Ok(TypedSkillContext::plain(context));
+            }
+        };
+        if skills.is_empty() {
+            return Ok(TypedSkillContext::plain(context));
+        }
+        let bodies: String = skills
+            .iter()
+            .map(|skill| {
+                format!(
+                    "\nSkill {} ({}) at {}:\n{}\n",
+                    skill.name,
+                    skill.digest,
+                    skill.root.display(),
+                    skill.body
+                )
+            })
+            .collect();
+        Ok(TypedSkillContext {
+            context: crate::provider::fit_claude_native_hidden_context(
+                provider_run.id(),
+                join_claude_context([context, bodies]),
+            )?,
+            loads: skills
+                .into_iter()
+                .map(|skill| TypedSkillLoad {
+                    skill_id: skill.skill_id,
+                    digest: skill.digest,
+                })
+                .collect(),
+        })
+    }
+
+    fn skills_not_delivered(
+        &mut self,
+        session_id: &str,
+        provider_run: &RuntimeProviderRun,
+        error: &DaemonError,
+    ) {
+        self.app.record_notice(
+            session_id,
+            Some(provider_run.id()),
+            self.app.attachments.list_session_attachment_ids(session_id),
+            format!("Skills were not delivered to this turn: {error}"),
+        );
+    }
+
+    /// The load of a typed skill is the home's to record; a refused acknowledgement
+    /// is a visible notice and never ends the hook that already delivered the body.
+    pub(super) fn acknowledge_typed_skills(
+        &mut self,
+        session_id: &str,
+        run_id: &str,
+        prompt_id: &str,
+        skills: &[TypedSkillLoad],
+    ) -> Result<(), DaemonError> {
+        let worktree = self
+            .app
+            .sessions
+            .get_session(session_id)?
+            .worktree_id()
+            .to_string();
+        let Some(mut context) = crate::app::RemoteLeaseRuntime::new(self.app)
+            .leased_workspace_live_sync_context_for_provider_run(
+                run_id,
+                crate::io::WorkspaceIdentity::local(&worktree),
+            )
+        else {
+            return Ok(());
+        };
+        // The home has no dispatched turn for text typed on the worker.
+        context.home_prompt_id = None;
+        if let Err(error) = self
+            .app
+            .providers
+            .acknowledge_typed_leased_skills(run_id, &context, prompt_id, skills)
+        {
+            self.app.record_notice(
+                session_id,
+                Some(run_id),
+                self.app.attachments.list_session_attachment_ids(session_id),
+                format!("A typed skill load was not recorded: {error}"),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// The hook context of a typed prompt, with the skills the worker put into it.
+pub(super) struct TypedSkillContext {
+    pub(super) context: String,
+    pub(super) loads: Vec<TypedSkillLoad>,
+}
+
+impl TypedSkillContext {
+    fn plain(context: String) -> Self {
+        Self {
+            context,
+            loads: Vec::new(),
+        }
     }
 }

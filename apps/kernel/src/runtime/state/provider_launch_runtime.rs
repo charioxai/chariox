@@ -359,6 +359,9 @@ impl KernelRuntimeState {
                 ) {
                     relay_config.apply_remote_relay_override(relay_url, relay_token);
                 }
+                state
+                    .ensure_native_launch_skills(&relay_config, &agent, &remote_execution)
+                    .await?;
                 let leased_agent_id = remote_execution.leased_agent_id.clone();
                 let target = ClientTarget {
                     daemon_id: Some(remote_execution.worker_kernel_id.clone()),

@@ -2,6 +2,7 @@ mod account_usage;
 mod context_failure;
 mod native_permission_race;
 mod prepared_context;
+mod typed_leased_skill;
 
 use super::transcript::ClaudeTranscriptCursor;
 use super::*;
@@ -3767,6 +3768,15 @@ fn claude_native_injection_uses_shared_skill_admission_before_pty_write() {
         ) -> Result<(), DaemonError> {
             Ok(())
         }
+        fn acknowledge_typed_leased(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+            _: &str,
+            _: &[crate::provider::skill_delivery::TypedSkillLoad],
+        ) -> Result<(), DaemonError> {
+            Ok(())
+        }
         fn prepare(
             &self,
             _: &RuntimeProviderRun,
@@ -3930,6 +3940,10 @@ mod skill_hook_fakes {
     use super::*;
     pub(super) static HOOK_RECEIPTS: std::sync::Mutex<Vec<String>> =
         std::sync::Mutex::new(Vec::new());
+    /// Typed worker loads handed to the bridge: prompt, skill ID, digest, home prompt.
+    pub(super) static TYPED_RECEIPTS: std::sync::Mutex<
+        Vec<(String, String, String, Option<String>)>,
+    > = std::sync::Mutex::new(Vec::new());
     pub(super) struct DeliverSkill;
     impl crate::provider::skill_delivery::SkillPromptBridge for DeliverSkill {
         fn acknowledge_hook_context(
@@ -3956,6 +3970,26 @@ mod skill_hook_fakes {
             _: &RuntimeProviderRun,
             _: &ProviderPromptSignalBatch,
         ) -> Result<(), DaemonError> {
+            Ok(())
+        }
+        fn acknowledge_typed_leased(
+            &self,
+            _: &RuntimeProviderRun,
+            context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+            prompt_id: &str,
+            skills: &[crate::provider::skill_delivery::TypedSkillLoad],
+        ) -> Result<(), DaemonError> {
+            TYPED_RECEIPTS
+                .lock()
+                .unwrap()
+                .extend(skills.iter().map(|skill| {
+                    (
+                        prompt_id.to_string(),
+                        skill.skill_id.clone(),
+                        skill.digest.clone(),
+                        context.home_prompt_id.clone(),
+                    )
+                }));
             Ok(())
         }
         fn prepare(

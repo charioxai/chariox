@@ -5018,6 +5018,26 @@ selection that no longer matches the worker inventory refuses the turn, and no
 native package is ever copied. The selections and their catalog revision live
 in the worker prompt's private durable state from admission through queueing,
 capacity holds and restart; public prompt JSON cannot supply them.
+`EnsureRemoteSkillPackages.skill_names` (peer 179, omitted when no transferred
+skill can be typed) is the home's name view for a `$name` typed in Claude's own
+composer on that lease's worker: `{ catalog_revision, skills: [{ skill_id, name,
+digest }] }`, one entry per effective Auto or Manual Chariox skill (Off and
+harness-provided rows are absent; the first row of a name wins, as at home).
+Auto and Manual packages are both transferred, and the view must name only
+skills of the same manifest and revision, or the request is refused. Turn hidden
+context still advertises Auto skills only. The worker keeps the newest view on
+its leased agent (it is no catalog and grants nothing). The home sends it with
+every leased turn and when a leased native provider launches, so a native
+composer works before any dispatched turn. The worker's Claude hook resolves
+the typed prompt against it with the home's `$name` token rules, reads the
+verified package from the lease's execution cache and returns the body in the
+hook context like a home-resolved skill; unresolved dollar text is not an
+invocation. After the hook confirms delivery the worker forwards
+`_chariox_skill_delivery_ack` with `delivery: "typed"`, `prompt_id`, `skill_id`
+and `digest` for each delivered skill (no home prompt binding: the home has no
+dispatched turn). The home records Explicit Loaded only when that ID and
+complete digest are an effective row of its current catalog; a stale, foreign
+or Off claim is refused and recorded nowhere.
 Environment snapshots carry Project records, package membership, overrides and
 only their required Chariox dependencies separately from Extension grants.
 

@@ -641,6 +641,7 @@ impl CommandRouter {
         execution_lease_id: String,
         manifest: crate::skill::v2::SkillTransferManifest,
         packages: Vec<crate::skill::CharioxSkillPackage>,
+        skill_names: Option<crate::skill::leased_names::LeasedSkillNames>,
     ) -> Result<Vec<crate::transport::relay_peer::RemoteSkillMaterialization>, DaemonError> {
         relay_peer_runtime::ensure_relay_remote_skill_packages(
             &self.runtime_state,
@@ -648,6 +649,7 @@ impl CommandRouter {
             execution_lease_id,
             manifest,
             packages,
+            skill_names,
         )
         .await
     }

@@ -60,17 +60,31 @@ fn service(state: &KernelRuntimeState) -> SkillDispatchService {
         history: owned.operational_history_store.clone(),
     }
 }
+/// What a leased worker must hold: every effective Auto and Manual package, and the
+/// home's names for them. The worker resolves nothing else.
+pub(super) struct RemoteSkillSet {
+    pub manifest: SkillTransferManifest,
+    pub packages: Vec<crate::skill::CharioxSkillPackage>,
+    pub names: Option<crate::skill::leased_names::LeasedSkillNames>,
+}
 /// Home-side delivery for a leased worker: the exact packages the worker must hold
 /// before the turn, and the hidden context that names the verified worker roots.
 pub(super) struct RemoteSkillTurn {
-    pub manifest: SkillTransferManifest,
-    pub packages: Vec<crate::skill::CharioxSkillPackage>,
+    pub set: RemoteSkillSet,
     auto_rows: Vec<SkillProjection>,
     loaded: Vec<SkillResolvedBody>,
     budget_percent: f64,
     /// Validated `From <Provider>` selections for the worker's own harness.
     pub native_selections: Vec<SkillSelection>,
     pub catalog_revision: u64,
+}
+/// The skills a native composer on a leased worker may select before any turn
+/// is dispatched from the home.
+pub(super) fn prepare_remote_launch_skills(
+    state: &KernelRuntimeState,
+    session_id: &str,
+) -> Result<Option<RemoteSkillSet>, DaemonError> {
+    service(state).prepare_remote_launch(session_id)
 }
 pub(super) fn prepare_remote_turn(
     state: &KernelRuntimeState,
@@ -119,6 +133,41 @@ pub(super) fn bind_remote_roots(
             Ok(())
         })
 }
+/// Native duplicates retain home load authority, but never transfer a body/package.
+fn remote_skill_set(
+    service: &SkillCatalogService,
+    catalog: &SkillCatalogSet,
+    project_id: &str,
+    rows: &[SkillProjection],
+) -> Result<RemoteSkillSet, DaemonError> {
+    let mut entries = Vec::new();
+    let mut packages = Vec::new();
+    for row in rows.iter().filter(|row| {
+        row.effective_state != SkillState::Off
+            && !matches!(row.delivery, SkillDelivery::ProvidedBy { .. })
+    }) {
+        let root = service.verified_package_root(&row.skill)?;
+        packages.push(crate::skill::package_skill_directory(&root)?);
+        entries.push(SkillTransferEntry {
+            skill_id: row.skill.id.clone(),
+            digest: row.skill.digest.clone(),
+            scope: row.skill.scope.clone(),
+            state: row.effective_state,
+        });
+    }
+    Ok(RemoteSkillSet {
+        manifest: SkillTransferManifest {
+            catalog_revision: catalog.revision,
+            project_id: Some(project_id.to_string()),
+            skills: entries,
+        },
+        packages: crate::skill::transfer::unique_payloads(packages),
+        names: crate::skill::leased_names::LeasedSkillNames::from_projections(
+            catalog.revision,
+            rows,
+        ),
+    })
+}
 impl RemoteSkillTurn {
     pub(super) fn hidden_context(
         &self,
@@ -148,6 +197,20 @@ impl RemoteSkillTurn {
     }
 }
 impl SkillDispatchService {
+    fn prepare_remote_launch(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<RemoteSkillSet>, DaemonError> {
+        if !self.catalog_available() {
+            return Ok(None);
+        }
+        let service = self.catalog()?;
+        let catalog = service.storage.snapshot()?;
+        let session = self.sessions.get_session(session_id)?;
+        let rows = crate::skill::resolver::projections(&catalog, Some(session.project_id()), &[]);
+        let set = remote_skill_set(&service, &catalog, session.project_id(), &rows)?;
+        Ok((!set.manifest.skills.is_empty()).then_some(set))
+    }
     fn remote_turn_needs_native_inventory(
         &self,
         session_id: &str,
@@ -269,30 +332,7 @@ impl SkillDispatchService {
             })
             .cloned()
             .collect();
-        let mut ids: BTreeSet<&str> = auto_rows.iter().map(|row| row.skill.id.as_str()).collect();
-        ids.extend(
-            context
-                .loaded
-                .iter()
-                .filter(|body| !matches!(body.delivery, SkillDelivery::ProvidedBy { .. }))
-                .map(|body| body.skill_id.as_str()),
-        );
-        let mut entries = Vec::new();
-        let mut packages = Vec::new();
-        for id in ids {
-            let row = rows
-                .iter()
-                .find(|row| row.skill.id == id)
-                .ok_or_else(|| failure("selected skill is not in the catalog"))?;
-            let root = service.verified_package_root(&row.skill)?;
-            packages.push(crate::skill::package_skill_directory(&root)?);
-            entries.push(SkillTransferEntry {
-                skill_id: row.skill.id.clone(),
-                digest: row.skill.digest.clone(),
-                scope: row.skill.scope.clone(),
-                state: row.effective_state,
-            });
-        }
+        let set = remote_skill_set(&service, &catalog, project_id, &rows)?;
         let run_id = leased_run_id(leased_agent_id);
         let mut authority = SkillTurnAuthority {
             catalog_revision: catalog.revision,
@@ -355,16 +395,11 @@ impl SkillDispatchService {
                 |_| Ok(authority.clone()),
             )?;
         }
-        if entries.is_empty() && context.native_selections.is_empty() {
+        if set.manifest.skills.is_empty() && context.native_selections.is_empty() {
             return Ok(None);
         }
         Ok(Some(RemoteSkillTurn {
-            manifest: SkillTransferManifest {
-                catalog_revision: catalog.revision,
-                project_id: Some(project_id.to_string()),
-                skills: entries,
-            },
-            packages: crate::skill::transfer::unique_payloads(packages),
+            set,
             auto_rows,
             loaded: context
                 .loaded
@@ -520,6 +555,15 @@ impl SkillPromptBridge for SkillDispatchService {
         batch: &crate::provider::ProviderPromptSignalBatch,
     ) -> Result<(), DaemonError> {
         self.record_tool_receipts(run, batch)
+    }
+    fn acknowledge_typed_leased(
+        &self,
+        _run: &RuntimeProviderRun,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        prompt_id: &str,
+        skills: &[crate::provider::skill_delivery::TypedSkillLoad],
+    ) -> Result<(), DaemonError> {
+        self.forward_typed_delivery(context, prompt_id, skills)
     }
     fn prepare(
         &self,

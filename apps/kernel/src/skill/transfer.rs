@@ -1,7 +1,9 @@
 //! MP-08 / MP-10 / MP-11: verified instruction caches, never worker catalogs/grants.
 use super::{
     catalog::{failure, validate_id},
-    package::{materialize_skill_package_for_id, package_skill_directory, verify_package},
+    package::{
+        instruction_body, materialize_skill_package_for_id, package_skill_directory, verify_package,
+    },
     paths::{existing_owned_directory, owned_directory},
     v2::*,
     CharioxSkillPackage,
@@ -144,6 +146,37 @@ pub fn materialize_received_packages(
         });
     }
     Ok(materialized)
+}
+/// A skill read back from one execution's verified cache.
+pub(crate) struct CachedSkill {
+    pub root: PathBuf,
+    pub body: String,
+}
+/// Reads only this binding's exact ID+digest directory and re-verifies its complete
+/// content: a model-writable cache cannot serve a body the home never transferred.
+pub(crate) fn read_cached_skill(
+    home: &Path,
+    context: &RemoteSkillSyncContext,
+    lease_id: &str,
+    skill_id: &str,
+    digest: &str,
+) -> Result<CachedSkill, DaemonError> {
+    validate_id(skill_id)?;
+    let relative = binding_relative(context, lease_id)?
+        .join(skill_id)
+        .join(digest);
+    let root = existing_owned_directory(home, &relative)
+        .map_err(|_| failure("skill execution cache is missing or invalid; resend the exact package before submitting"))?;
+    let package = package_skill_directory(&root)?;
+    if package.version_hash != digest {
+        return Err(failure(
+            "skill execution cache content mismatch; submission refused",
+        ));
+    }
+    Ok(CachedSkill {
+        body: instruction_body(&package)?,
+        root,
+    })
 }
 /// Receipts prove materialization only, never provider delivery or a Loaded state.
 /// Keep the same check at every sender; no caller may accept a merely matching name.
