@@ -11,7 +11,7 @@ use super::inventory::InventorySource;
 use crate::local::{GatewayMachine, GatewayMachineStatus};
 
 /// The capability a kernel advertises when it enforces `on_behalf_of`.
-pub(crate) const GATEWAY_CAPABILITY: &str = "machine_gateway_v1";
+const GATEWAY_CAPABILITY: &str = "machine_gateway_v1";
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct Seen {

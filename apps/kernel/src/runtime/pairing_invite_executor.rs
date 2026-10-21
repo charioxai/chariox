@@ -119,7 +119,9 @@ pub(crate) async fn execute_pairing_request(
         }
         // The owner lets a revoked gateway back in: the same list that revoked it records it again.
         LocalDaemonRequest::RecordPairedClient(request)
-            if request.client_id.starts_with(super::machine_gateway::origins::CLIENT_PREFIX) =>
+            if request
+                .client_id
+                .starts_with(super::machine_gateway::origins::CLIENT_PREFIX) =>
         {
             let thumbprint =
                 &request.client_id[super::machine_gateway::origins::CLIENT_PREFIX.len()..];
