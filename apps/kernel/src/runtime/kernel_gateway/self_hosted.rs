@@ -21,8 +21,24 @@ use crate::local::{
 
 const PROBE_DEADLINE: Duration = Duration::from_secs(5);
 
-/// What a kernel advertises (for example `kernel_gateway_v1`), from its status answer.
-pub(super) async fn capabilities_of(link: &Link) -> Result<Vec<String>, LinkFailure> {
+/// What a paired kernel says about itself in its status answer.
+pub(super) struct TargetStatus {
+    pub(super) capabilities: Vec<String>,
+    pub(super) kernel_alias: Option<String>,
+    pub(super) machine_alias: Option<String>,
+}
+
+impl TargetStatus {
+    /// Takes the names the kernel gives itself: the pairing link only carried its ids.
+    pub(super) fn apply_to(self, presence: &mut RelayKernelPresence) {
+        presence.capabilities = self.capabilities;
+        presence.kernel_alias = self.kernel_alias.or(presence.kernel_alias.take());
+        presence.machine_alias = self.machine_alias.or(presence.machine_alias.take());
+    }
+}
+
+/// The status of a kernel (capabilities such as `kernel_gateway_v1`, and its aliases).
+pub(super) async fn status_of(link: &Link) -> Result<TargetStatus, LinkFailure> {
     let request = serde_json::to_vec(
         &serde_json::json!({"request": LocalDaemonRequest::RelayStatus(RelayStatusRequest)}),
     )
@@ -33,11 +49,24 @@ pub(super) async fn capabilities_of(link: &Link) -> Result<Vec<String>, LinkFail
         REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
     let answer = link.request(request_id, &request, PROBE_DEADLINE).await?;
-    Ok(serde_json::from_slice::<Value>(&answer)
-        .ok()
-        .and_then(|value| value.pointer("/RelayStatus/status/capabilities").cloned())
-        .and_then(|capabilities| serde_json::from_value(capabilities).ok())
-        .unwrap_or_default())
+    let answer = serde_json::from_slice::<Value>(&answer).unwrap_or(Value::Null);
+    let status = |key: &str| {
+        answer
+            .pointer(&format!("/RelayStatus/status/{key}"))
+            .cloned()
+    };
+    let text = |key: &str| {
+        status(key)
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .filter(|value| !value.trim().is_empty())
+    };
+    Ok(TargetStatus {
+        capabilities: status("capabilities")
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default(),
+        kernel_alias: text("daemon_alias"),
+        machine_alias: text("machine_alias"),
+    })
 }
 
 /// The one paired kernel `name` means; unknown and ambiguous are errors.
@@ -64,42 +93,53 @@ impl KernelGateway {
         if !self.is_self_hosted() {
             return self.directory.kernels().await;
         }
-        let paired = self.paired.all()?;
-        let known: Vec<RelayKernelPresence> = paired
-            .iter()
-            .map(|target| target.presence.clone())
-            .collect();
-        let known: Vec<&RelayKernelPresence> = known.iter().collect();
-        let names: Vec<String> = known
-            .iter()
-            .map(|presence| names::display_name(presence, &known))
-            .collect();
+        let probed = join_all(
+            self.paired
+                .all()?
+                .into_iter()
+                .map(|target| self.probe(target)),
+        )
+        .await;
+        let known: Vec<&RelayKernelPresence> =
+            probed.iter().map(|probed| &probed.presence).collect();
         Ok(names::grouped(
-            join_all(
-                paired
-                    .into_iter()
-                    .zip(names)
-                    .map(|(target, name)| self.probe(target, name)),
-            )
-            .await,
+            probed
+                .iter()
+                .map(|probed| GatewayKernel {
+                    name: names::display_name(&probed.presence, &known),
+                    label: names::label(&probed.presence),
+                    kernel_id: probed.presence.kernel_id.clone(),
+                    machine_id: probed.presence.machine_id.clone(),
+                    machine_alias: probed.presence.machine_alias.clone(),
+                    status: if probed.online {
+                        GatewayKernelStatus::Online
+                    } else {
+                        GatewayKernelStatus::Offline
+                    },
+                    last_seen_ms: probed.last_seen_ms,
+                    gateway_ready: is_gateway_ready(&probed.presence),
+                    via: GatewayKernelVia::SelfHosted,
+                })
+                .collect(),
         ))
     }
 
-    async fn probe(&self, target: PairedKernel, name: String) -> GatewayKernel {
+    /// Asks one paired kernel for its status over its own link and keeps what it says.
+    async fn probe(&self, target: PairedKernel) -> Probed {
         let mut presence = target.presence;
-        let answered = match self.link_for(&name, &presence).await {
-            Ok(link) => capabilities_of(&link).await.ok(),
+        let answered = match self.link_for(&presence.kernel_id, &presence).await {
+            Ok(link) => status_of(&link).await.ok(),
             Err(_) => None,
         };
-        let now = crate::session::unix_epoch_ms();
         let online = answered.is_some();
-        if let Some(capabilities) = answered {
+        if let Some(status) = answered {
             self.last_answer
                 .lock()
                 .expect("last answer poisoned")
-                .insert(presence.kernel_id.clone(), now);
-            if capabilities != presence.capabilities {
-                presence.capabilities = capabilities;
+                .insert(presence.kernel_id.clone(), crate::session::unix_epoch_ms());
+            let before = presence.clone();
+            status.apply_to(&mut presence);
+            if presence != before {
                 // The pairing stays valid whether or not the update could be stored.
                 let _ = self.paired.save(PairedKernel {
                     presence: presence.clone(),
@@ -115,22 +155,18 @@ impl KernelGateway {
             .get(&presence.kernel_id)
             .copied()
             .unwrap_or(0);
-        GatewayKernel {
-            name,
-            label: names::label(&presence),
-            kernel_id: presence.kernel_id.clone(),
-            machine_id: presence.machine_id.clone(),
-            machine_alias: presence.machine_alias.clone(),
-            status: if online {
-                GatewayKernelStatus::Online
-            } else {
-                GatewayKernelStatus::Offline
-            },
+        Probed {
+            presence,
+            online,
             last_seen_ms,
-            gateway_ready: is_gateway_ready(&presence),
-            via: GatewayKernelVia::SelfHosted,
         }
     }
+}
+
+struct Probed {
+    presence: RelayKernelPresence,
+    online: bool,
+    last_seen_ms: u64,
 }
 
 #[cfg(test)]
@@ -176,5 +212,30 @@ mod tests {
         let ambiguous = named(&kernels, "shared").unwrap_err();
         assert_eq!(ambiguous.code(), "kernel_ambiguous");
         assert!(ambiguous.message().contains("k-x") && ambiguous.message().contains("k-y"));
+    }
+
+    // A pairing link carries ids only; the kernel's own status gives the names `--kernel` accepts.
+    #[test]
+    fn the_names_a_kernel_gives_itself_replace_the_ids_the_link_carried() {
+        let mut presence = paired("k-x", None, None).presence;
+        TargetStatus {
+            capabilities: vec!["kernel_gateway_v1".into()],
+            kernel_alias: Some("dev".into()),
+            machine_alias: Some("b3".into()),
+        }
+        .apply_to(&mut presence);
+        assert_eq!(presence.kernel_alias.as_deref(), Some("dev"));
+        assert_eq!(presence.machine_alias.as_deref(), Some("b3"));
+        assert_eq!(presence.capabilities, ["kernel_gateway_v1"]);
+        // A status that names nothing keeps what was learned before.
+        TargetStatus {
+            capabilities: Vec::new(),
+            kernel_alias: None,
+            machine_alias: None,
+        }
+        .apply_to(&mut presence);
+        assert_eq!(presence.kernel_alias.as_deref(), Some("dev"));
+        assert_eq!(presence.machine_alias.as_deref(), Some("b3"));
+        assert!(presence.capabilities.is_empty());
     }
 }

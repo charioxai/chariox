@@ -10,7 +10,7 @@ use serde_json::Value;
 use super::error::GatewayError;
 use super::link::{Link, LinkParams};
 use super::paired::PairedKernel;
-use super::self_hosted::capabilities_of;
+use super::self_hosted::status_of;
 use super::{map_failure, map_open_failure, KernelGateway, REQUEST_COUNTER};
 use crate::local::{
     GatewayKernel, GatewayKernelStatus, GatewayKernelVia, JoinKernelLinkRequest,
@@ -110,7 +110,7 @@ impl KernelGateway {
                 "the kernel did not admit this kernel's key; it may run an older Chariox kernel. Update it and make a new link.",
             ));
         }
-        let presence = RelayKernelPresence {
+        let mut presence = RelayKernelPresence {
             kernel_id: token.target_daemon_id.clone(),
             machine_id: token.issuer_machine_id.clone(),
             machine_alias: None,
@@ -118,12 +118,15 @@ impl KernelGateway {
             kernel_alias: token.target_daemon_alias.clone(),
             available_providers: Vec::new(),
             provider_accounts: Vec::new(),
-            capabilities: capabilities_of(&link).await.unwrap_or_default(),
+            capabilities: Vec::new(),
             accepting_remote_leases: false,
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: link.target_public_key().to_string(),
         };
+        if let Ok(status) = status_of(&link).await {
+            status.apply_to(&mut presence);
+        }
         let mut known: Vec<RelayKernelPresence> = self
             .paired
             .all()?

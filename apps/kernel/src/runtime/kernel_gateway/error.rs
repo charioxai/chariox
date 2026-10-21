@@ -74,7 +74,7 @@ impl GatewayError {
                 "No kernel is named \"{name}\". Run `chariox kernels` to list the kernels you can use."
             ),
             Self::Ambiguous { name, candidates } => format!(
-                "\"{name}\" matches several kernels ({}). Run `chariox kernels` and use a kernel id.",
+                "\"{name}\" matches several kernels: {}. Name one of them as `<machine>/<label>` (see `chariox kernels`) or by its kernel id.",
                 candidates.join(", ")
             ),
             Self::Offline { name } => format!(
