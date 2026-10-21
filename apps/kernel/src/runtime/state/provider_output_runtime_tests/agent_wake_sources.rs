@@ -825,3 +825,94 @@ async fn event_tools_cancel_a_timer_and_block_for_the_owner() {
     .unwrap();
     assert_eq!(f.task(&task.task_id).state, ExecutionState::Blocked);
 }
+
+/// A02-S03: an urgent message to an agent its owner stopped does not start a
+/// turn; it waits, shown once to the room, until the owner prompts it again.
+#[tokio::test]
+async fn urgent_message_to_an_owner_stopped_agent_waits_for_the_owner() {
+    let f = fixture("a02-stopped-receiver", false).await;
+    let stopped = f.begin("stopped-turn");
+    f.store()
+        .agent_lifecycle(Operation::CancelTask {
+            task: stopped.task_id.clone(),
+            owner: "local".into(),
+            revision: stopped.revision,
+        })
+        .unwrap();
+    let mut message = crate::durable_state::agent_lifecycle::occurrence(
+        &f.room,
+        &f.agent,
+        "peer-agent",
+        "urgent-after-stop",
+        "message",
+        serde_json::json!({"message": "status now"}),
+    );
+    message.urgent = true;
+    let Outcome::Event(message) = f
+        .store()
+        .agent_lifecycle(Operation::Occur(message))
+        .unwrap()
+    else {
+        panic!("event")
+    };
+    let inbox_state = |f: &Fixture| {
+        f.store()
+            .agent_inbox(&f.room, &f.agent, 0)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.sequence == message.sequence)
+            .unwrap()
+    };
+
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.agent)
+        .await
+        .unwrap();
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.agent)
+        .await
+        .unwrap();
+
+    let held = inbox_state(&f);
+    assert_eq!(held.state, "pending", "{held:?}");
+    assert!(
+        held.prompt_id.is_none(),
+        "no turn started for a stopped agent: {held:?}"
+    );
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert!(f
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &f.agent)
+        .is_none());
+    let notices = f.notices();
+    assert_eq!(
+        notices.matches("which you stopped").count(),
+        1,
+        "the waiting message is shown once: {notices}"
+    );
+
+    // The owner's next prompt lifts the stop; the message follows it.
+    let next = f.begin("owner-next");
+    f.store()
+        .agent_lifecycle(Operation::Settle {
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            prompt: next.prompt_id.clone(),
+            run: f.run.clone(),
+            has_answer: true,
+            cancelled: false,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.agent)
+        .await
+        .unwrap();
+    assert!(
+        inbox_state(&f).prompt_id.is_some(),
+        "delivered after the owner's prompt: {:?}",
+        inbox_state(&f)
+    );
+}

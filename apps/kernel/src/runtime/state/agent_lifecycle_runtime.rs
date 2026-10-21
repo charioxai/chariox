@@ -571,7 +571,7 @@ impl KernelRuntimeState {
         }
     }
     /// Notices name the agent the way the owner does, never by task id.
-    fn agent_notice_name(&self, agent_id: &str) -> String {
+    pub(super) fn agent_notice_name(&self, agent_id: &str) -> String {
         self.owned
             .agent_store
             .get_agent(agent_id)
@@ -878,14 +878,7 @@ impl KernelRuntimeState {
                     }
                     _ if obligation.tracks_workflow_run() => self
                         .owned
-                        .agent_workflow_source(&session, source)?
-                        .map(|r| match r.status() {
-                            crate::session::WorkflowRunStatus::Completed => Some(true),
-                            crate::session::WorkflowRunStatus::Failed
-                            | crate::session::WorkflowRunStatus::Stopped => Some(false),
-                            _ => None,
-                        })
-                        .unwrap_or(Some(false)),
+                        .agent_workflow_obligation_outcome(&session, source)?,
                     super::HANDOFF_OBLIGATION_KIND => {
                         self.reconcile_handoff(&session, source).await
                     }
