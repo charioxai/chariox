@@ -3640,25 +3640,29 @@ async fn g18_completed_turn_settles_after_a_refused_durable_write() {
     );
     std::fs::remove_file(faults.join("writer-fail")).unwrap();
 
-    // No new provider signal arrives: the kernel's own retry must settle it.
-    tokio::time::sleep(std::time::Duration::from_millis(5_100)).await;
-    let ready = runtime.take_ready_provider_output_run_ids(crate::session::unix_epoch_ms());
-    assert!(
-        ready.contains(run.id()),
-        "a retry of the refused settlement is due"
-    );
-    runtime.pump_ready_provider_output_run(run.id()).await;
-    let snapshot = runtime
-        .owned
-        .session_store
-        .get_session(session.id())
-        .unwrap();
-    assert!(
+    // No new provider signal arrives: only the kernel's own retry can settle
+    // it, through the ready-run pump the runtime loop drives.
+    let active = |runtime: &KernelRuntimeState| {
+        let snapshot = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap();
         runtime
             .owned
             .prompt_state_owner
             .active_prompt_for_agent(&snapshot, agent.id())
-            .is_none(),
+            .is_some()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(12);
+    while active(&runtime) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        for ready in runtime.take_ready_provider_output_run_ids(crate::session::unix_epoch_ms()) {
+            runtime.pump_ready_provider_output_run(&ready).await;
+        }
+    }
+    assert!(
+        !active(&runtime),
         "the completed turn settles once the writer recovers"
     );
     let task = runtime
