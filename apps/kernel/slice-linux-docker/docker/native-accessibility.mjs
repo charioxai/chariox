@@ -15,7 +15,7 @@ export class NativeAccessibility {
     const raw=await this.execute({op:'accessibility',processes,...(browser_processes?{browser_processes}:{})},binding.environment,signal);
     if(signal?.aborted || this.binding()!==binding)throw new Error('MP-11: stale accessibility surface');
     const tree=redactObservation(raw,policy?.values??[]);
-    return {tree,binding,processes,rawDigest:createHash('sha256').update(JSON.stringify(canonical(raw))).digest('hex'),digest:createHash('sha256').update(JSON.stringify([binding.surface_id,binding.generation,tree,canonical(policy??{})])).digest('hex')};
+    return {tree,binding,processes,rawDigest:createHash('sha256').update(JSON.stringify(canonical(raw))).digest('hex'),digest:createHash('sha256').update(JSON.stringify([binding.surface_id,binding.generation,tree,canonical(policy?.values??[])])).digest('hex')};
   }
   async snapshot(observer,policy,{signal}={}){
     const {tree,binding,digest}=await this.read(policy,signal);
@@ -41,7 +41,7 @@ export class NativeAccessibility {
     for(const node of candidates){
       if(nodes.length>=64)break;
       const target_id=`atspi-${randomUUID()}`;
-      const protectedNode=Boolean(node.protected || node.role==='password text' || policy?.targets?.length);
+      const protectedNode=Boolean(node.protected || node.role==='password text');
       const projected={target_id,role:node.role,name:protectedNode?'[protected]':node.name,states:node.states??[],bounds:node.desktop_bounds??node.bounds,actions:protectedNode?[]:node.actions??[]};
       const size=Buffer.byteLength(JSON.stringify(projected))+1;
       // MP-08: MCP duplicates and pretty-prints this payload; history caps at12KiB.
@@ -57,7 +57,7 @@ export class NativeAccessibility {
   async action(observer,command,policy,{signal}={}){
     const observed=this.observers.get(observer),target=observed?.handles.get(command.target_id);
     if(!target || observed.revision!==command.tree_revision)throw new UserDomainRefusal('stale_reference');
-    if(target.protected || policy?.targets?.length || !target.actions.includes(command.action))throw new UserDomainRefusal('not_granted');
+    if(target.protected || !target.actions.includes(command.action))throw new UserDomainRefusal('not_granted');
     const {digest,binding,processes,rawDigest}=await this.read(policy,signal);
     if(digest!==observed.digest){this.observers.delete(observer);throw new UserDomainRefusal('stale_reference');}
     // MP-11: dispatch may apply an effect and then fail. Consume before sending.

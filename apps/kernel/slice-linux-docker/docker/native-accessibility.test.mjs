@@ -49,22 +49,35 @@ test('MP-11 password nodes and policy values never enter target names',async()=>
  const result=await native.snapshot('agent:a',{values:['private-canary']});assert(!JSON.stringify(result).includes('private-canary'));assert.equal(result.nodes[0].name,'[protected]');assert.deepEqual(result.nodes[0].actions,[]);
 });
 
-test('MP-11 target protection invalidates cached snapshots and direct old handles on an unchanged tree', async () => {
-  let actions = 0;
+test('a Vault fill keeps unrelated native accessibility actions available and the filled value masked', async () => {
+  const applied = [];
+  const vault = { values: ['vault-secret'], targets: [{ kind: 'native', target: { focus_window: 1, active_window: 2 } }], unknown: false };
+  const rows = { available: true, complete: true, protected: false, nodes: [
+    { ...tree.nodes[0], name: 'Save', actions: ['click'] },
+    { ...tree.nodes[0], path: [1], name: 'echo vault-secret', actions: ['click'] },
+    { ...tree.nodes[0], path: [2], role: 'password text', name: '[protected]', actions: [], protected: true },
+  ] };
   const native = new NativeAccessibility({ binding: () => binding, execute: async request => {
-    if (request.op === 'accessibility_action') { actions++; return { applied: true }; }
-    return structuredClone(tree);
+    if (request.op === 'accessibility_action') { applied.push(request.path); return { applied: true }; }
+    return structuredClone(rows);
   } });
-  const before = await native.snapshot('agent:a', {});
-  const policy = { targets: [{ target_id: 'password-field' }] };
-  await assert.rejects(native.action('agent:a', {
-    target_id: before.nodes[0].target_id, tree_revision: before.tree_revision, action: 'click',
-  }, policy));
-  const after = await native.snapshot('agent:a', policy);
-  assert.notEqual(after.tree_revision, before.tree_revision);
-  assert.equal(after.nodes[0].name, '[protected]');
-  assert.deepEqual(after.nodes[0].actions, []);
-  assert.equal(actions, 0);
+  const snapshot = await native.snapshot('agent:a', vault);
+  assert(!JSON.stringify(snapshot).includes('vault-secret'));
+  assert.deepEqual(snapshot.nodes.map(node => node.name), ['Save', 'echo [redacted]', '[protected]']);
+  assert.deepEqual(snapshot.nodes[0].actions, ['click']);
+  assert.deepEqual(snapshot.nodes[2].actions, []);
+  assert.equal((await native.action('agent:a', { target_id: snapshot.nodes[0].target_id, tree_revision: snapshot.tree_revision, action: 'click' }, vault)).applied, true);
+  assert.deepEqual(applied, [[0]]);
+  const fresh = await native.snapshot('agent:a', vault);
+  await assert.rejects(native.action('agent:a', { target_id: fresh.nodes[2].target_id, tree_revision: fresh.tree_revision, action: 'click' }, vault), error => error.code === 'user_domain_not_granted');
+  assert.deepEqual(applied, [[0]]);
+});
+
+test('a Vault fill after a snapshot does not stale an unrelated handle on an unchanged tree', async () => {
+  const native = new NativeAccessibility({ binding: () => binding, execute: async request => request.op === 'accessibility_action' ? { applied: true } : structuredClone(tree) });
+  const before = await native.snapshot('agent:a', { values: [], targets: [] });
+  const filled = { values: [], targets: [{ kind: 'native', target: {} }] };
+  assert.equal((await native.action('agent:a', { target_id: before.nodes[0].target_id, tree_revision: before.tree_revision, action: 'click' }, filled)).applied, true);
 });
 
 test('MP-08 stale handles expose the existing typed refusal instead of a generic backend failure', async () => {
