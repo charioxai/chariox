@@ -89,7 +89,8 @@ jobs:
 
       - name: Install Python test dependencies
         # python3-pil: observation masks. python3-av/ffmpeg: browser display codec tests.
-        run: sudo apt-get update && sudo apt-get install -y python3-pil python3-av ffmpeg
+        # python3-xlib: the native X11 input, clipboard and accessibility modules.
+        run: sudo apt-get update && sudo apt-get install -y python3-pil python3-xlib python3-av ffmpeg
 
       - name: Test Python scripts
         # Every tracked Python test runs as its own script with the runner's
@@ -97,6 +98,8 @@ jobs:
         # Excluded: these import the hash-pinned Selkies runtime (aiohttp,
         # psutil), which exists only in the slice image venv. The slice image
         # build runs docker/test_*.py (test_slice_selkies.py) in that venv.
+        # apps/browser-display/lan-kit-probe.test.py chroots, so it runs in the
+        # root-only step below.
         #   apps/kernel/slice-linux-docker/docker/canonical-display.test.py
         #   apps/kernel/slice-linux-docker/docker/test_slice_selkies.py
         #   apps/kernel/slice-linux-docker/docker/test_slice_keyboard_overlays.py
@@ -109,7 +112,8 @@ jobs:
             case "$test_file" in
               apps/kernel/slice-linux-docker/docker/canonical-display.test.py | \
               apps/kernel/slice-linux-docker/docker/test_slice_selkies.py | \
-              apps/kernel/slice-linux-docker/docker/test_slice_keyboard_overlays.py) continue ;;
+              apps/kernel/slice-linux-docker/docker/test_slice_keyboard_overlays.py | \
+              apps/browser-display/lan-kit-probe.test.py) continue ;;
             esac
             count=$((count + 1))
             echo "::group::$test_file"
@@ -137,6 +141,7 @@ jobs:
           failed=0
           for test_file in \
             scripts/docker-admission-lock.test.py \
+            apps/browser-display/lan-kit-probe.test.py \
             apps/kernel/slice-linux-docker/test_development_workspace_access.py
           do
             sudo python3 -B "$test_file" || failed=1
@@ -160,6 +165,17 @@ jobs:
 
       - name: Verify source revision
         run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Add swap for the kernel test build
+        # MP-08/MP-10: rustc peaks near 18 GiB resident while compiling the
+        # chariox-kernel test crate, more than the hosted runner's RAM; the
+        # unswapped runner killed the build with SIGTERM (exit 143).
+        run: |
+          sudo fallocate -l 24G /mnt/chariox-swap
+          sudo chmod 600 /mnt/chariox-swap
+          sudo mkswap /mnt/chariox-swap
+          sudo swapon /mnt/chariox-swap
+          free -h
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable

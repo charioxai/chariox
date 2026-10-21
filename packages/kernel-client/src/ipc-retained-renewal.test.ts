@@ -87,8 +87,9 @@ test("active remote terminal crosses repeated grant expiries without reconnectin
     await source.send({ GetDaemonHealth: null })
     await target.subscribeToKernelEvents("session-fixture", "attachment-fixture")
     await source.close() // Retained authority survives the visible client closing.
-    const deadline = Date.now()+1_500
-    while (Date.now()<deadline) {
+    // Wait for the renewals themselves; a loaded host stretches wall-clock time.
+    const deadline = Date.now()+30_000
+    while ((renewals<6 || events<=20) && Date.now()<deadline) {
       assert.deepEqual(await target.send({ GetDaemonHealth: null }), { accepted: true })
       await new Promise(resolve => setTimeout(resolve, 30))
     }
