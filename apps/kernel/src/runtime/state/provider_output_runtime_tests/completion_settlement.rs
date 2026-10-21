@@ -333,7 +333,7 @@ async fn a02_r3_taskless_rejection_timeout_projects_owner_action() {
             .terminal_stream
             .drain_notice_records(session.id(), attachment.id())
             .iter()
-            .any(|r| r.message.contains("Blocked:")),
+            .any(|r| r.message.contains("Needs your help.")),
         "the timeout must emit a notice to the attached client"
     );
 }

@@ -104,7 +104,8 @@ impl KernelRuntimeState {
             Err(error) => Some(format!("The Vault unlock failed: {error}")),
             _ => None,
         };
-        self.end_vault_wait(session_id, waiting, refusal).await;
+        // Boxed: callers hold this future across their own awaits and must stay small (MD-4).
+        Box::pin(self.end_vault_wait(session_id, waiting, refusal)).await;
         result
     }
 }
