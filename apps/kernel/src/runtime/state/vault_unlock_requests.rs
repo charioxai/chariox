@@ -94,11 +94,13 @@ impl KernelRuntimeState {
                 }
             }
         };
+        // An unanswered popup times out and is asked again by whoever needs the Vault; only an
+        // answer that refuses it (or a failure) ends the waiting task.
         let refusal = match &result {
-            Ok(Some(resolution)) if resolution.status == "timed_out" => {
-                Some("The Vault unlock timed out".to_owned())
-            }
-            Ok(Some(resolution)) if !matches!(resolution.choice_id.as_deref(), Some(choice) if choice != "cancel") => {
+            Ok(Some(resolution))
+                if resolution.status != "timed_out"
+                    && !matches!(resolution.choice_id.as_deref(), Some(choice) if choice != "cancel") =>
+            {
                 Some("The Vault unlock was declined".to_owned())
             }
             Err(error) => Some(format!("The Vault unlock failed: {error}")),

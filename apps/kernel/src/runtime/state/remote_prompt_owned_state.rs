@@ -1490,6 +1490,35 @@ mod tests {
         std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
     }
 
+    // An unanswered popup times out and is asked again; that is not the owner declining.
+    #[tokio::test]
+    async fn timed_out_vault_popup_does_not_block_the_waiting_completion_check() {
+        use crate::durable_state::agent_lifecycle::ExecutionState;
+        let (runtime, session, _agent, vault, unlock, _check) =
+            vault_wait_fixture("vault-timeout").await;
+        let card = vault_popup(&runtime, &session).await;
+        runtime
+            .timeout_runtime_interaction(&session, &card)
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(10), unlock)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        let task = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(None, None)
+            .unwrap()
+            .remove(0);
+        assert_eq!(task.state, ExecutionState::Working, "{}", task.reason);
+        assert_eq!(task.reason, "Evaluating original goal objective");
+        std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
+    }
+
     #[tokio::test]
     async fn declined_vault_unlock_blocks_the_waiting_completion_check_with_its_reason() {
         use crate::durable_state::agent_lifecycle::ExecutionState;
