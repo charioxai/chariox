@@ -54,26 +54,6 @@ impl KernelRuntimeOwnedState {
         let Outcome::Task(task) = self.durable_state_store.agent_lifecycle(operation)? else {
             unreachable!()
         };
-        // A workflow node turn completes through its validated handoff or final
-        // output; a plain check could only see that handoff after the node completes.
-        // A native provider TUI settles definitively at turn end: no completion-check turn
-        // would be typed into the TUI the person is driving.
-        let native_tui = self
-            .provider_store
-            .get_latest_run_for_agent(&prepared.session_id, prepared.prompt.target_agent_id())
-            .is_some_and(|run| {
-                run.client_interface() == crate::provider::ProviderClientInterface::NativeTui
-            });
-        if !existed
-            && !native_tui
-            && prepared.prompt.workflow_run_id().is_none()
-            && super::agent_goal_runtime::parse_goal_prompt(prepared.prompt.prompt())?.is_none()
-        {
-            self.durable_state_store
-                .agent_lifecycle(Operation::EnableCompletionCheck {
-                    task: task.task_id.clone(),
-                })?;
-        }
         self.bind_agent_workflow_task(&task, &prepared.prompt)?;
         Ok(!existed)
     }
@@ -220,22 +200,6 @@ impl KernelRuntimeOwnedState {
                         return Ok(Some((task, false)));
                     }
                 }
-            }
-        }
-        if !cancelled
-            && self
-                .provider_run_projection
-                .get(run)
-                .is_some_and(|run| !crate::provider::provider_run_uses_structured_prompt_io(&run))
-        {
-            if let Some(task) = self
-                .durable_state_store
-                .agent_tasks(Some(room), Some(agent))?
-                .into_iter()
-                .find(|t| t.prompt_id == prompt.id())
-            {
-                self.durable_state_store
-                    .agent_lifecycle(Operation::DisableCompletionCheck { task: task.task_id })?;
             }
         }
         let entries = self
@@ -887,8 +851,12 @@ impl KernelRuntimeState {
                     .durable_state_store
                     .agent_has_live_wake_admission(&task, crate::session::unix_epoch_ms)?
             {
-                if let Outcome::Task(task) = self.owned.durable_state_store.agent_lifecycle(Operation::Block{task:task.task_id,prompt:task.prompt_id,reason:"No live provider turn or confirmed wake delivery; owner must reconcile and resume".into()})? {
-                    blocked.push(task);
+                if let Some(ended) = ledger::end_failed_turn(
+                    &self.owned.durable_state_store,
+                    &task,
+                    "No live provider turn or confirmed wake delivery; owner must reconcile and resume".into(),
+                )? {
+                    blocked.push(ended);
                 }
             }
         }

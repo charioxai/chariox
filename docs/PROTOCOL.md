@@ -863,7 +863,10 @@ bindings. Achieved requires no open, settling or failed obligations. Valid
 continue retains sources and admits one durable continuation; valid waiting
 requires coverage and a deadline no later than the goal interval. Both immediate
 continuations and periodic wakes share the no-progress guard. Malformed/timeout
-checks block once with explicit owner recovery. Plain tasks gain no goal loop.
+checks block once with explicit owner recovery. A plain turn (no goal, obligation
+or wait) only gets a task row and its task id in hidden context: it is never
+checked, corrected, held to a wait or blocked, and a failed plain turn is
+cancelled.
 
 Owner controls use the existing `SubmitPrompt` frame:
 `/goal pause|resume|cancel|interval|edit <goal-id> <task-revision> [value]`.

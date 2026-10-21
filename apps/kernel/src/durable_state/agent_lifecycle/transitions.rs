@@ -25,8 +25,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             next_prompt,
             now,
         } => super::continuations::prepare_catalog(tx, room, agent, prompt, run, next_prompt, now),
-        Operation::EnableCompletionCheck { task } => super::completion::admit(tx, task),
-        Operation::DisableCompletionCheck { task } => super::completion::withdraw(tx, task),
         Operation::AdoptGoal {
             owner,
             room,
@@ -128,10 +126,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     != if t.goal.as_ref().is_some_and(|g| {
                         g.check_count == 0 && g.continuation_sequence == 0 && !g.paused
                     }) && t.provider_run_id.is_none()
-                        || t.completion_check
-                            .as_ref()
-                            .is_some_and(|c| c.check_count == 0)
-                            && t.provider_run_id.is_none()
                     {
                         2
                     } else {
@@ -420,6 +414,28 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             save(tx, &t)?;
             Ok(Outcome::Task(t))
         }
+        Operation::EndFailedTurn {
+            task,
+            prompt,
+            reason,
+        } => {
+            let mut t = load(tx, &task)?;
+            if t.prompt_id != prompt || t.state != ExecutionState::Working {
+                return Err(error("stale failed-turn intent"));
+            }
+            super::goals::clock(&mut t, crate::session::unix_epoch_ms());
+            t.reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
+            if is_plain(tx, &t)? {
+                t.state = ExecutionState::Cancelled;
+                t.pending_prompt_id = None;
+            } else {
+                t.state = ExecutionState::Blocked;
+                t.blocked_revision = t.revision + 1;
+            }
+            t.revision += 1;
+            save(tx, &t)?;
+            Ok(Outcome::Task(t))
+        }
         Operation::Settle {
             room,
             agent,
@@ -444,11 +460,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     correction: false,
                 });
             }
-            if !cancelled
-                && t.state == ExecutionState::Working
-                && (t.goal.is_some()
-                    || (t.completion_check.is_some() && has_answer && t.wait.is_none()))
-            {
+            if !cancelled && t.state == ExecutionState::Working && t.goal.is_some() {
                 let correction = super::goals::work_end(&mut t, has_answer, now);
                 t.provider_run_id = Some(run);
                 t.revision += 1;
@@ -495,7 +507,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 } else {
                     false
                 };
-                if !open && has_answer && t.wait.is_none() {
+                if is_plain(tx, &t)? || (!open && has_answer && t.wait.is_none()) {
                     t.state = ExecutionState::Done;
                     t.reason.clear();
                 } else if t.no_progress_wakes >= NO_PROGRESS_LIMIT {
