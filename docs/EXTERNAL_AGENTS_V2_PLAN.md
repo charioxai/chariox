@@ -13,7 +13,7 @@
 7. `apps-external-agents` is closed out as in section 10.
 8. The popup default stays 8 h; "until the agent exits" is opt-in; a kernel restart still ends it.
 
-**Extension added 2026-10-21, waiting for Miguel's review:** section 14, events for external agents (a kernel-owned event feed the agent can list, wait on or stream across sessions and machines), with rows EA2-20..EA2-27.
+**Extension added 2026-10-21, waiting for Miguel's review:** section 14, events for external agents (event subscriptions naming the sessions and machines an agent follows, filtered at the source, with one cursor and one wait across machines), with rows EA2-20..EA2-28.
 
 Builds on `docs/CHARIOX_KERNEL_ACCESS_PLAN.md` (D1–D16), `docs/KERNEL_SUDO.md` and `docs/KERNEL_ACCESS.md`. Where this plan changes a rule from those documents it says so (section 4).
 
@@ -174,11 +174,11 @@ Per AGENTS.md: version bump, snapshot and hash tests, a focused drill. Numbers a
 
 **Relay peer protocol:** unchanged if the client request context is not peer-versioned (confirm in step 1; otherwise `NEXT+1`, and the relay itself does not change).
 
-**Local protocol, events extension (section 14).** `ListEvents { since, filter, limit }`, `WaitEvents { since, filter, timeout_ms, limit }`, `AckEvents { cursor }`, the `EventsListed` response `{ events, next_cursor, oldest_cursor, timed_out }`, the feed event record (14.4), the `cursor_expired` and `events_grant_ended` error codes, and the outside-principal recipient kind in the agent-model ledger. Allocated at the integration that ships it; it can share a number with `NEXT` or `NEXT+1`.
+**Local protocol, events extension (section 14).** `Create/Update/Delete/ListEventSubscription(s)`, `ListEvents { subscription_id, since, limit }`, `WaitEvents { subscription_id, since, timeout_ms, limit }`, `AckEvents { subscription_id, cursor }`, the `EventsListed` response `{ events, next_cursor, oldest_cursor, timed_out }`, the feed event record (14.4), the `cursor_expired`, `subscription_expired` and `events_grant_ended` codes, and the `Outside` recipient kind in the agent-model ledger. External access path only, never in the session-agent or `/sudo` vocabulary. Allocated at the integration that ships it; it can share a number with `NEXT` or `NEXT+1`.
 
 **Local protocol `NEXT+1` (approvals extension).** `ApprovalPending` frame to the waiting agent connection, `ListPendingApprovals` (read-only for agents), pointer record `{approval_id, kind, machine, one_line, link?, expires_at}`; Cloud API `POST /v1/approval-pointers` (chariox-cloud).
 
-Drills for these shapes: section 12 (EA2-01..EA2-27). Snapshot and hash tests next to `protocol_shapes/kernel_access.rs`.
+Drills for these shapes: section 12 (EA2-01..EA2-28). Snapshot and hash tests next to `protocol_shapes/kernel_access.rs`.
 
 ## 7. CLI surface
 
@@ -193,7 +193,7 @@ chariox request [--machine M] [--command-id ID] < request.json   # one LocalDaem
 chariox sessions|agent|terminal|files ... [--machine M]          # thin verbs (below)
 chariox sudo request --agent A --prompt P [--machine M]
 chariox approvals list | wait <id> [--timeout S]                 # extension
-chariox events list|wait|watch|ack [--since C] [--kind K] [--session S] [--agent A] [--machine M]   # extension, section 14
+chariox events subscribe|unsubscribe|subscriptions|list|wait|watch|ack ...   # extension, section 14
 ```
 
 - `chariox request` is the single generic door: any `LocalDaemonRequest` the grant allows, locally or on `--machine`. It is the same shape as the sudo MCP `chariox_kernel_request`, so there is one request vocabulary.
@@ -226,7 +226,7 @@ The extension can ship after the core; the core's popups cover the Mac TUI, and 
 | Read files, logs, run `git` | Terminal (`cat`, `tail`, `journalctl`) works with no new code | Convenience `files stat/get`. |
 | **Transfer files, incl. git bundles and artifacts** | Nothing general today (`DIRECTORY_WORKSPACE_TRANSFER` and managed context transfer only move provisioned contexts; `ReadFileCapabilityRequest` is session-scoped text) | New small family `Read/Write/StatMachineFile`, see 9.1. A git bundle is then `files put` + `git fetch bundle` in a terminal. |
 | Logs of the kernel itself | Terminal / `files get` | A dedicated logs request is not in v2. |
-| Being woken when a lane finishes, blocks or asks (today `watch.sh` polling lane folders over ssh) | Nothing for an outside recipient; session subscriptions need a held connection per session | Events extension, section 14: `chariox events wait --machine b3 --kind task_done --kind task_blocked` replaces the watcher. |
+| Being woken when a lane finishes, blocks or asks (today `watch.sh` polling lane folders over ssh) | Nothing for an outside recipient; session subscriptions need a held connection per session | Events extension, section 14: a subscription to the lane sessions plus one background `chariox events wait` replaces the watcher. |
 | Build slots, drills, killing exact PIDs | Terminal | None. |
 | Slices | Home kernel's slice requests (`ListSlices`, Room/Environment requests) and their terminals via the home kernel | Verify a slice on a remote machine is driven through that machine's kernel with `--machine`. |
 | Machine is a real kernel in Miguel's account | b3 runs a signed product kernel as a per-user service, enrolled to his hosted account (owner-managed machine / Setup) | One-time ssh bootstrap, then ssh is break-glass. **Interim (Miguel, 2026-10-20):** this hand enrolment is replaced when b3 becomes a Path-1 Chariox-managed machine or a BYOM machine; nothing in the gateway depends on how the machine was enrolled. |
@@ -269,7 +269,7 @@ Process: the `val910` lane and its "val910 r3 + Miguel attended session" next st
 4. **Core D, work surface.** Terminal verbs on top of #1054; file family; slice check. (EA2-06, 07, 13, 15)
 5. **Dogfood.** EA2-14, 16, 19 on the real Mac + b3.
 6. **Extension, approvals.** Pointer frame, `approvals`, Cloud pointer endpoint, web approval view, self-hosted remote-TUI path. (EA2-17, 18)
-7. **Extension, events (section 14).** Feed journal and its producers, outside-principal recipient in the ledger (agent-model side), `ListEvents`/`WaitEvents`/`AckEvents`, `chariox events`, `--machine` through the gateway, guide paragraph. After step 2 (needs the gateway for `--machine`) and after the agent-model event core is on `main`. (EA2-20..EA2-27; EA2-27 is the dogfood that retires `watch.sh`.)
+7. **Extension, events (section 14).** Feed journal and its producers, `Outside` recipient in the ledger (agent-model side), event subscriptions with source-side filtering through the gateway, `ListEvents`/`WaitEvents`/`AckEvents`, `chariox events`, guide paragraph. After step 2 (the gateway) and after the agent-model event core is on `main`. (EA2-20..EA2-28; EA2-28 is the dogfood that retires `watch.sh`.)
 
 Steps 1–3 can be separate PRs; step 6 includes a `chariox-cloud` PR. One build per machine at a time (AGENTS.md).
 
@@ -303,14 +303,15 @@ All are real-path, red-capable drills (they fail on the base or before the step,
 | **EA2-17** | **Approvals from a phone (extension, hosted).** An agent requests a grant on A, then a `/sudo` on B; the pointer appears in the agent chat; Miguel opens the link on a real phone (DPR 3); types the passkey; the kernel proceeds. Repeat with a canary passkey. | No pointer. | Works end to end; the link is single-use, expires at 10 min, refuses the wrong account and the wrong kernel; Cloud logs, relay capture and the agent transcript contain no passkey (canary grep); the real popup was also visible on the TUI. |
 | **EA2-18** | **Approvals self-hosted (extension).** Pointer says which kernel; user answers in a remote TUI over an ssh phone app (second host). | n/a | Same outcome; no web page involved. |
 | **EA2-19** | **Guide only.** A fresh Codex and a fresh Claude agent get one line: "run `chariox guide` and ..." and complete tasks on B (list sessions, run a command, move a file) with no human hints. | No guide. | Both succeed; a test checks the guide against the parser; no files appear in the harness directories (`~/.claude`, `~/.codex`, MCP config). |
-| **EA2-20** | **Wait across sessions (events extension).** Real Claude Code on A with an until-exit grant runs `chariox events wait --kind task_done --kind task_blocked --kind turn_ended` in the background. Three sessions on A each run a real agent; one finishes, one blocks on an owner interaction, one is stopped. | No feed: one subscription per session over a held connection. | Each change reaches the agent within 2 s of the kernel recording it (one wait returns all events already pending), with session, agent, kind, one line and cursor; the agent loops on `next_cursor` and sees every change exactly once, in order. Synchronous variant: the same with the wait in the foreground and `--timeout 540`, looping. |
-| **EA2-21** | **Nothing lost between waits.** While the agent is busy (no wait running) 50 events happen in 5 sessions; the A kernel is then restarted (exact PID) and a new grant is taken. | n/a | `list --since <last cursor>` after the restart returns all 50, in order, none twice; the cursor from before the restart is still valid. |
-| **EA2-22** | **Cursor expired.** A cursor older than the retained window (test retention lowered). | Silent gap. | `wait` and `list` exit 7 with `cursor_expired` and `oldest_cursor`; the guide's resync (read current state, continue from the latest cursor) completes; no event is presented as if continuous. |
-| **EA2-23** | **Waits end with the grant.** A running `wait` and a `watch` when the grant is revoked from the TUI, when it expires, and when the holder exits. | n/a | Each ends within 2 s with `events_grant_ended` (exit 3), never as a timeout or a hang; no event is delivered after the end. |
-| **EA2-24** | **Remote machine feed.** `events wait --machine b` while agents on B finish and block; B's kernel restarted once; the relay link dropped once. | No `--machine` feed. | Events carry `machine: b`; after the restart and the drop the wait resumes from its cursor with no loss and no duplicate; an unreachable B gives `machine_offline`/`machine_unreachable` (exit 4), never a silent empty wait. |
-| **EA2-25** | **Session confinement holds.** A real kernel-launched agent in session X tries the feed requests through its kernel MCP and through `/sudo`, and `chariox.events.inbox` for session Y. | n/a (negative) | All refused with the exact code; its own `chariox.events.*` tools keep working for session X only; no event of Y reaches X. |
-| **EA2-26** | **Approvals in the feed are pointers.** A passkey approval is raised on A and on B while a wait is running; a routine approval too. | n/a | The passkey approval arrives as the section 8 pointer only (no prompt body, no passkey; canary grep on the agent transcript and the feed journal); the routine approval arrives as an ordinary `interaction_pending` event the agent may answer. |
-| **EA2-27** | **Coordinator dogfood: `watch.sh` retired.** For one working day the coordinator on Miguel's Mac follows every lane on A and b3 with `chariox events wait` (background) and `list` only; `watch.sh` and lane-folder polling are off. | Coordinator polls lane folders over ssh. | Every lane finish, block and owner question is seen within 2 s of the kernel recording it (compared with the lane's own log); zero missed or duplicated; any missing event kind is a recorded product issue and none is open at the end. Can run inside EA2-16. |
+| **EA2-20** | **Wait across sessions (events extension).** Real Claude Code on A with an until-exit grant subscribes to three sessions on A (`task_done`, `task_blocked`, `turn_ended`) and runs `chariox events wait` in the background. Each session runs a real agent; one finishes, one blocks on an owner interaction, one is stopped. | No subscription or wait: one live subscription per session over a held connection. | Each change reaches the agent within 2 s of the kernel recording it (one wait returns all events already pending), with machine, session, agent, kind, one line and cursor; the agent loops on `next_cursor` and sees every change exactly once, in order. Synchronous variant: the same with the wait in the foreground and `--timeout 540`, looping. |
+| **EA2-21** | **Only subscribed sessions travel.** B runs 20 sessions with real agents; the agent on A subscribes to one of them on B; machine C is online but not in the subscription. | n/a | The agent receives only that session's events; B's kernel counts zero forwarded events for the other 19 sessions (kernel metric, the relay sees ciphertext only); C's kernel records no gateway connection from A. |
+| **EA2-22** | **Nothing lost between waits.** While the agent is busy (no wait running) 50 events happen in 5 subscribed sessions on A and B; the A kernel is then restarted (exact PID) and a new grant is taken. | n/a | The subscription still exists after the restart; `list --since <last cursor>` returns all 50, in order, none twice; the cursor from before the restart is still valid. |
+| **EA2-23** | **Cursor expired and gaps.** A cursor older than the retained window (test retention lowered); B unreachable longer than its journal keeps the cursor. | Silent gap. | `wait` and `list` exit 7 with `cursor_expired` and `oldest_cursor`; the guide's resync completes; B's gap appears as one `target_gap { machine: b }` event; no event is presented as if continuous. |
+| **EA2-24** | **Waits end with the grant.** A running `wait` and a `watch` when the grant is revoked from the TUI, when it expires, and when the holder exits. | n/a | Each ends within 2 s with `events_grant_ended` (exit 3), never as a timeout or a hang; nothing is delivered after the end; the subscription itself stays and a new grant continues from the cursor. |
+| **EA2-25** | **Two machines, one wait.** One subscription with sessions on A and B; agents on both finish and block; B's kernel restarted once; the relay link dropped once. | No cross-machine wait. | Events from both machines arrive in one wait, tagged with their machine; after the restart and the drop the wait resumes with no loss and no duplicate; while B is unreachable, the wait still returns A's events and a B-only wait gives `machine_offline`/`machine_unreachable` (exit 4), never a silent empty wait. |
+| **EA2-26** | **Not exposed to session agents.** A real kernel-launched agent in session X, with and without `/sudo`. | n/a (negative) | The subscription and event requests appear in none of its tool discovery, `chariox.events.*` or the `/sudo` request vocabulary (checked from the agent's own tool list and the sudo schema); its own `chariox.events.*` keep working for X only; no event of another session reaches X. |
+| **EA2-27** | **Approvals in the feed are pointers.** A passkey approval is raised on A and on B for subscribed sessions while a wait is running; a routine approval too. | n/a | The passkey approval arrives as the section 8 pointer only (no prompt body, no passkey; canary grep on the agent transcript and both journals); the routine approval arrives as an ordinary `interaction_pending` event the agent may answer. |
+| **EA2-28** | **Coordinator dogfood: `watch.sh` retired.** For one working day the coordinator on Miguel's Mac subscribes to its lane sessions on A and b3 and follows them with one background `chariox events wait` and `list` only; `watch.sh` and lane-folder polling are off. | Coordinator polls lane folders over ssh. | Every lane finish, block and owner question is seen within 2 s of the kernel recording it (compared with the lane's own log); zero missed or duplicated; any missing event kind is a recorded product issue and none is open at the end. Can run inside EA2-16. |
 
 Supplementary regression (not acceptance): Rust tests for the typed term, frame `machine`, policy-sharing, error codes and the snapshot/hash shapes; `pnpm protocol:conformance`; `pnpm lint:process-signals` for the exit watcher; CLI guide-vs-parser test.
 
@@ -321,7 +322,7 @@ Supplementary regression (not acceptance): Rust tests for the typed term, frame 
 - **Remote passkeys are per kernel.** Remote prompts need the user at some client of that kernel; the extension makes that practical.
 - **Dependency:** #1054 for terminals; a Cloud change only if step 1 finds that a kernel credential cannot read the owner's machine list (3.3).
 - **UX-first rule applied:** no new guard on what the agent reads or types; the only fences are the existing human-only set and the existing credential-literal response redaction.
-- **Events extension.** The feed adds one durable journal per kernel; its size is bounded by retention, and an expired cursor is always a definitive answer. Fan-in across machines in one wait is a later step; until then an agent runs one background wait per machine. Whether `/sudo` should ever reach the feed stays closed (refused) until inter-session communication is designed.
+- **Events extension.** Each kernel keeps one durable journal and each subscription one inbox, both bounded by retention; an expired cursor or a remote gap is always a definitive answer. Subscriptions outlive grants by design (they carry no authority; reading needs a live grant) and expire after 7 days unread.
 
 ## 14. Events for external agents (extension, discussed with Miguel 2026-10-21)
 
@@ -332,8 +333,9 @@ An external agent needs to know when something it started has moved: a turn ende
 ### 14.2 Session confinement (rule)
 
 - A session is the confinement boundary for the agents in it. A session agent sees and is woken by events of its own session only. The `chariox.events.*` tools stay session-scoped and unchanged.
-- Observing several sessions is allowed only to **outside principals**: an external agent through its grant (now) and the Chariox assistants (later, the in-product equivalent of an external agent, see the `chariox-assistants` area). Neither is a session member.
-- Communication between session agents across sessions is a separate future mechanism. Nothing here provides it, and the feed requests are refused to session-agent callers, including under `/sudo` (a sudo turn is one request path, not a subscription).
+- Observing several sessions belongs only to **outside principals**: an external agent through its grant (now) and the Chariox assistants (later, the in-product equivalent of an external agent, see the `chariox-assistants` area). Neither is a session member.
+- The event subscription requests of this section are **not exposed** to Chariox session agents at all: they are absent from kernel MCP tool discovery, from `chariox.events.*`, and from the `/sudo` request vocabulary. There is nothing for a session agent to call, so there is nothing to refuse. They exist only on the external access path (the grant holder's Unix socket and the gateway) and, later, for assistants inside the kernel.
+- Communication between session agents across sessions is a separate future mechanism. Nothing here provides it.
 
 ### 14.3 What exists and what is missing
 
@@ -344,61 +346,72 @@ An external agent needs to know when something it started has moved: a turn ende
 - Section 5: the gateway forwards subscriptions to other machines and tags events with the machine.
 
 **Missing for an outside recipient.**
-1. **Many sessions at once.** One subscription per session per machine; there is no kernel-wide stream.
-2. **Waiting from short command calls.** A subscription lives only while its connection is open; a CLI agent's tool calls are short. There is no durable cursor and no filtered wait.
+1. **Many sessions at once, on several machines.** One live subscription per session per machine; there is no way to say "these sessions on these machines".
+2. **Waiting from short command calls.** A live subscription exists only while its connection is open; a CLI agent's tool calls are short. There is no durable cursor and no wait.
 3. **Being the recipient.** The ledger's recipients are session agents only, and the kernel cannot start a turn in a process it did not launch, so delivery to an external agent has to be pulled.
-4. **Filters** by kind and agent.
 
-### 14.4 Design: one feed, two kinds of recipient
+### 14.4 Design
+
+**Authority versus interest.** A grant may see every session on every machine of the user (section 3.2). That is what the agent is *allowed* to see. What actually flows is what it *asked for*: an **event subscription**. Nothing outside a subscription leaves the kernel that owns it.
 
 **Recipients (agent-model side).** The ledger gains a recipient kind:
 - `SessionAgent { session_id, agent_id }`: unchanged. Sees its own session; delivery is a turn or a steer with a receipt.
-- `Outside { principal }`: `principal` is an external grant (now) or an assistant id (later). Sees what its principal may see across sessions; delivery is **pull** (list or wait), and the receipt is its ack.
+- `Outside { subscription_id }`: an event subscription of an outside principal. Delivery is **pull** (list or wait), and the receipt is its ack.
 
-Producers, occurrence ids, redaction and the no-silent-dormancy rules are the same for both. Only delivery differs. This is the one change the agent-model design takes from this section; it goes into `docs/AGENT_WAKES.md` when the extension is built.
+Producers, occurrence ids, redaction and the no-silent-dormancy rules are the same for both; only delivery differs. This is the one change the agent-model design takes from this section; it goes into `docs/AGENT_WAKES.md` when the extension is built.
 
-**The feed.** Each kernel keeps one durable feed journal for outside recipients, written by the producers that already exist: turn end and run outcome (provider runs), task state and wakes (ledger, `agent_task_updated`), interactions and approvals, terminal job exit (Room terminals, #1054), session created/ended. A feed event is small:
+**The feed on each kernel.** Each kernel keeps one durable journal of small events for outside recipients, written by the producers that already exist: turn end and run outcome (provider runs), task state and wakes (ledger, `agent_task_updated`), interactions and approvals, terminal job exit (Room terminals, #1054), session created/ended. A feed event is:
 
 ```
 { cursor, machine, session_id, agent_id?, kind, one_line, at_ms, refs: { task_id?, run_id?, interaction_id?, terminal_id? } }
 ```
 
-It carries ids and one line, never prompt or output bodies. The agent reads details with the existing requests (session read, terminal read, task list). The cursor is a kernel-wide monotonic id that survives a kernel restart (the event log already supports persistent ids).
+It carries ids and one line, never prompt or output bodies. The agent reads details with the existing requests (session read, terminal read, task list). The journal's ids survive a kernel restart (the event log already supports persistent ids).
 
-**Requests.**
-- `ListEvents { since?, filter, limit }` returns the matching events after `since`, oldest first.
-- `WaitEvents { since?, filter, timeout_ms, limit }` returns as soon as at least one matching event exists after `since`, with every matching event already pending (up to `limit`), or returns empty with `timed_out: true` at the timeout. The kernel caps `timeout_ms` (15 min).
-- `AckEvents { cursor }` records the principal's last handled cursor. `since` omitted means "after my last ack"; an explicit `since` always wins.
+**Event subscriptions.**
+- A subscription is a named list of targets: `{ machine, sessions: [ids] | all, kinds?, agents? }`. Example: "session `lane-mirror` and `lane-landfix` on b3, `task_done`/`task_blocked`/`interaction_pending`; every session on this Mac, `approval_pending` only".
+- It lives in the **local kernel** (the one the agent talks to). For each remote target the gateway creates a one-machine subscription on that machine's kernel with the same filter. **Filtering happens at the source:** a session that is not named never leaves its kernel, and a machine that is not named is never contacted. Answering Miguel's question: a machine running 40 sessions where the agent subscribed to one sends that one session's events and nothing else.
+- The local kernel merges the targets into one inbox with **one cursor per subscription**, events tagged with their machine. One `wait` covers every machine in the subscription (fan-in comes with the subscription, not as a later step).
+- **Sessions the agent creates.** A session created through the grant is added to the agent's default subscription unless the call says otherwise, so "watch what I started" needs no extra step.
+- **Lifetime.** A subscription is user state, not a grant: it is durable, survives a kernel restart and can be used by any later grant of the same user (the grant is what authorises reading it). It ends on `unsubscribe` or after 7 days without a read, with a definitive `subscription_expired`. A running wait ends at once with `events_grant_ended` when its grant is revoked, expires or the holder exits.
+- A session listed in a subscription that ends is reported once (`session_ended`) and then dropped from the targets.
+
+**Requests (external path only).**
+- `CreateEventSubscription { name, targets }`, `UpdateEventSubscription { subscription_id, add, remove }`, `DeleteEventSubscription`, `ListEventSubscriptions`.
+- `ListEvents { subscription_id, since?, limit }` returns the subscription's events after `since`, oldest first.
+- `WaitEvents { subscription_id, since?, timeout_ms, limit }` returns as soon as at least one event exists after `since`, with every event already pending (up to `limit`), or returns empty with `timed_out: true` at the timeout. The kernel caps `timeout_ms` (15 min).
+- `AckEvents { subscription_id, cursor }`. `since` omitted means "after the last ack"; an explicit `since` always wins.
 - Response `EventsListed { events, next_cursor, oldest_cursor, timed_out }`.
-- `filter`: `kinds` (`turn_ended`, `run_failed`, `task_waiting`, `task_blocked`, `task_done`, `task_cancelled`, `wake_fired`, `approval_pending`, `interaction_pending`, `terminal_job_exited`, `session_created`, `session_ended`), `sessions`, `agents`. `machine` is the frame tag from section 5, not a filter field.
+- Kinds: `turn_ended`, `run_failed`, `task_waiting`, `task_blocked`, `task_done`, `task_cancelled`, `wake_fired`, `approval_pending`, `interaction_pending`, `terminal_job_exited`, `session_created`, `session_ended`.
+- The gateway uses the same requests on remote kernels; there is no second protocol for the remote half.
 
-**Retention.** Bounded by age and count (proposed: 7 days or 100 000 events per kernel, whichever is smaller). A `since` older than the oldest retained event is answered with `cursor_expired { oldest_cursor }`, never a silent gap. The guide tells the agent to resync by reading current state (sessions, tasks) and to continue from the latest cursor.
+**Retention.** Bounded by age and count (proposed: 7 days or 100 000 events per subscription inbox and per kernel journal, whichever is smaller). A `since` older than the oldest retained event is answered with `cursor_expired { oldest_cursor }`, never a silent gap. The guide tells the agent to resync by reading current state (sessions, tasks) and to continue from the latest cursor. A remote target that was unreachable resumes from its own source cursor when it is back; if its journal no longer holds that cursor, the subscription records one `target_gap { machine }` event instead of skipping silently.
 
-**Lifetime.** A running `WaitEvents` belongs to the grant. It ends at once with `events_grant_ended` when the grant is revoked, expires or its holder exits, never as a timeout. The ack is kept per grant; a new grant continues with an explicit `--since`. The feed itself does not depend on any grant.
+**Visibility.** Within what the grant may see, with the existing credential-literal redaction. A passkey approval appears only as the section 8 pointer `{approval_id, kind, machine, one_line, link?, expires_at}`; a routine approval is an ordinary `interaction_pending` event the agent may answer.
 
-**Visibility.** What the grant may see: the user's sessions on that kernel, with the existing credential-literal redaction. A passkey approval appears only as the section 8 pointer `{approval_id, kind, machine, one_line, link?, expires_at}`; a routine approval is an ordinary `interaction_pending` event the agent may answer.
-
-**Machines.** `--machine` sends `ListEvents`/`WaitEvents` through the gateway (section 5) to that kernel's own feed; each kernel owns its feed and cursors are per machine. Events come back tagged with the machine. One wait over several machines (the local kernel merging remote feeds) is a later step; until then the agent runs one background wait per machine.
-
-**Assistants (later).** An assistant is an `Outside` recipient that the kernel itself runs, so its delivery is a turn, like a session agent's, while its visibility is that of an outside principal. Nothing for assistants is built in v2; the recipient kind leaves room for it.
+**Assistants (later).** An assistant is an `Outside` recipient that the kernel itself runs, so its delivery is a turn, like a session agent's, while its reach is that of an outside principal and its subscriptions work the same way. Nothing for assistants is built in v2; the recipient kind leaves room for it.
 
 ### 14.5 CLI
 
 ```
-chariox events list  [--since C] [--kind K]... [--session S]... [--agent A]... [--machine M] [--limit N]
-chariox events wait  [--since C] [filters] [--timeout S] [--machine M]
-chariox events watch [--since C] [filters] [--machine M]       # one JSON line per event until interrupted or the grant ends
-chariox events ack <cursor> [--machine M]
+chariox events subscribe [--name N] --machine M (--session S... | --all-sessions) [--kind K]... [--agent A]...   # adds a target
+chariox events unsubscribe [--name N] [--machine M] [--session S]...                                           # removes targets or the whole subscription
+chariox events subscriptions
+chariox events list  [--name N] [--since C] [--limit L]
+chariox events wait  [--name N] [--since C] [--timeout S]
+chariox events watch [--name N] [--since C]          # one JSON line per event until interrupted or the grant ends
+chariox events ack <cursor> [--name N]
 ```
 
-- `wait` prints `{events, next_cursor}` and exits 0 as soon as something matches; 5 on timeout (with `next_cursor`, so the next wait continues); 3 when the grant ended; 4 when the machine is unavailable; 7 on `cursor_expired`.
+- `--name` defaults to the agent's default subscription.
+- `wait` prints `{events, next_cursor}` and exits 0 as soon as something arrives; 5 on timeout (with `next_cursor`, so the next wait continues); 3 when the grant ended; 4 when a target machine is unavailable and nothing else arrived (the event list names it); 7 on `cursor_expired`.
 - Three ways to use it, no custom tool needed:
   - **Synchronous:** `wait --timeout 540` in the foreground, looping on `next_cursor`. Works in any harness; the timeout stays under the harness's own cap for one command (about 10 min for Claude Code).
   - **Background:** the same command with the harness's background option (`run_in_background` in Claude Code). The agent stays free and the harness tells it when the command exits.
   - **Polling:** `list --since <cursor>` whenever the agent wants to look.
 - `watch` is for harnesses that read a live output stream.
-- `chariox guide` gains one paragraph: the three ways, keep the cursor, resync on exit 7, approval pointers are shown to the user verbatim.
+- `chariox guide` gains one paragraph: subscribe to what you need, the three ways to wait, keep the cursor, resync on exit 7, approval pointers are shown to the user verbatim.
 
 ### 14.6 What it replaces
 
-The coordinator's `watch.sh`, lane-folder and `LANE_STATUS.md` polling and the ssh round trips behind them: a lane is an agent in a session, so "lane finished" is `task_done` or `turn_ended`, "lane needs me" is `task_blocked` or `interaction_pending`, and the coordinator runs `chariox events wait --machine b3 --kind task_done --kind task_blocked` in the background. This is the dogfood target (EA2-27) and the reason this ships together with the agent-model work rather than after it.
+The coordinator's `watch.sh`, lane-folder and `LANE_STATUS.md` polling and the ssh round trips behind them: a lane is an agent in a session, so "lane finished" is `task_done` or `turn_ended` and "lane needs me" is `task_blocked` or `interaction_pending`. The coordinator subscribes to its lane sessions on b3 and the Mac and runs one `chariox events wait` in the background. This is the dogfood target (EA2-28) and the reason this ships together with the agent-model work rather than after it.
