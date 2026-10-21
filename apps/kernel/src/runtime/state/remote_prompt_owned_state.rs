@@ -1254,6 +1254,96 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    // A queued prompt whose provider launch needs a locked Vault (no Project environment, so
+    // no up-front unlock) must ask the owner for the unlock and then run, never stay pending.
+    #[tokio::test]
+    async fn queued_prompt_launch_asks_for_the_vault_unlock_and_then_runs() {
+        let root =
+            std::env::temp_dir().join(format!("chariox-queued-vault-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        let vault = root.join("synthetic-vault.json");
+        let mut config = crate::DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = vault.display().to_string();
+        config.user_config.credential_vault.unlock_policy =
+            crate::config::CredentialVaultUnlockPolicy::KernelInit;
+        crate::secret::unlock_chariox_encrypted_vault(
+            &vault,
+            "synthetic queued passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+        crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
+        let (runtime, session, agent, _attachment, _binding) = mp11_fixture(config).await;
+        let launches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let task = tokio::spawn({
+            let runtime = runtime.clone();
+            let (session, agent) = (session.clone(), agent.clone());
+            let vault = vault.clone();
+            let launches = launches.clone();
+            async move {
+                runtime
+                    .with_project_prompt_environment(&session, &agent, |_| {
+                        launches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        if crate::secret::chariox_encrypted_vault_status(&vault)?.unlocked {
+                            Ok(())
+                        } else {
+                            Err(DaemonError::LocalTransport {
+                                operation: "credential_vault_locked",
+                                message: "Chariox vault is locked".into(),
+                            })
+                        }
+                    })
+                    .await
+            }
+        });
+        let card = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let card = runtime
+                    .owned
+                    .session_snapshot(&session)
+                    .unwrap()
+                    .active_interactions()
+                    .iter()
+                    .find(|card| card.id().starts_with("vault-unlock-"))
+                    .map(|card| card.id().to_string());
+                if let Some(card) = card {
+                    break card;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the locked Vault must raise the unlock popup");
+        let owner = runtime
+            .owned
+            .session_store
+            .get_session(&session)
+            .unwrap()
+            .owner_user_id()
+            .to_string();
+        runtime
+            .owned
+            .resolve_runtime_interaction(
+                &session,
+                &card,
+                "passphrase",
+                Some("synthetic queued passphrase"),
+                Some(&owner),
+                true,
+            )
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(launches.load(std::sync::atomic::Ordering::SeqCst), 2);
+        crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn mp11_completion_receipt_cannot_settle_successor_or_rebound_prompt() {
         let (runtime, session, agent, attachment, binding) =
