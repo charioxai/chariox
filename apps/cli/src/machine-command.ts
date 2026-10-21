@@ -149,6 +149,7 @@ async function readStdin(): Promise<string> {
 
 export async function runMachineCommand(argv: string[]): Promise<boolean> {
   const [command, ...rest] = argv
+  if (command === undefined) return false
   // `chariox terminal --session ...` is the interactive attach for a person; a verb first is the agent's.
   const terminalVerb = command === "terminal" ? TERMINAL_VERBS.find(name => name === rest[0]) : undefined
   if (command !== "guide" && command !== "machines" && command !== "request" && command !== "watch" && command !== "files" && !terminalVerb) return false

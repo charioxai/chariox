@@ -17,14 +17,18 @@ const ENTER = "\r"
 // CSI, OSC and the other two-byte escape sequences a shell prints for colours, titles and the cursor.
 const ESCAPES = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)|[@-Z\\-_])/g
 
-export type TerminalFlags = { cols?: string | true; rows?: string | true; title?: string | true; session?: string | true; terminal?: string | true; since?: string | true; waitMs?: string | true; for?: string | true; timeout?: string | true; noEnter: boolean }
+type Flag = string | true | undefined
+export type TerminalFlags = {
+  cols?: Flag; rows?: Flag; title?: Flag; session?: Flag; terminal?: Flag; since?: Flag
+  waitMs?: Flag; for?: Flag; timeout?: Flag; noEnter: boolean
+}
 
-function required(value: string | true | undefined, flag: string): string {
+function required(value: Flag, flag: string): string {
   if (typeof value !== "string") throw new CommandFailure("usage", `${flag} is required for this command`)
   return value
 }
 
-function wholeNumber(value: string | true | undefined, flag: string, fallback: number): number {
+function wholeNumber(value: Flag, flag: string, fallback: number): number {
   if (value === undefined) return fallback
   const number = Number(value)
   if (typeof value !== "string" || !Number.isSafeInteger(number) || number < 0) throw new CommandFailure("usage", `${flag} needs a whole number from 0`)
