@@ -740,6 +740,19 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     prompt,
                     attachments,
                 )?;
+                let hook_context = match (&outcome, hook_context) {
+                    (
+                        crate::session::PromptSubmissionOutcome::Started { prompt: started },
+                        Some(context),
+                    ) => Some(self.typed_skill_context(
+                        session_id,
+                        &agent_id,
+                        provider_run,
+                        started,
+                        context,
+                    )?),
+                    (_, context) => context,
+                };
                 let native_started = matches!(
                     &outcome,
                     crate::session::PromptSubmissionOutcome::Started { .. }

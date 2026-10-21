@@ -175,7 +175,10 @@ impl<'a> KernelAgentService<'a> {
             prompt,
             PromptStatus::Queued,
         )
-        .with_attachments(attachments);
+        .with_attachments(attachments)
+        // Text typed in a native composer is the user's own `$name` syntax; only the
+        // kernel that owns the catalog can resolve it.
+        .with_user_skill_syntax(self.app.durable_state_store().owns_skill_catalog());
         let admission = self.prepare_prompt_admission(KernelPreparedPromptSubmission {
             session_id: session_id.to_string(),
             prompt: prepared_prompt,

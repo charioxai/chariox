@@ -3742,6 +3742,15 @@ fn notes_reach_claude_hidden_context_once_and_fit_the_bridge_limit() {
 fn claude_native_injection_uses_shared_skill_admission_before_pty_write() {
     struct RejectSkill;
     impl crate::provider::skill_delivery::SkillPromptBridge for RejectSkill {
+        fn acknowledge_hook_context(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<(), DaemonError> {
+            Ok(())
+        }
         fn acknowledge_prompt(
             &self,
             _: &RuntimeProviderRun,
@@ -3917,12 +3926,21 @@ fn claude_native_skill_retry_recognizes_the_prepared_invocation_in_the_composer(
     );
 }
 
-// MP-08 / MP-10 / MP-11: with delivery receipts the hook rebuilds its context from
-// the staged managed inputs; the selected skill body must survive that rebuild.
-#[test]
-fn claude_native_receipt_hook_context_keeps_the_selected_skill_body() {
-    struct DeliverSkill;
+mod skill_hook_fakes {
+    use super::*;
+    pub(super) static HOOK_RECEIPTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    pub(super) struct DeliverSkill;
     impl crate::provider::skill_delivery::SkillPromptBridge for DeliverSkill {
+        fn acknowledge_hook_context(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &str,
+            _: &str,
+            prompt_id: &str,
+        ) -> Result<(), DaemonError> {
+            HOOK_RECEIPTS.lock().unwrap().push(prompt_id.to_string());
+            Ok(())
+        }
         fn acknowledge_prompt(
             &self,
             _: &RuntimeProviderRun,
@@ -3957,7 +3975,7 @@ fn claude_native_receipt_hook_context_keeps_the_selected_skill_body() {
             }))
         }
     }
-    struct PassthroughPolicy;
+    pub(super) struct PassthroughPolicy;
     impl NativePromptHandoffPolicy for PassthroughPolicy {
         fn prepare_context(
             &self,
@@ -3992,6 +4010,13 @@ fn claude_native_receipt_hook_context_keeps_the_selected_skill_body() {
             Ok(())
         }
     }
+}
+
+// MP-08 / MP-10 / MP-11: with delivery receipts the hook rebuilds its context from
+// the staged managed inputs; the selected skill body must survive that rebuild.
+#[test]
+fn claude_native_receipt_hook_context_keeps_the_selected_skill_body() {
+    use skill_hook_fakes::{DeliverSkill, PassthroughPolicy};
     let worktree = crate::test_support::TestWorktree::new("claude-receipt-skill-body");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
     app.providers
@@ -4085,10 +4110,100 @@ fn claude_native_receipt_hook_context_keeps_the_selected_skill_body() {
         .unwrap();
     let delivered =
         fs::read_to_string(root.join("hook-context-responses/skill-body-request.txt")).unwrap();
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "CharioxContextDelivered",
+            "hook_context_request_id": "skill-body-request",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .with_prompt_handoff(&policy)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    let receipts = skill_hook_fakes::HOOK_RECEIPTS.lock().unwrap().clone();
     app.pty.remove_process(run.id()).unwrap();
     let _ = fs::remove_dir_all(root);
     assert!(
         delivered.contains("SKILL-BODY-MARKER-77"),
         "the hook response dropped the selected skill body: {delivered:?}"
+    );
+    assert!(
+        receipts.contains(&prompt.id().to_string()),
+        "the hook delivery receipt never reached the skill bridge: {receipts:?}"
+    );
+}
+
+// MP-08 / MP-10 / MP-11: a `$name` typed into the native Claude composer reaches
+// the kernel only as the hook's prompt; its resolved skill rides the hook context.
+#[test]
+fn claude_native_typed_skill_reaches_the_hook_context() {
+    use skill_hook_fakes::{DeliverSkill, PassthroughPolicy};
+    let worktree = crate::test_support::TestWorktree::new("claude-typed-skill");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    app.providers
+        .set_skill_prompt_bridge(std::sync::Arc::new(DeliverSkill));
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "typed-skill-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-typed-skill-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    fs::write(&context_file, "").unwrap();
+    fs::write(&events_file, "").unwrap();
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "typed-skill-claude-run",
+        &context_file,
+        &events_file,
+        "cat >/dev/null".to_string(),
+    );
+    run.mark_running();
+    let mut ready_run = serde_json::to_value(&run).unwrap();
+    ready_run["started_at_ms"] = serde_json::json!(unix_epoch_ms().saturating_sub(5_000));
+    ready_run["pty_env"]["CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS"] = serde_json::json!("1");
+    run = serde_json::from_value(ready_run).unwrap();
+    app.pty.spawn_for_run(&run).unwrap();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .unwrap();
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "$review inspect source",
+            "hook_context_request_id": "typed-skill-request",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let policy = PassthroughPolicy;
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .with_prompt_handoff(&policy)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    let delivered =
+        fs::read_to_string(root.join("hook-context-responses/typed-skill-request.txt")).unwrap();
+    app.pty.remove_process(run.id()).unwrap();
+    let _ = fs::remove_dir_all(root);
+    assert!(
+        delivered.contains("SKILL-BODY-MARKER-77"),
+        "the typed skill never reached the hook context: {delivered:?}"
     );
 }

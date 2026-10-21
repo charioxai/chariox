@@ -706,6 +706,25 @@ impl ProviderProcessServiceStore {
         Ok(())
     }
 
+    pub(crate) fn acknowledge_skill_hook_delivery(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        let bridge = self
+            .skill_prompt_bridge
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(bridge) = bridge {
+            let run = self.get_run(provider_run_id)?;
+            bridge.acknowledge_hook_context(&run, session_id, agent_id, prompt_id)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn apply_prompt_submit_acknowledgement(
         &self,
         provider_run_id: &str,

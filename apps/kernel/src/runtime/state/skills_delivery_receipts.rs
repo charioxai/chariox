@@ -20,6 +20,21 @@ impl SkillDispatchService {
                 .contains(&record.skill_id)
         })
     }
+    /// Claude's prompt acknowledgement only proves the PTY write; its hook receipt
+    /// is the official confirmation that the instruction bodies were consumed.
+    pub(super) fn record_hook_receipts(
+        &self,
+        run: &RuntimeProviderRun,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.record_acknowledged_loads(run, session_id, agent_id, prompt_id, |authority, record| {
+            authority
+                .prompt_delivery_skill_ids
+                .contains(&record.skill_id)
+        })
+    }
     pub(super) fn record_tool_receipts(
         &self,
         run: &RuntimeProviderRun,

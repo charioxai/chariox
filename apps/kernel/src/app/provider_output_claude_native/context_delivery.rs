@@ -222,6 +222,15 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         else {
             return Ok(());
         };
+        self.app.providers.acknowledge_skill_hook_delivery(
+            session_id,
+            agent_id,
+            pending
+                .active_prompt_id
+                .as_deref()
+                .unwrap_or(&pending.prompt_id),
+            run_id,
+        )?;
         if pending.managed {
             write_claude_native_marker(context_file, &format!("accepted:{}", pending.prompt_id));
             self.consume_accepted_failed_request_context(session_id, agent_id, context_file)?;

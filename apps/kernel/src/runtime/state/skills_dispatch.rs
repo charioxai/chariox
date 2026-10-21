@@ -471,6 +471,15 @@ impl SkillPromptBridge for SkillDispatchService {
     ) -> Result<(), DaemonError> {
         self.record_prompt_receipts(run, session_id, agent_id, prompt_id)
     }
+    fn acknowledge_hook_context(
+        &self,
+        run: &RuntimeProviderRun,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.record_hook_receipts(run, session_id, agent_id, prompt_id)
+    }
     fn acknowledge_tools(
         &self,
         run: &RuntimeProviderRun,

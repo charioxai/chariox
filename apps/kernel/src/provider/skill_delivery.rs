@@ -20,6 +20,14 @@ pub(crate) trait SkillPromptBridge: Send + Sync {
         agent_id: &str,
         prompt_id: &str,
     ) -> Result<(), DaemonError>;
+    /// Claude's hook receipt: its additionalContext reached the official harness.
+    fn acknowledge_hook_context(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError>;
     fn acknowledge_tools(
         &self,
         run: &crate::provider::RuntimeProviderRun,

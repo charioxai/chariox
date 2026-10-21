@@ -109,4 +109,49 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         // Fit optional lease replay again after adding current worker instructions.
         crate::provider::fit_claude_native_hidden_context(provider_run.id(), hidden_context)
     }
+
+    /// A `$name` typed in Claude's own composer reaches the kernel only as the
+    /// hook prompt. It resolves like any user prompt and its instructions ride the
+    /// hook context; a refusal is a visible notice, never a silently empty context.
+    pub(super) fn typed_skill_context(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run: &RuntimeProviderRun,
+        prompt: &crate::session::PromptQueueItem,
+        context: String,
+    ) -> Result<String, DaemonError> {
+        let envelope = crate::prompt_assembly::PromptEnvelope::new(
+            prompt.prompt(),
+            "",
+            Vec::new(),
+            crate::prompt_assembly::PromptManifest::default(),
+        );
+        let delivery = match self.app.providers.prepare_skill_prompt(
+            session_id,
+            agent_id,
+            prompt.id(),
+            prompt.id(),
+            provider_run,
+            envelope,
+        ) {
+            Ok(envelope) => envelope.skill_delivery,
+            Err(error) => {
+                self.app.record_notice(
+                    session_id,
+                    Some(provider_run.id()),
+                    self.app.attachments.list_session_attachment_ids(session_id),
+                    format!("Skills were not delivered to this turn: {error}"),
+                );
+                return Ok(context);
+            }
+        };
+        let Some(delivery) = delivery.filter(|delivery| !delivery.hidden_context.is_empty()) else {
+            return Ok(context);
+        };
+        crate::provider::fit_claude_native_hidden_context(
+            provider_run.id(),
+            join_claude_context([context, delivery.hidden_context]),
+        )
+    }
 }
