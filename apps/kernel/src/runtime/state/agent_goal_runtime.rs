@@ -1,7 +1,7 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A12: wiring to ordinary prompt admission.
 use super::*;
 use crate::durable_state::agent_lifecycle::{
-    self as ledger, AgentTaskExecution, Operation, Outcome,
+    self as ledger, AgentTaskExecution, ExecutionState, Operation, Outcome,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -194,6 +194,94 @@ impl KernelRuntimeState {
             }
         }
         Ok(())
+    }
+
+    /// The owner's Vault unlock is all this agent's pending completion checks
+    /// wait for: stop their service bound and say so in the task.
+    pub(super) fn begin_vault_wait(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Vec<(String, String)> {
+        let tasks = self
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(session_id), Some(agent_id))
+            .unwrap_or_default();
+        let mut waiting = Vec::new();
+        for task in tasks {
+            let Some(check) = ledger::completion::evaluation(&task).filter(|e| e.result.is_none())
+            else {
+                continue;
+            };
+            let prompt = check.prompt_id.clone();
+            match self
+                .owned
+                .durable_state_store
+                .agent_lifecycle(Operation::BeginOwnerWait {
+                    task: task.task_id.clone(),
+                    prompt: prompt.clone(),
+                    now: crate::session::unix_epoch_ms(),
+                }) {
+                Ok(Outcome::Task(_)) => waiting.push((task.task_id, prompt)),
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "MP-08/MP-10/MP-11: completion check keeps its service bound")
+                }
+            }
+        }
+        self.publish_task_change(session_id);
+        waiting
+    }
+
+    /// An unlock gives the checks back the time they waited; a refusal ends
+    /// them Blocked with the reason, like any other definitive outcome.
+    pub(super) async fn end_vault_wait(
+        &self,
+        session_id: &str,
+        waiting: Vec<(String, String)>,
+        refusal: Option<String>,
+    ) {
+        for (task, prompt) in waiting {
+            let result = self
+                .owned
+                .durable_state_store
+                .agent_lifecycle(Operation::EndOwnerWait {
+                    task,
+                    prompt,
+                    refusal: refusal.clone(),
+                    now: crate::session::unix_epoch_ms(),
+                });
+            match result {
+                Ok(Outcome::Task(task)) if task.state == ExecutionState::Blocked => {
+                    let _ = self.stop_goal_turn(&task).await;
+                    let _ = self.ensure_task_owner_interaction_boxed(task).await;
+                }
+                Ok(Outcome::Task(task)) => self.arm_goal_check_deadline(&task),
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "MP-08/MP-10/MP-11: completion check bound resumes at its next sweep")
+                }
+            }
+        }
+        self.publish_task_change(session_id);
+    }
+
+    // The owner's Resume answer can need the Vault again; the explicit boxed type is where the
+    // recursion between that answer and this wait stops needing itself to prove it is Send.
+    fn ensure_task_owner_interaction_boxed(
+        &self,
+        task: AgentTaskExecution,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), DaemonError>> + Send + '_>>
+    {
+        Box::pin(self.ensure_task_owner_interaction(task))
+    }
+
+    fn publish_task_change(&self, session_id: &str) {
+        let _ = self.owned.session_snapshot(session_id);
+        self.owned
+            .terminal_stream
+            .notify_terminal_projection_change(session_id);
     }
 
     pub(super) fn arm_goal_check_deadline(&self, task: &AgentTaskExecution) {

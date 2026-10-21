@@ -204,6 +204,17 @@ pub(crate) enum Operation {
         prompt: String,
         now: u64,
     },
+    BeginOwnerWait {
+        task: String,
+        prompt: String,
+        now: u64,
+    },
+    EndOwnerWait {
+        task: String,
+        prompt: String,
+        refusal: Option<String>,
+        now: u64,
+    },
     StartGoal {
         task: String,
         owner: String,

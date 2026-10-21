@@ -384,7 +384,7 @@ export type AgentGoal = {
   active_elapsed_ms: number; waiting_elapsed_ms: number; state_since_ms: number
   check_in_minutes: number; next_check_in_ms: number | null; paused: boolean
   continuation_sequence: number; check_count: number
-  evaluation: { origin: "completion_check"; prompt_id: string; work_prompt_id: string; work_provider_run_id: string | null; objective_revision: number; ledger_revision: number; started_at_ms: number; deadline_ms: number; result: Record<string, unknown> | null } | null
+  evaluation: { origin: "completion_check"; prompt_id: string; work_prompt_id: string; work_provider_run_id: string | null; objective_revision: number; ledger_revision: number; started_at_ms: number; deadline_ms: number; paused_at_ms?: number; result: Record<string, unknown> | null } | null
   final_answer: string | null; evidence: string[]
 }
 // MP-08 / MP-09 / MP-10 / MP-11 A12: same bounded check, no goal mode.

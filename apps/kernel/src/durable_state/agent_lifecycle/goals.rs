@@ -7,6 +7,8 @@ pub(super) use controls::control;
 use serde::{Deserialize, Serialize};
 
 pub(crate) const CHECK_BOUND_MS: u64 = 60_000;
+const EVALUATING_REASON: &str = "Evaluating original goal objective";
+const VAULT_WAIT_REASON: &str = "Waiting for the Vault unlock";
 pub(crate) const RESULT_LIMIT: usize = 8_192;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +47,10 @@ pub struct GoalEvaluation {
     pub ledger_revision: u64,
     pub started_at_ms: u64,
     pub deadline_ms: u64,
+    /// Set while the check waits on the owner (the Vault unlock); that time
+    /// does not count against the service bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_at_ms: Option<u64>,
     pub result: Option<serde_json::Value>,
 }
 
@@ -195,6 +201,7 @@ pub(super) fn work_end(t: &mut AgentTaskExecution, has_answer: bool, now: u64) -
         ledger_revision: t.revision + 2,
         started_at_ms: now,
         deadline_ms: now.saturating_add(CHECK_BOUND_MS),
+        paused_at_ms: None,
         result: None,
     };
     if let Some(g) = &mut t.goal {
@@ -207,7 +214,7 @@ pub(super) fn work_end(t: &mut AgentTaskExecution, has_answer: bool, now: u64) -
     }
     t.pending_prompt_id = Some(prompt);
     t.state = ExecutionState::Working;
-    t.reason = "Evaluating original goal objective".into();
+    t.reason = EVALUATING_REASON.into();
     true
 }
 
@@ -441,7 +448,7 @@ pub(super) fn timeout(
     prompt: String,
     now: u64,
 ) -> Result<Outcome, DaemonError> {
-    let mut t = load(tx, &task)?;
+    let t = load(tx, &task)?;
     let Some(check) = completion::evaluation(&t) else {
         return Ok(Outcome::Saved);
     };
@@ -449,14 +456,96 @@ pub(super) fn timeout(
         || check.prompt_id != prompt
         || t.pending_prompt_id.as_deref().unwrap_or(&t.prompt_id) != prompt
         || check.result.is_some()
+        || check.paused_at_ms.is_some()
         || now < check.deadline_ms
     {
         return Ok(Outcome::Saved);
     }
+    block_check(
+        tx,
+        t,
+        prompt,
+        now,
+        "Goal completion check exceeded 60 seconds; inspect the exact delivery receipt and explicitly resume",
+        "completion_check service bound exceeded",
+    )
+}
+
+/// The check is waiting on the owner's Vault unlock: its service bound stops
+/// counting until `end_owner_wait`, and the task says what it waits for.
+pub(super) fn begin_owner_wait(
+    tx: &Transaction<'_>,
+    task: String,
+    prompt: String,
+    now: u64,
+) -> Result<Outcome, DaemonError> {
+    let mut t = load(tx, &task)?;
+    if !check_is_pending(&t, &prompt) || completion::evaluation(&t).unwrap().paused_at_ms.is_some()
+    {
+        return Ok(Outcome::Saved);
+    }
+    completion::evaluation_mut(&mut t).unwrap().paused_at_ms = Some(now);
+    t.reason = VAULT_WAIT_REASON.into();
+    save(tx, &t)?;
+    Ok(Outcome::Task(t))
+}
+
+/// The owner answered: an unlock gives the check back the time it waited; a
+/// refusal ends the task Blocked with the reason and Resume.
+pub(super) fn end_owner_wait(
+    tx: &Transaction<'_>,
+    task: String,
+    prompt: String,
+    refusal: Option<String>,
+    now: u64,
+) -> Result<Outcome, DaemonError> {
+    let mut t = load(tx, &task)?;
+    let Some(paused_at) = check_is_pending(&t, &prompt)
+        .then(|| completion::evaluation(&t).unwrap().paused_at_ms)
+        .flatten()
+    else {
+        return Ok(Outcome::Saved);
+    };
+    if let Some(reason) = refusal {
+        completion::evaluation_mut(&mut t).unwrap().paused_at_ms = None;
+        return block_check(
+            tx,
+            t,
+            prompt,
+            now,
+            &format!("{reason}; unlock the Vault and Resume"),
+            "owner did not unlock the Vault",
+        );
+    }
+    let waited = now.saturating_sub(paused_at);
+    let check = completion::evaluation_mut(&mut t).unwrap();
+    // The bound stays exactly `CHECK_BOUND_MS` after the start the ledger validates.
+    check.started_at_ms = check.started_at_ms.saturating_add(waited);
+    check.deadline_ms = check.deadline_ms.saturating_add(waited);
+    check.paused_at_ms = None;
+    t.reason = EVALUATING_REASON.into();
+    save(tx, &t)?;
+    Ok(Outcome::Task(t))
+}
+
+fn check_is_pending(t: &AgentTaskExecution, prompt: &str) -> bool {
+    t.state == ExecutionState::Working
+        && t.pending_prompt_id.as_deref().unwrap_or(&t.prompt_id) == prompt
+        && completion::evaluation(t).is_some_and(|e| e.prompt_id == prompt && e.result.is_none())
+}
+
+fn block_check(
+    tx: &Transaction<'_>,
+    mut t: AgentTaskExecution,
+    prompt: String,
+    now: u64,
+    reason: &str,
+    result_reason: &str,
+) -> Result<Outcome, DaemonError> {
     clock(&mut t, now);
-    blocked(&mut t, "Goal completion check exceeded 60 seconds; inspect the exact delivery receipt and explicitly resume");
+    blocked(&mut t, reason);
     completion::evaluation_mut(&mut t).unwrap().result = Some(serde_json::json!({
-        "status":"blocked","reason":"completion_check service bound exceeded","received_at_ms":now }));
+        "status":"blocked","reason":result_reason,"received_at_ms":now }));
     t.revision += 1;
     migration::audit(
         tx,

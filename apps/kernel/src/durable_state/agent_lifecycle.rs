@@ -696,7 +696,7 @@ pub(crate) fn lacks_live_executor(
         check.result.is_none()
             && check.prompt_id == task.pending_prompt_id.as_deref().unwrap_or(&task.prompt_id)
             && check.started_at_ms <= now
-            && now < check.deadline_ms
+            && (check.paused_at_ms.is_some() || now < check.deadline_ms)
     });
     task.state == ExecutionState::Working
         && now.saturating_sub(task.last_progress_at_ms) >= DELIVERY_TIMEOUT_MS

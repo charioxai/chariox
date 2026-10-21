@@ -39,6 +39,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         Operation::TimeoutGoal { task, prompt, now } => {
             super::goals::timeout(tx, task, prompt, now)
         }
+        Operation::BeginOwnerWait { task, prompt, now } => {
+            super::goals::begin_owner_wait(tx, task, prompt, now)
+        }
+        Operation::EndOwnerWait {
+            task,
+            prompt,
+            refusal,
+            now,
+        } => super::goals::end_owner_wait(tx, task, prompt, refusal, now),
         Operation::StartGoal {
             task,
             owner,

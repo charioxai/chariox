@@ -1344,6 +1344,190 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    // A completion check that waits for the owner's Vault unlock shows that wait and keeps its
+    // 60 s bound until the owner answers; a refusal ends it Blocked with the reason.
+    async fn vault_wait_fixture(
+        label: &str,
+    ) -> (
+        KernelRuntimeState,
+        String,
+        String,
+        std::path::PathBuf,
+        tokio::task::JoinHandle<Result<(), DaemonError>>,
+        crate::durable_state::agent_lifecycle::goals::GoalEvaluation,
+    ) {
+        use crate::durable_state::agent_lifecycle::{completion, Operation};
+        let root = std::env::temp_dir().join(format!("chariox-{label}-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        let vault = root.join("synthetic-vault.json");
+        let mut config = crate::DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = vault.display().to_string();
+        config.user_config.credential_vault.unlock_policy =
+            crate::config::CredentialVaultUnlockPolicy::KernelInit;
+        crate::secret::unlock_chariox_encrypted_vault(
+            &vault,
+            "synthetic wait passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+        crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
+        let (runtime, session, agent, _attachment, _binding) = mp11_fixture(config).await;
+        let store = &runtime.owned.durable_state_store;
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: "owner".into(),
+                room: session.clone(),
+                agent: agent.clone(),
+                prompt: "p".into(),
+                run: Some("run".into()),
+                now: 1,
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::EnableCompletionCheck { task: "p".into() })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::Settle {
+                room: session.clone(),
+                agent: agent.clone(),
+                prompt: "p".into(),
+                run: "run".into(),
+                has_answer: true,
+                cancelled: false,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+        let check = completion::evaluation(&store.agent_tasks(None, None).unwrap()[0])
+            .unwrap()
+            .clone();
+        let unlock = tokio::spawn({
+            let runtime = runtime.clone();
+            let (session, agent) = (session.clone(), agent.clone());
+            async move {
+                runtime
+                    .ensure_vault_unlocked_for_agent(&session, &agent, "launch provider run")
+                    .await
+                    .map(drop)
+            }
+        });
+        (runtime, session, agent, vault, unlock, check)
+    }
+
+    async fn vault_popup(runtime: &KernelRuntimeState, session: &str) -> String {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let card = runtime
+                    .owned
+                    .session_snapshot(session)
+                    .unwrap()
+                    .active_interactions()
+                    .iter()
+                    .find(|card| card.id().starts_with("vault-unlock-"))
+                    .map(|card| card.id().to_string());
+                if let Some(card) = card {
+                    break card;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the locked Vault must raise the unlock popup")
+    }
+
+    #[tokio::test]
+    async fn completion_check_waits_for_the_vault_unlock_without_spending_its_bound() {
+        use crate::durable_state::agent_lifecycle::{completion, ExecutionState, Operation};
+        let (runtime, session, _agent, vault, unlock, check) =
+            vault_wait_fixture("vault-wait").await;
+        let card = vault_popup(&runtime, &session).await;
+        let store = &runtime.owned.durable_state_store;
+        let waiting = store.agent_tasks(None, None).unwrap().remove(0);
+        assert_eq!(waiting.state, ExecutionState::Working);
+        assert_eq!(waiting.reason, "Waiting for the Vault unlock");
+        store
+            .agent_lifecycle(Operation::TimeoutGoal {
+                task: "p".into(),
+                prompt: check.prompt_id.clone(),
+                now: check.deadline_ms + 300_000,
+            })
+            .unwrap();
+        assert_eq!(
+            store.agent_tasks(None, None).unwrap()[0].state,
+            ExecutionState::Working,
+            "the owner's wait must not time the check out"
+        );
+        let owner = runtime
+            .owned
+            .session_store
+            .get_session(&session)
+            .unwrap()
+            .owner_user_id()
+            .to_string();
+        runtime
+            .owned
+            .resolve_runtime_interaction(
+                &session,
+                &card,
+                "passphrase",
+                Some("synthetic wait passphrase"),
+                Some(&owner),
+                true,
+            )
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), unlock)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let resumed = store.agent_tasks(None, None).unwrap().remove(0);
+        let after = completion::evaluation(&resumed).unwrap();
+        assert_eq!(after.paused_at_ms, None);
+        assert!(after.deadline_ms >= check.deadline_ms);
+        assert_eq!(resumed.reason, "Evaluating original goal objective");
+        crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
+        std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn declined_vault_unlock_blocks_the_waiting_completion_check_with_its_reason() {
+        use crate::durable_state::agent_lifecycle::ExecutionState;
+        let (runtime, session, _agent, vault, unlock, _check) =
+            vault_wait_fixture("vault-decline").await;
+        let card = vault_popup(&runtime, &session).await;
+        let owner = runtime
+            .owned
+            .session_store
+            .get_session(&session)
+            .unwrap()
+            .owner_user_id()
+            .to_string();
+        runtime
+            .owned
+            .resolve_runtime_interaction(&session, &card, "cancel", None, Some(&owner), true)
+            .unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(10), unlock)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        let blocked = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(None, None)
+            .unwrap()
+            .remove(0);
+        assert_eq!(blocked.state, ExecutionState::Blocked);
+        assert_eq!(
+            blocked.reason,
+            "The Vault unlock was declined; unlock the Vault and Resume"
+        );
+        std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
+    }
+
     #[tokio::test]
     async fn mp11_completion_receipt_cannot_settle_successor_or_rebound_prompt() {
         let (runtime, session, agent, attachment, binding) =

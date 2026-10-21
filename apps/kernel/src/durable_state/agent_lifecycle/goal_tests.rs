@@ -1448,3 +1448,98 @@ fn assessor_answering_the_request_leaves_the_public_answer_standing() {
     assert_eq!(task.state, ExecutionState::Done, "{}", task.reason);
     assert!(!task.correction_used);
 }
+
+// The 60 s check bound is a service bound, not an owner deadline: the time the check waits
+// for the owner's Vault unlock is given back, and a refusal is a definitive Blocked.
+fn wait_for_owner(f: &Fixture, is_goal: bool, at: u64) -> (String, goals::GoalEvaluation) {
+    if is_goal {
+        goal(f, 1);
+    } else {
+        plain(f);
+    }
+    f.settle("p", true);
+    let task = f.task();
+    let check = completion::evaluation(&task).unwrap().clone();
+    f.apply(Operation::BeginOwnerWait {
+        task: task.task_id.clone(),
+        prompt: check.prompt_id.clone(),
+        now: at,
+    });
+    (task.task_id, check)
+}
+
+#[test]
+fn owner_wait_stops_the_check_bound_and_an_unlock_gives_the_time_back() {
+    for is_goal in [false, true] {
+        let f = Fixture::new();
+        let (task, check) = wait_for_owner(&f, is_goal, 5_000);
+        let waiting = f.task();
+        assert_eq!(waiting.state, ExecutionState::Working);
+        assert_eq!(waiting.reason, "Waiting for the Vault unlock");
+        assert!(!lacks_live_executor(
+            &waiting,
+            check.deadline_ms * 10,
+            false,
+            false
+        ));
+        f.apply(Operation::TimeoutGoal {
+            task: task.clone(),
+            prompt: check.prompt_id.clone(),
+            now: check.deadline_ms + 300_000,
+        });
+        assert_eq!(
+            f.task().state,
+            ExecutionState::Working,
+            "the wait is not a timeout"
+        );
+        let paused_at = completion::evaluation(&f.task())
+            .unwrap()
+            .paused_at_ms
+            .unwrap();
+        let unlocked_at = paused_at + 420_000;
+        f.apply(Operation::EndOwnerWait {
+            task: task.clone(),
+            prompt: check.prompt_id.clone(),
+            refusal: None,
+            now: unlocked_at,
+        });
+        let resumed = f.task();
+        let after = completion::evaluation(&resumed).unwrap();
+        assert_eq!(after.paused_at_ms, None);
+        assert_eq!(after.deadline_ms, check.deadline_ms + 420_000);
+        assert_eq!(
+            after.deadline_ms,
+            after.started_at_ms + goals::CHECK_BOUND_MS
+        );
+        assert_eq!(resumed.reason, "Evaluating original goal objective");
+        f.apply(Operation::TimeoutGoal {
+            task,
+            prompt: check.prompt_id.clone(),
+            now: after.deadline_ms,
+        });
+        assert_eq!(
+            f.task().state,
+            ExecutionState::Blocked,
+            "the bound counts again after the unlock"
+        );
+    }
+}
+
+#[test]
+fn owner_refusal_blocks_with_the_reason_and_resume() {
+    let f = Fixture::new();
+    let (task, check) = wait_for_owner(&f, false, 1_000);
+    f.apply(Operation::EndOwnerWait {
+        task,
+        prompt: check.prompt_id,
+        refusal: Some("The Vault unlock was declined".into()),
+        now: 9_000,
+    });
+    let blocked = f.task();
+    assert_eq!(blocked.state, ExecutionState::Blocked);
+    assert_eq!(
+        blocked.reason,
+        "The Vault unlock was declined; unlock the Vault and Resume"
+    );
+    assert_eq!(completion::evaluation(&blocked).unwrap().paused_at_ms, None);
+}
