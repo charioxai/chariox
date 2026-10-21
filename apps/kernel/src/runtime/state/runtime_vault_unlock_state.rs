@@ -485,37 +485,6 @@ impl KernelRuntimeState {
             .await
     }
 
-    /// Agent work that needs the Vault waits for the owner: an unanswered popup is asked again
-    /// instead of failing the work, until the owner answers, refuses or unlocks elsewhere.
-    async fn await_vault_answer(
-        &self,
-        session_id: &str,
-        interaction: impl Fn() -> crate::session::RuntimeInteraction,
-        operation: &'static str,
-        vault_path: &std::path::Path,
-        unlocks: &mut tokio::sync::watch::Receiver<()>,
-        accept_shared_unlock: bool,
-    ) -> Result<Option<super::PendingInteractionResolution>, DaemonError> {
-        loop {
-            let answer = self
-                .await_vault_unlock_interaction(
-                    session_id,
-                    interaction(),
-                    operation,
-                    vault_path,
-                    unlocks,
-                    accept_shared_unlock,
-                )
-                .await?;
-            if answer
-                .as_ref()
-                .is_none_or(|resolution| resolution.status != "timed_out")
-            {
-                return Ok(answer);
-            }
-        }
-    }
-
     pub(super) async fn ensure_vault_unlocked_for_agent(
         &self,
         session_id: &str,
@@ -543,9 +512,9 @@ impl KernelRuntimeState {
         }
 
         let Some(resolution) = self
-            .await_vault_answer(
+            .await_vault_unlock_interaction(
                 session_id,
-                || vault_passphrase_interaction(session_id, agent_id, operation),
+                vault_passphrase_interaction(session_id, agent_id, operation),
                 operation,
                 &vault_path,
                 &mut unlocks,
@@ -561,9 +530,9 @@ impl KernelRuntimeState {
             crate::config::CredentialVaultUnlockPolicy::Ttl
         ) {
             let Some(resolution) = self
-                .await_vault_answer(
+                .await_vault_unlock_interaction(
                     session_id,
-                    || vault_unlock_lease_interaction(session_id, agent_id, &vault_config),
+                    vault_unlock_lease_interaction(session_id, agent_id, &vault_config),
                     operation,
                     &vault_path,
                     &mut unlocks,

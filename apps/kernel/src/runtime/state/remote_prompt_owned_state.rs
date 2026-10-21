@@ -1490,62 +1490,6 @@ mod tests {
         std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
     }
 
-    // An unanswered popup times out and is asked again; the task keeps waiting, it is not blocked.
-    #[tokio::test]
-    async fn timed_out_vault_popup_is_asked_again_while_the_completion_check_waits() {
-        use crate::durable_state::agent_lifecycle::ExecutionState;
-        let (runtime, session, _agent, vault, unlock, _check) =
-            vault_wait_fixture("vault-timeout").await;
-        let first = vault_popup(&runtime, &session).await;
-        runtime
-            .timeout_runtime_interaction(&session, &first)
-            .await
-            .unwrap();
-        let second = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            loop {
-                let card = vault_popup(&runtime, &session).await;
-                if card != first {
-                    break card;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("the timed-out popup must be asked again");
-        let task = runtime
-            .owned
-            .durable_state_store
-            .agent_tasks(None, None)
-            .unwrap()
-            .remove(0);
-        assert_eq!(task.state, ExecutionState::Working, "{}", task.reason);
-        let owner = runtime
-            .owned
-            .session_store
-            .get_session(&session)
-            .unwrap()
-            .owner_user_id()
-            .to_string();
-        runtime
-            .owned
-            .resolve_runtime_interaction(
-                &session,
-                &second,
-                "passphrase",
-                Some("synthetic wait passphrase"),
-                Some(&owner),
-                true,
-            )
-            .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(10), unlock)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
-        std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
-    }
-
     #[tokio::test]
     async fn declined_vault_unlock_blocks_the_waiting_completion_check_with_its_reason() {
         use crate::durable_state::agent_lifecycle::ExecutionState;
@@ -1580,6 +1524,39 @@ mod tests {
         assert_eq!(
             blocked.reason,
             "The Vault unlock was declined; unlock the Vault and Resume"
+        );
+        std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
+    }
+
+    // The popup lives 60 s: an owner who never answers ends the waiting check Blocked with the
+    // reason and Resume, not with a timeout that has nothing to do with the check.
+    #[tokio::test]
+    async fn timed_out_vault_popup_blocks_the_waiting_completion_check_with_its_reason() {
+        use crate::durable_state::agent_lifecycle::ExecutionState;
+        let (runtime, session, _agent, vault, unlock, _check) =
+            vault_wait_fixture("vault-timeout").await;
+        let card = vault_popup(&runtime, &session).await;
+        runtime
+            .timeout_runtime_interaction(&session, &card)
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(10), unlock)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        let task = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(None, None)
+            .unwrap()
+            .remove(0);
+        assert_eq!(task.state, ExecutionState::Blocked);
+        assert_eq!(
+            task.reason,
+            "The Vault unlock timed out; unlock the Vault and Resume"
         );
         std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
     }
