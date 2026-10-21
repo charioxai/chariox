@@ -539,7 +539,7 @@ impl KernelRuntimeState {
                 if agent.remote_execution().is_some() {
                     let revision = service.storage.snapshot()?.revision;
                     let (_, details) = tokio::runtime::Handle::current().block_on(
-                        self.remote_skill_native_inventory(
+                        self.recovering_remote_skill_native_inventory(
                             &agent,
                             revision,
                             false,

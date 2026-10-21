@@ -72,7 +72,12 @@ impl KernelRuntimeState {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         if agent.remote_execution().is_some() {
             let (inventory, _) = tokio::runtime::Handle::current().block_on(
-                self.remote_skill_native_inventory(&agent, catalog_revision, refresh, None),
+                self.recovering_remote_skill_native_inventory(
+                    &agent,
+                    catalog_revision,
+                    refresh,
+                    None,
+                ),
             )?;
             return Ok(inventory.map(|inventory| AgentNativeEntries {
                 entries: inventory.entries,
@@ -110,6 +115,37 @@ impl KernelRuntimeState {
         Ok(inventory
             .map(|inventory| inventory.entries)
             .unwrap_or_default())
+    }
+
+    /// Picker and inventory reads meet a lease the restarted worker no longer knows
+    /// before any prompt does: rebind it as a prompt dispatch would, then ask again.
+    /// Dispatch has its own recovery loop and uses the plain request.
+    pub(super) async fn recovering_remote_skill_native_inventory(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        catalog_revision: u64,
+        refresh: bool,
+        details_for: Option<SkillSelection>,
+    ) -> Result<
+        (
+            Option<LeasedSkillNativeInventory>,
+            Option<NativeSkillDetails>,
+        ),
+        DaemonError,
+    > {
+        match self
+            .remote_skill_native_inventory(agent, catalog_revision, refresh, details_for.clone())
+            .await
+        {
+            Err(error)
+                if super::remote_prompt_worker_submission_runtime::remote_prompt_error_should_refresh_binding(&error) =>
+            {
+                let agent = self.refresh_remote_agent_binding_authorized(agent.id()).await?;
+                self.remote_skill_native_inventory(&agent, catalog_revision, refresh, details_for)
+                    .await
+            }
+            result => result,
+        }
     }
 
     /// Home side: the leased worker owns the harness, so it answers.
