@@ -248,8 +248,6 @@ impl CommandRouter {
             | LocalDaemonRequest::ObserveEventConnectionAuthorization(_)
             | LocalDaemonRequest::RefreshEventConnection(_)
             | LocalDaemonRequest::TestEventConnection(_)
-            | LocalDaemonRequest::ListEventConnectionEvents(_)
-            | LocalDaemonRequest::ReplayEventConnectionEvent(_)
             | LocalDaemonRequest::ReconnectEventConnection(_)
             | LocalDaemonRequest::ListEventConnectionResources(_)
             | LocalDaemonRequest::ListEventConnectionDependencies(_)
