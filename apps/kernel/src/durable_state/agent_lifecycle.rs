@@ -443,11 +443,11 @@ fn current(task: &AgentTaskExecution, prompt: &str) -> Result<(), DaemonError> {
     {
         return Err(error("completion_check cannot mutate work or authority"));
     }
-    if task.prompt_id != prompt
-        || task.state != ExecutionState::Working
-        || task.pending_prompt_id.is_some()
-    {
-        return Err(error("turn mutation admission closed or stale"));
+    if task.prompt_id != prompt {
+        return Err(error("origin_prompt_id is not this running turn's. Retry with the task_id and origin_prompt_id from this turn's <chariox-task-context>; never reuse ids from an earlier turn"));
+    }
+    if task.state != ExecutionState::Working || task.pending_prompt_id.is_some() {
+        return Err(error("this turn can no longer change its task: it is waiting, finished or already ending. End the turn without more tools"));
     }
     Ok(())
 }

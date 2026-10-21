@@ -3428,3 +3428,22 @@ fn a02_child_subscription_prefers_unresolved_completion_to_delivered_message() {
         });
     }
 }
+
+// A model that reuses an earlier turn's ids is told which ids to use, not just refused.
+#[test]
+fn a_stale_origin_prompt_error_names_the_turn_context_to_use() {
+    let f = Fixture::new();
+    f.begin("p");
+    let error = f
+        .store
+        .agent_lifecycle(Operation::Unsubscribe {
+            task: "p".into(),
+            prompt: "older-turn".into(),
+            registration: "r".into(),
+        })
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("<chariox-task-context>"),
+        "{error}"
+    );
+}
