@@ -39,3 +39,27 @@ pub(crate) async fn scoped_metadata_config(
     discovery.cloud_relay = None;
     Ok(discovery)
 }
+
+// A managed slice worker is not in the owner's Cloud kernel directory, so a
+// lookup that only carries the directory grant never finds it. The owner asks
+// Cloud for a grant scoped to exactly that worker, as slice launch already does.
+pub(crate) async fn relay_target_discovery_config(
+    config: &DaemonConfig,
+    target_ref: &str,
+) -> Result<DaemonConfig, DaemonError> {
+    let hosted_slice_profile = config
+        .relay_url
+        .as_deref()
+        .filter(|url| config.relay_url_uses_cloud_profile(url))
+        .and(config.cloud_relay.as_ref())
+        .filter(|_| target_ref.starts_with("slice:"));
+    let Some(profile) = hosted_slice_profile else {
+        return relay_metadata_discovery_config(config).await;
+    };
+    let grant =
+        super::issue_cloud_slice_discovery_token(profile, &config.daemon_id, target_ref).await?;
+    Ok(crate::transport::relay_discovery::with_metadata_token(
+        config,
+        grant.token,
+    ))
+}
