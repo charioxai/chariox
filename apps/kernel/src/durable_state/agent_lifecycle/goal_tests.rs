@@ -1131,3 +1131,78 @@ fn a12_settling_obligation_never_saves_done_on_repeated_verdicts() {
     }
     assert_eq!(f.task().state, ExecutionState::Blocked);
 }
+
+// A12-S02/S07: a continuation that made no handled progress and yielded again on
+// live sources covering every obligation keeps that wait; a repeated continue
+// must not discard it and spend the guard while the build is still running.
+#[test]
+fn a12_repeated_continue_keeps_the_agents_covered_wait() {
+    let f = Fixture::new();
+    goal(&f, 1);
+    f.register();
+    f.subscribe();
+    let yield_on = |prompt: &str, now: u64| {
+        f.apply(Operation::Yield {
+            task: "p".into(),
+            prompt: prompt.into(),
+            registrations: vec!["reg".into()],
+            cursor: 0,
+            deadline: 9_000_000,
+            reason: "build still running".into(),
+            now,
+        });
+    };
+    yield_on("p", 2);
+    f.settle("p", true);
+    let first = check(&f, assessment("continue"));
+    assert_eq!(first.state, ExecutionState::Working);
+    let id = first.pending_prompt_id.unwrap();
+    f.begin(&id);
+    yield_on(&id, 3);
+    f.settle(&id, true);
+    let t = check(&f, assessment("continue"));
+    assert_eq!(t.state, ExecutionState::Waiting, "{t:?}");
+    assert_eq!(t.no_progress_wakes, first.no_progress_wakes);
+    let wait = t.wait.clone().unwrap();
+    assert_eq!(wait.registration_ids, vec!["reg".to_string()]);
+    assert_eq!(
+        t.goal.as_ref().unwrap().next_check_in_ms,
+        Some(wait.deadline_ms)
+    );
+    assert!(wait.deadline_ms <= 3 + 60_000);
+    assert_eq!(f.task(), t);
+}
+
+// The kept wait never bypasses the guard: at the limit a covered wait still blocks.
+#[test]
+fn a12_kept_wait_still_ends_at_the_progress_guard() {
+    let f = Fixture::new();
+    goal(&f, 1);
+    f.register();
+    f.subscribe();
+    f.settle("p", true);
+    let mut t = check(&f, assessment("continue"));
+    for _ in 1..NO_PROGRESS_LIMIT {
+        let id = t.pending_prompt_id.clone().unwrap();
+        f.begin(&id);
+        f.settle(&id, true);
+        t = check(&f, assessment("continue"));
+    }
+    assert_eq!(t.no_progress_wakes, NO_PROGRESS_LIMIT);
+    let id = t.pending_prompt_id.clone().unwrap();
+    f.begin(&id);
+    f.apply(Operation::Yield {
+        task: "p".into(),
+        prompt: id.clone(),
+        registrations: vec!["reg".into()],
+        cursor: 0,
+        deadline: 9_000_000,
+        reason: "build still running".into(),
+        now: 3,
+    });
+    f.settle(&id, true);
+    assert_eq!(
+        check(&f, assessment("continue")).state,
+        ExecutionState::Blocked
+    );
+}
