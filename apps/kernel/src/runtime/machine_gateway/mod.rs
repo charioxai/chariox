@@ -42,6 +42,7 @@ pub(crate) use subscription::{ForwardedSubscription, SubscribeRequest};
 /// The default time a forwarded request may take before `machine_request_timeout`.
 pub(crate) const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 const GATEWAY_CLIENT_ID: &str = "agent-gateway";
+const GRANTS_END_AFTER_REVOKE: Duration = Duration::from_secs(2);
 pub(super) static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// The grant a forwarded request acts under, as the origin kernel knows it.
@@ -266,12 +267,20 @@ impl MachineGateway {
     /// The owner revoked this kernel's gateway in the Cloud clients list. That ends
     /// every agent access grant; a new grant registers the gateway again.
     async fn gateway_revoked(&self) -> GatewayError {
-        self.hosted.forget().await;
-        if let Err(error) = self
-            .runtime_state
-            .revoke_kernel_access(None, None, "gateway_revoked")
-        {
-            tracing::warn!(%error, "could not end agent access grants after the gateway was revoked");
+        if self.hosted.revoked().await {
+            let hosted = self.hosted.clone();
+            let runtime_state = self.runtime_state.clone();
+            tokio::spawn(async move {
+                // Ending the grants closes the agent's connection, so the answer to the
+                // request that found the revoke has to be delivered before they end.
+                tokio::time::sleep(GRANTS_END_AFTER_REVOKE).await;
+                if let Err(error) =
+                    runtime_state.revoke_kernel_access(None, None, "gateway_revoked")
+                {
+                    tracing::warn!(%error, "could not end agent access grants after the gateway was revoked");
+                }
+                hosted.reopen().await;
+            });
         }
         GatewayError::GatewayRevoked
     }

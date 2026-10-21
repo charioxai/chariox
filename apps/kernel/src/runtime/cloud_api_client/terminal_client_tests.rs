@@ -384,7 +384,10 @@ async fn gateway_registration_names_the_gateway_subject_and_uses_only_the_kernel
     .unwrap();
     let request = fixture.join().unwrap().remove(0);
     assert_eq!(request.authorization, None);
-    assert_eq!(request.body["kernelCredential"], "synthetic-kernel-credential");
+    assert_eq!(
+        request.body["kernelCredential"],
+        "synthetic-kernel-credential"
+    );
     assert_eq!(request.body["kernelId"], "kernel-fixture");
     assert_eq!(
         request.body["clientId"],

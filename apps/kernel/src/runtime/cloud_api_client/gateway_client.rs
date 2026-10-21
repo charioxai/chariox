@@ -3,8 +3,8 @@
 use crate::config::PersistedCloudRelayProfile;
 use crate::error::DaemonError;
 
-use super::terminal_client::kernel_client_subject;
 use super::post_cloud_json;
+use super::terminal_client::kernel_client_subject;
 
 /// Registers (or brings back) the client row named by the gateway's relay subject.
 /// Cloud accepts it only from this kernel's own credential.
@@ -16,11 +16,16 @@ pub(crate) async fn register_cloud_gateway_client(
 ) -> Result<(), DaemonError> {
     let (Some(kernel_id), Some(credential)) = (
         profile.kernel_id.as_deref().filter(|id| !id.is_empty()),
-        profile.kernel_credential.as_deref().filter(|c| !c.is_empty()),
+        profile
+            .kernel_credential
+            .as_deref()
+            .filter(|c| !c.is_empty()),
     ) else {
         return Err(DaemonError::LocalTransport {
             operation: "register agent gateway",
-            message: "the agent gateway needs this kernel's own Cloud enrollment; run /relay cloud login".into(),
+            message:
+                "the agent gateway needs this kernel's own Cloud enrollment; run /relay cloud login"
+                    .into(),
         });
     };
     post_cloud_json::<serde_json::Value>(
