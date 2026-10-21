@@ -866,12 +866,11 @@ impl SkillPromptBridge for SkillDispatchService {
         }
         let opencode =
             crate::provider::canonical_provider_family(run.provider()) == Some("opencode");
+        if opencode {
+            authority.native_tool_loads =
+                native_tool_loads(&context.loaded, &context.native_selections, native);
+        }
         for body in &context.loaded {
-            if opencode && matches!(body.delivery, SkillDelivery::ProvidedBy { .. }) {
-                authority
-                    .native_tool_loads
-                    .insert(body.name.clone(), body.skill_id.clone());
-            }
             if !matches!(body.delivery, SkillDelivery::ProvidedBy { .. })
                 || crate::provider::canonical_provider_family(run.provider()) == Some("codex")
             {
@@ -907,14 +906,9 @@ impl SkillPromptBridge for SkillDispatchService {
             }
         }
         for selection in &context.native_selections {
-            let SkillSelection::Native { entry_id, name, .. } = selection else {
+            let SkillSelection::Native { entry_id, .. } = selection else {
                 continue;
             };
-            if opencode {
-                authority
-                    .native_tool_loads
-                    .insert(name.clone(), entry_id.clone());
-            }
             if context.loaded.iter().any(|body|matches!(&body.delivery,SkillDelivery::ProvidedBy{entry_id:id,..} if id==entry_id)) {continue}
             let Some(entry) = native.iter().find(|entry| &entry.selection == selection) else {
                 continue;
@@ -956,5 +950,93 @@ impl SkillPromptBridge for SkillDispatchService {
             && delivery.requires_native_load_ack.is_empty()
             && delivery.visible_prompt == envelope.visible_user_prompt;
         Ok((!carries_nothing).then_some(delivery))
+    }
+}
+
+/// OpenCode loads deduped Chariox skills and `From OpenCode` selections with its own
+/// `skill` tool, by name. Map each name to the pending load that tool call settles: the
+/// Chariox skill a native copy provides, or the selected native entry.
+fn native_tool_loads(
+    loaded: &[SkillResolvedBody],
+    selections: &[SkillSelection],
+    native: &[NativeSkillEntry],
+) -> BTreeMap<String, String> {
+    let mut loads: BTreeMap<String, String> = loaded
+        .iter()
+        .filter(|body| matches!(body.delivery, SkillDelivery::ProvidedBy { .. }))
+        .map(|body| (body.name.clone(), body.skill_id.clone()))
+        .collect();
+    for selection in selections {
+        let SkillSelection::Native { entry_id, name, .. } = selection else {
+            continue;
+        };
+        let provided = loaded.iter().any(|body| {
+            matches!(&body.delivery, SkillDelivery::ProvidedBy { entry_id: id, .. } if id == entry_id)
+        });
+        let verified = native.iter().any(|entry| {
+            &entry.selection == selection && entry.complete_manifest && entry.digest.is_some()
+        });
+        if !provided && verified {
+            loads.insert(name.clone(), entry_id.clone());
+        }
+    }
+    loads
+}
+
+#[cfg(test)]
+mod native_tool_load_tests {
+    use super::*;
+
+    fn native(name: &str) -> NativeSkillEntry {
+        NativeSkillEntry {
+            selection: SkillSelection::Native {
+                entry_id: format!("entry-{name}"),
+                name: name.into(),
+                provider: "opencode".into(),
+                account_profile: "default".into(),
+                execution_id: "kernel:run".into(),
+                inventory_revision: "inventory".into(),
+            },
+            description: String::new(),
+            digest: Some("a".repeat(64)),
+            exposure: crate::skill::v2::NativeSkillExposure::Confirmed,
+            default_state: SkillState::Auto,
+            complete_manifest: true,
+            supports_load_ack: true,
+            discovery_error: None,
+        }
+    }
+
+    // A deduped `$name` resolves to the native entry too; its tool call must still
+    // settle the Chariox skill's pending load, not the native entry.
+    #[test]
+    fn a_deduped_skill_maps_to_its_chariox_load_and_a_native_selection_to_its_entry() {
+        let dup = native("dup");
+        let only = native("only");
+        let provided = SkillResolvedBody {
+            skill_id: "skill-dup".into(),
+            name: "dup".into(),
+            digest: "a".repeat(64),
+            root: String::new(),
+            body: String::new(),
+            files: vec![],
+            reason: SkillLoadReason::Explicit,
+            delivery: SkillDelivery::ProvidedBy {
+                provider: "opencode".into(),
+                entry_id: "entry-dup".into(),
+            },
+        };
+        let loads = native_tool_loads(
+            &[provided],
+            &[dup.selection.clone(), only.selection.clone()],
+            &[dup, only],
+        );
+        assert_eq!(
+            loads,
+            BTreeMap::from([
+                ("dup".to_string(), "skill-dup".to_string()),
+                ("only".to_string(), "entry-only".to_string()),
+            ])
+        );
     }
 }
