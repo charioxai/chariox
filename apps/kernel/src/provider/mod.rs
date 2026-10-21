@@ -1,4 +1,5 @@
 mod skill_ack;
+pub(crate) use skill_ack::completed_native_skill_tool;
 pub use skill_ack::SkillToolDeliveryAcknowledgement;
 pub mod skill_delivery;
 pub mod skill_inventory;

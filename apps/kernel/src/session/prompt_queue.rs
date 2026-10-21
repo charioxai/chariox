@@ -1179,6 +1179,7 @@ mod tests {
             pending_loads: vec![],
             prompt_delivery_skill_ids: Default::default(),
             remote_roots: Default::default(),
+            native_tool_loads: Default::default(),
         };
         let prompt = prompt.with_skill_turn_authority(authority.clone());
         assert_eq!(prompt.skill_selections(), &[selection.clone()]);

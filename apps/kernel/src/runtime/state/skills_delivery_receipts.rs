@@ -50,6 +50,11 @@ impl SkillDispatchService {
                 self.record_hook_receipts(run, run.session_id(), agent_id, prompt.id())?;
             }
         }
+        if crate::provider::canonical_provider_family(run.provider()) == Some("opencode")
+            && !self.runs.is_leased_provider_run(run.id())
+        {
+            self.record_native_tool_receipts(run, agent_id, batch)?;
+        }
         for ack in &batch.skill_tool_delivery_acknowledgements {
             let session = self.sessions.get_session(run.session_id())?;
             let leased = self
@@ -198,5 +203,43 @@ impl SkillDispatchService {
                 }
                 Ok(())
             })
+    }
+    /// OpenCode loads a deduped or `From OpenCode` skill with its own `skill` tool; the
+    /// completed call settles the pending load the turn mapped to that name.
+    fn record_native_tool_receipts(
+        &self,
+        run: &RuntimeProviderRun,
+        agent_id: &str,
+        batch: &crate::provider::ProviderPromptSignalBatch,
+    ) -> Result<(), DaemonError> {
+        let names: Vec<String> = batch
+            .chunks
+            .iter()
+            .filter_map(|chunk| {
+                crate::provider::completed_native_skill_tool(chunk.kind.clone(), &chunk.bytes)
+            })
+            .collect();
+        if names.is_empty() {
+            return Ok(());
+        }
+        let session = self.sessions.get_session(run.session_id())?;
+        let Some(prompt) = self.prompts.active_prompt_for_agent(&session, agent_id) else {
+            return Ok(());
+        };
+        let skill_ids: std::collections::BTreeSet<String> = prompt
+            .skill_turn_authority()
+            .map(|authority| {
+                names
+                    .iter()
+                    .filter_map(|name| authority.native_tool_loads.get(name).cloned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if skill_ids.is_empty() {
+            return Ok(());
+        }
+        self.record_acknowledged_loads(run, run.session_id(), agent_id, prompt.id(), |_, record| {
+            skill_ids.contains(&record.skill_id)
+        })
     }
 }

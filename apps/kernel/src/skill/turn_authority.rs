@@ -22,6 +22,10 @@ pub(crate) struct SkillTurnAuthority {
     /// Leased turns: worker-verified package roots by skill ID, bound after the transfer receipt.
     #[serde(default)]
     pub remote_roots: BTreeMap<String, String>,
+    /// Loads a provider's own skill tool settles by name (OpenCode's `skill` tool):
+    /// the name the harness invokes, mapped to the pending load's skill ID.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub native_tool_loads: BTreeMap<String, String>,
 }
 /// Leased turns have no home provider run; the run ID names the lease instead.
 pub(crate) const LEASED_RUN_PREFIX: &str = "leased:";
@@ -62,6 +66,7 @@ mod tests {
             pending_loads: vec![],
             prompt_delivery_skill_ids: Default::default(),
             remote_roots: Default::default(),
+            native_tool_loads: Default::default(),
         };
         turn.reserve_body("first", 5).unwrap();
         turn.reserve_body("first", 5).unwrap();

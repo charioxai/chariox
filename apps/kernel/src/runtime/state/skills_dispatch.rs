@@ -454,6 +454,7 @@ impl SkillDispatchService {
             pending_loads: vec![],
             prompt_delivery_skill_ids: Default::default(),
             remote_roots: Default::default(),
+            native_tool_loads: Default::default(),
         };
         for body in &context.loaded {
             if !matches!(body.delivery, SkillDelivery::ProvidedBy { .. })
@@ -848,6 +849,7 @@ impl SkillPromptBridge for SkillDispatchService {
             pending_loads: vec![],
             prompt_delivery_skill_ids: Default::default(),
             remote_roots: Default::default(),
+            native_tool_loads: Default::default(),
         };
         if let Some(previous) = prompt
             .skill_turn_authority()
@@ -862,7 +864,14 @@ impl SkillPromptBridge for SkillDispatchService {
             authority.pending_loads = previous.pending_loads.clone();
             authority.prompt_delivery_skill_ids = previous.prompt_delivery_skill_ids.clone();
         }
+        let opencode =
+            crate::provider::canonical_provider_family(run.provider()) == Some("opencode");
         for body in &context.loaded {
+            if opencode && matches!(body.delivery, SkillDelivery::ProvidedBy { .. }) {
+                authority
+                    .native_tool_loads
+                    .insert(body.name.clone(), body.skill_id.clone());
+            }
             if !matches!(body.delivery, SkillDelivery::ProvidedBy { .. })
                 || crate::provider::canonical_provider_family(run.provider()) == Some("codex")
             {
@@ -898,9 +907,14 @@ impl SkillPromptBridge for SkillDispatchService {
             }
         }
         for selection in &context.native_selections {
-            let SkillSelection::Native { entry_id, .. } = selection else {
+            let SkillSelection::Native { entry_id, name, .. } = selection else {
                 continue;
             };
+            if opencode {
+                authority
+                    .native_tool_loads
+                    .insert(name.clone(), entry_id.clone());
+            }
             if context.loaded.iter().any(|body|matches!(&body.delivery,SkillDelivery::ProvidedBy{entry_id:id,..} if id==entry_id)) {continue}
             let Some(entry) = native.iter().find(|entry| &entry.selection == selection) else {
                 continue;

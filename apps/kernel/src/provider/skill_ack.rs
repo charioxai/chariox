@@ -35,6 +35,31 @@ pub(crate) fn completed_skill_tool(
     })
 }
 
+/// OpenCode's own `skill` tool completed for a native skill: the harness loaded it.
+/// Returns the invoked name; only a completed call with a result counts.
+pub(crate) fn completed_native_skill_tool(
+    kind: crate::terminal::TerminalOutputKind,
+    bytes: &[u8],
+) -> Option<String> {
+    if kind != crate::terminal::TerminalOutputKind::ProviderTool {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    if value.get("tool").and_then(Value::as_str) != Some("skill")
+        || value.get("status").and_then(Value::as_str) != Some("completed")
+        || value
+            .get("error")
+            .is_some_and(|error| !error.is_null() && error.as_str() != Some(""))
+        || value
+            .get("output")
+            .is_none_or(|output| output.is_null() || output.as_str() == Some(""))
+    {
+        return None;
+    }
+    let name = value.get("input")?.get("name")?.as_str()?;
+    (!name.is_empty() && name.len() <= 128).then(|| name.into())
+}
+
 /// Normalized official Codex/OpenCode tool frames retain full result bytes.
 /// Claude observes the raw matching result before its bounded transcript copy.
 pub(crate) fn completed_tool_transcript(
@@ -131,6 +156,32 @@ mod tests {
             assert_eq!(receipt.prompt_id, "turn-1");
             assert_eq!(receipt.skill_id, "skill-1");
             assert_eq!(receipt.digest, "a".repeat(64));
+        }
+    }
+    #[test]
+    fn opencode_native_skill_tool_settles_by_name_only_when_completed() {
+        use crate::terminal::TerminalOutputKind::{ProviderOutput, ProviderTool};
+        let frame = |value: Value| serde_json::to_vec(&value).unwrap();
+        let loaded = json!({"tool":"skill","status":"completed","input":{"name":"house-review"},
+            "output":"<skill_content name=\"house-review\">Review.</skill_content>"});
+        assert_eq!(
+            completed_native_skill_tool(ProviderTool, &frame(loaded.clone())).as_deref(),
+            Some("house-review")
+        );
+        assert_eq!(
+            completed_native_skill_tool(ProviderOutput, &frame(loaded)),
+            None
+        );
+        for refused in [
+            json!({"tool":"skill","status":"running","input":{"name":"house-review"},"output":""}),
+            json!({"tool":"skill","status":"completed","input":{"name":"house-review"},"output":"x","error":"denied"}),
+            json!({"tool":"skill","status":"completed","input":{"name":"house-review"},"output":""}),
+            json!({"tool":"read","status":"completed","input":{"name":"house-review"},"output":"x"}),
+        ] {
+            assert_eq!(
+                completed_native_skill_tool(ProviderTool, &frame(refused)),
+                None
+            );
         }
     }
     #[test]

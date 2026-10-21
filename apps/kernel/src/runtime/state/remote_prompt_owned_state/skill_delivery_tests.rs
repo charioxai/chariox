@@ -91,6 +91,7 @@ async fn fixture_with_dispatch(
         pending_loads,
         prompt_delivery_skill_ids: ["explicit".into()].into(),
         remote_roots: Default::default(),
+        native_tool_loads: Default::default(),
     };
     runtime
         .owned
@@ -1258,6 +1259,7 @@ async fn claude_hook_delivery_receipt_records_the_local_run_load_once() {
         }],
         prompt_delivery_skill_ids: [skill.id.clone()].into(),
         remote_roots: Default::default(),
+        native_tool_loads: Default::default(),
     };
     runtime
         .owned
