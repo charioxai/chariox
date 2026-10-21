@@ -3429,7 +3429,30 @@ pub(in crate::runtime::state) mod tests {
             matches!(result, Ok(PromptDispatchAcceptance::Dropped)),
             "cancelled dispatch should be dropped: {result:?}"
         );
-        assert!(provider_inputs_containing(&runtime, "active prompt").is_empty());
+        let writer = runtime
+            .with_app_side_effect(|app| app.provider_pty_input_writer_for_runtime(&run_id))
+            .await
+            .unwrap();
+        writer.write_input(b"cancelled-dispatch-barrier\n").unwrap();
+        // Audit input records admission intent. Wait for a later wire marker
+        // instead so the PTY proves the cancelled prompt was never written.
+        let mut output = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let chunks = runtime
+                    .with_app_side_effect(|app| app.pty_mut().drain_output(&run_id))
+                    .await
+                    .unwrap();
+                output.extend(chunks.into_iter().flat_map(|chunk| chunk.bytes));
+                if String::from_utf8_lossy(&output).contains("cancelled-dispatch-barrier") {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the live PTY should acknowledge the barrier");
+        assert!(!String::from_utf8_lossy(&output).contains("active prompt"));
         assert!(failed_requests(&runtime, &agent_id).is_empty());
     }
 
