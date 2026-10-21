@@ -24,6 +24,7 @@ static SUBSCRIPTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// What the agent asked to watch on the machine.
 pub(crate) struct SubscribeRequest {
+    pub(crate) grant_id: String,
     pub(crate) session_id: String,
     pub(crate) attachment_id: String,
     pub(crate) scope: Option<String>,
@@ -59,6 +60,7 @@ impl MachineGateway {
         request: SubscribeRequest,
     ) -> Result<ForwardedSubscription, GatewayError> {
         let kernel = self.resolve(machine).await?;
+        self.register_for(&request.grant_id, machine).await?;
         // Its own connection: the relay token it renews is the one it was opened with,
         // not one shared with requests that may be minutes older.
         let link = self.open_link(machine, &kernel).await?;

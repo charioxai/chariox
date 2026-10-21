@@ -1699,7 +1699,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
             machine,
         } => {
             if let Some(machine) = machine {
-                if external_caller.is_none() {
+                let Some(caller) = external_caller.as_ref() else {
                     let _ = try_send_outgoing_frame(
                         outgoing_tx,
                         close_tx,
@@ -1719,12 +1719,13 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                         None,
                     );
                     return;
-                }
+                };
                 unix_access::serve_gateway_subscription(
                     &connection,
                     request_id,
                     machine,
                     crate::runtime::machine_gateway::SubscribeRequest {
+                        grant_id: caller.caller_id.clone(),
                         session_id,
                         attachment_id,
                         scope: subscription_scope,

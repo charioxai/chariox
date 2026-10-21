@@ -132,6 +132,7 @@ impl MachineGateway {
         deadline: Duration,
     ) -> Result<Value, GatewayError> {
         let kernel = self.resolve(machine).await?;
+        self.register_for(&origin.grant_id, machine).await?;
         let gateway_ready = is_gateway_ready(&kernel);
         if let Some(detail) = directory::incompatibility(&kernel, request) {
             return Err(GatewayError::Incompatible {
@@ -184,6 +185,25 @@ impl MachineGateway {
         let link = self.open_link(machine, kernel).await?;
         links.insert(kernel.kernel_id.clone(), Arc::clone(&link));
         Ok(link)
+    }
+
+    /// The hosted gateway is listed in the Cloud clients list for as long as an access
+    /// grant the user approved uses it; each grant registers it, which also brings back
+    /// a gateway the user revoked there while no grant was using it.
+    async fn register_for(&self, grant_id: &str, machine: &str) -> Result<(), GatewayError> {
+        let Some(profile) = self.config.snapshot().cloud_relay else {
+            return Ok(());
+        };
+        let identity = self.identity()?;
+        self.hosted
+            .ensure_registered(
+                &profile,
+                GATEWAY_CLIENT_ID,
+                &identity.thumbprint,
+                grant_id,
+                machine,
+            )
+            .await
     }
 
     /// A fresh connection to `kernel`. A self-hosted machine is held to the key
@@ -239,11 +259,6 @@ impl MachineGateway {
                 machine_id: Some(kernel.machine_id.clone()),
                 kernel_id: Some(kernel.kernel_id.clone()),
             });
-        }
-        if let Some(profile) = &config.cloud_relay {
-            self.hosted
-                .ensure_registered(profile, GATEWAY_CLIENT_ID, &identity.thumbprint, machine)
-                .await?;
         }
         match crate::runtime::cloud_relay_connection_executor::kernel_client_connection(
             &self.runtime_state,

@@ -1,9 +1,11 @@
 //! The hosted gateway's row in the Cloud clients list.
 //!
-//! The kernel registers the gateway before its first hosted link, and again after
-//! the owner revoked it there. Both happen only under an agent access grant the
-//! owner approved (grants die with the kernel and end with a revoke), so
-//! registering is what brings a revoked gateway back.
+//! Every access grant the user approves registers the gateway before its first
+//! hosted link, which lists it and brings it back after the user revoked it there.
+//! When Cloud refuses a gateway token because the row was revoked, the grants that
+//! were live end (the user took the agents' machine access away), and the next
+//! grant registers again.
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
@@ -12,24 +14,24 @@ use super::error::GatewayError;
 use crate::config::PersistedCloudRelayProfile;
 use crate::runtime::cloud_api_client::register_cloud_gateway_client;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum State {
-    Unregistered,
-    Registered,
+/// Grants are few and short-lived; the set is dropped when it grows past this.
+const REMEMBERED_GRANTS: usize = 256;
+
+#[derive(Default)]
+struct State {
     /// The owner revoked the row; stays so until the agent access grants have ended.
-    Revoked,
+    revoked: bool,
+    registered_for: HashSet<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(super) struct HostedClient {
     state: Arc<Mutex<State>>,
 }
 
 impl HostedClient {
     pub(super) fn new() -> Self {
-        Self {
-            state: Arc::new(Mutex::new(State::Unregistered)),
-        }
+        Self::default()
     }
 
     pub(super) async fn ensure_registered(
@@ -37,13 +39,15 @@ impl HostedClient {
         profile: &PersistedCloudRelayProfile,
         client_id: &str,
         thumbprint: &str,
+        grant_id: &str,
         machine: &str,
     ) -> Result<(), GatewayError> {
         let mut state = self.state.lock().await;
-        match *state {
-            State::Registered => return Ok(()),
-            State::Revoked => return Err(GatewayError::GatewayRevoked),
-            State::Unregistered => {}
+        if state.revoked {
+            return Err(GatewayError::GatewayRevoked);
+        }
+        if state.registered_for.contains(grant_id) {
+            return Ok(());
         }
         let local = profile
             .machine_alias
@@ -62,19 +66,23 @@ impl HostedClient {
             name: machine.into(),
             detail: format!("could not register the agent gateway with Cloud: {error}"),
         })?;
-        *state = State::Registered;
+        if state.registered_for.len() >= REMEMBERED_GRANTS {
+            state.registered_for.clear();
+        }
+        state.registered_for.insert(grant_id.to_string());
         Ok(())
     }
 
     /// The owner revoked the row. True for the caller that found it first.
     pub(super) async fn revoked(&self) -> bool {
-        std::mem::replace(&mut *self.state.lock().await, State::Revoked) != State::Revoked
+        let mut state = self.state.lock().await;
+        state.registered_for.clear();
+        !std::mem::replace(&mut state.revoked, true)
     }
 
-    /// The grants that were live at the revoke have ended: the next registration
-    /// happens under a grant the owner approves afresh.
+    /// The grants that were live at the revoke have ended: the next grant registers afresh.
     pub(super) async fn reopen(&self) {
-        *self.state.lock().await = State::Unregistered;
+        self.state.lock().await.revoked = false;
     }
 }
 
@@ -121,53 +129,62 @@ mod tests {
         }
     }
 
+    async fn register(
+        hosted: &HostedClient,
+        profile: &PersistedCloudRelayProfile,
+        grant: &str,
+    ) -> Result<(), GatewayError> {
+        hosted
+            .ensure_registered(profile, "agent-gateway", &"d".repeat(64), grant, "b3")
+            .await
+    }
+
     #[tokio::test]
-    async fn registers_once_and_again_only_after_the_owner_revoked_it() {
+    async fn each_grant_registers_once_so_a_new_grant_brings_a_revoked_gateway_back() {
         let (url, seen) = cloud();
         let profile = enrolled(url);
         let hosted = HostedClient::new();
         for _ in 0..3 {
-            hosted
-                .ensure_registered(&profile, "agent-gateway", &"d".repeat(64), "b3")
-                .await
-                .unwrap();
+            register(&hosted, &profile, "grant-1").await.unwrap();
         }
         assert_eq!(seen.load(Ordering::SeqCst), 1);
-        assert!(hosted.revoked().await);
-        assert!(!hosted.revoked().await, "only the first finder acts");
-        let refused = hosted
-            .ensure_registered(&profile, "agent-gateway", &"d".repeat(64), "b3")
-            .await
-            .unwrap_err();
-        assert_eq!(refused.code(), "machine_unpaired");
+        register(&hosted, &profile, "grant-2").await.unwrap();
         assert_eq!(
             seen.load(Ordering::SeqCst),
-            1,
-            "a revoked gateway asks Cloud nothing"
+            2,
+            "a new grant registers afresh"
         );
+    }
+
+    #[tokio::test]
+    async fn a_revoked_gateway_asks_cloud_nothing_until_the_grants_have_ended() {
+        let (url, seen) = cloud();
+        let profile = enrolled(url);
+        let hosted = HostedClient::new();
+        register(&hosted, &profile, "grant-1").await.unwrap();
+        assert!(hosted.revoked().await);
+        assert!(!hosted.revoked().await, "only the first finder acts");
+        let refused = register(&hosted, &profile, "grant-1").await.unwrap_err();
+        assert_eq!(refused.code(), "machine_unpaired");
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
         hosted.reopen().await;
-        hosted
-            .ensure_registered(&profile, "agent-gateway", &"d".repeat(64), "b3")
-            .await
-            .unwrap();
-        assert_eq!(seen.load(Ordering::SeqCst), 2);
+        register(&hosted, &profile, "grant-1").await.unwrap();
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            2,
+            "the revoke forgot the registration"
+        );
     }
 
     #[tokio::test]
     async fn a_registration_cloud_refuses_is_unreachable_and_retried_next_time() {
         let hosted = HostedClient::new();
-        let error = hosted
-            .ensure_registered(
-                &enrolled("http://127.0.0.1:9".into()),
-                "agent-gateway",
-                &"d".repeat(64),
-                "b3",
-            )
+        let error = register(&hosted, &enrolled("http://127.0.0.1:9".into()), "grant-1")
             .await
             .unwrap_err();
         assert_eq!(error.code(), "machine_unreachable");
         assert!(error.message().contains("agent gateway"));
-        assert_eq!(*hosted.state.lock().await, State::Unregistered);
+        assert!(hosted.state.lock().await.registered_for.is_empty());
     }
 
     #[test]
