@@ -1088,6 +1088,41 @@ fn skills_v2_loaded_skill_is_delivered_once_per_provider_run() {
         turn("next question", Some("run-2")).loaded.is_empty(),
         "the restarted run holds the body even though an older run's record exists"
     );
+    // A changed body is not what the live run holds: it is delivered once, then held.
+    let mutation = SkillCatalogMutation {
+        scope: SkillScope::Chariox,
+        expected_revision: set.revision,
+        actions: vec![SkillCatalogAction::Update {
+            skill_id: skill.id.clone(),
+            expected_digest: skill.digest.clone(),
+            source: SkillInstallSource::Content {
+                skill_md: "---\nname: review\ndescription: review code\ndisable-model-invocation: true\n---\nNEW BODY\n".into(),
+            },
+        }],
+    };
+    let prepared = service.prepare(&mutation).unwrap();
+    let updated = service.publish_authorized(&mutation, &prepared).unwrap();
+    let new_digest = updated.catalogs[0].skills[0].digest.clone();
+    let changed = turn("next question", Some("run-2"));
+    assert_eq!(changed.loaded.len(), 1, "a changed body is delivered once");
+    assert!(changed.loaded[0].body.contains("NEW BODY"));
+    f.storage
+        .record_load(&SkillLoadRecord {
+            skill_id: skill.id.clone(),
+            digest: new_digest,
+            session_id: "s".into(),
+            agent_id: "a".into(),
+            run_id: "run-2".into(),
+            prompt_id: "p3".into(),
+            reason: SkillLoadReason::Explicit,
+            context_generation: "g4".into(),
+            delivered_at_ms: 3,
+        })
+        .unwrap();
+    assert!(
+        turn("next question", Some("run-2")).loaded.is_empty(),
+        "the live run holds the changed body; older records of the skill do not re-attach it"
+    );
 }
 
 #[test]

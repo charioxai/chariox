@@ -356,15 +356,20 @@ impl SkillCatalogService {
             .storage
             .active_loads(session_id, project_id, revision)?;
         // The provider run still holds what it was given earlier; only a new run,
-        // a compaction or a profile switch loses it. An older record of the same
-        // skill on a previous run must not re-attach a body the live run holds.
-        let held: BTreeSet<(&str, &str)> = previous_loads
+        // a compaction, a profile switch or a changed body loses it. A skill whose
+        // current body the live run already holds is skipped whatever older
+        // records of it exist on previous runs or bodies.
+        let held: BTreeSet<&str> = previous_loads
             .iter()
             .filter(|load| load.agent_id == agent_id && live_run_id == Some(load.run_id.as_str()))
-            .map(|load| (load.skill_id.as_str(), load.digest.as_str()))
+            .filter(|load| {
+                rows.iter()
+                    .any(|row| row.skill.id == load.skill_id && row.skill.digest == load.digest)
+            })
+            .map(|load| load.skill_id.as_str())
             .collect();
         for previous in previous_loads.iter().rev().cloned() {
-            if held.contains(&(previous.skill_id.as_str(), previous.digest.as_str())) {
+            if held.contains(previous.skill_id.as_str()) {
                 continue;
             }
             if previous.agent_id == agent_id
