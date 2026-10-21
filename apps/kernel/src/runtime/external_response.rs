@@ -25,6 +25,15 @@ fn protect_error(error: DaemonError) -> DaemonError {
     if matches!(&error, DaemonError::MachineRequest { .. }) {
         return error;
     }
+    // A terminal on a worker answers in the same words, arriving through the relay.
+    if let DaemonError::RelayTransport { code, message, .. } = &error {
+        if crate::room_terminal::is_public_code(code) {
+            return DaemonError::MachineRequest {
+                code: code.clone(),
+                message: message.clone(),
+            };
+        }
+    }
     // A terminal error ("this Room has no terminal `t`", "terminal `t` has ended; open a
     // new terminal") is the kernel's own sentence about an id the agent sent.
     if matches!(

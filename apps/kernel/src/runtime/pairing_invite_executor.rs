@@ -49,8 +49,23 @@ pub(crate) async fn execute_pairing_request(
                 .await
         }
         LocalDaemonRequest::JoinTerminalPairingLink(request) => {
-            execute_join_terminal_pairing_link_request(runtime_state, config_projection, request)
-                .await
+            let key_thumbprint = request.public_key_thumbprint.clone();
+            let joined = execute_join_terminal_pairing_link_request(
+                runtime_state,
+                config_projection,
+                request,
+            )
+            .await?;
+            // A key the owner revoked as a gateway is paired again by a link they just made.
+            if let (Some(thumbprint), LocalDaemonResponse::TerminalPairingLinkJoined { .. }) =
+                (key_thumbprint, &joined)
+            {
+                let path = super::machine_gateway::origins::path_in(
+                    &config_projection.snapshot().private_runtime_state_root(),
+                );
+                super::machine_gateway::origins::reinstate(&path, &thumbprint)?;
+            }
+            Ok(joined)
         }
         LocalDaemonRequest::ListTerminals(_)
             if super::self_host_terminal_grants::required(&config_projection.snapshot()) =>
@@ -100,6 +115,24 @@ pub(crate) async fn execute_pairing_request(
                 })?;
             Ok(LocalDaemonResponse::PairedClientRevoked {
                 client: gateway_client_record(revoked),
+            })
+        }
+        // The owner lets a revoked gateway back in: the same list that revoked it records it again.
+        LocalDaemonRequest::RecordPairedClient(request)
+            if request.client_id.starts_with(super::machine_gateway::origins::CLIENT_PREFIX) =>
+        {
+            let thumbprint =
+                &request.client_id[super::machine_gateway::origins::CLIENT_PREFIX.len()..];
+            let path = super::machine_gateway::origins::path_in(
+                &config_projection.snapshot().private_runtime_state_root(),
+            );
+            let origin = super::machine_gateway::origins::reinstate(&path, thumbprint)?
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "record paired client",
+                    message: format!("no revoked gateway {} to pair again", request.client_id),
+                })?;
+            Ok(LocalDaemonResponse::PairedClientRecorded {
+                client: gateway_client_record(origin),
             })
         }
         LocalDaemonRequest::RecordPairedClient(request) => {

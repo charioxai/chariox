@@ -131,6 +131,25 @@ pub(crate) fn revoke(path: &Path, client_id: &str) -> Result<Option<GatewayOrigi
     })
 }
 
+/// The owner paired this key again with a link they just made: whatever revoked it earlier is over.
+pub(crate) fn reinstate(
+    path: &Path,
+    key_thumbprint: &str,
+) -> Result<Option<GatewayOrigin>, DaemonError> {
+    with(path, |origins| {
+        match origins
+            .iter_mut()
+            .find(|o| o.key_thumbprint == key_thumbprint && o.revoked)
+        {
+            Some(found) => {
+                found.revoked = false;
+                (Some(found.clone()), true)
+            }
+            None => (None, false),
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,6 +190,12 @@ mod tests {
         // A restart reads the same answer from the file.
         CACHE.lock().unwrap().remove(&path);
         assert!(!admit(&path, "gateway-key", None, 300_000).unwrap());
+        // A new pairing link made by the owner brings the key back; nothing else does.
+        assert!(reinstate(&path, "no-such-thumbprint").unwrap().is_none());
+        assert!(reinstate(&path, &public_key_thumbprint("gateway-key"))
+            .unwrap()
+            .is_some());
+        assert!(admit(&path, "gateway-key", Some("mac-kernel"), 400_000).unwrap());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

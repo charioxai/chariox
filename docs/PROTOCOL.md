@@ -4888,7 +4888,9 @@ authority for its own sessions, agents, terminals and files.
 - The gateway on the target: a request carrying `on_behalf_of` records its sender, keyed by the relay's
   authenticated client key (`gateway-origins.json`), and `ListPairedClients` lists it as `Agent gateway of <origin
   kernel>` with client id `agent-gateway:<thumbprint>`. `RevokePairedClient` on that id refuses the key from then on,
-  with or without `on_behalf_of` (the origin reports `machine_unpaired`). An unreadable list refuses gateway
+  with or without `on_behalf_of` (the origin reports `machine_unpaired`). The owner lets it back in with
+  `RecordPairedClient` for that id, or by pairing it again with a link they just made (`JoinTerminalPairingLink`, the
+  one request a revoked gateway may still send). An unreadable list refuses gateway
   requests only. `KernelAccessGrant.holder_harness` (`codex`, `claude`, `opencode`; absent when unknown) names the
   provider harness the kernel recognised, for display.
 - At most once: every non-read request (repeatable means a variant that starts with List, Get, Search, Stat or Heartbeat)

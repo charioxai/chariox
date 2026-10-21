@@ -397,25 +397,39 @@ fn external_response_preserves_notification_metadata_and_sudo_extension() {
 fn external_response_tells_a_grant_holder_what_is_wrong_with_its_terminal() {
     let caller = command(KernelConnectionClass::ExternalAgent);
     let said = "this Room has no terminal `t-1`";
-    let error = finish_response(
-        &caller,
-        Err(DaemonError::LocalTransport {
-            operation: "room terminal",
+    // The terminal service's refusal, here or on a worker (which answers through the relay).
+    for error in [
+        crate::room_terminal::refused_for_test(said),
+        DaemonError::RelayTransport {
+            operation: "relay request",
+            code: crate::room_terminal::REFUSED_CODE.into(),
             message: said.into(),
-        }),
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains(said));
+            retryable: false,
+        },
+    ] {
+        let told = finish_response(&caller, Err(error)).unwrap_err();
+        assert!(told.to_string().contains(said), "{told}");
+        assert_eq!(
+            crate::transport::kernel_protocol::map_kernel_error(&told).code,
+            crate::room_terminal::REFUSED_CODE
+        );
+    }
     // Any other failure keeps its details in the host terminal.
-    let other = finish_response(
-        &caller,
-        Err(DaemonError::LocalTransport {
+    for other in [
+        DaemonError::LocalTransport {
             operation: "list sessions",
             message: format!("{said} {CANARY}"),
-        }),
-    )
-    .unwrap_err();
-    assert!(!other.to_string().contains(CANARY));
+        },
+        DaemonError::RelayTransport {
+            operation: "relay request",
+            code: "transport_error".into(),
+            message: format!("{said} {CANARY}"),
+            retryable: false,
+        },
+    ] {
+        let hidden = finish_response(&caller, Err(other)).unwrap_err();
+        assert!(!hidden.to_string().contains(CANARY));
+    }
 }
 
 #[test]

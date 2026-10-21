@@ -180,6 +180,13 @@ pub(super) async fn handle_prepared_daemon_request(
                 .admit_origin(&client_public_key, origin)
             {
                 Ok(true) => {}
+                // The one request a revoked gateway may still make: to be paired again with a
+                // link the owner made for it (the executor lifts the revocation).
+                Ok(false)
+                    if matches!(
+                        request.request,
+                        LocalDaemonRequest::JoinTerminalPairingLink(_)
+                    ) => {}
                 Ok(false) => {
                     return RelayRequestOutcome {
                         display_event: None,
