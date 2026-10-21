@@ -751,7 +751,7 @@ mod tests {
         )
     }
 
-    async fn mp11_fixture(
+    pub(super) async fn mp11_fixture(
         config: crate::DaemonConfig,
     ) -> (
         KernelRuntimeState,
@@ -2067,3 +2067,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "remote_prompt_owned_state/skill_delivery_tests.rs"]
+mod skill_delivery_tests;

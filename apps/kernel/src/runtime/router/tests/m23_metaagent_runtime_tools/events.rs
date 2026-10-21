@@ -319,7 +319,7 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
         Some(true)
     );
 
-    for command in ["mcp list", "skill list", "credential list", "slice list"] {
+    for command in ["mcp list", "credential list", "slice list"] {
         let routed = router
             .dispatch_authenticated_runtime_tool_call(
                 &meta_auth_token,

@@ -610,7 +610,7 @@ pub(super) fn meta_extension_import_request(
         || args.get(1).map(String::as_str) != Some("providers")
     {
         return Err(meta_command_error(
-            "usage: extension import providers [--provider codex|opencode|claude] [--kind all|mcp|skill] [--name <capability>] [--dry-run]",
+            "usage: extension import providers [--provider codex|opencode|claude] [--kind all|mcp] [--name <capability>] [--dry-run]",
         ));
     }
     let mut providers = Vec::new();
@@ -637,13 +637,11 @@ pub(super) fn meta_extension_import_request(
             "--kind" => {
                 let Some(value) = args.get(index + 1) else {
                     return Err(meta_command_error(
-                        "usage: extension import providers --kind all|mcp|skill",
+                        "usage: extension import providers --kind all|mcp",
                     ));
                 };
-                if value.starts_with("--") {
-                    return Err(meta_command_error(
-                        "usage: extension import providers --kind all|mcp|skill",
-                    ));
+                if !matches!(value.as_str(), "all" | "mcp" | "mcps") {
+                    return Err(meta_command_error("Skills use an explicit reviewed home catalog import; --kind must be all or mcp"));
                 }
                 kind = Some(value.clone());
                 index += 2;
@@ -697,9 +695,6 @@ pub(super) fn meta_extension_request(
             ExtensionKind::Mcp => Ok(LocalDaemonRequest::ListMcpServers(ListMcpServersRequest {
                 workspace_id: Some(session.workspace_id().to_string()),
             })),
-            ExtensionKind::Skill => Ok(LocalDaemonRequest::ListSkills(ListSkillsRequest {
-                workspace_id: Some(session.workspace_id().to_string()),
-            })),
             _ => Err(meta_command_error(format!(
                 "`{family} list` is not supported by Meta-mode run_command"
             ))),
@@ -713,10 +708,6 @@ pub(super) fn meta_extension_request(
             }
             match kind {
                 ExtensionKind::Mcp => Ok(LocalDaemonRequest::GetMcpServer(GetMcpServerRequest {
-                    workspace_id: Some(session.workspace_id().to_string()),
-                    name: name.clone(),
-                })),
-                ExtensionKind::Skill => Ok(LocalDaemonRequest::GetSkill(GetSkillRequest {
                     workspace_id: Some(session.workspace_id().to_string()),
                     name: name.clone(),
                 })),
@@ -754,30 +745,6 @@ pub(super) fn meta_extension_request(
                 ))
             }
         }
-        Some("install" | "update") if kind == ExtensionKind::Skill => {
-            let Some(source_path) = args.get(1) else {
-                return Err(meta_command_error(format!(
-                    "usage: {family} install <path>"
-                )));
-            };
-            if args.len() > 2 {
-                return Err(meta_command_error(format!(
-                    "usage: {family} install <path>"
-                )));
-            }
-            let source_path = std::path::PathBuf::from(source_path);
-            if args.first().map(String::as_str) == Some("install") {
-                Ok(LocalDaemonRequest::InstallSkill(InstallSkillRequest {
-                    workspace_id: Some(session.workspace_id().to_string()),
-                    source_path,
-                }))
-            } else {
-                Ok(LocalDaemonRequest::UpdateSkill(UpdateSkillRequest {
-                    workspace_id: Some(session.workspace_id().to_string()),
-                    source_path,
-                }))
-            }
-        }
         Some("uninstall" | "remove") => {
             let Some(name) = args.get(1) else {
                 return Err(meta_command_error(format!(
@@ -796,12 +763,6 @@ pub(super) fn meta_extension_request(
                         name: name.clone(),
                     },
                 )),
-                ExtensionKind::Skill => {
-                    Ok(LocalDaemonRequest::UninstallSkill(UninstallSkillRequest {
-                        workspace_id: Some(session.workspace_id().to_string()),
-                        name: name.clone(),
-                    }))
-                }
                 _ => Err(meta_command_error(format!(
                     "`{family} uninstall` is not supported by Meta-mode run_command"
                 ))),
@@ -826,11 +787,6 @@ pub(super) fn meta_extension_request(
                         name: args.get(2).cloned(),
                     },
                 )),
-                ExtensionKind::Skill => Ok(LocalDaemonRequest::ImportSkills(ImportSkillsRequest {
-                    workspace_id: Some(session.workspace_id().to_string()),
-                    provider: provider.clone(),
-                    name: args.get(2).cloned(),
-                })),
                 _ => Err(meta_command_error(format!(
                     "`{family} import` is not supported by Meta-mode run_command"
                 ))),
@@ -1001,3 +957,33 @@ pub(super) fn metaagent_command_client_id(metaagent_id: &str) -> String {
 }
 mod app_binding;
 pub(super) use app_binding::meta_app_binding_request;
+
+/// MP-08 / MP-10 / MP-11: management uses the same home catalog requests,
+/// never the retired extension grant model or prompt invocation heuristics.
+pub(super) fn meta_skills_request(
+    session: &crate::session::RuntimeSession,
+    metaagent: &crate::agent::AgentInstance,
+    args: &[String],
+) -> Result<LocalDaemonRequest, DaemonError> {
+    use crate::skill::v2::{SkillCatalogMutation, SkillsV2Request};
+    let request = match args.first().map(String::as_str) {
+        None | Some("list" | "ls") if args.len() <= 1 => SkillsV2Request::List {
+            session_id: session.id().to_string(), agent_id: metaagent.id().to_string(),
+            cursor: None, limit: 50,
+        },
+        Some("show" | "get" | "load") if args.len() == 2 => SkillsV2Request::Load {
+            session_id: session.id().to_string(), agent_id: metaagent.id().to_string(), skill_id: args[1].clone(),
+        },
+        Some("preview") if args.len() == 2 => SkillsV2Request::Preview {
+            mutation: serde_json::from_str::<SkillCatalogMutation>(&args[1])
+                .map_err(|_|meta_command_error("invalid Skills v2 mutation; use scope, expected_revision and reviewed actions"))?,
+        },
+        Some("mutate") if args.len() == 3 => SkillsV2Request::Mutate {
+            review_receipt_id: args[1].clone(),
+            mutation: serde_json::from_str::<SkillCatalogMutation>(&args[2])
+                .map_err(|_|meta_command_error("invalid Skills v2 mutation; preview the exact action batch first"))?,
+        },
+        _ => return Err(meta_command_error("usage: skills [list|show <id>|preview <mutation-json>|mutate <review-id> <mutation-json>]; skills have no grant/revoke operation")),
+    };
+    Ok(LocalDaemonRequest::SkillsV2(request))
+}

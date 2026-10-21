@@ -851,11 +851,26 @@ fn room_admission_workflow_binding_cannot_grant_peer_extensions() {
     let env = TestMetaRuntimeEnv::new("room-peer-capability");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    // Supplementary authored capability package in disposable test workspace, never acceptance.
-    let skill = workspace.join(".chariox/skills/am1-source-regression-only");
-    std::fs::create_dir_all(&skill).unwrap();
-    std::fs::write(skill.join("SKILL.md"), "---\nname: am1-source-regression-only\ndescription: Source regression capability package.\n---\nRead-only source review.\n").unwrap();
-    crate::runtime::capability_registry::ensure_skill_exists(
+    // Supplementary authored capability in disposable test workspace, never acceptance.
+    let script = workspace.join(".chariox/scripts/am1-source-regression-only");
+    std::fs::create_dir_all(&script).unwrap();
+    std::fs::write(script.join("script.py"), "print('ok')\n").unwrap();
+    std::fs::write(
+        script.join("metadata.json"),
+        format!(
+            r#"{{"name":"am1-source-regression-only","runtime":"python","entrypoint":"script.py","description":"Source regression capability.","input_schema":{{}},"definition_hash":"{}"}}"#,
+            "a".repeat(64)
+        ),
+    )
+    .unwrap();
+    let envs = workspace.join(".chariox/envs");
+    std::fs::create_dir_all(&envs).unwrap();
+    std::fs::write(
+        envs.join("python.json"),
+        r#"{"name":"python","runtime":{"type":"python","python":"/usr/bin/python3"}}"#,
+    )
+    .unwrap();
+    crate::runtime::capability_registry::ensure_script_exists(
         Some(&workspace.to_string_lossy()),
         "am1-source-regression-only",
     )
@@ -875,7 +890,7 @@ fn room_admission_workflow_binding_cannot_grant_peer_extensions() {
     let definition: crate::workflow_code::WorkflowCodeDefinition = serde_json::from_value(serde_json::json!({
         "workflow":{"alias":"unadmitted-peer-grants"},
         "nodes":[{"handle":"review", "agent":{"kind":"existing","agent_ref":peer.id()},
-            "can_complete_workflow_run":true, "extensions":[{"kind":"skill","name":"am1-source-regression-only"}]}],
+            "can_complete_workflow_run":true, "extensions":[{"kind":"script","name":"am1-source-regression-only","environment":"python"}]}],
         "endpoints":[{"handle":"entry","entry_node":"review"}],
     })).unwrap();
     // MP-08/MP-11: target validation must report the same provisioning fence as apply.
@@ -894,10 +909,13 @@ fn room_admission_workflow_binding_cannot_grant_peer_extensions() {
         !validation.ok,
         "room validation must reject unadmitted capability provisioning: {validation:?}"
     );
-    assert!(validation
-        .diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.code == "unauthorized_extension_provisioning"));
+    assert!(
+        validation
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "unauthorized_extension_provisioning"),
+        "{validation:?}"
+    );
     let (_, owner_validation) = crate::app::KernelSessionService::new(&mut app)
         .validate_workflow_code_definition_with_rebindings(
             session.id(),

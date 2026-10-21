@@ -20,6 +20,8 @@ pub struct ProviderAssistantCompletion {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ProviderPromptSignalBatch {
+    /// Official completed instruction-tool responses; not transcript availability.
+    pub skill_tool_delivery_acknowledgements: Vec<super::SkillToolDeliveryAcknowledgement>,
     pub chunks: Vec<ProviderPromptChunk>,
     pub completions: Vec<ProviderAssistantCompletion>,
     pub prompt_completed: bool,

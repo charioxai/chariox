@@ -629,10 +629,13 @@ async fn relay_status_uses_config_projection_without_app_lock() {
                     .all(|c| c.is_ascii_digit()));
             }
 
-            assert_eq!(
-                status.capabilities,
-                crate::local::RUNTIME_CONTROL_CAPABILITIES
-            );
+            // The test kernel owns the home catalog, so it also advertises Skills v2.
+            let mut expected = crate::local::RUNTIME_CONTROL_CAPABILITIES
+                .iter()
+                .map(|capability| capability.to_string())
+                .collect::<Vec<_>>();
+            expected.push(crate::local::SKILLS_V2_RUNTIME_CAPABILITY.to_string());
+            assert_eq!(status.capabilities, expected);
             let registration = app.lock().await.relay_registration();
             for capability in &status.capabilities {
                 assert!(registration.capabilities.contains(capability));

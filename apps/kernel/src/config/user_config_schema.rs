@@ -44,6 +44,7 @@ fn entry(
 
 pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
     vec![
+        entry("skills.metadata_budget_percent", "number", &[], true, true, "runtime_config", "next_turn", "Percentage of resolved model context reserved for Auto skill metadata (default 1%)."),
         entry(
             "providers.workspace_live_sync",
             "enum",

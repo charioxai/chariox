@@ -1376,10 +1376,18 @@ impl DaemonApp {
                     "sessions",
                     "durable_state.restore_session_batch_update",
                 )?;
-                for session in sessions {
+                for mut session in sessions {
                     if !self.session_belongs_to_current_kernel(&session) {
                         continue;
                     }
+                    // MP-08 / MP-10 / MP-11: public batch snapshots cannot
+                    // replace queued user skill intent with client authority.
+                    let private = self
+                        .sessions
+                        .get_session(session.id())
+                        .map(|current| current.durable_prompt_private_states())
+                        .unwrap_or_default();
+                    session.restore_durable_prompt_private_states(&private);
                     let preserved_prompt_states = self
                         .sessions
                         .get_session(session.id())

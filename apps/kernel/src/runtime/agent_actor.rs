@@ -95,6 +95,24 @@ impl AgentRuntime {
             command,
             request,
             PromptSubmitResponseMode::Full,
+            Vec::new(),
+        )
+        .await
+    }
+
+    /// MP-08 / MP-10 / MP-11: same ordinary lane, attachment checks and
+    /// durable command identity; only source-bound private metadata is added.
+    pub(crate) async fn dispatch_prompt_submit_with_skills(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+        request: crate::local::SubmitPromptRequest,
+        selections: Vec<crate::skill::v2::SkillSelection>,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.dispatch_prompt_submit_with_response_mode(
+            command,
+            request,
+            PromptSubmitResponseMode::Full,
+            selections,
         )
         .await
     }
@@ -104,7 +122,12 @@ impl AgentRuntime {
         command: &crate::runtime::command::KernelCommand,
         mut request: crate::local::SubmitPromptRequest,
         response_mode: PromptSubmitResponseMode,
+        skill_selections: Vec<crate::skill::v2::SkillSelection>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        if !skill_selections.is_empty() && !command.is_terminal_caller() {
+            return Err(DaemonError::LocalTransport {operation:"skills.v2.submit",
+                message:"explicit skill selections require an authenticated user terminal; agents use Auto discovery and load_skill".into()});
+        }
         let caller_user_id = command_agent_actor_user_id(command);
         let alias_route = parse_prompt_agent_alias_route(&request.prompt)
             .map(|route| (route.alias.to_string(), route.prompt.to_string()));
@@ -151,6 +174,8 @@ impl AgentRuntime {
             command,
             AgentCommand::SubmitPrompt {
                 request,
+                skill_selections,
+                user_skill_syntax: command.is_terminal_caller(),
                 trace_id: command_trace.trace_id().to_string(),
                 operation_id: command.durable_operation_id(None),
                 operation_fingerprint: command.durable_request_fingerprint(),
@@ -227,6 +252,8 @@ impl AgentRuntime {
                             &command,
                             AgentCommand::SubmitPrompt {
                                 request: submit_request,
+                                skill_selections: Vec::new(),
+                                user_skill_syntax: command.is_terminal_caller(),
                                 trace_id: command_trace.trace_id().to_string(),
                                 operation_id,
                                 operation_fingerprint,

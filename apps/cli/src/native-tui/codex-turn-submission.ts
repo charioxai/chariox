@@ -5,7 +5,10 @@ import { LocalIpcClient } from "../ipc.js"
 import { cancelActivePromptRequest, submitPromptRequest } from "../ipc-requests.js"
 import { preparePromptAttachmentsForSubmit } from "../prompt-attachment-transfer.js"
 import type { CodexJsonRpcMessage } from "./codex-json-rpc.js"
-import { extractCodexAttachments, extractCodexPrompt } from "./codex-prompt.js"
+import { extractCodexAttachments, extractCodexNativeSkillNames, extractCodexPrompt, extractCodexSkillNames } from "./codex-prompt.js"
+import { SKILLS_V2_RUNTIME_CAPABILITY, skillsV2Request } from "@chariox/kernel-client/ipc-skills-v2-requests"
+import { codexSkillSelections, nativeSkillCatalog } from "./skills-v2.js"
+import { hasExplicitSkillMarker } from "./skill-marker.js"
 import { bindCodexDisplayTurn } from "./codex-conversation-controls.js"
 
 export type CodexNativeBindingState = {
@@ -39,12 +42,31 @@ export async function handleCodexNativeTurnStart(
     const attachments = await preparePromptAttachmentsForSubmit(extractCodexAttachments(message.params), {
       inlineLocalFiles: options.inlineLocalAttachments,
     })
-    const response = await options.client.send<{ PromptSubmitted: { outcome: {
-      Started?: { prompt: { id: string } }, Queued?: { prompt: { id: string } },
-    } } }>(
-      submitPromptRequest(options.sessionId, options.attachmentId, options.agentId, prompt, attachments),
-    )
-    const outcome = response.PromptSubmitted?.outcome
+    const names = extractCodexSkillNames(message.params)
+    type Outcome = { Started?: { prompt: { id: string } }, Queued?: { prompt: { id: string } } }
+    let outcome: Outcome | undefined
+    // MP-08 / MP-10 / MP-11: wire allocation also covers foundation builds.
+    // Preserve native admission until the attached kernel advertises v2 runtime.
+    // Probe before admission; a catalog/submit failure never retries a prompt.
+    let skillsV2 = false
+    if (names.length || hasExplicitSkillMarker(prompt)) {
+      const status = await options.client.send<{ RelayStatus: { status: { capabilities?: string[] } } }>({ RelayStatus: null })
+      skillsV2 = status.RelayStatus.status.capabilities?.includes(SKILLS_V2_RUNTIME_CAPABILITY) === true
+    }
+    if (skillsV2) {
+      const catalog = await nativeSkillCatalog(options.client, options.sessionId, options.agentId)
+      const selections = codexSkillSelections(names, catalog, extractCodexNativeSkillNames(message.params))
+      const response = await options.client.send<{ SkillsV2: { result: { kind: string, outcome: Outcome } } }>(
+        skillsV2Request({ action: "submit", session_id: options.sessionId, attachment_id: options.attachmentId,
+          target_agent_id: options.agentId, prompt, attachments, selections }),
+      )
+      outcome = response.SkillsV2?.result.kind === "submitted" ? response.SkillsV2.result.outcome : undefined
+    } else {
+      const response = await options.client.send<{ PromptSubmitted: { outcome: Outcome } }>(
+        submitPromptRequest(options.sessionId, options.attachmentId, options.agentId, prompt, attachments),
+      )
+      outcome = response.PromptSubmitted?.outcome
+    }
     const promptId = (outcome?.Started ?? outcome?.Queued)?.prompt.id
     const threadId = message.params?.threadId
     if (!promptId || typeof threadId !== "string") throw new Error("kernel did not return a native prompt identity")

@@ -1,4 +1,8 @@
+import { skillCatalogRequest, skillsV2Request } from "./ipc-skills-v2-requests.js"
+import type { SkillsV2Response } from "./kernel-types-skills-v2.js"
+import { getSessionStateRequest } from "./ipc-session-requests.js"
 import type {
+  RuntimeSession,
   AgentInstance,
   CharioxConnectorAdapterDefinition,
   CharioxEnvironmentConfig,
@@ -6,11 +10,9 @@ import type {
   CharioxCredentialConfig,
   CharioxMcpServerConfig,
   CharioxScriptMetadata,
-  CharioxSkillMetadata,
   ExtensionKind,
   McpImportOutcome,
   ProviderCapabilityImportReport,
-  SkillImportOutcome,
 } from "./kernel-types.js"
 import {
   getEnvironmentRequest,
@@ -19,20 +21,16 @@ import {
   getCredentialRequest,
   getMcpServerRequest,
   getScriptRequest,
-  getSkillRequest,
   grantAgentExtensionRequest,
   importMcpServersRequest,
   importProviderCapabilitiesRequest,
-  importSkillsRequest,
   installMcpServerRequest,
   listHomeExtensionAuditRequest,
-  installSkillRequest,
   listEnvironmentsRequest,
   listConnectorAdaptersRequest,
   listConnectorsRequest,
   listMcpServersRequest,
   listScriptsRequest,
-  listSkillsRequest,
   registerEnvironmentRequest,
   registerConnectorAdapterRequest,
   registerConnectorRequest,
@@ -45,9 +43,7 @@ import {
   syncRemoteExtensionManifestRequest,
   testConnectorRequest,
   uninstallMcpServerRequest,
-  uninstallSkillRequest,
   updateMcpServerRequest,
-  updateSkillRequest,
   validateScriptRequest,
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
@@ -61,8 +57,6 @@ import {
   formatProviderCapabilityImportReport,
   formatRemoteExtensionSyncStatus,
   formatScriptList,
-  formatSkillImportOutcome,
-  formatSkillList,
 } from "./shell-capability-format.js"
 
 type ShellKernelClient = {
@@ -194,79 +188,28 @@ export async function executeSkillCommand(
   context: ShellContext,
   deps: ShellCapabilityCommandDeps,
 ): Promise<ShellCommandResult> {
-  const [action, name] = parsed.args
-  switch (action) {
-    case "list":
-    case "ls": {
-      const response = await deps.client.send(listSkillsRequest(context.workspace))
-      const skills = expectVariant<{ skills: CharioxSkillMetadata[] }>(response, "SkillsListed").skills
-      return { ok: true, message: formatSkillList(skills), data: { skills } }
-    }
-    case "show": {
-      if (!name) {
-        return { ok: false, message: "usage: skill show <name>" }
-      }
-      const response = await deps.client.send(getSkillRequest(context.workspace, name))
-      const skill = expectVariant<{ skill: CharioxSkillMetadata }>(response, "Skill").skill
-      return { ok: true, message: JSON.stringify(skill, null, 2), data: { skill }, format: "json" }
-    }
-    case "install":
-    case "update": {
-      if (!name) {
-        return { ok: false, message: `usage: skill ${action} <path>` }
-      }
-      const response = await deps.client.send(action === "install"
-        ? installSkillRequest(context.workspace, name)
-        : updateSkillRequest(context.workspace, name))
-      const variant = action === "install" ? "SkillInstalled" : "SkillUpdated"
-      const skill = expectVariant<{ skill: CharioxSkillMetadata }>(response, variant).skill
-      return { ok: true, message: `${action === "install" ? "installed" : "updated"} skill ${skill.name}`, data: { skill } }
-    }
-    case "uninstall":
-    case "remove": {
-      if (!name) {
-        return { ok: false, message: `usage: skill ${action} <name>` }
-      }
-      const response = await deps.client.send(uninstallSkillRequest(context.workspace, name))
-      const skill = expectVariant<{ skill: CharioxSkillMetadata }>(response, "SkillUninstalled").skill
-      return { ok: true, message: `uninstalled skill ${skill.name}`, data: { skill } }
-    }
-    case "import": {
-      const provider = name
-      const importName = parsed.args[2] ?? null
-      if (!provider) {
-        return { ok: false, message: "usage: skill import <codex|opencode|claude> [name]" }
-      }
-      const response = await deps.client.send(importSkillsRequest(context.workspace, provider, importName))
-      const outcome = expectVariant<{ outcome: SkillImportOutcome }>(response, "SkillsImported").outcome
-      return { ok: true, message: formatSkillImportOutcome(outcome), data: { outcome } }
-    }
-    case "grant":
-    case "revoke": {
-      const agentRef = name
-      const grantName = parsed.args[2]
-      if (!agentRef || !grantName) {
-        return { ok: false, message: `usage: skill ${action} <agent-ref> <name>` }
-      }
-      const request = action === "grant"
-        ? grantAgentExtensionRequest(context.workspace, agentRef, "skill", grantName)
-        : revokeAgentExtensionRequest(agentRef, "skill", grantName)
-      const response = await deps.client.send(request)
-      const variant = action === "grant" ? "AgentExtensionGranted" : "AgentExtensionRevoked"
-      const agent = expectVariant<{ agent: AgentInstance }>(response, variant).agent
-      return { ok: true, message: `${action === "grant" ? "granted" : "revoked"} skill ${grantName} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, data: { agent }, contextUpdates: { agentId: agent.id } }
-    }
-    case "grants":
-    case "agent": {
-      const agent = await resolveShellAgent(context, deps, name)
-      if (!agent.ok) {
-        return { ok: false, message: agent.message }
-      }
-      return { ok: true, message: formatAgentExtensionGrants(agent.agent, "skill"), data: { agent: agent.agent } }
-    }
-    default:
-      return { ok: false, message: "usage: skill list|show|install|update|uninstall|import|grant|revoke|grants" }
+  // MP-08 / MP-10 / MP-11: management uses the home catalog, never grants
+  // or workspace paths as a substitute for Project identity.
+  const [action = "list", id] = parsed.args
+  if (!["list", "ls", "show"].includes(action) || (action === "show" && !id)) {
+    return { ok: false, message: "usage: skills list | skills show <skill-id>; manage installations and state in Skills" }
   }
+  let projectId: string | null = null
+  if (context.sessionId) {
+    const response = await deps.client.send(getSessionStateRequest(context.sessionId))
+    projectId = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session.project_id
+  }
+  const request = action === "show"
+    ? skillsV2Request({ action: "get", skill_id: id!, project_id: projectId })
+    : skillCatalogRequest(projectId, context.agentId ?? null)
+  const response = await deps.client.send(request)
+  const result = expectVariant<{ result: SkillsV2Response }>(response, "SkillsV2").result
+  if (action === "show" && result.kind === "detail") {
+    return { ok: true, message: result.body, data: { skill: result.skill } }
+  }
+  if (result.kind !== "catalog") throw new Error("Unexpected Skills response")
+  const message = result.skills.map(row => `${row.skill.id} ${row.skill.name} [${row.effective_state}]${row.also_in_provider ? ` (also in ${row.also_in_provider})` : ""} - ${row.skill.description}`).join("\n")
+  return { ok: true, message: message || "no skills installed", data: { catalog: result } }
 }
 
 export async function executeEnvironmentCommand(
@@ -463,7 +406,7 @@ export async function executeExtensionCommand(
   const [action, kind, agentRef, name] = parsed.args
   if (action === "import") {
     if (kind !== "providers") {
-      return { ok: false, message: "usage: extension import providers [--provider codex|opencode|claude] [--kind all|mcp|skill] [--name <capability>] [--dry-run]" }
+      return { ok: false, message: "usage: extension import providers [--provider codex|opencode|claude] [--kind all|mcp] [--name <capability>] [--dry-run]" }
     }
     const response = await deps.client.send(importProviderCapabilitiesRequest(context.workspace, {
       providers: readRepeatedOption(parsed.args, "--provider"),
@@ -492,10 +435,10 @@ export async function executeExtensionCommand(
     return { ok: true, message: formatHomeExtensionAuditEvents(events), data: { events } }
   }
   if (action !== "grant" && action !== "revoke" && action !== "grants") {
-    return { ok: false, message: "usage: extension grant|revoke <mcp|skill|script|connector|app> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | extension grants <kind> [agent-ref] | extension import providers [--provider codex|opencode|claude] [--kind all|mcp|skill] [--name <capability>] [--dry-run] | extension sync-status|sync-retry|audit <agent-ref>" }
+    return { ok: false, message: "usage: extension grant|revoke <mcp|script|connector|app> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | extension grants <kind> [agent-ref] | extension import providers [--provider codex|opencode|claude] [--kind all|mcp] [--name <capability>] [--dry-run] | extension sync-status|sync-retry|audit <agent-ref>" }
   }
   if (!isExtensionKind(kind)) {
-    return { ok: false, message: "extension kind must be mcp, skill, script, connector, or app" }
+    return { ok: false, message: "extension kind must be mcp, script, connector, or app" }
   }
   if (action === "grants") {
     const agent = await resolveShellAgent(context, deps, agentRef)
@@ -503,7 +446,7 @@ export async function executeExtensionCommand(
     return { ok: true, message: formatAgentExtensionGrants(agent.agent, kind), data: { agent: agent.agent } }
   }
   if (!agentRef || !name) {
-    return { ok: false, message: `usage: extension ${action} <mcp|skill|script|connector|app> <agent-ref> <name> [--env <environment>]` }
+    return { ok: false, message: `usage: extension ${action} <mcp|script|connector|app> <agent-ref> <name> [--env <environment>]` }
   }
   const environment = readOption(parsed.args, "--env")
   if (action === "grant" && kind === "script" && !environment) {
@@ -631,7 +574,7 @@ function readNumberOption(args: string[], flag: string): number | null {
 }
 
 function isExtensionKind(value: string | undefined): value is ExtensionKind {
-  return value === "mcp" || value === "skill" || value === "script" || value === "connector" || value === "app"
+  return value === "mcp" || value === "script" || value === "connector" || value === "app"
 }
 
 function formatConnectorSummary(connector: CharioxConnectorDefinition): string {

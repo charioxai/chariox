@@ -596,7 +596,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             }
                             let base = self.managed_base_context(
                                 session_id,
-                                &agent_id,
                                 context_file,
                                 provider_run,
                                 &ClaudeNativePromptInjection {
@@ -685,7 +684,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 }
                 let hook_request_id = event.get("hook_context_request_id").and_then(Value::as_str);
                 let hook_context = if hook_request_id.is_some() {
-                    let base = self.claude_native_prompt_context(session_id, &agent_id, prompt)?;
+                    let base = String::new();
                     let context = match self.prompt_handoff {
                         Some(policy) => policy.prepare_context(
                             session_id,
@@ -1623,23 +1622,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         Ok(ClaudeNativeDispatchAttempt::AwaitingInjection)
     }
 
-    fn claude_native_prompt_context(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        prompt: &str,
-    ) -> Result<String, DaemonError> {
-        let agent = self.app.agents.get_agent(agent_id)?;
-        let session = self.app.sessions.get_session(session_id)?;
-        let skill_grants = agent.skill_grants();
-        crate::skill::format_granted_skill_prompt_context(
-            agent.agent_ref(),
-            &skill_grants,
-            session.workspace_id(),
-            prompt,
-        )
-    }
-
     fn consume_accepted_failed_request_context(
         &mut self,
         session_id: &str,
@@ -1953,10 +1935,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             };
             if count < CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT
                 && now.saturating_sub(last_attempt_ms) >= CLAUDE_HEADLESS_RETRY_MS
-                && claude_headless_prompt_waiting_in_composer(
-                    &recent,
-                    redact_native_hidden_instructions(prompt.prompt).trim(),
-                )
+                && claude_headless_prompt_waiting_in_composer(&recent, &visible_prompt)
             {
                 append_claude_headless_debug(
                     context_file,
@@ -1981,7 +1960,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 // UserPromptSubmit changes the marker to `accepted` before
                 // this grace period expires on successful submissions, so an
                 // idle composer with no acknowledgement is safe to retype.
-                let input = claude_headless_prompt_input(prompt, context_file);
+                let input = visible_prompt;
                 append_claude_headless_debug(
                     context_file,
                     "inject_prompt_retry",
@@ -2004,12 +1983,33 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             return Ok(());
         }
         let hidden_context =
-            self.managed_base_context(session_id, agent_id, context_file, provider_run, prompt)?;
+            self.managed_base_context(session_id, context_file, provider_run, prompt)?;
         let handoff_room = crate::provider::claude_native_hidden_context_room(&hidden_context);
         let hidden_context =
             join_claude_context([hidden_context, (prompt.context_handoff)(handoff_room)]);
-        let hidden_context =
-            crate::provider::fit_claude_native_hidden_context(provider_run_id, hidden_context)?;
+        // MP-08 / MP-10 / MP-11: native PTY runs use the same validated
+        // skill adapter as structured runs. Only its visible /name enters the
+        // PTY; instruction bodies remain in UserPromptSubmit additionalContext.
+        let envelope = crate::prompt_assembly::PromptEnvelope::new(
+            claude_typed_prompt(prompt, context_file),
+            hidden_context,
+            prompt.attachments.to_vec(),
+            crate::prompt_assembly::PromptManifest::default(),
+        )
+        .with_steering(prompt.id != prompt.origin_prompt_id);
+        let envelope = self.app.providers.prepare_skill_prompt(
+            session_id,
+            agent_id,
+            prompt.id,
+            prompt.origin_prompt_id,
+            provider_run,
+            envelope,
+        )?;
+        let visible = envelope.visible_user_prompt;
+        let hidden_context = crate::provider::fit_claude_native_hidden_context(
+            provider_run_id,
+            envelope.hidden_system_context,
+        )?;
         if provider_run
             .pty_env()
             .get("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS")
@@ -2024,7 +2024,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             operation: "claude_hidden_context_write",
             message: error.to_string(),
         })?;
-        let visible = claude_typed_prompt(prompt, context_file);
         if !visible.is_empty() {
             let input = if provider_run.provider() == "claude-headless" {
                 normalize_claude_visible_prompt_for_headless(&visible)

@@ -26,7 +26,7 @@ export function formatExtensionGrantPlacementSummary(
     acc[grant.kind] = (acc[grant.kind] ?? 0) + 1
     return acc
   }, {})
-  const byKind = ["mcp", "script", "connector", "skill"]
+  const byKind = ["mcp", "script", "connector", "app"]
     .map((kind) => counts[kind] ? `${kind}${countSeparator}${counts[kind]}` : null)
     .filter(Boolean)
     .join(", ")
@@ -43,10 +43,8 @@ export function formatExtensionGrantPlacement(
   }
   const visibleGrants = grants ?? []
   const activeHomeProxy = hasActiveHomeProxyExtensionGrants(visibleGrants)
-  const passiveSkillSnapshot = visibleGrants.some((grant) => grant.kind === "skill")
   return [
     activeHomeProxy ? "active tools home-proxy" : null,
-    passiveSkillSnapshot ? "skills snapshot" : null,
   ].filter(Boolean).join("; ") || "home-proxy"
 }
 
@@ -59,15 +57,8 @@ export function formatExtensionGrantRuntimeDetail(
   }
   const visibleGrants = grants ?? []
   const activeHomeProxy = hasActiveHomeProxyExtensionGrants(visibleGrants)
-  const passiveSkillSnapshot = visibleGrants.some((grant) => grant.kind === "skill")
-  if (activeHomeProxy && passiveSkillSnapshot) {
-    return "home-proxy tools execute on home with home-owned grants and credentials; skills are passive snapshots"
-  }
   if (activeHomeProxy) {
     return "home-proxy: home owns definition, grants, credentials, and execution; worker receives projected tools"
-  }
-  if (passiveSkillSnapshot) {
-    return "skill snapshot: home projects passive content; executable helpers require a separate tool grant"
   }
   return "home-proxy: home remains authoritative for projected remote extension tools"
 }
@@ -81,12 +72,8 @@ export function formatExtensionAuthorityBoundaryDetail(
   }
   const visibleGrants = grants ?? []
   const activeHomeProxy = hasActiveHomeProxyExtensionGrants(visibleGrants)
-  const passiveSkillSnapshot = visibleGrants.some((grant) => grant.kind === "skill")
   if (activeHomeProxy) {
     return "home validates every call; credentials never leave home"
-  }
-  if (passiveSkillSnapshot) {
-    return "passive content only; executable helpers require separate tool grants"
   }
   return "home remains authoritative for projected remote extension tools"
 }

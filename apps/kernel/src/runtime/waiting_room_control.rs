@@ -124,7 +124,12 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
     let account_owner_user_id =
         runtime_state.provider_account_authority_owner_user_id(caller_user_id);
     let config = config_projection.snapshot();
-    let relay_status = projected_relay_status_view(relay_state, config_projection).await;
+    let relay_status = projected_relay_status_view(
+        relay_state,
+        config_projection,
+        runtime_state.control_capabilities(),
+    )
+    .await;
     let (remote_machines, remote_kernels) = remote_relay_inventory_projection.snapshot();
     let terminals = if super::self_host_terminal_grants::required(&config) {
         super::self_host_terminal_grants::entries(&config)?

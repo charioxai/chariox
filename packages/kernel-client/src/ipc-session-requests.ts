@@ -34,6 +34,11 @@ export function listProjectsRequest(includeArchived = false) {
   return { ListProjects: { include_archived: includeArchived } }
 }
 
+// MP-08 / MP-10 / MP-11: requires local protocol 533; does not create a session/folder.
+export function createProjectRequest(name: string) {
+  return { CreateProject: { name } }
+}
+
 export function renameProjectRequest(projectId: string, name: string) {
   return { RenameProject: { project_id: projectId, name } }
 }

@@ -539,6 +539,12 @@ impl KernelRuntimeOwnedState {
                 Some("prompt_delivery_acknowledged"),
             )?;
         }
+        self.provider_store.acknowledge_skill_prompt_delivery(
+            session_id,
+            agent_id,
+            prompt_id,
+            provider_run_id,
+        )?;
         let run = self
             .provider_store
             .apply_prompt_submit_acknowledgement(provider_run_id, acknowledgement)?;

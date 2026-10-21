@@ -16,6 +16,36 @@ const CLAUDE_USAGE_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 const CLAUDE_USAGE_PROBE_OUTPUT_BYTES: u64 = 1024 * 1024;
 const CLAUDE_CREDENTIAL_CHECK_TIMEOUT: Duration = Duration::from_secs(90);
 
+/// MP-08 / MP-10 / MP-11: a bounded local --version utility, not a provider turn.
+/// The selected run supplies discovery-only profile settings. No auth is read here.
+pub(crate) fn probe_claude_skill_version(
+    executable: &Path,
+    environment: &BTreeMap<String, String>,
+) -> Result<String, DaemonError> {
+    let (status, bytes) = run_claude_capture(
+        executable,
+        environment,
+        &["--version"],
+        None,
+        Duration::from_secs(8),
+        "Claude native skill version",
+    )?;
+    if !status.success() || bytes.len() > 512 {
+        return Err(probe_error(
+            "Claude did not report a bounded version identity".into(),
+        ));
+    }
+    let version = std::str::from_utf8(&bytes)
+        .map_err(|_| probe_error("Claude version is not UTF-8".into()))?
+        .trim();
+    if version.is_empty() || version.chars().any(char::is_control) {
+        return Err(probe_error(
+            "Claude did not report a valid version identity".into(),
+        ));
+    }
+    Ok(version.into())
+}
+
 pub(crate) fn probe_claude_account_usage(
     executable: &Path,
     account_profile: &str,

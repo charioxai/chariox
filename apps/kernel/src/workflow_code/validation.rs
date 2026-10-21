@@ -562,7 +562,7 @@ impl<'a> WorkflowCodeValidator<'a> {
                         );
                     }
                 }
-                ExtensionKind::Mcp | ExtensionKind::Skill => {}
+                ExtensionKind::Mcp => {}
                 ExtensionKind::App => {
                     if let Err(error) = grant.validate_app_binding() {
                         self.error(

@@ -44,11 +44,9 @@ impl DaemonApp {
                 "execution_lease_management".to_string(),
             ]
             .into_iter()
-            .chain(
-                crate::local::RUNTIME_CONTROL_CAPABILITIES
-                    .iter()
-                    .map(|value| (*value).to_string()),
-            )
+            .chain(crate::runtime::state::control_capabilities(
+                &self.durable_state_store(),
+            ))
             .collect(),
             available_providers,
             provider_accounts,

@@ -726,7 +726,7 @@ The kernel owns prompt assembly. Clients, workflow schedulers, provider adapters
 The prompt assembly boundary produces a `PromptEnvelope` with these conceptual fields:
 
 - `visible_user_prompt`: the human or endpoint prompt that should appear in Chariox prompt history and prompt input surfaces
-- `hidden_system_context`: Chariox runtime instructions, workflow-level prompt, node-level instructions, granted MCP/skill summaries, runtime continuation instructions, and utility-specific instructions
+- `hidden_system_context`: Chariox runtime instructions, workflow-level prompt, node-level instructions, granted MCP summaries and state-aware Skills v2 metadata, runtime continuation instructions, and utility-specific instructions
 - `attachments`: structured attachments, unchanged from the prompt submission path
 - `manifest`: prompt template ids, template versions or content hashes, assembly conditions, and the provider injection channel used for the turn
 
@@ -835,7 +835,7 @@ a kernel-owned remote-rendered PTY because Claude Code's public integration
 surface is terminal-first rather than a separable app-server protocol.
 Claude hidden prompt context for native TUI runs is delivered through Claude
 Code's `UserPromptSubmit` hook `additionalContext` response. Local launchers and
-worker kernels answer a scoped hook context request with the same granted-skill
+worker kernels answer a scoped hook context request with the same state-aware Skills v2
 prompt context used by normal Chariox provider runs, while keeping that context
 out of visible PTY input and native TUI transcript rendering.
 
@@ -850,6 +850,16 @@ Slice-backed native TUI mode is the same composition with a home-managed slice
 as the worker execution environment. Provider TUIs still attach to the home
 kernel session; `slice_ref` only selects where provider execution runs. Native
 TUI clients must not attach directly to a slice kernel for the product path.
+
+MP-08 / MP-10 / MP-11: the home Skills v2 catalog resolves instruction scope,
+state, explicit selection and immutable revision for local, leased, slice, BYOC
+and managed native TUI execution. Standard workers receive the same verified
+Auto/Manual package set as slices through the existing lease transport. Off
+stops future delivery; native sources remain independent. Exact, confirmed
+harness duplicates have one delivery and one picker row; differing content
+surfaces a conflict and Chariox selection retains the home revision. MCP
+placement and agent grants retain their existing behavior. Compaction/reset
+regenerates current instruction context before the next task continues.
 
 ### 5.3.3 OpenCode Structured Adapter
 

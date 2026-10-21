@@ -343,7 +343,7 @@
             <td><code>watchdog({ endpoint, enabled, intervalSeconds, invocationPrompt, policy, maxWakeups })</code></td>
           </tr>
           <tr>
-            <td><code>mcp grant</code>, <code>skill grant</code>, script extensions</td>
+            <td><code>mcp grant</code>, script and other capability extensions</td>
             <td><code>node({ extensions: [...] })</code>, compiled into existing owned-agent extension grants</td>
           </tr>
         </tbody>
@@ -420,9 +420,17 @@ script_memory_bytes = 268435456</code></pre>
         function. Applying a workflow-code artifact translates extension declarations into the same
         kernel extension grants used outside workflows.
       </p>
+      <p>
+        MP-08 / MP-10 / MP-11: Skills v2 instructions do not belong in
+        <code>extensions</code> and have no grant operation. When the kernel advertises
+        <code>skills_v2_runtime</code>, workflow agents use the home-selected Auto
+        metadata and ordinary <code>chariox.list_skills</code>/<code>chariox.load_skill</code>
+        runtime tools. Manual loading requires a kernel-recorded explicit user selection;
+        workflow or model-authored text cannot confer that authority. Existing MCP,
+        script, connector and App grants retain their normal authorization.
+      </p>
       <pre><code>extensions: [
   { kind: "mcp", name: "playwright" },
-  { kind: "skill", name: "frontend-design" },
   { kind: "script", name: "schema-normalizer", environment: "node" },
 ]</code></pre>
       <ul>
@@ -558,9 +566,7 @@ If the synthesis node asks for revision, incorporate its feedback and send updat
   canEmitIntermediateRunOutput: true,
   intermediateOutputSchema: partialOutput,
   maxTurns: 4,
-  extensions: [
-    { kind: "skill", name: "openai-docs" },
-  ],
+  extensions: [],
   canvas: { x: 120, y: 240 },
 });
 

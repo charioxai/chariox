@@ -130,15 +130,13 @@ pub(crate) async fn execute_remote_relay_inventory_request(
 pub(crate) async fn projected_relay_status(
     relay_state: Arc<RwLock<RelayClientState>>,
     config_projection: DaemonConfigProjectionStore,
+    capabilities: Vec<String>,
 ) -> RelayStatus {
     let config = config_projection.snapshot();
     let connected = relay_state.read().await.connected();
     RelayStatus {
         runtime_process_identity: crate::runtime::kernel_process_identity::current(),
-        capabilities: crate::local::RUNTIME_CONTROL_CAPABILITIES
-            .iter()
-            .map(|value| (*value).to_string())
-            .collect(),
+        capabilities,
         configured: config.relay_url.is_some() && config.relay_token.is_some(),
         connected,
         relay_url: config.relay_url,
@@ -206,9 +204,11 @@ mod tests {
         let status = projected_relay_status(
             Arc::new(RwLock::new(RelayClientState::default())),
             DaemonConfigProjectionStore::new(config),
+            vec!["skills_v2_runtime".to_string()],
         )
         .await;
 
+        assert_eq!(status.capabilities, ["skills_v2_runtime"]);
         assert!(status.configured);
         assert!(!status.connected);
         assert_eq!(status.relay_url.as_deref(), Some("wss://relay.example"));

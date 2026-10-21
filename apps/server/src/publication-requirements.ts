@@ -5,7 +5,6 @@ import {
   listCredentialsRequest,
   listMcpServersRequest,
   listScriptsRequest,
-  listSkillsRequest,
 } from "@chariox/kernel-client/ipc-requests"
 import {
   validateWorkflowPublicationDeploymentExtensions,
@@ -38,7 +37,7 @@ async function validateLegacyRequirements(
 ) {
   const missing = [
     ...await missingNamedRequirements("mcp", requirements.mcps, () => listKernelNames(client, listMcpServersRequest(workspaceId), "McpServersListed", "mcps")),
-    ...await missingNamedRequirements("skill", requirements.skills, () => listKernelNames(client, listSkillsRequest(workspaceId), "SkillsListed", "skills")),
+    ...await missingNamedRequirements("skill", requirements.skills, noInstalledSkillExtensions),
     ...await missingNamedRequirements("script", requirements.scripts, () => listKernelNames(client, listScriptsRequest(workspaceId), "ScriptsListed", "scripts")),
     ...await missingNamedRequirements("connector", requirements.connectors, () => listKernelNames(client, listConnectorsRequest(), "ConnectorsListed", "connectors")),
     ...await missingNamedRequirements("credential", requirements.credentials, () => listKernelNames(client, listCredentialsRequest(), "CredentialsListed", "credentials")),
@@ -79,7 +78,6 @@ async function validateExactExtensionRequirements(
 
   const missing = [
     ...await missingExactExtensionKind("mcp", extensions, () => listKernelNames(client, listMcpServersRequest(workspaceId), "McpServersListed", "mcps")),
-    ...await missingExactExtensionKind("skill", extensions, () => listKernelNames(client, listSkillsRequest(workspaceId), "SkillsListed", "skills")),
     ...await missingExactExtensionKind("script", extensions, () => listKernelNames(client, listScriptsRequest(workspaceId), "ScriptsListed", "scripts")),
     ...await missingExactExtensionKind("connector", extensions, () => listKernelNames(client, listConnectorsRequest(), "ConnectorsListed", "connectors")),
   ]
@@ -182,4 +180,10 @@ function uniqueNames(requirements: readonly { name?: unknown }[] | undefined) {
     names.push(name)
   }
   return names
+}
+
+// Skills v2 are instruction packages in the home catalog, not installed Extensions: a
+// legacy publication requirement for a skill can never be satisfied.
+async function noInstalledSkillExtensions(): Promise<Set<string>> {
+  return new Set()
 }

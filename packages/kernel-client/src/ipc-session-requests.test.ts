@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   archiveProjectRequest,
   createSessionRequest,
+  createProjectRequest,
   deleteProjectRequest,
   listProjectsRequest,
   renameProjectRequest,
@@ -55,4 +56,9 @@ test("project session selection and lifecycle requests match the current protoco
   assert.deepEqual(restoreProjectRequest("project-1"), {
     RestoreProject: { project_id: "project-1" },
   })
+})
+
+test("MP-08 MP-10 MP-11 standalone Project creation has no invented Workspace/session", () => {
+  assert.deepEqual(createProjectRequest("No folders"), { CreateProject: { name: "No folders" } })
+  assert.equal(JSON.stringify(createProjectRequest("No folders")).includes("workspace"), false)
 })

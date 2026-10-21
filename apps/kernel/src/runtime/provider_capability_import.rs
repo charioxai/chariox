@@ -21,11 +21,11 @@ pub(crate) fn execute_import_provider_capabilities_request(
         .unwrap_or("all")
         .to_ascii_lowercase();
     let include_mcp = matches!(kind.as_str(), "all" | "mcp" | "mcps");
-    let include_skill = matches!(kind.as_str(), "all" | "skill" | "skills");
-    if !include_mcp && !include_skill {
+    if !include_mcp {
         return Err(DaemonError::InvalidConfig {
             field: "kind",
-            message: "kind must be all, mcp, or skill",
+            message:
+                "kind must be all or mcp; import Skills through an explicit home catalog review",
         });
     }
     if let Some(name) = request.name.as_deref() {
@@ -37,21 +37,10 @@ pub(crate) fn execute_import_provider_capabilities_request(
         providers: providers.clone(),
         summary: ProviderCapabilityImportSummary::default(),
         mcps: Vec::new(),
-        skills: Vec::new(),
     };
 
     if include_mcp {
         import_mcp_candidates(
-            &mut report,
-            &providers,
-            &workspace,
-            request.name.as_deref(),
-            request.dry_run,
-            request.workspace_id.as_deref(),
-        )?;
-    }
-    if include_skill {
-        import_skill_candidates(
             &mut report,
             &providers,
             &workspace,
@@ -212,150 +201,10 @@ fn import_mcp_candidates(
     Ok(())
 }
 
-fn import_skill_candidates(
-    report: &mut ProviderCapabilityImportReport,
-    providers: &[String],
-    workspace: &Path,
-    requested_name: Option<&str>,
-    dry_run: bool,
-    workspace_id: Option<&str>,
-) -> Result<(), DaemonError> {
-    let registry = crate::skill::CharioxSkillRegistry::new(
-        super::capability_registry::skill_registry_roots(workspace_id)?,
-    );
-    let mut candidates = Vec::new();
-    for provider in providers {
-        match crate::skill::discover_provider_skill_import_candidates(
-            provider,
-            workspace,
-            requested_name,
-        ) {
-            Ok(discovery) => {
-                for skip in discovery.skipped {
-                    report.skills.push(entry(
-                        "skill",
-                        &skip.name,
-                        provider,
-                        &skip.path.display().to_string(),
-                        None,
-                        "skipped",
-                        &skip.reason,
-                        Vec::new(),
-                    ));
-                }
-                candidates.extend(discovery.candidates);
-            }
-            Err(error) => report.skills.push(entry(
-                "skill",
-                requested_name.unwrap_or("*"),
-                provider,
-                "",
-                None,
-                "error",
-                &error.to_string(),
-                Vec::new(),
-            )),
-        }
-    }
-
-    for mut group in group_skill_candidates(candidates).into_values() {
-        group.sort_by(|left, right| {
-            compare_candidate_recency(
-                right.source_modified_ms,
-                provider_rank(&right.provider),
-                &right.name,
-                left.source_modified_ms,
-                provider_rank(&left.provider),
-                &left.name,
-            )
-        });
-        let chosen = group.remove(0);
-        let duplicates = duplicates_for_skill(&chosen, &group);
-        let (action, reason) = match registry.get(&chosen.name)? {
-            Some(_) => {
-                let existing_hash = registry
-                    .package(&chosen.name)?
-                    .map(|package| package.version_hash)
-                    .unwrap_or_default();
-                if existing_hash == chosen.version_hash {
-                    (
-                        "already_installed".to_string(),
-                        "matching skill package already installed in Chariox".to_string(),
-                    )
-                } else if dry_run {
-                    (
-                        "would_update".to_string(),
-                        "newer provider skill would update installed Chariox skill".to_string(),
-                    )
-                } else {
-                    registry.update_from_path(&chosen.source_path)?;
-                    (
-                        "updated".to_string(),
-                        "updated installed Chariox skill from newest provider package".to_string(),
-                    )
-                }
-            }
-            None if dry_run => (
-                "would_import".to_string(),
-                "would import newest provider skill package".to_string(),
-            ),
-            None => {
-                registry.install_from_path(&chosen.source_path)?;
-                (
-                    "imported".to_string(),
-                    "imported newest provider skill package".to_string(),
-                )
-            }
-        };
-        report.skills.push(entry(
-            "skill",
-            &chosen.name,
-            &chosen.provider,
-            &chosen.source,
-            Some(chosen.version_hash.clone()),
-            &action,
-            &reason,
-            duplicates,
-        ));
-        for duplicate in group {
-            let reason = if duplicate.version_hash == chosen.version_hash {
-                "duplicate of selected provider skill"
-            } else {
-                "older provider skill superseded by selected provider skill"
-            };
-            report.skills.push(entry(
-                "skill",
-                &duplicate.name,
-                &duplicate.provider,
-                &duplicate.source,
-                Some(duplicate.version_hash),
-                "deduped",
-                reason,
-                Vec::new(),
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn group_mcp_candidates(
     candidates: Vec<crate::mcp::ProviderMcpImportCandidate>,
 ) -> BTreeMap<String, Vec<crate::mcp::ProviderMcpImportCandidate>> {
     let mut groups: BTreeMap<String, Vec<crate::mcp::ProviderMcpImportCandidate>> = BTreeMap::new();
-    for candidate in candidates {
-        groups
-            .entry(normalized_capability_name(&candidate.name))
-            .or_default()
-            .push(candidate);
-    }
-    groups
-}
-
-fn group_skill_candidates(
-    candidates: Vec<crate::skill::ProviderSkillImportCandidate>,
-) -> BTreeMap<String, Vec<crate::skill::ProviderSkillImportCandidate>> {
-    let mut groups: BTreeMap<String, Vec<crate::skill::ProviderSkillImportCandidate>> =
-        BTreeMap::new();
     for candidate in candidates {
         groups
             .entry(normalized_capability_name(&candidate.name))
@@ -458,7 +307,7 @@ fn entry(
 
 fn summarize_report(report: &ProviderCapabilityImportReport) -> ProviderCapabilityImportSummary {
     let mut summary = ProviderCapabilityImportSummary::default();
-    for entry in report.mcps.iter().chain(report.skills.iter()) {
+    for entry in report.mcps.iter() {
         match entry.action.as_str() {
             "imported" => summary.imported += 1,
             "updated" => summary.updated += 1,
@@ -507,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    fn imports_newest_provider_capabilities_after_deduplication() {
+    fn imports_newest_mcp_definitions_without_automatically_importing_skills() {
         crate::test_support::isolated_env_test!();
         let _guard = crate::env_lock::lock();
         let workspace = temp_root("workspace");
@@ -569,20 +418,19 @@ mod tests {
         let LocalDaemonResponse::ProviderCapabilitiesImported { report } = response else {
             panic!("unexpected response");
         };
-        assert!(report.summary.imported >= 2);
-        assert!(report.summary.deduped >= 2);
+        assert!(report.summary.imported >= 1);
+        assert!(report.summary.deduped >= 1);
         assert!(report.mcps.iter().any(|entry| entry.name == mcp_name
             && entry.provider == "claude"
             && entry.action == "imported"));
         assert!(report.mcps.iter().any(|entry| entry.name == mcp_name
             && entry.provider == "codex"
             && entry.action == "deduped"));
-        assert!(report.skills.iter().any(|entry| entry.name == skill_name
-            && entry.provider == "claude"
-            && entry.action == "imported"));
-        assert!(report.skills.iter().any(|entry| entry.name == skill_name
-            && entry.provider == "codex"
-            && entry.action == "deduped"));
+        let report_json = serde_json::to_value(&report).unwrap();
+        assert!(report_json.get("skills").is_none());
+        assert!(!report_json.to_string().contains(&skill_name));
+        assert!(codex_skill.join("SKILL.md").is_file());
+        assert!(claude_skill.join("SKILL.md").is_file());
 
         restore_env_var("CODEX_HOME", previous_codex_home);
         let _ = fs::remove_dir_all(workspace);

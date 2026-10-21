@@ -87,6 +87,10 @@ pub(crate) enum KernelEvent {
         subscription_id: String,
         frame: Value,
     },
+    SkillsChanged {
+        session_id: String,
+        change: crate::skill::v2::SkillCatalogEvent,
+    },
     TerminalOutput {
         records: Vec<TerminalOutputRecord>,
     },
@@ -368,6 +372,9 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
         KernelEvent::ClientCatalogChanged { revision } => {
             serde_json::json!({ "event_id": event_id, "event": "client_catalog_changed", "revision": revision })
         }
+        KernelEvent::SkillsChanged { session_id, .. } => serde_json::json!({
+            "event_id": event_id, "event": "skills_changed", "session_id": session_id,
+        }),
         KernelEvent::ProviderCatalogChanged {
             generated_at_ms,
             catalog,
@@ -765,6 +772,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::WaitingRoomRowsChanged { .. } => "waiting_room_rows_changed",
         KernelEvent::ClientCatalogChanged { .. } => "client_catalog_changed",
         KernelEvent::ProviderCatalogChanged { .. } => "provider_catalog_changed",
+        KernelEvent::SkillsChanged { .. } => "skills_changed",
         KernelEvent::SlicesChanged { .. } => "slices_changed",
         KernelEvent::WorkflowDesignOp { .. } => "workflow_design_op",
         KernelEvent::WorkflowRunUpdated { .. } => "workflow_run_updated",
@@ -799,6 +807,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::WaitingRoomRowsChanged { .. } => None,
         KernelEvent::ClientCatalogChanged { .. } => None,
         KernelEvent::ProviderCatalogChanged { .. } => None,
+        KernelEvent::SkillsChanged { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::SlicesChanged { .. } => None,
         KernelEvent::WorkflowDesignOp { design_op } => Some(design_op.session_id.as_str()),
         KernelEvent::WorkflowRunUpdated { session_id, .. } => Some(session_id.as_str()),
@@ -863,6 +872,7 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         | KernelEvent::WaitingRoomRowsChanged { .. }
         | KernelEvent::ClientCatalogChanged { .. }
         | KernelEvent::ProviderCatalogChanged { .. }
+        | KernelEvent::SkillsChanged { .. }
         | KernelEvent::SlicesChanged { .. }
         | KernelEvent::WorkflowDesignOp { .. }
         | KernelEvent::WorkflowRunUpdated { .. }

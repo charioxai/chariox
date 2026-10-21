@@ -283,6 +283,10 @@ pub struct KernelRuntimeProcessIdentity {
     pub start_time_ticks: String,
 }
 
+/// MP-08 / MP-10 / MP-11: wire allocation alone does not enable Skills v2.
+/// Add this to advertised capabilities only once list/load/dispatch are wired.
+pub const SKILLS_V2_RUNTIME_CAPABILITY: &str = "skills_v2_runtime";
+
 /// Shared by direct kernel status and relay discovery. These advertise support,
 /// not authorization; every operation still checks its caller and home binding.
 pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[

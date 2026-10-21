@@ -55,6 +55,8 @@ pub(super) async fn run_subscription_loop(
     }
     let mut previous_catalog_revision = None;
     let mut previous_snapshot: Option<SessionSnapshotProjection> = None;
+    // MP-08 / MP-10 / MP-11: reconnect rebuilds this disposable journal cursor.
+    let mut skill_cursor = crate::skill::watch::SkillWatchCursor::default();
     let mut last_workflow_design_sequence = 0_u64;
     let mut last_snapshot_projection_sequence: Option<u64> = None;
     let mut next_snapshot_reconciliation_at = Instant::now();
@@ -108,6 +110,7 @@ pub(super) async fn run_subscription_loop(
         let session_projection_change_sequence =
             router.session_projection_session_change_sequence(&subscription.session_id);
         let workflow_design_change_sequence = router.workflow_design_change_sequence();
+        let skill_change_sequence = router.waiting_room_change_sequence();
         let now = Instant::now();
         let should_check_snapshot = previous_snapshot.is_none()
             || last_snapshot_projection_sequence != Some(session_projection_change_sequence)
@@ -189,6 +192,45 @@ pub(super) async fn run_subscription_loop(
                     {
                         return;
                     }
+                }
+                // The ordinary watch has admitted the live attachment. Project
+                // and user membership are rechecked inside the scoped read.
+                match router
+                    .runtime_state()
+                    .skill_subscription_events(
+                        &subscription.session_id,
+                        &subscription.attachment_id,
+                        skill_cursor.clone(),
+                    )
+                    .await
+                {
+                    Ok((next, changes)) => {
+                        for change in changes {
+                            if !emit_kernel_event(
+                                &runtime,
+                                &outgoing_tx,
+                                &close_tx,
+                                &close_requested,
+                                KernelEvent::SkillsChanged {
+                                    session_id: subscription.session_id.clone(),
+                                    change,
+                                },
+                                Some(&event_stream_id),
+                                Some(&subscription.session_id),
+                                Some(&subscription.attachment_id),
+                            )
+                            .await
+                            {
+                                return;
+                            }
+                        }
+                        skill_cursor = next;
+                    }
+                    Err(error) => crate::logging::warn_with_fields(
+                        "skills.v2.watch",
+                        "Skills event projection requires retry",
+                        serde_json::json!({"session_id": subscription.session_id, "error": error.to_string()}),
+                    ),
                 }
                 if !records.is_empty()
                     && !emit_kernel_event(
@@ -346,6 +388,7 @@ pub(super) async fn run_subscription_loop(
                         workflow_design_change_sequence
                     ) => {}
                     _ = router.wait_for_client_catalog_change_after(client_catalog_sequence) => {}
+                    _ = router.wait_for_waiting_room_change_after(skill_change_sequence) => {}
                     _ = passkey_prompts.changed(&router) => {}
                 }
             },

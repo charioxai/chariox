@@ -218,6 +218,13 @@ pub struct ListProjectsRequest {
     pub include_archived: bool,
 }
 
+/// MP-08 / MP-10 / MP-11: local protocol 533 creates a named Project without folders.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProjectRequest {
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetProjectPinnedRequest {
     pub project_id: String,

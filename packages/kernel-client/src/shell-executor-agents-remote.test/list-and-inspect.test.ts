@@ -170,7 +170,7 @@ test("executeShellCommand lists blocked remote worker provider runs inline", asy
   assert.match(result.message ?? "", /agent-remote \(worker\) \[Working; opencode gpt-5\.2; worktree \/repo\/feature; remote worker-kernel@hetzner \(lease=lease-1, leased_agent=leased-agent-1\); provider blocked \(missing worker run on hetzner; inspect agent-remote\); 0 grants\]/)
 })
 
-test("executeShellCommand lists remote skill-only agents without manifest pending", async () => {
+test("executeShellCommand lists remote agents with no grants without manifest pending", async () => {
   const agent = makeAgent({
     id: "agent-remote",
     agent_ref: "agent-remote",
@@ -181,7 +181,7 @@ test("executeShellCommand lists remote skill-only agents without manifest pendin
       execution_lease_id: "lease-1",
       leased_agent_id: "leased-agent-1",
     },
-    extension_grants: [{ kind: "skill", name: "review" }],
+    extension_grants: [],
   })
   const fake = fakeClient((request) => {
     if ("GetSessionState" in request) {
@@ -196,7 +196,7 @@ test("executeShellCommand lists remote skill-only agents without manifest pendin
   const result = await executeShellCommand(parseShellCommand("agent list"), context, { client: fake.client })
 
   assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /agent-remote \(reviewer\).*1 grant \(skills snapshot\)/)
+  assert.match(result.message ?? "", /agent-remote \(reviewer\).*0 grants/)
   assert.doesNotMatch(result.message ?? "", /manifest pending/)
 })
 
@@ -212,7 +212,7 @@ test("executeShellCommand inspects local agent placement and policy", async () =
     worktree_id: "/repo-feature",
     execution_mode_override: "plan",
     permission_level_override: "required",
-    extension_grants: [{ kind: "skill", name: "review" }],
+    extension_grants: [{ kind: "script", name: "review" }],
   })
   const fake = fakeClient((request) => {
     if ("ListAgents" in request) {
@@ -245,11 +245,11 @@ test("executeShellCommand inspects local agent placement and policy", async () =
   assert.match(result.message ?? "", /worktree: \/repo-feature/)
   assert.match(result.message ?? "", /placement: worker-local/)
   assert.match(result.message ?? "", /provider run: session=run-session/)
-  assert.match(result.message ?? "", /extensions: 1 grant \(worker-local; skill=1\)/)
+  assert.match(result.message ?? "", /extensions: 1 grant \(worker-local; script=1\)/)
   assert.match(result.message ?? "", /remote extension sync: not applicable \(worker-local agent; no home-proxy manifest\)/)
 })
 
-test("executeShellCommand inspects remote skill-only agents without manifest pending", async () => {
+test("executeShellCommand inspects remote agents with no grants without manifest pending", async () => {
   const agent = makeAgent({
     id: "agent-remote",
     agent_ref: "agent-remote",
@@ -260,7 +260,7 @@ test("executeShellCommand inspects remote skill-only agents without manifest pen
       execution_lease_id: "lease-1",
       leased_agent_id: "leased-agent-1",
     },
-    extension_grants: [{ kind: "skill", name: "review" }],
+    extension_grants: [],
   })
   const fake = fakeClient((request) => {
     if ("ListAgents" in request) {
@@ -278,7 +278,7 @@ test("executeShellCommand inspects remote skill-only agents without manifest pen
   const result = await executeShellCommand(parseShellCommand("agent inspect reviewer"), context, { client: fake.client })
 
   assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /extensions: 1 grant \(skills snapshot; skill=1\)/)
+  assert.match(result.message ?? "", /extensions: none/)
   assert.match(result.message ?? "", /remote extension sync: not applicable \(no active home-proxy tools\)/)
   assert.doesNotMatch(result.message ?? "", /manifest pending/)
 })

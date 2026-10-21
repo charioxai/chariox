@@ -52,7 +52,6 @@ impl NativeLeaseFixture {
                 None,
                 None,
                 Vec::new(),
-                Some(Vec::new()),
                 crate::extension::RemoteExtensionManifest::default(),
                 None,
             )
@@ -113,7 +112,6 @@ fn native_lease_fixture_with_account(profile_root: Option<&std::path::Path>) -> 
                 None,
                 None,
                 Vec::new(),
-                Some(Vec::new()),
                 crate::extension::RemoteExtensionManifest::default(),
             )
             .expect("matching native request should prepare");
@@ -228,7 +226,6 @@ async fn concurrent_relay_native_launches_serialize_and_reuse_one_worker_run() {
                 None,
                 None,
                 Vec::new(),
-                Some(Vec::new()),
                 crate::extension::RemoteExtensionManifest::default(),
                 None,
             )
@@ -248,7 +245,6 @@ async fn concurrent_relay_native_launches_serialize_and_reuse_one_worker_run() {
                 None,
                 None,
                 Vec::new(),
-                Some(Vec::new()),
                 crate::extension::RemoteExtensionManifest::default(),
                 None,
             )
@@ -320,9 +316,9 @@ async fn cold_claude_credential_preflight_does_not_fence_the_home_prompt() {
             None,
             Some(context),
             Vec::new(),
-            Some(Vec::new()),
             crate::extension::RemoteExtensionManifest::default(),
             None,
+            Default::default(),
         )
         .await
         .expect_err("a cold run requires the selected Claude credential");
@@ -411,9 +407,9 @@ async fn unavailable_claude_profile_keeps_a_definitive_rejection_receipt() {
             None,
             Some(context),
             Vec::new(),
-            Some(Vec::new()),
             crate::extension::RemoteExtensionManifest::default(),
             None,
+            Default::default(),
         )
         .await
         .unwrap_err();

@@ -22,3 +22,5 @@ export type * from "./kernel-types-kernel-browser.js"
 export { userDomainWindowBadge } from "./kernel-types-kernel-browser.js"
 
 export * from "./notes.js"
+
+export type * from "./kernel-types-skills-v2.js"

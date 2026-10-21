@@ -315,14 +315,7 @@ impl CommandRouter {
             | LocalDaemonRequest::RemoveConnector(_)
             | LocalDaemonRequest::GetConnector(_)
             | LocalDaemonRequest::ListConnectors(_)
-            | LocalDaemonRequest::TestConnector(_)
-            | LocalDaemonRequest::UpsertSkill(_)
-            | LocalDaemonRequest::InstallSkill(_)
-            | LocalDaemonRequest::UpdateSkill(_)
-            | LocalDaemonRequest::UninstallSkill(_)
-            | LocalDaemonRequest::ImportSkills(_)
-            | LocalDaemonRequest::GetSkill(_)
-            | LocalDaemonRequest::ListSkills(_)) => boxed_handler(|| async move {
+            | LocalDaemonRequest::TestConnector(_)) => boxed_handler(|| async move {
                 let credential_vault = self
                     .config_projection
                     .snapshot()
@@ -681,6 +674,14 @@ impl CommandRouter {
                     request,
                 )
                 .await
+            }),
+            LocalDaemonRequest::SkillsV2(request) => boxed_handler(|| async move {
+                let caller = crate::runtime::session_membership::command_session_user_id(&command)
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "skills.v2.authorize",
+                        message: "an authenticated user identity is required for Skills".into(),
+                    })?;
+                self.dispatch_skills_v2(&command, request, &caller).await
             }),
             LocalDaemonRequest::SubmitPrompt(request) => boxed_handler(|| async move {
                 self.agent_runtime

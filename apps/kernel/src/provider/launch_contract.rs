@@ -477,6 +477,9 @@ pub struct LaunchProviderRequest {
     pub working_directory: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_live_sync_roots: Vec<PathBuf>,
+    /// Execution-bound skill cache a managed provider may read; never serialized.
+    #[serde(skip)]
+    pub(crate) skill_cache_roots: Vec<PathBuf>,
     pub runtime_mcp_binding: Option<RuntimeMcpBinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_servers: Vec<CharioxMcpServerConfig>,
@@ -669,6 +672,7 @@ impl LaunchProviderRequest {
             variant: None,
             working_directory: None,
             workspace_live_sync_roots: Vec::new(),
+            skill_cache_roots: Vec::new(),
             runtime_mcp_binding: None,
             mcp_servers: Vec::new(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
@@ -728,6 +732,11 @@ impl LaunchProviderRequest {
 
     pub fn with_workspace_live_sync_roots(mut self, roots: Vec<PathBuf>) -> Self {
         self.workspace_live_sync_roots = roots;
+        self
+    }
+
+    pub(crate) fn with_skill_cache_root(mut self, root: PathBuf) -> Self {
+        self.skill_cache_roots = vec![root];
         self
     }
 

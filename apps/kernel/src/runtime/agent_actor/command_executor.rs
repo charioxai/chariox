@@ -64,6 +64,8 @@ impl AgentRuntimeCommandExecutor {
         match command {
             AgentCommand::SubmitPrompt {
                 request,
+                skill_selections,
+                user_skill_syntax,
                 trace_id,
                 operation_id,
                 operation_fingerprint,
@@ -71,6 +73,8 @@ impl AgentRuntimeCommandExecutor {
             } => boxed_agent_handler(|| {
                 self.submit_prompt(
                     request,
+                    skill_selections,
+                    user_skill_syntax,
                     trace_id,
                     operation_id,
                     operation_fingerprint,
@@ -106,6 +110,8 @@ impl AgentRuntimeCommandExecutor {
     async fn submit_prompt(
         &self,
         request: crate::local::SubmitPromptRequest,
+        skill_selections: Vec<crate::skill::v2::SkillSelection>,
+        user_skill_syntax: bool,
         trace_id: String,
         operation_id: String,
         operation_fingerprint: String,
@@ -141,12 +147,14 @@ impl AgentRuntimeCommandExecutor {
                 .prompt_commands
                 .session_task_lane_busy(&request.session_id)?
             {
-                let (task, session) = self.prompt_commands.enqueue_metaagent_task(
+                let (task, session) = self.prompt_commands.enqueue_metaagent_task_with_skills(
                     &request.session_id,
                     &target_agent_id,
                     &request.attachment_id,
                     &meta_slash.task_prompt,
                     materialized_attachments,
+                    skill_selections,
+                    user_skill_syntax,
                 )?;
                 let queued_prompt = PromptQueueItem::new(
                     task.id(),
@@ -155,7 +163,9 @@ impl AgentRuntimeCommandExecutor {
                     task.task_markdown(),
                     PromptStatus::Queued,
                 )
-                .with_attachments(task.attachments().to_vec());
+                .with_attachments(task.attachments().to_vec())
+                .with_skill_selections(task.skill_selections().to_vec())
+                .with_user_skill_syntax(task.user_skill_syntax());
                 if response_mode == PromptSubmitResponseMode::Full {
                     publish_session_runtime_projection(
                         &self.session_projection,
@@ -205,6 +215,8 @@ impl AgentRuntimeCommandExecutor {
             PromptStatus::Queued,
         )
         .with_hidden_system_context(hidden_system_context)
+        .with_skill_selections(skill_selections)
+        .with_user_skill_syntax(user_skill_syntax)
         .with_durable_operation(operation_id, operation_fingerprint)
         .with_attachments(materialized_attachments);
         timing.mark("prepare");

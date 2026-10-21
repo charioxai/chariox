@@ -20,6 +20,7 @@ mod permission;
 mod runtime_mcp;
 mod runtime_trace;
 mod server_requests;
+mod skills;
 mod socket_io;
 mod thread_runtime;
 

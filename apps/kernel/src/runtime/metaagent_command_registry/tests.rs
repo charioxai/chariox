@@ -49,19 +49,10 @@ const ROUTED_COMMAND_CASES: &[&str] = &[
     "mcp import codex playwright",
     "mcp grant reviewer playwright",
     "mcp revoke reviewer playwright",
-    "skill list",
-    "skill ls",
-    "skill show browser-qa",
-    "skill get browser-qa",
-    "skill install ./skills/browser-qa",
-    "skill update ./skills/browser-qa",
-    "skill uninstall browser-qa",
-    "skill remove browser-qa",
-    "skill import codex browser-qa",
-    "skill grant reviewer browser-qa",
-    "skill revoke reviewer browser-qa",
     "skills list",
-    "skills grant reviewer browser-qa",
+    "skills load skill-id",
+    "skills preview {}",
+    "skills mutate review-id {}",
     "credential list",
     "credential ls",
     "credential get credential-1",
@@ -191,7 +182,7 @@ fn search_commands_finds_worker_capability_grants() {
         commands.iter().any(|command| {
             matches!(
                 command.get("name").and_then(serde_json::Value::as_str),
-                Some("mcp grant" | "skill grant")
+                Some("mcp grant")
             )
         }),
         "grant command should be discoverable: {commands:?}"
@@ -328,7 +319,7 @@ fn command_docs_do_not_advertise_unrouted_subcommands() {
         ("workflow", &["edit"][..]),
         ("workflow node add", &["node-name", "node alias"][..]),
         ("mcp", &["test", "adapter", "connector"][..]),
-        ("skill", &["grants", "script", "connector"][..]),
+        ("skills", &["grant", "revoke", "script", "connector"][..]),
         ("slice", &["reset-state"][..]),
         ("credential", &["set-secret", "delete-secret"][..]),
     ];

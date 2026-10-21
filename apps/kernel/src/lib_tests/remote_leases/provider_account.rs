@@ -35,8 +35,8 @@ fn leased_prompt_launch_preserves_selected_provider_account() {
                     None,
                     None,
                     Vec::new(),
-                    None,
                     crate::extension::RemoteExtensionManifest::default(),
+                    Default::default(),
                 )
                 .expect("prompt admission");
             match prepared.provider_run {

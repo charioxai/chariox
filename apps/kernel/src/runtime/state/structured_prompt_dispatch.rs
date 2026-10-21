@@ -1,6 +1,5 @@
 //! Structured prompt submission and the detached handoff preparation continuation.
 use super::context_handoff::PendingAgentContextHandoff;
-use super::local_prompt_dispatch_runtime::join_hidden_context;
 use super::*;
 
 impl KernelRuntimeState {
@@ -113,13 +112,7 @@ impl KernelRuntimeState {
             }
             None => dispatch.prompt.clone(),
         };
-        let granted_skill_context = owned.granted_skill_hidden_context(
-            &dispatch.session_id,
-            &dispatch.agent_id,
-            &prompt_with_handoff,
-        )?;
-        let hidden_system_context =
-            join_hidden_context(hidden_system_context, &granted_skill_context);
+        let hidden_system_context = hidden_system_context.to_string();
         // Preparation can outlive a Room policy change. Protect every retained
         // input, including failed-request and skill context, at final admission.
         let (hidden_system_context, attachments) =

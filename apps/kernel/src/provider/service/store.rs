@@ -18,6 +18,8 @@ use super::{
 #[derive(Clone)]
 pub struct ProviderProcessServiceStore {
     inner: Arc<Mutex<ProviderProcessService>>,
+    skill_prompt_bridge:
+        Arc<Mutex<Option<Arc<dyn crate::provider::skill_delivery::SkillPromptBridge>>>>,
     managed_admission_gate:
         Arc<Mutex<Option<Arc<crate::runtime::state::ManagedKernelQuiescenceGate>>>>,
 }
@@ -33,8 +35,19 @@ impl ProviderProcessServiceStore {
     pub fn new(service: ProviderProcessService) -> Self {
         Self {
             inner: Arc::new(Mutex::new(service)),
+            skill_prompt_bridge: Arc::new(Mutex::new(None)),
             managed_admission_gate: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub(crate) fn set_skill_prompt_bridge(
+        &self,
+        bridge: Arc<dyn crate::provider::skill_delivery::SkillPromptBridge>,
+    ) {
+        *self
+            .skill_prompt_bridge
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(bridge);
     }
 
     pub(crate) fn set_managed_kernel_admission_gate(
@@ -491,6 +504,35 @@ impl ProviderProcessServiceStore {
         self.write().clear_runtime(provider_run_id)
     }
 
+    pub(crate) fn prepare_skill_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        origin_prompt_id: &str,
+        run: &RuntimeProviderRun,
+        mut envelope: crate::prompt_assembly::PromptEnvelope,
+    ) -> Result<crate::prompt_assembly::PromptEnvelope, DaemonError> {
+        let bridge = self
+            .skill_prompt_bridge
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(bridge) = bridge {
+            if let Some(delivery) = bridge.prepare(
+                run,
+                session_id,
+                agent_id,
+                prompt_id,
+                origin_prompt_id,
+                &envelope,
+            )? {
+                envelope = envelope.with_skill_delivery(delivery);
+            }
+        }
+        Ok(envelope)
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "Preserve the existing enqueue_structured_prompt_submit operation signature and explicit context arguments"
@@ -510,12 +552,7 @@ impl ProviderProcessServiceStore {
         private_assessment_evidence: Option<crate::prompt_assembly::AssessmentEvidence>,
         steering: bool,
     ) -> Result<(), DaemonError> {
-        self.write().enqueue_structured_prompt_submit(
-            session_id,
-            provider_run_id,
-            agent_id,
-            prompt_id,
-            origin_prompt_id,
+        let envelope = super::prompt_envelope::assemble(
             run,
             prompt,
             hidden_system_context,
@@ -523,6 +560,23 @@ impl ProviderProcessServiceStore {
             mode,
             private_assessment_evidence,
             steering,
+            origin_prompt_id,
+        )?;
+        let envelope = self.prepare_skill_prompt(
+            &session_id,
+            &agent_id,
+            &prompt_id,
+            origin_prompt_id,
+            run,
+            envelope,
+        )?;
+        self.write().enqueue_structured_prompt_submit(
+            session_id,
+            provider_run_id,
+            agent_id,
+            prompt_id,
+            run,
+            envelope,
         )
     }
 
@@ -633,6 +687,25 @@ impl ProviderProcessServiceStore {
             );
     }
 
+    pub(crate) fn acknowledge_skill_prompt_delivery(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        let bridge = self
+            .skill_prompt_bridge
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(bridge) = bridge {
+            let run = self.get_run(provider_run_id)?;
+            bridge.acknowledge_prompt(&run, session_id, agent_id, prompt_id)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn apply_prompt_submit_acknowledgement(
         &self,
         provider_run_id: &str,
@@ -683,6 +756,15 @@ impl ProviderProcessServiceStore {
         provider_run_id: &str,
         batch: &ProviderPromptSignalBatch,
     ) -> Result<(), DaemonError> {
+        let bridge = self
+            .skill_prompt_bridge
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(bridge) = bridge {
+            let run = self.get_run(provider_run_id)?;
+            bridge.acknowledge_tools(&run, batch)?;
+        }
         self.write()
             .apply_structured_output_metadata(provider_run_id, batch)
     }

@@ -32,7 +32,6 @@ pub(super) struct KernelContextSourceSnapshot {
     pub(super) mcp_root: PathBuf,
     pub(super) user_rules_root: PathBuf,
     pub(super) original_mcp_root: Option<PathBuf>,
-    pub(super) skill_root: PathBuf,
     pub(super) script_root: PathBuf,
     pub(super) environment_root: PathBuf,
     pub(super) original_environment_root: Option<PathBuf>,
@@ -56,7 +55,6 @@ impl KernelContextSourceSnapshot {
         let root = PrivateSnapshotRoot::new()?;
         let mut budget = SourceBudget::copying_into(&root.path);
         let mcp_root = root.path.join("user/mcps");
-        let skill_root = root.path.join("user/skills");
         let script_root = root.path.join("user/scripts");
         let environment_root = root.path.join("user/envs");
         let connector_root = root.path.join("connectors/definitions");
@@ -92,11 +90,6 @@ impl KernelContextSourceSnapshot {
                 _ => return Err(source_error("user rules must be a bounded regular file")),
             }
         }
-        capture_optional_root(
-            crate::skill::CharioxSkillRegistry::user_root().as_deref(),
-            &skill_root,
-            &mut budget,
-        )?;
         capture_optional_root(
             crate::script::CharioxScriptRegistry::user_root().as_deref(),
             &script_root,
@@ -143,7 +136,6 @@ impl KernelContextSourceSnapshot {
             mcp_root,
             user_rules_root,
             original_mcp_root,
-            skill_root,
             script_root,
             environment_root,
             original_environment_root,
@@ -169,7 +161,6 @@ impl KernelContextSourceSnapshot {
         let mut roots = vec![
             ("mcp".to_string(), self.mcp_root.as_path()),
             ("user_rules".to_string(), self.user_rules_root.as_path()),
-            ("skill".to_string(), self.skill_root.as_path()),
             ("script".to_string(), self.script_root.as_path()),
             ("environment".to_string(), self.environment_root.as_path()),
             ("connector".to_string(), self.connector_root.as_path()),

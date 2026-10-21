@@ -39,7 +39,7 @@ test("buildCommandCenterItems shows root slash commands", () => {
   assert.equal(items.some((item) => item.kind === "group" && item.label === "/meta" && item.value === "/meta "), true)
   assert.equal(items.some((item) => item.kind === "command" && item.label === "/exit"), true)
   assert.equal(items.some((item) => item.kind === "command" && item.value === "/approvals"), true)
-  assert.equal(items.find((item) => item.kind === "group" && item.label === "/extension")?.description, "Inspect worker-local, home-proxy, and skill snapshot extension state (7)")
+  assert.equal(items.find((item) => item.kind === "group" && item.label === "/extension")?.description, "Inspect worker-local and home-proxy extension state (7)")
 })
 
 test("buildCommandCenterItems exposes Room browser history and tab controls", () => {
@@ -160,7 +160,7 @@ test("buildCommandCenterItems describes home-proxy extension sync recovery", () 
 
   assert.equal(items.find((item) => item.value === "/extension sync-status ")?.description, "Show home-authoritative manifest sync, worker projection, and recovery for an agent")
   assert.equal(items.find((item) => item.value === "/extension sync-retry ")?.description, "Retry worker projection of a home-authoritative extension manifest")
-  assert.equal(items.find((item) => item.value === "/extension import providers ")?.description, "Import MCPs and skills from provider configs into Chariox")
+  assert.equal(items.find((item) => item.value === "/extension import providers ")?.description, "Import MCPs from provider configs into Chariox")
   assert.equal(buildCommandCenterItems("/extension import provider mcp", {
     providerCatalog: fallbackProviderCatalog(),
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),

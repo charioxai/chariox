@@ -83,6 +83,7 @@ fn bounded_result(content: Option<&Value>) -> String {
 
 #[derive(Default)]
 pub(super) struct ClaudeToolTranscript {
+    skill_deliveries: Vec<crate::provider::SkillToolDeliveryAcknowledgement>,
     pending: BTreeMap<String, PendingTool>,
     pending_bytes: usize,
     truncated: bool,
@@ -109,6 +110,11 @@ impl PendingTool {
 }
 
 impl ClaudeToolTranscript {
+    pub(super) fn take_skill_deliveries(
+        &mut self,
+    ) -> Vec<crate::provider::SkillToolDeliveryAcknowledgement> {
+        std::mem::take(&mut self.skill_deliveries)
+    }
     pub(super) fn has_pending_tools(&self) -> bool {
         !self.pending.is_empty()
     }
@@ -137,6 +143,9 @@ impl ClaudeToolTranscript {
                     self.pending_bytes -= pending.bytes(id);
                     let mut payload = pending.payload(id);
                     let failed = block.get("is_error").and_then(Value::as_bool) == Some(true);
+                    if !failed && pending.name.starts_with("mcp__chariox__") {
+                        if let Some(ack)=crate::provider::skill_ack::completed_skill_tool(&pending.name,&payload["input"],block.get("content").unwrap_or(&Value::Null)) {self.skill_deliveries.push(ack);}
+                    }
                     payload["status"] = json!(if failed { "error" } else { "completed" });
                     let output = bounded_result(block.get("content"));
                     payload[if failed { "error" } else { "output" }] = json!(output);
@@ -184,6 +193,7 @@ impl ClaudeToolTranscript {
     }
 
     pub(super) fn clear(&mut self) {
+        self.skill_deliveries.clear();
         self.pending.clear();
         self.pending_bytes = 0;
         self.truncated = false;
@@ -461,5 +471,29 @@ mod tests {
         assert_eq!(finished[0]["input"]["text"], "STALE ATTEMPT MUST NOT LAND");
         assert_eq!(finished[0]["error"], "environment_stale_element_reference");
         assert_eq!(finished[0]["status"], "error");
+    }
+    #[test]
+    fn claude_skill_ack_uses_matching_raw_success_before_transcript_truncation() {
+        let mut transcript = ClaudeToolTranscript::default();
+        let call = json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"load-1","name":"mcp__chariox__load_skill","input":{"origin_prompt_id":"turn-1","skill_id":"skill-1"}}]}});
+        let body=json!({"kind":"loaded","skill_id":"skill-1","digest":"a".repeat(64),"body":"instruction ".repeat(4000),"root":"/owned/skill-1/digest","files":[]}).to_string();
+        transcript.observe(&call);
+        assert!(transcript.take_skill_deliveries().is_empty());
+        let output = transcript.observe(&result("load-1", Value::String(body.clone())));
+        assert!(output[0]["output"].as_str().unwrap().len() <= RESULT_BYTES);
+        let receipts = transcript.take_skill_deliveries();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].prompt_id, "turn-1");
+        assert_eq!(receipts[0].digest, "a".repeat(64));
+        transcript.observe(&result("load-1", Value::String(body.clone())));
+        assert!(
+            transcript.take_skill_deliveries().is_empty(),
+            "duplicate results do not acknowledge another turn"
+        );
+        transcript.observe(&call);
+        let mut denied = result("load-1", Value::String(body));
+        denied["message"]["content"][0]["is_error"] = json!(true);
+        transcript.observe(&denied);
+        assert!(transcript.take_skill_deliveries().is_empty());
     }
 }

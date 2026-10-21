@@ -1,3 +1,7 @@
+mod skill_ack;
+pub use skill_ack::SkillToolDeliveryAcknowledgement;
+pub mod skill_delivery;
+pub mod skill_inventory;
 #[cfg(test)]
 pub(crate) use account_credential::provider_account_credential_uses_vault;
 use std::time::Duration;
@@ -62,8 +66,8 @@ pub(crate) use claude::{
 };
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
-    probe_claude_account_usage, verify_claude_account_credential, verify_claude_setup_token,
-    ClaudeCredentialCheckError,
+    probe_claude_account_usage, probe_claude_skill_version, verify_claude_account_credential,
+    verify_claude_setup_token, ClaudeCredentialCheckError,
 };
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;

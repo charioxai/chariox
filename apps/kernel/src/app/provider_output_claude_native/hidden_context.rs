@@ -50,7 +50,6 @@ impl ProviderOutputClaudeNativeBridge<'_> {
     pub(super) fn managed_base_context(
         &mut self,
         session_id: &str,
-        agent_id: &str,
         context_file: &str,
         provider_run: &RuntimeProviderRun,
         prompt: &ClaudeNativePromptInjection<'_>,
@@ -84,12 +83,9 @@ impl ProviderOutputClaudeNativeBridge<'_> {
                     attachments.clone(),
                     crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn,
                 )?;
-            let skill_context =
-                self.claude_native_prompt_context(session_id, agent_id, &visible)?;
             join_claude_context([
                 envelope.hidden_system_context,
                 origin_context,
-                skill_context,
                 native_hidden,
                 attachment_context,
                 notes_context.unwrap_or_default(),

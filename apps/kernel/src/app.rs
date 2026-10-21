@@ -295,7 +295,7 @@ impl DaemonApp {
         );
 
         let durable_state_started = Instant::now();
-        let durable_state = DurableKernelStateStore::open_owned(config.durable_state_path())?;
+        let durable_state = DurableKernelStateStore::open_kernel_owned(&config)?;
         let worker_prompt_receipts =
             crate::durable_state::worker_prompt_receipts::WorkerPromptReceiptStore::restore(
                 durable_state.clone(),
@@ -826,6 +826,7 @@ mod tests {
         let mut config_b = DaemonConfig::for_tests();
         config_b.daemon_id = "kernel-b".to_string();
         config_b.user_config.state.path = Some(state_path.display().to_string());
+        config_b.user_config_path = config_a.user_config_path.clone();
         let app_b = DaemonApp::bootstrap(config_b).expect("kernel b should boot");
         assert!(app_b.sessions().list_sessions().is_empty());
         drop(app_b);
@@ -915,6 +916,7 @@ mod tests {
         let mut config_b = DaemonConfig::for_tests();
         config_b.daemon_id = "kernel-b".to_string();
         config_b.user_config.state.path = Some(state_path.display().to_string());
+        config_b.user_config_path = config_a.user_config_path.clone();
         let app_b = DaemonApp::bootstrap(config_b).expect("kernel b should boot");
         assert!(app_b.slices().list().is_empty());
         drop(app_b);
@@ -988,6 +990,7 @@ mod tests {
         let mut config_b = DaemonConfig::for_tests();
         config_b.daemon_id = "kernel-b".to_string();
         config_b.user_config.state.path = Some(state_path.display().to_string());
+        config_b.user_config_path = config_a.user_config_path.clone();
         {
             let mut app = DaemonApp::bootstrap(config_b).expect("kernel b should boot");
             app.create_session(second_worktree.session_request())

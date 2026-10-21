@@ -6,9 +6,7 @@ import type {
   CharioxEnvironmentConfig,
   CharioxMcpServerConfig,
   CharioxScriptMetadata,
-  CharioxSkillMetadata,
   McpImportOutcome,
-  SkillImportOutcome,
   ExtensionKind,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
@@ -37,14 +35,6 @@ export type CapabilityCommandHandlerDeps = {
   grantAgentApp?: (agentRef: string, installationId: string) => Promise<AgentInstance>
   revokeAgentApp?: (agentRef: string, installationId: string) => Promise<AgentInstance>
   revokeAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
-  listSkills?: () => Promise<CharioxSkillMetadata[]>
-  installSkill?: (sourcePath: string) => Promise<CharioxSkillMetadata>
-  updateSkill?: (sourcePath: string) => Promise<CharioxSkillMetadata>
-  uninstallSkill?: (name: string) => Promise<CharioxSkillMetadata>
-  importSkills?: (provider: string, name?: string | null) => Promise<SkillImportOutcome>
-  getSkill?: (name: string) => Promise<CharioxSkillMetadata>
-  grantAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
-  revokeAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
   listEnvironments?: () => Promise<CharioxEnvironmentConfig[]>
   getEnvironment?: (name: string) => Promise<CharioxEnvironmentConfig>
   registerEnvironment?: (config: CharioxEnvironmentConfig) => Promise<CharioxEnvironmentConfig>
@@ -267,94 +257,13 @@ export async function handleMcpSlashCommand(
   deps.flashFooter("usage: /mcp list | /mcp show <name> | /mcp install ... | /mcp update ... | /mcp uninstall <name> | /mcp import <codex|opencode> [name] | /mcp grant <agent-ref> <name> | /mcp revoke <agent-ref> <name> | /mcp grants <agent-ref>", "error")
 }
 
+// MP-08 / MP-10 / MP-11: the Skills v2 client owns management. The old
+// registry/grant transport has been deleted and must never be a fallback.
 export async function handleSkillSlashCommand(
   deps: CapabilityCommandHandlerDeps,
-  command: Extract<ParsedSlashCommand, { kind: "skill" }>,
+  _command: Extract<ParsedSlashCommand, { kind: "skill" }>,
 ): Promise<void> {
-  const [action] = command.args
-  if (!action || action === "list" || action === "ls") {
-    if (!deps.listSkills) {
-      deps.flashFooter("skill registry is not available in this daemon", "error")
-      return
-    }
-    const skills = await deps.listSkills()
-    deps.appendNotice(skills.length === 0 ? "No Chariox-managed skills installed." : skills.map(formatSkillSummary).join("\n"))
-    deps.flashFooter(`listed ${skills.length} skill${skills.length === 1 ? "" : "s"}`, "info")
-    return
-  }
-  if (action === "show") {
-    const name = command.args[1]
-    if (!name || !deps.getSkill) {
-      deps.flashFooter("usage: /skill show <name>", "error")
-      return
-    }
-    const skill = await deps.getSkill(name)
-    deps.appendNotice(formatSkillDetails(skill))
-    deps.flashFooter(`showing skill ${skill.name}`, "info")
-    return
-  }
-  if (action === "install") {
-    const sourcePath = command.args[1]
-    if (!sourcePath || !deps.installSkill) {
-      deps.flashFooter("usage: /skill install <path>", "error")
-      return
-    }
-    const skill = await deps.installSkill(sourcePath)
-    deps.flashFooter(`installed skill ${skill.name}`, "info")
-    return
-  }
-  if (action === "update") {
-    const sourcePath = command.args[1]
-    if (!sourcePath || !deps.updateSkill) {
-      deps.flashFooter("usage: /skill update <path>", "error")
-      return
-    }
-    const skill = await deps.updateSkill(sourcePath)
-    deps.flashFooter(`updated skill ${skill.name}`, "info")
-    return
-  }
-  if (action === "uninstall" || action === "remove") {
-    const name = command.args[1]
-    if (!name || !deps.uninstallSkill) {
-      deps.flashFooter(`usage: /skill ${action} <name>`, "error")
-      return
-    }
-    const skill = await deps.uninstallSkill(name)
-    deps.flashFooter(`uninstalled skill ${skill.name}`, "info")
-    return
-  }
-  if (action === "import") {
-    const provider = command.args[1]
-    const name = command.args[2] ?? null
-    if (!provider || !deps.importSkills) {
-      deps.flashFooter("usage: /skill import <codex|opencode> [name]", "error")
-      return
-    }
-    const outcome = await deps.importSkills(provider, name)
-    deps.appendNotice(formatSkillImportOutcome(outcome))
-    deps.flashFooter(`imported ${outcome.imported.length} skill${outcome.imported.length === 1 ? "" : "s"} from ${provider}`, "info")
-    return
-  }
-  if (action === "grant" || action === "revoke") {
-    const agentRef = command.args[1]
-    const name = command.args[2]
-    const handler = action === "grant" ? deps.grantAgentSkill : deps.revokeAgentSkill
-    if (!agentRef || !name || !handler) {
-      deps.flashFooter(`usage: /skill ${action} <agent-ref> <name>`, "error")
-      return
-    }
-    const agent = await handler(agentRef, name)
-    deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} skill ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
-    return
-  }
-  if (action === "grants" || action === "agent") {
-    const agent = resolveGrantTarget(deps, command.args[1], `usage: /skill ${action} <agent-ref>`)
-    if (!agent) return
-    deps.appendNotice(formatAgentCapabilityGrants(agent, "skill"))
-    deps.flashFooter(`showing skill grants for ${agent.agent_ref}`, "info")
-    return
-  }
-  deps.flashFooter("usage: /skill list | /skill show <name> | /skill install <path> | /skill update <path> | /skill uninstall <name> | /skill import <codex|opencode> [name] | /skill grant <agent-ref> <name> | /skill revoke <agent-ref> <name> | /skill grants <agent-ref>", "error")
+  deps.flashFooter("Skills v2 runtime is unavailable in this kernel build", "error")
 }
 
 export async function handleEnvironmentSlashCommand(
@@ -694,7 +603,7 @@ export async function handleExtensionSlashCommand(
     deps.flashFooter("usage: /extension grant|revoke <mcp|skill|script|connector|app> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | /extension grants <kind> <agent-ref> | /extension sync-status|sync-retry|audit <agent-ref>", "error")
     return
   }
-  if (kind !== "mcp" && kind !== "skill" && kind !== "script" && kind !== "connector" && kind !== "app") return deps.flashFooter("extension kind must be mcp, skill, script, connector, or app", "error")
+  if (kind !== "mcp" && kind !== "script" && kind !== "connector" && kind !== "app") return deps.flashFooter("extension kind must be mcp, script, connector, or app", "error")
   if (action === "grants") {
     const agent = resolveGrantTarget(deps, agentRef, "usage: /extension grants <mcp|skill|script|connector|app> <agent-ref>")
     if (!agent) return
@@ -720,13 +629,6 @@ export async function handleExtensionSlashCommand(
     if (explainActiveHomeProxySlashGrant(deps, command, action, kind, agentRef, name)) return
     const agent = await handler(agentRef, name)
     deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} MCP ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
-    return
-  }
-  if (kind === "skill") {
-    const handler = action === "grant" ? deps.grantAgentSkill : deps.revokeAgentSkill
-    if (!handler) return deps.flashFooter(`skill ${action} is not available`, "error")
-    const agent = await handler(agentRef, name)
-    deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} skill ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
     return
   }
   if (kind === "connector") {
@@ -764,10 +666,6 @@ function formatMcpSummary(mcp: CharioxMcpServerConfig): string {
   return `${mcp.name} [${transportType}, ${status}]`
 }
 
-function formatSkillSummary(skill: CharioxSkillMetadata): string {
-  const summary = skill.short_description ?? skill.description
-  return `${skill.name}: ${summary}`
-}
 
 function formatEnvironmentSummary(environment: CharioxEnvironmentConfig): string {
   const runtime = typeof environment.runtime?.type === "string"
@@ -827,13 +725,6 @@ function formatMcpDetails(mcp: CharioxMcpServerConfig): string {
   return JSON.stringify(mcp, null, 2)
 }
 
-function formatSkillDetails(skill: CharioxSkillMetadata): string {
-  return [
-    `${skill.name}: ${skill.description}`,
-    skill.short_description ? `short: ${skill.short_description}` : null,
-    `path: ${skill.path}`,
-  ].filter(Boolean).join("\n")
-}
 
 function formatMcpImportOutcome(outcome: McpImportOutcome): string {
   const lines: string[] = []
@@ -849,20 +740,6 @@ function formatMcpImportOutcome(outcome: McpImportOutcome): string {
   return lines.length === 0 ? "No MCPs imported." : lines.join("\n")
 }
 
-function formatSkillImportOutcome(outcome: SkillImportOutcome): string {
-  const lines: string[] = []
-  if (outcome.imported.length > 0) {
-    lines.push(`Imported skills: ${outcome.imported.map((skill) => skill.name).join(", ")}`)
-  }
-  if (outcome.skipped.length > 0) {
-    lines.push("Skipped skills:")
-    for (const skip of outcome.skipped) {
-      const suffix = skip.path ? ` (${skip.path})` : ""
-      lines.push(`- ${skip.name}${suffix}: ${skip.reason}`)
-    }
-  }
-  return lines.length === 0 ? "No skills imported." : lines.join("\n")
-}
 
 /** An explicit owner grant needs no second confirmation: say where it runs and continue.
  * Returns true only when the grant target cannot be resolved (the caller stops). */
@@ -874,7 +751,7 @@ function explainActiveHomeProxySlashGrant(
   agentRef: string,
   name: string,
 ): boolean {
-  if (action !== "grant" || kind === "skill") return false
+  if (action !== "grant") return false
   const agent = resolveGrantTarget(deps, agentRef, `usage: /${command.kind} grant <agent-ref> <name>`)
   if (!agent) return true
   if (agent.remote_execution && !command.args.includes("--confirm-home-proxy")) {

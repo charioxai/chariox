@@ -317,6 +317,31 @@ pub struct RemoteSkillSyncContext {
     pub leased_agent_id: String,
 }
 
+/// Source-bound native selections of one leased turn, with the home catalog revision
+/// the worker's inventory binding (and so each selection's identity) was read at.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeasedNativeSkills {
+    pub catalog_revision: u64,
+    pub selections: Vec<crate::skill::v2::SkillSelection>,
+}
+
+impl LeasedNativeSkills {
+    pub fn is_empty(&self) -> bool {
+        self.selections.is_empty()
+    }
+
+    /// No selections and no home catalog revision binding the turn.
+    pub fn is_unbound(&self) -> bool {
+        self.selections.is_empty() && self.catalog_revision == 0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeasedSkillNativeInventory {
+    pub entries: Vec<crate::skill::v2::NativeSkillEntry>,
+    pub revision: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteProviderAccountSyncContext {
     pub home_kernel_id: String,
@@ -327,6 +352,7 @@ pub struct RemoteProviderAccountSyncContext {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteSkillMaterialization {
+    pub skill_id: String,
     pub name: String,
     pub version_hash: String,
     pub materialized_root: String,
@@ -512,12 +538,6 @@ pub struct RequiredRemoteMcp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RequiredRemoteSkill {
-    pub name: String,
-    pub version_hash: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteMcpAvailability {
     pub name: String,
     pub expected_hash: String,
@@ -668,7 +688,7 @@ fn default_workspace_live_sync_invocation_attempt() -> u32 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[allow(
     clippy::large_enum_variant,
     reason = "Preserve the existing RelayPeerRequest typed actor payload layout"
@@ -824,8 +844,6 @@ pub enum RelayPeerRequest {
         provider_session_id: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         required_mcps: Vec<RequiredRemoteMcp>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        required_skills: Option<Vec<RequiredRemoteSkill>>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
@@ -860,8 +878,6 @@ pub enum RelayPeerRequest {
         git_context: Option<RemoteGitTurnContext>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         required_mcps: Vec<RequiredRemoteMcp>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        required_skills: Option<Vec<RequiredRemoteSkill>>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
@@ -869,6 +885,10 @@ pub enum RelayPeerRequest {
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_launch_credential: Option<RemoteProviderLaunchCredential>,
+        /// Source-bound `From <Provider>` skills the home validated; the worker
+        /// applies its own harness invocation and never receives native packages.
+        #[serde(default, skip_serializing_if = "LeasedNativeSkills::is_empty")]
+        native_skill_selections: LeasedNativeSkills,
     },
     /// A10: install or replace the worker fence for one exact leased home
     /// prompt's sudo window; `remaining_ms == 0` ends the window's fences.
@@ -897,8 +917,6 @@ pub enum RelayPeerRequest {
         hidden_system_context: String,
         #[serde(default)]
         attachments: Vec<RelayPromptAttachment>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        required_skills: Option<Vec<RequiredRemoteSkill>>,
     },
     DrainLeasedRuntimeProjection {
         leased_agent_id: String,
@@ -1089,8 +1107,18 @@ pub enum RelayPeerRequest {
         workspace_directories: std::collections::BTreeMap<String, String>,
     },
     EnsureRemoteSkillPackages {
+        execution_lease_id: String,
+        manifest: crate::skill::v2::SkillTransferManifest,
         context: RemoteSkillSyncContext,
         packages: Vec<CharioxSkillPackage>,
+    },
+    /// MP-08 / MP-10 / MP-11: home asks the leased worker for its harness-native skills.
+    ReadLeasedSkillNativeInventory {
+        context: RemoteSkillSyncContext,
+        catalog_revision: u64,
+        refresh: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details_for: Option<crate::skill::v2::SkillSelection>,
     },
     EnsureRemoteProviderAccount {
         context: RemoteProviderAccountSyncContext,
@@ -1339,8 +1367,6 @@ pub enum RelayPeerResponse {
     WorkspaceLiveSyncRuntimeToolFinalized,
     CapabilityRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        skill_package: Option<CharioxSkillPackage>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
@@ -1400,7 +1426,16 @@ pub enum RelayPeerResponse {
         project_id: String,
     },
     RemoteSkillPackagesEnsured {
+        execution_lease_id: String,
+        context: RemoteSkillSyncContext,
+        manifest: crate::skill::v2::SkillTransferManifest,
         materialized: Vec<RemoteSkillMaterialization>,
+    },
+    LeasedSkillNativeInventory {
+        /// `None` until the leased provider has started on the worker.
+        inventory: Option<LeasedSkillNativeInventory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<crate::skill::v2::NativeSkillDetails>,
     },
     RemoteProviderAccountEnsured {
         provider: String,

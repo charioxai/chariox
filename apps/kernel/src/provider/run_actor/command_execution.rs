@@ -365,7 +365,19 @@ pub(super) fn execute_output_poll_command(
                 "notices": poll.notices.len(),
             }),
         );
+        let skill_tool_delivery_acknowledgements = poll
+            .chunks
+            .iter()
+            .filter_map(|chunk| {
+                crate::provider::skill_ack::completed_tool_transcript(
+                    "codex",
+                    chunk.kind.clone(),
+                    &chunk.bytes,
+                )
+            })
+            .collect();
         return Ok(Some(ProviderPromptSignalBatch {
+            skill_tool_delivery_acknowledgements,
             chunks: poll
                 .chunks
                 .into_iter()
@@ -437,7 +449,19 @@ pub(super) fn execute_output_poll_command(
     );
     let drain = drain?;
     let explicit_provider_error = drain.explicit_provider_error;
+    let skill_tool_delivery_acknowledgements = drain
+        .chunks
+        .iter()
+        .filter_map(|chunk| {
+            crate::provider::skill_ack::completed_tool_transcript(
+                "opencode",
+                chunk.kind.clone(),
+                &chunk.bytes,
+            )
+        })
+        .collect();
     Ok(Some(ProviderPromptSignalBatch {
+        skill_tool_delivery_acknowledgements,
         chunks: drain
             .chunks
             .into_iter()

@@ -224,7 +224,7 @@ function formatRemoteSummary(
 function formatRemoteExtensionSummary(session: RuntimeSession): string {
   const homeProxyAgents = session.agents.filter((agent) => (
     agent.remote_execution
-    && (agent.extension_grants ?? []).some((grant) => grant.kind !== "skill")
+    && (agent.extension_grants ?? []).length > 0
   ))
   const syncIssues = session.agents.filter((agent) => {
     const sync = agent.remote_extension_manifest_sync

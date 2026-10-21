@@ -90,13 +90,12 @@ test("formatAgentListSummary renders aliases and pluralization", () => {
   )
 })
 
-test("formatAgentCapabilityGrants renders MCP and skill grants", () => {
+test("formatAgentCapabilityGrants renders MCP grants", () => {
   const agent = makeAgent({
     alias: "qa",
     extension_grants: [
       { kind: "mcp", name: "browser" },
       { kind: "mcp", name: "github" },
-      { kind: "skill", name: "browser-qa" },
     ],
   })
 
@@ -105,12 +104,8 @@ test("formatAgentCapabilityGrants renders MCP and skill grants", () => {
     "agent-1 (qa) MCP grants:\n- browser (worker-local)\n- github (worker-local)",
   )
   assert.equal(
-    formatAgentCapabilityGrants(agent, "skill"),
-    "agent-1 (qa) skill grants:\n- browser-qa (worker-local)",
-  )
-  assert.equal(
-    formatAgentCapabilityGrants(makeAgent(), "skill"),
-    "agent-1 has no skill grants.",
+    formatAgentCapabilityGrants(makeAgent(), "mcp"),
+    "agent-1 has no MCP grants.",
   )
   assert.equal(
     formatAgentCapabilityGrants(makeAgent({

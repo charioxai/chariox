@@ -567,21 +567,36 @@ Remote native TUI composition:
 - worker output, notices, completions, and permission interactions MUST return to the home kernel through existing leased runtime projection and native interaction relay paths
 - relay peer protocol v3 extends leased runtime projection with an optional worker `provider_run` snapshot. The home kernel MUST project that worker-owned run onto the home session/agent, including any resolved `provider_session_id` and resume state, because some providers such as Codex only expose the durable thread id after the first turn rather than at launch time.
 - relay peer protocol v7 correlates projected completions with `home_prompt_id`. Workers retain the latest settled completion for pull-based replay, and home kernels MUST ignore a stale replay when that prompt is no longer active. This makes a completion recoverable when a fire-and-forget worker projection is lost without allowing the replay to settle a later queued turn.
-- relay peer protocol v8 carries an optional exact worker-local skill requirement set for native TUI launch and prompt submission. Standard workers validate matching local package hashes without receiving package payloads; home-managed slices may materialize packages first. Workers project the validated set onto the leased backing agent so per-prompt hidden skill context stays worker-local and grant revocations cannot leave stale skills active.
+- MP-08 / MP-10 / MP-11: Skills v2 (local 533 / peer 141) replaces the v8 skill-grant requirement contract. Home-selected instruction packages and scope/state/revision follow every leased execution placement through `EnsureRemoteSkillPackages`. Both request and receipt require the current `execution_lease_id`; each materialization binds its stable `skill_id` and complete digest. Received packages must not synthesize agent grants or become a worker catalog. The older standard-worker no-copy exception does not apply to skills. MCP requirements and placement are unchanged.
 - relay peer protocol v9 adds idempotent queued-prompt steering for leased agents. The home kernel keeps queue/history authority and removes the queued prompt only after the worker acknowledges provider delivery; the worker keys delivery by the home queued prompt ID, rejects stale active-turn targets, and replays acknowledgements without injecting duplicate provider input.
 - relay peer protocol v10 forwards provider-targeted terminal resizes to leased worker PTYs. The worker validates that the requested provider run belongs to the leased agent and acknowledges the applied dimensions; the home kernel does not report a remote resize as successful before that acknowledgement.
 - the provider-native proxy/launcher MAY translate home-kernel session output back into provider-native UI protocol or PTY rendering, but it must not become a session authority or bypass the home kernel prompt queue
 - the relay remains transport-only and must not inspect or transform provider-native prompts, outputs, attachments, permissions, or history
 - slice-backed native TUI mode follows the same contract: provider TUIs and Chariox TUIs attach to the home kernel session, `slice_ref` selects a home-managed worker execution environment, and the slice worker uses the same worker-owned provider adapter/server path as remote leased agents
 
+MP-08 / MP-10 / MP-11, Skills v2 local 533 / peer 141: `native_details`
+accepts the focused agent and a provider/account/execution/inventory-bound native
+selection, never a client-chosen native root. Its read-only projection carries
+source provenance, the file manifest and declared version; unavailable bodies
+remain explicitly unavailable. Catalog `preview` returns a home review receipt
+binding the mutation hash, resolved source revisions and complete-content digests.
+`mutate` requires that receipt ID. Home must verify its owner, scope, revision,
+expiry and reviewed staged bytes; approval must not fetch newer source content.
+
+MP-08 / MP-10 / MP-11: Project-scoped skills bind the Project ID, independent
+of Workspace membership. Local 533 adds `CreateProject { name }` /
+`ProjectCreated { project }` through the ordinary Project service/actor. A named
+Project can have `workspace_ids: []`; its legacy `workspace_id` shadow is empty,
+never an executable cwd. A session chooses a valid execution cwd separately; choosing it does not add a Project folder.
+
 Native TUI MCP and skill placement:
 
-- local native TUI provider runs use the same agent-scoped grant filtering as ordinary local provider runs, so only MCPs and skills granted to that agent are injected or rendered for that run
+- MP-08 / MP-10 / MP-11: local native TUI provider runs use the same agent-scoped MCP grant filtering and home-owned Skills v2 resolver as ordinary local provider runs; skill state and explicit selection control instruction delivery, independently of grants
 - standard home-worker native TUI may expose home-authorized remote extension manifests to the worker. Home-owned active extensions remain grant/revoke authoritative on the home kernel and execute on home through relay peer calls; the worker only advertises the manifest and forwards calls. Each forwarded call carries `invocation_id`, optional `provider_tool_call_id`, `attempt`, and optional `idempotency_key`; home reconstructs the current tool definition before execution and rejects stale or forged worker metadata, including calls from a worker provider run that is not the current remote binding.
 - when an extension is explicitly worker-local, the home kernel may still compute grant-derived remote MCP requirements and pass those requirements to the worker launch/prompt path so the worker can fail fast on missing or mismatched local worker definitions before provider execution
-- slice-backed native TUI may synchronize Chariox skill packages from the home kernel to the child worker because the slice is home-managed; this is not a general remote-machine install mechanism
+- MP-08 / MP-10 / MP-11: every execution placement, including standard leased/native workers and slices, receives the effective home-selected Auto/Manual Skills v2 packages through `EnsureRemoteSkillPackages`; Off is not newly transferred. Verified revision/digest receipts bind to the current home/session/agent/lease/Project before dispatch. Received packages remain lease-private materializations, never a shadow worker catalog
 - slice-backed native TUI still executes worker-local MCP commands on the worker side, so worker-local MCP commands and environment must be available in the slice image or injected slice environment; Chariox vault credentials remain home-owned and are exposed to slice workers only through home-authorized credential proxy calls and one-operation secret injection
-- capability grants remain agent-scoped in all modes; native TUI launch must not expose ungranted local/user MCPs or skills just because the provider CLI can see them natively
+- capability grants remain agent-scoped in all modes; native TUI launch must not expose ungranted MCPs. Provider-native skills remain independent, read-only `From <Provider>` entries; complete-content dedupe and conflict projection follow the home Skills v2 resolver, without modifying native sources
 
 Native TUI permissions:
 
@@ -604,12 +619,13 @@ Provider-native credential enrollment callback bridge (local daemon protocol 241
 
 Native TUI hidden context:
 
-- granted skill prompt context and other Chariox-only prompt injections MUST be delivered on the provider-facing path without becoming visible provider-TUI text
+- MP-08 / MP-10 / MP-11: state-selected Skills v2 instruction context and other Chariox-only prompt injections MUST be delivered on the provider-facing path without becoming visible provider-TUI text
 - Codex native TUI hidden context MUST use Codex `thread/inject_items` developer messages before `turn/start` or `turn/steer`, preserving the attached thread and keeping `input` limited to visible user text and attachments. Resumed threads use the same bridge; newly created ordinary threads retain `thread/start.developerInstructions`. Injection failures MUST fail the prompt rather than fall back to visible user input.
 - OpenCode native TUI hidden context MUST use the same OpenCode prompt request `system` field as ordinary OpenCode provider runs
 - Claude Code native TUI MUST use the `UserPromptSubmit` hook `additionalContext` path for hidden context; the hook emits a scoped context request id, and the Chariox CLI bridge or worker kernel writes the matching context response before the hook returns
 - Claude hook context responses are scoped to the session, agent, and provider run; they must not expose broad kernel authority or accept arbitrary provider-origin file paths
 - if a Claude hook context response is unavailable before timeout, the provider-facing hidden context is empty and the native TUI remains coherent; Chariox MUST NOT fall back to visible PTY prompt injection for skill bodies or system prompt blocks
+- MP-08 / MP-10 / MP-11: ordinary prompt text containing an unresolved `$word` is not evidence of a skill selection or missing skill context. Only a kernel-resolved selection failure may produce the explicit hidden selection-error response and refuse that turn; stale source-bound selections remain actionable errors.
 - local Claude native TUI can answer hook context requests through the launcher bridge and home kernel; remote/slice Claude native TUI answers them on the provider-execution side so worker-local or slice-isolated skill material is used
 
 Provider-specific transport:
@@ -4932,3 +4948,97 @@ absent `prompt_id` (kernels below local 545) as unscoped. No field or variant is
 added; the bump records the changed relay terminal-event semantics under the
 Protocol Change Rule. Web/native minimums are unchanged unless a client requires
 prompt-scoped live rows.
+### Skills v2 wire contract — MP-08 / MP-10 / MP-11
+
+Local daemon **533**, relay peer **141** reserve the Skills v2 instruction
+catalog contract; local **554** / peer **162** add the leased-worker native
+inventory request below (no client-visible shape changed; the client minimum
+stays 533/141). `SkillsV2` wraps a tagged `action` request and a tagged `kind`
+result. The canonical Rust shapes are `skill/v2.rs`; shared TypeScript and Swift
+bindings mirror them. Skills are instructions, never Extension grants.
+
+`catalog`, `get`, `native_inventory` and `loads` supply management projections.
+`preview` and `mutate` take the same reviewed action batch, typed scope
+(`chariox` or a kernel Project ID) and expected home-wide revision. A batch
+publishes one revision or no change. A null state removes the override.
+`list` and `load` are the model discovery/load surface; the kernel, rather than
+caller-supplied flags, records explicit Manual selections. `submit` carries
+source-bound selections alongside the ordinary prompt/attachment identities.
+A native selection includes kernel entry ID, provider, account, execution place
+and inventory revision; no client skill path or body is accepted.
+
+`SkillProjection.delivery` distinguishes Chariox delivery, verified native
+provision, content conflict and unverified native exposure. Equal complete
+content and compatible exposure produce one Chariox picker row with
+`also_in_provider`; clients omit that native row. Conflicting content retains
+the Chariox revision for Chariox selection. Native availability is not a load
+receipt. `skills_changed` is session-scoped and carries catalog revision
+invalidation or acknowledged load records. Every dispatch must still compare
+the durable catalog revision after a missed event.
+
+`EnsureRemoteSkillPackages` requires a revision/Project/state/digest manifest.
+Its receipt echoes the authenticated home/session/agent/lease context and exact
+manifest. The sender must reject mismatched receipts. Payload files include
+executable bits in their complete content identity. Old peers cannot omit the
+manifest: they require an upgrade before a v2 transfer or skill-using turn.
+For a leased worker the home builds the delivery at submit time from its own
+catalog revision, awaits the verified receipt, and prepends hidden context that
+names the worker's verified roots (Auto skills point to their SKILL.md there;
+selected bodies are inline). The worker holds no catalog and never resolves
+skills itself; Chariox list/load_skill/manage_skills and load receipts are
+forwarded to and recorded on the home (see peer 162 below); a failed transfer
+refuses the turn.
+Peer 162 adds `ReadLeasedSkillNativeInventory` (home to its leased worker; the
+authenticated lease home only) answered by `LeasedSkillNativeInventory`, which
+carries the worker harness's native entries (and, on request, one entry's
+Details). The home uses it for the Skills screen, the `$` picker, dispatch-time
+dedupe and `list_skills`/`load_skill` of a leased agent; `inventory: null`
+means the provider has not started on the worker. Chariox `list_skills`,
+`load_skill` and `manage_skills` of a leased agent are the existing
+`ForwardCapabilityRuntimeTool` forwarding: the home keeps a per-turn authority
+keyed by the lease (`leased:<leased_agent_id>`), `load_skill` names the root
+the worker verified for that skill. Admission and returning a tool body never
+record Loaded. After the official harness acknowledges prompt delivery or a
+completed `load_skill` result, the worker forwards the internal
+`_chariox_skill_delivery_ack` through the same authenticated
+`ForwardCapabilityRuntimeTool` path. It is absent from the model/client tool
+catalog. The home checks the current peer/session/agent/lease/provider-run and
+exact home prompt binding, then commits only its pinned prompt-body records or
+the acknowledged tool skill ID and full digest. A cancelled/held turn or lost
+tool response cannot create load history. Provider completion settlement retains
+failed acknowledgement work for retry; replay is idempotent. A skill the
+worker's harness already exposes is neither listed twice nor transferred.
+`SubmitLeasedPrompt.native_skill_selections` (peer 162, omitted when empty)
+carries the source-bound `From <Provider>` selections the home validated against
+that inventory, with the `catalog_revision` that inventory was read at (a
+selection's identity includes the inventory binding). The worker applies its own harness invocation to them (Claude
+`/name task`, a Codex skill input item with the worker-verified path, the
+OpenCode skill tool instruction) when that prompt reaches the provider; a
+selection that no longer matches the worker inventory refuses the turn, and no
+native package is ever copied. The selections and their catalog revision live
+in the worker prompt's private durable state from admission through queueing,
+capacity holds and restart; public prompt JSON cannot supply them.
+Environment snapshots carry Project records, package membership, overrides and
+only their required Chariox dependencies separately from Extension grants.
+
+MP-08 / MP-10 / MP-11: clients require both local protocol >=533 and the
+`skills_v2_runtime` capability in kernel status/relay discovery before routing
+Skills actions to V2. The unreleased 533/141 foundation does not advertise that
+capability: wire decoding alone is not a working list/load/dispatch runtime.
+
+MP-08 / MP-10 / MP-11: owning kernel startup completes the durable reset,
+exact product-owned legacy-copy cleanup and owned workflow artifact regeneration
+before admitting runtime work. The home journal ownership pin also serializes
+global cleanup with catalog publication. Other named kernel journals retire
+their own replayable state after the home owner completes; they cannot rewrite
+newly authored home artifacts. The overall checkpoint precedes the writer epoch
+fence, so an interrupted startup resumes before launches and an old writer
+connection cannot restore retired authority. Repo/native sources, other grants,
+credentials, Vaults and keys are outside this cleanup. Immutable old publications
+and archives needing legacy decoding require recreate/republish/re-export.
+
+The wire foundation alone is not an implemented catalog, destructive reset,
+provider delivery path or acceptance claim. Runtime rollout removes the old
+skill-grant contracts without a compatibility decoder. Skills v2 clients gate
+these operations at 533/141; unrelated clients need no minimum bump solely for
+this feature.

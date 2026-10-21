@@ -45,6 +45,7 @@ mod refresh_dispatch;
 mod relay_peer_bridge;
 mod retired_cloud_controls;
 mod runtime_tool_bridge;
+mod skills_v2_dispatch;
 mod slice_relay_token_bridge;
 pub(crate) use slice_relay_token_bridge::ManagedSliceRelayTokenInstallRequest;
 pub(in crate::runtime) use slice_relay_token_bridge::{

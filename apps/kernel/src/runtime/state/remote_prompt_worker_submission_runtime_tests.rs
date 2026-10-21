@@ -1170,8 +1170,8 @@ async fn leased_prompt_uses_shared_handoff_dispatch_before_provider_submission()
             None,
             None,
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
+            Default::default(),
         )
         .expect("prepare ready worker");
     if let crate::app::PreparedLeasedProviderRun::LaunchRequired(request) = prepared.provider_run {
@@ -1195,9 +1195,9 @@ async fn leased_prompt_uses_shared_handoff_dispatch_before_provider_submission()
             None,
             None,
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
             None,
+            Default::default(),
         )
         .await
         .expect("worker submission");

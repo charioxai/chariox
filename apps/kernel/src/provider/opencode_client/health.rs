@@ -11,6 +11,8 @@ use super::OpenCodeClient;
 #[derive(Debug, Deserialize)]
 struct OpenCodeHealth {
     healthy: bool,
+    #[serde(default)]
+    version: Option<String>,
 }
 
 impl OpenCodeClient {
@@ -28,6 +30,24 @@ impl OpenCodeClient {
         }
     }
 
+    /// MP-08 / MP-10 / MP-11: /global/health identifies the running official server.
+    pub(crate) fn native_skill_server_version(&self) -> Result<String, DaemonError> {
+        let health: OpenCodeHealth = self.send_json_request("GET", "/global/health", None)?;
+        health
+            .version
+            .filter(|value| {
+                health.healthy
+                    && !value.trim().is_empty()
+                    && value.len() <= 128
+                    && !value.chars().any(char::is_control)
+            })
+            .ok_or_else(|| {
+                self.protocol_error(
+                    "opencode_skill_inventory_version",
+                    "server did not report a valid version identity".into(),
+                )
+            })
+    }
     pub fn check_health(&self) -> Result<(), DaemonError> {
         self.health()
     }

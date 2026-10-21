@@ -762,9 +762,7 @@ impl KernelRuntimeState {
         }
         if let Some(started_next) = completion.started_next.as_ref() {
             let agent = self.owned.agent_store.get_agent(target_agent_id)?;
-            let (remote_prompt, _) = self
-                .prepare_remote_prompt_skill_context(&agent, started_next.prompt())
-                .await?;
+            let remote_prompt = started_next.prompt().to_string();
             let attachments = self
                 .with_app_side_effect(|app| {
                     app.serialize_remote_prompt_attachments(started_next.attachments())

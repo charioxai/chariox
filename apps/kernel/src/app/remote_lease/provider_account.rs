@@ -27,13 +27,30 @@ impl RemoteLeaseRuntime<'_> {
             })?;
         // Replicas are registered under the lease owner, not the worker's local
         // user or another lease's owner. Resolve aliases before changing a run.
-        self.app.provider_account_profile_registry()
+        let resolved = self
+            .app
+            .provider_account_profile_registry()
             .get(&lease.owner_user_id, provider, account_profile)
-            .map(|profile| profile.profile_id)
-            .map_err(|_| DaemonError::LocalTransport {
+            .map(|profile| profile.profile_id);
+        // MP-08 / MP-10 / MP-11: Claude's home-vault launch path deliberately
+        // carries no worker account copy. Confirm the identity already bound to
+        // this authenticated lease without resolving it as a worker-local alias.
+        // Provider launch still requires the home credential; identity changes
+        // still resolve strictly under the lease owner.
+        match resolved {
+            Ok(profile_id) => Ok(profile_id),
+            Err(_)
+                if crate::provider::canonical_provider_family(provider) == Some("claude")
+                    && provider == leased_agent.provider
+                    && account_profile == leased_agent.account_profile =>
+            {
+                Ok(leased_agent.account_profile.clone())
+            }
+            Err(_) => Err(DaemonError::LocalTransport {
                 operation: "update leased agent profile",
                 message: format!("the selected {provider} account is unavailable on the worker; connect or select an available account before changing the profile"),
-            })
+            }),
+        }
     }
 
     #[cfg(test)]

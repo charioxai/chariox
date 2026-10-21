@@ -18,6 +18,7 @@ pub mod error;
 pub(crate) mod event_connection;
 pub mod execution_lease;
 pub mod extension;
+mod extension_package_security;
 pub(crate) mod git_observer;
 pub(crate) mod git_worktree_placement;
 pub mod history;

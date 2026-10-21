@@ -2,6 +2,74 @@ use super::*;
 use std::future::{poll_fn, Future};
 use std::task::Poll;
 
+// MP-08 / MP-10 / MP-11: vaulted Claude launch credentials are lease-scoped;
+// an unchanged identity is confirmation, not a worker-local account switch.
+#[test]
+fn leased_profile_claude_confirmation_preserves_home_vault_selection_without_registry_copy() {
+    let (mut app, lease) = leased_agent_fixture(false);
+    let selected = "home-vault-selected";
+    let model = Some("claude-haiku-5-5".to_string());
+    let effort = Some("low".to_string());
+    {
+        let current = app.leased_agents.get_mut(&lease.id).unwrap();
+        current.provider = "claude".into();
+        current.account_profile = selected.into();
+        current.model = model.clone();
+        current.effort = effort.clone();
+    }
+    app.agents
+        .set_agent_runtime_profile_with_account_profile(
+            &lease.backing_agent_id,
+            "claude",
+            model.clone(),
+            effort.clone(),
+            Some(selected.into()),
+            crate::provider::ProviderResumeState::default(),
+        )
+        .unwrap();
+    let owner = app
+        .execution_leases
+        .get(&lease.lease_id)
+        .unwrap()
+        .owner_user_id
+        .clone();
+    assert!(app
+        .provider_account_profile_registry()
+        .get(&owner, "claude", selected)
+        .is_err());
+    let before = serde_json::to_value(app.leased_agents.get(&lease.id).unwrap()).unwrap();
+    let confirmed = RemoteLeaseRuntime::new(&mut app).update_leased_agent_profile(
+        &lease.id, "claude".into(), selected.into(), model.clone(), effort.clone(),
+    ).expect("confirming the selected home-vault Claude identity must not require a worker credential/profile copy");
+    assert_eq!(serde_json::to_value(confirmed).unwrap(), before);
+    assert!(app
+        .provider_account_profile_registry()
+        .get(&owner, "claude", selected)
+        .is_err());
+    for (provider, profile) in [
+        ("claude", "other-missing-profile"),
+        ("claude-headless", selected),
+        ("codex", selected),
+    ] {
+        assert!(
+            RemoteLeaseRuntime::new(&mut app)
+                .update_leased_agent_profile(
+                    &lease.id,
+                    provider.into(),
+                    profile.into(),
+                    model.clone(),
+                    effort.clone(),
+                )
+                .is_err(),
+            "actual identity changes still require the lease owner's registered account"
+        );
+        assert_eq!(
+            serde_json::to_value(app.leased_agents.get(&lease.id).unwrap()).unwrap(),
+            before
+        );
+    }
+}
+
 #[tokio::test]
 async fn leased_prompt_replaces_idle_run_on_a_different_account() {
     assert_run_profile_reconciliation("account", None).await;
@@ -88,9 +156,9 @@ async fn assert_run_profile_reconciliation(field: &str, queued_work: Option<bool
             None,
             None,
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
             None,
+            Default::default(),
         )
         .await;
     let mut app = app.lock().await;
@@ -172,9 +240,9 @@ async fn leased_prompt_admission_prevents_interleaved_profile_changes() {
         None,
         None,
         Vec::new(),
-        None,
         crate::extension::RemoteExtensionManifest::default(),
         None,
+        Default::default(),
     );
     tokio::pin!(submission);
     poll_fn(|cx| {
@@ -239,9 +307,9 @@ async fn cancelling_leased_prompt_admission_releases_profile_operations() {
         None,
         None,
         Vec::new(),
-        None,
         crate::extension::RemoteExtensionManifest::default(),
         None,
+        Default::default(),
     ));
     poll_fn(|cx| {
         assert!(submission.as_mut().poll(cx).is_pending());
@@ -320,9 +388,9 @@ async fn leased_prompt_reconciles_durable_home_profile_after_lost_ack_and_restar
             None,
             None,
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
             None,
+            Default::default(),
         )
         .await
         .unwrap();
@@ -384,9 +452,9 @@ async fn failed_leased_prompt_admission_after_run_assignment_settles_its_receipt
             None,
             Some(git_context.clone()),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
             None,
+            Default::default(),
         )
     };
     let admission_error = submit().await.unwrap_err();
@@ -481,9 +549,9 @@ async fn assert_leased_claude_home_credential(environment_changed: bool) {
             None,
             None,
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
             None,
+            Default::default(),
         )
     };
     // Without a live run, the worker still requires the home's credential.

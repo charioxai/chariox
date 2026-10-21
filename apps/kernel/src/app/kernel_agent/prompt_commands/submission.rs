@@ -88,6 +88,8 @@ impl<'a> KernelAgentService<'a> {
             hidden_system_context,
             PromptOrigin::Chariox,
             attachments,
+            Default::default(),
+            None,
         )?;
         self.finish_compat_prompt_dispatch(dispatch)?;
         crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
@@ -108,6 +110,8 @@ impl<'a> KernelAgentService<'a> {
         hidden_system_context: &str,
         prompt_origin: PromptOrigin,
         attachments: Vec<PromptAttachment>,
+        native_skills: crate::transport::relay_peer::LeasedNativeSkills,
+        skill_context: Option<crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext>,
     ) -> Result<(PromptSubmissionOutcome, Option<KernelPromptDispatch>), DaemonError> {
         crate::app::KernelSessionReadService::new(self.app)
             .ensure_attachment_in_session(session_id, attachment_id)?;
@@ -132,7 +136,8 @@ impl<'a> KernelAgentService<'a> {
         )
         .with_attachments(attachments)
         .with_hidden_system_context(hidden_system_context)
-        .with_prompt_origin(prompt_origin);
+        .with_prompt_origin(prompt_origin)
+        .with_leased_skills(native_skills, skill_context);
         let submitted = self.submit_prepared_prompt_for_kernel(KernelPreparedPromptSubmission {
             session_id: session_id.to_string(),
             prompt: prepared_prompt,

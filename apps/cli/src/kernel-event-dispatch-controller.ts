@@ -180,6 +180,10 @@ export function createKernelEventDispatchController(
         // The room workflow composition subscribes to these itself.
         deps.recordDaemonActivity("kernel_room_workflows_changed")
         return
+      case "skills_changed":
+        // Skills surfaces reread the catalog when they open; no TUI state to patch.
+        deps.recordDaemonActivity("kernel_skills_changed")
+        return
       case "passkey_prompts_changed":
         // The passkey popup composition subscribes to these itself.
         deps.recordDaemonActivity("kernel_passkey_prompts_changed")

@@ -120,7 +120,6 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
                 prompt_summary: "inspect the Room".to_string(),
             }),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
             // The isolated fake CLI still enters through the real cold-launch
             // admission path. Supply only a synthetic, profile-bound token.
@@ -133,6 +132,7 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
                     ),
                 },
             ),
+            Default::default(),
         )
         .await
         .expect("leased prompt accepted");
@@ -204,6 +204,7 @@ fn run_isolated_launch_fixture() {
         root: root.clone(),
         providers: None,
     };
+    std::fs::create_dir_all(root.join("home")).unwrap();
     let executable = root.join("claude");
     std::fs::write(&executable, r#"#!/bin/bash
 if [[ "$1" == "--version" ]]; then printf 'Claude Code 2.1.207\n'; exit 0; fi

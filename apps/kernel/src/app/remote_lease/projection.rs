@@ -2748,7 +2748,6 @@ mod explicit_completion_tests {
                 None,
                 None,
                 Vec::new(),
-                Some(Vec::new()),
                 crate::extension::RemoteExtensionManifest::default(),
             )
             .expect("native provider run should launch");

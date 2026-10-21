@@ -123,10 +123,7 @@ impl DaemonApp {
         })?;
         Ok(RelayStatus {
             runtime_process_identity: crate::runtime::kernel_process_identity::current(),
-            capabilities: crate::local::RUNTIME_CONTROL_CAPABILITIES
-                .iter()
-                .map(|value| (*value).to_string())
-                .collect(),
+            capabilities: crate::runtime::state::control_capabilities(&self.durable_state_store()),
             configured: self.config().relay_url.is_some() && self.config().relay_token.is_some(),
             connected,
             relay_url: self.config().relay_url.clone(),
@@ -236,7 +233,7 @@ fn remote_native_provider_run_response(
         return Ok(None);
     };
     let required_mcps = app.required_remote_mcps_for_native_provider_launch(&agent)?;
-    let required_skills = app.required_remote_skills_for_native_provider_launch(&agent)?;
+
     let remote_extension_manifest = app.remote_extension_manifest_for_agent(&agent)?;
     let relay_config = app.relay_config_for_remote_execution(&remote_execution);
     let response = app.block_on_relay_future(send_peer_request_via_temporary_connection(
@@ -256,7 +253,6 @@ fn remote_native_provider_run_response(
             structured_endpoint: request.structured_endpoint.clone(),
             provider_session_id: request.provider_session_id.clone(),
             required_mcps,
-            required_skills: Some(required_skills),
             remote_extension_manifest,
             provider_launch_credential: None,
         },

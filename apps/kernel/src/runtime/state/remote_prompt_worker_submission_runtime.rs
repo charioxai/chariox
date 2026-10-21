@@ -882,6 +882,8 @@ impl KernelRuntimeState {
                 request_transport_started: false,
             };
         }
+        let skill_session_id = dispatch.session_id.clone();
+        let skill_prompt_id = dispatch.prompt_id.clone();
         let workflow_context = dispatch.workflow_context.clone();
         let git_context = remote_git_turn_context(dispatch);
         let callback_state = self.clone();
@@ -924,14 +926,6 @@ impl KernelRuntimeState {
                 } else {
                     callback_state.required_remote_mcps_for_agent(&agent)?
                 };
-                let required_skills = if native_provider_run {
-                    Some(
-                        callback_state
-                            .required_remote_skills_for_native_provider_launch(&agent)?,
-                    )
-                } else {
-                    None
-                };
                 let mut config = callback_state.config_snapshot().await;
                 if let (Some(relay_url), Some(relay_token)) = (
                     remote_execution.relay_url.clone(),
@@ -962,6 +956,79 @@ impl KernelRuntimeState {
                 )?;
                 let response_timeout = super::leased_profile_transition_runtime::worker_profile_response_timeout(
                     crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT, agent.provider());
+                // MP-08 / MP-10: the home delivers its own catalog revision; the worker
+                // never resolves skills itself and a failed transfer refuses the turn.
+                let native = if super::skills_dispatch::remote_turn_needs_native_inventory(
+                    &callback_state,
+                    &skill_session_id,
+                    agent.id(),
+                    &skill_prompt_id,
+                )? {
+                    callback_state.remote_dispatch_native_entries(&agent).await?
+                } else {
+                    vec![]
+                };
+                let (hidden_system_context, native_skill_selections) = match super::skills_dispatch::prepare_remote_turn(
+                    &callback_state,
+                    &skill_session_id,
+                    agent.id(),
+                    &skill_prompt_id,
+                    &remote_execution.leased_agent_id,
+                    &native,
+                )? {
+                    Some(turn) => {
+                        let native_skill_selections = crate::transport::relay_peer::LeasedNativeSkills {
+                            catalog_revision: turn.catalog_revision,
+                            selections: turn.native_selections.clone(),
+                        };
+                        let context = crate::transport::relay_peer::RemoteSkillSyncContext {
+                            home_kernel_id: config.daemon_id.clone(),
+                            home_session_id: skill_session_id.clone(),
+                            home_agent_id: agent.id().to_string(),
+                            leased_agent_id: remote_execution.leased_agent_id.clone(),
+                        };
+                        let lease_id = remote_execution.execution_lease_id.clone();
+                        let request = RelayPeerRequest::EnsureRemoteSkillPackages {
+                            execution_lease_id: lease_id.clone(),
+                            manifest: turn.manifest.clone(),
+                            context: context.clone(),
+                            packages: turn.packages.clone(),
+                        };
+                        let timeout = std::time::Duration::from_millis(config.relay_request_timeout_ms);
+                        let response = match &relay_state {
+                            Some(relay_state) => {
+                                crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
+                                    &config, relay_state, target.clone(), request, timeout,
+                                )
+                                .await?
+                            }
+                            None => {
+                                crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                                    &config, target.clone(), request, timeout,
+                                )
+                                .await?
+                            }
+                        };
+                        let materialized = crate::skill::transfer::verify_transfer_receipt(
+                            &context, &lease_id, &turn.manifest, response,
+                        )?;
+                        super::skills_dispatch::bind_remote_roots(
+                            &callback_state,
+                            &skill_session_id,
+                            agent.id(),
+                            &skill_prompt_id,
+                            &materialized,
+                        )?;
+                        let skills = turn.hidden_context(&materialized)?;
+                        let hidden = if hidden_system_context.is_empty() {
+                            skills
+                        } else {
+                            format!("{skills}\n{hidden_system_context}")
+                        };
+                        (hidden, native_skill_selections)
+                    }
+                    None => (hidden_system_context, Default::default()),
+                };
                 let request = RelayPeerRequest::SubmitLeasedPrompt {
                     leased_agent_id: remote_execution.leased_agent_id,
                     expected_profile:
@@ -972,9 +1039,9 @@ impl KernelRuntimeState {
                     workflow_context,
                     git_context: Some(git_context),
                     required_mcps,
-                    required_skills,
                     remote_extension_manifest: manifest,
                     provider_launch_credential,
+                    native_skill_selections,
                 };
                 match relay_state {
                     Some(relay_state) => {

@@ -27,3 +27,20 @@ test("create preserves idempotency and explicit context without forwarding autho
     providerAccounts: { kind: "none" as const }, gitCredentials: { kind: "none" as const } }
   assert.deepEqual(requests.createDisposableWorkerRequest({ ...input, contextPlan }).CreateDisposableWorker.contextPlan, contextPlan)
 })
+
+// MP-08 / MP-10 / MP-11: contract-only 533 kernels reject Skills before dispatch.
+test("Skills V2 controls require the connected runtime capability", async () => {
+  const request = { SkillsV2: { action: "catalog", project_id: null, agent_id: null } }
+  assert.equal(requests.isGuardedKernelControl(request), true)
+  let queries = 0
+  for (const capabilities of [[], ["skills_v2_contract"], ["skills_v2_runtime"]]) {
+    const send = async (query: unknown) => {
+      queries++
+      assert.deepEqual(query, { RelayStatus: null })
+      return { RelayStatus: { status: { daemon_id: "home", machine_id: "machine", capabilities } } }
+    }
+    if (capabilities.includes("skills_v2_runtime")) await requests.requireKernelControlCapability(send, request)
+    else await assert.rejects(requests.requireKernelControlCapability(send, request), /skills_v2_runtime/)
+  }
+  assert.equal(queries, 3)
+})

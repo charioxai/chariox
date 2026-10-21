@@ -53,6 +53,7 @@ pub struct ClaudeRuntimeState {
     pub(super) cancelled_turn_pending_settlement: bool,
     pub(super) next_turn_number: u64,
     pub(super) result_number: u64,
+    pub(super) context_window: Option<u64>,
     pub(super) emitted_text_by_block: BTreeMap<String, String>,
     pub(super) tool_transcript: super::tool_transcript::ClaudeToolTranscript,
     pub(super) completed_text_blocks: BTreeSet<String>,

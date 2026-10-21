@@ -3645,7 +3645,6 @@ fn assert_recreated_replay_fits_worker(provider: &str) {
     let rebuilt = ProviderOutputClaudeNativeBridge::new(&mut app)
         .managed_base_context(
             session.id(),
-            agent.id(),
             context_file.to_str().unwrap(),
             &run,
             &ClaudeNativePromptInjection {
@@ -3735,4 +3734,185 @@ fn notes_reach_claude_hidden_context_once_and_fit_the_bridge_limit() {
     assert_eq!(context.matches(&"q".repeat(12_000)).count(), 1);
     assert!(!context.contains("Attachment 1"));
     assert!(context.len() < 48_000, "{}", context.len());
+}
+
+// MP-08 / MP-10 / MP-11: native PTY dispatch must use the same validated
+// skill bridge as structured runs, including rejection before any PTY write.
+#[test]
+fn claude_native_injection_uses_shared_skill_admission_before_pty_write() {
+    struct RejectSkill;
+    impl crate::provider::skill_delivery::SkillPromptBridge for RejectSkill {
+        fn acknowledge_prompt(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<(), DaemonError> {
+            Ok(())
+        }
+        fn acknowledge_tools(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &ProviderPromptSignalBatch,
+        ) -> Result<(), DaemonError> {
+            Ok(())
+        }
+        fn prepare(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            envelope: &crate::prompt_assembly::PromptEnvelope,
+        ) -> Result<Option<crate::provider::skill_delivery::ProviderSkillDelivery>, DaemonError>
+        {
+            assert_eq!(envelope.visible_user_prompt, "$review inspect source");
+            Err(DaemonError::LocalTransport {
+                operation: "native-skill-admission-regression",
+                message: "native inventory changed".into(),
+            })
+        }
+    }
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    app.providers
+        .set_skill_prompt_bridge(std::sync::Arc::new(RejectSkill));
+    let root = crate::test_support::TestWorktree::new("native-skill-admission");
+    let context = root.path().join("hidden-context");
+    fs::write(&context, "").unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        "session-1",
+        "claude",
+        "profile",
+        "claude-haiku-5-5",
+        "low",
+    )
+    .with_agent_id("agent-1")
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let run = RuntimeProviderRun::new(
+        "run-1",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: vec![],
+            pty_env: Default::default(),
+            pty_env_remove: vec![],
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    let error = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .inject_prompt(
+            "session-1",
+            run.id(),
+            "agent-1",
+            context.to_str().unwrap(),
+            &run,
+            &ClaudeNativePromptInjection {
+                id: "prompt-1",
+                origin_prompt_id: "prompt-1",
+                prompt: "$review inspect source",
+                hidden_system_context: "",
+                attachments: &[],
+                context_handoff: &|_| String::new(),
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            DaemonError::LocalTransport {
+                operation: "native-skill-admission-regression",
+                ..
+            }
+        ),
+        "shared admission must reject before PTY access: {error}"
+    );
+    assert_eq!(fs::read_to_string(context).unwrap(), "");
+}
+
+// MP-08 / MP-10 / MP-11: PTY recovery must keep retransmitting the prepared
+// native invocation, not the typed `$name` prompt.
+fn claude_native_skill_retry_capture(recent: &str) -> String {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-native-skill-retry-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    let capture_file = root.join("pty-input.log");
+    fs::write(&context_file, "").unwrap();
+    fs::write(&events_file, "").unwrap();
+    fs::write(root.join("permission-recent.txt"), recent).unwrap();
+    let mut run = startup_readiness_run(
+        "session-1",
+        "agent-1",
+        "provider-run-skill-retry",
+        &context_file,
+        &events_file,
+        format!(
+            "stty raw -echo; exec tee {} >/dev/null",
+            capture_file.display()
+        ),
+    );
+    run.mark_running();
+    app.pty.spawn_for_run(&run).unwrap();
+    app.providers_mut().insert_run_for_test(run.clone());
+    let context_file = context_file.display().to_string();
+    write_claude_native_marker(&context_file, "injected:prompt-1");
+    write_claude_headless_submit_retry(&context_file, "prompt-1", 0, 0, "/review inspect source");
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .inject_prompt(
+            "session-1",
+            run.id(),
+            "agent-1",
+            &context_file,
+            &run,
+            &ClaudeNativePromptInjection {
+                id: "prompt-1",
+                origin_prompt_id: "prompt-1",
+                prompt: "$review inspect source",
+                hidden_system_context: "",
+                attachments: &[],
+                context_handoff: &|_| String::new(),
+            },
+        )
+        .unwrap();
+    let mut captured = String::new();
+    for _ in 0..100 {
+        captured = fs::read_to_string(&capture_file).unwrap_or_default();
+        if !captured.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    app.pty.remove_process(run.id()).unwrap();
+    let _ = fs::remove_dir_all(root);
+    captured
+}
+
+#[test]
+fn claude_native_skill_retry_retypes_the_prepared_invocation() {
+    let captured = claude_native_skill_retry_capture("Claude Code ❯ ⏵⏵ mode (shift+tab to cycle)");
+    assert!(captured.contains("/review inspect source"), "{captured:?}");
+    assert!(!captured.contains("$review"), "{captured:?}");
+}
+
+#[test]
+fn claude_native_skill_retry_recognizes_the_prepared_invocation_in_the_composer() {
+    let captured = claude_native_skill_retry_capture(
+        "❯ ⏵⏵ mode (shift+tab to cycle)\n❯ /review inspect source",
+    );
+    // Only Enter is sent; the PTY may translate it to a newline.
+    assert!(
+        !captured.is_empty() && captured.trim().is_empty(),
+        "{captured:?}"
+    );
 }

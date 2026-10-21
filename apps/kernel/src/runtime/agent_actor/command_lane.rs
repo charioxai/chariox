@@ -18,6 +18,8 @@ use crate::runtime::projection::ActorQueueSnapshot;
 pub(super) enum AgentCommand {
     SubmitPrompt {
         request: crate::local::SubmitPromptRequest,
+        skill_selections: Vec<crate::skill::v2::SkillSelection>,
+        user_skill_syntax: bool,
         trace_id: String,
         operation_id: String,
         operation_fingerprint: String,
@@ -266,6 +268,20 @@ impl AgentCommand {
     fn local_request(&self) -> crate::local::LocalDaemonRequest {
         use crate::local::LocalDaemonRequest;
         match self {
+            Self::SubmitPrompt {
+                request,
+                skill_selections,
+                ..
+            } if !skill_selections.is_empty() => {
+                LocalDaemonRequest::SkillsV2(crate::skill::v2::SkillsV2Request::Submit {
+                    session_id: request.session_id.clone(),
+                    attachment_id: request.attachment_id.clone(),
+                    target_agent_id: request.target_agent_id.clone().unwrap_or_default(),
+                    prompt: request.prompt.clone(),
+                    attachments: request.attachments.clone(),
+                    selections: skill_selections.clone(),
+                })
+            }
             Self::SubmitPrompt { request, .. } => LocalDaemonRequest::SubmitPrompt(request.clone()),
             Self::CompletePrompt { request, .. } => {
                 LocalDaemonRequest::CompletePrompt(request.clone())

@@ -433,10 +433,6 @@ impl AgentInstance {
         self.granted_extension_names(ExtensionKind::Mcp)
     }
 
-    pub fn skill_grants(&self) -> Vec<String> {
-        self.granted_extension_names(ExtensionKind::Skill)
-    }
-
     pub fn script_grants(&self) -> Vec<ExtensionGrant> {
         self.extension_grants
             .iter()
@@ -730,14 +726,6 @@ impl AgentInstance {
 
     pub fn revoke_mcp(&mut self, name: &str) {
         self.revoke_extension(ExtensionKind::Mcp, name);
-    }
-
-    pub fn grant_skill(&mut self, name: impl Into<String>) {
-        self.grant_extension(ExtensionGrant::new(ExtensionKind::Skill, name));
-    }
-
-    pub fn revoke_skill(&mut self, name: &str) {
-        self.revoke_extension(ExtensionKind::Skill, name);
     }
 
     pub fn grant_script(&mut self, name: impl Into<String>, environment: impl Into<String>) {

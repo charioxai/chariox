@@ -4,28 +4,40 @@
     "label": "/mcp",
     "description": "Manage Chariox MCP registry and agent grants",
     "value": "/mcp ",
-    "surfaces": ["session", "waiting_room"],
+    "surfaces": [
+      "session",
+      "waiting_room"
+    ],
     "children": [
       {
         "id": "mcp-list",
         "label": "list",
         "description": "List Chariox-managed MCPs",
         "value": "/mcp list",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       },
       {
         "id": "mcp-install",
         "label": "install",
         "description": "Install an MCP into Chariox",
         "value": "/mcp install ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       },
       {
         "id": "mcp-import",
         "label": "import",
         "description": "Import provider MCPs into Chariox",
         "value": "/mcp import ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       },
       {
         "id": "mcp-grant",
@@ -50,62 +62,144 @@
         "label": "show",
         "description": "Show MCP config",
         "value": "/mcp show ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       }
     ]
   },
   {
-    "id": "skill",
-    "label": "/skill",
-    "description": "Manage Chariox skills and agent grants",
-    "value": "/skill ",
-    "surfaces": ["session", "waiting_room"],
+    "id": "skills",
+    "label": "/skills",
+    "description": "Manage Skills catalogs, states, packages and provider sources",
+    "value": "/skills ",
     "children": [
       {
-        "id": "skill-list",
+        "id": "skills-list",
         "label": "list",
-        "description": "List Chariox-managed skills",
-        "value": "/skill list",
-        "surfaces": ["session", "waiting_room"]
+        "description": "List installed skills and states",
+        "value": "/skills list"
       },
       {
-        "id": "skill-install",
-        "label": "install",
-        "description": "Install a skill into Chariox",
-        "value": "/skill install ",
-        "surfaces": ["session", "waiting_room"]
+        "id": "skills-chariox",
+        "label": "chariox",
+        "description": "Show the home Chariox catalog",
+        "value": "/skills chariox"
       },
       {
-        "id": "skill-import",
-        "label": "import",
-        "description": "Import provider skills into Chariox",
-        "value": "/skill import ",
-        "surfaces": ["session", "waiting_room"]
+        "id": "skills-project",
+        "label": "project",
+        "description": "Show the selected Project catalog",
+        "value": "/skills project"
       },
       {
-        "id": "skill-grant",
-        "label": "grant",
-        "description": "Grant a skill to an agent",
-        "value": "/skill grant "
+        "id": "skills-from",
+        "label": "from",
+        "description": "Show read-only skills From the focused provider",
+        "value": "/skills from "
       },
       {
-        "id": "skill-revoke",
-        "label": "revoke",
-        "description": "Revoke a skill from an agent",
-        "value": "/skill revoke "
-      },
-      {
-        "id": "skill-grants",
-        "label": "grants",
-        "description": "Show an agent's skill grants",
-        "value": "/skill grants "
-      },
-      {
-        "id": "skill-show",
+        "id": "skills-show",
         "label": "show",
-        "description": "Show skill metadata",
-        "value": "/skill show ",
-        "surfaces": ["session", "waiting_room"]
+        "description": "Inspect installed skill source, version, files and body",
+        "value": "/skills show "
+      },
+      {
+        "id": "skills-show-from",
+        "label": "show-from",
+        "description": "Inspect a focused-provider skill without importing it",
+        "value": "/skills show-from "
+      },
+      {
+        "id": "skills-install",
+        "label": "install",
+        "description": "Review a skill from folder, URL or content",
+        "value": "/skills install "
+      },
+      {
+        "id": "skills-import",
+        "label": "import",
+        "description": "Review importing a focused-provider skill",
+        "value": "/skills import "
+      },
+      {
+        "id": "skills-update",
+        "label": "update",
+        "description": "Review updating an installed skill",
+        "value": "/skills update "
+      },
+      {
+        "id": "skills-remove",
+        "label": "remove",
+        "description": "Review removing an installed skill",
+        "value": "/skills remove "
+      },
+      {
+        "id": "skills-state",
+        "label": "state",
+        "description": "Set auto, manual, off, or reset to inherited",
+        "value": "/skills state "
+      },
+      {
+        "id": "skills-environment",
+        "label": "environment",
+        "description": "Manage the selected Environment Project skills",
+        "value": "/skills environment "
+      },
+      {
+        "id": "skills-create-package",
+        "label": "create-package",
+        "description": "Create a custom package",
+        "value": "/skills create-package "
+      },
+      {
+        "id": "skills-move-to-package",
+        "label": "move-to-package",
+        "description": "Move a skill into a package",
+        "value": "/skills move-to-package "
+      },
+      {
+        "id": "skills-ungroup",
+        "label": "ungroup",
+        "description": "Remove a skill from its package",
+        "value": "/skills ungroup "
+      },
+      {
+        "id": "skills-package-state",
+        "label": "package-state",
+        "description": "Set member states or reset to inherited",
+        "value": "/skills package-state "
+      },
+      {
+        "id": "skills-update-package",
+        "label": "update-package",
+        "description": "Review updates for package members",
+        "value": "/skills update-package "
+      },
+      {
+        "id": "skills-remove-package",
+        "label": "remove-package",
+        "description": "Review removing a package and its skills",
+        "value": "/skills remove-package "
+      },
+      {
+        "id": "skills-ungroup-package",
+        "label": "ungroup-package",
+        "description": "Remove a package while keeping its skills",
+        "value": "/skills ungroup-package "
+      },
+      {
+        "id": "skills-confirm",
+        "label": "confirm",
+        "description": "Publish the current reviewed Skills batch",
+        "value": "/skills confirm"
+      },
+      {
+        "id": "skills-cancel",
+        "label": "cancel",
+        "description": "Discard the current Skills review",
+        "value": "/skills cancel"
       }
     ]
   },
@@ -114,35 +208,50 @@
     "label": "/env",
     "description": "Manage external script environments",
     "value": "/env ",
-    "surfaces": ["session", "waiting_room"],
+    "surfaces": [
+      "session",
+      "waiting_room"
+    ],
     "children": [
       {
         "id": "env-list",
         "label": "list",
         "description": "List script environments",
         "value": "/env list",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       },
       {
         "id": "env-register",
         "label": "register",
         "description": "Register Python or Node environment",
         "value": "/env register ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       },
       {
         "id": "env-remove",
         "label": "remove",
         "description": "Remove an environment",
         "value": "/env remove ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       },
       {
         "id": "env-show",
         "label": "show",
         "description": "Show environment config",
         "value": "/env show ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       }
     ]
   },
@@ -151,28 +260,40 @@
     "label": "/script",
     "description": "Manage script extensions",
     "value": "/script ",
-    "surfaces": ["session", "waiting_room"],
+    "surfaces": [
+      "session",
+      "waiting_room"
+    ],
     "children": [
       {
         "id": "script-list",
         "label": "list",
         "description": "List script extensions",
         "value": "/script list",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       },
       {
         "id": "script-validate",
         "label": "validate",
         "description": "Validate a script with test_run",
         "value": "/script validate ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       },
       {
         "id": "script-register",
         "label": "register",
         "description": "Register a script extension",
         "value": "/script register ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       },
       {
         "id": "script-grant",
@@ -197,7 +318,10 @@
         "label": "show",
         "description": "Show script metadata",
         "value": "/script show ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       }
     ]
   },
@@ -206,42 +330,60 @@
     "label": "/credential",
     "description": "Manage connector credentials",
     "value": "/credential ",
-    "surfaces": ["session", "waiting_room"],
+    "surfaces": [
+      "session",
+      "waiting_room"
+    ],
     "children": [
       {
         "id": "credential-list",
         "label": "list",
         "description": "List credentials",
         "value": "/credential list",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       },
       {
         "id": "credential-set",
         "label": "set",
         "description": "Store a vault secret",
         "value": "/credential set ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       },
       {
         "id": "credential-register",
         "label": "register",
         "description": "Register credential YAML",
         "value": "/credential register ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       },
       {
         "id": "credential-remove",
         "label": "remove",
         "description": "Remove a credential",
         "value": "/credential remove ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       },
       {
         "id": "credential-show",
         "label": "show",
         "description": "Show credential metadata",
         "value": "/credential show ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       }
     ]
   },
@@ -250,35 +392,50 @@
     "label": "/connector",
     "description": "Manage API connector extensions",
     "value": "/connector ",
-    "surfaces": ["session", "waiting_room"],
+    "surfaces": [
+      "session",
+      "waiting_room"
+    ],
     "children": [
       {
         "id": "connector-list",
         "label": "list",
         "description": "List connectors",
         "value": "/connector list",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       },
       {
         "id": "connector-register",
         "label": "register",
         "description": "Register connector YAML",
         "value": "/connector register ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       },
       {
         "id": "connector-doctor",
         "label": "doctor",
         "description": "Check connector metadata and credential policy",
         "value": "/connector doctor ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       },
       {
         "id": "connector-test",
         "label": "test",
         "description": "Test a connector operation",
         "value": "/connector test ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       },
       {
         "id": "connector-grant",
@@ -303,30 +460,30 @@
         "label": "show",
         "description": "Show connector metadata",
         "value": "/connector show ",
-        "surfaces": ["session", "waiting_room"]
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
       }
     ]
   },
   {
     "id": "extension",
     "label": "/extension",
-    "description": "Inspect worker-local, home-proxy, and skill snapshot extension state",
+    "description": "Inspect worker-local and home-proxy extension state",
     "value": "/extension ",
     "children": [
       {
         "id": "extension-import-providers",
         "label": "import providers",
-        "description": "Import MCPs and skills from provider configs into Chariox",
+        "description": "Import MCPs from provider configs into Chariox",
         "value": "/extension import providers ",
         "searchAliases": [
           "extension import",
           "import provider extensions",
           "import provider mcp",
-          "import provider skill",
           "import mcp",
-          "import skill",
-          "provider mcp import",
-          "provider skill import"
+          "provider mcp import"
         ]
       },
       {
@@ -352,12 +509,6 @@
             "label": "mcp",
             "description": "Show MCP extension grants for an agent or session",
             "value": "/extension grants mcp "
-          },
-          {
-            "id": "extension-grants-skill",
-            "label": "skill",
-            "description": "Show skill snapshot extension grants for an agent or session",
-            "value": "/extension grants skill "
           },
           {
             "id": "extension-grants-script",

@@ -7,7 +7,6 @@ import test from "node:test"
 import type {
   AgentInstance,
   CharioxMcpServerConfig,
-  CharioxSkillMetadata,
   ProviderProcessInfo,
   WorkspaceLinkDefinition,
 } from "./kernel-types.js"
@@ -47,30 +46,21 @@ test("executeShellCommand reports relay status", async () => {
   assert.match(result.message ?? "", /machine=mini/)
 })
 
-test("executeShellCommand lists MCP servers and skills in the workspace", async () => {
+test("MP-08 Skills listing uses catalog Project identity, never workspace discovery", async () => {
   const requests: Record<string, unknown>[] = []
-  const fake = {
-    client: {
-      send: async (request: Record<string, unknown>) => {
-        requests.push(request)
-        if ("ListMcpServers" in request) {
-          return { McpServersListed: { mcps: [{ name: "playwright", transport: { stdio: { command: "npx" } }, enabled: true }] } }
-        }
-        return { SkillsListed: { skills: [{ name: "qa", description: "QA checks", path: "/skills/qa" }] } }
-      },
-    },
-  }
-  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
-  const mcpResult = await executeShellCommand(parseShellCommand("mcp list"), context, { client: fake.client })
-  const skillResult = await executeShellCommand(parseShellCommand("skill list"), context, { client: fake.client })
-  assert.equal(mcpResult.ok, true)
-  assert.match(mcpResult.message ?? "", /playwright \[enabled\]/)
-  assert.equal(skillResult.ok, true)
-  assert.match(skillResult.message ?? "", /qa - QA checks/)
-  assert.deepEqual(requests, [
-    { ListMcpServers: { workspace_id: "/repo" } },
-    { ListSkills: { workspace_id: "/repo" } },
-  ])
+  const client = { send: async (request: Record<string, unknown>) => {
+    requests.push(request)
+    if ("GetSessionState" in request) return { SessionState: { session: makeSession({ project_id: "folderless-project" }) } }
+    return { SkillsV2: { result: { kind: "catalog", revision: 1, skills: [
+      { skill: { id: "skill-1", name: "qa", description: "QA checks" }, effective_state: "manual", also_in_provider: "Codex" },
+    ], packages: [], native: [], metadata_budget_percent: 1 } } }
+  } }
+  const context = createDefaultShellContext({ workspace: "/execution", sessionId: "session-1", agentId: "agent-1" })
+  const result = await executeShellCommand(parseShellCommand("skills list"), context, { client })
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /skill-1 qa \[manual\] \(also in Codex\) - QA checks/)
+  assert.deepEqual(requests, [ { GetSessionState: { session_id: "session-1" } },
+    { SkillsV2: { action: "catalog", project_id: "folderless-project", agent_id: "agent-1" } } ])
 })
 
 test("executeShellCommand shows config and provider auth status", async () => {
@@ -325,18 +315,12 @@ test("executeShellCommand installs and updates MCP servers", async () => {
   ])
 })
 
-test("executeShellCommand imports MCP servers and skills", async () => {
+test("MP-08 MCP imports stay unchanged and legacy Skill import is rejected", async () => {
   const mcp: CharioxMcpServerConfig = {
     name: "github",
     transport: { type: "stdio", command: "github-mcp-server", args: [], env: {}, env_vars: [] },
     enabled: true,
     required: false,
-  }
-  const skill: CharioxSkillMetadata = {
-    name: "qa",
-    description: "QA checks",
-    short_description: "QA",
-    path: "/skills/qa",
   }
   const requests: Record<string, unknown>[] = []
   const fake = {
@@ -353,14 +337,7 @@ test("executeShellCommand imports MCP servers and skills", async () => {
             },
           }
         }
-        return {
-          SkillsImported: {
-            outcome: {
-              imported: [skill],
-              skipped: [{ name: "old", reason: "already installed" }],
-            },
-          },
-        }
+        throw new Error("unexpected legacy Skill import")
       },
     },
   }
@@ -370,12 +347,9 @@ test("executeShellCommand imports MCP servers and skills", async () => {
   assert.equal(mcpResult.ok, true)
   assert.match(mcpResult.message ?? "", /Imported MCPs: github/)
   assert.match(mcpResult.message ?? "", /oauth: oauth transport is provider-native/)
-  assert.equal(skillResult.ok, true)
-  assert.match(skillResult.message ?? "", /Imported skills: qa/)
-  assert.match(skillResult.message ?? "", /old: already installed/)
+  assert.equal(skillResult.ok, false)
   assert.deepEqual(requests, [
     { ImportMcpServers: { workspace_id: "/repo", provider: "codex", name: "github" } },
-    { ImportSkills: { workspace_id: "/repo", provider: "codex", name: "qa" } },
   ])
 })
 
@@ -409,21 +383,7 @@ test("executeShellCommand imports provider capabilities through extension comman
                 reason: "would import newest provider definition",
                 duplicates: [],
               }],
-              skills: [{
-                kind: "skill",
-                name: "qa",
-                provider: "codex",
-                source: "/repo/.codex/skills/qa",
-                hash: "hash-2",
-                action: "already_installed",
-                reason: "matching skill package already installed in Chariox",
-                duplicates: [{
-                  provider: "claude",
-                  source: "/repo/.claude/skills/qa",
-                  hash: "hash-2",
-                  reason: "same package hash",
-                }],
-              }],
+
             },
           },
         }
@@ -440,7 +400,6 @@ test("executeShellCommand imports provider capabilities through extension comman
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /Provider capability import dry run: providers=codex, claude/)
   assert.match(result.message ?? "", /would_import mcp docs \[claude\]/)
-  assert.match(result.message ?? "", /already_installed skill qa \[codex\].*1 duplicate/)
   assert.deepEqual(requests, [{
     ImportProviderCapabilities: {
       workspace_id: "/repo",
@@ -478,7 +437,7 @@ test("executeShellCommand grants, revokes, and lists agent extensions", async ()
   const agent = makeAgent({
     extension_grants: [
       { kind: "mcp", name: "playwright" },
-      { kind: "skill", name: "qa" },
+      { kind: "mcp", name: "qa" },
     ],
   })
   const requests: Record<string, unknown>[] = []
@@ -503,19 +462,19 @@ test("executeShellCommand grants, revokes, and lists agent extensions", async ()
     agentId: "agent-1",
   })
   const grantResult = await executeShellCommand(parseShellCommand("mcp grant agent-1 playwright"), context, { client: fake.client })
-  const revokeResult = await executeShellCommand(parseShellCommand("skill revoke agent-1 qa"), context, { client: fake.client })
+  const revokeResult = await executeShellCommand(parseShellCommand("mcp revoke agent-1 qa"), context, { client: fake.client })
   const grantsResult = await executeShellCommand(parseShellCommand("mcp grants"), context, { client: fake.client })
   assert.equal(grantResult.ok, true)
   assert.match(grantResult.message ?? "", /granted MCP playwright to agent-1/)
   assert.deepEqual(grantResult.contextUpdates, { agentId: "agent-1" })
   assert.equal(revokeResult.ok, true)
-  assert.match(revokeResult.message ?? "", /revoked skill qa from agent-1/)
+  assert.match(revokeResult.message ?? "", /revoked MCP qa from agent-1/)
   assert.equal(grantsResult.ok, true)
   assert.match(grantsResult.message ?? "", /agent-1 MCP grants/)
   assert.match(grantsResult.message ?? "", /playwright/)
   assert.deepEqual(requests, [
     { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", kind: "mcp", name: "playwright" } },
-    { RevokeAgentExtension: { agent_ref: "agent-1", kind: "skill", name: "qa" } },
+    { RevokeAgentExtension: { agent_ref: "agent-1", kind: "mcp", name: "qa" } },
     { ListAgents: { session_id: "session-1" } },
   ])
 })
@@ -550,32 +509,13 @@ test("executeShellCommand grants an explicit home-proxy grant without a second c
   assert.equal(requests.filter(request => "GrantAgentExtension" in request).length, 2)
 })
 
-test("executeShellCommand grants passive remote skills without home-proxy confirmation", async () => {
-  const agent = makeAgent({
-    remote_execution: {
-      worker_kernel_id: "worker-1",
-      worker_machine_id: "machine-1",
-      execution_lease_id: "lease-1",
-      leased_agent_id: "leased-agent-1",
-    },
-  })
-  const requests: Record<string, unknown>[] = []
-  const fake = {
-    client: {
-      send: async (request: Record<string, unknown>) => {
-        requests.push(request)
-        return { AgentExtensionGranted: { agent } }
-      },
-    },
+test("MP-11 skills cannot be granted through extension commands", async () => {
+  const fake = fakeClient(() => { throw new Error("retired grant must not reach the kernel") })
+  const context = createDefaultShellContext({ workspace: "/repo", sessionId: "session-1" })
+  for (const command of ["extension grant skill agent-1 qa", "skill grant agent-1 qa", "skills revoke agent-1 qa"]) {
+    const result = await executeShellCommand(parseShellCommand(command), context, { client: fake.client })
+    assert.equal(result.ok, false)
   }
-  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1", agentId: "agent-1" })
-
-  const result = await executeShellCommand(parseShellCommand("extension grant skill agent-1 qa"), context, { client: fake.client })
-
-  assert.equal(result.ok, true)
-  assert.deepEqual(requests, [
-    { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", kind: "skill", name: "qa" } },
-  ])
 })
 
 test("executeShellCommand shows remote extension sync diagnostics", async () => {
@@ -693,28 +633,14 @@ test("executeShellCommand shows remote extension sync diagnostics", async () => 
   ])
 })
 
-test("executeShellCommand treats remote skill snapshots as passive for sync diagnostics", async () => {
-  const agent = makeAgent({
-    remote_execution: {
-      worker_kernel_id: "worker-1",
-      worker_machine_id: "machine-1",
-      execution_lease_id: "lease-1",
-      leased_agent_id: "leased-agent-1",
-    },
-    extension_grants: [{ kind: "skill", name: "qa" }],
-  })
+test("MP-10 no grants means no remote extension manifest requirement", async () => {
+  const agent = makeAgent({ extension_grants: [], remote_execution: { worker_kernel_id: "w", worker_machine_id: "m", execution_lease_id: "e", leased_agent_id: "a" } })
   const fake = fakeClient(() => ({ AgentsListed: { agents: [agent] } }))
-  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1", agentId: "agent-1" })
-
-  const grantsResult = await executeShellCommand(parseShellCommand("extension grants skill"), context, { client: fake.client })
-  const statusResult = await executeShellCommand(parseShellCommand("extension sync-status agent-1"), context, { client: fake.client })
-
-  assert.equal(grantsResult.ok, true)
-  assert.match(grantsResult.message ?? "", /agent-1 skill grants:\n- qa \(skills snapshot\)/)
-  assert.doesNotMatch(grantsResult.message ?? "", /remote extension sync:/)
-  assert.equal(statusResult.ok, true)
-  assert.match(statusResult.message ?? "", /agent-1 has no active home-proxy tools; skill grants are passive snapshots and no home-proxy manifest is projected\./)
-  assert.doesNotMatch(statusResult.message ?? "", /manifest pending/)
+  const context = createDefaultShellContext({ workspace: "/repo", sessionId: "session-1", agentId: "agent-1" })
+  const result = await executeShellCommand(parseShellCommand("extension sync-status agent-1"), context, { client: fake.client })
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /has no active home-proxy tools/)
+  assert.doesNotMatch(result.message ?? "", /manifest pending|skill grants/)
 })
 
 test("executeShellCommand makes pending remote extension sync retryable", async () => {
@@ -791,34 +717,11 @@ test("executeShellCommand manages script environments and script extensions", as
   ])
 })
 
-test("executeShellCommand installs and uninstalls skills", async () => {
-  const skill: CharioxSkillMetadata = {
-    name: "qa",
-    description: "QA checks",
-    short_description: "QA",
-    path: "/skills/qa",
+test("MP-11 legacy Skill install and removal cannot bypass home catalog review", async () => {
+  const client = { send: async (_: Record<string, unknown>) => { throw new Error("legacy mutation must not be sent") } }
+  const context = createDefaultShellContext({ workspace: "/repo" })
+  for (const command of ["skill install /source", "skill uninstall qa", "skill update /source"]) {
+    const result = await executeShellCommand(parseShellCommand(command), context, { client })
+    assert.equal(result.ok, false)
   }
-  const requests: Record<string, unknown>[] = []
-  const fake = {
-    client: {
-      send: async (request: Record<string, unknown>) => {
-        requests.push(request)
-        if ("InstallSkill" in request) {
-          return { SkillInstalled: { skill } }
-        }
-        return { SkillUninstalled: { skill } }
-      },
-    },
-  }
-  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
-  const installResult = await executeShellCommand(parseShellCommand("skill install /tmp/skills/qa"), context, { client: fake.client })
-  const uninstallResult = await executeShellCommand(parseShellCommand("skill uninstall qa"), context, { client: fake.client })
-  assert.equal(installResult.ok, true)
-  assert.match(installResult.message ?? "", /installed skill qa/)
-  assert.equal(uninstallResult.ok, true)
-  assert.match(uninstallResult.message ?? "", /uninstalled skill qa/)
-  assert.deepEqual(requests, [
-    { InstallSkill: { workspace_id: "/repo", source_path: "/tmp/skills/qa" } },
-    { UninstallSkill: { workspace_id: "/repo", name: "qa" } },
-  ])
 })

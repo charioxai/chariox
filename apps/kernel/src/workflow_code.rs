@@ -21,6 +21,8 @@ use crate::session::{
 };
 
 mod artifact_registry;
+mod skill_reset;
+pub(crate) use skill_reset::{owned_workflow_skill_names, retire_owned_workflow_skill_artifacts};
 mod common;
 mod compiler;
 mod compiler_isolation;

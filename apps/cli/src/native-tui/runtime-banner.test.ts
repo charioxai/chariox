@@ -35,7 +35,6 @@ test("native TUI runtime banner shows ownership, placement, and worktree", () =>
     worktree: "/repo/worktrees/feature",
     run: providerRun("session-run-1"),
     grantedMcps: ["filesystem"],
-    grantedSkills: ["review"],
     providerLines: ["  proxy:          ws://127.0.0.1:1234"],
     promptPolicy: "native prompts pass through",
   })
@@ -51,7 +50,7 @@ test("native TUI runtime banner shows ownership, placement, and worktree", () =>
   assert.match(banner, /slice auth:     ready codex/)
   assert.match(banner, /slice accounts: codex=work \(work@example.com\)/)
   assert.doesNotMatch(banner, /slice next:/)
-  assert.match(banner, /extensions:     mcp=filesystem \(active tools home-proxy\); skill=review \(skills snapshot\)/)
+  assert.match(banner, /extensions:     mcp=filesystem \(active tools home-proxy\)/)
   assert.match(banner, /ext runtime:    home-proxy tools execute on home with home-owned grants and credentials; skills are passive snapshots/)
   assert.match(banner, /ext boundary:   home validates every call; credentials never leave home/)
   assert.match(banner, /remote ext sync: pending/)
@@ -61,7 +60,7 @@ test("native TUI runtime banner shows ownership, placement, and worktree", () =>
   assert.match(banner, /prompt policy:  native prompts pass through/)
 })
 
-test("remote native TUI banner keeps MCPs and skills worker-local while scripts stay home-proxied", () => {
+test("remote native TUI banner keeps MCPs worker-local while scripts stay home-proxied", () => {
   const banner = formatNativeTuiRuntimeBanner({
     surface: "opencode native-tui",
     session: session({ workspace_live_sync_mode: "tracked" }),
@@ -74,23 +73,21 @@ test("remote native TUI banner keeps MCPs and skills worker-local while scripts 
       },
       extension_grants: [
         { kind: "mcp", name: "filesystem" },
-        { kind: "skill", name: "review" },
         { kind: "script", name: "release" },
       ],
     }),
     worktree: "/repo",
     run: providerRun("native-run-1", { client_interface: "native_tui" }),
     grantedMcps: ["filesystem"],
-    grantedSkills: ["review"],
   })
 
-  assert.match(banner, /extensions:     mcp=filesystem \(worker-local, hash-validated\); skill=review \(worker-local, hash-validated\)/)
-  assert.match(banner, /ext runtime:    native MCP and skill grants use hash-validated worker-local installs; scripts and connectors remain home-proxied/)
-  assert.match(banner, /ext boundary:   worker validates native MCP and skill hashes; home validates script and connector calls without exporting credentials/)
+  assert.match(banner, /extensions:     mcp=filesystem \(worker-local, hash-validated\)/)
+  assert.match(banner, /ext runtime:    native MCP grants use hash-validated worker-local installs; scripts and connectors remain home-proxied/)
+  assert.match(banner, /ext boundary:   worker validates native MCP hashes; home validates script and connector calls without exporting credentials/)
   assert.match(banner, /remote ext sync: pending/)
 })
 
-test("remote native TUI banner does not invent manifest sync for worker-local MCPs and skills", () => {
+test("remote native TUI banner does not invent manifest sync for worker-local MCPs", () => {
   const banner = formatNativeTuiRuntimeBanner({
     surface: "codex native-tui",
     session: session({ workspace_live_sync_mode: "tracked" }),
@@ -103,17 +100,15 @@ test("remote native TUI banner does not invent manifest sync for worker-local MC
       },
       extension_grants: [
         { kind: "mcp", name: "filesystem" },
-        { kind: "skill", name: "review" },
       ],
     }),
     worktree: "/repo",
     run: providerRun("native-run-1", { client_interface: "native_tui" }),
     grantedMcps: ["filesystem"],
-    grantedSkills: ["review"],
   })
 
-  assert.match(banner, /ext runtime:    native MCP and skill grants use hash-validated worker-local installs/)
-  assert.match(banner, /ext boundary:   worker validates native MCP and skill hashes; provider credentials and execution stay on the worker/)
+  assert.match(banner, /ext runtime:    native MCP grants use hash-validated worker-local installs/)
+  assert.match(banner, /ext boundary:   worker validates native MCP hashes; provider credentials and execution stay on the worker/)
   assert.doesNotMatch(banner, /remote ext sync:/)
 })
 
@@ -309,7 +304,7 @@ test("native TUI runtime banner surfaces provider run recovery actions", () => {
   assert.match(missingWorkerRun, /provider next:  run \/kernel remote-runtime and \/machine kernels hetzner; reconnect or relaunch the remote\/slice worker before sending prompts to that remote\/slice agent if no active worker run appears/)
 })
 
-test("native TUI runtime banner omits sync line for passive skill snapshots", () => {
+test("native TUI runtime banner has no instruction grant or sync line", () => {
   const banner = formatNativeTuiRuntimeBanner({
     surface: "opencode native-tui",
     session: session({ workspace_live_sync_mode: "tracked" }),
@@ -320,15 +315,14 @@ test("native TUI runtime banner omits sync line for passive skill snapshots", ()
         execution_lease_id: "lease-1",
         leased_agent_id: "leased-agent-1",
       },
-      extension_grants: [{ kind: "skill", name: "review" }],
+      extension_grants: [],
     }),
     worktree: "/repo",
-    grantedSkills: ["review"],
   })
 
-  assert.match(banner, /extensions:     skill=review \(skills snapshot\)/)
-  assert.match(banner, /ext runtime:    skill snapshot: home projects passive content; executable helpers require a separate tool grant/)
-  assert.match(banner, /ext boundary:   passive content only; executable helpers require separate tool grants/)
+  assert.match(banner, /extensions:     none/)
+  assert.doesNotMatch(banner, /skill snapshot|skill grant/)
+  assert.match(banner, /ext boundary:   home remains authoritative for projected remote extension tools/)
   assert.doesNotMatch(banner, /remote ext sync:/)
 })
 
