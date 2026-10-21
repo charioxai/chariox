@@ -137,6 +137,17 @@ fn managed_launch(
     pty_env: BTreeMap<String, String>,
     pty_env_remove: Vec<String>,
 ) -> ProviderLaunchResult {
+    // MP-08 / MP-10 / MP-11: OpenCode's Linux native watcher can synchronously
+    // block its server before the upstream subscription timeout can run.
+    #[cfg(target_os = "linux")]
+    let pty_env = {
+        let mut env = pty_env;
+        env.insert(
+            "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER".into(),
+            "true".into(),
+        );
+        env
+    };
     ProviderLaunchResult {
         endpoint_mode: AgentEndpointMode::Managed,
         process_label: "opencode:serve".to_string(),
@@ -299,6 +310,34 @@ mod tests {
             launch.structured_endpoint.as_deref(),
             Some(endpoint.as_str())
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_opencode_servers_disable_blocking_native_filewatcher() {
+        crate::test_support::isolated_env_test!();
+        let _guard = env_guard();
+        let path = std::env::temp_dir().join(format!(
+            "chariox-opencode-filewatcher-{}",
+            std::process::id()
+        ));
+        fs::write(&path, "fixture").unwrap();
+        std::env::set_var("CHARIOX_OPENCODE_BIN", &path);
+        let request =
+            LaunchProviderRequest::new("session-1", "opencode", "opencode", "default", "default");
+        let launches = [None, Some(&request)].map(|request| plan_opencode_launch(request).unwrap());
+        std::env::remove_var("CHARIOX_OPENCODE_BIN");
+        fs::remove_file(path).unwrap();
+        for launch in launches {
+            assert_eq!(
+                launch
+                    .pty_env
+                    .get("OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER")
+                    .map(String::as_str),
+                Some("true"),
+                "catalog and agent servers must not enter OpenCode's blocking Linux watcher"
+            );
+        }
     }
 
     #[test]

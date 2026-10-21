@@ -15,9 +15,9 @@ export function existingProjectSelectionId(projectId: string): string {
   return `${EXISTING_PROJECT_SELECTION_PREFIX}${projectId}`
 }
 
-export function projectSelectionFromId(selectionId: string): SessionProjectSelection {
+export function projectSelectionFromId(selectionId: string, name?: string): SessionProjectSelection {
   if (selectionId === NEW_PROJECT_SELECTION_ID) {
-    return { kind: "new" }
+    return { kind: "new", ...(name?.trim() ? { name: name.trim() } : {}) }
   }
   if (selectionId.startsWith(EXISTING_PROJECT_SELECTION_PREFIX)) {
     const projectId = selectionId.slice(EXISTING_PROJECT_SELECTION_PREFIX.length).trim()
@@ -33,17 +33,14 @@ export function waitingRoomProjectOptions(
   workspaceId?: string | null,
 ): Array<{ id: string; label: string; project?: WaitingRoomProjectSummary }> {
   const existing = (projects ?? [])
-    .filter((project) => project.status === "active" && project.kind === "named")
-    .filter((project) => !workspaceId || (
-      project.workspace_ids?.includes(workspaceId) ?? project.workspace_id === workspaceId
-    ))
+    .filter((project) => project.status === "active")
     .sort((left, right) => (
       (right.last_session_activity_at_ms ?? right.updated_at_ms)
       - (left.last_session_activity_at_ms ?? left.updated_at_ms)
       || left.name.localeCompare(right.name)
     ))
   return [
-    { id: DEFAULT_PROJECT_SELECTION_ID, label: "Default" },
+    { id: DEFAULT_PROJECT_SELECTION_ID, label: `Auto (${(projects ?? []).find(project => project.kind === "default" && project.workspace_id === workspaceId)?.name ?? "new project"})` },
     ...existing.map((project) => ({
       id: existingProjectSelectionId(project.id),
       label: project.name,
@@ -81,7 +78,7 @@ export function describeWaitingRoomProjectSelection(
   workspaceId?: string | null,
 ): string {
   return waitingRoomProjectOptions(projects, workspaceId)
-    .find((option) => option.id === selectionId)?.label ?? "Default"
+    .find((option) => option.id === selectionId)?.label ?? "Auto"
 }
 
 export function sessionsForProject(
@@ -97,6 +94,7 @@ export function activeWaitingRoomProjects(
   return (projects ?? [])
     .filter((project) => project.status === "active")
     .sort((left, right) => (
+      Number(right.pinned === true) - Number(left.pinned === true) ||
       (right.last_session_activity_at_ms ?? right.updated_at_ms)
       - (left.last_session_activity_at_ms ?? left.updated_at_ms)
       || left.name.localeCompare(right.name)

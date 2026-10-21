@@ -1,4 +1,5 @@
 pub(crate) mod aegs_network_policy;
+pub(crate) mod agent_account_admission;
 pub mod agent_actor;
 pub(crate) mod agent_control_executor;
 pub mod agent_prompt_service;
@@ -38,6 +39,7 @@ pub(crate) mod app_snapshot_restore;
 mod app_state_broker;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_validation_broker;
+pub(crate) mod app_view_authority;
 pub(crate) mod app_views;
 pub(crate) mod app_wake_pump;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -58,6 +60,7 @@ pub(crate) mod browser_import_payload;
 pub mod capability_executor;
 pub(crate) mod capability_registry;
 mod claude_setup_token_login;
+mod client_catalog_revisions;
 pub(crate) mod cloud_api_client;
 mod cloud_relay_authorization;
 pub(crate) mod cloud_relay_connection_executor;
@@ -86,6 +89,10 @@ pub(crate) mod history_executor;
 pub(crate) mod history_requests;
 pub(crate) mod interactive_command_dispatcher;
 pub(crate) mod invite_tokens;
+mod kernel_browser_actors;
+mod kernel_browser_assets;
+mod kernel_browser_display_gate;
+pub(crate) mod kernel_browser_host;
 pub(crate) mod kernel_lifecycle_executor;
 pub(crate) mod kernel_process_identity;
 pub(crate) mod kernel_runtime_role_policy;
@@ -102,8 +109,10 @@ pub(crate) mod metaagent_event_control;
 pub(crate) mod metaagent_guides;
 pub(crate) mod metaagent_trace;
 pub(crate) mod native_interaction_bridge;
+pub(crate) mod notes;
 pub(crate) mod owned_process_signals;
 pub(crate) mod pairing_invite_executor;
+pub(crate) mod perf_timing;
 pub mod process_health;
 pub(crate) mod project_environment_setup_utility;
 pub mod projection;
@@ -141,6 +150,7 @@ pub mod terminal_output_executor;
 pub(crate) mod terminal_pairings;
 pub(crate) mod user_config_executor;
 pub(crate) mod user_config_policy;
+pub(crate) mod user_domain_access;
 pub(crate) mod waiting_room_activity;
 pub(crate) mod waiting_room_control;
 pub(crate) mod waiting_room_public_projection;
@@ -162,5 +172,10 @@ pub(crate) mod kernel_access;
 
 pub(crate) mod relay_peer_authority;
 pub(crate) mod self_host_terminal_grants;
+
+pub(crate) mod room_tool_admission;
+
+pub(crate) mod room_dispatch_registration;
+mod user_app_views;
 
 pub(crate) mod ssh_machine_control;

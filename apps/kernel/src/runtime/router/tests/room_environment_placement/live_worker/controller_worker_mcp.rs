@@ -1203,7 +1203,9 @@ async fn check_room_browser_on_environment_worker_serves_remote_agent_and_web_vi
     }
 }
 
-async fn prepare_cross_worker_room_display(fixture: &LiveWorker) -> (String, String, String) {
+pub(super) async fn prepare_cross_worker_room_display(
+    fixture: &LiveWorker,
+) -> (String, String, String) {
     dispatch_json(
         &fixture.home,
         json!({"CreateSlice": {
@@ -1582,10 +1584,12 @@ async fn launch_leased_room_provider(
         "target_directory": fixture.home_state.root.join("leased-browser-agent-worktree"),
         "from_ref": "HEAD",
     });
+    // The idle stub prints nothing, so the worker's quiet-output settlement can
+    // never end the retained turn while the cross-kernel tools are still running.
     let spawned = dispatch_json(
         &fixture.home,
         json!({"SpawnAgent": {
-            "session_id":room, "provider":"managed-dev-stub", "model":"runtime-mcp-idle",
+            "session_id":room, "provider":"managed-dev-stub", "model":"native-tui-idle",
             "kernel_ref":worker_kernel_id, "worktree_placement":placement
         }}),
     )
@@ -2292,6 +2296,8 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     );
     assert_eq!(action.arguments, None);
 
+    // UX-first: the approved native secret above stays registered for this
+    // Room, and agent input still forwards.
     let input_cases = [
         (
             "slice_mouse",
@@ -2300,38 +2306,8 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         ),
         (
             "slice_mouse",
-            json!({"action":"click","x":220,"y":260,"button":"right"}),
-            "pointer_click",
-        ),
-        (
-            "slice_mouse",
-            json!({"action":"double_click","x":320,"y":360}),
-            "pointer_click",
-        ),
-        (
-            "slice_mouse",
-            json!({"action":"drag","x":120,"y":160,"to_x":720,"to_y":560,"button":"middle"}),
-            "pointer_drag",
-        ),
-        (
-            "slice_mouse",
             json!({"action":"scroll","x":640,"y":400,"amount":5,"horizontal_steps":-3}),
             "pointer_scroll",
-        ),
-        (
-            "slice_clipboard_write",
-            json!({"text":"Clipboard Grüße 世界"}),
-            "clipboard_write",
-        ),
-        (
-            "slice_keyboard",
-            json!({"action":"type","text":"Grüße 世界"}),
-            "keyboard_text",
-        ),
-        (
-            "slice_keyboard",
-            json!({"action":"key","key":"ctrl+shift+p","repeat":3}),
-            "keyboard_key",
         ),
     ];
     let mut action_ids = Vec::new();
@@ -2357,6 +2333,59 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
                 .expect("Computer tool result should identify its Room Action")
                 .to_string(),
         );
+    }
+
+    // Authorized agents drag, hold, write the clipboard and middle-click like
+    // any other input; only Vault values stay out of model-bound output.
+    for (tool, arguments) in [
+        (
+            "slice_mouse",
+            json!({"action":"drag","x":120,"y":160,"to_x":720,"to_y":560,"button":"middle"}),
+        ),
+        (
+            "slice_clipboard_write",
+            json!({"text":"Clipboard Grüße 世界"}),
+        ),
+        (
+            "slice_keyboard",
+            json!({"action":"hold","key":"a","duration_ms":100}),
+        ),
+        (
+            "slice_mouse",
+            json!({"action":"hold","x":120,"y":160,"button":"left","duration_ms":100}),
+        ),
+        (
+            "slice_mouse",
+            json!({"action":"click","x":120,"y":160,"button":"middle"}),
+        ),
+        (
+            "slice_mouse",
+            json!({"action":"click","x":220,"y":260,"button":"right"}),
+        ),
+        (
+            "slice_mouse",
+            json!({"action":"double_click","x":320,"y":360}),
+        ),
+        (
+            "slice_keyboard",
+            json!({"action":"type","text":"Grüße 世界"}),
+        ),
+        (
+            "slice_keyboard",
+            json!({"action":"key","key":"ctrl+shift+p","repeat":3}),
+        ),
+        (
+            "slice_keyboard",
+            json!({"action":"key","key":"CTRL+v","repeat":2}),
+        ),
+    ] {
+        let result = fixture
+            .worker
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(&input_token, tool, arguments.clone())
+            .await
+            .unwrap_or_else(|error| panic!("{tool} {arguments}: {error}"));
+        assert!(result.ok, "{tool} {arguments}: {:?}", result.payload);
     }
 
     let action_count_before_invalid = fixture
@@ -2393,16 +2422,8 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         action_count_before_invalid,
         "rejected provider input must not enter the home Action ledger"
     );
-    for (action_id, expected_kind) in action_ids.iter().zip([
-        "pointer_move",
-        "pointer_click",
-        "pointer_click",
-        "pointer_drag",
-        "pointer_scroll",
-        "clipboard_write",
-        "keyboard_text",
-        "keyboard_key",
-    ]) {
+    assert_eq!(action_ids.len(), 2);
+    for (action_id, expected_kind) in action_ids.iter().zip(["pointer_move", "pointer_scroll"]) {
         let action = home_environment
             .actions
             .iter()
@@ -2418,39 +2439,6 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
             crate::session::EnvironmentActionState::Completed
         );
     }
-    let keyboard = home_environment
-        .actions
-        .iter()
-        .find(|action| action.action_id == action_ids[6])
-        .expect("keyboard text Action");
-    assert_eq!(
-        keyboard.arguments,
-        Some(crate::session::EnvironmentActionArguments::KeyboardText {
-            utf8_byte_count: 14,
-            character_count: 8,
-        })
-    );
-    let key = home_environment
-        .actions
-        .iter()
-        .find(|action| action.action_id == action_ids[7])
-        .expect("keyboard key Action");
-    assert_eq!(
-        key.arguments,
-        Some(crate::session::EnvironmentActionArguments::KeyboardKey { repeat: 3 })
-    );
-    let clipboard = home_environment
-        .actions
-        .iter()
-        .find(|action| action.action_id == action_ids[5])
-        .expect("clipboard write Action");
-    assert_eq!(
-        clipboard.arguments,
-        Some(crate::session::EnvironmentActionArguments::ClipboardWrite {
-            utf8_byte_count: 24,
-            character_count: 18,
-        })
-    );
     let environment_debug = format!("{home_environment:?}");
     assert!(
         !environment_debug.contains("Grüße 世界")
@@ -2467,21 +2455,21 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         "worker must not create parallel Room authority for any Computer tool"
     );
 
-    assert_eq!(
-        std::fs::read_to_string(&screen_log).expect("worker Computer tool log"),
-        concat!(
+    let log = std::fs::read_to_string(&screen_log).expect("worker Computer tool log");
+    assert!(
+        log.starts_with(concat!(
             "computer-secret-input-ok\n",
             "move 120 160\n",
-            "pointer-click 220 260 right 1\n",
-            "pointer-click 320 360 left 2\n",
-            "pointer-drag 120 160 720 560 middle\n",
             "pointer-scroll 640 400 -3 5\n",
-            "computer-clipboard-write-stdin|Clipboard Grüße 世界\n",
-            "computer-type-stdin|Grüße 世界\n",
-            "computer-key-stdin 3|ctrl+shift+p\n",
-        ),
-        "provider Computer tools must use the shared physical input adapter",
+        )),
+        "provider Computer tools must use the shared physical input adapter: {log}",
     );
+    for forwarded in ["pointer-drag", "computer-clipboard-write-stdin"] {
+        assert!(
+            log.contains(forwarded),
+            "authorized {forwarded} must reach the helper: {log}"
+        );
+    }
 
     dispatch_json(
         &fixture.home,

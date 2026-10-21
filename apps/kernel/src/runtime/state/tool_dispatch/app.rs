@@ -154,6 +154,35 @@ impl KernelRuntimeState {
         if run.session_id() != agent.session_id() {
             return Err(unavailable());
         }
+        if run.owner_user_id() != agent.owner_user_id()
+            || run.state() == crate::provider::ProviderRunState::Ended
+            || self
+                .owned
+                .provider_store
+                .get_run_for_agent(agent.session_id(), agent.id())
+                .is_none_or(|current| {
+                    current.id() != run.id()
+                        || current.state() == crate::provider::ProviderRunState::Ended
+                })
+            || self
+                .owned
+                .session_store
+                .get_session(agent.session_id())?
+                .status()
+                == crate::session::SessionStatus::Ended
+        {
+            return Err(unavailable());
+        }
+        if self.room_agent_tools_enabled()
+            && (agent.remote_execution().is_some()
+                || self.slice_kernel_id().is_some()
+                || self
+                    .owned
+                    .provider_run_projection
+                    .is_leased_provider_run(run.id()))
+        {
+            return Err(unavailable());
+        }
         Ok(agent)
     }
 
@@ -234,6 +263,7 @@ impl KernelRuntimeState {
         tool: &RemoteExtensionTool,
         input: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
+        // MP-08/MP-10/MP-11 D1: the home kernel owns App authority for every placement.
         let agent = super::home_extension_authorizer::HomeExtensionAuthorizationService::new(self)
             .authorize_granted_agent(context, tool)?;
         self.invoke_bound_app_tool(

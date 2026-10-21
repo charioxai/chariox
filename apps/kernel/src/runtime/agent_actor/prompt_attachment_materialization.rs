@@ -17,6 +17,11 @@ pub(crate) fn materialize_inline_prompt_attachments(
         .into_iter()
         .enumerate()
         .map(|(index, attachment)| {
+            // Notes stay inline: history replays them as chips and the prompt
+            // assembly turns them into hidden context, never a provider file.
+            if crate::prompt_notes::is_note(&attachment) {
+                return Ok(attachment);
+            }
             let Some(contents_base64) = attachment.contents_base64() else {
                 return Ok(attachment);
             };

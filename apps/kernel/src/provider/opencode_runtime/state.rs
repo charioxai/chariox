@@ -35,16 +35,22 @@ pub struct OpenCodeAssistantCompletion {
 #[derive(Debug)]
 pub(crate) struct OpenCodeRuntimeState {
     pub(super) base_url: String,
+    pub(in crate::provider) prompt_client: Option<crate::provider::OpenCodeClient>,
     pub(super) session_id: String,
     pub(super) emitted_text_by_part: BTreeMap<String, String>,
+    pub(super) finalized_text_part_ids: BTreeSet<String>,
+    // SSE cumulative position is independent of snapshots: HTTP can observe
+    // text that is still queued in the event subscription.
+    pub(super) streamed_text_by_part: BTreeMap<String, String>,
     pub(super) emitted_tool_summaries: BTreeMap<String, String>,
-    pub(super) buffered_text_deltas: BTreeMap<String, Vec<String>>,
+    pub(in crate::provider) live_text_from_start: bool,
     pub(super) message_roles: BTreeMap<String, String>,
     pub(super) part_kinds: BTreeMap<String, String>,
     pub(super) part_message_ids: BTreeMap<String, String>,
     pub(super) message_parent_ids: BTreeMap<String, Option<String>>,
     pub(super) preexisting_message_ids: BTreeSet<String>,
     pub(super) event_subscription: OpenCodeEventSubscription,
+    pub(super) pending_event: Option<crate::provider::OpenCodeEvent>,
     pub(super) last_status: Option<OpenCodeSessionStatus>,
     pub(super) completed_assistant_message_ids: BTreeSet<String>,
     pub(super) active_terminal_assistant_message_id: Option<String>,
@@ -64,16 +70,20 @@ impl OpenCodeRuntimeState {
     ) -> Self {
         Self {
             base_url,
+            prompt_client: None,
             session_id,
             emitted_text_by_part: BTreeMap::new(),
+            finalized_text_part_ids: BTreeSet::new(),
+            streamed_text_by_part: BTreeMap::new(),
             emitted_tool_summaries: BTreeMap::new(),
-            buffered_text_deltas: BTreeMap::new(),
+            live_text_from_start: false,
             message_roles: BTreeMap::new(),
             part_kinds: BTreeMap::new(),
             part_message_ids: BTreeMap::new(),
             message_parent_ids: BTreeMap::new(),
             preexisting_message_ids: BTreeSet::new(),
             event_subscription,
+            pending_event: None,
             last_status: None,
             completed_assistant_message_ids: BTreeSet::new(),
             active_terminal_assistant_message_id: None,
@@ -84,6 +94,14 @@ impl OpenCodeRuntimeState {
             unmatched_session_error_idle_since: None,
             native_approval_origin: None,
         }
+    }
+
+    pub(in crate::provider) fn bind_output_ready(
+        &self,
+        run_id: String,
+        signal: crate::provider::output_ready::ProviderOutputReadySignal,
+    ) {
+        self.event_subscription.output_notifier.bind(run_id, signal);
     }
 
     pub(in crate::provider) fn base_url(&self) -> &str {
@@ -156,11 +174,14 @@ impl OpenCodeRuntimeState {
     }
 
     pub(in crate::provider) fn settle_aborted_turn(&mut self, messages: &[OpenCodeMessage]) {
+        self.pending_event = None;
         self.session_errors_require_prompt_match = true;
+        self.live_text_from_start = false;
         while self.event_subscription.receiver.try_recv().is_ok() {}
         self.emitted_text_by_part.clear();
+        self.finalized_text_part_ids.clear();
+        self.streamed_text_by_part.clear();
         self.emitted_tool_summaries.clear();
-        self.buffered_text_deltas.clear();
         self.message_roles.clear();
         self.part_kinds.clear();
         self.part_message_ids.clear();

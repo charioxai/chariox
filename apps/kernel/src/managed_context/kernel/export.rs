@@ -8,23 +8,23 @@ use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
 
-pub(super) const MAX_EXTENSIONS: usize = 2_048;
-pub(super) const MAX_DEPENDENCIES: usize = 2_048;
 pub(super) const MAX_PACKAGE_FILES: usize = 1_024;
 const MAX_PACKAGE_ENTRIES: usize = 2_048;
 const MAX_DIRECTORY_DEPTH: usize = 64;
 pub(super) const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 pub(super) const MAX_PACKAGE_BYTES: u64 = 32 * 1024 * 1024;
-pub(crate) const MAX_SNAPSHOT_BYTES: usize = 128 * 1024 * 1024;
-pub(super) const MAX_SNAPSHOT_FILES: usize = 16_384;
+/// Serialization for hashing streams through the hasher; memory is admitted by `SnapshotMemoryBudget`.
+pub(super) const UNBOUNDED_SERIALIZATION: usize = usize::MAX;
 
 struct SnapshotMemoryBudget {
     bytes: usize,
-    files: usize,
+    limit: usize,
 }
 
 impl SnapshotMemoryBudget {
     fn new(request: &KernelContextExportRequest) -> Result<Self, DaemonError> {
+        let limit =
+            usize::try_from(crate::managed_context::limits::memory_budget()).unwrap_or(usize::MAX);
         let mut bytes = request
             .context_id
             .len()
@@ -33,35 +33,28 @@ impl SnapshotMemoryBudget {
             .saturating_add(request.target_kernel_id.len())
             .saturating_add(request.target_key_thumbprint.len())
             .saturating_add(4096);
-        bytes =
-            bytes.saturating_add(serialized_json_measure(&request.vault, MAX_SNAPSHOT_BYTES)?.0);
-        let budget = Self { bytes, files: 1 };
+        bytes = bytes.saturating_add(serialized_json_measure(&request.vault, limit)?.0);
+        let budget = Self { bytes, limit };
         budget.ensure_available()?;
         Ok(budget)
     }
 
     fn consume<T: Serialize>(&mut self, value: &T) -> Result<(), DaemonError> {
-        let remaining = MAX_SNAPSHOT_BYTES.saturating_sub(self.bytes);
+        let remaining = self.limit.saturating_sub(self.bytes);
         self.bytes = self
             .bytes
             .saturating_add(serialized_json_measure(value, remaining)?.0);
         self.ensure_available()
     }
 
-    fn consume_files(&mut self, count: usize) -> Result<(), DaemonError> {
-        self.files = self.files.saturating_add(count);
-        if self.files > MAX_SNAPSHOT_FILES {
-            return Err(kernel_context_error(
-                "kernel context snapshot file count exceeds its limit",
-            ));
-        }
-        Ok(())
-    }
-
     fn ensure_available(&self) -> Result<(), DaemonError> {
-        if self.bytes > MAX_SNAPSHOT_BYTES {
+        if self.bytes > self.limit {
             return Err(kernel_context_error(
-                "kernel context snapshot exceeds its size limit",
+                crate::managed_context::limits::memory_shortage(
+                    "kernel context snapshot",
+                    self.bytes as u64,
+                    self.limit as u64,
+                ),
             ));
         }
         Ok(())
@@ -178,11 +171,6 @@ fn export_kernel_context_mode(
             .cmp(&right.kind)
             .then_with(|| left.name.cmp(&right.name))
     });
-    if extensions.len() > MAX_EXTENSIONS {
-        return Err(kernel_context_error(
-            "kernel Extension count exceeds its limit",
-        ));
-    }
     let unique_extensions = extensions
         .iter()
         .map(|extension| (extension.kind.clone(), extension.name.as_str()))
@@ -223,11 +211,6 @@ fn export_kernel_context_mode(
     if !without_credentials {
         export_credentials(&sources.credential_root, &mut dependencies, &mut budget)?;
     }
-    if dependencies.len() > MAX_DEPENDENCIES {
-        return Err(kernel_context_error(
-            "kernel Extension dependency count exceeds its limit",
-        ));
-    }
     let payload = KernelContextPayload {
         schema_version: KERNEL_CONTEXT_SCHEMA_VERSION,
         context_id: request.context_id,
@@ -247,7 +230,7 @@ fn export_kernel_context_mode(
     if without_credentials {
         crate::managed_context::credential_free::validate_kernel_payload(&payload)?;
     }
-    let (_, snapshot_sha256) = serialized_json_measure(&payload, MAX_SNAPSHOT_BYTES)?;
+    let (_, snapshot_sha256) = serialized_json_measure(&payload, UNBOUNDED_SERIALIZATION)?;
     Ok(KernelContextSnapshot {
         snapshot_sha256,
         payload,
@@ -914,20 +897,6 @@ fn push_extension(
     budget: &mut SnapshotMemoryBudget,
     extension: KernelExtensionSnapshot,
 ) -> Result<(), DaemonError> {
-    if extensions.len() >= MAX_EXTENSIONS {
-        return Err(kernel_context_error(
-            "kernel Extension count exceeds its limit",
-        ));
-    }
-    let file_count = match &extension.definition {
-        KernelExtensionDefinition::Skill { package, .. } => package.files.len(),
-        KernelExtensionDefinition::Script { .. } => 1,
-        KernelExtensionDefinition::Mcp { runtime, .. } => {
-            runtime.as_ref().map_or(0, |runtime| runtime.files.len())
-        }
-        KernelExtensionDefinition::Connector { .. } => 0,
-    };
-    budget.consume_files(file_count)?;
     budget.consume(&extension)?;
     extensions.push(extension);
     Ok(())
@@ -938,25 +907,6 @@ fn push_dependency(
     budget: &mut SnapshotMemoryBudget,
     dependency: KernelExtensionDependency,
 ) -> Result<(), DaemonError> {
-    if dependencies.len() >= MAX_DEPENDENCIES {
-        return Err(kernel_context_error(
-            "kernel Extension dependency count exceeds its limit",
-        ));
-    }
-    match &dependency {
-        KernelExtensionDependency::UserRules { .. } => budget.consume_files(1)?,
-        KernelExtensionDependency::Environment {
-            runtime:
-                PortableEnvironmentRuntime::Python { files, .. }
-                | PortableEnvironmentRuntime::Node { files, .. },
-            ..
-        }
-        | KernelExtensionDependency::UserConnectorAdapter { files, .. } => {
-            budget.consume_files(files.len())?
-        }
-        KernelExtensionDependency::BundledConnectorAdapter { .. }
-        | KernelExtensionDependency::Credential { .. } => {}
-    }
     budget.consume(&dependency)?;
     dependencies.push(dependency);
     Ok(())

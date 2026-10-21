@@ -75,6 +75,7 @@ impl KernelRuntimeState {
         drop(state);
         let mut audit_error = sudo_result.err();
         for grant in revoked {
+            self.retire_notification_grants(Some(&grant.summary.grant_id));
             if let Err(error) = self.audit_access(&grant.summary, "revoked", Some(reason)) {
                 audit_error.get_or_insert(error);
             }
@@ -148,6 +149,7 @@ impl KernelRuntimeState {
         }
         drop(state);
         for (grant, reason) in removed {
+            self.retire_notification_grants(Some(&grant.summary.grant_id));
             self.cancel_access_prompt(&grant.summary, "extension");
             let _ = self.audit_access(
                 &grant.summary,
@@ -405,6 +407,8 @@ impl KernelRuntimeState {
 
     pub(crate) fn pump_kernel_access(&self) {
         self.sweep_kernel_access();
+        // Dead-man for sudo window timers: the kernel pump enforces and alerts too.
+        self.pump_sudo_windows(None);
         let notices = {
             let mut state = self
                 .owned

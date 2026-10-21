@@ -4,6 +4,7 @@ adapters/rust
 apps/aegs-dummy
 apps/kernel
 apps/relay
+deploy/managed-kernel
 examples/workflow-code
 packages/aegs-sdk
 packages/event-protocol

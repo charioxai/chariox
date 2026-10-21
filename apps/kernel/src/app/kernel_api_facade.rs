@@ -67,6 +67,10 @@ impl DaemonApp {
     }
 
     #[doc(hidden)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing apply_workflow_code_definition_with_rebindings operation signature and explicit context arguments"
+    )]
     pub fn apply_workflow_code_definition_with_rebindings(
         &mut self,
         session_id: &str,
@@ -109,6 +113,10 @@ impl DaemonApp {
     }
 
     #[doc(hidden)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing compile_and_apply_workflow_code_javascript_with_rebindings operation signature and explicit context arguments"
+    )]
     pub fn compile_and_apply_workflow_code_javascript_with_rebindings(
         &mut self,
         session_id: &str,
@@ -133,6 +141,10 @@ impl DaemonApp {
     }
 
     #[doc(hidden)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing compile_and_apply_workflow_code_source_with_rebindings operation signature and explicit context arguments"
+    )]
     pub fn compile_and_apply_workflow_code_source_with_rebindings(
         &mut self,
         session_id: &str,

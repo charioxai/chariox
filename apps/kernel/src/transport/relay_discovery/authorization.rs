@@ -31,14 +31,25 @@ pub(crate) async fn cloud_metadata_token(config: &DaemonConfig) -> Result<String
             operation: "relay_metadata_query",
             message: "Cloud relay profile is not configured".to_string(),
         })?;
-    // Use the same scoped grant for projected inventory and fresh lookups.
-    // Issuance failure must not fall back to the machine runtime grant.
+    cloud_metadata_token_for_targets(config, visible_targets(profile).await?).await
+}
+
+pub(crate) async fn cloud_metadata_token_for_targets(
+    config: &DaemonConfig,
+    targets: Option<std::collections::BTreeSet<String>>,
+) -> Result<String, DaemonError> {
+    let profile = config
+        .cloud_relay
+        .as_ref()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "relay_metadata_query",
+            message: "Cloud relay profile is not configured".into(),
+        })?;
+    // Issuance failure must never fall back to the kernel's runtime grant.
     Ok(issue_cloud_relay_inventory_discovery_token(
         profile,
         &config.daemon_id,
-        visible_targets(profile)
-            .await?
-            .map(|ids| ids.into_iter().collect()),
+        targets.map(|ids| ids.into_iter().collect()),
     )
     .await?
     .token)
@@ -67,12 +78,10 @@ fn cloud_directory_discovery_targets(
             message: "Cloud returned an invalid kernel directory".into(),
         })?
         .iter()
-        // The owner directory retains revoked rows for account history, but
-        // Cloud rejects discovery grants containing any revoked target. An
-        // unlinked sibling must not prevent the remaining kernels renewing.
-        .filter(|target| {
-            target.get("status").and_then(serde_json::Value::as_str) != Some("REVOKED")
-        })
+        // The owner directory retains enrollment history. Live discovery needs
+        // only Cloud-fresh online targets; dormant history must not exhaust the
+        // bounded inventory grant or make an offline sibling look available.
+        .filter(|target| target.get("status").and_then(serde_json::Value::as_str) == Some("ONLINE"))
         .filter_map(|target| {
             target
                 .get("daemonId")
@@ -86,7 +95,7 @@ fn cloud_directory_discovery_targets(
 mod tests {
     use super::*;
     #[test]
-    fn cloud_directory_excludes_revoked_siblings_from_discovery_grants() {
+    fn cloud_directory_excludes_inactive_siblings_from_discovery_grants() {
         let targets = cloud_directory_discovery_targets(&serde_json::json!({
             "targets": [
                 {"daemonId": "owner", "status": "ONLINE"},
@@ -97,11 +106,27 @@ mod tests {
             ]
         }))
         .unwrap();
-        assert_eq!(targets, ["owner".to_string(), "sibling".to_string()].into());
+        assert_eq!(targets, ["owner".to_string()].into());
     }
 
     #[test]
     fn malformed_directory_fails_closed() {
         assert!(cloud_directory_discovery_targets(&serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn live_discovery_does_not_grant_offline_enrollment_history() {
+        let mut targets = (0..71)
+            .map(|id| serde_json::json!({"daemonId": format!("retired-run-{id}"), "status": "OFFLINE"}))
+            .collect::<Vec<_>>();
+        targets.extend([
+            serde_json::json!({"daemonId": "owner", "status": "ONLINE"}),
+            serde_json::json!({"daemonId": "worker", "status": "ONLINE"}),
+            serde_json::json!({"daemonId": "stale", "status": "STALE"}),
+            serde_json::json!({"daemonId": "unknown"}),
+        ]);
+        let visible =
+            cloud_directory_discovery_targets(&serde_json::json!({"targets": targets})).unwrap();
+        assert_eq!(visible, ["owner".to_string(), "worker".to_string()].into());
     }
 }

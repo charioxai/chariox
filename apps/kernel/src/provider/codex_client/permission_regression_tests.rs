@@ -39,7 +39,7 @@ impl TemporaryPermissionRoots {
     fn create_layout(&self) {
         std::fs::create_dir_all(self.selected_project().join("src"))
             .expect("selected project should be created");
-        std::fs::create_dir_all(&self.provider_account_root())
+        std::fs::create_dir_all(self.provider_account_root())
             .expect("provider account root should be created");
         std::fs::write(
             self.selected_project().join("src/main.rs"),

@@ -13,6 +13,10 @@ pub struct UserConfigSchemaEntry {
     pub description: String,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing entry operation signature and explicit context arguments"
+)]
 fn entry(
     path: &str,
     value_type: &str,
@@ -74,6 +78,8 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("history.archive.archive_before_delete", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Archive-before-delete flag; deletion flow does not currently consume it."),
         entry("history.archive.delete_operational_after_verified_archive", "bool", &["true", "false"], true, true, "no_runtime_effect", "unwired", "Delete-after-archive flag; no archive cleanup flow currently consumes it."),
         entry("history.archive.require_durable_acceptance", "bool", &["true", "false"], true, true, "none", "live", "Require durable archive acceptance for history events."),
+        entry("history.handoff.codex_brief_model", "string", &[], true, true, "none", "live", "Model that writes provider-switch handoff briefs on Codex; unset uses gpt-6-luna."),
+        entry("history.handoff.claude_brief_model", "string", &[], true, true, "none", "live", "Model that writes provider-switch handoff briefs on Claude; unset uses the source or target model."),
         entry("artifacts.operational.backend", "enum", &["filesystem"], true, false, "none", "live", "Operational artifact storage backend."),
         entry("artifacts.operational.root", "string", &[], true, true, "none", "live", "Operational artifact filesystem root."),
         entry("artifacts.operational.index_path", "string", &[], true, true, "none", "live", "Operational artifact SQLite index path."),
@@ -102,7 +108,7 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("slices.linux.screen_width", "u32", &[], true, true, "none", "live", "Linux slice virtual screen width."),
         entry("slices.linux.screen_height", "u32", &[], true, true, "none", "live", "Linux slice virtual screen height."),
         entry("kernel_access.grant_default_minutes", "u32", &[], true, true, "runtime_policy", "live", "Default access-grant term in minutes; defaults to 480."),
-        entry("kernel_access.grant_max_minutes", "u32", &[], true, true, "runtime_policy", "live", "Maximum access-grant term in minutes; defaults to 1440; cannot exceed 24 hours."),
+        entry("kernel_access.grant_max_minutes", "u32", &[], true, true, "runtime_policy", "live", "Maximum access-grant term in minutes; defaults to 1440; cannot exceed 1440."),
         entry("kernel_access.grant_extend_notice_minutes", "u32", &[], true, true, "runtime_policy", "live", "Minutes before expiry to offer an extension; defaults to 5."),
         entry("kernel_access.request_timeout_minutes", "u32", &[], true, true, "runtime_policy", "live", "Minutes to wait for an access-request answer; defaults to 10."),
         entry("kernel.websocket_host", "string", &[], true, true, "restart_required", "boot", "Kernel websocket bind host."),

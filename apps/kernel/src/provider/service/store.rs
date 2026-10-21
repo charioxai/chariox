@@ -114,6 +114,12 @@ impl ProviderProcessServiceStore {
         self.read().native_interaction_bridge()
     }
 
+    pub(crate) fn output_ready_signal(
+        &self,
+    ) -> crate::provider::output_ready::ProviderOutputReadySignal {
+        self.read().output_ready_signal()
+    }
+
     pub(crate) fn run_actor_completion_signal(
         &self,
     ) -> crate::provider::ProviderRunActorCompletionSignal {
@@ -176,6 +182,29 @@ impl ProviderProcessServiceStore {
 
     pub fn get_run(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
         self.read().get_run(run_id)
+    }
+
+    /// Presentation may use its last published projection while credential-bearing
+    /// launch holds the authority mutex. Admission and run mutation must keep using
+    /// the blocking authority reads.
+    pub(crate) fn try_get_run_for_projection(&self, run_id: &str) -> Option<RuntimeProviderRun> {
+        match self.inner.try_lock() {
+            Ok(service) => service.get_run(run_id).ok(),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+            Err(std::sync::TryLockError::Poisoned(_)) => panic!("provider service mutex poisoned"),
+        }
+    }
+
+    pub(crate) fn try_get_agent_run_for_projection(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<RuntimeProviderRun> {
+        match self.inner.try_lock() {
+            Ok(service) => service.get_run_for_agent(session_id, agent_id),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+            Err(std::sync::TryLockError::Poisoned(_)) => panic!("provider service mutex poisoned"),
+        }
     }
 
     #[doc(hidden)]
@@ -462,6 +491,10 @@ impl ProviderProcessServiceStore {
         self.write().clear_runtime(provider_run_id)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing enqueue_structured_prompt_submit operation signature and explicit context arguments"
+    )]
     pub(crate) fn enqueue_structured_prompt_submit(
         &self,
         session_id: String,
@@ -474,6 +507,7 @@ impl ProviderProcessServiceStore {
         hidden_system_context: &str,
         attachments: &[PromptAttachment],
         mode: PromptAssemblyMode,
+        private_assessment_evidence: Option<crate::prompt_assembly::AssessmentEvidence>,
         steering: bool,
     ) -> Result<(), DaemonError> {
         self.write().enqueue_structured_prompt_submit(
@@ -487,6 +521,7 @@ impl ProviderProcessServiceStore {
             hidden_system_context,
             attachments,
             mode,
+            private_assessment_evidence,
             steering,
         )
     }
@@ -499,13 +534,39 @@ impl ProviderProcessServiceStore {
         timeout: std::time::Duration,
         policy: super::super::ProviderUtilityExecutionPolicy,
     ) -> Result<String, DaemonError> {
-        self.write().run_structured_utility_prompt(
+        self.run_structured_utility_prompt_with_admission(
             run,
             visible_user_prompt,
             hidden_system_context,
             timeout,
             policy,
+            None,
         )
+    }
+
+    pub(crate) fn run_structured_utility_prompt_with_admission(
+        &self,
+        run: &RuntimeProviderRun,
+        visible_user_prompt: &str,
+        hidden_system_context: &str,
+        timeout: std::time::Duration,
+        policy: super::super::ProviderUtilityExecutionPolicy,
+        admission: Option<crate::provider::ProviderUtilityAdmission>,
+    ) -> Result<String, DaemonError> {
+        let response_rx = self.write().enqueue_structured_utility_prompt(
+            run,
+            visible_user_prompt,
+            hidden_system_context,
+            timeout,
+            policy,
+            admission,
+        )?;
+        response_rx
+            .recv()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "run structured utility prompt",
+                message: format!("provider run actor utility response failed: {error}"),
+            })?
     }
 
     pub(crate) fn enqueue_structured_prompt_abort(
@@ -607,6 +668,14 @@ impl ProviderProcessServiceStore {
         &self,
     ) -> Vec<FinishedProviderOutputPollJob> {
         self.write().drain_finished_structured_output_poll_jobs()
+    }
+
+    pub(crate) fn drain_finished_structured_output_poll_jobs_for_run(
+        &self,
+        run_id: &str,
+    ) -> Vec<FinishedProviderOutputPollJob> {
+        self.write()
+            .drain_finished_structured_output_poll_jobs_for_run(run_id)
     }
 
     pub(crate) fn apply_structured_output_metadata(

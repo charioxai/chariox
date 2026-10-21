@@ -421,6 +421,7 @@ fn session_history_load_rehydrates_file_image_attachment_previews() {
         mime: "image/png".to_string(),
         filename: Some("file-screenshot.png".to_string()),
         preview_url: None,
+        contents_base64: None,
     }];
 
     store
@@ -567,6 +568,8 @@ fn active_workflow_prompt_context_survives_history_conversion_and_query() {
         app.session_state_store(),
         app.prompt_state_owner(),
         app.active_turns.clone(),
+        app.agents.clone(),
+        app.provider_run_projection_store(),
     )
     .resolve(&entry);
 
@@ -791,6 +794,7 @@ fn canonical_history_events_rehydrate_file_image_attachment_previews() {
         mime: "image/png".to_string(),
         filename: Some("file-screenshot.png".to_string()),
         preview_url: None,
+        contents_base64: None,
     }];
     let event = HistoryEvent::transcript(7, &entry, HistoryEventTurnContext::default());
     let round_tripped = event
@@ -1432,7 +1436,7 @@ fn operational_history_enforces_size_budget_for_temp_stores() {
             Some("agent-cap"),
             TerminalOutputKind::ProviderOutput,
             Some(format!("chunk-{index}")),
-            &"x".repeat(64 * 1024),
+            "x".repeat(64 * 1024),
         );
         let event = HistoryEvent::transcript(index + 1, &entry, HistoryEventTurnContext::default());
         store.append(&event).expect("event should append");
@@ -1505,6 +1509,69 @@ fn operational_history_capture_can_be_disabled_and_reenabled_live() {
             .len(),
         1
     );
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn answered_provider_sessions_outlive_retention_and_backfill_once() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-operational-history-answered-sessions-{}-{}.db",
+        std::process::id(),
+        super::unix_epoch_ms()
+    ));
+    let answer = |sequence: u64, provider_session_id: &str| {
+        let mut event = HistoryEvent::transcript(
+            sequence,
+            &SessionHistoryEntry::provider_output(
+                "session-1",
+                "run-1",
+                Some("agent-1"),
+                TerminalOutputKind::ProviderOutput,
+                None,
+                "answer",
+            ),
+            HistoryEventTurnContext {
+                provider_session_id: Some(provider_session_id.to_string()),
+                ..HistoryEventTurnContext::default()
+            },
+        );
+        event.timestamp_ms = 1_000;
+        event
+    };
+    let answered = |store: &OperationalHistoryStore, provider_session_id: &str| {
+        store
+            .provider_session_answered_agent("session-1", "agent-1", provider_session_id)
+            .expect("answered sessions should load")
+    };
+
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history should open");
+    store
+        .append(&answer(1, "thread-1"))
+        .expect("answer should append");
+    store
+        .prune_events_before(2_000, true)
+        .expect("retention should prune the answer");
+    assert!(answered(&store, "thread-1"));
+    assert!(!answered(&store, "thread-2"));
+    store
+        .append(&answer(2, "thread-2"))
+        .expect("answer should append");
+    drop(store);
+
+    // A history written before the table existed is backfilled when opened.
+    rusqlite::Connection::open(&path)
+        .and_then(|connection| {
+            connection.execute("DROP TABLE history_answered_provider_sessions", [])
+        })
+        .expect("the answered-session table should drop");
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history should reopen");
+    assert!(answered(&store, "thread-2"));
 
     drop(store);
     let _ = std::fs::remove_file(&path);

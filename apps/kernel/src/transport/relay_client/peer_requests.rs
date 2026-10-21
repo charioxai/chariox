@@ -36,6 +36,7 @@ pub(super) async fn handle_daemon_peer_request(
         validate_optional_daemon_sender(caller_identity.as_ref(), &encrypted_request)
     {
         return RelayRequestOutcome {
+            display_event: None,
             encrypted_response: None,
             error: Some(error),
         };
@@ -50,6 +51,7 @@ pub(super) async fn handle_daemon_peer_request(
             Ok(payload) => payload,
             Err(error) => {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
                         "invalid_request",
@@ -63,6 +65,7 @@ pub(super) async fn handle_daemon_peer_request(
             Ok(request) => request,
             Err(error) => {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
                         "invalid_request",
@@ -111,6 +114,7 @@ pub(super) async fn handle_daemon_peer_request(
     {
         if is_lease_worker && !lease_worker_peer_request_allowed(&request) {
             return RelayRequestOutcome {
+                display_event: None,
                 encrypted_response: None,
                 error: Some(relay_error(
                     "kernel_runtime_role_denied",
@@ -132,6 +136,7 @@ pub(super) async fn handle_daemon_peer_request(
             Ok(caller) => caller,
             Err(error) => {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(error),
                 };
@@ -151,6 +156,7 @@ pub(super) async fn handle_daemon_peer_request(
                     && caller.owner_user_id != *owner_user_id)
             {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
                         "unauthorized",
@@ -189,11 +195,13 @@ pub(super) async fn handle_daemon_peer_request(
                 );
                 if absent_cleanup {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
                 }
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
                         "unauthorized",
@@ -253,6 +261,7 @@ pub(super) async fn handle_daemon_peer_request(
             Ok(identity) => identity,
             Err(error) => {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(error),
                 }
@@ -260,6 +269,7 @@ pub(super) async fn handle_daemon_peer_request(
         };
         let Some(sender) = canonical_peer_daemon_id(from_daemon_id) else {
             return RelayRequestOutcome {
+                display_event: None,
                 encrypted_response: None,
                 error: Some(relay_error(
                     "unauthorized",
@@ -268,11 +278,13 @@ pub(super) async fn handle_daemon_peer_request(
                 )),
             };
         };
-        if identity.subject.trim().is_empty()
+        if sender.starts_with("slice:")
+            || identity.subject.trim().is_empty()
             || (identity.subject_kind == chariox_relay::auth::RelaySubjectKind::Kernel
                 && identity.subject != sender)
         {
             return RelayRequestOutcome {
+                display_event: None,
                 encrypted_response: None,
                 error: Some(relay_error(
                     "unauthorized",
@@ -283,6 +295,7 @@ pub(super) async fn handle_daemon_peer_request(
         }
         let Some(owner) = router.notification_peer_owner(identity) else {
             return RelayRequestOutcome {
+                display_event: None,
                 encrypted_response: None,
                 error: Some(relay_error(
                     "unauthorized",
@@ -303,6 +316,7 @@ pub(super) async fn handle_daemon_peer_request(
             Ok(response) => response,
             Err(error) => {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(map_relay_error(&error)),
                 }
@@ -355,12 +369,48 @@ pub(super) async fn handle_daemon_peer_request(
         Ok(router) => Arc::new(router),
         Err(error) => {
             return RelayRequestOutcome {
+                display_event: None,
                 encrypted_response: None,
                 error: Some(map_relay_error(&error)),
             }
         }
     };
     let response = match request {
+        RelayPeerRequest::SetLeasedComputerGrant {
+            leased_agent_id,
+            epoch,
+            grant,
+        } => {
+            match router
+                .runtime_state()
+                .install_leased_computer_grant(&leased_agent_id, &epoch, grant)
+                .await
+            {
+                Ok(()) => RelayPeerResponse::LeasedComputerGrantUpdated {},
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::CheckLeasedComputerGrant { context, epoch } => {
+            match router
+                .runtime_state()
+                .check_leased_computer_grant(&context, &epoch)
+            {
+                Ok(grant) => RelayPeerResponse::LeasedComputerGrantChecked { grant },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::ListWorkflowNotificationSources { .. }
         | RelayPeerRequest::SubscribeWorkflowNotifications { .. }
         | RelayPeerRequest::UnsubscribeWorkflowNotifications { .. }
@@ -389,9 +439,82 @@ pub(super) async fn handle_daemon_peer_request(
                 },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
+                }
+            }
+        }
+        RelayPeerRequest::OpenRoomSharedDisplay {
+            session_id,
+            slice_id,
+            lease_id,
+            viewer_public_key,
+            audience,
+            offer,
+            viewport,
+            target,
+        } => {
+            match router
+                .runtime_state()
+                .execute_bound_room_shared_display_open(
+                    stable_peer_daemon_id(from_daemon_id),
+                    &requester_public_key,
+                    &session_id,
+                    &slice_id,
+                    &lease_id,
+                    viewer_public_key,
+                    audience,
+                    offer,
+                    viewport,
+                    target,
+                )
+                .await
+            {
+                Ok(result) => RelayPeerResponse::RoomSharedDisplay {
+                    session_id,
+                    slice_id,
+                    result,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
+        RelayPeerRequest::RoomSharedDisplay {
+            session_id,
+            slice_id,
+            lease_id,
+            command,
+        } => {
+            match router
+                .runtime_state()
+                .execute_bound_room_shared_display(
+                    stable_peer_daemon_id(from_daemon_id),
+                    &requester_public_key,
+                    &session_id,
+                    &slice_id,
+                    &lease_id,
+                    command,
+                )
+                .await
+            {
+                Ok(result) => RelayPeerResponse::RoomSharedDisplay {
+                    session_id,
+                    slice_id,
+                    result,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
                 }
             }
         }
@@ -417,6 +540,7 @@ pub(super) async fn handle_daemon_peer_request(
                 },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -443,6 +567,7 @@ pub(super) async fn handle_daemon_peer_request(
                 },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -472,6 +597,7 @@ pub(super) async fn handle_daemon_peer_request(
                 },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -502,13 +628,18 @@ pub(super) async fn handle_daemon_peer_request(
                 },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
                 }
             }
         }
-        RelayPeerRequest::Ping { value } => RelayPeerResponse::Pong { value, daemon_id },
+        RelayPeerRequest::Ping { value } => RelayPeerResponse::Pong {
+            value,
+            daemon_id,
+            relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION),
+        },
         RelayPeerRequest::InstallManagedSliceRelayToken {
             slice_id,
             owner_kernel_id,
@@ -704,6 +835,7 @@ pub(super) async fn handle_daemon_peer_request(
                 },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -716,6 +848,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(_) => RelayPeerResponse::ExecutionLeaseDestroyed { lease_id },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -752,6 +885,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(leased_agent) => RelayPeerResponse::LeasedAgentSpawned { leased_agent },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -764,6 +898,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(_) => RelayPeerResponse::LeasedAgentDestroyed { leased_agent_id },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -786,6 +921,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(leased_agent) => RelayPeerResponse::LeasedAgentConfigUpdated { leased_agent },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -812,6 +948,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(leased_agent) => RelayPeerResponse::LeasedAgentProfileUpdated { leased_agent },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -829,6 +966,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(leased_agent) => RelayPeerResponse::LeasedAgentMetaModeUpdated { leased_agent },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -851,6 +989,7 @@ pub(super) async fn handle_daemon_peer_request(
                 }
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -893,6 +1032,7 @@ pub(super) async fn handle_daemon_peer_request(
                 }
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -917,6 +1057,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(byte_count) => RelayPeerResponse::LeasedNativeProviderInputSent { byte_count },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -945,6 +1086,7 @@ pub(super) async fn handle_daemon_peer_request(
                 },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -990,12 +1132,29 @@ pub(super) async fn handle_daemon_peer_request(
                 },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
                 }
             }
         }
+        RelayPeerRequest::LeasedWatchedProcess {
+            leased_agent_id,
+            action,
+        } => match router
+            .relay_leased_watched_process(&leased_agent_id, action)
+            .await
+        {
+            Ok(receipt) => RelayPeerResponse::LeasedWatchedProcess { receipt },
+            Err(error) => {
+                return RelayRequestOutcome {
+                    display_event: None,
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                }
+            }
+        },
         RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id,
             home_prompt_id,
@@ -1006,6 +1165,7 @@ pub(super) async fn handle_daemon_peer_request(
             Ok(receipt) => RelayPeerResponse::LeasedPromptReceiptQueried { receipt },
             Err(error) => {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(map_relay_error(&error)),
                 };
@@ -1032,6 +1192,25 @@ pub(super) async fn handle_daemon_peer_request(
             },
             Err(error) => {
                 return RelayRequestOutcome {
+                    display_event: None,
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                };
+            }
+        },
+        RelayPeerRequest::UpdateLeasedSudo {
+            leased_agent_id,
+            home_prompt_id,
+            grant,
+        } => match router
+            .runtime_state()
+            .update_relay_leased_sudo(&leased_agent_id, &home_prompt_id, grant)
+            .await
+        {
+            Ok(()) => RelayPeerResponse::LeasedSudoUpdated,
+            Err(error) => {
+                return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(map_relay_error(&error)),
                 };
@@ -1088,6 +1267,7 @@ pub(super) async fn handle_daemon_peer_request(
                 }
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1113,6 +1293,7 @@ pub(super) async fn handle_daemon_peer_request(
                 },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1171,6 +1352,7 @@ pub(super) async fn handle_daemon_peer_request(
                 }
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1193,6 +1375,7 @@ pub(super) async fn handle_daemon_peer_request(
             }
             Err(error) => {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(map_relay_error(&error)),
                 };
@@ -1214,6 +1397,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(cancellation) => RelayPeerResponse::LeasedPromptCancelled { cancellation },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1241,6 +1425,7 @@ pub(super) async fn handle_daemon_peer_request(
                 }
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1279,6 +1464,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(setup) => RelayPeerResponse::LeasedProjectEnvironmentSetupStarted { setup },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1316,6 +1502,7 @@ pub(super) async fn handle_daemon_peer_request(
                 }
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1340,6 +1527,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(setup) => RelayPeerResponse::LeasedProjectEnvironmentSetupStatus { setup },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1364,6 +1552,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(setup) => RelayPeerResponse::LeasedProjectEnvironmentSetupCancelled { setup },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1388,6 +1577,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(setup) => RelayPeerResponse::LeasedProjectEnvironmentSetupRetried { setup },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1406,6 +1596,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(result) => RelayPeerResponse::WorkflowRuntimeToolHandled { result },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1437,6 +1628,7 @@ pub(super) async fn handle_daemon_peer_request(
                 }
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1465,6 +1657,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(()) => RelayPeerResponse::WorkspaceLiveSyncRuntimeToolFinalized,
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1489,6 +1682,7 @@ pub(super) async fn handle_daemon_peer_request(
                 }
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1507,6 +1701,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(result) => RelayPeerResponse::MetaRuntimeToolHandled { result },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1529,6 +1724,7 @@ pub(super) async fn handle_daemon_peer_request(
                 },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1548,6 +1744,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(result) => RelayPeerResponse::HomeExtensionToolHandled { result },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1568,6 +1765,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(response) => RelayPeerResponse::HomeMcpProxyHandled { response },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1586,6 +1784,7 @@ pub(super) async fn handle_daemon_peer_request(
                 },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1604,6 +1803,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(result) => RelayPeerResponse::HomeCredentialToolHandled { result },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1630,6 +1830,7 @@ pub(super) async fn handle_daemon_peer_request(
                 }
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1646,6 +1847,7 @@ pub(super) async fn handle_daemon_peer_request(
                 }
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1669,6 +1871,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(()) => RelayPeerResponse::NativeInteractionUpdated {},
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     }
@@ -1690,6 +1893,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(resolution) => RelayPeerResponse::NativeInteractionResolved { resolution },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1704,6 +1908,7 @@ pub(super) async fn handle_daemon_peer_request(
         } => {
             if context.home_kernel_id != stable_peer_daemon_id(from_daemon_id) {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
                         "unauthorized",
@@ -1719,6 +1924,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(response) => response,
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1742,6 +1948,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(bytes) => RelayPeerResponse::ProjectPrivateFile { bytes },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1754,6 +1961,7 @@ pub(super) async fn handle_daemon_peer_request(
         } => {
             if context.home_kernel_id != stable_peer_daemon_id(from_daemon_id) {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
                         "unauthorized",
@@ -1769,6 +1977,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(exists) => RelayPeerResponse::LeasedProjectEnvironmentUsed { exists },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1782,6 +1991,7 @@ pub(super) async fn handle_daemon_peer_request(
         } => {
             if context.home_kernel_id != stable_peer_daemon_id(from_daemon_id) {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
                         "unauthorized",
@@ -1797,6 +2007,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(bytes) => RelayPeerResponse::ProjectPrivateFile { bytes },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1806,6 +2017,7 @@ pub(super) async fn handle_daemon_peer_request(
         RelayPeerRequest::ReadLeasedProjectEnvironment { context, adjust } => {
             if context.home_kernel_id != stable_peer_daemon_id(from_daemon_id) {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
                         "unauthorized",
@@ -1818,6 +2030,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(response) => response,
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1842,6 +2055,7 @@ pub(super) async fn handle_daemon_peer_request(
                     && layer.sealed.values.sender_public_key != requester_public_key)
             {
                 return RelayRequestOutcome {
+                    display_event: None,
                     encrypted_response: None,
                     error: Some(relay_error(
                         "unauthorized",
@@ -1864,6 +2078,7 @@ pub(super) async fn handle_daemon_peer_request(
                 }
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1878,6 +2093,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(materialized) => RelayPeerResponse::RemoteSkillPackagesEnsured { materialized },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1898,6 +2114,7 @@ pub(super) async fn handle_daemon_peer_request(
                 },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -1915,6 +2132,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok(results) => RelayPeerResponse::RemoteMcpAvailabilityChecked { results },
                 Err(error) => {
                     return RelayRequestOutcome {
+                        display_event: None,
                         encrypted_response: None,
                         error: Some(map_relay_error(&error)),
                     };
@@ -2085,6 +2303,7 @@ pub(super) async fn handle_daemon_peer_request(
     }) {
         Ok(outcome) => outcome,
         Err(error) => RelayRequestOutcome {
+            display_event: None,
             encrypted_response: None,
             error: Some(map_relay_error(&error)),
         },
@@ -2092,6 +2311,10 @@ pub(super) async fn handle_daemon_peer_request(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing send_authenticated_peer_request_for_test operation signature and explicit context arguments"
+)]
 pub(crate) async fn send_authenticated_peer_request_for_test(
     router: &Arc<CommandRouter>,
     state: &Arc<RwLock<RelayClientState>>,
@@ -2167,6 +2390,7 @@ fn encrypt_peer_response(
         Ok(bytes) => bytes,
         Err(error) => {
             return RelayRequestOutcome {
+                display_event: None,
                 encrypted_response: None,
                 error: Some(relay_error(
                     "relay_request_failed",
@@ -2182,10 +2406,12 @@ fn encrypt_peer_response(
         &plaintext,
     ) {
         Ok(encrypted_response) => RelayRequestOutcome {
+            display_event: None,
             encrypted_response: Some(encrypted_response),
             error: None,
         },
         Err(error) => RelayRequestOutcome {
+            display_event: None,
             encrypted_response: None,
             error: Some(relay_error(
                 "relay_request_failed",
@@ -2379,7 +2605,10 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
         | RelayPeerRequest::SpawnLeasedAgent { lease_id, .. } => {
             Some(LeaseResource::ExecutionLease(lease_id))
         }
-        RelayPeerRequest::DestroyLeasedAgent { leased_agent_id }
+        RelayPeerRequest::SetLeasedComputerGrant {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::DestroyLeasedAgent { leased_agent_id }
         | RelayPeerRequest::UpdateLeasedAgentConfig {
             leased_agent_id, ..
         }
@@ -2404,7 +2633,13 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
         | RelayPeerRequest::SubmitLeasedPrompt {
             leased_agent_id, ..
         }
+        | RelayPeerRequest::LeasedWatchedProcess {
+            leased_agent_id, ..
+        }
         | RelayPeerRequest::GetLeasedPromptReceipt {
+            leased_agent_id, ..
+        }
+        | RelayPeerRequest::UpdateLeasedSudo {
             leased_agent_id, ..
         }
         | RelayPeerRequest::ReconcileLeasedPromptSteerReceipt {
@@ -2522,6 +2757,36 @@ mod tests {
         ManagedContextPackageKernel, ManagedContextPackageProviderAccounts,
     };
 
+    #[test]
+    fn mp11_leased_computer_set_requires_exact_lease_caller() {
+        let request = RelayPeerRequest::SetLeasedComputerGrant {
+            leased_agent_id: "leased".into(),
+            epoch: "epoch".into(),
+            grant: None,
+        };
+        assert!(matches!(
+            lease_resource(&request),
+            Some(LeaseResource::LeasedAgent("leased"))
+        ));
+        assert!(lease_worker_peer_request_allowed(&request));
+    }
+    #[test]
+    fn mp11_leased_computer_check_rejects_unrelated_verified_peer() {
+        std::thread::Builder::new()
+            .name("mp11-leased-computer-peer".into())
+            .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(mp11_unrelated_forwarded_peer("computer"));
+            })
+            .unwrap()
+            .join()
+            .unwrap_or_else(|error| std::panic::resume_unwind(error));
+    }
+
     #[tokio::test]
     async fn mp11_forwarded_capability_rejects_unrelated_verified_peer() {
         mp11_unrelated_forwarded_peer("capability").await;
@@ -2566,7 +2831,20 @@ mod tests {
                 },
             )
             .unwrap();
-        let request = if kind == "credential" {
+        let request = if kind == "computer" {
+            RelayPeerRequest::CheckLeasedComputerGrant {
+                context: crate::transport::relay_peer::RemoteExtensionInvocationContext {
+                    home_kernel_id: home.daemon_id.clone(),
+                    home_session_id: session.id().into(),
+                    home_agent_id: agent.id().into(),
+                    leased_agent_id: "victim-leased-agent".into(),
+                    worker_kernel_id: Some("victim-worker".into()),
+                    worker_machine_id: Some("victim-machine".into()),
+                    worker_provider_run_id: "victim-run".into(),
+                },
+                epoch: "epoch".into(),
+            }
+        } else if kind == "credential" {
             RelayPeerRequest::ResolveHomeCredentialSecret {
                 context: crate::transport::relay_peer::RemoteExtensionInvocationContext {
                     home_kernel_id: home.daemon_id.clone(),
@@ -2754,6 +3032,10 @@ mod tests {
         config
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing send_lease_worker_request operation signature and explicit context arguments"
+    )]
     async fn send_lease_worker_request(
         router: &Arc<CommandRouter>,
         state: &Arc<RwLock<RelayClientState>>,

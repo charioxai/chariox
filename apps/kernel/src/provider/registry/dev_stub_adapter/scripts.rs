@@ -52,7 +52,8 @@ fn dev_stub_terminal_echo_script() -> String {
 }
 
 fn dev_stub_native_tui_idle_script() -> String {
-    "stty -echo 2>/dev/null || true; (sleep 3600; kill $$ 2>/dev/null) & while :; do IFS= read -r _line || sleep 1; done"
+    // Match native CLIs that keep their session alive after a prompt's Ctrl-C.
+    "trap ':' INT; stty -echo 2>/dev/null || true; while :; do IFS= read -r _line || sleep 1; done"
         .to_string()
 }
 
@@ -727,8 +728,8 @@ fn dev_stub_workflow_intermediate_payload_script(
         r#"const http = require("node:http");
 const runtimeUrl = process.env.CHARIOX_DEV_STUB_RUNTIME_MCP_URL;
 const runtimeToken = process.env.CHARIOX_DEV_STUB_RUNTIME_MCP_TOKEN;
-const finalPayload = {payload_json};
-const intermediateOutput = {intermediate_json};
+const finalPayload = {payload};
+const intermediateOutput = {intermediate_output};
 const outputDelayMs = {output_delay_ms};
 const emittedDeliveryTokens = new Set();
 const emittedSourceProofs = new Set();
@@ -857,9 +858,6 @@ process.stdin.on("data", (chunk) => {{
 }});
 process.stdin.resume();
 "#,
-        payload_json = payload,
-        intermediate_json = intermediate_output,
-        output_delay_ms = output_delay_ms,
     );
     format!(
         "stty -echo 2>/dev/null || true; node -e {}",
@@ -1078,10 +1076,7 @@ fn dev_stub_semantic_renderer_script() -> String {
         "summary": "semantic renderer stub",
         "output": { "message": response }
     });
-    format!(
-        "while true; do sleep 2; printf '%s\\n%s\\n%s\\n' '```json' '{}' '```'; done",
-        payload
-    )
+    format!("while true; do sleep 2; printf '%s\\n%s\\n%s\\n' '```json' '{payload}' '```'; done")
 }
 
 fn dev_stub_slow_first_output_script() -> String {

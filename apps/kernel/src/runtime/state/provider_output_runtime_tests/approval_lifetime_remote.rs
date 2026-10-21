@@ -648,3 +648,64 @@ async fn mp08_mp10_mp11_idle_home_review_prefers_live_projection_over_ended_hist
         .unwrap();
     assert_eq!(receiver.await.unwrap().status, "answered");
 }
+#[tokio::test]
+async fn approval_lifetime_remote_retried_forward_joins_the_same_decision() {
+    // A worker re-forwards an approval after a relay hiccup: the human sees one
+    // card, both forwards get its answer, and a forward after the answer gets
+    // that answer instead of a second card.
+    let f = home(Some("worker-run"), true).await;
+    let origin = NativeInteractionOrigin::Prompt {
+        provider_run_id: f.run.clone(),
+        prompt_id: "home-A".into(),
+    };
+    let forward = |f: &Fixture| {
+        let runtime = f.runtime.clone();
+        let context = context(f, true);
+        let interaction = native_approval(f, Some(origin.clone()));
+        tokio::spawn(async move {
+            crate::runtime::native_interaction_bridge::forward_relay_native_interaction(
+                &runtime,
+                context,
+                interaction,
+            )
+            .await
+        })
+    };
+    let first = forward(&f);
+    let pending = || {
+        f.runtime
+            .owned
+            .session_snapshot(&f.session)
+            .unwrap()
+            .active_interactions()
+            .len()
+    };
+    while pending() == 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let retry = forward(&f);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(pending(), 1);
+    f.runtime
+        .resolve_runtime_interaction(&f.session, &f.id(), "allow", None)
+        .await
+        .unwrap();
+    for handle in [first, retry] {
+        let resolution = tokio::time::timeout(std::time::Duration::from_secs(2), handle)
+            .await
+            .expect("every forward of the decision gets its answer")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (resolution.status.as_str(), resolution.choice_id.as_deref()),
+            ("answered", Some("allow"))
+        );
+    }
+    let late = tokio::time::timeout(std::time::Duration::from_secs(2), forward(&f))
+        .await
+        .expect("a forward after the answer gets the answer")
+        .unwrap()
+        .unwrap();
+    assert_eq!(late.choice_id.as_deref(), Some("allow"));
+    assert_eq!(pending(), 0);
+}

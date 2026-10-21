@@ -1,6 +1,77 @@
 use super::*;
 
 #[tokio::test]
+async fn panes_stream_reconciliation_clock_does_not_repeat_unchanged_snapshots() {
+    // MP-08 / MP-10: clock/revision-only refreshes must not queue full session
+    // payloads ahead of ready text or make every client rebuild unchanged DOM.
+    let worktree = crate::test_support::TestWorktree::new("panes-stream-snapshot-clock");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "snapshot-clock-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let first = runtime
+        .watch_relay_subscription_state(session.id(), attachment.id(), true, None, 0)
+        .await;
+    let crate::runtime_transport::WatchResult::Ok { snapshot, .. } = first else {
+        panic!("initial snapshot unavailable")
+    };
+    let mut previous = snapshot.unwrap();
+    previous.metadata.generated_at_ms = 0;
+    previous.metadata.last_event_id = u64::MAX;
+    let same = runtime
+        .watch_relay_subscription_state(
+            session.id(),
+            attachment.id(),
+            true,
+            Some(previous.clone()),
+            0,
+        )
+        .await;
+    assert!(
+        matches!(same,
+            crate::runtime_transport::WatchResult::Ok { snapshot, .. } if snapshot.is_none()
+        ),
+        "clock-only reconciliation sent unchanged session data"
+    );
+    let mut different_data = previous.clone();
+    different_data.session.set_alias(Some("stale-alias".into()));
+    let changed_data = runtime
+        .watch_relay_subscription_state(
+            session.id(),
+            attachment.id(),
+            true,
+            Some(different_data),
+            0,
+        )
+        .await;
+    assert!(
+        matches!(changed_data,
+            crate::runtime_transport::WatchResult::Ok { snapshot, .. } if snapshot.is_some()
+        ),
+        "session data changes must still refresh the client"
+    );
+    previous.metadata.projection_version += 1;
+    let changed = runtime
+        .watch_relay_subscription_state(session.id(), attachment.id(), true, Some(previous), 0)
+        .await;
+    assert!(
+        matches!(changed,
+            crate::runtime_transport::WatchResult::Ok { snapshot, .. } if snapshot.is_some()
+        ),
+        "projection contract changes must still refresh the client"
+    );
+}
+
+#[tokio::test]
 async fn started_prompt_history_records_prompt_activation_timestamp() {
     let worktree = crate::test_support::TestWorktree::new("history-projection-prompt-time");
     let mut app =
@@ -511,5 +582,37 @@ async fn rejected_owned_local_prompt_does_not_persist_history() {
             .filter(|entry| entry.kind == crate::history::SessionHistoryEntryKind::UserPrompt)
             .count(),
         1
+    );
+}
+
+#[tokio::test]
+async fn projection_only_subscription_does_not_wait_for_the_app_lock() {
+    // MP-08 / MP-10 / MP-11: prove the production owner already skips the
+    // legacy app-lock/provider pump on a projection-only subscription wake.
+    let worktree = crate::test_support::TestWorktree::new("panes-projection-only-lock");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "projection-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let held = app.lock().await;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(150),
+        runtime.watch_relay_subscription_state(session.id(), attachment.id(), true, None, 0),
+    )
+    .await;
+    drop(held);
+    assert!(
+        matches!(result, Ok(crate::runtime_transport::WatchResult::Ok { records, snapshot, .. })
+        if records.is_empty() && snapshot.is_some()),
+        "projection-only watch waited for the app lock"
     );
 }

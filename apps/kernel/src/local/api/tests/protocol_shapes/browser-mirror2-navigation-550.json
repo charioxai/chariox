@@ -1,0 +1,54 @@
+{
+  "protocol_version": 550,
+  "relay_peer_version": 147,
+  "commands": [
+    {
+      "KernelBrowser": {
+        "command": {
+          "op": "mirror_subscribe",
+          "tab_id": "t",
+          "generation": 1,
+          "device_scale_factor": 2,
+          "wire": 2,
+          "navigation_preview": true
+        }
+      }
+    },
+    {
+      "KernelBrowser": {
+        "command": {
+          "op": "mirror_next",
+          "subscription_id": "s",
+          "generation": 1,
+          "after_sequence": 2,
+          "drift_nodes": [],
+          "wait_ms": 0,
+          "flush": true
+        }
+      }
+    }
+  ],
+  "preview": {
+    "wire": 2,
+    "subscription_id": "s",
+    "tab_id": "t",
+    "generation": 1,
+    "document_id": "new",
+    "sequence": 2,
+    "base_sequence": null,
+    "reset": true,
+    "fallback": "navigation_preview",
+    "snapshot_complete": false,
+    "css_width": 1280,
+    "css_height": 800,
+    "device_scale_factor": 2,
+    "scroll": [
+      0,
+      0
+    ],
+    "focused": null,
+    "selection": null,
+    "resources": [],
+    "tiles": []
+  }
+}

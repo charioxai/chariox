@@ -59,6 +59,14 @@ A change is done when it works on the real path a user takes: real kernel, relay
 - Don't touch the reviewer's services and state (`~/.chariox-reviewer`).
 - Clean up what you started.
 
+## Secrets and agents
+
+UX comes first. Agents are benign and act for the user. Chariox gives them tools to finish secret workflows, such as Vault fill by handle and the secret-capture helper, and does not gatekeep them.
+
+- Guard one thing: the product must not hand a Vault value to the model on its own. Keep the Vault-filled field masked in what the model sees (frames, accessibility and DOM text), and never echo Vault values in tool results, history, logs or traces.
+- Don't guard secrets that are visible on screens, terminals or pages, anything an agent does with a value itself (copy, paste, move, re-display), or what a person types.
+- A guard that blocks or slows an agent or the user's view without protecting what the model sees is a bug.
+
 ## Commits and pull requests
 
 - A commit message is a short summary of the change: one subject line, and a few short lines only if needed. No Co-Authored-By lines, no agent or model names, no logs.

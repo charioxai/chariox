@@ -113,7 +113,7 @@ class Handler(socketserver.StreamRequestHandler):
                 result = {}
                 with lock:
                     state = json.loads(state_path.read_text()) if state_path.exists() else {'threads': {}, 'resumes': []}
-                    notification = None
+                    notification = resumed = None
                     if method == 'initialize':
                         if fail_relaunch:
                             self.send({'id': request['id'], 'error': {'code': -32000, 'message': 'synthetic replacement initialization failed'}})
@@ -146,9 +146,14 @@ class Handler(socketserver.StreamRequestHandler):
                                 failure = json.loads(error.read())['error']
                             notification = {'method':'turn/completed', 'params':{'threadId':params['threadId'], 'turn':{'id':turn_id,'status':'failed','error':{'message':failure}}}}
                         else:
-                            (home / 'synthetic-resumed').write_text(turn_id)
-                            notification = {'method':'turn/completed', 'params':{'threadId':params['threadId'], 'turn':{'id':turn_id,'status':'completed'}}}
-                    state_path.write_text(json.dumps(state))
+                            resumed = turn_id
+                            
+                            if not (home / 'synthetic-hold-sudo').exists(): notification = {'method':'turn/completed', 'params':{'threadId':params['threadId'], 'turn':{'id':turn_id,'status':'completed'}}}
+                    # The test reads the turns once the resume marker exists.
+                    state_path.with_suffix('.tmp').write_text(json.dumps(state))
+                    state_path.with_suffix('.tmp').replace(state_path)
+                    if resumed:
+                        (home / 'synthetic-resumed').write_text(resumed)
                 self.send({'id': request['id'], 'result': result})
                 if notification: self.send(notification)
         except (EOFError, BrokenPipeError, ConnectionResetError):

@@ -1255,6 +1255,78 @@ mod tests {
 mod metadata_discovery_tests {
     use super::*;
     #[test]
+    fn review971_assessment_denies_native_shell_file_network_and_mcp_requests() {
+        use std::{net::TcpListener, thread};
+        use tokio_tungstenite::tungstenite::{accept, connect};
+        let methods = [
+            (
+                "item/commandExecution/requestApproval",
+                serde_json::json!({"decision":"decline"}),
+            ),
+            (
+                "item/fileChange/requestApproval",
+                serde_json::json!({"decision":"decline"}),
+            ),
+            (
+                "execCommandApproval",
+                serde_json::json!({"decision":"denied"}),
+            ),
+            (
+                "applyPatchApproval",
+                serde_json::json!({"decision":"denied"}),
+            ),
+            (
+                "item/permissions/requestApproval",
+                serde_json::json!({"permissions":{},"scope":"turn"}),
+            ),
+            (
+                "item/tool/call",
+                serde_json::json!({"success":false,"contentItems":[]}),
+            ),
+            (
+                "mcpServer/elicitation/request",
+                serde_json::json!({"action":"decline","content":null,"_meta":null}),
+            ),
+        ];
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = accept(stream).unwrap();
+            for (method, expected) in methods {
+                let response: serde_json::Value =
+                    serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+                assert_eq!(
+                    response["result"], expected,
+                    "{method} must deny native work without an approval bridge"
+                );
+            }
+        });
+        let client = CodexClient::new("assessment", &endpoint)
+            .unwrap()
+            .with_metadata_only_discovery();
+        let (mut socket, _) = connect(&endpoint).unwrap();
+        for method in [
+            "item/commandExecution/requestApproval",
+            "item/fileChange/requestApproval",
+            "execCommandApproval",
+            "applyPatchApproval",
+            "item/permissions/requestApproval",
+            "item/tool/call",
+            "mcpServer/elicitation/request",
+        ] {
+            let request = serde_json::from_value(serde_json::json!({
+                "id": 1, "method": method,
+                "params": {"command":"touch unauthorized", "permissions":{"network":{"enabled":true},"fileSystem":{"write":["/project"]}}}
+            })).unwrap();
+            assert!(client
+                .respond_to_server_request(&mut socket, &request)
+                .unwrap());
+        }
+        server.join().unwrap();
+    }
+
+    #[test]
     fn mp08_mp11_source_discovery_does_not_require_a_durable_rollout() {
         let client = CodexClient::new("discovery", "ws://127.0.0.1:1")
             .unwrap()

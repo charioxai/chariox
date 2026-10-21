@@ -206,3 +206,145 @@ fn retry_messages_are_bounded_and_invalid_dates_do_not_panic() {
     let rendered = super::transcript::format_session_status(&status);
     assert!(!rendered.contains("Next retry:"));
 }
+
+// MP-08 / MP-10 / MP-11: an open SSE socket does not prove HTTP liveness.
+#[test]
+fn exhausted_status_poll_error_does_not_leave_an_active_turn_running() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    // Reserve an owned address, then close its listener so all bounded native
+    // HTTP transport retries fail while the event channel remains connected.
+    drop(listener);
+    let (_sender, receiver) = mpsc::channel();
+    let mut state = OpenCodeRuntimeState::new(
+        format!("http://{address}"),
+        "session-1".into(),
+        OpenCodeEventSubscription::for_tests(receiver),
+    );
+    state.note_prompt_submitted("message-user".into());
+    let error = drain_opencode_events(&test_run(), &mut state, None)
+        .err()
+        .expect("exhausted native status errors must reach the run actor");
+    assert!(error.to_string().contains("session_status"), "{error}");
+}
+
+#[test]
+fn status_failure_preserves_drained_text_and_tool_output_through_http_recovery() {
+    use crate::provider::opencode_client::OpenCodeEvent;
+    use crate::provider::OpenCodeMessage;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let (sender, receiver) = mpsc::channel();
+    let mut state = OpenCodeRuntimeState::new(
+        format!("http://{address}"),
+        "session-1".into(),
+        OpenCodeEventSubscription::for_tests(receiver),
+    );
+    state.note_prompt_submitted("message-user".into());
+    let message: OpenCodeMessage = serde_json::from_value(serde_json::json!({
+        "info": {"id":"assistant-1", "sessionID":"session-1", "role":"assistant", "parentID":"message-user", "finish":"stop", "time":{"completed":1}},
+        "parts": [
+            {"id":"text-1", "sessionID":"session-1", "messageID":"assistant-1", "type":"text", "text":"already streamed answer"},
+            {"id":"tool-1", "sessionID":"session-1", "messageID":"assistant-1", "type":"tool", "tool":"bash", "state":{"status":"completed", "input":{"command":"git status"}, "output":"already streamed tool result"}}
+        ]
+    })).unwrap();
+    sender
+        .send(OpenCodeEvent::MessageUpdated {
+            info: message.info.clone(),
+        })
+        .unwrap();
+    for part in &message.parts {
+        sender
+            .send(OpenCodeEvent::MessagePartUpdated {
+                part: Box::new(part.clone()),
+            })
+            .unwrap();
+    }
+    let mut first = drain_opencode_events(&test_run(), &mut state, None)
+        .expect("failed status HTTP must not discard consumed SSE output");
+    // Ready output may be split at the bounded drain's render budget.
+    for _ in 0..message.parts.len() {
+        if first
+            .chunks
+            .iter()
+            .any(|chunk| chunk.kind == TerminalOutputKind::ProviderTool)
+        {
+            break;
+        }
+        let next = drain_opencode_events(&test_run(), &mut state, None)
+            .expect("remaining ready SSE output must be delivered before quiet HTTP polling");
+        assert!(!next.prompt_completed);
+        first.chunks.extend(next.chunks);
+        first.completions.extend(next.completions);
+        first.notices.extend(next.notices);
+    }
+    assert!(!first.prompt_completed);
+    assert!(
+        first.notices.is_empty(),
+        "ready SSE output must not wait for a speculative HTTP poll"
+    );
+    assert_eq!(
+        first
+            .chunks
+            .iter()
+            .filter(|c| c.kind == TerminalOutputKind::ProviderOutput)
+            .count(),
+        1
+    );
+    assert_eq!(
+        first
+            .chunks
+            .iter()
+            .filter(|c| c.kind == TerminalOutputKind::ProviderTool)
+            .count(),
+        1
+    );
+    assert_eq!(
+        first.completions.len(),
+        1,
+        "consumed completion metadata must also reach the actor"
+    );
+    // MP-08 / MP-10 / MP-11: the following quiet drain exposes the HTTP failure.
+    let error = drain_opencode_events(&test_run(), &mut state, None)
+        .err()
+        .expect("quiet HTTP failure must remain visible after ready output is delivered");
+    assert!(error.to_string().contains("session_status"), "{error}");
+    let body = serde_json::json!([{
+        "info": {"id":"assistant-1", "sessionID":"session-1", "role":"assistant", "parentID":"message-user", "finish":"stop", "time":{"completed":1}},
+        "parts": [
+            {"id":"text-1", "sessionID":"session-1", "messageID":"assistant-1", "type":"text", "text":"already streamed answer"},
+            {"id":"tool-1", "sessionID":"session-1", "messageID":"assistant-1", "type":"tool", "tool":"bash", "state":{"status":"completed", "input":{"command":"git status"}, "output":"already streamed tool result"}}
+        ]
+    }]).to_string();
+    let (recovered, server) = serve(vec![
+        (
+            "/session/status",
+            "application/json",
+            r#"{"session-1":{"type":"idle"}}"#.into(),
+        ),
+        ("/session/session-1/message", "application/json", body),
+    ]);
+    state.base_url = recovered;
+    let next = drain_opencode_events(&test_run(), &mut state, None).unwrap();
+    server.join().unwrap();
+    assert!(next.prompt_completed);
+    assert!(
+        next.completions.is_empty(),
+        "published completion must not replay after recovery"
+    );
+    assert!(!next.chunks.iter().any(|c| matches!(
+        c.kind,
+        TerminalOutputKind::ProviderOutput | TerminalOutputKind::ProviderTool
+    )));
+    let replay = super::snapshot::render_snapshot_output_chunks(
+        &mut state,
+        test_run().remote_extension_manifest(),
+        &[message],
+    );
+    assert!(
+        replay.chunks.is_empty(),
+        "recovered snapshots must not replay delivered output"
+    );
+}

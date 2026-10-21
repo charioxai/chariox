@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -96,6 +97,9 @@ pub struct SessionHistoryPromptAttachment {
     pub filename: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_url: Option<String>,
+    /// Payload of a note attachment, so a reloaded chip can be re-read and resubmitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contents_base64: Option<String>,
 }
 
 impl SessionHistoryPromptAttachment {
@@ -105,6 +109,9 @@ impl SessionHistoryPromptAttachment {
             mime: attachment.mime().to_string(),
             filename: attachment.filename().map(str::to_string),
             preview_url: image_prompt_attachment_preview_url(attachment),
+            contents_base64: crate::prompt_notes::is_note(attachment)
+                .then(|| attachment.contents_base64().map(str::to_string))
+                .flatten(),
         }
     }
 
@@ -505,6 +512,10 @@ impl SessionHistoryEntry {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing external_provider_observed operation signature and explicit context arguments"
+    )]
     pub fn external_provider_observed(
         session_id: &str,
         provider_run_id: Option<&str>,
@@ -535,6 +546,10 @@ impl SessionHistoryEntry {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing external_provider_observed_with_merge_key operation signature and explicit context arguments"
+    )]
     pub fn external_provider_observed_with_merge_key(
         session_id: &str,
         provider_run_id: Option<&str>,
@@ -573,6 +588,10 @@ impl SessionHistoryEntry {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing external_provider_observed_state_signal operation signature and explicit context arguments"
+    )]
     pub fn external_provider_observed_state_signal(
         session_id: &str,
         provider_run_id: Option<&str>,
@@ -1102,4 +1121,3 @@ mod tests {
         );
     }
 }
-use std::collections::{HashMap, HashSet};

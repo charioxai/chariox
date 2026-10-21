@@ -1,3 +1,5 @@
+mod room_display;
+pub use room_display::{RoomDisplayBinding, RoomDisplayOffer, RoomDisplaySource};
 mod disk_quota_policy;
 mod display;
 mod local_docker;
@@ -54,6 +56,7 @@ pub(crate) use store::unacknowledged_backup_restore_error;
 pub use store::{SliceAgentAttachment, SliceHostRuntimeState, SliceOperationGuard, SliceStore};
 pub(crate) use store::{
     SliceEnvironmentUseGuard, ENVIRONMENT_USE_ADMISSION_EXPIRED, ENVIRONMENT_USE_ADMISSION_TIMEOUT,
+    SHARED_DISPLAY_READ_OPERATION,
 };
 
 #[cfg(test)]

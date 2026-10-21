@@ -287,3 +287,33 @@ for (const request of [
   }
 
 }
+
+// MP-08/MP-10/MP-11: a kernel that is reconnecting refuses new requests
+// before starting them, so even a prompt submission replays safely.
+test("LocalIpcClient replays a request the reconnecting kernel did not admit", async (t) => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
+  await new Promise<void>((resolve) => server.once("listening", resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === "object")
+  let received = 0
+  server.on("connection", (socket) => {
+    socket.on("message", (payload) => {
+      const frame = JSON.parse(String(payload))
+      received++
+      socket.send(JSON.stringify(received === 1
+        ? { type: "response", request_id: frame.request_id, response: null,
+          error: { code: "target_not_connected", message: "kernel relay connection is reconnecting", retryable: true } }
+        : { type: "response", request_id: frame.request_id, response: { ok: true }, error: null }))
+    })
+  })
+  const client = new LocalIpcClient(`ws://127.0.0.1:${address.port}`, {
+    controlRequestRetryDeadlineMs: 2_000, reconnectJitterMs: 0,
+  })
+  t.after(() => {
+    client.destroy()
+    for (const socket of server.clients) socket.terminate()
+    return new Promise<void>((resolve) => server.close(() => resolve()))
+  })
+  assert.deepEqual(await client.send({ SubmitPrompt: { session_id: "fixture", prompt: "task" } }), { ok: true })
+  assert.equal(received, 2)
+})

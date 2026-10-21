@@ -15,9 +15,21 @@ impl KernelRuntimeState {
         let Some(token) = run.runtime_mcp_auth_token() else {
             return Vec::new();
         };
+        self.runtime_catalog_signature(token)
+    }
+
+    /// What catalog-change detection compares. MP-08/MP-10/MP-11 A04/A06: a
+    /// sudo window lists its tools only while live and reloads the provider
+    /// itself before its first turn. Counting them would let a later unrelated
+    /// change arm a continuation that replays whichever ordinary prompt is active.
+    pub(crate) fn runtime_catalog_signature(
+        &self,
+        token: &str,
+    ) -> Vec<(String, String, serde_json::Value)> {
         let mut tools: Vec<_> = self
             .runtime_tool_specs_for_auth_token(token)
             .into_iter()
+            .filter(|tool| tool.name != sudo::SUDO_TOOL && tool.name != sudo::VAULT_GENERATE)
             .map(|tool| (tool.name, tool.description, tool.input_schema))
             .collect();
         tools.sort_by(|a, b| a.0.cmp(&b.0));
@@ -96,6 +108,31 @@ impl KernelRuntimeState {
         } else {
             ("now", false)
         }
+    }
+
+    // MP-08/MP-10/MP-11: loaders share the extension grant's catalog contract.
+    // A cached provider must finish this turn so its kernel-owned continuation
+    // can refresh tools; a missing cached tool is not an owner permission request.
+    pub(super) fn runtime_catalog_loader_result(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        previous: &[(String, String, serde_json::Value)],
+        already_loaded: bool,
+        mut payload: serde_json::Value,
+    ) -> crate::transport::runtime_tools::RuntimeToolResult {
+        self.runtime_catalog_registration_changed(agent, previous);
+        let (effective, restart) = self.runtime_catalog_grant_effect(agent, already_loaded);
+        if restart {
+            self.remember_runtime_catalog_continuation(agent, "runtime tool catalog");
+        }
+        payload["effective"] = effective.into();
+        payload["requires_provider_restart"] = restart.into();
+        payload["note"] = if restart {
+            "Chariox will refresh this provider's tools after this turn and automatically continue the request. End this turn now; do not report a blocker or ask the owner to expose tools for this refresh."
+        } else {
+            "The loaded tools are available in this turn."
+        }.into();
+        crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload }
     }
 
     pub(super) fn remember_runtime_catalog_continuation(
@@ -180,6 +217,17 @@ impl KernelRuntimeState {
         previous_prompt: &str,
         reload_reason: ProviderReloadReason,
     ) {
+        let source_prompt_id = self
+            .owned
+            .session_store
+            .get_session(session_id)
+            .ok()
+            .and_then(|session| {
+                self.owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, agent_id)
+            })
+            .map(|prompt| prompt.id().to_string());
         let mut pending = self.owned.pending_mcp_continuations.write();
         if let Some(existing) = pending.get_mut(agent_id) {
             // The first continuation owns the interrupted turn. Later grants in
@@ -191,6 +239,7 @@ impl KernelRuntimeState {
                 PendingMcpContinuation {
                     session_id: session_id.to_string(),
                     agent_id: agent_id.to_string(),
+                    source_prompt_id,
                     mcp_name: mcp_name.to_string(),
                     previous_prompt: previous_prompt.to_string(),
                     reload_reason,
@@ -335,6 +384,15 @@ impl KernelRuntimeState {
         let (hidden_system_context, _manifest) =
             crate::prompt_assembly::PromptAssemblyService::from_env()?
                 .assemble_mcp_skill_continuation_context(&continuation.mcp_name)?;
+        if self.owned.config_projection.snapshot().room_agent_tools {
+            return self
+                .dispatch_catalog_task_continuation(
+                    continuation,
+                    previous_provider_run_id,
+                    hidden_system_context,
+                )
+                .await;
+        }
         let prompt = crate::session::PromptQueueItem::new(
             format!(
                 "pending-draft:mcp-continuation:{}:{}",

@@ -482,6 +482,10 @@ pub(super) fn attached_external_observer_targets_from_resume_state(
         .collect()
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing attached_external_observer_target_from_provider_session operation signature and explicit context arguments"
+)]
 pub(super) fn attached_external_observer_target_from_provider_session(
     cursor_store: &crate::app::AttachedProviderTranscriptCursorStore,
     session_id: &str,

@@ -175,7 +175,7 @@ fn agent_outline_pages_older_turns_with_cursor() {
                 "session-1",
                 &format!("attachment-{index}"),
                 "agent-1",
-                &format!("prompt {index}"),
+                format!("prompt {index}"),
             ),
             context,
         );
@@ -260,6 +260,7 @@ fn agent_outline_rehydrates_file_image_attachment_previews() {
         mime: "image/png".to_string(),
         filename: Some("file-screenshot.png".to_string()),
         preview_url: None,
+        contents_base64: None,
     }];
     let event = HistoryEvent::transcript(10, &entry, context);
 
@@ -532,6 +533,7 @@ fn session_history_outline_recovers_multiple_agents_and_image_attachment_after_s
             mime: "image/png".to_string(),
             filename: Some("screen.png".to_string()),
             preview_url: Some("data:image/png;base64,aW1hZ2U=".to_string()),
+            contents_base64: None,
         }];
         store
             .append(&HistoryEvent::transcript(
@@ -785,13 +787,18 @@ fn agent_outline_groups_large_blob_metadata_sets() {
                 "session-1",
                 "run-1",
                 Some("agent-1"),
-                TerminalOutputKind::ProviderTool,
-                Some(format!("tool-{index}")),
-                format!(r#"{{"tool":"bash","index":{index}}}"#),
+                // One long thought: a blob covers at most
+                // MAX_OUTLINE_EVENTS_PER_BLOB of its rows (MP-08 / MP-10 panes R7
+                // gives each tool call its own blob).
+                TerminalOutputKind::ProviderReasoning,
+                Some("thought-1".to_string()),
+                format!("step {index} "),
             ),
             context.clone(),
         );
-        store.append(&event).expect("tool output should append");
+        store
+            .append(&event)
+            .expect("reasoning output should append");
     }
 
     let outline =

@@ -28,6 +28,7 @@ pub(crate) fn computer_input_action_metadata(
     viewport_revision: u64,
 ) -> ComputerInputActionMetadata {
     let (kind, arguments) = match input {
+        RoomComputerInputAction::TargetAction { .. } => ("accessibility_action", None),
         RoomComputerInputAction::PointerMove { x, y } => (
             "pointer_move",
             Some(EnvironmentActionArguments::PointerMove {
@@ -145,6 +146,23 @@ pub(crate) fn validate_computer_input_action(
     };
 
     match input {
+        RoomComputerInputAction::TargetAction {
+            tree_revision,
+            target_id,
+            action,
+        } => {
+            if *tree_revision == 0
+                || !target_id.starts_with("atspi-")
+                || target_id.len() > 128
+                || action.is_empty()
+                || action.len() > 64
+                || action.chars().any(char::is_control)
+            {
+                Err(EnvironmentError::InvalidTargetAction)
+            } else {
+                Ok(())
+            }
+        }
         RoomComputerInputAction::PointerMove { x, y } => validate_point(*x, *y),
         RoomComputerInputAction::PointerDrag {
             from_x,
@@ -322,6 +340,26 @@ mod tests {
             ),
             Err(crate::session::EnvironmentError::PointerOutOfBounds { .. })
         ));
+    }
+    #[test]
+    fn mp08_malformed_target_action_reports_target_action_refusal() {
+        for (tree_revision, target_id, action) in [
+            (0, "atspi-1", "click"),
+            (1, "node-1", "click"),
+            (1, "atspi-1", ""),
+            (1, "atspi-1", "cl\nick"),
+        ] {
+            let error = validate_computer_input_action(
+                &viewport(),
+                &RoomComputerInputAction::TargetAction {
+                    tree_revision,
+                    target_id: target_id.into(),
+                    action: action.into(),
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error.code(), "environment_invalid_target_action");
+        }
     }
     #[test]
     fn mp08_mp10_mp11_holds_validate_bounds_and_redact_keyboard_history() {

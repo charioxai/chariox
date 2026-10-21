@@ -81,7 +81,7 @@ impl FileTransferService {
         })?;
         let stored_path = request
             .artifact_root
-            .join(format!("{}-{}", artifact_id, stored_name));
+            .join(format!("{artifact_id}-{stored_name}"));
         let bytes = std::fs::copy(&source_path, &stored_path).map_err(|error| {
             DaemonError::TransferCapabilityFailed {
                 session_id: request.session_id.clone(),

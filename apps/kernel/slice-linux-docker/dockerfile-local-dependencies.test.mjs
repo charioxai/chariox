@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
-import { readFile } from "node:fs/promises"
+import { readdir, readFile } from "node:fs/promises"
+import { join, relative, resolve } from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 
@@ -44,9 +45,63 @@ test("slice image provides the desktop terminal command advertised by Openbox", 
   assert.match(dockerfile, /test -x \/usr\/bin\/x-terminal-emulator/)
 })
 
+// MP-08/MP-11 (r36b): agent keyboard input requires a proved AT-SPI focus.
+// xterm exposes none, so the Openbox terminal must be an accessible GTK one,
+// and the Room desktop carries an installed accessible editor.
+test("slice image gives agents an accessible terminal and installed editor", async () => {
+  const dockerfile = await readFile(dockerfilePath, "utf8")
+
+  assert.match(dockerfile, /\n    mousepad \\\n/)
+  assert.match(dockerfile, /\n    xfce4-terminal \\\n/)
+  assert.match(dockerfile, /update-alternatives --set x-terminal-emulator \/usr\/bin\/xfce4-terminal\.wrapper/)
+})
+
 test("slice image renders CJK text and emoji in the Room browser", async () => {
   const dockerfile = await readFile(dockerfilePath, "utf8")
 
   assert.match(dockerfile, /\n    fonts-noto-cjk \\\n/)
   assert.match(dockerfile, /\n    fonts-noto-color-emoji \\\n/)
+})
+
+// MP-08/MP-10/MP-11: saved images need the same proved keyboard focus.
+test("restored images upgrade to the accessible terminal and editor", async () => {
+  const provisioner = await readFile(provisionerPath, "utf8")
+  const refresh = provisioner.slice(provisioner.indexOf("refresh_slice_support_files()"), provisioner.indexOf("copy_required_slice_overlay", provisioner.indexOf("refresh_slice_support_files()")))
+  assert.match(refresh, /command -v xfce4-terminal/)
+  assert.match(refresh, /command -v mousepad/)
+  assert.match(refresh, /install[^\n]*xfce4-terminal[^\n]*mousepad/)
+  assert.match(refresh, /update-alternatives --set x-terminal-emulator \/usr\/bin\/xfce4-terminal\.wrapper/)
+})
+
+test("slice images copy and fingerprint every repository path the kernel embeds at compile time", async () => {
+  const kernelSource = fileURLToPath(new URL("../src", import.meta.url))
+  const repository = fileURLToPath(new URL("../../..", import.meta.url))
+  const [dockerfile, runtimeSourceRoots] = await Promise.all([
+    readFile(dockerfilePath, "utf8"),
+    readFile(runtimeSourceRootsPath, "utf8"),
+  ])
+  const roots = runtimeSourceRoots.split("\n").filter(Boolean)
+  const embedded = new Set()
+  const walk = async (directory) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name)
+      // lib.rs declares this module only under cfg(test).
+      if (["test_support", "test_support.rs"].includes(relative(kernelSource, path))) continue
+      if (entry.isDirectory()) await walk(path)
+      else if (entry.name.endsWith(".rs") && !/(^|[\\/])tests?(\.rs|[\\/])/.test(relative(kernelSource, path))) {
+        // Inline `#[cfg(test)] mod` code is not part of the runtime image build.
+        const runtime = (await readFile(path, "utf8")).split(/^#\[cfg\(test\)\]\s*\nmod \w+ \{/m)[0]
+        for (const match of runtime.matchAll(/include_(?:str|bytes)!\(\s*"([^"]+)"/g)) {
+          embedded.add(relative(repository, resolve(path, "..", match[1])))
+        }
+      }
+    }
+  }
+  await walk(kernelSource)
+  assert.ok(embedded.size > 0, "fixture should discover embedded files")
+  for (const file of embedded) {
+    const root = roots.find((candidate) => file === candidate || file.startsWith(`${candidate}/`))
+    assert.ok(root, `runtime source roots omit ${file}`)
+    assert.match(dockerfile, new RegExp(`COPY ${root.replaceAll("/", "\\/")}\\s+${root.replaceAll("/", "\\/")}`), `Dockerfile does not copy ${root} into the Rust build stage`)
+  }
 })

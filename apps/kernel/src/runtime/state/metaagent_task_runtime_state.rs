@@ -87,6 +87,7 @@ impl KernelRuntimeState {
         )))
     }
 
+    #[cfg(test)]
     pub(super) fn persist_metaagent_task_session_update(
         &self,
         session_id: &str,
@@ -202,10 +203,10 @@ impl KernelRuntimeState {
         }
         let _admission = self.owned.begin_managed_activity_admission()?;
         let activity_mutation = self.owned.begin_managed_activity_mutation();
-        let session_result = (|| {
+        let session_result = {
             let mut sessions = self.owned.session_store.write();
             sessions.start_or_update_metaagent_task(session_id, agent_id, task_prompt)
-        })();
+        };
         let session = match session_result {
             Ok(session) => session,
             Err(error) => {
@@ -298,7 +299,7 @@ impl KernelRuntimeState {
         self.authorize_current_external_command()?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id || !agent.is_metaagent() {
-            return Ok(self.owned.session_store.get_session(session_id)?);
+            return self.owned.session_store.get_session(session_id);
         }
         let task_attachment_id = self.ensure_metaagent_task_attachment(session_id, &agent)?;
         let _ = self.owned.remove_queued_metaagent_event_prompts_for_agent(
@@ -323,7 +324,7 @@ impl KernelRuntimeState {
         let _ = self
             .reload_agent_provider_for_policy(session_id, agent_id, reason)
             .await?;
-        Ok(self.owned.session_store.get_session(session_id)?)
+        self.owned.session_store.get_session(session_id)
     }
 
     pub(crate) fn meta_mode_entered_hidden_context() -> Result<String, DaemonError> {

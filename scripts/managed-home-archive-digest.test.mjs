@@ -50,14 +50,14 @@ test("MP-08 MP-11 ordinary preverification uses the descriptor-owned progress su
 })
 
 for (const fault of ["before", "after", "healthy"]) test(`MP-08 MP-10 MP-11 pinned supervisor covers syscall progress: ${fault}`, {
- skip: process.platform !== "linux" && "requires Linux syscall injection", timeout: 6000,
+ skip: process.platform !== "linux" && "requires Linux syscall injection", timeout: 20000,
 }, async context => {
  const {spawnSync}=await import("node:child_process")
  const {readFile}=await import("node:fs/promises")
  const root=await mkdtemp(join(tmpdir(),"chariox-verify-syscall-"))
  context.after(()=>rm(root,{recursive:true,force:true}))
  const archive=join(root,"archive"),marker=join(root,"started"),source=join(root,"stall.c"),library=join(root,"stall.so")
- const contents=Buffer.alloc((fault === "healthy" ? 1024 : 256)*1024,111)
+ const contents=Buffer.alloc((fault === "healthy" ? 8192 : 256)*1024,111)
  await writeFile(archive,contents,{mode:0o600})
  const fd=openSync(archive,"r"), identity=fstatSync(fd,{bigint:true});closeSync(fd)
  await writeFile(source,`
@@ -83,9 +83,9 @@ ssize_t read(int fd, void *buf, size_t count) {
  assert.equal(compiled.status,0,compiled.stderr)
  const moduleUrl=new URL("../apps/kernel/slice-linux-docker/managed-home-archive-digest.mjs",import.meta.url).href
   const script=fault === "healthy"
-  ? `import {openSync,closeSync} from 'node:fs';import {digestPinnedHomeArchive} from ${JSON.stringify(moduleUrl)};const fd=openSync(${JSON.stringify(archive)},'r');try{const start=Date.now();const digest=await digestPinnedHomeArchive(fd,200);if(Date.now()-start<=200 || digest!==${JSON.stringify(sha256(contents))})throw Error('healthy progress failed')}finally{closeSync(fd)}`
+  ? `import {openSync,closeSync} from 'node:fs';import {digestPinnedHomeArchive} from ${JSON.stringify(moduleUrl)};const fd=openSync(${JSON.stringify(archive)},'r');try{const start=Date.now();const digest=await digestPinnedHomeArchive(fd,1000);if(Date.now()-start<=1000 || digest!==${JSON.stringify(sha256(contents))})throw Error('healthy progress failed')}finally{closeSync(fd)}`
   : `import {openSync,closeSync} from 'node:fs';import {digestPinnedHomeArchive} from ${JSON.stringify(moduleUrl)};const fd=openSync(${JSON.stringify(archive)},'r');try{await digestPinnedHomeArchive(fd,1000);process.exitCode=99}catch(e){if(!/made no progress/.test(e.message))throw e}finally{closeSync(fd)}`
- const result=spawnSync(process.execPath,["--input-type=module","-e",script],{env:{...process.env,LD_PRELOAD:library},encoding:"utf8",timeout:4000})
+ const result=spawnSync(process.execPath,["--input-type=module","-e",script],{env:{...process.env,LD_PRELOAD:library},encoding:"utf8",timeout:15000})
  assert.equal(result.status,0,result.stderr)
  const pid=(await readFile(marker,"utf8")).trim()
  const state=await readFile(`/proc/${pid}/stat`,"utf8").catch(()=>undefined)

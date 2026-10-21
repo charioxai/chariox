@@ -37,7 +37,7 @@ test("project rows expose nonzero runtime badges and separate collaboration coun
   assert.equal(row?.focused, true)
   assert.equal(
     row?.value,
-    "1 session · 7 agents · 2 WORKING · 2 IDLE · 2 DONE · 1 ERROR · 2 workflows · 1 RUNNING · 3 collaborators joined · 2 invitations pending",
+    "1970-01-01 00:00 UTC · 1 session · 7 agents · 2 WORKING · 2 IDLE · 2 DONE · 1 ERROR · 2 workflows · 1 RUNNING · 3 collaborators joined · 2 invitations pending",
   )
 })
 
@@ -98,4 +98,12 @@ test("ENV-UX-03 kernel alias stays on-screen with long inventory titles", async(
  const {formatWaitingRoomMenuRow}=await import("./waiting-room-menu-row.js")
  const rows=waitingRoomProjectRows({focus:"project-entry",projectIndex:0},[projectSummary()],[],{inventoryLoading:false,loadingText:"loading",titleWidth:200,kernelLabel:"Laptop kernel"})
  assert.match(formatWaitingRoomMenuRow(rows.find(r=>r.id.startsWith("project-kernel:"))!,80),/Kernel: Laptop kernel/)
+})
+
+// MP-08 OWNER-15: pinned area and shared navigation use the same project order.
+test("pinned projects precede activity-sorted projects", () => {
+  const projects = [{ ...projectSummary(), id: "recent", last_session_activity_at_ms: 90 }, { ...projectSummary(), id: "pin", pinned: true, last_session_activity_at_ms: 1 }]
+  const rows = waitingRoomProjectRows({focus: "project-entry", projectIndex: 0}, projects, [], {inventoryLoading: false, loadingText: "loading", titleWidth: 24})
+  assert.deepEqual(rows.filter(row => row.id.startsWith("project-entry:")).map(row => row.id), ["project-entry:pin", "project-entry:recent"])
+  assert.ok(rows.some(row => row.title === "Pinned projects"))
 })

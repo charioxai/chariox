@@ -68,6 +68,22 @@ test("bootstrapCliRuntime attaches and resizes attached sessions", async () => {
   ])
 })
 
+test("MP-08 / MP-10: advisory resize does not delay the attached transcript", async () => {
+  let finish!: () => void
+  const pending = new Promise<void>(resolve => { finish = resolve })
+  const client = fakeClient()
+  const options = cliOptions({ kernelUrl: "ws://kernel.example/session" })
+  const deps = createDeps({ parseArgs: () => options, createClient: () => client,
+    bootstrapAttachedSession: async (c, o, _workspace, _worktree, prefs) => attachedBootstrap(c, o, prefs),
+    maybeResize: () => pending,
+  })
+  const mounting = bootstrapCliRuntime({ argv: ["--session", "session-1"], cwd: "/repo" }, deps)
+  const result = await Promise.race([mounting, new Promise<"blocked">(resolve => setTimeout(() => resolve("blocked"), 20))])
+  finish()
+  await mounting
+  assert.notEqual(result, "blocked")
+})
+
 test("remote bootstrap passes the original issuing kernel route to the shared client", async () => {
   const issuer = { endpoint: "ws://127.0.0.1:49911/kernel", daemonId: "account-kernel" }
   const options = cliOptions({ relayUrl: "wss://relay.example", relayToken: "synthetic", targetDaemonId: "managed-kernel", relayTokenIssuer: issuer })
@@ -536,6 +552,7 @@ test("Cloud-free pairing keeps operator transport while the kernel admits the pe
 // MP-08 / MP-11: exercise the final production bootstrap client, commands and events.
 for (const source of ["automatic", "argv", "environment"] as const) {
 test(`Cloud pairing ${source} bootstrap keeps commands and events across repeated grant expiries`, async t => {
+  t.mock.timers.enable({apis:["Date","setTimeout","setInterval"],now:Date.now()})
   const server = new WebSocketServer({host:"127.0.0.1",port:0})
   await new Promise<void>(resolve => server.once("listening",resolve))
   const address = server.address()
@@ -548,8 +565,17 @@ test(`Cloud pairing ${source} bootstrap keeps commands and events across repeate
   const timers = new Set<ReturnType<typeof setTimeout>>()
   const streams = new Set<ReturnType<typeof setInterval>>()
   let renewals=0, events=0, subscriptions=0, receivingChecks=0, receivingDenials=0, receivingRevoked=false
+  let subscribedSocket: unknown, reauthorizations=0
+  const waitForProgress=async (ready:()=>boolean,reason:string)=>{
+    const deadline=performance.now()+10_000
+    while(!ready()){
+      assert.ok(performance.now()<deadline,reason)
+      await new Promise<void>(resolve=>setImmediate(resolve))
+    }
+  }
+  const grantLifetimeMs=2_000
   const grant = () => {
-    const expiresAtMs=Date.now()+400
+    const expiresAtMs=Date.now()+grantLifetimeMs
     const payload=Buffer.from(JSON.stringify({sub:"paired-subject",public_key_thumbprint:identity.publicKeyThumbprint,allowed_targets:["home"],expires_at_ms:expiresAtMs})).toString("base64url")
     return {token:`chariox-scoped-v1.${payload}.synthetic`,expiresAtMs}
   }
@@ -558,6 +584,7 @@ test(`Cloud pairing ${source} bootstrap keeps commands and events across repeate
     socket.on("message",raw => {
       const frame=JSON.parse(String(raw))
       if(frame.kind==="client_connect") {
+        if(socket===subscribedSocket)reauthorizations++
         if(expiryTimer) {clearTimeout(expiryTimer);timers.delete(expiryTimer)}
         const expiry=frame.auth_token==="bootstrap" ? Date.now()+5_000 : JSON.parse(Buffer.from(frame.auth_token.split(".")[1],"base64url").toString()).expires_at_ms
         expiryTimer=setTimeout(()=>socket.close(),Math.max(0,expiry-Date.now()));timers.add(expiryTimer)
@@ -584,6 +611,7 @@ test(`Cloud pairing ${source} bootstrap keeps commands and events across repeate
         socket.send(JSON.stringify({kind:"client_response",request_id:frame.request_id,encrypted_response:daemon.encrypt(frame.encrypted_request.sender_public_key,JSON.stringify(response)),error:null}))
       }
       if(frame.kind==="client_subscribe") {
+        subscribedSocket=socket
         subscriptions++
         socket.send(JSON.stringify({kind:"client_response",request_id:frame.request_id,encrypted_response:daemon.encrypt(frame.client_public_key,"null"),error:null}))
         let id=0
@@ -606,8 +634,16 @@ test(`Cloud pairing ${source} bootstrap keeps commands and events across repeate
     finalClient=result.bootstrap.client
     finalClient.onKernelEvent(event=>{if(event.event==="runtime_notices")events++})
     await finalClient.subscribeToKernelEvents("session","attachment")
-    const deadline=Date.now()+2_000
-    while(Date.now()<deadline){assert.deepEqual(await finalClient.send({GetDaemonHealth:null}),{accepted:true});await new Promise(resolve=>setTimeout(resolve,25))}
+    // Advance lease time only after the real socket has acknowledged renewal.
+    // This verifies continuity without making CI scheduler pauses expire grants.
+    for(let round=0;round<5;round++){
+      const before=renewals, previousAuthorizations=reauthorizations
+      t.mock.timers.tick(grantLifetimeMs-100)
+      await waitForProgress(()=>renewals>before && reauthorizations>previousAuthorizations,"paired renewal must reauthorize the existing socket")
+      assert.deepEqual(await finalClient.send({GetDaemonHealth:null}),{accepted:true})
+      await new Promise<void>(resolve=>setImmediate(resolve))
+    }
+    await waitForProgress(()=>events>40,"renewed subscription must deliver events")
     assert.ok(renewals>=5,"final paired client renews repeatedly")
     // MP-08 / MP-10 / MP-11: kernel pivot renewal cannot outlive receiver CLIENT authority.
     if(source==="automatic")assert.ok(receivingChecks>=renewals+1,"every automatic kernel pivot renewal rechecks the independently enrolled receiving CLIENT")
@@ -616,7 +652,11 @@ test(`Cloud pairing ${source} bootstrap keeps commands and events across repeate
     assert.equal(subscriptions,1,"renewal preserves event subscription")
     receivingRevoked=true
     const issuedBeforeRevoke=renewals
-    await new Promise(resolve=>setTimeout(resolve,500))
+    const checksBeforeRevoke=receivingChecks, denialsBeforeRevoke=receivingDenials
+    t.mock.timers.tick(grantLifetimeMs-100)
+    await waitForProgress(()=>source==="automatic" ? receivingChecks>checksBeforeRevoke : receivingDenials>denialsBeforeRevoke,"revoked receiving authority must reject renewal")
+    await new Promise<void>(resolve=>setImmediate(resolve))
+    t.mock.timers.tick(grantLifetimeMs+100)
     await assert.rejects(finalClient.send({GetDaemonHealth:null}), /revoked|authorization|client|authority has expired/i)
     assert.equal(renewals,issuedBeforeRevoke,"revoked receiving CLIENT cannot get another kernel pivot")
     if(source!=="automatic")assert.ok(receivingDenials>0,"kernel/Cloud must reject the revoked receiving CLIENT")

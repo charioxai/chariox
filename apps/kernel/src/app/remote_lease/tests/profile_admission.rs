@@ -344,6 +344,303 @@ async fn leased_prompt_reconciles_durable_home_profile_after_lost_ack_and_restar
     );
 }
 
+// MP-08 / MP-10 / MP-11: a worker admission that fails after its provider run
+// was assigned must settle the exact receipt. A receipt left in Dispatching is
+// projected as a queued-steer phase, so home holds its prompt forever.
+#[tokio::test]
+async fn failed_leased_prompt_admission_after_run_assignment_settles_its_receipt() {
+    crate::test_support::isolated_env_test!();
+    let (mut app, lease) = leased_agent_fixture(false);
+    let profile = crate::transport::relay_peer::RelayAgentExecutionProfile::from(
+        &app.agents().get_agent(&lease.backing_agent_id).unwrap(),
+    );
+    // Launch succeeds; the backing prompt admission that follows it fails.
+    crate::app::KernelSessionService::new(&mut app)
+        .detach(&lease.backing_attachment_id)
+        .unwrap();
+    let home_prompt_id = "home-prompt-admission-failure";
+    let git_context = crate::transport::relay_peer::RemoteGitTurnContext {
+        home_session_id: "home-session".to_string(),
+        home_agent_id: lease.home_agent_id.clone(),
+        home_prompt_id: home_prompt_id.to_string(),
+        home_turn_id: home_prompt_id.to_string(),
+        source_attachment_id: None,
+        workspace_live_sync_mode: None,
+        prompt_origin: None,
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        prompt_summary: "admission failure".to_string(),
+    };
+    let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 2);
+    let submit = || {
+        router.relay_submit_leased_prompt(
+            &lease.id,
+            profile.clone(),
+            "call the capability loader",
+            "",
+            Vec::new(),
+            None,
+            Some(git_context.clone()),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+            None,
+        )
+    };
+    let admission_error = submit().await.unwrap_err();
+    assert!(
+        app.lock()
+            .await
+            .providers()
+            .get_run_for_agent(&lease.backing_session_id, &lease.backing_agent_id)
+            .is_some(),
+        "the fixture must fail after the worker assigned a provider run"
+    );
+    assert_eq!(
+        router
+            .relay_query_leased_prompt_receipt(&lease.id, home_prompt_id)
+            .await
+            .unwrap(),
+        Some(crate::transport::relay_peer::LeasedPromptReceipt {
+            home_prompt_id: home_prompt_id.to_string(),
+            worker_provider_run_id: String::new(),
+            phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected,
+            target_home_prompt_id: None,
+            execution_lease_id: Some(lease.lease_id.clone()),
+        }),
+        "home settles this exact shape as an unadmitted prompt; admission error: {admission_error}"
+    );
+    // The settled receipt fences the same home prompt from a second delivery.
+    assert!(submit()
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("worker rejection receipt fences this home prompt"));
+    assert!(app
+        .lock()
+        .await
+        .prompt_owner_active_prompt_for_agent(&lease.backing_session_id, &lease.backing_agent_id)
+        .unwrap()
+        .is_none());
+}
+
+// MP-08 / MP-10 / MP-11: a leased Claude replica runs on the home's per-launch
+// credential; the worker's own Claude profile is never logged in.
+#[tokio::test]
+async fn leased_claude_prompt_admits_on_the_home_credential_run_without_a_worker_login() {
+    assert_leased_claude_home_credential(false).await;
+}
+
+#[tokio::test]
+async fn leased_claude_environment_change_cannot_relaunch_under_worker_account() {
+    assert_leased_claude_home_credential(true).await;
+}
+
+async fn assert_leased_claude_home_credential(environment_changed: bool) {
+    crate::test_support::isolated_env_test!();
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let execution_lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "home-session",
+            "home-agent",
+            false,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        )
+        .unwrap();
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &execution_lease.id,
+            "claude-p",
+            "default",
+            Some("haiku".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let profile = crate::transport::relay_peer::RelayAgentExecutionProfile::from(
+        &app.agents().get_agent(&lease.backing_agent_id).unwrap(),
+    );
+    let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 2);
+    let submit = || {
+        router.relay_submit_leased_prompt(
+            &lease.id,
+            profile.clone(),
+            "call the capability loader",
+            "",
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+            None,
+        )
+    };
+    // Without a live run, the worker still requires the home's credential.
+    assert!(submit()
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains(crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE));
+    assert!(app
+        .lock()
+        .await
+        .providers()
+        .get_run_for_agent(&lease.backing_session_id, &lease.backing_agent_id)
+        .is_none());
+    // The live run a credentialed lease launch produced for the admitted profile.
+    let mut worker = app.lock().await;
+    let admitted = worker.leased_agents.get(&lease.id).cloned().unwrap();
+    let mut request = crate::provider::LaunchProviderRequest::new(
+        &lease.backing_session_id,
+        "dev-stub",
+        &admitted.provider,
+        &admitted.account_profile,
+        "haiku",
+    )
+    .with_agent_id(&lease.backing_agent_id)
+    .with_variant(admitted.effort.clone());
+    if environment_changed {
+        request.project_environment_revision = Some("old-project-revision".into());
+    }
+    let run = worker
+        .providers_mut()
+        .launch_run_detached(request.clone())
+        .unwrap();
+    let selected_agent = worker.agents().get_agent(&lease.backing_agent_id).unwrap();
+    assert!(
+        worker
+            .reusable_leased_claude_run_for_agent(&lease.backing_session_id, &selected_agent)
+            .unwrap()
+            .is_none(),
+        "an unmarked worker run is not proof of HOME credential authority"
+    );
+    worker
+        .provider_run_projection
+        .mark_leased_provider_run(run.id());
+    assert!(
+        worker
+            .reusable_leased_claude_run_for_agent(&lease.backing_session_id, &selected_agent)
+            .unwrap()
+            .is_some(),
+        "the admitted HOME-bound run is reusable"
+    );
+    if environment_changed {
+        // MP-08/MP-10/MP-11: a prompt admitted before the Project change keeps
+        // the live run that holds HOME's credential; nothing is deferred.
+        assert_eq!(
+            worker
+                .ensure_prompt_provider_run_for_agent(
+                    &lease.backing_session_id,
+                    &lease.backing_agent_id,
+                )
+                .expect("the admitted prompt keeps the HOME-credentialed run"),
+            run.id()
+        );
+        worker
+            .prompt_owner_submit_prepared_prompt(
+                &lease.backing_session_id,
+                crate::session::PromptQueueItem::new(
+                    "queued-after-project-refresh",
+                    &lease.backing_attachment_id,
+                    &lease.backing_agent_id,
+                    "keep the HOME account",
+                    crate::session::PromptStatus::Queued,
+                ),
+                true,
+            )
+            .unwrap();
+        // Two pump ticks: queue recovery, then the HOME-bound projection drain.
+        // (The stub run has no process, so the pump's liveness probe is skipped.)
+        let mut deferrals = 0;
+        for _ in 0..2 {
+            let mut runtime = RemoteLeaseRuntime::new(&mut worker);
+            // The stub completes an activated prompt at once; only deferral matters.
+            let _ = runtime.recover_idle_leased_prompt_queue(&lease.id);
+            if let Some((_, event)) = runtime
+                .drain_leased_runtime_projection(&lease.id, run.id(), false)
+                .unwrap()
+            {
+                let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    notices,
+                    ..
+                } = event;
+                deferrals += notices
+                    .iter()
+                    .filter(|notice| notice.contains("Deferred queued prompt"))
+                    .count();
+            }
+        }
+        assert_eq!(deferrals, 0, "the pump must not re-defer the queued prompt");
+        assert!(worker
+            .prompt_owner_peek_next_queued_prompt(
+                &lease.backing_session_id,
+                &lease.backing_agent_id
+            )
+            .unwrap()
+            .is_none());
+        // A new prompt for the changed inputs is refused while such a run is
+        // busy, so it never queues behind a run the worker cannot relaunch.
+        // (The stub ended the first run when its prompt completed.)
+        let run = worker.providers_mut().launch_run_detached(request).unwrap();
+        worker
+            .provider_run_projection
+            .mark_leased_provider_run(run.id());
+        worker
+            .prompt_owner_sync_external_active_prompt(
+                &lease.backing_session_id,
+                &lease.backing_agent_id,
+                Some(crate::session::PromptQueueItem::new(
+                    "active-prompt",
+                    &lease.backing_attachment_id,
+                    &lease.backing_agent_id,
+                    "active prompt",
+                    crate::session::PromptStatus::Running,
+                )),
+            )
+            .unwrap();
+        let admitted = worker.leased_agents.get(&lease.id).cloned().unwrap();
+        let busy = RemoteLeaseRuntime::new(&mut worker).prepare_leased_provider_run_matches_mcps(
+            &admitted,
+            &[],
+            &crate::extension::RemoteExtensionManifest::default(),
+        );
+        assert!(
+            matches!(
+                busy,
+                Err(DaemonError::LocalTransport {
+                    operation: "remote Project environment reload",
+                    ..
+                })
+            ),
+            "{:?}",
+            busy.err()
+        );
+        assert_eq!(
+            worker.providers.get_run(run.id()).unwrap().state(),
+            crate::provider::ProviderRunState::Running
+        );
+        return;
+    }
+    drop(worker);
+    let (run_id, outcome) = submit().await.unwrap();
+    assert_eq!(run_id, run.id());
+    assert!(matches!(
+        outcome,
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ));
+}
+
 // MP-08 / MP-10 / MP-11: Target worker re-resolves before its Ready shortcut.
 #[test]
 fn mp08_mp10_mp11_leased_reuse_observes_worker_value_changes() {

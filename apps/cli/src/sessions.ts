@@ -114,7 +114,7 @@ export function formatSessionList(sessions: SessionListEntry[], currentSessionId
       const remote = formatSessionRemoteActivity(session)
       const next = formatSessionActivityNext(session)
       const current = session.id === currentSessionId ? " - current" : ""
-      return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${home} - sync ${liveSync}${remote}${next}${current}`
+      return `- ${name} - ${session.status.toLowerCase()} - ${attachments} - ${location}${home}${remote}${next}${current}`
     }),
   ].join("\n")
 }

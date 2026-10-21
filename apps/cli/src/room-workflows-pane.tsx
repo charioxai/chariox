@@ -39,6 +39,7 @@ export function RoomWorkflowsPane(props: RoomWorkflowsPaneProps) {
        <text fg={row.key === record()?.selectedKey ? theme.text : theme.textMuted}>{`${row.key === record()?.selectedKey ? "›" : " "} ${row.workflow.label} / ${row.endpoint.label}`}</text>
        <text fg={theme.textMuted}>{`${row.workflow.state} · ${row.workflow.running_count} running · ${row.workflow.paused_count} paused · ${row.workflow.queued_count} queued`}</text>
 
+         <For each={row.workflow.runs.filter(run => run.created_before_ownership_tracking)}>{run => <text fg={theme.textMuted}>{`${run.run_id} · Created before ownership tracking · read-only${run.can_stop ? "; owner may stop" : ""}`}</text>}</For>
          <For each={["pause", "resume", "stop"] as const}>{action => <Show when={roomWorkflowRunTargets(row.workflow, action).length}>
            <text fg={theme.textMuted} onMouseDown={() => { controller().select(index()); void controller().control(action) }}>{`${action[0]!.toUpperCase()}${action.slice(1)} current runs (${roomWorkflowRunTargets(row.workflow, action).length})`}</text>
          </Show>}</For>

@@ -93,7 +93,7 @@ fn outbound_generated_every_event_variant_hides_worker_credentials() {
         }
     }
     assert_eq!(
-        delivered, 21,
+        delivered, 23,
         "MP-11 current public events remain deliverable"
     );
 }
@@ -238,4 +238,19 @@ fn outbound_preserves_kernel_error_codes_and_retries_without_error_payloads() {
     let frame = serde_json::json!({"type":"response","request_id":"sudo","response":null,
         "error":{"code":"local_transport_error","message":message,"retryable":true}});
     assert_eq!(project_payload(frame.clone()).unwrap(), frame);
+}
+
+// MP-08 / MP-11: cached and socket errors retain the same safe lookup reason.
+#[test]
+fn mp11_missing_session_socket_reason_is_public_without_private_details() {
+    let projected = project_error(&serde_json::json!({
+        "code": "session_not_found", "message": CANARY, "retryable": false,
+    }));
+    assert_eq!(projected.code, "session_not_found");
+    assert!(
+        projected.message.contains("session not found"),
+        "{}",
+        projected.message
+    );
+    assert!(!projected.message.contains(CANARY));
 }

@@ -15,7 +15,7 @@ pub(super) fn prepare_repository(
                 materialized_entries: repository.directories.len() as u64,
             },
             &repository.overlay,
-            remaining_project_checkout_bytes.min(MAX_CHECKOUT_BYTES_PER_REPOSITORY),
+            remaining_project_checkout_bytes,
             remaining_project_materialized_entries,
         );
     }
@@ -27,6 +27,21 @@ pub(super) fn prepare_repository(
     let staging_parent = destination
         .parent()
         .ok_or_else(|| context_error("repository destination has no parent"))?;
+    // The clone duplicates the bundle's pack: refuse before Git can fill the volume.
+    let clone_bytes = fs::metadata(&bundle)
+        .map_err(|error| context_io_error("inspect Git bundle", error))?
+        .len();
+    let clone_room = crate::managed_context::limits::disk_budget(staging_parent);
+    if clone_bytes > clone_room {
+        return Err(context_error(
+            crate::managed_context::limits::disk_shortage(
+                "development context repository clone",
+                staging_parent,
+                clone_bytes,
+                clone_room,
+            ),
+        ));
+    }
     git_output_isolated(
         staging_parent,
         &[
@@ -47,7 +62,7 @@ pub(super) fn prepare_repository(
     let estimate = charge_overlay_materialization(
         estimate,
         &repository.overlay,
-        remaining_project_checkout_bytes.min(MAX_CHECKOUT_BYTES_PER_REPOSITORY),
+        remaining_project_checkout_bytes,
         remaining_project_materialized_entries,
     )?;
     if git_text_isolated(destination, &["rev-parse", "HEAD"])? != repository.head_sha {

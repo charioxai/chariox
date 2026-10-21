@@ -1,0 +1,26 @@
+{
+  "items": [
+    "MP-08",
+    "MP-10",
+    "MP-11"
+  ],
+  "version": "2.6.0",
+  "source_reference": "https://github.com/cisco/openh264/releases/tag/v2.6.0",
+  "delivery": "Download directly from Cisco at runtime installation; exclude binaries from source kits and images.",
+  "targets": {
+    "amd64": {
+      "url": "https://ciscobinary.openh264.org/libopenh264-2.6.0-linux64.8.so.bz2",
+      "compressed_sha256": "27ab53323c110b76214c1c72222f459d17febbcd1e252136cadc292b0308d75b",
+      "library_sha256": "2f0cde7c6a6abcf5cae76942894ea42897fa677bce4ed6c91a24dd1b041d5f04",
+      "compressed_bytes": 634264,
+      "library_bytes": 1731128
+    },
+    "arm64": {
+      "url": "https://ciscobinary.openh264.org/libopenh264-2.6.0-linux-arm64.8.so.bz2",
+      "compressed_sha256": "a78aea7970150f46bcd3bb7994c9e6dd90bd7a9ea785920f5a73f6964e3fcda7",
+      "library_sha256": "12e7b33623667cdab0e575170c147b1b36eadb77d0d2aa7ceb5afd3e58902140",
+      "compressed_bytes": 619371,
+      "library_bytes": 1492120
+    }
+  }
+}

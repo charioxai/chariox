@@ -342,3 +342,19 @@ test("MP-08/MP-10/MP-11 Claude login starts scoped OAuth without logout or a ter
   assert.match(result.message ?? "", /authorization link/)
   assert.doesNotMatch(result.message ?? "", /login-status|login-input/)
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11 A10/G03: peer focus must reach kernel cancellation.
+test("stop targets the focused peer instead of the default session agent", async () => {
+  const requests: Record<string, unknown>[] = []
+  const result = await executeShellCommand(parseShellCommand("stop"),
+    createDefaultShellContext({ sessionId: "room", attachmentId: "terminal", agentId: "peer" }), {
+      client: { send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        return { PromptCancelled: { cancellation: { prompt: { id: "peer-turn" } } } }
+      } },
+    })
+  assert.equal(result.ok, true)
+  assert.deepEqual(requests, [{ CancelActivePrompt: {
+    session_id: "room", attachment_id: "terminal", target_agent_id: "peer",
+  } }])
+})

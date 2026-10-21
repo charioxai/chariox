@@ -1,5 +1,6 @@
+import { KernelCatalogReads, captureKernelCatalogRead } from './kernel-catalog-reads.js'
+import { RelayFrameReceiver, relayTransportUrl, relayResponseInProgress } from "./relay-frame-transport.js"
 import { TerminalLocalDirect } from "./terminal-local-direct.js"
-import { RelayFrameReceiver, relayTransportUrl } from "./relay-frame-transport.js"
 import { RelayAuthRenewal, type RelayGrantProvider } from "./relay-auth-renewal.js"
 import { RelaySubscriptionDiagnostics, type RelaySubscriptionDiagnostic } from "./relay-subscription-diagnostics.js"
 export type { RelaySubscriptionDiagnostic } from "./relay-subscription-diagnostics.js"
@@ -52,6 +53,7 @@ import {
   type RelayClientIdentity,
 } from "./relay-crypto.js"
 import type { EncryptedRelayPayload } from "./kernel-transport-frames.js"
+import { decodeDisplayEvent } from "./browser-relay-crypto.js"
 import {
   buildRelayConnectFrame,
   buildRelaySubscribeFrame,
@@ -80,13 +82,15 @@ const KERNEL_CONTROL_REQUEST_RETRY_DEADLINE_MS = 60_000
 const KERNEL_CONTROL_RESPONSE_STALL_MS = 5_000
 // The kernel runs these again when they are replayed: they carry no request id
 // its ledgers deduplicate, and it keeps them out of its command-result cache
-// (`request_is_cacheable`, whose tests check this list). Each stops an App
+// (`request_is_cacheable`, whose tests check this list). Worker control stops an App
 // worker, which can outlast the stall window; a replay then meets the first
 // one's operation guard and answers `busy` (or, once the first has finished,
 // restarts the worker again or is refused by the uninstall's generation fence)
 // although the first one succeeds. Once written, they wait for their answer
 // and are never resent; losing the answer rejects with `outcome_unknown`.
-const KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY = new Set(["ControlAppWorker", "UninstallApp"])
+// User view opens allocate instances/tabs and frontend calls may mutate App
+// state. They likewise have no request-id receipts: neither may be resent.
+const KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY = new Set(["ControlAppWorker", "UninstallApp", "OpenUserAppView", "CallUserAppView", "RespondToHandoff"])
 const MAX_KERNEL_LOCAL_AUTH_TOKEN_BYTES = 8 * 1024
 
 export type { KernelEvent } from "./kernel-events.js"
@@ -263,6 +267,11 @@ export type LocalIpcClientOptions = {
 }
 
 export class LocalIpcClient {
+  prioritizeInteractiveDisplay(): () => void { return this.catalogReads.hold() }
+
+  isReceivingKernelResponse(): boolean { return relayResponseInProgress(this.getWebSocket("control")) }
+
+  private readonly catalogReads = new KernelCatalogReads()
   private readonly transportObserver: LocalIpcClientOptions["onTransportDiagnostic"]
   readonly socketPath: string
   private readonly relayIssuer: LocalIpcClient | null
@@ -290,6 +299,8 @@ export class LocalIpcClient {
   private eventWebsocketConnectPromise: Promise<WebSocket> | null = null
   private readonly pendingRequests = new KernelPendingRequestRegistry(IPC_TIMEOUT_MS)
   private readonly requestLifetime = new KernelRequestLifetime()
+  private readonly requestKinds = new Map<string, number>()
+  private readonly requestTimeline: Array<[string, number]> = []
   private readonly relaySubscriptionDiagnostics = new RelaySubscriptionDiagnostics()
   private eventHandlers = new Set<(event: KernelEvent) => void>()
   private activeKernelSubscription: KernelSubscriptionState | null = null
@@ -424,14 +435,29 @@ export class LocalIpcClient {
     return this.relayAuthToken != null
   }
 
+  /** Requests written to the kernel by kind (no payloads); drills read it as "requests on open". */
+  requestStats(): { count: number; kinds: Record<string, number>; timeline: Array<[string, number]> } {
+    const kinds = Object.fromEntries(this.requestKinds)
+    return { count: [...this.requestKinds.values()].reduce((sum, n) => sum + n, 0), kinds, timeline: [...this.requestTimeline] }
+  }
+
+  private countRequest(request: unknown): void {
+    const kind = typeof request === "string" ? request
+      : request && typeof request === "object" ? Object.keys(request)[0] ?? "unknown" : "unknown"
+    this.requestKinds.set(kind, (this.requestKinds.get(kind) ?? 0) + 1)
+    // [kind, ms since process start], bounded: enough to order the requests of an open.
+    if (this.requestTimeline.length < 64) this.requestTimeline.push([kind, Math.round(process.uptime() * 1000)])
+  }
+
   async send<TResponse>(request: unknown): Promise<TResponse> {
+    request = captureKernelCatalogRead(request)
     let admittedSocket: WebSocket | undefined
     await requireKernelControlCapability(async query => {
       admittedSocket = await this.ensureWebSocket("control")
       return this.sendWebSocket(query, "control", admittedSocket)
     }, request)
     if (admittedSocket) return this.sendWebSocket<TResponse>(request, "control", admittedSocket)
-    return this.sendUnchecked<TResponse>(request)
+    return this.catalogReads.run(request, this.socketPath, () => this.sendUnchecked<TResponse>(request))
   }
 
   private sendUnchecked<TResponse>(request: unknown): Promise<TResponse> {
@@ -558,15 +584,9 @@ export class LocalIpcClient {
     }
     this.clearReconnectState()
     this.clearKernelEventWatchdog()
-    this.clearKernelHeartbeat("event")
-    const socket = this.getWebSocket("event")
-    if (socket && socket.readyState !== WebSocket.CLOSED) {
-      this.suppressNextEventCloseEvent = true
-      socket.terminate()
-      this.setWebSocket("event", null)
-      this.setWebSocketConnectPromise("event", null)
-    }
-    this.setRelayDaemonPublicKey("event", null)
+    // MP-08 / MP-10 OWNER-25: retiring the carrier must settle its pending
+    // subscribe too; its close callback is deliberately stale after restart.
+    this.destroyWebSocket("event", "kernel event stream restarted")
     this.scheduleReconnect(25)
   }
 
@@ -608,6 +628,7 @@ export class LocalIpcClient {
   }
 
   async close(): Promise<void> {
+    this.catalogReads.clear()
     this.terminalLocalDirect?.close()
     if (this.renewalRetainers) {
       this.renewalCloseRequested = true
@@ -666,7 +687,7 @@ export class LocalIpcClient {
 
   private async sendWebSocket<TResponse>(request: unknown, lane: KernelSocketLane = "control", admittedSocket?: WebSocket): Promise<TResponse> {
     const lifetime = this.requestLifetime.capture()
-    const requestId = randomUUID()
+    let requestId = randomUUID()
     const waitsForAuthorization = waitsForKernelAuthorization(request)
     const retryUntilMs = lane === "control" && !waitsForAuthorization
       ? Date.now() + this.controlRequestRetryDeadlineMs
@@ -727,6 +748,7 @@ export class LocalIpcClient {
           ? relayRequest.frame
           : normalizeWebSocketRequest(requestId, request)
         socket.send(JSON.stringify(payload))
+        this.countRequest(request)
       } catch (error) {
         pending.reject(new LocalIpcError("write kernel request", error instanceof Error ? error.message : String(error), "write_failed", true))
       }
@@ -737,13 +759,20 @@ export class LocalIpcClient {
         if (this.relayAuthorizationFailure) throw this.relayAuthorizationFailure
         lifetime.throwIfAborted()
         if (!replayAfterWrite && error instanceof LocalIpcError
-          && (error.code === "connection_closed" || error.code === "request_timeout")) {
-          const lost = error.code === "request_timeout" ? "no answer in time" : "the connection closed before the answer"
+          && (error.code === "connection_closed" || error.code === "request_timeout" || error.code === "write_failed")) {
+          // MP-11 A07: a send error can follow a partial write. Protected input
+          // and other unreceipted effects must never retry that uncertain write.
+          const lost = error.code === "request_timeout" ? "no answer in time"
+            : error.code === "write_failed" ? "the write outcome was not confirmed"
+              : "the connection closed before the answer"
           throw new LocalIpcError("handle kernel response", `${lost}; the kernel may have run the request`, "outcome_unknown")
         }
         if (admittedSocket || !this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
           throw error
         }
+        // MD-3: a reconnected terminal has another caller-bound receipt scope.
+        // Safe browser reads are new observations; uncertain mutations never replay.
+        if (isBrowserObservation(request)) requestId = randomUUID()
         const current = this.getWebSocket(lane)
         const responsiveTimeout = error instanceof LocalIpcError && error.code === "request_timeout"
           && current === socket && socket.readyState === WebSocket.OPEN
@@ -768,7 +797,8 @@ export class LocalIpcClient {
       && Date.now() < retryUntilMs
       && error instanceof LocalIpcError
       && error.retryable
-      && (error.code === "connection_closed" || error.code === "write_failed" || error.code === "request_timeout")
+      // target_not_connected: the kernel or relay refused before starting it.
+      && (error.code === "connection_closed" || error.code === "write_failed" || error.code === "request_timeout" || error.code === "target_not_connected")
   }
 
   private requestAttemptTimeoutMs(lane: KernelSocketLane, retryUntilMs: number): number {
@@ -852,6 +882,7 @@ export class LocalIpcClient {
         subscriptionScope,
       })
       socket.send(JSON.stringify(frame))
+      this.countRequest("RelaySubscribe")
       this.relaySubscriptionDiagnostics.emit("binding_sent", subscriptionId)
     } catch (error) {
       pending.reject(new LocalIpcError("write relay subscribe", error instanceof Error ? error.message : String(error), "write_failed", true))
@@ -933,7 +964,7 @@ export class LocalIpcClient {
 
     const nextConnectPromise = new Promise<WebSocket>((resolve, reject) => {
       let socket = this.openKernelWebSocket()
-      const relayFrames = new RelayFrameReceiver()
+      const relayFrames = new RelayFrameReceiver(socket)
       let settled = false
       this.setConnectingWebSocket(lane, socket)
 
@@ -1077,7 +1108,10 @@ export class LocalIpcClient {
           }
           let frame: RelayConnectedFrame | RelayCloseFrame
           try {
-            frame = JSON.parse(String(data)) as RelayConnectedFrame | RelayCloseFrame
+            // The relay frames every reply, including this acknowledgement, as chunks-v2.
+            const text = relayFrames.receive(String(data), receipt => socket.send(receipt))
+            if (text === null) return
+            frame = JSON.parse(text) as RelayConnectedFrame | RelayCloseFrame
           } catch (error) {
             fail("connect relay transport", error)
             return
@@ -1240,6 +1274,22 @@ export class LocalIpcClient {
   }
 
   private handleWebSocketMessage(data: WebSocket.RawData, lane: KernelSocketLane) {
+    // MP-08/MP-10: protocol 466 display events arrive as binary messages.
+    if (Buffer.isBuffer(data) && data[0] === 0x43) {
+      let display: KernelEvent | null = null
+      try {
+        const value = decodeDisplayEvent(new Uint8Array(data.buffer, data.byteOffset, data.byteLength))
+        display = value ? kernelEventFromValue(value) : null
+      } catch (error) {
+        this.rejectPending(error instanceof Error ? error.message : String(error), lane)
+        return
+      }
+      if (display) {
+        this.markKernelEventReceived()
+        for (const handler of this.eventHandlers) handler(display)
+        return
+      }
+    }
     let frame:
       | KernelTransportResponseFrame<unknown>
       | KernelTransportEventFrame<KernelEvent>
@@ -1268,7 +1318,7 @@ export class LocalIpcClient {
         this.rejectPending(error instanceof Error ? error.message : String(error), lane)
         return
       }
-      this.lastReceivedEventId = frame.event_id
+      if (event.event !== "kernel_browser_frame") this.lastReceivedEventId = frame.event_id
       this.markKernelEventReceived()
       for (const handler of this.eventHandlers) {
         handler(event)
@@ -1514,7 +1564,16 @@ export class LocalIpcClient {
         session_id: subscription.sessionId,
         resumed_from_event_id: resumeFromEventId,
       })
-    } catch {
+    } catch (error) {
+      // The kernel rejected this session/attachment pair: retrying it can
+      // never succeed. Hand it to session-unavailable recovery (re-attach).
+      const message = error instanceof Error ? error.message : String(error)
+      if (subscription.sessionId && kernelRejectedSubscriptionPair(message)) {
+        this.activeKernelSubscription = null
+        this.clearReconnectState()
+        this.emitSyntheticEvent({ event: "session_unavailable", session_id: subscription.sessionId, message })
+        return
+      }
       this.scheduleReconnect()
     }
   }
@@ -1687,8 +1746,20 @@ export class LocalIpcClient {
 }
 
 function runsAgainOnReplay(request: unknown): boolean {
-  return request !== null && typeof request === "object"
-    && Object.keys(request).some((kind) => KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY.has(kind))
+  if (request === null || typeof request !== "object") return false
+  if ((request as {GetSliceDisplayEndpoint?:{shared_display?:unknown}}).GetSliceDisplayEndpoint?.shared_display) return true
+  if (Object.keys(request).some(kind => KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY.has(kind))) return true
+  // MD-3: reconnect creates another browser actor. Never repeat an uncertain
+  // mutation on that connection; observations can be fetched again safely.
+  const browser = (request as { KernelBrowser?: { command?: { op?: string } } }).KernelBrowser
+  return browser !== undefined && !isBrowserObservation(request)
+}
+
+function isBrowserObservation(request: unknown): boolean {
+  if (request === null || typeof request !== "object") return false
+  const browser = (request as { KernelBrowser?: { command?: { op?: string } } }).KernelBrowser
+  return browser !== undefined
+    && ["state", "snapshot", "screenshot", "frames", "list_grants", "subscribe_grants"].includes(browser.command?.op ?? "")
 }
 
 function kernelEventFromValue(value: unknown): KernelEvent {
@@ -1715,4 +1786,8 @@ function clampRandom(value: number): number {
     return 0
   }
   return Math.min(Math.max(value, 0), 0.999999)
+}
+
+function kernelRejectedSubscriptionPair(message: string): boolean {
+  return /does not belong to session|attachment `[^`]+` was not found|session `[^`]+` was not found/i.test(message)
 }

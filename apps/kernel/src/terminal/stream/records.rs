@@ -26,6 +26,17 @@ pub enum TerminalOutputKind {
 pub struct TerminalOutputRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record_id: Option<u64>,
+    /// History sequence of the row this output was persisted as. Live and
+    /// hydrated transcript entries share this one ordering key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<u64>,
+    /// Inclusive last persisted row in a coalesced consecutive range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence_end: Option<u64>,
+    /// UTF-8 byte lengths of the persisted rows, present only after coalescing.
+    /// Clients can discard already hydrated rows without losing unseen text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sequence_byte_lengths: Vec<usize>,
     pub timestamp_ms: u64,
     pub session_id: String,
     pub provider_run_id: String,
@@ -81,10 +92,12 @@ pub struct TerminalOutputAppend {
     pub session_id: String,
     pub provider_run_id: String,
     pub agent_id: Option<String>,
+    pub prompt_id: Option<String>,
     pub prompt_origin: Option<PromptOrigin>,
     pub source_attachment_id: Option<String>,
     pub kind: TerminalOutputKind,
     pub merge_key: Option<String>,
+    pub sequence: Option<u64>,
     pub recipient_attachment_ids: Arc<[String]>,
     pub bytes: Vec<u8>,
 }

@@ -1,6 +1,7 @@
 import type { AgentInstance, RuntimeSession, SliceRecord } from "./kernel-types.js"
 import {
   sessionAgentRuntimeState,
+  sessionAgentTaskStatus,
 } from "./session-runtime-status.js"
 import { agentLegacyProcessingStateIsBusy } from "./agent-activity.js"
 import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "./shell-capability-format.js"
@@ -68,7 +69,6 @@ function formatAgentListSessionContext(context: ShellAgentSessionContext): strin
     `home kernel ${formatHomeKernel(context)}`,
     context.ownerUserId ? `owner ${context.ownerUserId}` : null,
     "authority home-owned",
-    `live sync ${formatWorkspaceLiveSyncModeLabel(context.workspaceLiveSyncMode)}${formatLiveSyncScopeSuffix(context)}`,
   ].filter(Boolean)
   return `session runtime: ${parts.join("; ")}`
 }
@@ -79,7 +79,7 @@ function formatAgentListEntry(
   providerRunContext: ShellAgentProviderRunContext,
   sessionContext: ShellAgentSessionContext,
 ): string {
-  const runtimeState = agentRuntimeStateForSessionContext(agent, sessionContext)
+  const runtimeState = sessionAgentTaskStatus(sessionContext.session, agent.id)?.label ?? agentRuntimeStateForSessionContext(agent, sessionContext)
   const parts = [
     runtimeState,
     formatAgentProvider(agent),
@@ -195,16 +195,14 @@ export function formatAgentInspectSummary(
   sessionContext: ShellAgentSessionContext = {},
 ): string {
   const slice = sliceForRemoteAgent(agent, slices)
-  const runtimeState = agentRuntimeStateForSessionContext(agent, sessionContext)
+  const runtimeState = sessionAgentTaskStatus(sessionContext.session, agent.id)?.label ?? agentRuntimeStateForSessionContext(agent, sessionContext)
   const lines = [
     `${formatAgentRef(agent)} [${runtimeState}]`,
     `id: ${agent.id}`,
     `session: ${agent.session_id}`,
     `home kernel: ${formatHomeKernel(sessionContext)}`,
     `session owner: ${sessionContext.ownerUserId || "<unknown>"}`,
-    "runtime authority: home owns session, prompts, grants, and live sync; workers execute leases and projected tools",
-    `live sync: ${formatWorkspaceLiveSyncModeLabel(sessionContext.workspaceLiveSyncMode)}`,
-    `live sync scope: ${formatLiveSyncScope(sessionContext)}`,
+    "runtime authority: home owns session, prompts, and grants; workers execute leases and projected tools",
     `provider: ${agent.provider}`,
     `model: ${agent.model ?? "<none>"}`,
     `variant: ${agent.effort ?? "<none>"}`,

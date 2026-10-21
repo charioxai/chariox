@@ -9,9 +9,8 @@ use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
 
-const MAX_SOURCE_FILES: usize = 16_384;
+const MAX_DIRECTORY_ENTRIES: usize = 1 << 20;
 const MAX_SOURCE_FILE_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_SOURCE_DEPTH: usize = 64;
 const SNAPSHOT_PARENT_DIRECTORY: &str = "chariox-kernel-context-snapshots";
 const SNAPSHOT_DIRECTORY_PREFIX: &str = "chariox-kernel-context-";
@@ -55,7 +54,7 @@ impl KernelContextSourceSnapshot {
 
     fn capture_once(without_credentials: bool) -> Result<Self, DaemonError> {
         let root = PrivateSnapshotRoot::new()?;
-        let mut budget = SourceBudget::default();
+        let mut budget = SourceBudget::copying_into(&root.path);
         let mcp_root = root.path.join("user/mcps");
         let skill_root = root.path.join("user/skills");
         let script_root = root.path.join("user/scripts");
@@ -157,7 +156,7 @@ impl KernelContextSourceSnapshot {
 
     fn content_digest(&self) -> Result<String, DaemonError> {
         let mut hasher = Sha256::new();
-        let mut budget = SourceBudget::default();
+        let mut budget = SourceBudget::hashing();
         for (label, root) in self.roots() {
             hasher.update(label.as_bytes());
             hasher.update([0]);
@@ -190,29 +189,40 @@ impl KernelContextSourceSnapshot {
     }
 }
 
-#[derive(Default)]
 struct SourceBudget {
-    entries: usize,
     bytes: u64,
+    limit: u64,
+    dir: PathBuf,
 }
 
 impl SourceBudget {
-    fn add_entry(&mut self) -> Result<(), DaemonError> {
-        self.entries = self.entries.saturating_add(1);
-        if self.entries > MAX_SOURCE_FILES {
-            return Err(source_error(
-                "kernel Extension source exceeds its entry limit",
-            ));
+    /// Copies are admitted against the free space below the snapshot directory.
+    fn copying_into(dir: &Path) -> Self {
+        Self {
+            bytes: 0,
+            limit: crate::managed_context::limits::disk_budget(dir),
+            dir: dir.to_path_buf(),
         }
-        Ok(())
+    }
+
+    /// Hash-only passes write nothing and need no admission.
+    fn hashing() -> Self {
+        Self {
+            bytes: 0,
+            limit: u64::MAX,
+            dir: PathBuf::new(),
+        }
     }
 
     fn add_file(&mut self, bytes: u64) -> Result<(), DaemonError> {
         self.bytes = self.bytes.saturating_add(bytes);
-        if self.bytes > MAX_SOURCE_BYTES {
-            return Err(source_error(
-                "kernel Extension source exceeds its byte limit",
-            ));
+        if self.bytes > self.limit {
+            return Err(source_error(crate::managed_context::limits::disk_shortage(
+                "kernel Extension source snapshot",
+                &self.dir,
+                self.bytes,
+                self.limit,
+            )));
         }
         Ok(())
     }
@@ -614,20 +624,16 @@ fn capture_environment_root(
                 "portable environment must be a directory without reparse points",
             ));
         }
-        budget.add_entry()?;
         let destination_package = destination.join(".portable").join(&name);
         create_private_directory(&destination_package)?;
         for file_name in PORTABLE_ENVIRONMENT_FILES {
             let source_file = source_package.join(file_name);
             match fs::symlink_metadata(&source_file) {
-                Ok(_) => {
-                    budget.add_entry()?;
-                    copy_selected_fallback_file(
-                        &source_file,
-                        &destination_package.join(file_name),
-                        budget,
-                    )?
-                }
+                Ok(_) => copy_selected_fallback_file(
+                    &source_file,
+                    &destination_package.join(file_name),
+                    budget,
+                )?,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => {
                     return Err(source_io_error("inspect portable environment input", error))
@@ -723,7 +729,6 @@ fn bounded_directory_entries(
     for entry in
         fs::read_dir(source).map_err(|error| source_io_error("enumerate source snapshot", error))?
     {
-        budget.add_entry()?;
         entries.push(entry.map_err(|error| source_io_error("enumerate source snapshot", error))?);
     }
     Ok(entries)
@@ -768,7 +773,6 @@ fn hash_snapshot_tree(
         .map_err(|error| source_io_error("enumerate private source snapshot", error))?;
     entries.sort_by_key(fs::DirEntry::file_name);
     for entry in entries {
-        budget.add_entry()?;
         let path = entry.path();
         let relative = path
             .strip_prefix(root)
@@ -1039,7 +1043,6 @@ mod unix {
         }
         let names = read_directory_names(source)?;
         for name in names {
-            budget.add_entry()?;
             let name_text = name
                 .to_str()
                 .ok_or_else(|| source_error("kernel Extension source path is not UTF-8"))?;
@@ -1102,7 +1105,6 @@ mod unix {
             {
                 continue;
             }
-            budget.add_entry()?;
             validate_snapshot_component(name_text)?;
             let c_name = CString::new(name.as_bytes())
                 .map_err(|_| source_error("environment definition path contains NUL"))?;
@@ -1132,7 +1134,6 @@ mod unix {
         let Some(environment) = open_optional_directory_at(&portable, &environment_name)? else {
             return Ok(());
         };
-        budget.add_entry()?;
         let destination_package = destination.join(".portable").join(
             environment_name
                 .to_str()
@@ -1149,7 +1150,6 @@ mod unix {
                     "portable environment input must be a regular file without links",
                 ));
             }
-            budget.add_entry()?;
             copy_regular_entry(
                 &environment,
                 &c_name,
@@ -1273,7 +1273,7 @@ mod unix {
                 continue;
             }
             names.push(OsString::from_vec(name.to_vec()));
-            if names.len() > MAX_SOURCE_FILES {
+            if names.len() > MAX_DIRECTORY_ENTRIES {
                 unsafe { libc::closedir(directory) };
                 return Err(source_error(
                     "kernel Extension source entry count exceeds its limit",

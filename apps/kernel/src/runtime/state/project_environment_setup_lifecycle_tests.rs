@@ -80,6 +80,12 @@ const SETUP_TRANSPORT_RECOVERY_REALM: &str = "realm-transport-recovery";
 #[cfg(unix)]
 const SETUP_TRANSPORT_RECOVERY_RELAY_REQUEST_TIMEOUT_MS: u64 = 500;
 
+/// The Get under test keeps one observation budget while the test holds the
+/// authenticated Retry and races a Cancel against it; 500 ms is too tight for a
+/// loaded builder.
+#[cfg(unix)]
+const SETUP_STALE_BINDING_CANCEL_RELAY_REQUEST_TIMEOUT_MS: u64 = 5_000;
+
 #[cfg(unix)]
 struct WorkerCommandGateCleanup {
     setup_release: PathBuf,
@@ -4791,7 +4797,7 @@ async fn stale_binding_recovery_retry_is_ordered_with_concurrent_cancel_inner() 
     config_home.relay_url = Some(relay_url.clone());
     config_home.relay_token = Some("setup-transport-recovery-home-token".to_string());
     config_home.relay_heartbeat_ms = 50;
-    config_home.relay_request_timeout_ms = SETUP_TRANSPORT_RECOVERY_RELAY_REQUEST_TIMEOUT_MS;
+    config_home.relay_request_timeout_ms = SETUP_STALE_BINDING_CANCEL_RELAY_REQUEST_TIMEOUT_MS;
 
     let mut config_worker = DaemonConfig::for_tests();
     config_worker.daemon_id = "worker-kernel-stale-binding-cancel".to_string();
@@ -4799,7 +4805,7 @@ async fn stale_binding_recovery_retry_is_ordered_with_concurrent_cancel_inner() 
     config_worker.relay_url = Some(relay_url.clone());
     config_worker.relay_token = Some("setup-transport-recovery-worker-token".to_string());
     config_worker.relay_heartbeat_ms = 50;
-    config_worker.relay_request_timeout_ms = SETUP_TRANSPORT_RECOVERY_RELAY_REQUEST_TIMEOUT_MS;
+    config_worker.relay_request_timeout_ms = SETUP_STALE_BINDING_CANCEL_RELAY_REQUEST_TIMEOUT_MS;
     config_worker.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
     config_worker.accept_remote_leases = true;
     config_worker.remote_lease_capacity = Some(1);
@@ -5606,6 +5612,10 @@ fn spawn_external_worker_fixture(
 }
 
 #[cfg(unix)]
+#[allow(
+    clippy::type_complexity,
+    reason = "Keep the explicit spawn_external_worker_fixture_with_withheld_retry state or return type at the existing boundary"
+)]
 fn spawn_external_worker_fixture_with_withheld_retry(
     relay_url: String,
     registration: DaemonRegistration,

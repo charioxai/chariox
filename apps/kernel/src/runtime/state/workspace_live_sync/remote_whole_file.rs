@@ -53,7 +53,7 @@ pub(in crate::runtime::state) fn apply_remote_workspace_live_sync_whole_file_ope
                     ));
                 }
                 reservation_ranges
-                    .entry(path.clone())
+                    .entry(path.to_path_buf())
                     .or_default()
                     .push(crate::io::TextRange::new(0, usize::MAX));
                 final_states.insert(path, None);
@@ -97,11 +97,11 @@ pub(in crate::runtime::state) fn apply_remote_workspace_live_sync_whole_file_ope
                     ));
                 }
                 reservation_ranges
-                    .entry(from_path.clone())
+                    .entry(from_path.to_path_buf())
                     .or_default()
                     .push(crate::io::TextRange::new(0, usize::MAX));
                 reservation_ranges
-                    .entry(to_path.clone())
+                    .entry(to_path.to_path_buf())
                     .or_default()
                     .push(crate::io::TextRange::new(0, usize::MAX));
                 final_states.insert(from_path, None);
@@ -135,7 +135,7 @@ pub(in crate::runtime::state) fn apply_remote_workspace_live_sync_whole_file_ope
             Some(content) => {
                 coordinator.read_artifact(crate::io::ArtifactReadRequest {
                     workspace_identity: workspace_identity.clone(),
-                    path: path.clone(),
+                    path: path.to_path_buf(),
                     domain,
                     content: content.clone(),
                 });
@@ -153,7 +153,7 @@ pub(in crate::runtime::state) fn apply_remote_workspace_live_sync_whole_file_ope
         let mut change_payload = serde_json::json!({});
         add_workspace_live_sync_whole_file_change_payload(
             &mut change_payload,
-            path.clone(),
+            path.to_path_buf(),
             before,
             after.clone(),
         );
@@ -188,7 +188,7 @@ pub(in crate::runtime::state) fn apply_remote_workspace_live_sync_whole_file_ope
 
 fn remote_workspace_live_sync_whole_file_state(
     artifact_states: &[crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState],
-    path: &PathBuf,
+    path: &Path,
     domain: crate::io::ArtifactDomainKind,
     before_states: &mut BTreeMap<PathBuf, Option<crate::io::ArtifactContent>>,
     final_states: &mut BTreeMap<PathBuf, Option<crate::io::ArtifactContent>>,
@@ -211,8 +211,8 @@ fn remote_workspace_live_sync_whole_file_state(
         .then(|| remote_workspace_live_sync_content_from_state(state, domain))
         .transpose()?;
     before_states
-        .entry(path.clone())
+        .entry(path.to_path_buf())
         .or_insert_with(|| current.clone());
-    final_states.insert(path.clone(), current.clone());
+    final_states.insert(path.to_path_buf(), current.clone());
     Ok(current)
 }

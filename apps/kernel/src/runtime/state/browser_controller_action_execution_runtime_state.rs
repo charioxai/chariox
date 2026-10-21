@@ -61,6 +61,7 @@ impl KernelRuntimeState {
                 agent_id: agent_id.into(),
             });
         }
+        self.require_room_computer_access(agent_id)?;
         self.recover_active_room_for_computer_input(session_id)
             .await?;
         let _execution_guard = self
@@ -232,6 +233,10 @@ impl KernelRuntimeState {
             })
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing execute_browser_mutation_as_agent operation signature and explicit context arguments"
+    )]
     pub(crate) async fn execute_browser_mutation_as_agent<T, F>(
         &self,
         session_id: &str,
@@ -260,6 +265,10 @@ impl KernelRuntimeState {
             .await
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing execute_browser_tab_mutation_as_agent operation signature and explicit context arguments"
+    )]
     pub(crate) async fn execute_browser_tab_mutation_as_agent<T, F>(
         &self,
         session_id: &str,
@@ -530,6 +539,18 @@ impl KernelRuntimeState {
             // promote a revoked command later. This is cleanup, not execution.
             let _ = self.cancel_unstarted_import_blocked_action(session_id, action_id);
             return Err(error);
+        }
+        let room = self
+            .room_environment_snapshot(session_id)
+            .map_err(action_environment_error)?;
+        if let Some(action) = room.actions.iter().find(|action| {
+            action.action_id == action_id
+                && action.mode == crate::session::EnvironmentMode::Computer
+        }) {
+            if let Err(error) = self.require_room_computer_actor(&action.actor_id) {
+                let _ = self.cancel_unstarted_import_blocked_action(session_id, action_id);
+                return Err(error);
+            }
         }
         Ok(())
     }

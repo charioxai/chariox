@@ -235,13 +235,22 @@ pub fn run_local_docker_slice_action(
     } else {
         None
     };
+    // The image build runs before provisioning and needs a running engine too.
+    if matches!(
+        action,
+        LocalDockerSliceAction::BuildImage
+            | LocalDockerSliceAction::Provision
+            | LocalDockerSliceAction::RestoreState
+            | LocalDockerSliceAction::Recover
+    ) {
+        ensure_host_docker_ready()?;
+    }
     let _memory_admission = if matches!(
         action,
         LocalDockerSliceAction::Provision
             | LocalDockerSliceAction::RestoreState
             | LocalDockerSliceAction::Recover
     ) {
-        ensure_host_docker_ready()?;
         snapshot_pause::recover(record, options)?;
         let memory_admission = memory_admission::admit_slice_start(record, action, options)?;
         if action == LocalDockerSliceAction::Provision {
@@ -253,15 +262,7 @@ pub fn run_local_docker_slice_action(
     };
     let script = linux_docker_slice_script()?;
     let mut command = Command::new(&script);
-    let action_name = match action {
-        LocalDockerSliceAction::Provision => "provision",
-        LocalDockerSliceAction::RestoreState => "restore-state",
-        LocalDockerSliceAction::Recover => "recover",
-        LocalDockerSliceAction::ImportProviderAuth => "import-provider-auth",
-        LocalDockerSliceAction::RemoveProviderAuth => "remove-provider-auth",
-        LocalDockerSliceAction::Stop => "stop",
-        LocalDockerSliceAction::Destroy => "destroy",
-    };
+    let action_name = action.as_str();
     command.arg(action_name);
     configure_local_docker_slice_command(
         &mut command,
@@ -270,7 +271,8 @@ pub fn run_local_docker_slice_action(
         options,
         matches!(
             action,
-            LocalDockerSliceAction::Provision
+            LocalDockerSliceAction::BuildImage
+                | LocalDockerSliceAction::Provision
                 | LocalDockerSliceAction::RestoreState
                 | LocalDockerSliceAction::Recover
         ),
@@ -1434,6 +1436,7 @@ pub(super) fn relay_url_for_container(relay_url: &str) -> String {
 impl LocalDockerSliceAction {
     fn as_str(self) -> &'static str {
         match self {
+            Self::BuildImage => "build-image",
             Self::Provision => "provision",
             Self::RestoreState => "restore-state",
             Self::Recover => "recover",

@@ -78,6 +78,7 @@ impl AgentServiceStore {
             .materialize_publication_agent(agent, session_id, owner_user_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn materialize_workflow_runtime_agent(
         &self,
         agent: AgentInstance,
@@ -90,6 +91,21 @@ impl AgentServiceStore {
 
     pub(crate) fn remove_workflow_runtime_agent(&self, agent_id: &str) -> Option<AgentInstance> {
         self.write().remove_workflow_runtime_agent(agent_id)
+    }
+
+    pub(crate) fn materialize_workflow_runtime_agent_by_agent(
+        &self,
+        agent: AgentInstance,
+        session_id: &str,
+        worktree_id: &str,
+        creator: Option<&str>,
+    ) -> AgentInstance {
+        self.write().materialize_workflow_runtime_agent_by_agent(
+            agent,
+            session_id,
+            worktree_id,
+            creator,
+        )
     }
 
     pub(crate) fn destroy_workflow_runtime_agent(
@@ -255,6 +271,29 @@ impl AgentServiceStore {
             "agent.runtime_profile_updated",
             Some(updated.id().to_string()),
             payload,
+        ) {
+            agents.restore_agent(previous);
+            return Err(error);
+        }
+        Ok(updated)
+    }
+
+    /// MP-08 / MP-10 / MP-11: native identity confirmation does not change
+    /// the selected provider, model, effort or account, including on workers.
+    pub(crate) fn set_agent_provider_resume_state_durably(
+        &self,
+        durable_state_store: &DurableKernelStateStore,
+        agent_id: &str,
+        resume_state: ProviderResumeState,
+        provider_run_id: &str,
+    ) -> Result<AgentInstance, DaemonError> {
+        let mut agents = self.write();
+        let previous = agents.get_agent(agent_id)?;
+        let updated = agents.set_agent_provider_resume_state(agent_id, resume_state)?;
+        if let Err(error) = durable_state_store.append_event(
+            "agent.runtime_profile_updated",
+            Some(updated.id().to_string()),
+            serde_json::json!({ "agent": &updated, "provider_run_id": provider_run_id }),
         ) {
             agents.restore_agent(previous);
             return Err(error);

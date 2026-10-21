@@ -2,7 +2,7 @@ import { BoxRenderable, TextAttributes } from "@opentui/core"
 import {
   sessionAgentRuntimeDisplayStateByAgent,
 } from "@chariox/kernel-client/session-runtime-status"
-import { createEffect } from "solid-js"
+import { createEffect, onCleanup } from "solid-js"
 
 import { createAgentInteractionStripController } from "./agent-interaction-strip-controller.js"
 import { CHROME_UPDATE_THROTTLE_MS } from "./cli-runtime-tuning.js"
@@ -38,12 +38,9 @@ import { buildEmptyTranscriptRenderable } from "./workspace-renderables.js"
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
 import { STATUS_BADGE_WIDTH } from "./runtime.js"
 import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
-import type { RuntimeInteraction } from "./cli-types.js"
+import { createProviderAccountLabelController } from "./provider-account-label-controller.js"
+import type { ProviderAccountProfile, RuntimeInteraction } from "./cli-types.js"
 import type { ProviderLoginInteractionController } from "./provider-login-interaction-controller.js"
-import {
-  providerAccountDisplayLabel,
-  selectedProviderAccount,
-} from "./waiting-room-provider-accounts.js"
 
 type AnyFn = (...args: any[]) => any
 
@@ -79,6 +76,7 @@ export type CliResponseShellCompositionDeps = {
   providerRunState: AnyFn
   currentProviderSelection: AnyFn
   providerAccountsState: AnyFn
+  getProviderAccountProfile?: (provider: string, reference: string) => Promise<ProviderAccountProfile>
   agentActivityLabels: AnyFn
   streamingAgentId: AnyFn
   agentBusyLatch: AnyFn
@@ -116,6 +114,7 @@ export type CliResponseShellCompositionDeps = {
   setCurrentAuxiliaryAgentId: AnyFn
   registerAgentScrollbox: AnyFn
   rebuildAuxiliaryAgentPane: AnyFn
+  rebuildEmptyAuxiliaryAgentPanes: AnyFn
   primaryTranscriptRuntimeStore: {
     getMountedTranscriptAgentId: AnyFn
   }
@@ -144,6 +143,13 @@ export type CliResponseShellCompositionDeps = {
 }
 
 export function createCliResponseShellComposition(deps: CliResponseShellCompositionDeps) {
+  const accountLabels = createProviderAccountLabelController({
+    profiles: deps.providerAccountsState,
+    kernelId: () => deps.sessionState()?.host_daemon_id,
+    ...(deps.getProviderAccountProfile ? { readProfile: deps.getProviderAccountProfile } : {}),
+    changed: () => renderSplitPaneFooters(),
+  })
+  onCleanup(accountLabels.dispose)
   const splitPaneFooterRenderController = createSplitPaneFooterRenderController({
     renderer: deps.renderer,
     state: deps.splitPaneFooterRenderState,
@@ -163,11 +169,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     agentBusyLatch: deps.agentBusyLatch,
     sessionConfigValues: () => deps.sessionState().config_state?.values,
     agentLocationLabel: deps.agentLocationLabel,
-    providerAccountLabel: (provider, accountProfile) => {
-      const profile = selectedProviderAccount(deps.providerAccountsState(), provider, accountProfile)
-      if (profile) return providerAccountDisplayLabel(profile)
-      return "Account unavailable"
-    },
+    providerAccountLabel: accountLabels.label,
     badgeWidth: STATUS_BADGE_WIDTH,
     animationFrame: deps.workingAnimationFrame,
     renderFooters: renderSplitPaneFootersView,
@@ -219,6 +221,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     workflowScreenActive: () => deps.workflowScreenActive(),
     rebuildTranscript: () => deps.rebuildTranscript(),
     requestTranscriptRender,
+    rebuildEmptyAuxiliaryPanes: () => deps.rebuildEmptyAuxiliaryAgentPanes(),
   })
 
   const statusIndicatorController = createStatusIndicatorController<BoxRenderable>({
@@ -331,6 +334,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     getSubmitting: deps.submitting,
     getFooterHint: deps.footerHint,
     isAttached: deps.isAttached,
+    getSessionHydrating: deps.sessionHydrating,
     getSession: deps.sessionState,
     getConnectedClientCount: deps.connectedClientCount,
     getMultiAgentMode: deps.multiAgentMode,
@@ -357,6 +361,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     scheduleTimer: deps.scheduleTimer,
     clearTimer: deps.clearTimer,
     isBatched: deps.uiBatchController.isBatched,
+    isDisposed: () => deps.renderer.isDestroyed,
     applyUpdate: sessionChromeRenderController.apply,
   })
   const updateSessionChrome = () => {

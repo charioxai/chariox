@@ -7,9 +7,10 @@ import { createServer } from 'node:http'
 import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { mkdir, mkdtemp, writeFile, readFile, rm, rename, access, chmod } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile, readFile, rm, rename, access, chmod, cp } from 'node:fs/promises'
 import { spawnOwned, signalOwnedProcessGroup, signalOwnedProcess, ownedProcessHandles, processSnapshot } from '../../kernel/slice-linux-docker/owned-process-signals.mjs'
 import { createReadStream } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { LocalIpcClient } from '../../../packages/kernel-client/dist/ipc.js'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
@@ -194,8 +195,19 @@ async function handleCloud(req,res) {
   } catch(e) {steps.push({name:'cloud-fixture-refusal',path:req.url,message:sanitize(e.message)});res.writeHead(403,{'content-type':'application/json'});res.end('{"code":"admission_refused"}')}
 }
 let relayUrl
+// MP-08: a target whose transfer-store volume has room for the archive once but not twice, so a replayed
+// arm after the bytes arrived is refused by the old full-size admission. Root-only loop mount, removed in cleanup.
+const storeMounts=[]
+function mountTargetStore(state) {
+  const megabytes=Number(process.env.CTXDRILL_TARGET_STORE_MB??0);if(!megabytes)return
+  const directory=path.join(state,'state','managed-context-transfers'),image=path.join(root,'target-store.img')
+  execFileSync('mkdir',['-p',directory]);execFileSync('truncate',['-s',`${megabytes}M`,image]);execFileSync('mkfs.ext4',['-q','-F',image])
+  execFileSync('mount',['-o','loop',image,directory]);storeMounts.push(directory)
+  execFileSync('rmdir',[path.join(directory,'lost+found')]);execFileSync('chmod',['700',directory])
+}
 async function kernel(name, enroll=true) {
   const home=path.join(workRoot,name+'-home'), state=path.join(root,name,'state');await mkdir(home,{recursive:true});await mkdir(state,{recursive:true})
+  if(name==='target')mountTargetStore(state)
   const kp=await port(),mp=await port()
   const env={...baseEnv,HOME:home,CHARIOX_HOME:state,CHARIOX_KERNEL_PORT:String(kp),CHARIOX_MCP_PORT:String(mp),
     CHARIOX_OPENCODE_PORT:String(await port()),CHARIOX_CODEX_PORT:String(await port()),
@@ -231,8 +243,15 @@ try {
   const vaultTransfer=encodedMode||duplicateJson
   secrets.push('synthetic-canary')
   const duplicateBytes=Buffer.from('{"api_key":"synthetic-canary","api_key":""}')
-  const kernelOnly=scenario==='kernel-only'
-  const projectReview=scenario==='project-only'||scenario==='project-with-kernel'
+  const largeKernel=scenario==='kernel-large'
+  const kernelOnly=scenario==='kernel-only'||largeKernel
+  // MP-08: a real provider decides a workspace holding far more gitignored files than the prompt can carry.
+  const ignoredInventory=scenario==='project-ignored-inventory'
+  const ignoredFiles=Number(process.env.CTXDRILL_IGNORED_FILES??12000)
+  // One directory holding every ignored file, or 500 per directory; the owner can bring all not-reviewed files.
+  const ignoredOneDir=process.env.CTXDRILL_IGNORED_ONE_DIR==='1'
+  const bringUnreviewed=process.env.CTXDRILL_BRING_UNREVIEWED==='1'
+  const projectReview=scenario==='project-only'||scenario==='project-with-kernel'||ignoredInventory
   const packagedMode=scenario.startsWith('packaged-')||kernelOnly||scenario==='project-with-kernel'
   const structuredMode=scenario==='structured-header'||scenario==='packaged-metadata'
   const packagedAttack=scenario==='packaged-shell'
@@ -242,7 +261,13 @@ try {
     const skill=path.join(source.env.HOME,'.chariox','skills','review');await mkdir(skill,{recursive:true})
     await writeFile(path.join(skill,'SKILL.md'),'---\nname: review\ndescription: Review code\n---\nRead the diff.\n')
     await writeFile(path.join(skill,packagedFile),packagedBytes)
-
+    // Beyond twice the former fixed snapshot totals: 2,048 extensions, 16,384 files, 128 MiB.
+    if(largeKernel)for(let i=0;i<4200;i++){
+      const bulk=path.join(source.env.HOME,'.chariox','skills',`bulk-${i}`);await mkdir(bulk,{recursive:true})
+      await writeFile(path.join(bulk,'SKILL.md'),`---\nname: bulk-${i}\ndescription: Bulk skill ${i}\n---\nBulk ${i}.\n`)
+      for(let f=0;f<7;f++)await writeFile(path.join(bulk,`part-${f}.txt`),`bulk ${i} part ${f} ${'x'.repeat(1900)}\n`)
+      if(i<30)await writeFile(path.join(bulk,'data.txt'),`bulk ${i} ordinary project note\n`.repeat(400000).slice(0,9*1024*1024))
+    }
   }
   if(structuredMode) {
     const mcps=path.join(source.env.HOME,'.chariox','mcps');await mkdir(path.join(mcps,'local'),{recursive:true})
@@ -262,6 +287,15 @@ try {
   if(scenario==='utf16-history')await writeFile(path.join(workspace,'bootstrap.ps1'),canary)
   if(scenario==='duplicate-json-history')await writeFile(path.join(workspace,'settings.json'),duplicateBytes)
   if(!encodedMode)for(const [name,contents] of Object.entries(metadata))await writeFile(path.join(workspace,name),contents)
+  if(ignoredInventory) {
+    await writeFile(path.join(workspace,'.gitignore'),'scratch-out/\nconfig-local/\n')
+    await mkdir(path.join(workspace,'config-local'));await writeFile(path.join(workspace,'config-local','settings.json'),'{"theme":"dark"}\n')
+    const perDir=ignoredOneDir?ignoredFiles:500
+    for(let group=0;group<ignoredFiles/perDir;group++){
+      const dir=path.join(workspace,'scratch-out',`part-${String(group).padStart(3,'0')}`);await mkdir(dir,{recursive:true})
+      for(let i=0;i<perDir&&group*perDir+i<ignoredFiles;i++)await writeFile(path.join(dir,`artifact-${String(group*perDir+i).padStart(6,'0')}.dat`),`generated ${group*perDir+i}\n`)
+    }
+  }
   for(const args of [['init','-b','main'],['config','user.name','Chariox Drill'],['config','user.email','drill@example.test'],['add','.'],['commit','-m','ordinary setup']]) {
     const result=await run(`git-${steps.length}`,'git',['-C',workspace,...args],source.env);assert.equal(result.code,0)
   }
@@ -279,9 +313,22 @@ try {
   } else if(duplicateJson)await writeFile(path.join(workspace,'settings.json'),duplicateBytes)
   if(!encodedMode) {await mkdir(path.join(workspace,'overlay'));await writeFile(path.join(workspace,'overlay','package.json'),metadata['package.json']);await writeFile(path.join(workspace,'overlay','package-lock.json'),metadata['package-lock.json'])}
   await writeFile(path.join(workspace,'README.md'),'MP-05 owner context overlay\n')
+  // Incompressible (high-bit) dirty PNG assets (16 MiB is the per-file overlay bound) make the transfer archive about this large.
+  for(let i=0;i<Number(process.env.CTXDRILL_NOISE_MB??0)/16;i++){const noise=randomBytes(16*1024*1024-8);for(let b=0;b<noise.length;b++)noise[b]|=0x80;await writeFile(path.join(workspace,`noise-${i}.png`),Buffer.concat([Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]),noise]))}
   automationSocket=path.join(root,'automation.sock')
+  // The current TUI refuses --create-session while the provider account sign-in is unchecked; a
+  // credential-free kernel creates the Project session over IPC and the TUI attaches to it.
+  const { createSessionRequest } = await import('../../../packages/kernel-client/dist/ipc-session-requests.js')
+  if(ignoredInventory) {
+    // The reviewed Codex login is linked, never copied: the source kernel's discovery utility is a real turn.
+    const { linkProviderAccountProfileRequest, refreshProviderAccountProfileRequest, setDefaultProviderAccountProfileRequest } = await import('../../../packages/kernel-client/dist/ipc-provider-requests.js')
+    assert(process.env.CTXDRILL_CODEX_LINK_SCOPE,'CTXDRILL_CODEX_LINK_SCOPE names the product Codex scope to link')
+    const profile=(await rpc(source,linkProviderAccountProfileRequest('codex','ignored-inventory',process.env.CTXDRILL_CODEX_LINK_SCOPE))).ProviderAccountProfile.profile.profile_id
+    await rpc(source,refreshProviderAccountProfileRequest('codex',profile));await rpc(source,setDefaultProviderAccountProfileRequest('codex',profile))
+  }
+  const created=(await rpc(source,createSessionRequest(workspace,workspace,'owner-context-drill',ignoredInventory?{provider:'codex',model:'gpt-6-luna',effort:'low'}:{provider:'claude',model:'claude-haiku-4-5',effort:'low'}))).SessionCreated.session
   tui=start('source-tui','python3',[path.join(repo,'apps/cli/scripts/lib/owner-context-terminal.py'),path.join(binaryDir,'chariox-cli'),
-    '--kernel-url',source.url,'--automation-socket',automationSocket,'--create-session','--workspace',workspace,'--worktree',workspace,'--provider','codex','--model','gpt-5.5'],source.env)
+    '--kernel-url',source.url,'--automation-socket',automationSocket,'--session',created.id],source.env)
   await until(async()=>{await access(automationSocket);const v=await automation({action:'snapshot'});return v.session?.id&&v},'real CLI Project creation',90000)
   const snapshot=await capture('01-enrolled-project')
   const session=(await rpc(source,{GetSessionState:{session_id:snapshot.session.id}})).SessionState.session
@@ -332,6 +379,7 @@ try {
     const result=await run(name,path.join(binaryDir,'chariox-cli'),['context',...args,'--kernel-url',kernel.url],kernel.env)
     assert.equal(result.code,0,`MP-08 ${name}: ${result.output}`);return JSON.parse(result.output.trim())
   }
+  let unreviewedOffered=0
   async function copy(name, inject=false, cancel=false) {
     const start=await cli(name+'-start',source,['copy',selectionPath]);const initial=start.ManagedContextTransferStarted.status
     if(inject)faultContext=initial.contextId
@@ -341,7 +389,7 @@ try {
       if(snapshot.interactions?.some(i=>i.id.startsWith(prefix)||i.id.startsWith('project-environment:')))return snapshot
       const status=(await cli(name+'-before-review-'+steps.length,source,['status',initial.contextId])).ManagedContextTransferStatus.status
       if(status.phase!=='preparing'||status.packageSizeBytes>0)return {premature:status}
-    },'compulsory native owner review')
+    },'compulsory native owner review',ignoredInventory||Number(process.env.CTXDRILL_NOISE_MB??0)>0?400000:45000)
     if(review.premature){await capture(name+'-missing-review');assert.fail('MP-11 owner copy packaged or sent before compulsory native confirmation')}
     await capture(name+'-review-pending')
     assert(review.interactions.some(i=>i.id.startsWith(prefix)),
@@ -363,6 +411,19 @@ try {
       if(packagedMode)await assert.rejects(access(path.join(target.env.HOME,'.chariox','skills','review',packagedFile)))
       steps.push({name:name+'-no-package-or-publication-before-approval',mpItems:['MP-08','MP-10','MP-11'],status:pending})
     }
+    if(ignoredInventory) {
+      // MP-08: ignored files the utility was not shown stay visible, with one action to bring them all.
+      const shown=review.interactions.find(i=>i.id.startsWith(prefix))
+      const bring=shown.choices.find(c=>c.id==='bring-unreviewed')
+      assert(bring,'MP-08 not-reviewed ignored files must stay visible with one action to bring them')
+      unreviewedOffered=Number(/\d+/.exec(bring.label)[0])
+      assert(unreviewedOffered>=ignoredFiles-31&&unreviewedOffered<=ignoredFiles+1,`not-reviewed count ${unreviewedOffered}`)
+      if(bringUnreviewed&&!cancel) {
+        tui.stdin.write(String(shown.choices.indexOf(bring)+1))
+        await until(async()=>(await automation({action:'snapshot'})).interactions?.find(i=>i.id.startsWith(prefix)&&i.choices?.some(c=>c.id==='leave-unreviewed')),'review after bringing every not-reviewed file',120000)
+        await capture(name+'-review-brought')
+      }
+    }
     if(kernelOnly) {
       // MP-10: opening selects nothing. Up selects Cancel, Down Continue.
       tui.stdin.write(cancel?'\x1b[A':'\x1b[B')
@@ -381,7 +442,7 @@ try {
       }
       const status=(await cli(name+'-poll-'+steps.length,source,['status',initial.contextId])).ManagedContextTransferStatus.status
       return (status.phase === 'completed' || (status.phase === 'failed' && (!inject || status.receipt || !faultInjected))) && status
-    },'owner copy terminal status',90000)
+    },'owner copy terminal status',largeKernel?3600000:Number(process.env.CTXDRILL_NOISE_MB??0)>0?900000:90000)
     await capture(name+'-result')
     return terminal
   }
@@ -396,12 +457,41 @@ try {
     assert.notEqual(approved.contextId,cancelled.contextId);assert.equal(approved.phase,'completed');assert(approved.receipt)
     const launch=(await cli('04-owner-target-launch',target,['launch-target',approved.contextId,approved.planDigest])).ManagedContextLaunchTarget.target
     assert.equal(launch.development.kind,kernelOnly?'empty':'from_source');assert.equal(approved.receipt.kernelContext.kind,packagedMode?'from_kernel':'empty')
+    if(ignoredInventory) {
+      // The real provider decided exactly the bounded offered set; the remaining ignored files were left out.
+      const { readdir } = await import('node:fs/promises')
+      const logs=path.join(root,'source','logs');let line
+      for(const name of await readdir(logs))for(const text of (await readFile(path.join(logs,name),'utf8')).split('\n'))
+        if(!line&&text.includes('Project environment discovery decided ignored files'))line=JSON.parse(text)
+      assert(line,'source kernel logged the discovery outcome')
+      const decided=line.decided;assert.equal(line.inventory,ignoredFiles+1);assert.equal(line.unreviewed,ignoredFiles+1-decided)
+      assert(decided>0&&decided<=32,`MP-08 offered a bounded set of ${ignoredFiles} ignored files, got ${decided}`)
+      steps.push({name:'ignored-inventory-bounded-prefix-decided-by-real-codex',mpItems:['MP-08','MP-10','MP-11'],ignoredFiles,decided,unreviewedOffered,model:'gpt-6-luna low'})
+      // Nothing drops silently: the unreviewed files stay behind unless the owner brought them all.
+      const imported=launch.development.repositories[0].workspacePath
+      let arrived=0
+      for(const part of await readdir(path.join(imported,'scratch-out')).catch(()=>[]))arrived+=(await readdir(path.join(imported,'scratch-out',part))).length
+      if(bringUnreviewed) {
+        assert(arrived>=ignoredFiles-decided&&arrived<=ignoredFiles,`every not-reviewed ignored file the owner brought arrived, got ${arrived}`)
+        const last=ignoredFiles-1,dir=ignoredOneDir?'part-000':`part-${String(Math.floor(last/500)).padStart(3,'0')}`
+        assert.equal(await readFile(path.join(imported,'scratch-out',dir,`artifact-${String(last).padStart(6,'0')}.dat`),'utf8'),`generated ${last}\n`)
+      } else assert(arrived<=decided,`only decided ignored files arrive, got ${arrived}`)
+      steps.push({name:'ignored-files-arrival',mpItems:['MP-08','MP-10','MP-11'],bringUnreviewed,arrived})
+    }
     if(projectReview) {
       const imported=launch.development.repositories[0].workspacePath
       assert.equal(await readFile(path.join(imported,'bootstrap.sh'),'utf8'),ordinary)
       assert.equal(await readFile(path.join(imported,'README.md'),'utf8'),'MP-05 owner context overlay\n')
     }
     if(packagedMode)assert.deepEqual(await readFile(path.join(target.env.HOME,'.chariox','skills','review',packagedFile)),packagedBytes)
+    if(largeKernel) {
+      const { readdir } = await import('node:fs/promises'); const sk=path.join(target.env.HOME,'.chariox','skills')
+      const names=await readdir(sk); const bulk=names.filter(n=>n.startsWith('bulk-')).length
+      const first=await sha256(path.join(source.env.HOME,'.chariox','skills','bulk-29','data.txt'))
+      assert.equal(bulk,4200);assert.equal(await sha256(path.join(sk,'bulk-29','data.txt')),first)
+      assert.equal(await readFile(path.join(sk,'bulk-4199','part-6.txt'),'utf8'),`bulk 4199 part 6 ${'x'.repeat(1900)}\n`)
+      steps.push({name:'large-kernel-snapshot-imported',skills:bulk+1,receipt:approved.receipt})
+    }
     await assert.rejects(access(path.join(source.outbound,approved.contextId)))
     steps.push({name:'owner-approved-exact-bytes-published',mpItems:['MP-08','MP-10','MP-11'],launch})
     if(scenario==='project-only') {
@@ -503,7 +593,15 @@ try {
 finally {
   for(const child of [...children].reverse()) {try{await stop(child);await writeFile(path.join(evidence,child.name+'-process.log'),child.output)}catch(e){failed??=sanitize(e.message)}}
   if(cloud)await new Promise(r=>cloud.close(r))
+  for(const directory of storeMounts.splice(0)){
+    try{
+      const used=execFileSync('df',['--output=used,avail','-B1',directory],{encoding:'utf8'}).trim().split('\n').pop().trim().split(/\s+/)
+      steps.push({name:'target-store-volume-at-end',usedBytes:Number(used[0]),availBytes:Number(used[1])})
+      execFileSync('umount',[directory])
+    }catch(e){failed??=sanitize(e.message)}
+  }
   // Only the exact mkdtemp root owned by this run contains disposable runtime keys.
+  if(root&&evidence)for(const name of ['source','target'])await cp(path.join(root,name,'logs'),path.join(evidence,`${name}-kernel-logs`),{recursive:true}).catch(()=>{})
   if(root){assert(path.dirname(root)==='/root/.chariox/dev/browser-resume-20260930'&&path.basename(root).startsWith('byomctx-r5-live-'));await rm(root,{recursive:true,force:true});cleanup=true}
   if(workRoot){assert(path.dirname(workRoot)==='/root/work'&&path.basename(workRoot).startsWith('agent-byomctx-r5-live-'));await rm(workRoot,{recursive:true,force:true})}
   await sample()

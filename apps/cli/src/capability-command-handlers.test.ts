@@ -20,20 +20,17 @@ test("App bindings use the existing slash grant path without a second remote con
   assert.deepEqual(harness.footers, ["info:bound App installed to agent-1", "error:App bindings take only an installation ID"])
 })
 
-test("extension slash command confirms active home-proxy grants before exposing home execution", async () => {
+test("extension slash command grants an explicit home-proxy grant at once and says where it runs", async () => {
   const remote = agent({ remote: true })
   const harness = capabilityHarness(remote)
 
   await handleExtensionSlashCommand(harness.deps, parseSlashCommand("/extension grant script agent-1 lookup --env py") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "extension" }>)
   await handleExtensionSlashCommand(harness.deps, parseSlashCommand("/extension grant script agent-1 lookup --env py --confirm-home-proxy") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "extension" }>)
 
-  assert.deepEqual(harness.grants, ["script:agent-1:lookup:py"])
-  assert.match(harness.notices[0] ?? "", /Confirm exposing script lookup to remote agent agent-1/)
-  assert.match(harness.notices[0] ?? "", /rerun: \/extension grant script agent-1 lookup --env py --confirm-home-proxy/)
-  assert.deepEqual(harness.footers, [
-    "error:confirmation required for home-proxy grant",
-    "info:granted script lookup to agent-1",
-  ])
+  assert.deepEqual(harness.grants, ["script:agent-1:lookup:py", "script:agent-1:lookup:py"])
+  assert.equal(harness.notices.length, 1)
+  assert.match(harness.notices[0] ?? "", /script lookup is exposed to remote agent agent-1; home keeps credentials local/)
+  assert.deepEqual(harness.footers, ["info:granted script lookup to agent-1", "info:granted script lookup to agent-1"])
 })
 
 test("extension slash command grants passive remote skills without home-proxy confirmation", async () => {
@@ -113,16 +110,14 @@ test("extension slash command reports empty home extension audit accurately", as
   assert.deepEqual(harness.footers, ["info:home extension audit for agent-1: 0 events"])
 })
 
-test("mcp slash command confirms active home-proxy shorthand grants", async () => {
+test("mcp slash command grants home-proxy shorthand grants at once", async () => {
   const remote = agent({ remote: true })
   const harness = capabilityHarness(remote)
 
   await handleMcpSlashCommand(harness.deps, parseSlashCommand("/mcp grant agent-1 filesystem") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "mcp" }>)
 
-  assert.deepEqual(harness.grants, [])
-  assert.match(harness.notices[0] ?? "", /Confirm exposing mcp filesystem to remote agent agent-1/)
-  assert.match(harness.notices[0] ?? "", /rerun: \/mcp grant agent-1 filesystem --confirm-home-proxy/)
-  assert.deepEqual(harness.footers, ["error:confirmation required for home-proxy grant"])
+  assert.equal(harness.grants.length, 1)
+  assert.match(harness.notices[0] ?? "", /mcp filesystem is exposed to remote agent agent-1/)
 })
 
 test("a rejected vault passphrase adds the one-line recovery hint and still fails", async () => {

@@ -44,6 +44,7 @@ impl RoomComputerSecretInput {
         &self.0
     }
 
+    #[cfg(test)]
     pub(crate) fn new(value: String) -> Self {
         Self(value)
     }
@@ -161,6 +162,11 @@ impl RoomComputerSecretTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RoomComputerInputAction {
+    TargetAction {
+        tree_revision: u64,
+        target_id: String,
+        action: String,
+    },
     PointerMove {
         x: u32,
         y: u32,
@@ -241,6 +247,10 @@ pub(crate) struct RoomBrowserImportBinding {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RoomBrowserControllerCommand {
+    NoteObservation {
+        target_id: String,
+        document_id: String,
+    },
     Acquire,
     Reconcile {
         viewport: CanonicalViewport,
@@ -413,6 +423,7 @@ pub(crate) enum SecretObservationDisposition {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RoomBrowserControllerResult {
+    NoteObservation { observation: Option<crate::runtime::notes::observation::BrowserNoteObservation> },
     RecoveryRequired {
         process: BrowserControllerProcessSnapshot,
     },

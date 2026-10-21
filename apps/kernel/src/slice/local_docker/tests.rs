@@ -314,6 +314,75 @@ fn managed_broker_slice_does_not_require_docker_in_the_kernel_namespace() {
 
 #[cfg(unix)]
 #[test]
+fn image_build_starts_a_stopped_docker_engine_before_building() {
+    crate::test_support::isolated_env_test!();
+    use std::os::unix::fs::PermissionsExt;
+
+    let _lock = crate::env_lock::lock();
+    let root = test_root("image-build-docker-start");
+    let bin = root.join("bin");
+    let started = root.join("colima-started");
+    let provisioner = root.join("provision.sh");
+    std::fs::create_dir_all(&bin).expect("fake launcher directory should create");
+    let write_script = |path: &std::path::Path, body: String| {
+        std::fs::write(path, body).expect("fake script should write");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("fake script should become executable");
+    };
+    write_script(
+        &bin.join("docker"),
+        format!(
+            "#!/bin/sh\n[ \"$1\" = info ] && [ -e '{}' ]\n",
+            started.display()
+        ),
+    );
+    write_script(
+        &bin.join("colima"),
+        format!("#!/bin/sh\n: > '{}'\n", started.display()),
+    );
+    write_script(&provisioner, "#!/bin/sh\nexit 0\n".to_string());
+    let saved: Vec<_> = [
+        "PATH",
+        "CHARIOX_SLICE_DOCKER_PROVISIONER",
+        "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED",
+    ]
+    .into_iter()
+    .map(|name| (name, std::env::var_os(name)))
+    .collect();
+    let mut path = bin.clone().into_os_string();
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    std::env::set_var("PATH", path);
+    std::env::set_var("CHARIOX_SLICE_DOCKER_PROVISIONER", &provisioner);
+    std::env::remove_var("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED");
+
+    let options = LocalDockerSliceOptions::from_config(&DaemonConfig::for_tests());
+    let result = run_local_docker_slice_action(
+        &test_record(),
+        LocalDockerSliceAction::BuildImage,
+        None,
+        None,
+        None,
+        &options,
+    );
+    let engine_was_started = started.exists();
+    // Restore before assertions so a RED test cannot contaminate the suite.
+    for (name, value) in saved {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        engine_was_started,
+        "the image build skipped the Docker engine start: {result:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn disk_pressure_admission_fault_probe() {
     crate::test_support::isolated_env_test!();
     use std::os::unix::fs::PermissionsExt;
@@ -764,7 +833,10 @@ fn backup_restore_never_quarantines_a_file_outside_the_owned_archive_shape() {
     let error = validate_local_docker_slice_backup(&test_record(), &backup)
         .expect_err("an invalid archive path must fail without renaming it");
 
-    assert!(error.to_string().contains("cannot be quarantined safely"));
+    assert!(
+        error.to_string().contains("cannot be quarantined safely"),
+        "{error}"
+    );
     assert_eq!(
         std::fs::read(&unowned).expect("unowned file must remain readable"),
         b"must-remain"
@@ -1004,10 +1076,12 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
         "slice-screen.sh",
         "tint2rc",
         "browser-app-restore.mjs",
+        "browser-app-drafts.mjs",
         "browser-cdp.mjs",
         "browser-controller-actions.mjs",
         "browser-controller-apps.mjs",
         "browser-controller-bar.mjs",
+        "browser-focus-world.mjs",
         "browser-controller-cdp.mjs",
         "browser-controller-dialogs.mjs",
         "browser-controller-events.mjs",
@@ -1279,18 +1353,19 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
             "mousemove 640 400\n",
             "click --repeat 3 --delay 20 6\n",
             "click --repeat 5 --delay 20 5\n",
-            "key --clearmodifiers --repeat 3 --delay 40 ctrl+shift+p\n",
         )
     );
+    // MP-08/MP-11: repeated chords use the same strict XTEST helper as text
+    // (xdotool can report success for unknown keysyms without input).
     assert_eq!(
         std::fs::read_to_string(&keyboard_stdin_log)
             .expect("keyboard text should reach the Selkies helper stdin"),
-        "Grüße 世界"
+        "Grüße 世界ctrl+shift+p"
     );
     assert_eq!(
         std::fs::read_to_string(&keyboard_log)
-            .expect("text and reset should use the shared keyboard helper"),
-        "slice-keyboard.py\nslice-keyboard.py reset\n"
+            .expect("text, repeat and reset should use the shared keyboard helper"),
+        "slice-keyboard.py\nslice-keyboard.py key-repeat\nslice-keyboard.py reset\n"
     );
     std::fs::remove_dir_all(root).expect("test root should be removed");
 }

@@ -1,3 +1,5 @@
+import { clearClientViews } from "./client-view-cache.js"
+import { invalidateClientInventories } from "./client-inventory-cache.js"
 import type {
   WaitingRoomRelayStatusView,
   WaitingRoomTerminalView,
@@ -154,8 +156,12 @@ export async function logoutCloudRelay(
   client: LocalIpcClient,
   options: { revokeClient?: boolean; revokeMachine?: boolean } = {},
 ): Promise<void> {
-  const response = await client.send<Record<string, unknown>>(logoutCloudRelayRequest(options))
-  expectVariant(response, "CloudRelayLoggedOut")
+  await clearClientViews()
+  await invalidateClientInventories()
+  const response = await client.send<unknown>(logoutCloudRelayRequest(options))
+  if (response !== "CloudRelayLoggedOut") {
+    throw new Error("unexpected response variant: expected CloudRelayLoggedOut")
+  }
 }
 
 export async function pairKernelCloudRelayClient(
@@ -222,11 +228,14 @@ export async function issueKernelCloudRelayClientToken(
     requireRelayTokenKeyBinding(payload.token.relay_token, publicKeyThumbprint, "CLI key-bound relay token")
   }
   const targetDaemonId = relayTokenCanonicalTarget(payload.token.relay_token, targetDaemonAlias)
+  // The kernel omits a session for its own account's kernels; report the grant's scope.
+  const grantSessionId = relayTokenPayload(payload.token.relay_token)?.session_id
   return {
     relayUrl: payload.token.relay_url,
     relayToken: payload.token.relay_token,
     tokenExpiresAtMs: parseAbsoluteInstantMs(payload.token.token_expires_at),
     ...(targetDaemonId ? { targetDaemonId } : {}),
+    ...(typeof grantSessionId === "string" && grantSessionId ? { sessionId: grantSessionId } : {}),
     profile: relayCloudProfileFromKernel(payload.profile),
   }
 }

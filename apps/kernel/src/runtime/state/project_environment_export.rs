@@ -380,7 +380,7 @@ impl KernelRuntimeState {
             &crate::local::AgentUtilityKind::ProjectEnvironmentSetup,
         )
         .await?;
-        let scratch = EnvironmentDiscoveryScratch::new(
+        let scratch = MetadataUtilityScratch::new(
             &self
                 .owned
                 .config_projection
@@ -391,8 +391,23 @@ impl KernelRuntimeState {
         let output = run_provider_utility_prompt(self, run, AgentUtilityPromptParts {
             visible_user_prompt: project_environment_discovery_prompt(input)?,
             hidden_system_context: "Classify only the supplied Project environment metadata. No tools or source contents are available.".into(),
-        }, "discover Project environment", ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery).await?;
-        parse_project_environment_discovery_output(&output, input)
+        }, "discover Project environment", ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery, crate::runtime::agent_utility_executor::AGENT_UTILITY_TIMEOUT).await?;
+        let manifest = parse_project_environment_discovery_output(&output, input)?;
+        let decided = manifest
+            .private_files
+            .iter()
+            .filter(|file| file.reason != UNREVIEWED_PRIVATE_FILE_REASON)
+            .count();
+        crate::logging::info_with_fields(
+            "daemon.project_environment",
+            "MP-08: Project environment discovery decided ignored files",
+            serde_json::json!({
+                "inventory": input.private_files.len(),
+                "decided": decided,
+                "unreviewed": manifest.private_files.len() - decided,
+            }),
+        );
+        Ok(manifest)
     }
 
     async fn environment_utility_identity(
@@ -465,12 +480,14 @@ pub(super) fn environment_failure(message: &'static str) -> DaemonError {
         message: message.into(),
     }
 }
-struct EnvironmentDiscoveryScratch(PathBuf);
-impl EnvironmentDiscoveryScratch {
-    fn new(root: &Path) -> Result<Self, DaemonError> {
+/// A private, empty working directory for a metadata-only utility run, which
+/// must not see any source.
+pub(super) struct MetadataUtilityScratch(pub(super) PathBuf);
+impl MetadataUtilityScratch {
+    pub(super) fn new(root: &Path) -> Result<Self, DaemonError> {
         std::fs::create_dir_all(root)
             .map_err(|_| environment_failure("discovery state root unavailable"))?;
-        let path = root.join(format!("project-discovery-{}", rand::random::<u64>()));
+        let path = root.join(format!("metadata-utility-{}", rand::random::<u64>()));
         std::fs::create_dir(&path)
             .map_err(|_| environment_failure("discovery scratch unavailable"))?;
         #[cfg(unix)]
@@ -482,7 +499,7 @@ impl EnvironmentDiscoveryScratch {
         Ok(Self(path))
     }
 }
-impl Drop for EnvironmentDiscoveryScratch {
+impl Drop for MetadataUtilityScratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir(&self.0);
     }

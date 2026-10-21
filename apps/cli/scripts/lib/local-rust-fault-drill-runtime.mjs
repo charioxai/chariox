@@ -67,13 +67,16 @@ export async function runLocalRustFaultDrill({
     if (interrupted) throw new Error(`${name} interrupted by ${interrupted}`)
     report.resources.push(await resourceSnapshot(run, "before", null, repoRoot))
     if (interrupted) throw new Error(`${name} interrupted by ${interrupted}`)
-    const execution = run("cargo", cargoArgs, {
+    // A fast failure must stay handled while the resource sample is collected.
+    const execution = Promise.allSettled([run("cargo", cargoArgs, {
       env: { ...process.env, CARGO_BUILD_JOBS: "1", CARGO_TARGET_DIR: cargoTarget },
       onSpawn: (child) => { cargoPid = child.pid },
-    })
+    })])
     await new Promise((resolve) => setTimeout(resolve, 100))
     report.resources.push(await resourceSnapshot(run, "during", cargoPid, repoRoot))
-    const result = await execution
+    const [outcome] = await execution
+    if (outcome.status === "rejected") throw outcome.reason
+    const result = outcome.value
     report.execution = executionMetadata(result, "passed")
     report.output = outputTails(result)
     report.probe = parseProbe(`${result.stdout}\n${result.stderr}`)
@@ -208,7 +211,7 @@ export function createRunner({ repoRoot, children }) {
 }
 
 function terminateGroup(child, signal) {
-  if (!child?.pid || child.exitCode !== null) return
+  if (!Number.isSafeInteger(child?.pid) || child.pid <= 1 || child.exitCode !== null) return
   try {
     signalOwnedProcessGroup(child, signal)
   } catch {

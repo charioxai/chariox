@@ -313,6 +313,7 @@ export function createCliPromptSurfaceComposition(deps: CliPromptSurfaceComposit
   const removePromptAttachmentsForEdit = promptAttachmentController.removeForEdit
 
   const promptSubmissionUiController = createPromptSubmissionUiController({
+    getPromptText: deps.promptTextController.currentText,
     getSessionId: () => deps.attachmentState()?.session_id ?? null,
     getPendingAttachments: deps.pendingAttachments,
     resetPromptHistoryNavigation: () => {
@@ -394,7 +395,6 @@ export function createCliPromptSurfaceComposition(deps: CliPromptSurfaceComposit
     persistablePromptDraft,
     persistSessionPromptState,
     promptAreaBackground: promptChromeProjectionController.promptAreaBackground,
-    promptHistoryHydrationController,
     promptInputHistoryRefreshController,
     promptInputMaxHeight,
     promptPlaceholder,

@@ -4,9 +4,11 @@ mod events;
 mod input;
 mod interrupt;
 mod lifecycle;
+mod output_ready;
 mod prompt;
 mod run_config;
 mod state;
+mod tool_snapshots;
 mod transcript;
 mod turn;
 mod utility;
@@ -20,6 +22,7 @@ pub use state::{
     CodexRuntimeState,
 };
 pub use utility::run_codex_utility_prompt;
+pub(crate) use utility::run_codex_utility_prompt_with_admission;
 
 #[cfg(test)]
 mod tests;

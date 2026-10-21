@@ -29,6 +29,15 @@ pub(super) fn execute_submit_command(
     prompt_id: &str,
 ) -> Result<ProviderPromptSubmitAcknowledgement, DaemonError> {
     let run_id = run.id().to_string();
+    runtime_registry.take_assessment_output(&run_id);
+    if envelope.assessment_only {
+        return super::assessment::execute_assessment(runtime_registry, &run, envelope, prompt_id);
+    }
+    crate::logging::debug_with_fields(
+        "daemon.provider.prompt_timing",
+        "provider prompt dispatch started",
+        serde_json::json!({"provider_run_id": run_id, "prompt_id": prompt_id}),
+    );
     if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
         thread::sleep(Duration::from_millis(750));
         return Ok(ProviderPromptSubmitAcknowledgement {
@@ -84,6 +93,12 @@ pub(super) fn execute_submit_command(
         });
     }
     let result = submit_opencode_prompt(&run, &mut state, &envelope);
+    crate::logging::debug_with_fields(
+        "daemon.provider.prompt_timing",
+        "provider prompt dispatch finished",
+        serde_json::json!({"provider_run_id": run_id, "prompt_id": prompt_id,
+            "success": result.is_ok()}),
+    );
     let resume_state = ProviderResumeState::from_opencode_session_id(state.session_id());
     runtime_registry.restore_opencode_runtime_if_live(&run_id, &slot, state);
     result.map(|_| ProviderPromptSubmitAcknowledgement { resume_state })
@@ -94,6 +109,7 @@ pub(super) fn execute_abort_command(
     run: RuntimeProviderRun,
 ) -> Result<(), DaemonError> {
     let run_id = run.id().to_string();
+    runtime_registry.take_assessment_output(&run_id);
     if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
         thread::sleep(Duration::from_millis(750));
         return Ok(());
@@ -129,6 +145,8 @@ pub(super) fn execute_utility_command(
     envelope: PromptEnvelope,
     timeout: Duration,
     policy: ProviderUtilityExecutionPolicy,
+    cancellation: Option<super::utility_cancellation::MetadataUtilityCancellation>,
+    admission: Option<crate::provider::ProviderUtilityAdmission>,
 ) -> Result<String, DaemonError> {
     if policy.is_read_only_discovery()
         && (run.execution_mode() != crate::provider::AgentExecutionMode::Plan
@@ -161,15 +179,31 @@ pub(super) fn execute_utility_command(
                     &credentials,
                 )?
                 .state;
-            let result =
-                run_claude_utility_prompt_on_runtime(&run, &mut utility, &envelope, timeout);
+            let result = run_claude_utility_prompt_on_runtime(
+                &run,
+                &mut utility,
+                &envelope,
+                timeout,
+                true,
+                cancellation.as_ref(),
+                admission.as_ref(),
+            );
             drop(utility);
             result
         })();
         runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
         return result;
     }
-    let result = run_claude_utility_prompt_on_runtime(&run, &mut state, &envelope, timeout);
+    let expects_text = policy != ProviderUtilityExecutionPolicy::SessionCommand;
+    let result = run_claude_utility_prompt_on_runtime(
+        &run,
+        &mut state,
+        &envelope,
+        timeout,
+        expects_text,
+        None,
+        admission.as_ref(),
+    );
     runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
     result
 }
@@ -179,12 +213,23 @@ fn run_claude_utility_prompt_on_runtime(
     state: &mut super::super::ClaudeRuntimeState,
     envelope: &PromptEnvelope,
     timeout: Duration,
+    expects_text: bool,
+    cancellation: Option<&super::utility_cancellation::MetadataUtilityCancellation>,
+    admission: Option<&crate::provider::ProviderUtilityAdmission>,
 ) -> Result<String, DaemonError> {
+    if cancellation.is_some_and(|c| c.is_cancelled()) {
+        return Err(cancelled_metadata_utility(run));
+    }
+    let guard = admission.map(|check| check.acquire()).transpose()?;
     submit_claude_prompt(run, state, envelope)?;
+    drop(guard);
     let deadline = std::time::Instant::now() + timeout;
     let mut output = String::new();
     while std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(100));
+        if cancellation.is_some_and(|c| c.is_cancelled()) {
+            return Err(cancelled_metadata_utility(run));
+        }
         let batch = drain_claude_events(run, state)?;
         for chunk in batch.chunks {
             if chunk.kind == crate::terminal::TerminalOutputKind::ProviderOutput {
@@ -200,7 +245,7 @@ fn run_claude_utility_prompt_on_runtime(
         }
         if batch.prompt_completed {
             let output = output.trim().to_string();
-            if output.is_empty() {
+            if output.is_empty() && expects_text {
                 return Err(DaemonError::ProviderProtocol {
                     provider_run_id: run.id().to_string(),
                     operation: "claude_utility_empty_output",
@@ -218,6 +263,14 @@ fn run_claude_utility_prompt_on_runtime(
             timeout.as_millis()
         ),
     })
+}
+
+fn cancelled_metadata_utility(run: &RuntimeProviderRun) -> DaemonError {
+    DaemonError::ProviderProtocol {
+        provider_run_id: run.id().to_string(),
+        operation: "claude_utility_cancelled",
+        message: "the fresh metadata utility was cancelled before completing".to_string(),
+    }
 }
 
 pub(super) fn execute_terminate_command(
@@ -275,6 +328,9 @@ pub(super) fn execute_output_poll_command(
     output_poll_delay: Duration,
 ) -> Result<Option<ProviderPromptSignalBatch>, DaemonError> {
     let run_id = run.id();
+    if let Some(output) = runtime_registry.take_assessment_output(run_id) {
+        return Ok(Some(output));
+    }
     if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
         thread::sleep(Duration::from_millis(750));
         return Ok(None);
@@ -288,6 +344,7 @@ pub(super) fn execute_output_poll_command(
             thread::sleep(output_poll_delay);
         }
         let poll = drain_codex_events(run, &mut state, native_interaction_bridge.read());
+        state.acknowledge_output_poll();
         let resolved_resume_state =
             completed_codex_turn_resume_state(state.thread_id(), poll.as_ref().ok());
         runtime_registry.restore_codex_runtime_if_live(run_id, &slot, state);
@@ -354,6 +411,13 @@ pub(super) fn execute_output_poll_command(
     if run.adapter_key() != "opencode" {
         return Ok(None);
     }
+    // MP-08 / MP-10: separate actor/HTTP time from pump and app-lock time.
+    let poll_started = std::time::Instant::now();
+    crate::logging::debug_with_fields(
+        "daemon.provider.opencode.timing",
+        "output poll started",
+        serde_json::json!({"provider_run_id": run_id}),
+    );
     let (slot, mut state) = match runtime_registry.take_opencode_runtime(run_id) {
         Ok((slot, state)) => (slot, state),
         Err(_) => return Ok(None),
@@ -363,6 +427,14 @@ pub(super) fn execute_output_poll_command(
     }
     let drain = drain_opencode_events(run, &mut state, native_interaction_bridge.read());
     runtime_registry.restore_opencode_runtime_if_live(run_id, &slot, state);
+    crate::logging::debug_with_fields(
+        "daemon.provider.opencode.timing",
+        "output poll finished",
+        serde_json::json!({"provider_run_id": run_id,
+            "elapsed_us": poll_started.elapsed().as_micros(),
+            "success": drain.is_ok(),
+            "chunks": drain.as_ref().ok().map(|batch| batch.chunks.len())}),
+    );
     let drain = drain?;
     let explicit_provider_error = drain.explicit_provider_error;
     Ok(Some(ProviderPromptSignalBatch {

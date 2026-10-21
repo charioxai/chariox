@@ -65,10 +65,12 @@ fn zero_recipient_outputs_and_completions_are_not_retained() {
         session_id: "session-1".to_string(),
         provider_run_id: "provider-run-1".to_string(),
         agent_id: Some("agent-1".to_string()),
+        prompt_id: None,
         prompt_origin: Some(crate::session::PromptOrigin::Chariox),
         source_attachment_id: Some("attachment-detached".to_string()),
         kind: TerminalOutputKind::ProviderTool,
         merge_key: Some("tool-1".to_string()),
+        sequence: None,
         recipient_attachment_ids: Arc::from(Vec::<String>::new()),
         bytes: b"detached tool result".to_vec(),
     }]);
@@ -316,10 +318,12 @@ fn output_polling_drains_single_recipient_batch_records() {
             session_id: "session-1".to_string(),
             provider_run_id: "provider-run-1".to_string(),
             agent_id: Some("agent-1".to_string()),
+            prompt_id: None,
             prompt_origin: None,
             source_attachment_id: None,
             kind: TerminalOutputKind::ProviderOutput,
             merge_key: Some("chunk-1".to_string()),
+            sequence: None,
             recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
             bytes: b"one".to_vec(),
         },
@@ -327,10 +331,12 @@ fn output_polling_drains_single_recipient_batch_records() {
             session_id: "session-1".to_string(),
             provider_run_id: "provider-run-1".to_string(),
             agent_id: Some("agent-1".to_string()),
+            prompt_id: None,
             prompt_origin: None,
             source_attachment_id: None,
             kind: TerminalOutputKind::ProviderOutput,
             merge_key: Some("chunk-2".to_string()),
+            sequence: None,
             recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
             bytes: b"two".to_vec(),
         },
@@ -352,6 +358,36 @@ fn output_polling_drains_single_recipient_batch_records() {
 }
 
 #[test]
+fn batch_output_coalescing_keeps_reused_merge_keys_in_separate_prompts() {
+    let mut terminal = TerminalStreamService::with_output_coalesce_byte_limit(1024);
+    terminal.fan_out_outputs(
+        ["prompt-first", "prompt-second"]
+            .into_iter()
+            .map(|prompt_id| TerminalOutputAppend {
+                session_id: "session-1".to_string(),
+                provider_run_id: "provider-run-1".to_string(),
+                agent_id: Some("agent-1".to_string()),
+                prompt_id: Some(prompt_id.to_string()),
+                sequence: None,
+                prompt_origin: Some(crate::session::PromptOrigin::Chariox),
+                source_attachment_id: Some("attachment-owner".to_string()),
+                kind: TerminalOutputKind::ProviderOutput,
+                merge_key: Some("assistant".to_string()),
+                recipient_attachment_ids: Arc::from(vec!["attachment-viewer".to_string()]),
+                bytes: prompt_id.as_bytes().to_vec(),
+            })
+            .collect(),
+    );
+
+    let records = terminal.drain_output_records("session-1", "attachment-viewer");
+    assert_eq!(records.len(), 2);
+    for (record, prompt_id) in records.iter().zip(["prompt-first", "prompt-second"]) {
+        assert_eq!(record.prompt_id.as_deref(), Some(prompt_id));
+        assert_eq!(record.bytes, prompt_id.as_bytes());
+    }
+}
+
+#[test]
 fn output_coalescing_is_scoped_by_prompt_metadata() {
     let mut terminal = TerminalStreamService::with_output_coalesce_byte_limit(1024);
     terminal.fan_out_output_with_prompt_metadata(
@@ -360,6 +396,7 @@ fn output_coalescing_is_scoped_by_prompt_metadata() {
         Some("agent-1"),
         TerminalOutputKind::ProviderOutput,
         Some("assistant".to_string()),
+        None,
         Some(crate::session::PromptOrigin::External),
         Some("attachment-1".to_string()),
         vec!["attachment-viewer".to_string()],
@@ -371,6 +408,7 @@ fn output_coalescing_is_scoped_by_prompt_metadata() {
         Some("agent-1"),
         TerminalOutputKind::ProviderOutput,
         Some("assistant".to_string()),
+        None,
         Some(crate::session::PromptOrigin::External),
         Some("attachment-2".to_string()),
         vec!["attachment-viewer".to_string()],
@@ -435,10 +473,12 @@ fn batch_fanout_deduplicates_repeated_single_recipient_changed_keys() {
                 session_id: "session-1".to_string(),
                 provider_run_id: format!("provider-run-{index}"),
                 agent_id: Some(format!("agent-{index}")),
+                prompt_id: None,
                 prompt_origin: None,
                 source_attachment_id: None,
                 kind: TerminalOutputKind::ProviderTool,
                 merge_key: Some(format!("chunk-{index}")),
+                sequence: None,
                 recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
                 bytes: format!("chunk-{index}").into_bytes(),
             })
@@ -522,6 +562,10 @@ fn output_polling_keeps_large_drains_batched() {
 fn output_drain_size_estimator_bounds_scoped_json() {
     let record = TerminalOutputRecord {
         record_id: None,
+        // MP-08 / MP-10 (chariox#987 review): the history sequence counts too.
+        sequence: Some(u64::MAX - 1),
+        sequence_end: Some(u64::MAX),
+        sequence_byte_lengths: vec![2, 4],
         timestamp_ms: 1_700,
         session_id: "session-\n1".to_string(),
         provider_run_id: "provider-run-1".to_string(),
@@ -1239,4 +1283,141 @@ fn workflow_run_updates_are_bounded_per_attachment() {
         vec![second, third]
     );
     assert!(terminal.workflow_run_update_records.is_empty());
+}
+
+// MP-08/MP-10: goal completion-check turns are agent-only. The instruction
+// echo (by its kernel-owned id) and every record of the turn (by origin) are
+// never delivered; ordinary prompts and replies still are.
+#[test]
+fn goal_completion_check_turn_is_not_delivered_to_clients() {
+    let mut terminal = TerminalStreamService::new();
+    for origin in [
+        None,
+        Some(crate::session::PromptOrigin::Chariox),
+        Some(crate::session::PromptOrigin::CompletionCheck),
+    ] {
+        terminal.fan_out_prompt_output(
+            "session-1",
+            "run-1",
+            Some("agent-1"),
+            "goal-check-task-1-1-1",
+            origin,
+            "attachment-1",
+            vec!["attachment-1".into()],
+            b"This turn has origin completion_check.",
+        );
+    }
+    terminal.fan_out_output_with_prompt_origin(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        Some(crate::session::PromptOrigin::CompletionCheck),
+        vec!["attachment-1".into()],
+        br#"{"status":"achieved"}"#,
+    );
+    assert!(terminal
+        .drain_output_records("session-1", "attachment-1")
+        .is_empty());
+    terminal.fan_out_prompt_output(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        "prompt-1",
+        Some(crate::session::PromptOrigin::Chariox),
+        "attachment-1",
+        vec!["attachment-1".into()],
+        b"ordinary prompt",
+    );
+    terminal.fan_out_output_with_prompt_origin(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        Some(crate::session::PromptOrigin::Chariox),
+        vec!["attachment-1".into()],
+        b"ordinary reply",
+    );
+    let delivered = terminal.drain_output_records("session-1", "attachment-1");
+    assert_eq!(delivered.len(), 2);
+    assert_eq!(delivered[0].bytes, b"ordinary prompt");
+    assert_eq!(delivered[1].bytes, b"ordinary reply");
+}
+
+// MP-08 / MP-10: a stalled attachment must retain more than 4096 text deltas.
+#[test]
+fn stalled_attachment_retains_six_thousand_history_deltas() {
+    let mut terminal = TerminalStreamService::new();
+    for sequence in 1..=6000 {
+        terminal.fan_out_outputs(vec![TerminalOutputAppend {
+            prompt_id: None,
+            session_id: "session-1".into(),
+            provider_run_id: "run-1".into(),
+            agent_id: Some("agent-1".into()),
+            prompt_origin: None,
+            source_attachment_id: None,
+            kind: TerminalOutputKind::ProviderOutput,
+            merge_key: Some("message-1".into()),
+            sequence: Some(sequence),
+            recipient_attachment_ids: vec!["attachment-1".into()].into(),
+            bytes: b"x".to_vec(),
+        }]);
+    }
+    let mut records = Vec::new();
+    loop {
+        let page = terminal.drain_output_records("session-1", "attachment-1");
+        if page.is_empty() {
+            break;
+        }
+        records.extend(page);
+    }
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.bytes.len())
+            .sum::<usize>(),
+        6000
+    );
+    assert_eq!(records.first().and_then(|record| record.sequence), Some(1));
+}
+
+// MP-08 / MP-10: coalescing retains the exact persisted row boundaries.
+#[test]
+fn output_records_preserve_distinct_history_sequences() {
+    let append = |sequence: Option<u64>, bytes: &[u8]| TerminalOutputAppend {
+        prompt_id: None,
+        session_id: "session-1".to_string(),
+        provider_run_id: "provider-run-1".to_string(),
+        agent_id: Some("agent-1".to_string()),
+        prompt_origin: None,
+        source_attachment_id: None,
+        kind: TerminalOutputKind::ProviderOutput,
+        merge_key: Some("codex:item-1".to_string()),
+        sequence,
+        recipient_attachment_ids: vec!["attachment-1".to_string()].into(),
+        bytes: bytes.to_vec(),
+    };
+    let mut terminal = TerminalStreamService::new();
+    terminal.fan_out_outputs(vec![append(Some(10), b"hello ")]);
+    terminal.fan_out_outputs(vec![append(Some(11), b"big ")]);
+    terminal.fan_out_outputs(vec![append(Some(12), b"world")]);
+    terminal.fan_out_outputs(vec![append(None, b"live-only")]);
+
+    let records = terminal.drain_output_records("session-1", "attachment-1");
+    assert_eq!(records.len(), 2);
+    assert_eq!(
+        records.iter().map(|r| r.sequence).collect::<Vec<_>>(),
+        vec![Some(10), None]
+    );
+    assert_eq!(
+        records
+            .iter()
+            .map(|r| r.bytes.as_slice())
+            .collect::<Vec<_>>(),
+        vec![b"hello big world".as_slice(), b"live-only".as_slice()]
+    );
+    assert_eq!(records[0].sequence_end, Some(12));
+    assert_eq!(records[0].sequence_byte_lengths, vec![6, 4, 5]);
 }

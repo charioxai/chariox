@@ -13,14 +13,33 @@ use tokio::sync::Mutex;
 /// The pump's idle poll cadence (`AppViewPoll`), which busy refusals keep.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
-struct Cleanup(std::path::PathBuf);
+pub(super) struct Cleanup(std::path::PathBuf);
 impl Drop for Cleanup {
     fn drop(&mut self) {
+        // Staged App releases are sealed read-only; an unprivileged user can
+        // delete them only after their directories are writable again.
+        make_dirs_writable(&self.0);
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
+fn make_dirs_writable(dir: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).is_err() {
+        return;
+    }
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            make_dirs_writable(&entry.path());
+        }
+    }
+}
+
 fn fixture() -> (KernelRuntimeState, String, Cleanup) {
+    fixture_for_owner("local")
+}
+
+pub(super) fn fixture_for_owner(owner: &str) -> (KernelRuntimeState, String, Cleanup) {
     let root =
         std::env::temp_dir().join(format!("chariox-cold-pump-{:016x}", rand::random::<u64>()));
     std::fs::create_dir(&root).unwrap();
@@ -37,12 +56,62 @@ fn fixture() -> (KernelRuntimeState, String, Cleanup) {
     config.user_config.credential_vault.path = root.join("vault.json").display().to_string();
     let mut app = DaemonApp::bootstrap(config).unwrap();
     let (session, _) = KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("cold-pump", "cold-pump"))
+        .create_session(
+            CreateSessionRequest::new("cold-pump", "cold-pump").with_owner_user_id(owner),
+        )
         .unwrap();
     let session = session.id().to_owned();
     let runtime =
         CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1).runtime_state();
     (runtime, session, cleanup)
+}
+
+#[test]
+fn mp08_late_browser_pump_failure_keeps_saved_app_tabs() {
+    let (runtime, _, _cleanup) = fixture();
+    let owner = "local";
+    let views = runtime.app_control().user_views();
+    let view = views
+        .open(
+            owner,
+            AppViewBinding {
+                owner: owner.into(),
+                installation: "todo".into(),
+                generation: 1,
+                panel: Default::default(),
+                logical_tab: None,
+            },
+            "a",
+        )
+        .unwrap();
+    views
+        .bind_browser(
+            owner,
+            &view.view_id,
+            "target".into(),
+            crate::local::UserAppViewBrowser {
+                tab_id: "host-tab-saved".into(),
+                generation: 1,
+            },
+        )
+        .unwrap();
+    runtime.remember_user_app_tabs(owner);
+    let path = runtime
+        .owned
+        .kernel_browser_host
+        .profile_root(&runtime.provider_account_authority_owner_user_id(owner))
+        .join("app-tabs.json");
+    let saved = std::fs::read(&path).unwrap();
+    assert!(String::from_utf8_lossy(&saved).contains("todo"));
+    // Shutdown retires instances before stopping the controller. A poll
+    // already in flight then reports its failed drain against the old view.
+    views.shutdown();
+    runtime.suspend_user_app_view(owner, &view.view_id);
+    assert_eq!(
+        std::fs::read(path).unwrap(),
+        saved,
+        "a late pump result cannot overwrite the owner's durable Tab intent"
+    );
 }
 
 #[tokio::test]
@@ -215,6 +284,7 @@ async fn inconclusive_identity_check_keeps_drained_live_calls_and_cancels_gone_d
             call_id: "call-1".into(),
             method: "list_todos".into(),
             params: serde_json::json!({}),
+            actor: None,
         }],
         open_targets: Some(vec!["live".into()]),
         documents: Some(std::collections::HashMap::from([(
@@ -277,6 +347,7 @@ async fn inconclusive_identity_probes_are_throttled_without_slowing_live_calls()
             call_id: "call-1".into(),
             method: "list_todos".into(),
             params: serde_json::json!({}),
+            actor: None,
         }],
         open_targets: Some(vec!["live".into()]),
         documents: None,
@@ -432,4 +503,158 @@ async fn successful_poll_rearms_a_new_bounded_viewport_window() {
         );
     }
     assert!(views.next_cold_start_attempt("room").is_none());
+}
+
+/// #992 review F5: an agent without its own App grant reaches no App host action
+/// (clipboard, links) either; the grant check runs before the host broker.
+#[tokio::test]
+async fn mp11_an_ungranted_agent_reaches_no_app_host_action() {
+    let (runtime, session, _cleanup) = fixture();
+    let agent = runtime
+        .owned
+        .agent_store
+        .list_agents()
+        .into_iter()
+        .find(|agent| agent.session_id() == session)
+        .unwrap();
+    let binding = AppViewBinding {
+        owner: agent.owner_user_id().into(),
+        installation: "todo".into(),
+        generation: 1,
+        panel: Default::default(),
+        logical_tab: None,
+    };
+    for tool in ["host.clipboard_write", "host.open_link"] {
+        let mut tracked = runtime
+            .app_control()
+            .views()
+            .track_call("view", "view", None);
+        let refused = runtime
+            .invoke_app_view_tool(
+                ViewCaller::Agent(&agent),
+                &binding,
+                tool,
+                serde_json::json!({}),
+                &mut tracked,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, "AGENT_APP_NOT_GRANTED", "{tool}");
+    }
+}
+
+/// #992 review F3 follow-up (live r3b step 07): an App the owner reopens before the
+/// first restore pass settles exactly one saved Tab, not two.
+#[test]
+fn mp08_an_app_reopened_before_seeding_settles_one_saved_tab() {
+    let (runtime, _, _cleanup) = fixture();
+    let owner = "local";
+    let path = runtime
+        .owned
+        .kernel_browser_host
+        .profile_root(&runtime.provider_account_authority_owner_user_id(owner))
+        .join("app-tabs.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let saved = serde_json::json!({"apps": [
+        {"owner": owner, "installation_id": "todo"},
+        {"owner": owner, "installation_id": "todo"},
+    ]});
+    std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let views = runtime.app_control().user_views();
+    let view = views
+        .open(
+            owner,
+            AppViewBinding {
+                owner: owner.into(),
+                installation: "todo".into(),
+                generation: 1,
+                panel: Default::default(),
+                logical_tab: None,
+            },
+            "a",
+        )
+        .unwrap();
+    views
+        .bind_browser(
+            owner,
+            &view.view_id,
+            "target".into(),
+            crate::local::UserAppViewBrowser {
+                tab_id: "host-tab-reopened".into(),
+                generation: 1,
+            },
+        )
+        .unwrap();
+    runtime.remember_user_app_tabs(owner);
+    // An App is one Tab: the saved duplicate collapsed, and the explicit open settled it.
+    assert!(views.restore_batch(owner).is_empty());
+}
+
+/// MP-08/MP-10/MP-11 #992: shutdown/restart while the second App is opening.
+#[test]
+fn mp08_inflight_restore_intent_survives_kernel_shutdown_and_restart() {
+    let (runtime, _, _cleanup) = fixture();
+    let owner = "local";
+    let path = runtime
+        .owned
+        .kernel_browser_host
+        .profile_root(owner)
+        .join("app-tabs.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, br#"{"apps":[{"owner":"local","installation_id":"todo"},{"owner":"local","installation_id":"documents"}]}"#).unwrap();
+    let views = runtime.app_control().user_views();
+    runtime.remember_user_app_tabs(owner);
+    assert!(views.begin_restore(owner));
+    let batch = views.restore_batch(owner);
+    assert_eq!(batch, vec!["todo", "documents"]);
+    let first = views
+        .open(
+            owner,
+            AppViewBinding {
+                owner: owner.into(),
+                installation: "todo".into(),
+                generation: 1,
+                panel: Default::default(),
+                logical_tab: None,
+            },
+            "a",
+        )
+        .unwrap();
+    views
+        .bind_browser(
+            owner,
+            &first.view_id,
+            "target".into(),
+            crate::local::UserAppViewBrowser {
+                tab_id: "host-tab-first".into(),
+                generation: 1,
+            },
+        )
+        .unwrap();
+    runtime.remember_user_app_tabs(owner);
+    let during = std::fs::read(&path).unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(&during).unwrap();
+    assert_eq!(
+        saved["apps"].as_array().unwrap().len(),
+        2,
+        "the second App remains durable while opening"
+    );
+    views.shutdown();
+    runtime.remember_user_app_tabs(owner); // A late restore task's final save.
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        during,
+        "shutdown fences late saves"
+    );
+    let restarted = crate::runtime::user_app_views::UserAppViews::default();
+    restarted.seed_restore(
+        owner,
+        saved["apps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|app| app["installation_id"].as_str().unwrap().to_owned())
+            .collect(),
+    );
+    assert_eq!(restarted.restore_batch(owner), vec!["todo", "documents"]);
 }

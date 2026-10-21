@@ -13,7 +13,7 @@ use std::sync::atomic::AtomicBool;
 fn caller() -> CallerContext {
     CallerContext {
         actor: Actor::Agent("agent".into()),
-        room_id: "room".into(),
+        room_id: Some("room".into()),
         operation_id: "fixed-native-tool-call".into(),
         task_id: None,
         turn_id: None,

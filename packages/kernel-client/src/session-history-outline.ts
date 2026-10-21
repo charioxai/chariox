@@ -12,6 +12,7 @@ import {
   presentTranscriptPromptMetadataFields,
 } from "./transcript-entry-state.js"
 import { providerTranscriptRoleForKind } from "./transcript-kind-role.js"
+import { formatToolDisplay, type ToolDisplayIcon } from "@chariox/tool-display"
 
 export type SessionHistoryCursorSelection = {
   readonly agentId: string
@@ -260,4 +261,64 @@ export function sessionHistoryEntryKindTranscriptRole(
     return "notice"
   }
   return providerTranscriptRoleForKind(kind)
+}
+
+// Title and summary of an unloaded outline blob. Protocol ≥508 kernels send a
+// preview (a tool call's snapshot without output, or a thought's first line)
+// so the row reads like the loaded one: "Ran ls -la · $ ls -la", "Thought".
+export function sessionHistoryOutlineBlobDisplay(
+  blob: Pick<SessionHistoryOutlineBlob, "kind" | "title" | "summary" | "preview">,
+): { readonly title: string; readonly summary: string; readonly icon?: ToolDisplayIcon } {
+  const preview = blob.preview?.trim()
+  if (preview && blob.kind === "provider_reasoning") {
+    return { title: "Thought", summary: preview.replace(/\*\*/g, "") }
+  }
+  if (preview && blob.kind === "provider_tool") {
+    try {
+      const snapshot = JSON.parse(preview) as Record<string, unknown>
+      if (snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)) {
+        const display = formatToolDisplay({ ...snapshot, id: String(snapshot.id ?? snapshot.call_id ?? "") })
+        return { title: display.title, summary: display.summary || blob.summary, icon: display.icon }
+      }
+    } catch {
+      // fall back to the kernel's generic labels
+    }
+  }
+  return { title: blob.title, summary: blob.summary }
+}
+
+// The provider tool call id an outline tool blob previews (protocol ≥508).
+export function sessionHistoryOutlineBlobToolId(
+  blob: Pick<SessionHistoryOutlineBlob, "kind" | "preview">,
+): string | null {
+  if (blob.kind !== "provider_tool" || !blob.preview) {
+    return null
+  }
+  try {
+    const id = (JSON.parse(blob.preview) as { id?: unknown }).id
+    return typeof id === "string" && id ? id : null
+  } catch {
+    return null
+  }
+}
+
+export const SESSION_HISTORY_PREFETCH_BLOB_LIMIT = 64
+
+// The blobs a client loads together with an outline, in one batch per agent
+// (protocol ≥508): the latest turn's rows, so tool calls and thoughts open
+// without another round trip, and every assistant-output blob, so answers read
+// as text instead of placeholders.
+export function sessionHistoryOutlinePrefetchBlobIds(
+  agent: { readonly turns: readonly (SessionHistoryOutlineTurnLike & { readonly blobs: readonly Pick<SessionHistoryOutlineBlob, "blob_id" | "kind" | "steering">[] })[] },
+): string[] {
+  const turns = orderedSessionHistoryOutlineTurns(agent.turns).reverse()
+  const ids = new Set((turns[0]?.blobs ?? []).filter((blob) => blob.kind !== "user_prompt" || blob.steering).map((blob) => blob.blob_id))
+  for (const turn of turns) {
+    for (const blob of turn.blobs) {
+      if (blob.kind === "provider_output" || blob.steering) {
+        ids.add(blob.blob_id)
+      }
+    }
+  }
+  return [...ids].slice(0, SESSION_HISTORY_PREFETCH_BLOB_LIMIT)
 }

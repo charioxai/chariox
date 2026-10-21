@@ -1,7 +1,11 @@
 //! MP-08 / MP-10 / MP-11: first-use verdicts, deduplicated per account.
 use crate::provider::ClaudeCredentialCheckError;
-use std::{collections::BTreeMap, future::Future, sync::Arc};
-use tokio::sync::{Mutex, OnceCell};
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    sync::{Arc, Mutex},
+};
+use tokio::sync::OnceCell;
 
 type Verdict = Result<(), ClaudeCredentialCheckError>;
 
@@ -10,7 +14,19 @@ pub(super) struct ClaudeTokenChecks(Mutex<BTreeMap<String, Arc<OnceCell<Verdict>
 
 impl ClaudeTokenChecks {
     pub(super) async fn invalidate(&self, id: &str) {
-        self.0.lock().await.remove(id);
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|key, _| key != id && !key.starts_with(&format!("{id}:")));
+    }
+
+    pub(super) fn is_rejected(&self, id: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .and_then(|cell| cell.get())
+            .is_some_and(|verdict| matches!(verdict, Err(ClaudeCredentialCheckError::Rejected)))
     }
 
     pub(super) async fn check<F, V>(&self, id: &str, verify: F) -> Option<Verdict>
@@ -19,13 +35,19 @@ impl ClaudeTokenChecks {
         V: Future<Output = Verdict>,
     {
         let check = {
-            let mut checks = self.0.lock().await;
+            let mut checks = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             checks.entry(id.to_string()).or_default().clone()
         };
         // The official CLI may wait on the network for 90 seconds. Only this
         // account's cell is held across that await, never the kernel cache lock.
         let checked = check.get_or_init(verify).await.clone();
-        let checks = self.0.lock().await;
+        let checks = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Invalidation replaces the credential generation without waiting for
         // its old verifier. Its verdict cannot authenticate the replacement.
         checks
@@ -65,6 +87,46 @@ mod tests {
         });
         started.notified().await;
         (task, release)
+    }
+
+    #[tokio::test]
+    async fn rejection_does_not_poison_a_transferred_credential_renewal() {
+        let checks = ClaudeTokenChecks::default();
+        assert_eq!(
+            checks
+                .check("account-A:old", || async {
+                    Err(ClaudeCredentialCheckError::Rejected)
+                })
+                .await,
+            Some(Err(ClaudeCredentialCheckError::Rejected))
+        );
+        assert_eq!(
+            checks.check("account-A:new", || async { Ok(()) }).await,
+            Some(Ok(()))
+        );
+        assert_eq!(
+            checks
+                .check("account-A", || async {
+                    Err(ClaudeCredentialCheckError::Rejected)
+                })
+                .await,
+            Some(Err(ClaudeCredentialCheckError::Rejected))
+        );
+        assert!(checks.is_rejected("account-A"));
+        checks.invalidate("account-A").await;
+        assert!(!checks.is_rejected("account-A"));
+        assert_eq!(
+            checks.check("account-A:old", || async { Ok(()) }).await,
+            Some(Ok(()))
+        );
+        assert_eq!(
+            checks
+                .check("account-A:new", || async {
+                    Err(ClaudeCredentialCheckError::Rejected)
+                })
+                .await,
+            Some(Err(ClaudeCredentialCheckError::Rejected))
+        );
     }
 
     #[tokio::test]

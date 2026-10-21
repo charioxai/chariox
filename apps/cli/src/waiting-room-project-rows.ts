@@ -1,3 +1,4 @@
+import { waitingRoomTimestampLabel } from "@chariox/kernel-client/waiting-room-activity"
 import type { SessionListEntry } from "./sessions.js"
 import {
   activeWaitingRoomProjects,
@@ -31,7 +32,7 @@ export function waitingRoomProjectRows(
   const rows: WaitingRoomRow[] = [{
     id: "project-header",
     title: "Projects",
-    value: "Enter browses sessions • V Environment • E renames • A/D confirm • R restores archived",
+    value: "Enter browses sessions • P pins/unpins • V Environment • E renames • A/D confirm • R restores archived",
     titleWidth: options.titleWidth,
     indent: 0,
     focused: false,
@@ -52,10 +53,13 @@ export function waitingRoomProjectRows(
   }
   for (const [projectIndex, project] of all.entries()) {
     const projectSessions = sessionsForProject(sessions, project.id)
+    if (projectIndex === 0 || Boolean(all[projectIndex - 1]?.pinned) !== Boolean(project.pinned)) rows.push({
+      id: `project-section:${project.pinned ? "pinned" : "recent"}`, title: project.pinned ? "Pinned projects" : "Projects", value: "", titleWidth: options.titleWidth, indent: 0, focused: false, selectable: false, scrollbar: "",
+    })
     rows.push({
       id: `project-entry:${project.id}`,
       title: project.name,
-      value: formatWaitingRoomProjectSummary(project, projectSessions),
+      value: `${waitingRoomTimestampLabel(project.last_session_activity_at_ms ?? project.updated_at_ms)} · ${formatWaitingRoomProjectSummary(project, projectSessions)}`,
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "project-entry" && (state.projectIndex ?? 0) === projectIndex,

@@ -21,9 +21,19 @@ pub(crate) async fn scoped_metadata_config(
     issue_cloud_grant: bool,
 ) -> Result<DaemonConfig, DaemonError> {
     let mut discovery = config.clone();
-    if issue_cloud_grant && config.cloud_relay.is_some() {
+    if let Some(profile) = config.cloud_relay.as_ref().filter(|_| issue_cloud_grant) {
+        let targets =
+            crate::transport::relay_discovery::authorization::visible_targets(profile).await?;
+        // MP-08 / MP-10 / MP-11: defer large inventories to the query's bounded
+        // grants. A single API grant can authorize at most 64 targets.
+        if targets.as_ref().is_some_and(|targets| targets.len() > 64) {
+            return Ok(discovery);
+        }
         discovery.relay_token = Some(
-            crate::transport::relay_discovery::authorization::cloud_metadata_token(config).await?,
+            crate::transport::relay_discovery::authorization::cloud_metadata_token_for_targets(
+                config, targets,
+            )
+            .await?,
         );
     }
     discovery.cloud_relay = None;

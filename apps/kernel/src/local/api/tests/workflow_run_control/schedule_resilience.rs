@@ -150,6 +150,17 @@ fn disabled_schedule_queue_recovers_without_duplicates_or_busy_polling() {
 }
 
 fn disabled_schedule_queue_recovers_without_duplicates_or_busy_polling_inner() {
+    schedule_queue_recovers_with_owner(false);
+}
+
+#[test]
+fn mp11_busy_schedule_queue_records_owner_before_start() {
+    run_schedule_resilience_large_stack_test("busy-schedule-queue-owner", || {
+        schedule_queue_recovers_with_owner(true)
+    });
+}
+
+fn schedule_queue_recovers_with_owner(entry_busy: bool) {
     let worktree = crate::test_support::TestWorktree::new("schedule-queue");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
@@ -208,6 +219,18 @@ fn disabled_schedule_queue_recovers_without_duplicates_or_busy_polling_inner() {
         LocalDaemonResponse::WorkflowScheduleCreated { schedule, .. } => schedule,
         _ => panic!("unexpected local response"),
     };
+    let busy_run = entry_busy.then(|| {
+        harness.with_app_mut(|app| {
+            app.sessions_mut()
+                .invoke_workflow_endpoint(
+                    session.id(),
+                    workflow.id(),
+                    endpoint.id(),
+                    Some("keep entry busy".into()),
+                )
+                .unwrap()
+        })
+    });
     update_default_queue_enabled(&harness, session.id(), workflow.id(), false);
 
     let wait_ms = schedule
@@ -224,7 +247,16 @@ fn disabled_schedule_queue_recovers_without_duplicates_or_busy_polling_inner() {
             .expect("session should still exist")
     });
     assert_eq!(queued.workflow_queued_prompts().len(), 1);
-    assert!(queued.workflow_runs().is_empty());
+    assert_eq!(queued.workflow_runs().len(), usize::from(entry_busy));
+    let queued_id = queued.workflow_queued_prompts()[0].id();
+    assert_eq!(
+        harness.with_app(|app| app
+            .durable_state_store()
+            .workflow_invocation_owner(session.host_daemon_id(), session.id(), queued_id)
+            .unwrap()),
+        Some(crate::session::DEFAULT_LOCAL_USER_ID.into()),
+        "MP-11: a busy schedule captures its owner when it queues, before launch"
+    );
     assert!(queued
         .workflow_schedules()
         .iter()
@@ -236,6 +268,13 @@ fn disabled_schedule_queue_recovers_without_duplicates_or_busy_polling_inner() {
             > 0
     );
 
+    if let Some(run) = busy_run {
+        harness.with_app_mut(|app| {
+            app.sessions_mut()
+                .stop_workflow_run_with_final_output(session.id(), run.id(), None, None, None, None)
+                .unwrap()
+        });
+    }
     update_default_queue_enabled(&harness, session.id(), workflow.id(), true);
     harness.pump_transport_runtime();
 
@@ -245,7 +284,65 @@ fn disabled_schedule_queue_recovers_without_duplicates_or_busy_polling_inner() {
             .expect("session should still exist")
     });
     assert!(resumed.workflow_queued_prompts().is_empty());
-    assert_eq!(resumed.workflow_runs().len(), 1);
+    assert_eq!(resumed.workflow_runs().len(), 1); // The stopped fixture run is archived.
+                                                  // MP-08/MP-10/MP-11 review: inspect the private owner's real router projection,
+                                                  // not only the scheduler's unredacted application state.
+    let run_id = resumed
+        .workflow_runs()
+        .iter()
+        .find(|run| run.queue_item_id() == Some(queued_id))
+        .unwrap()
+        .id();
+    let listed = harness
+        .dispatch(LocalDaemonRequest::ListWorkflowRuns(
+            ListWorkflowRunsRequest {
+                session_id: session.id().into(),
+                workflow_ref: None,
+                cursor: None,
+                limit: None,
+            },
+        ))
+        .unwrap();
+    let LocalDaemonResponse::WorkflowRunsListed { workflow_runs, .. } = listed else {
+        panic!("unexpected list");
+    };
+    assert!(
+        workflow_runs.iter().any(|run| run.id() == run_id),
+        "MP-11: a private owner sees its scheduled run"
+    );
+    let got = harness
+        .dispatch(LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+            session_id: session.id().into(),
+            workflow_run_ref: run_id.into(),
+        }))
+        .unwrap();
+    let LocalDaemonResponse::WorkflowRun { workflow_run } = got else {
+        panic!("unexpected get")
+    };
+    assert!(!workflow_run.created_before_ownership_tracking());
+    assert!(matches!(
+        harness
+            .dispatch(LocalDaemonRequest::PauseWorkflowRun(
+                crate::local::PauseWorkflowRunRequest {
+                    session_id: session.id().into(),
+                    workflow_run_ref: run_id.into()
+                },
+            ))
+            .unwrap(),
+        LocalDaemonResponse::WorkflowRunPaused { .. }
+    ));
+    assert!(matches!(
+        harness
+            .dispatch(LocalDaemonRequest::CancelWorkflowRun(
+                crate::local::CancelWorkflowRunRequest {
+                    session_id: session.id().into(),
+                    workflow_run_ref: run_id.into()
+                },
+            ))
+            .unwrap(),
+        LocalDaemonResponse::WorkflowRunCancelled { .. }
+    ));
+
     let resumed_schedule = resumed
         .workflow_schedules()
         .iter()

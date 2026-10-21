@@ -24,6 +24,26 @@ pub(crate) async fn execute_provider_catalog_request(
             )
             .await
         }
+        LocalDaemonRequest::GetClientCatalogSnapshot(request) => {
+            super::client_catalog_revisions::catalog_snapshot(
+                provider_catalog_projection,
+                config_projection,
+                account_profiles,
+                owner_user_id,
+                request,
+            )
+            .await
+        }
+        LocalDaemonRequest::GetClientCatalogRevisions(request) => {
+            super::client_catalog_revisions::catalog_revisions(
+                provider_catalog_projection,
+                config_projection,
+                account_profiles,
+                owner_user_id,
+                request,
+            )
+            .await
+        }
         LocalDaemonRequest::GetProviderCommandCatalogs(_) => {
             execute_get_provider_command_catalogs_request()
         }
@@ -41,6 +61,66 @@ pub(crate) async fn execute_get_provider_catalog_request(
     owner_user_id: &str,
     request: crate::local::GetProviderCatalogRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let catalog = load_catalog(
+        provider_catalog_projection,
+        config_projection,
+        account_profiles,
+        owner_user_id,
+        request,
+        true,
+    )
+    .await?;
+    Ok(LocalDaemonResponse::ProviderCatalog { catalog })
+}
+
+/// What a catalog read can honestly answer. `Revalidating` means the scope has no
+/// kernel copy yet, the caller already holds one, and discovery runs in the
+/// background; a change event follows when it ends.
+pub(super) enum CatalogRead {
+    Loaded(crate::provider::OpenCodeProviderCatalog),
+    Revalidating,
+}
+
+// Both ordinary full reads and rare revision checks use the same scoped loader.
+// A revision check reconciles stale provider metadata before comparing hashes;
+// the client keeps its stored catalog visible while that work runs.
+pub(super) async fn load_catalog(
+    provider_catalog_projection: &ProviderCatalogProjectionStore,
+    config_projection: &DaemonConfigProjectionStore,
+    account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    request: crate::local::GetProviderCatalogRequest,
+    allow_stale: bool,
+) -> Result<crate::provider::OpenCodeProviderCatalog, DaemonError> {
+    match read_catalog(
+        provider_catalog_projection,
+        config_projection,
+        account_profiles,
+        owner_user_id,
+        request,
+        allow_stale,
+        false,
+    )
+    .await?
+    {
+        CatalogRead::Loaded(catalog) => Ok(catalog),
+        CatalogRead::Revalidating => {
+            unreachable!("only a caller holding a catalog may be answered while revalidating")
+        }
+    }
+}
+
+// Model discovery can take many seconds and must never hold back the account,
+// command and revision sections of a snapshot the client could already render.
+pub(super) async fn read_catalog(
+    provider_catalog_projection: &ProviderCatalogProjectionStore,
+    config_projection: &DaemonConfigProjectionStore,
+    account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    request: crate::local::GetProviderCatalogRequest,
+    allow_stale: bool,
+    caller_holds_catalog: bool,
+) -> Result<CatalogRead, DaemonError> {
     let owner_user_id = crate::account_profile::provider_account_authority_owner_user_id(
         &config_projection.snapshot(),
         owner_user_id,
@@ -57,9 +137,12 @@ pub(crate) async fn execute_get_provider_catalog_request(
                 "connected_provider_count": catalog.connected.len(),
             }),
         );
-        return Ok(LocalDaemonResponse::ProviderCatalog { catalog });
+        return Ok(CatalogRead::Loaded(catalog));
     }
-    if let Some(catalog) = provider_catalog_projection.cached_scoped(&cache_key) {
+    let stale = provider_catalog_projection
+        .cached_scoped(&cache_key)
+        .filter(|_| allow_stale);
+    if stale.is_some() || (allow_stale && caller_holds_catalog) {
         refresh_provider_catalog_in_background(
             provider_catalog_projection.clone(),
             config_projection.snapshot(),
@@ -68,17 +151,23 @@ pub(crate) async fn execute_get_provider_catalog_request(
             request,
             cache_key,
         );
-        crate::logging::info_with_fields(
-            "daemon.startup",
-            "serving stale provider catalog while refresh runs",
-            serde_json::json!({
-                "provider_count": catalog.all.len(),
-                "connected_provider_count": catalog.connected.len(),
-            }),
-        );
-        return Ok(LocalDaemonResponse::ProviderCatalog { catalog });
+        return Ok(match stale {
+            Some(catalog) => {
+                crate::logging::info_with_fields(
+                    "daemon.startup",
+                    "serving stale provider catalog while refresh runs",
+                    serde_json::json!({
+                        "provider_count": catalog.all.len(),
+                        "connected_provider_count": catalog.connected.len(),
+                    }),
+                );
+                CatalogRead::Loaded(catalog)
+            }
+            None => CatalogRead::Revalidating,
+        });
     }
 
+    let generation = provider_catalog_projection.invalidation_generation();
     let config = config_projection.snapshot();
     let registry = account_profiles.clone();
     let load_started = Instant::now();
@@ -99,8 +188,19 @@ pub(crate) async fn execute_get_provider_catalog_request(
             "connected_provider_count": catalog.connected.len(),
         }),
     );
-    provider_catalog_projection.update_scoped(&cache_key, catalog.clone());
-    Ok(LocalDaemonResponse::ProviderCatalog { catalog })
+    if !provider_catalog_projection.update_scoped_if_generation(
+        &cache_key,
+        catalog.clone(),
+        generation,
+    ) {
+        // An account change during discovery must not fail the read.
+        provider_catalog_projection.update_scoped_stale_if_absent(
+            &cache_key,
+            catalog.clone(),
+            generation,
+        );
+    }
+    Ok(CatalogRead::Loaded(catalog))
 }
 
 fn refresh_provider_catalog_in_background(
@@ -111,7 +211,7 @@ fn refresh_provider_catalog_in_background(
     request: crate::local::GetProviderCatalogRequest,
     cache_key: String,
 ) {
-    let Some(generation) = provider_catalog_projection.begin_refresh() else {
+    let Some(generation) = provider_catalog_projection.begin_refresh(&cache_key) else {
         return;
     };
     tokio::spawn(async move {
@@ -131,12 +231,16 @@ fn refresh_provider_catalog_in_background(
                         "connected_provider_count": catalog.connected.len(),
                     }),
                 );
-                if !provider_catalog_projection
-                    .update_scoped_if_generation(&cache_key, catalog, generation)
-                {
+                if !provider_catalog_projection.update_scoped_if_generation(
+                    &cache_key,
+                    catalog.clone(),
+                    generation,
+                ) {
+                    provider_catalog_projection
+                        .update_scoped_stale_if_absent(&cache_key, catalog, generation);
                     crate::logging::info(
                         "daemon.startup",
-                        "discarded provider catalog refresh after explicit invalidation",
+                        "provider catalog refresh overtaken by an invalidation; kept only as stale metadata",
                     );
                 }
             }
@@ -157,7 +261,7 @@ fn refresh_provider_catalog_in_background(
                 }),
             ),
         }
-        provider_catalog_projection.finish_refresh();
+        provider_catalog_projection.finish_refresh(&cache_key, generation);
     });
 }
 

@@ -38,6 +38,8 @@ export type ParsedSlashCommand =
   | { kind: "workflow"; raw: string; args: string[] }
   | { kind: "notifications"; raw: string; args: string[] }
   | { kind: "app"; raw: string; args: string[] }
+  | { kind: "access"; raw: string; args: string[] }
+  | { kind: "computer"; raw: string; args: string[] }
   | { kind: "settings"; raw: string; args: string[] }
   | { kind: "loop"; raw: string; prompt: string }
   | { kind: "goal"; raw: string; prompt: string }
@@ -200,6 +202,9 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       args: trimmed.replace(/^\/agent\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
+  // MP-08/MP-10/MP-11 A04: window controls; any other `/sudo …` is a prompt.
+  const sudo = /^\/sudo\s+(extend|revoke|status)(?:\s+(sudo:[0-9a-f]+))?\s*$/u.exec(trimmed)
+  if (sudo) return { kind: "kernel", raw: trimmed, args: ["sudo", sudo[1]!, ...(sudo[2] ? [sudo[2]] : [])] }
   if (trimmed.startsWith("/kernel")) {
     return {
       kind: "kernel",
@@ -269,6 +274,12 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       raw: trimmed,
       args: trimmed.replace(/^\/worktree\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
+  }
+  if (/^\/computer(?:\s|$)/.test(trimmed)) {
+    return { kind: "computer", raw: trimmed, args: trimmed.slice(9).trim().split(/\s+/).filter(Boolean) }
+  }
+  if (/^\/access(?:\s|$)/.test(trimmed)) {
+    return { kind: "access", raw: trimmed, args: trimmed.slice(7).trim().split(/\s+/).filter(Boolean) }
   }
   if (/^\/app(?:\s|$)/.test(trimmed)) {
     try {
@@ -389,6 +400,8 @@ export function sharedShellCommandForSlashCommand(input: string): string | null 
     || command.startsWith("/workflow code ")
     || command === "/workflow trigger"
     || command.startsWith("/workflow trigger ")
+    || command === "/workflow notifications"
+    || command.startsWith("/workflow notifications ")
     || command === "/workflow registry"
     || command.startsWith("/workflow registry ")
     || command === "/workflow load"
@@ -525,6 +538,10 @@ export async function executeSlashCommand(
       break
     case "notifications":
       await handlers.onNotifications?.(command)
+      break
+    case "computer":
+    case "access":
+      // Owner access commands are intercepted by the shared command route.
       break
     case "app":
       await handlers.onApp?.(command)
