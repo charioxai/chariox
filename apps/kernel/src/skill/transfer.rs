@@ -147,7 +147,7 @@ pub fn materialize_received_packages(
 }
 /// Receipts prove materialization only, never provider delivery or a Loaded state.
 /// Keep the same check at every sender; no caller may accept a merely matching name.
-pub fn verify_transfer_receipt(
+pub(crate) fn verify_transfer_receipt(
     expected_context: &RemoteSkillSyncContext,
     expected_lease: &str,
     expected: &SkillTransferManifest,

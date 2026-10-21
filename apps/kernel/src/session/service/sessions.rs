@@ -319,8 +319,10 @@ impl SessionService {
             source_attachment_id,
             task_markdown,
             attachments,
-            vec![],
-            false,
+            crate::session::SkillIntent {
+                selections: vec![],
+                user_syntax: false,
+            },
         )
     }
 
@@ -332,8 +334,7 @@ impl SessionService {
         source_attachment_id: &str,
         task_markdown: impl Into<String>,
         attachments: Vec<crate::session::PromptAttachment>,
-        selections: Vec<crate::skill::v2::SkillSelection>,
-        user_syntax: bool,
+        skill_intent: crate::session::SkillIntent,
     ) -> Result<crate::session::QueuedMetaagentTask, DaemonError> {
         let id = format!("session-task:{}", self.reserve_prompt_id());
         let task = crate::session::QueuedMetaagentTask::new(
@@ -343,7 +344,7 @@ impl SessionService {
             task_markdown,
             attachments,
         )
-        .with_skill_intent(selections, user_syntax);
+        .with_skill_intent(skill_intent);
         let session = self.get_session_mut_for_operation(session_id, "enqueue metaagent task")?;
         let task = session.enqueue_metaagent_task(task);
         session.touch();

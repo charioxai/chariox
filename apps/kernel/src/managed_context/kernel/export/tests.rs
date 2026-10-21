@@ -10,13 +10,7 @@ impl Drop for Mp11FixtureRoot {
 
 // MP-08/MP-11: exercise real source snapshot capture and target publication,
 // including hostile snapshots composed without the source's admission guard.
-fn mp11_packaged_snapshot_case(
-    mcp: bool,
-    path: &str,
-    bytes: &[u8],
-    accepted: bool,
-    source_only: bool,
-) {
+fn mp11_packaged_snapshot_case(path: &str, bytes: &[u8], accepted: bool, source_only: bool) {
     let root = test_root(format!(
         "chariox-packaged-context-{:016x}",
         rand::random::<u64>()
@@ -25,36 +19,24 @@ fn mp11_packaged_snapshot_case(
     let isolation = root.join("capabilities");
     std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation);
     std::env::set_var("CHARIOX_HOME", root.join("home"));
-    let package_root = isolation.join(if mcp {
-        "user/mcps/local"
-    } else {
-        "user/skills/review"
-    });
+    let package_root = isolation.join("user/mcps/local");
     fs::create_dir_all(&package_root).unwrap();
-    if mcp {
-        fs::write(package_root.join("run.sh"), "#!/bin/sh\necho ready\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(
-                package_root.join("run.sh"),
-                fs::Permissions::from_mode(0o755),
-            )
-            .unwrap();
-        }
-        let config = CharioxMcpServerConfig::stdio("local", "run.sh", vec![]);
-        fs::write(
-            isolation.join("user/mcps/local.json"),
-            serde_json::to_vec(&config).unwrap(),
-        )
-        .unwrap();
-    } else {
-        fs::write(
-            package_root.join("SKILL.md"),
-            "---\nname: review\ndescription: Review code\n---\nRead the diff.\n",
+    fs::write(package_root.join("run.sh"), "#!/bin/sh\necho ready\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            package_root.join("run.sh"),
+            fs::Permissions::from_mode(0o755),
         )
         .unwrap();
     }
+    let config = CharioxMcpServerConfig::stdio("local", "run.sh", vec![]);
+    fs::write(
+        isolation.join("user/mcps/local.json"),
+        serde_json::to_vec(&config).unwrap(),
+    )
+    .unwrap();
     fs::write(package_root.join(path), bytes).unwrap();
     let target_private = crate::transport::relay_crypto::generate_private_key_base64();
     let target_public =
@@ -66,11 +48,7 @@ fn mp11_packaged_snapshot_case(
         crate::runtime::terminal_pairings::public_key_thumbprint(&target_public);
     let source = export_kernel_context_without_credentials(request.clone());
     if source_only {
-        assert_eq!(
-            source.is_ok(),
-            accepted,
-            "MP-11 source mcp={mcp} path={path}"
-        );
+        assert_eq!(source.is_ok(), accepted, "MP-11 source path={path}");
         fs::remove_dir_all(root).unwrap();
         return;
     }
@@ -91,19 +69,10 @@ fn mp11_packaged_snapshot_case(
             capability_root: destination.clone(),
             vault_path: root.join("unused-vault"),
         });
-    assert_eq!(
-        target.is_ok(),
-        accepted,
-        "MP-11 target mcp={mcp} path={path}"
-    );
+    assert_eq!(target.is_ok(), accepted, "MP-11 target path={path}");
     if accepted {
-        let relative = if mcp {
-            "user/mcps/local"
-        } else {
-            "user/skills/review"
-        };
         assert_eq!(
-            fs::read(destination.join(relative).join(path)).unwrap(),
+            fs::read(destination.join("user/mcps/local").join(path)).unwrap(),
             bytes
         );
     } else {
@@ -124,60 +93,48 @@ fn mp11_packaged_snapshot_case(
 fn mp11_packaged_kernel_snapshot_target_preserves_shell_path() {
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
-    for mcp in [true] {
-        mp11_packaged_snapshot_case(
-            mcp,
-            "bootstrap.sh",
-            b"curl --us\\er owner:synthetic-canary https://example.test\n'",
-            false,
-            false,
-        );
-    }
+    mp11_packaged_snapshot_case(
+        "bootstrap.sh",
+        b"curl --us\\er owner:synthetic-canary https://example.test\n'",
+        false,
+        false,
+    );
 }
 
 #[test]
 fn mp08_mp11_packaged_kernel_snapshot_target_preserves_package_role() {
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
-    for mcp in [true] {
-        mp11_packaged_snapshot_case(
-            mcp,
-            "package.json",
-            br#"{"dependencies":{"js-tokens":"^4.0.0"}}"#,
-            true,
-            false,
-        );
-    }
+    mp11_packaged_snapshot_case(
+        "package.json",
+        br#"{"dependencies":{"js-tokens":"^4.0.0"}}"#,
+        true,
+        false,
+    );
 }
 
 #[test]
 fn mp11_packaged_kernel_snapshot_source_preserves_shell_path() {
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
-    for mcp in [true] {
-        mp11_packaged_snapshot_case(
-            mcp,
-            "bootstrap.sh",
-            b"curl --us\\er owner:synthetic-canary https://example.test\n'",
-            false,
-            true,
-        );
-    }
+    mp11_packaged_snapshot_case(
+        "bootstrap.sh",
+        b"curl --us\\er owner:synthetic-canary https://example.test\n'",
+        false,
+        true,
+    );
 }
 
 #[test]
 fn mp08_mp11_packaged_kernel_snapshot_source_preserves_package_role() {
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
-    for mcp in [true] {
-        mp11_packaged_snapshot_case(
-            mcp,
-            "package.json",
-            br#"{"dependencies":{"js-tokens":"^4.0.0"}}"#,
-            true,
-            true,
-        );
-    }
+    mp11_packaged_snapshot_case(
+        "package.json",
+        br#"{"dependencies":{"js-tokens":"^4.0.0"}}"#,
+        true,
+        true,
+    );
 }
 
 #[test]
@@ -1343,42 +1300,35 @@ fn mp11_packaged_snapshot_normalizes_encoding_and_checks_shebang_and_token_forma
             .flat_map(u16::to_le_bytes),
     );
     for source in [true, false] {
-        for mcp in [true] {
-            mp11_packaged_snapshot_case(mcp, "bootstrap.sh", &wide, false, source);
-            for (path, bytes, data) in
-                crate::managed_context::credential_free::tests::boundary_cases()
-            {
-                mp11_packaged_snapshot_case(mcp, path, &bytes, data, source);
-            }
-            mp11_packaged_snapshot_case(
-                mcp,
-                "bootstrap",
-                b"#!/bin/sh\ncurl --us\\er owner:synthetic-canary https://example.test\n'",
-                false,
-                source,
-            );
-            mp11_packaged_snapshot_case(
-                mcp,
-                "notes.md",
-                b"ghp_000000000000000000000000000000000000",
-                false,
-                source,
-            );
-            mp11_packaged_snapshot_case(
-                mcp,
-                "notes.json",
-                br#"{"\u0067hp_000000000000000000000000000000000000":"ordinary"}"#,
-                false,
-                source,
-            );
-            mp11_packaged_snapshot_case(
-                mcp,
-                "bootstrap.sh",
-                b"echo 'ordinary Unicode: \xf0\x9f\xa6\x80'\n",
-                true,
-                source,
-            );
+        mp11_packaged_snapshot_case("bootstrap.sh", &wide, false, source);
+        for (path, bytes, data) in crate::managed_context::credential_free::tests::boundary_cases()
+        {
+            mp11_packaged_snapshot_case(path, &bytes, data, source);
         }
+        mp11_packaged_snapshot_case(
+            "bootstrap",
+            b"#!/bin/sh\ncurl --us\\er owner:synthetic-canary https://example.test\n'",
+            false,
+            source,
+        );
+        mp11_packaged_snapshot_case(
+            "notes.md",
+            b"ghp_000000000000000000000000000000000000",
+            false,
+            source,
+        );
+        mp11_packaged_snapshot_case(
+            "notes.json",
+            br#"{"\u0067hp_000000000000000000000000000000000000":"ordinary"}"#,
+            false,
+            source,
+        );
+        mp11_packaged_snapshot_case(
+            "bootstrap.sh",
+            b"echo 'ordinary Unicode: \xf0\x9f\xa6\x80'\n",
+            true,
+            source,
+        );
     }
 }
 

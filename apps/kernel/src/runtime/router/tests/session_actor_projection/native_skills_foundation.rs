@@ -51,7 +51,7 @@ async fn native_skills_catalog_service_does_not_block_ordinary_prompt_admission(
             attachments: Vec::new(),
         });
         let command = KernelCommand::from_local_request(
-            &format!("native-foundation-submit-{index}"),
+            format!("native-foundation-submit-{index}"),
             None,
             None,
             &request,

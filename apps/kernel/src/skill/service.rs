@@ -231,6 +231,10 @@ impl SkillCatalogService {
             failure("installed skill package is missing or invalid; reinstall before submitting")
         })
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Turn pinning takes the whole admitted turn input as plain values; a request type would rewrite every catalog test call"
+    )]
     pub fn pinned_turn(
         &self,
         project_id: Option<&str>,
@@ -258,6 +262,10 @@ impl SkillCatalogService {
             context_generation,
         )
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Turn pinning takes the whole admitted turn input as plain values; a request type would rewrite every catalog test call"
+    )]
     pub(crate) fn pinned_turn_from_snapshot(
         &self,
         catalog: &SkillCatalogSet,

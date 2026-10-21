@@ -246,8 +246,7 @@ impl AgentPromptCommandService {
         source_attachment_id: &str,
         task_markdown: &str,
         attachments: Vec<crate::session::PromptAttachment>,
-        selections: Vec<crate::skill::v2::SkillSelection>,
-        user_syntax: bool,
+        skill_intent: crate::session::SkillIntent,
     ) -> Result<
         (
             crate::session::QueuedMetaagentTask,
@@ -261,8 +260,7 @@ impl AgentPromptCommandService {
             source_attachment_id,
             task_markdown,
             attachments,
-            selections,
-            user_syntax,
+            skill_intent,
         )
     }
 

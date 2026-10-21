@@ -260,25 +260,6 @@ fn duplicates_for_mcp(
         .collect()
 }
 
-fn duplicates_for_skill(
-    chosen: &crate::skill::ProviderSkillImportCandidate,
-    duplicates: &[crate::skill::ProviderSkillImportCandidate],
-) -> Vec<ProviderCapabilityImportDuplicate> {
-    duplicates
-        .iter()
-        .map(|duplicate| ProviderCapabilityImportDuplicate {
-            provider: duplicate.provider.clone(),
-            source: duplicate.source.clone(),
-            hash: Some(duplicate.version_hash.clone()),
-            reason: if duplicate.version_hash == chosen.version_hash {
-                "same package hash".to_string()
-            } else {
-                "different package hash, older source".to_string()
-            },
-        })
-        .collect()
-}
-
 #[allow(
     clippy::too_many_arguments,
     reason = "Preserve the existing entry operation signature and explicit context arguments"

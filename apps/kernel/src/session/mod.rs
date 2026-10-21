@@ -91,7 +91,7 @@ pub use types::{
     RuntimeInteractionLevel, RuntimeInteractionSubject, RuntimeProviderLogin, RuntimeSession,
     RuntimeWorktreeAssignment, SchedulerState, SessionAgentDefaults,
     SessionCollaborationAgentCounts, SessionConfigState, SessionExecutionMode, SessionInvite,
-    SessionMember, SessionStatus, WorkflowArtifactRef, WorkflowCanvasLayout,
+    SessionMember, SessionStatus, SkillIntent, WorkflowArtifactRef, WorkflowCanvasLayout,
     WorkflowCanvasLayoutPatch, WorkflowCanvasPoint, WorkflowCodeSourceBinding,
     WorkflowCodeSourceOrigin, WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry,
     WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEdgeEndpointSide,

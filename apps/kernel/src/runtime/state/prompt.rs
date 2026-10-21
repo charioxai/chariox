@@ -717,12 +717,3 @@ impl KernelRuntimeOwnedState {
 #[cfg(test)]
 #[path = "prompt_workspace_claim_conflict_tests.rs"]
 mod prompt_workspace_claim_conflict_tests;
-
-fn join_hidden_context(first: &str, second: &str) -> String {
-    match (first.trim(), second.trim()) {
-        ("", "") => String::new(),
-        (first, "") => first.to_string(),
-        ("", second) => second.to_string(),
-        (first, second) => format!("{first}\n\n{second}"),
-    }
-}

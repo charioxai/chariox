@@ -291,10 +291,9 @@ mod tests {
         assert_eq!(request.account_profile, "materialized-profile");
         // MP-08 / MP-10 / MP-11: the sandbox gets exactly this execution's cache.
         let expected = crate::skill::transfer::execution_cache_root(
-            &crate::config::DaemonConfig::default_user_config_path()
+            crate::config::DaemonConfig::default_user_config_path()
                 .parent()
-                .unwrap()
-                .to_path_buf(),
+                .unwrap(),
             &crate::transport::relay_peer::RemoteSkillSyncContext {
                 home_kernel_id: "home-kernel".into(),
                 home_session_id: "home-session".into(),

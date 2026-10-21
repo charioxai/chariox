@@ -408,8 +408,7 @@ impl KernelRuntimeState {
                     .storage
                     .snapshot_at_revision(authority.catalog_revision)?;
                 let revision = catalog.revision;
-                let native =
-                    self.turn_native_entries(authority, &agent_id, session.project_id())?;
+                let native = self.turn_native_entries(authority, &agent_id)?;
                 let rows = crate::skill::resolver::projections(
                     &catalog,
                     Some(session.project_id()),
@@ -448,8 +447,7 @@ impl KernelRuntimeState {
                 let catalog = service
                     .storage
                     .snapshot_at_revision(authority.catalog_revision)?;
-                let native =
-                    self.turn_native_entries(authority, &agent_id, session.project_id())?;
+                let native = self.turn_native_entries(authority, &agent_id)?;
                 let rows = crate::skill::resolver::projections(
                     &catalog,
                     Some(session.project_id()),
@@ -510,11 +508,7 @@ impl KernelRuntimeState {
                     delivered_at_ms: 0,
                 };
                 self.owned.reserve_skill_body(
-                    &session_id,
-                    &agent_id,
-                    prompt.id(),
                     authority,
-                    &skill_id,
                     response_bytes,
                     &record,
                     remaining_context,

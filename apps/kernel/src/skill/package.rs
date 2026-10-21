@@ -191,7 +191,7 @@ pub(crate) fn verify_package(
         if !names.insert(file.path.to_lowercase()) {
             return Err(failure("duplicate or case-conflicting skill package path"));
         }
-        if file.content_base64.len() as u64 > ((MAX_SKILL_PACKAGE_BYTES + 2) / 3) * 4 {
+        if file.content_base64.len() as u64 > MAX_SKILL_PACKAGE_BYTES.div_ceil(3) * 4 {
             return Err(failure("skill package exceeds maximum byte size"));
         }
         let bytes = base64::engine::general_purpose::STANDARD

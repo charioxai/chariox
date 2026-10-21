@@ -627,8 +627,10 @@ fn skill_meta_queue_commits_private_user_intent_and_restores_from_the_durable_ev
             "attachment",
             "Review",
             vec![],
-            vec![selection.clone()],
-            true,
+            crate::session::SkillIntent {
+                selections: vec![selection.clone()],
+                user_syntax: true,
+            },
         )
         .unwrap();
     let events = runtime

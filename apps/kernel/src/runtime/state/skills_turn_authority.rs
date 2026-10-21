@@ -68,35 +68,38 @@ impl KernelRuntimeOwnedState {
 
     pub(super) fn reserve_skill_body(
         &self,
-        session_id: &str,
-        agent_id: &str,
-        prompt_id: &str,
         expected: &SkillTurnAuthority,
-        skill_id: &str,
         tokens: u64,
         record: &crate::skill::v2::SkillLoadRecord,
         remaining_context: Option<u64>,
     ) -> Result<(), DaemonError> {
-        self.update_skill_turn_authority(session_id, agent_id, prompt_id, |current| {
-            if current.catalog_revision != expected.catalog_revision
-                || current.provider_run_id != expected.provider_run_id
-                || current.context_generation != expected.context_generation
-            {
-                return Err(failure("skill turn binding changed; start a new turn"));
-            }
-            // A real provider usage update can replace the initial supported
-            // floor. Keep all prior reservations in this ceiling, conservatively
-            // counting already delivered bodies again rather than oversubscribing.
-            if let Some(remaining) = remaining_context {
-                current.body_budget_tokens = remaining;
-            }
-            current.reserve_body(skill_id, tokens).map_err(failure)?;
-            if !current.pending_loads.iter().any(|pending| {
-                pending.skill_id == record.skill_id && pending.digest == record.digest
-            }) {
-                current.pending_loads.push(record.clone());
-            }
-            Ok(())
-        })
+        self.update_skill_turn_authority(
+            &record.session_id,
+            &record.agent_id,
+            &record.prompt_id,
+            |current| {
+                if current.catalog_revision != expected.catalog_revision
+                    || current.provider_run_id != expected.provider_run_id
+                    || current.context_generation != expected.context_generation
+                {
+                    return Err(failure("skill turn binding changed; start a new turn"));
+                }
+                // A real provider usage update can replace the initial supported
+                // floor. Keep all prior reservations in this ceiling, conservatively
+                // counting already delivered bodies again rather than oversubscribing.
+                if let Some(remaining) = remaining_context {
+                    current.body_budget_tokens = remaining;
+                }
+                current
+                    .reserve_body(&record.skill_id, tokens)
+                    .map_err(failure)?;
+                if !current.pending_loads.iter().any(|pending| {
+                    pending.skill_id == record.skill_id && pending.digest == record.digest
+                }) {
+                    current.pending_loads.push(record.clone());
+                }
+                Ok(())
+            },
+        )
     }
 }

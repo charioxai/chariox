@@ -7,7 +7,6 @@ use super::*;
 
 #[derive(Clone)]
 pub(super) struct RemoteQueuedPromptSteerPreparation {
-    pub(super) agent: crate::agent::AgentInstance,
     pub(super) remote_execution: crate::agent::RemoteAgentBinding,
     pub(super) target_active_prompt_id: String,
     pub(super) provider_run_id: String,
@@ -994,7 +993,6 @@ impl KernelRuntimeOwnedState {
             return Ok(None);
         };
         Ok(Some(RemoteQueuedPromptSteerPreparation {
-            agent: context.agent,
             remote_execution,
             target_active_prompt_id: context.active_prompt.id().to_string(),
             provider_run_id: context.provider_run_id,

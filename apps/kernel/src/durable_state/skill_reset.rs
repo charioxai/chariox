@@ -72,6 +72,7 @@ pub(crate) fn reset(
 /// SQLite transaction, so an older checkpoint cannot resurrect a grant on retry.
 /// Filesystem cleanup and startup admission are a separate phase; callers must
 /// not mistake this authority checkpoint for completion of the whole reset.
+#[cfg(test)]
 pub(super) fn initialize(connection: &mut Connection) -> rusqlite::Result<()> {
     initialize_with_names(connection, &std::collections::BTreeSet::new())
 }
@@ -281,6 +282,7 @@ fn queued_selection(value: &Value, names: &std::collections::BTreeSet<String>) -
                 v.contains("skill-context-instructions") || v.contains("<chariox_skill")
             })
 }
+#[cfg(test)]
 fn retire(value: &mut Value) {
     let mut names = std::collections::BTreeSet::new();
     executable::collect_names(value, &mut names);

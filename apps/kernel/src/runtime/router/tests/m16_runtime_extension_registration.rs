@@ -507,27 +507,3 @@ async fn register_mcp_can_grant_to_current_agent_in_one_runtime_call() {
         .join(format!("{mcp_name}.json"));
     let _ = std::fs::remove_file(expected_path);
 }
-
-async fn wait_for_active_interaction(
-    app: &Arc<Mutex<DaemonApp>>,
-    session_id: &str,
-    agent_id: &str,
-) -> String {
-    timeout(Duration::from_secs(2), async {
-        loop {
-            if let Some(interaction_id) = {
-                let app = app.lock().await;
-                app.sessions()
-                    .get_session(session_id)
-                    .expect("session should exist")
-                    .active_interaction_for_agent(agent_id)
-                    .map(|interaction| interaction.id().to_string())
-            } {
-                return interaction_id;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("registration approval interaction should be projected")
-}

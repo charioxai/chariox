@@ -25,7 +25,6 @@ impl KernelRuntimeState {
         &self,
         authority: &crate::skill::turn_authority::SkillTurnAuthority,
         agent_id: &str,
-        project_id: &str,
     ) -> Result<Vec<NativeSkillEntry>, DaemonError> {
         if authority.is_leased() {
             return Ok(self
@@ -38,7 +37,7 @@ impl KernelRuntimeState {
             .provider_store
             .get_run(&authority.provider_run_id)?;
         Ok(self
-            .local_skill_inventory_for_run(&run, project_id, authority.catalog_revision, false)?
+            .local_skill_inventory_for_run(&run, authority.catalog_revision, false)?
             .entries)
     }
 
@@ -212,16 +211,7 @@ impl KernelRuntimeState {
             else {
                 return Ok((None, None));
             };
-            let session = state
-                .owned
-                .session_store
-                .get_session(&target.backing_session_id)?;
-            let inventory = state.local_skill_inventory_for_run(
-                &run,
-                session.project_id(),
-                catalog_revision,
-                refresh,
-            )?;
+            let inventory = state.local_skill_inventory_for_run(&run, catalog_revision, refresh)?;
             let details = details_for
                 .map(|selection| {
                     super::skills_native_inventory::native_details(

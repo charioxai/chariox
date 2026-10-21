@@ -14,13 +14,14 @@ pub struct QueuedMetaagentTask {
     // MP-08 / MP-10 / MP-11: admitted user intent travels privately through
     // the existing prompt journal, never through client-supplied task JSON.
     #[serde(skip)]
-    skill_intent: Option<Box<QueuedSkillIntent>>,
+    skill_intent: Option<Box<SkillIntent>>,
 }
 
+/// The skills a user chose, and whether they typed `$name` syntax, for one prompt.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct QueuedSkillIntent {
-    selections: Vec<crate::skill::v2::SkillSelection>,
-    user_syntax: bool,
+pub struct SkillIntent {
+    pub selections: Vec<crate::skill::v2::SkillSelection>,
+    pub user_syntax: bool,
 }
 
 impl QueuedMetaagentTask {
@@ -66,17 +67,9 @@ impl QueuedMetaagentTask {
         self.created_at_ms
     }
 
-    pub(crate) fn with_skill_intent(
-        mut self,
-        selections: Vec<crate::skill::v2::SkillSelection>,
-        user_syntax: bool,
-    ) -> Self {
-        self.skill_intent = (!selections.is_empty() || user_syntax).then(|| {
-            Box::new(QueuedSkillIntent {
-                selections,
-                user_syntax,
-            })
-        });
+    pub(crate) fn with_skill_intent(mut self, intent: SkillIntent) -> Self {
+        self.skill_intent =
+            (!intent.selections.is_empty() || intent.user_syntax).then(|| Box::new(intent));
         self
     }
     pub(crate) fn skill_selections(&self) -> &[crate::skill::v2::SkillSelection] {
@@ -119,7 +112,7 @@ impl QueuedMetaagentTask {
         );
         prompt.restore_durable_private_state(state);
         // Queued work has no dispatch authority, loaded body or reserved budget.
-        self.skill_intent = Some(Box::new(QueuedSkillIntent {
+        self.skill_intent = Some(Box::new(SkillIntent {
             selections: prompt.skill_selections().to_vec(),
             user_syntax: prompt.user_skill_syntax(),
         }));
@@ -143,7 +136,10 @@ mod tests {
             "Use selected instructions",
             vec![],
         )
-        .with_skill_intent(vec![selection.clone()], true);
+        .with_skill_intent(SkillIntent {
+            selections: vec![selection.clone()],
+            user_syntax: true,
+        });
         let mut session = crate::session::RuntimeSession::new(
             "session",
             None,

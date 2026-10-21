@@ -390,7 +390,7 @@ impl KernelRuntimeState {
         self.with_app_side_effect(|_| {
             self.authorize_forwarded_workspace_context(&context)?;
             // Agent messages retain the exact home-turn origin contract.
-            if crate::transport::runtime_tools::canonical_agent_messaging_tool_name(&tool_name)
+            if (crate::transport::runtime_tools::canonical_agent_messaging_tool_name(&tool_name)
                 == Some(crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL)
                 || matches!(
                     crate::transport::runtime_tools::canonical_skill_tool_name(&tool_name),
@@ -399,15 +399,13 @@ impl KernelRuntimeState {
                             | crate::transport::runtime_tools::LOAD_SKILL_TOOL
                             | crate::transport::runtime_tools::MANAGE_SKILLS_TOOL
                     )
-                )
+                ))
+                && context.home_prompt_id.is_none()
             {
-                if context.home_prompt_id.is_none() {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "dispatch forwarded agent message",
-                        message: "sender prompt or leased worker binding is no longer current"
-                            .into(),
-                    });
-                }
+                return Err(DaemonError::LocalTransport {
+                    operation: "dispatch forwarded agent message",
+                    message: "sender prompt or leased worker binding is no longer current".into(),
+                });
             }
             Ok(())
         })

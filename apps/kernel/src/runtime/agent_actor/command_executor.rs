@@ -73,8 +73,10 @@ impl AgentRuntimeCommandExecutor {
             } => boxed_agent_handler(|| {
                 self.submit_prompt(
                     request,
-                    skill_selections,
-                    user_skill_syntax,
+                    crate::session::SkillIntent {
+                        selections: skill_selections,
+                        user_syntax: user_skill_syntax,
+                    },
                     trace_id,
                     operation_id,
                     operation_fingerprint,
@@ -110,13 +112,16 @@ impl AgentRuntimeCommandExecutor {
     async fn submit_prompt(
         &self,
         request: crate::local::SubmitPromptRequest,
-        skill_selections: Vec<crate::skill::v2::SkillSelection>,
-        user_skill_syntax: bool,
+        skill_intent: crate::session::SkillIntent,
         trace_id: String,
         operation_id: String,
         operation_fingerprint: String,
         response_mode: PromptSubmitResponseMode,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let crate::session::SkillIntent {
+            selections: skill_selections,
+            user_syntax: user_skill_syntax,
+        } = skill_intent;
         let mut timing = crate::runtime::perf_timing::Phases::new();
         let target_agent_id =
             request
@@ -153,8 +158,10 @@ impl AgentRuntimeCommandExecutor {
                     &request.attachment_id,
                     &meta_slash.task_prompt,
                     materialized_attachments,
-                    skill_selections,
-                    user_skill_syntax,
+                    crate::session::SkillIntent {
+                        selections: skill_selections,
+                        user_syntax: user_skill_syntax,
+                    },
                 )?;
                 let queued_prompt = PromptQueueItem::new(
                     task.id(),

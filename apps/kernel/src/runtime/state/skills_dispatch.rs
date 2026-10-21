@@ -393,7 +393,6 @@ impl SkillDispatchService {
             &session,
             Some(&agent),
             &self.config.snapshot(),
-            session.project_id(),
             staged.catalog_revision,
             false,
         )?;
@@ -538,7 +537,6 @@ impl SkillPromptBridge for SkillDispatchService {
                 &session,
                 Some(&agent),
                 &config,
-                session.project_id(),
                 catalog.revision,
                 false,
             )?)
@@ -551,7 +549,6 @@ impl SkillPromptBridge for SkillDispatchService {
                     &session,
                     Some(&agent),
                     &config,
-                    session.project_id(),
                     catalog.revision,
                     false,
                 )

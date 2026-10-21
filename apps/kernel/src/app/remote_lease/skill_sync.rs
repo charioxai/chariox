@@ -61,7 +61,7 @@ fn skill_home() -> Result<std::path::PathBuf, DaemonError> {
     crate::config::DaemonConfig::default_user_config_path()
         .parent()
         .map(std::path::Path::to_path_buf)
-        .ok_or_else(|| DaemonError::InvalidConfig {
+        .ok_or(DaemonError::InvalidConfig {
             field: "CHARIOX_HOME",
             message: "Skills require a resolved Chariox home",
         })

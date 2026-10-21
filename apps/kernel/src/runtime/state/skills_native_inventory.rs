@@ -50,12 +50,11 @@ impl KernelRuntimeState {
         let session = self.owned.session_store.get_session(agent.session_id())?;
         let run=self.owned.provider_store.get_run_for_agent(session.id(),agent.id())
             .ok_or_else(||failure("native inventory requires the focused provider to start; submit a turn or attach its native TUI"))?;
-        self.local_skill_inventory_for_run(&run, session.project_id(), catalog_revision, refresh)
+        self.local_skill_inventory_for_run(&run, catalog_revision, refresh)
     }
     pub(super) fn local_skill_inventory_for_run(
         &self,
         run: &crate::provider::RuntimeProviderRun,
-        project_id: &str,
         catalog_revision: u64,
         refresh: bool,
     ) -> Result<NativeSkillInventory, DaemonError> {
@@ -68,7 +67,6 @@ impl KernelRuntimeState {
             &session,
             agent.as_ref(),
             &self.owned.config_projection.snapshot(),
-            project_id,
             catalog_revision,
             refresh,
         )
@@ -81,10 +79,10 @@ impl SkillInventories {
         session: &crate::session::RuntimeSession,
         agent: Option<&crate::agent::AgentInstance>,
         config: &crate::config::DaemonConfig,
-        project_id: &str,
         catalog_revision: u64,
         refresh: bool,
     ) -> Result<NativeSkillInventory, DaemonError> {
+        let project_id = session.project_id();
         let environment = run.native_skill_discovery_environment();
         if environment.is_empty() {
             return Err(failure(
