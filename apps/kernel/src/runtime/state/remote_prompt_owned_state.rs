@@ -1490,24 +1490,28 @@ mod tests {
         std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
     }
 
-    // An unanswered popup times out and is asked again; that is not the owner declining.
+    // An unanswered popup times out and is asked again; the task keeps waiting, it is not blocked.
     #[tokio::test]
-    async fn timed_out_vault_popup_does_not_block_the_waiting_completion_check() {
+    async fn timed_out_vault_popup_is_asked_again_while_the_completion_check_waits() {
         use crate::durable_state::agent_lifecycle::ExecutionState;
         let (runtime, session, _agent, vault, unlock, _check) =
             vault_wait_fixture("vault-timeout").await;
-        let card = vault_popup(&runtime, &session).await;
+        let first = vault_popup(&runtime, &session).await;
         runtime
-            .timeout_runtime_interaction(&session, &card)
+            .timeout_runtime_interaction(&session, &first)
             .await
             .unwrap();
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(10), unlock)
-                .await
-                .unwrap()
-                .unwrap()
-                .is_err()
-        );
+        let second = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let card = vault_popup(&runtime, &session).await;
+                if card != first {
+                    break card;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the timed-out popup must be asked again");
         let task = runtime
             .owned
             .durable_state_store
@@ -1515,7 +1519,30 @@ mod tests {
             .unwrap()
             .remove(0);
         assert_eq!(task.state, ExecutionState::Working, "{}", task.reason);
-        assert_eq!(task.reason, "Evaluating original goal objective");
+        let owner = runtime
+            .owned
+            .session_store
+            .get_session(&session)
+            .unwrap()
+            .owner_user_id()
+            .to_string();
+        runtime
+            .owned
+            .resolve_runtime_interaction(
+                &session,
+                &second,
+                "passphrase",
+                Some("synthetic wait passphrase"),
+                Some(&owner),
+                true,
+            )
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), unlock)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
         std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
     }
 
