@@ -141,9 +141,11 @@ pub(super) fn task_status_notice(task: &AgentTaskExecution, name: &str) -> Strin
     format!("{name}: {state}.")
 }
 
-// Leased history retains the worker run ID. Resolve it from the task's durable
-// execution binding, so reconciliation does not depend on the current lease or
-// active run. This is a history lookup only; the task's authority stays projected.
+// Leased history entries carry either the worker's run ID or the projected
+// `leased:<lease>:<worker run>` one. Resolve both to the worker run ID from the
+// task's durable execution binding, so reconciliation does not depend on the
+// current lease or active run. This is a history lookup only; the task's
+// authority stays projected.
 pub(super) fn task_answer_history_run(run: Option<&str>) -> Option<&str> {
     run.map(|run| {
         run.strip_prefix("leased:")
@@ -224,7 +226,10 @@ pub(super) fn task_public_outputs<'a>(
                 })
         })
         .filter(|e| {
-            e.kind == Kind::ProviderOutput && run.is_some() && e.provider_run_id.as_deref() == run
+            e.kind == Kind::ProviderOutput
+                && run.is_some()
+                && task_answer_history_run(e.provider_run_id.as_deref())
+                    == task_answer_history_run(run)
         })
         .filter(|e| {
             !e.is_external_provider_observed()
@@ -458,6 +463,35 @@ mod tests {
             ),
             vec!["verified worker answer"]
         );
+    }
+
+    // A leased turn's home history may carry the projected run id the task binds; the answer
+    // must be found under it too, or every leased turn ends Blocked "Repeated invalid turn end".
+    #[test]
+    fn leased_answer_is_found_under_the_projected_run_id() {
+        let projected = "leased:old-lease:old-run";
+        let entry = |kind: &str, key: Option<&str>, run: Option<&str>, text: &str| {
+            serde_json::from_value(serde_json::json!({"session_id":"room", "kind":kind,
+                "merge_key":key,"provider_run_id":run,"text":text,"timestamp_ms":1}))
+            .unwrap()
+        };
+        let entries = vec![
+            entry("user_prompt", Some("prompt:completed"), None, "task"),
+            entry("provider_output", None, Some(projected), "projected answer"),
+            entry("provider_output", None, Some("old-run"), "worker answer"),
+            entry(
+                "provider_output",
+                None,
+                Some("leased:other:other-run"),
+                "foreign",
+            ),
+        ];
+        for bound in [projected, "old-run"] {
+            assert_eq!(
+                task_public_outputs(&entries, "completed", Some(bound)),
+                vec!["projected answer", "worker answer"]
+            );
+        }
     }
 
     #[test]
