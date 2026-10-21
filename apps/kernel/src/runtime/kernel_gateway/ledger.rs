@@ -303,7 +303,7 @@ mod tests {
     async fn a_full_ledger_makes_room_once_a_receipt_is_older_than_the_window() {
         let path = journal();
         let runs = AtomicU32::new(0);
-        let ledger = GatewayLedger::open_expiring(path.clone(), 40, 3);
+        let ledger = GatewayLedger::open_expiring(path.clone(), 2_000, 3);
         let run = |id: &'static str| {
             let ledger = &ledger;
             let runs = &runs;
@@ -323,7 +323,7 @@ mod tests {
             matches!(run("k4").await, Settled::Unavailable(_)),
             "inside the window nothing can be evicted"
         );
-        tokio::time::sleep(Duration::from_millis(80)).await;
+        tokio::time::sleep(Duration::from_millis(2_300)).await;
         assert!(
             matches!(run("k4").await, Settled::Done(Ok(_))),
             "an old receipt made room"
