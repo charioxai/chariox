@@ -681,6 +681,18 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 ));
             }
             if terminal(&wake) {
+                // A02-S04: an ended source has nothing to stop, but task
+                // cancellation still settles an obligation left unresolved
+                // (a fire the task never handled).
+                if prompt.is_none() {
+                    if let Some(o) = t.obligations.iter_mut().find(|o| {
+                        o.id == id && matches!(o.status.as_str(), "open" | "settling" | "failed")
+                    }) {
+                        o.status = "cancelled".into();
+                        t.revision += 1;
+                        save(tx, &t)?;
+                    }
+                }
                 return Ok(Outcome::Wakes(vec![wake]));
             }
             // A watched process always settles on its physical exit.
