@@ -188,15 +188,13 @@ impl SkillDispatchService {
         agent_id: &str,
         run: &'a RuntimeProviderRun,
     ) -> Result<Option<&'a str>, DaemonError> {
-        let pending = self
-            .history
-            .load_agent_compaction_boundary(
-                session_id,
-                agent_id,
-                run.provider(),
-                run.account_profile(),
-                super::context_handoff::native_session_id(run),
-            )?;
+        let pending = self.history.load_agent_compaction_boundary(
+            session_id,
+            agent_id,
+            run.provider(),
+            run.account_profile(),
+            super::context_handoff::native_session_id(run),
+        )?;
         Ok(pending.is_none().then(|| run.id()))
     }
     fn prepare_remote(

@@ -535,9 +535,11 @@ pub(crate) async fn enqueue_peer_request_via_connected_relay_authorized(
             if stale_public_key.is_some() {
                 state.write().await.forget_peer_public_key(&target_ref);
             }
-            let discovery =
-                crate::runtime::cloud_api_client::relay_target_discovery_config(config, &target_ref)
-                    .await?;
+            let discovery = crate::runtime::cloud_api_client::relay_target_discovery_config(
+                config,
+                &target_ref,
+            )
+            .await?;
             let kernel = relay_discovery::get_live_kernel(&discovery, &target_ref).await?;
             authorize()?;
             let public_key = kernel.public_key;

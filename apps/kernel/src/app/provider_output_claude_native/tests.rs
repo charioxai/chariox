@@ -3928,7 +3928,8 @@ fn claude_native_skill_retry_recognizes_the_prepared_invocation_in_the_composer(
 
 mod skill_hook_fakes {
     use super::*;
-    pub(super) static HOOK_RECEIPTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    pub(super) static HOOK_RECEIPTS: std::sync::Mutex<Vec<String>> =
+        std::sync::Mutex::new(Vec::new());
     pub(super) struct DeliverSkill;
     impl crate::provider::skill_delivery::SkillPromptBridge for DeliverSkill {
         fn acknowledge_hook_context(
@@ -3967,12 +3968,14 @@ mod skill_hook_fakes {
             _: &crate::prompt_assembly::PromptEnvelope,
         ) -> Result<Option<crate::provider::skill_delivery::ProviderSkillDelivery>, DaemonError>
         {
-            Ok(Some(crate::provider::skill_delivery::ProviderSkillDelivery {
-                visible_prompt: "[Chariox skill review] inspect source".into(),
-                hidden_context: "SKILL-BODY-MARKER-77".into(),
-                codex_input: Vec::new(),
-                requires_native_load_ack: Vec::new(),
-            }))
+            Ok(Some(
+                crate::provider::skill_delivery::ProviderSkillDelivery {
+                    visible_prompt: "[Chariox skill review] inspect source".into(),
+                    hidden_context: "SKILL-BODY-MARKER-77".into(),
+                    codex_input: Vec::new(),
+                    requires_native_load_ack: Vec::new(),
+                },
+            ))
         }
     }
     pub(super) struct PassthroughPolicy;

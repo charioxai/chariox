@@ -232,7 +232,10 @@ mod tests {
             body["subject"],
             "slice-discovery:owner-kernel:slice:worker-hash"
         );
-        assert_eq!(discovery.relay_token.as_deref(), Some("synthetic-client-token"));
+        assert_eq!(
+            discovery.relay_token.as_deref(),
+            Some("synthetic-client-token")
+        );
         assert!(discovery.cloud_relay.is_none());
     }
 
