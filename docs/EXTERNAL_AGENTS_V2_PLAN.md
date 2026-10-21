@@ -252,7 +252,7 @@ The extension can ship after the core; the core's popups cover the Mac TUI, and 
 
 Every break-glass ssh during the dogfooding day (EA2-16) is logged as a product issue with the missing capability.
 
-### 9.2 Terminal verbs on top of #1054 (design only; build when #1054 is on the base)
+### 9.2 Terminal verbs on top of #1054 (built in r6, provisional protocol 569 with the Room terminal service)
 
 Terminals are Room-scoped, owner-sent and survive client disconnects (term/r1, protocol 562 / peer 170). The verbs are one-screen mappings onto the single request `RoomTerminal { session_id, acting_agent?, operation }`; the gateway forwards it like any request with `--machine`. The agent calls exactly these (no `acting_agent`, so the actor is the user and the gateway, an owner terminal on the target, may type):
 
@@ -266,7 +266,8 @@ Terminals are Room-scoped, owner-sent and survive client disconnects (term/r1, p
 | `terminal wait --for finished\|output_contains=TEXT\|waiting_for_input --timeout S` | `wait` | One request waits at most 240 s; the CLI loops for longer waits and prints the exit code when the shell reports one. |
 | `terminal close` | `close` | Ends the shell's whole session (background jobs too). |
 
-- **At-most-once.** The target's ledger today treats a request as repeatable by the name of its variant (`List`, `Get`, `Search`, `Stat`, `Heartbeat`). `RoomTerminal` must be classified by `operation`: `list`, `snapshot`, `read_output`, `wait` repeat; `open`, `input`, `resize`, `close` are state-changing and use the ledger, so a retried `input` never types twice.
+- **As built (r6).** `terminal open|list|send|read|wait|close` in `apps/cli/src/terminal-verbs.ts`, JSON on stdout, `--machine` optional (without it the local kernel answers). Differences from the table: `send` appends Enter (a carriage return; `--no-enter` types the text as it is), reads one `snapshot` first and prints its `output_offset` as `after_offset` (the `input` answer carries no offset); `read` prints the output as plain text (colour, title and cursor escapes removed) with `next_offset` and `gap`; `wait --timeout S` (default 60) asks in pieces of at most 240 s, each continuing from the offset the last piece saw, and a timeout is an answer (`fired: null` with the screen), not an error. The origin's wait for the machine's answer is the usual 30 s plus the request's own wait (`deadline_for` in `machine_gateway/ledger.rs`).
+- **At-most-once (built).** The target's ledger treated a request as repeatable by the name of its variant (`List`, `Get`, `Search`, `Stat`, `Heartbeat`). `RoomTerminal` is classified by `operation`: `list`, `snapshot`, `read_output`, `wait` repeat; `open`, `input`, `resize`, `close` are state-changing and use the ledger, so a retried `input` never types twice.
 - **Detached jobs.** The job belongs to the kernel-owned terminal, not to the agent or its grant: killing the agent ends the grant, not the job. A new grant (the same `--machine`, the same `--session`) reads it with `read --since`. A terminal is not an attachment, so the gateway's attachment heartbeat is not involved.
 - **No new fence.** Anything typed or read is the agent's own action on a machine the user connected to it; the response redaction applies as to every reply.
 
@@ -341,6 +342,9 @@ All are real-path, red-capable drills (they fail on the base or before the step,
 Supplementary regression (not acceptance): Rust tests for the typed term, frame `machine`, policy-sharing, error codes and the snapshot/hash shapes; `pnpm protocol:conformance`; `pnpm lint:process-signals` for the exit watcher; CLI guide-vs-parser test.
 
 ## 13. Risks and residual notes
+
+- **The gateway on the target (r6).** The target records each gateway that sends a request carrying `on_behalf_of`, keyed by the relay's authenticated client key (`gateway-origins.json`, 0600), and lists it beside its paired clients as `Agent gateway of <origin kernel>` (client id `agent-gateway:<thumbprint>`). Revoking that id (`RevokePairedClient`) refuses the key at once, with or without `on_behalf_of` (`machine_unpaired` at the origin). Self-hosted: a second pairing link for the same gateway key replaces the earlier grant (one grant per key; the replaced link cannot bring it back). **Not built:** the hosted gateway is not a Cloud client, so it is not in the Cloud clients list and the web's Cloud-side revoke does not reach it; a Cloud client needs a pairing session, which a kernel credential does not have. Hosted revoke today = revoke the grant on the origin, revoke the gateway on the target, or unlink the origin kernel. Decision for the coordinator: add a kernel-authenticated Cloud route that registers the gateway key as a client named "Agent gateway of <machine>" (small, Cloud only) or accept the target-side list.
+- **Web (r6).** An access request opens its popup by itself on the web (once per request; closing leaves the footer notice) and Settings > Security shows the live grants of the selected kernel with Revoke / Revoke all (`ListKernelAccessGrants` / `RevokeKernelAccessGrant`).
 
 - **Blast radius.** One local passkey reaches all machines. This follows decision 2; the popup says so, the list shows it, the remote paired-client list shows the gateway, and revoke is immediate. Narrowing per machine is not in v2.
 - **Kernel restart ends grants.** By design (memory only). For the coordinator this means re-granting after a Mac kernel restart.
