@@ -264,6 +264,8 @@ impl KernelRuntimeState {
             owner_user_id: self.owned.config_projection.local_owner_user_id(),
             holder_pid: holder.pid,
             holder_executable: holder.executable.clone(),
+            holder_harness: crate::runtime::kernel_access::requester::project(&holder)
+                .provider_harness,
             term,
             expires_at_ms: None,
         };

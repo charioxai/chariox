@@ -191,6 +191,11 @@ pub(super) async fn handle_prepared_daemon_request(
                         )),
                     }
                 }
+                // An unreadable list must not lock the owner out of their own kernel: only a
+                // gateway, which names its origin, is refused until the list can be read.
+                Err(error) if origin.is_none() => {
+                    tracing::warn!(%error, "gateway origins unreadable; admitting a request that names no origin");
+                }
                 Err(error) => {
                     return RelayRequestOutcome {
                         display_event: None,

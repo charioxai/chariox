@@ -303,6 +303,7 @@ async fn kernel_access_targeted_revocation_preserves_other_owners_pending_reques
         owner_user_id: owner.into(),
         holder_pid: 1,
         holder_executable: "fixture".into(),
+        holder_harness: None,
         term: crate::local::KernelAccessTerm::Minutes(30),
         expires_at_ms: None,
     };

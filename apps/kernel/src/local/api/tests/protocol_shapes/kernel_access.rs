@@ -257,9 +257,22 @@ fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
         owner_user_id: "local".into(),
         holder_pid: 42,
         holder_executable: "/usr/bin/agent".into(),
+        holder_harness: Some(crate::local::KernelAccessProviderHarness::Claude),
         term: crate::local::KernelAccessTerm::Minutes(30),
         expires_at_ms: Some(1_801_000),
     };
+    // A holder the kernel cannot attribute to a provider harness says nothing about it.
+    assert_eq!(
+        serde_json::to_value(&grant).unwrap()["holder_harness"],
+        "claude"
+    );
+    assert!(serde_json::to_value(KernelAccessGrant {
+        holder_harness: None,
+        ..grant.clone()
+    })
+    .unwrap()
+    .get("holder_harness")
+    .is_none());
     let until_exit_grant = KernelAccessGrant {
         grant_id: "g2".into(),
         term: crate::local::KernelAccessTerm::UntilHolderExits,
@@ -352,7 +365,7 @@ fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
     let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "d65ce1a8c02027796acb4be7559caa6cae9ccea9900e6e97b2b584339dcca3b1"
+        "e1cb510d6f0b0daf8261f90790a353663cc2df12c768257d03c85f9171220cdc"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
         serde_json::json!({"RequestKernelAccess": {

@@ -154,6 +154,11 @@ pub struct KernelAccessGrant {
     pub owner_user_id: String,
     pub holder_pid: u32,
     pub holder_executable: String,
+    /// Which provider's harness the holder is, when the kernel can tell by the
+    /// exact executable it is configured to run (display only; clients show it
+    /// instead of an install-path name such as a version number).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder_harness: Option<KernelAccessProviderHarness>,
     /// Protocol 568 replaces `lifetime_minutes`.
     pub term: KernelAccessTerm,
     /// Absent for `UntilHolderExits`.

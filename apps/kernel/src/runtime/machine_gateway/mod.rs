@@ -25,7 +25,7 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use crate::local::{GatewayMachine, LocalDaemonRequest, OnBehalfOf};
+use crate::local::{LocalDaemonRequest, OnBehalfOf};
 use crate::runtime::projection::{
     DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore,
 };

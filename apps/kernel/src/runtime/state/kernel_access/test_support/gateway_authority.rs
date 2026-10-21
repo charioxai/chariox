@@ -21,6 +21,7 @@ fn state_with_live_grant() -> (KernelRuntimeState, String) {
                 owner_user_id: "local".into(),
                 holder_pid: holder.pid,
                 holder_executable: holder.executable.clone(),
+                holder_harness: None,
                 term: KernelAccessTerm::UntilHolderExits,
                 expires_at_ms: None,
             },
