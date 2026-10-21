@@ -3,7 +3,7 @@ import {
   listProjectsRequest, listSessionsRequest, searchWorkspaceDirectoriesRequest, spawnAgentRequest, submitPromptRequest,
 } from "./ipc-requests.js"
 
-type Flag = { name: string; value?: string }
+type Flag = { name: string; value?: string; required?: true }
 type CommandSpec = { name: string; flags: readonly Flag[]; args?: readonly string[]; summary: string }
 
 const SOCKET: Flag = { name: "--socket", value: "PATH" }
@@ -31,7 +31,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "watch",
-    flags: [MACHINE, { name: "--session", value: "SESSION_ID" }, { name: "--attachment", value: "ATTACHMENT_ID" }, { name: "--from", value: "EVENT_ID" }, SOCKET],
+    // watch follows another machine's events; a local session is read with `request`.
+    flags: [{ ...MACHINE, required: true }, { name: "--session", value: "SESSION_ID", required: true }, { name: "--attachment", value: "ATTACHMENT_ID", required: true }, { name: "--from", value: "EVENT_ID" }, SOCKET],
     summary: "print one JSON line per event of that machine's session until the connection is lost",
   },
   {
@@ -39,7 +40,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     flags: [MACHINE, SESSION, HOST_AGENT, { name: "--cols", value: "N" }, { name: "--rows", value: "N" }, { name: "--title", value: "TITLE" }, TIMEOUT, SOCKET],
     summary: "open a terminal in that Room (a login shell, or the argv after --); it keeps running when you disconnect",
   },
-  { name: "terminal list", flags: [MACHINE, SESSION, TIMEOUT, SOCKET], summary: "the Room's terminals with their output offsets; one that shows host_agent runs on that agent's machine: pass it as --host-agent" },
+  { name: "terminal list", flags: [MACHINE, SESSION, TIMEOUT, SOCKET], summary: "the Room's terminals with their output offsets; a terminal that shows host_agent runs on that agent's machine: pass that id as --host-agent to send, read, wait and close" },
   {
     name: "terminal send",
     flags: [MACHINE, SESSION, TERMINAL, HOST_AGENT, { name: "--no-enter" }, TIMEOUT, SOCKET],
@@ -115,7 +116,10 @@ function commandSpec(command: string): CommandSpec {
 }
 
 function usage(spec: CommandSpec): string {
-  const flags = spec.flags.map(flag => `[${flag.name}${flag.value ? ` ${flag.value}` : ""}]`)
+  const flags = spec.flags.map(flag => {
+    const text = `${flag.name}${flag.value ? ` ${flag.value}` : ""}`
+    return flag.required ? text : `[${text}]`
+  })
   return `Usage: chariox ${[spec.name, ...flags, ...spec.args ?? []].join(" ")}`
 }
 

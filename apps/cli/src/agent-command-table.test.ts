@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { readdirSync, readFileSync } from "node:fs"
-import { COMMANDS, EXIT_CODES, REQUEST_EXAMPLES, CommandFailure, exitCodeFor, guideText, parseArguments } from "./agent-command-table.js"
+import { COMMANDS, EXIT_CODES, REQUEST_EXAMPLES, CommandFailure, exitCodeFor, guideText, parseArguments, usageOf } from "./agent-command-table.js"
 import {
   attachToSessionRequest, cancelActivePromptRequest, createSessionRequest, endSessionRequest, getSessionStateRequest,
   listProjectsRequest, listSessionsRequest, searchWorkspaceDirectoriesRequest, spawnAgentRequest, submitPromptRequest,
@@ -119,6 +119,10 @@ test("the guide steps cover watching a machine and an attachment that is kept al
   assert.match(guide, /An AttachToSession you make on another machine is kept alive for you while your access lasts; send DetachFromSession when you are done with it\./)
   assert.doesNotMatch(guide, /lapses/)
   assert.deepEqual(COMMANDS.find(spec => spec.name === "watch")?.flags.map(flag => flag.name), ["--machine", "--session", "--attachment", "--from", "--socket"])
+})
+
+test("watch's usage line shows the flags it cannot run without as required", () => {
+  assert.equal(usageOf("watch"), "Usage: chariox watch --machine NAME --session SESSION_ID --attachment ATTACHMENT_ID [--from EVENT_ID] [--socket PATH]")
 })
 
 test("the guide teaches moving files and resuming a transfer", () => {
