@@ -1069,6 +1069,25 @@ fn skills_v2_loaded_skill_is_delivered_once_per_provider_run() {
         1,
         "an explicit selection always delivers"
     );
+    // The body was delivered again on the restarted run; the older record on the
+    // previous run must not re-attach it on every later turn.
+    f.storage
+        .record_load(&SkillLoadRecord {
+            skill_id: skill.id.clone(),
+            digest: skill.digest.clone(),
+            session_id: "s".into(),
+            agent_id: "a".into(),
+            run_id: "run-2".into(),
+            prompt_id: "p2".into(),
+            reason: SkillLoadReason::Explicit,
+            context_generation: "g3".into(),
+            delivered_at_ms: 2,
+        })
+        .unwrap();
+    assert!(
+        turn("next question", Some("run-2")).loaded.is_empty(),
+        "the restarted run holds the body even though an older run's record exists"
+    );
 }
 
 #[test]
