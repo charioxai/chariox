@@ -816,11 +816,13 @@ export class Mirror2 {
     const sheets = []; let bytes = 0;
     const read = async (href, open, close, depth) => {
       if (sheets.length >= 64) return false;
-      const body = await this.resourceBody(world, href, 16 * 1024 * 1024);
+      // CDP names a request without its fragment; a sheet's `href` keeps it (Amazon's end in `#<revision>`).
+      const requested = href.split('#')[0];
+      const body = await this.resourceBody(world, requested, 16 * 1024 * 1024);
       let text = body?.toString('utf8');
       if (text === undefined) {
-        const frameId = (await frames()).get(href); if (!frameId) return false;
-        const reply = await world.connection.send('Page.getResourceContent', { frameId, url: href }, world.sessionId);
+        const frameId = (await frames()).get(requested); if (!frameId) return false;
+        const reply = await world.connection.send('Page.getResourceContent', { frameId, url: requested }, world.sessionId);
         text = reply.base64Encoded ? Buffer.from(reply.content, 'base64').toString('utf8') : reply.content;
       }
       if (typeof text !== 'string' || (bytes += text.length) > 16 * 1024 * 1024) return false;
