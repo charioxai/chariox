@@ -306,11 +306,11 @@ test("MD-2: text input reaches any focused field, secret or not (A-L23)", () => 
   assert(sent.some(call => call.method === "Input.insertText"));
   fixture.secretFocused = false;
   await assert.rejects(host.request({ op: "input", ...binding, input: { kind: "click", x: 1280, y: 0 } }), /viewport/);
-  // Protocol 530: middle/right buttons are the band's (Chrome's own UI), never a page click;
-  // a page drag is only the watching person's (coordinator 15:08Z).
+  // Protocol 530: middle/right buttons are the band's (Chrome's own UI), never a page click.
   for (const input of [{ kind: "click", x: 1, y: 1, button: "right" }, { kind: "click", x: 1, y: 1, button: "middle" }])
     await assert.rejects(host.request({ op: "input", ...binding, input }), /unsupported input/);
-  await assert.rejects(host.request({ op: "input", ...binding, input: { kind: "drag", x: 1, y: 1, to_x: 5, to_y: 5 } }), error => error.code === "user_domain_not_granted");
+  await host.request({ op: "input", ...binding, input: { kind: "drag", x: 1, y: 1, to_x: 5, to_y: 5 } });
+  await assert.rejects(host.request({ op: "input", ...binding, input: { kind: "drag", x: 1, y: 1, to_x: 1280, to_y: 5 } }), /viewport/);
 }));
 
 test("MP-08 / MP-10 / MP-11: native navigation adopts the keepalive tab and reserves a background replacement", () => using(async ({ host, chromium, sent, pages }) => {
@@ -1506,19 +1506,17 @@ test('MP-11 an out-of-band Tab switch stops whole-page native readback and input
   host.displays.delete('whole-a'); host.compositors.delete(a.tab_id);
 }));
 
-// Coordinator 15:08Z (protocol 530): a page drag is the person's, on a page they are watching.
-test('MP-11 (530) agents and viewers without a live display lease cannot drag in a page', () => using(async ({ host, sent }) => {
+// MP-08/MP-10/MP-11: authorised input is not model-visible data. A DOM mirror does not need a video lease to drag.
+test('MP-08/MP-10/MP-11 authorised page drags work for agents and mirror-only viewers', () => using(async ({ host, sent }) => {
   const opened = await host.request({ op: 'open', url: 'https://example.com/' }), tab = host.tabs.get(opened.tab_id);
   const drag = extra => host.request({ op: 'input', tab_id: opened.tab_id, generation: host.generation, document_id: tab.document_id, input: { kind: 'drag', x: 10, y: 10, to_x: 200, to_y: 12 }, ...extra });
   const presses = () => sent.filter(x => x.method === 'Input.dispatchMouseEvent' && x.params?.type === 'mousePressed').length;
-  const refused = error => error.code === 'user_domain_not_granted';
-  await assert.rejects(drag({ _agent_input: true }), refused);
-  await assert.rejects(drag({ focused_agent: 'agent-a', _display_input: true, observed_by: 'terminal:test' }), refused);
-  await assert.rejects(drag({ _display_input: true, observed_by: 'terminal:test' }), refused, 'no display of this Tab');
-  assert.equal(presses(), 0);
-  host.displays.set('whole-a', { subscription_id: 'whole-a', tab_id: opened.tab_id, observed_by: 'terminal:test', expires: Date.now() + 60_000, close: async () => {} });
-  try { await drag({ _display_input: true, observed_by: 'terminal:test' }); assert.equal(presses(), 1, 'the watching person drags'); }
-  finally { host.displays.delete('whole-a'); }
+  await drag({ _agent_input: true });
+  await drag({ focused_agent: 'agent-a', _display_input: true, observed_by: 'terminal:test' });
+  await drag({ _display_input: true, observed_by: 'terminal:test' });
+  assert.equal(presses(), 3, 'the existing input grant and document fence admit every authorised caller');
+  await assert.rejects(host.request({op:'input',tab_id:opened.tab_id,generation:host.generation,document_id:'retired',input:{kind:'drag',x:10,y:10,to_x:200,to_y:12}}), error=>error.code==='user_domain_stale_reference');
+  assert.equal(presses(), 3, 'retired document coordinates are still refused before dispatch');
 }));
 
 // MP-11 (Miguel 2026-10-15): the person manages extensions as in any Chrome; an agent cannot open the

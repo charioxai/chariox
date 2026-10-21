@@ -9,7 +9,9 @@ import { inputHostTab } from "./kernel-browser-input.mjs";
 
 assert(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "MP-10: explicit disposable drill root required");
 
-async function native(markup, operation, instrument = true) {
+async function native(markup, operation, instrument = true, mirror = false) {
+  const previousMirror = process.env.CHARIOX_KERNEL_BROWSER_MIRROR;
+  if (mirror) process.env.CHARIOX_KERNEL_BROWSER_MIRROR = "1";
   const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "native-input-"));
   const server = createServer((_request, response) => {
     response.setHeader("Content-Type", "text/html");
@@ -66,6 +68,7 @@ async function native(markup, operation, instrument = true) {
     await host.stop();
     await new Promise(resolve => server.close(resolve));
     await rm(root, { recursive: true, force: true });
+    if (mirror) { if (previousMirror === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR; else process.env.CHARIOX_KERNEL_BROWSER_MIRROR = previousMirror; }
   }
 }
 
@@ -139,13 +142,13 @@ test("MP-11: retained/focused state reads cannot restart native Chromium after h
   assert.equal(restarted.generation,bound.generation+1); assert.equal(restarted.tabs[0].tab_id,bound.tab_id);
 },false));
 
-test("MP-11: retained input still checks revocation between paired native events", () => native(field, async ({input,events,host,bound}) => {
+test("MP-11: revoked retained input pairs the non-text release before reporting cancellation", () => native(field, async ({input,events,host,bound}) => {
   const cancellation=new AbortController();
   const {connection}=await host.browser.resolvePageTarget(host.tabs.get(bound.tab_id).target_id);
   const send=connection.send.bind(connection);
   connection.send=async(method,params,session)=>{const result=await send(method,params,session); if(method==='Input.dispatchKeyEvent'&&params.type==='keyDown')cancellation.abort(); return result;};
   await assert.rejects(host.request({op:'input',...bound,input:{kind:'key',key:'Tab'},_retained_agent:true},{signal:cancellation.signal}),{code:'browser_action_cancelled'});
-  assert.deepEqual(events.map(e=>e.type),['keyDown']);
+  assert.deepEqual(events.map(e=>e.type),['keyDown','keyUp']);
 }));
 
 
@@ -307,3 +310,11 @@ for (const dpr of [1, 2]) test(`MP-11: addressed mirror input fences live dispat
     assert(positive.every(row=>row.pass),JSON.stringify(positive));
   },false
 ));
+
+
+test("MP-08/MP-10/MP-11: a mirror-only viewer drags through the normal page input path", () => native(`${field}<div id="source" style="position:absolute;left:20px;top:80px;width:80px;height:40px;background:green"></div><div style="position:absolute;left:220px;top:80px;width:80px;height:40px;background:blue"></div><script>window.drops=0;let pressed=false;document.addEventListener('pointerdown',event=>{pressed=event.target.id==='source'});document.addEventListener('pointerup',event=>{if(pressed&&event.clientX>=220)window.drops++;pressed=false})</script>`, async ({host,bound,input,evaluate}) => {
+  await host.request({op:'mirror_subscribe',...bound,wire:2,device_scale_factor:1,observed_by:'terminal:test'});
+  assert.equal(host.displays.size,0,'the DOM mirror has no video display lease');
+  await input({kind:'drag',x:50,y:100,to_x:250,to_y:100},{_display_input:true,observed_by:'terminal:test'});
+  assert.equal(await evaluate('window.drops'),1,'Chromium received the real press, moves and release');
+}, false, true));
