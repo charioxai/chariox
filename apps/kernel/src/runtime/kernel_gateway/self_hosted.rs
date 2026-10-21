@@ -74,13 +74,15 @@ impl KernelGateway {
             .iter()
             .map(|presence| names::display_name(presence, &known))
             .collect();
-        Ok(join_all(
-            paired
-                .into_iter()
-                .zip(names)
-                .map(|(target, name)| self.probe(target, name)),
-        )
-        .await)
+        Ok(names::grouped(
+            join_all(
+                paired
+                    .into_iter()
+                    .zip(names)
+                    .map(|(target, name)| self.probe(target, name)),
+            )
+            .await,
+        ))
     }
 
     async fn probe(&self, target: PairedKernel, name: String) -> GatewayKernel {

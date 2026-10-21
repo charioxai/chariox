@@ -42,24 +42,25 @@ impl Directory {
         let via = self.source.via();
         let seen = self.seen.lock().expect("directory poisoned");
         let known: Vec<&RelayKernelPresence> = seen.values().map(|seen| &seen.kernel).collect();
-        Ok(seen
-            .values()
-            .map(|seen| GatewayKernel {
-                name: names::display_name(&seen.kernel, &known),
-                label: names::label(&seen.kernel),
-                kernel_id: seen.kernel.kernel_id.clone(),
-                machine_id: seen.kernel.machine_id.clone(),
-                machine_alias: seen.kernel.machine_alias.clone(),
-                status: if seen.online {
-                    GatewayKernelStatus::Online
-                } else {
-                    GatewayKernelStatus::Offline
-                },
-                last_seen_ms: seen.last_seen_ms,
-                gateway_ready: is_gateway_ready(&seen.kernel),
-                via,
-            })
-            .collect())
+        Ok(names::grouped(
+            seen.values()
+                .map(|seen| GatewayKernel {
+                    name: names::display_name(&seen.kernel, &known),
+                    label: names::label(&seen.kernel),
+                    kernel_id: seen.kernel.kernel_id.clone(),
+                    machine_id: seen.kernel.machine_id.clone(),
+                    machine_alias: seen.kernel.machine_alias.clone(),
+                    status: if seen.online {
+                        GatewayKernelStatus::Online
+                    } else {
+                        GatewayKernelStatus::Offline
+                    },
+                    last_seen_ms: seen.last_seen_ms,
+                    gateway_ready: is_gateway_ready(&seen.kernel),
+                    via,
+                })
+                .collect(),
+        ))
     }
 
     /// The one live kernel `name` means; unknown, ambiguous and offline are errors.

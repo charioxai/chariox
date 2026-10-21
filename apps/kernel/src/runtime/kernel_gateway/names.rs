@@ -4,6 +4,7 @@
 use chariox_relay::protocol::RelayKernelPresence;
 
 use super::error::GatewayError;
+use crate::local::GatewayKernel;
 
 fn machine_name(kernel: &RelayKernelPresence) -> String {
     kernel
@@ -39,6 +40,19 @@ pub(super) fn display_name(kernel: &RelayKernelPresence, all: &[&RelayKernelPres
             .or_else(|| kernel.relay_alias.clone())
             .unwrap_or_else(|| kernel.kernel_id.clone())
     }
+}
+
+/// The list `chariox kernels` prints: the kernels of one machine together, by label.
+pub(super) fn grouped(mut kernels: Vec<GatewayKernel>) -> Vec<GatewayKernel> {
+    kernels.sort_by(|a, b| {
+        let machine = |k: &GatewayKernel| {
+            k.machine_alias
+                .clone()
+                .unwrap_or_else(|| k.machine_id.clone())
+        };
+        (machine(a), &a.label).cmp(&(machine(b), &b.label))
+    });
+    kernels
 }
 
 /// The one kernel `name` means. A kernel id or a `<machine>/<label>` name wins; a
@@ -134,5 +148,28 @@ mod tests {
             "{message}"
         );
         assert_eq!(find(&all, "nope").unwrap_err().code(), "kernel_unknown");
+    }
+
+    #[test]
+    fn the_list_keeps_the_kernels_of_one_machine_together() {
+        let entry = |machine: &str, label: &str| GatewayKernel {
+            name: format!("{machine}/{label}"),
+            kernel_id: format!("k-{machine}-{label}"),
+            label: label.into(),
+            machine_id: format!("id-{machine}"),
+            machine_alias: Some(machine.into()),
+            status: crate::local::GatewayKernelStatus::Online,
+            last_seen_ms: 0,
+            gateway_ready: true,
+            via: crate::local::GatewayKernelVia::Hosted,
+        };
+        let listed = grouped(vec![
+            entry("mac", "main"),
+            entry("b3", "main"),
+            entry("mac", "dev"),
+            entry("b3", "dev"),
+        ]);
+        let order: Vec<&str> = listed.iter().map(|k| k.name.as_str()).collect();
+        assert_eq!(order, ["b3/dev", "b3/main", "mac/dev", "mac/main"]);
     }
 }
