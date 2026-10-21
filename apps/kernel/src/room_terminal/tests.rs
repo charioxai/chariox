@@ -64,7 +64,9 @@ fn service(root: &Path) -> RoomTerminalService {
 }
 
 fn service_with_events(root: &Path, events: Arc<FakeEvents>) -> RoomTerminalService {
-    RoomTerminalService::new(root.join("terminals"), events)
+    let service = RoomTerminalService::new(root.join("terminals"));
+    service.bind_events(events);
+    service
 }
 
 fn owner(wake_id: &str, agent_id: &str) -> WatchOwner {
@@ -416,9 +418,9 @@ async fn notifications_fire_for_text_waiting_and_finish() {
             "room-1",
             &id,
             owner("w-text", "agent-a"),
-            RoomTerminalWatch::OutputContains {
+            vec![RoomTerminalWatch::OutputContains {
                 text: "NEEDLE-7".into(),
-            },
+            }],
             None,
         )
         .unwrap();
@@ -427,7 +429,7 @@ async fn notifications_fire_for_text_waiting_and_finish() {
             "room-1",
             &id,
             owner("w-wait", "agent-a"),
-            RoomTerminalWatch::WaitingForInput,
+            vec![RoomTerminalWatch::WaitingForInput],
             None,
         )
         .unwrap();
@@ -458,7 +460,7 @@ async fn notifications_fire_for_text_waiting_and_finish() {
             "room-1",
             &id,
             owner("w-program", "agent-a"),
-            RoomTerminalWatch::Finished,
+            vec![RoomTerminalWatch::Finished],
             None,
         )
         .unwrap();
@@ -482,7 +484,7 @@ async fn notifications_fire_for_text_waiting_and_finish() {
             "room-1",
             &id,
             owner("w-shell", "agent-a"),
-            RoomTerminalWatch::Finished,
+            vec![RoomTerminalWatch::Finished],
             None,
         )
         .unwrap();
@@ -577,7 +579,7 @@ async fn a_wait_that_times_out_loses_nothing() {
             "room-1",
             &id,
             owner("later", "a"),
-            RoomTerminalWatch::Finished,
+            vec![RoomTerminalWatch::Finished],
             Some(offset),
         )
         .unwrap();

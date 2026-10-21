@@ -5018,6 +5018,12 @@ Operations: `open` (cols, rows, title?, command?), `list`, `snapshot`
 below the provider tool limit; on timeout `fired` is null and the program is
 still running) and `close`.
 
+A runtime tool `chariox.events.terminal` (`terminal_id`, `until` as for `wait`,
+`after_offset`) registers a notification in the wake registry as a `terminal`
+wake on a terminal of this kernel: yield on its registration and the kernel
+wakes the agent once with the exit code (`finished`) or the matched text and the
+screen, ending the wake. A terminal closed or ended first ends it as lost.
+
 - Only the Room's owner may send it. A Room made before Cloud enrollment (owner
   `local`) stays usable by the enrolled terminal. `host_agent` and `acting_agent`
   must belong to the request's Room. Invited members get

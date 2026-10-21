@@ -216,6 +216,7 @@ impl KernelRuntimeState {
             }
             "chariox.events.timer"
             | "chariox.events.process"
+            | "chariox.events.terminal"
             | "chariox.events.cancel_wake"
             | "chariox.events.wakes" => {
                 self.dispatch_agent_wake_tool(run, name, &args, &task)

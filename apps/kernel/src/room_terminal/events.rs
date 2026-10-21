@@ -3,6 +3,7 @@
 //! receives its event through `CompletionEvents`; nothing else in this
 //! module knows about wakes.
 
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use super::plain_text::PlainText;
@@ -17,17 +18,28 @@ pub trait CompletionEvents: Send + Sync {
     fn deliver(&self, event: RoomTerminalEvent);
 }
 
-/// The sink until the event core is wired: no notification can be armed
-/// through the protocol, so reaching it is a bug and says so.
-pub struct EventCoreNotWired;
+/// The event core's sink, bound once the runtime exists. A terminal event
+/// before that has nobody to wake, so it is logged as lost.
+#[derive(Default)]
+pub(super) struct BoundEvents(OnceLock<Arc<dyn CompletionEvents>>);
 
-impl CompletionEvents for EventCoreNotWired {
-    fn deliver(&self, event: RoomTerminalEvent) {
-        crate::logging::error_with_fields(
-            "room_terminal.event",
-            "terminal event dropped: no event core is wired to Room terminals",
-            serde_json::json!({ "terminal_id": event.terminal_id, "wake_id": event.wake_id }),
+impl BoundEvents {
+    pub(super) fn bind(&self, events: Arc<dyn CompletionEvents>) {
+        assert!(
+            self.0.set(events).is_ok(),
+            "Room terminal events are bound once"
         );
+    }
+
+    pub(super) fn deliver(&self, event: RoomTerminalEvent) {
+        match self.0.get() {
+            Some(events) => events.deliver(event),
+            None => crate::logging::error_with_fields(
+                "room_terminal.event",
+                "terminal event dropped: the event core is not bound to Room terminals",
+                serde_json::json!({ "terminal_id": event.terminal_id, "wake_id": event.wake_id }),
+            ),
+        }
     }
 }
 

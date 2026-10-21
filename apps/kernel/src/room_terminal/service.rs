@@ -14,7 +14,7 @@ use rand::RngCore;
 use tokio::sync::{oneshot, Notify};
 
 use super::driver::Admission;
-use super::events::{CompletionEvents, WatchOwner};
+use super::events::{BoundEvents, CompletionEvents, WatchOwner};
 use super::managed_work::ManagedWork;
 use super::session_sweep::SessionSweep;
 use super::shell::login_shell;
@@ -71,7 +71,7 @@ pub struct RoomTerminalService {
 struct Inner {
     state: Mutex<State>,
     store: TerminalStore,
-    events: Arc<dyn CompletionEvents>,
+    events: BoundEvents,
     shell_integration: ShellIntegration,
     managed: ManagedWork,
     output_changed: Notify,
@@ -94,7 +94,7 @@ pub(super) struct State {
 impl RoomTerminalService {
     /// Terminals that ran when the kernel last stopped come back as ended by
     /// the restart, scrollback kept.
-    pub fn new(store_root: PathBuf, events: Arc<dyn CompletionEvents>) -> Self {
+    pub fn new(store_root: PathBuf) -> Self {
         let shell_integration = ShellIntegration::install(&store_root.with_extension("shell"));
         let store = TerminalStore::new(store_root);
         let terminals = match store.recover() {
@@ -120,7 +120,7 @@ impl RoomTerminalService {
                     next_wait: 0,
                 }),
                 store,
-                events,
+                events: BoundEvents::default(),
                 shell_integration,
                 managed: ManagedWork::default(),
                 output_changed: Notify::new(),
@@ -129,6 +129,11 @@ impl RoomTerminalService {
                 pump_active_until: Mutex::new(Instant::now()),
             }),
         }
+    }
+
+    /// Where fired watches go. Bound once, by the event core.
+    pub fn bind_events(&self, events: Arc<dyn CompletionEvents>) {
+        self.inner.events.bind(events);
     }
 
     pub fn open(&self, spec: OpenRoomTerminal) -> Result<RoomTerminalSummary, DaemonError> {
@@ -452,9 +457,14 @@ impl RoomTerminalService {
         session_id: &str,
         terminal_id: &str,
         owner: WatchOwner,
-        watch: RoomTerminalWatch,
+        watches: Vec<RoomTerminalWatch>,
         after_offset: Option<u64>,
     ) -> Result<(), DaemonError> {
+        if watches.is_empty() {
+            return Err(refused(
+                "a notification needs at least one condition".to_string(),
+            ));
+        }
         let immediate = {
             let mut state = self.lock();
             let State { pty, terminals, .. } = &mut *state;
@@ -463,15 +473,23 @@ impl RoomTerminalService {
                 return Err(ended_error(terminal));
             }
             let program_running = terminal.is_busy(pty);
-            terminal
-                .arm_watch(
-                    owner.clone(),
-                    watch,
-                    after_offset,
-                    Instant::now(),
-                    program_running,
-                )
-                .map(|kind| event(terminal, owner, kind, terminal.screen.visible_text()))
+            let now = Instant::now();
+            let mut immediate = None;
+            for watch in watches {
+                if let Some(kind) =
+                    terminal.arm_watch(owner.clone(), watch, after_offset, now, program_running)
+                {
+                    terminal.watches.disarm(&owner.wake_id);
+                    immediate = Some(event(
+                        terminal,
+                        owner.clone(),
+                        kind,
+                        terminal.screen.visible_text(),
+                    ));
+                    break;
+                }
+            }
+            immediate
         };
         if let Some(event) = immediate {
             self.inner.events.deliver(event);

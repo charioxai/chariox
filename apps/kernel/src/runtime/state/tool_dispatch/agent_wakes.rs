@@ -104,6 +104,24 @@ impl KernelRuntimeState {
                 }
                 serde_json::json!({"wake_id":wake.id,"registration_id":wake.registration_id,"first_fire_at_ms":wake.next_due_ms,"interval_ms":interval,"scheduler_confirmed":verified.is_some(),"verified_at_ms":verified})
             }
+            "chariox.events.terminal" => {
+                let until: Vec<crate::transport::runtime_tools::TerminalWaitCondition> =
+                    serde_json::from_value(args["until"].clone())
+                        .ok()
+                        .filter(|u: &Vec<_>| (1..=8).contains(&u.len()))
+                        .ok_or_else(|| ledger::error("1-8 conditions in until required"))?;
+                let detail = super::super::terminal_wake::TerminalWakeDetail {
+                    terminal_id: args["terminal_id"]
+                        .as_str()
+                        .filter(|id| !id.is_empty())
+                        .ok_or_else(|| ledger::error("terminal_id required"))?
+                        .to_string(),
+                    until: super::terminal::watches(until),
+                    after_offset: args["after_offset"].as_u64(),
+                };
+                let wake = new_wake(task, super::super::terminal_wake::KIND, label(args)?, now);
+                self.arm_terminal_wake(task, wake, detail)?
+            }
             "chariox.events.process" => {
                 let agent = self.owned.agent_store.get_agent(&task.agent_id)?;
                 if agent.remote_execution().is_some() {

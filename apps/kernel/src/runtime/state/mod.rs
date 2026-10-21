@@ -1066,6 +1066,7 @@ impl KernelRuntimeState {
             },
         };
         runtime.link_room_terminals_to_managed_kernel();
+        runtime.register_terminal_wake_driver();
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
         // Access grants are process-bound and never survive a kernel restart.
@@ -1382,5 +1383,6 @@ mod agent_wake_cancellation;
 mod agent_wake_scheduler;
 mod agent_workflow_tasks;
 mod room_dispatch_obligation;
+mod terminal_wake;
 // MD-3: typed internal seam for display integration; public protocol remains coordinator-owned.
 pub(crate) use kernel_browser_runtime::{KernelBrowserDisplayRequest, KernelBrowserPushCredit};

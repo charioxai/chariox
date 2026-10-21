@@ -441,22 +441,28 @@ fn terminal_tool_error(tool_name: &str, message: String) -> DaemonError {
 fn wait_operation(args: TerminalWaitArgs) -> RoomTerminalOperation {
     RoomTerminalOperation::Wait {
         terminal_id: args.terminal_id,
-        watches: args
-            .until
-            .into_iter()
-            .map(|condition| match condition {
-                TerminalWaitCondition::Named(TerminalNamedCondition::Finished) => {
-                    RoomTerminalWatch::Finished
-                }
-                TerminalWaitCondition::Named(TerminalNamedCondition::WaitingForInput) => {
-                    RoomTerminalWatch::WaitingForInput
-                }
-                TerminalWaitCondition::Text { text } => RoomTerminalWatch::OutputContains { text },
-            })
-            .collect(),
+        watches: watches(args.until),
         after_offset: args.after_offset,
         timeout_ms: args.timeout_seconds.unwrap_or(DEFAULT_WAIT_SECONDS) * 1000,
     }
+}
+
+/// The conditions an agent names, as the terminal service watches them.
+pub(in crate::runtime::state) fn watches(
+    until: Vec<TerminalWaitCondition>,
+) -> Vec<RoomTerminalWatch> {
+    until
+        .into_iter()
+        .map(|condition| match condition {
+            TerminalWaitCondition::Named(TerminalNamedCondition::Finished) => {
+                RoomTerminalWatch::Finished
+            }
+            TerminalWaitCondition::Named(TerminalNamedCondition::WaitingForInput) => {
+                RoomTerminalWatch::WaitingForInput
+            }
+            TerminalWaitCondition::Text { text } => RoomTerminalWatch::OutputContains { text },
+        })
+        .collect()
 }
 
 fn terminal_result_payload(result: RoomTerminalResult) -> RuntimeToolResult {

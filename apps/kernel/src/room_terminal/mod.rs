@@ -18,6 +18,6 @@ mod types;
 #[cfg(all(test, unix))]
 mod tests;
 
-pub use events::{CompletionEvents, EventCoreNotWired, WatchOwner};
+pub use events::{CompletionEvents, WatchOwner};
 pub use service::{OpenRoomTerminal, RoomTerminalService, MAX_WAIT};
 pub use types::*;
