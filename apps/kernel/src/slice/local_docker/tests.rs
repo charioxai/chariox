@@ -764,7 +764,10 @@ fn backup_restore_never_quarantines_a_file_outside_the_owned_archive_shape() {
     let error = validate_local_docker_slice_backup(&test_record(), &backup)
         .expect_err("an invalid archive path must fail without renaming it");
 
-    assert!(error.to_string().contains("cannot be quarantined safely"));
+    assert!(
+        error.to_string().contains("cannot be quarantined safely"),
+        "{error}"
+    );
     assert_eq!(
         std::fs::read(&unowned).expect("unowned file must remain readable"),
         b"must-remain"
@@ -1004,10 +1007,12 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
         "slice-screen.sh",
         "tint2rc",
         "browser-app-restore.mjs",
+        "browser-app-drafts.mjs",
         "browser-cdp.mjs",
         "browser-controller-actions.mjs",
         "browser-controller-apps.mjs",
         "browser-controller-bar.mjs",
+        "browser-focus-world.mjs",
         "browser-controller-cdp.mjs",
         "browser-controller-dialogs.mjs",
         "browser-controller-events.mjs",
@@ -1279,18 +1284,19 @@ fn linux_docker_computer_input_preserves_desktop_focus_and_maps_commands() {
             "mousemove 640 400\n",
             "click --repeat 3 --delay 20 6\n",
             "click --repeat 5 --delay 20 5\n",
-            "key --clearmodifiers --repeat 3 --delay 40 ctrl+shift+p\n",
         )
     );
+    // MP-08/MP-11: repeated chords use the same strict XTEST helper as text
+    // (xdotool can report success for unknown keysyms without input).
     assert_eq!(
         std::fs::read_to_string(&keyboard_stdin_log)
             .expect("keyboard text should reach the Selkies helper stdin"),
-        "Grüße 世界"
+        "Grüße 世界ctrl+shift+p"
     );
     assert_eq!(
         std::fs::read_to_string(&keyboard_log)
-            .expect("text and reset should use the shared keyboard helper"),
-        "slice-keyboard.py\nslice-keyboard.py reset\n"
+            .expect("text, repeat and reset should use the shared keyboard helper"),
+        "slice-keyboard.py\nslice-keyboard.py key-repeat\nslice-keyboard.py reset\n"
     );
     std::fs::remove_dir_all(root).expect("test root should be removed");
 }
@@ -3225,4 +3231,37 @@ fn mp11_log_tail_is_bounded_and_survives_split_utf8() {
         "single-line log projection is unbounded"
     );
     assert!(projected.truncated);
+}
+
+#[test]
+fn a_start_clears_the_previous_provision_log_before_its_admission_checks() {
+    // Clients poll this log for first-start progress; the checks before the provisioner take seconds.
+    let root = test_root("stale-provision-log");
+    let record = test_record();
+    let mut options = test_options();
+    options.root = root.clone();
+    options.disk_layer_mb = Some(1024);
+    options.disk_home_mb = Some(1024);
+    let log = local_docker_slice_action_log_path(&root, &record, LocalDockerSliceAction::Provision);
+    std::fs::create_dir_all(log.parent().expect("log has a directory")).expect("log directory");
+    std::fs::write(
+        &log,
+        "[slice-linux] progress: Starting the slice services\n",
+    )
+    .expect("stale log");
+    let error = run_local_docker_slice_action(
+        &record,
+        LocalDockerSliceAction::Provision,
+        None,
+        None,
+        None,
+        &options,
+    )
+    .expect_err("bounded slices need the managed broker, which this test does not run");
+    assert!(
+        error.to_string().contains("managed Docker broker"),
+        "{error}"
+    );
+    assert_eq!(std::fs::read_to_string(&log).expect("log"), "");
+    let _ = std::fs::remove_dir_all(&root);
 }

@@ -26,7 +26,7 @@ const broker = join(
 function brokerExecutionFixture(source, context) {
   const spawnStart = source.indexOf("function spawnBounded(")
   const spawnEnd = source.indexOf("\nfunction provisionerQuotaRequest(", spawnStart)
-  const executeStart = source.indexOf("async function execute(request)")
+  const executeStart = source.indexOf("async function execute(request, report)")
   const executeEnd = source.indexOf("\nfunction errorResponse(", executeStart)
   assert.ok(spawnStart >= 0 && spawnEnd > spawnStart, "broker owned-lifetime function must exist")
   assert.ok(executeStart >= 0 && executeEnd > executeStart, "broker execution function must exist")
@@ -91,7 +91,7 @@ test("canonical slice worker IDs cross managed provision and recovery without wi
 
 test("broker start and unpause route Docker mutation through quota admission", async () => {
   const source = await readFile(broker, "utf8")
-  const executeStart = source.indexOf("async function execute(request)")
+  const executeStart = source.indexOf("async function execute(request, report)")
   const executeEnd = source.indexOf("\nfunction errorResponse", executeStart)
   assert.notEqual(executeStart, -1)
   assert.notEqual(executeEnd, -1)

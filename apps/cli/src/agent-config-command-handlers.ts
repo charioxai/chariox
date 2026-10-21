@@ -191,10 +191,10 @@ async function agentAccountDisplayValue(
   agent: AgentInstance,
 ): Promise<string> {
   const profileId = agent.account_profile?.trim() || "default"
-  if (!deps.listProviderAccountProfiles) return "Account unavailable"
+  if (!deps.listProviderAccountProfiles) return "Account status not checked"
   const profiles = await deps.listProviderAccountProfiles(agent.provider)
   const profile = selectedProviderAccount(profiles, agent.provider, profileId)
-  return profile ? providerAccountDisplayLabel(profile, agent.model) : "Account unavailable"
+  return profile ? providerAccountDisplayLabel(profile, agent.model) : "Account status not checked"
 }
 
 async function updateAgentAccountProfile(
@@ -216,19 +216,34 @@ async function updateAgentAccountProfile(
       deps.flashFooter(`account is unavailable for ${agent.provider}`, "error")
       return
     }
+    const selected = deps.resolveSessionAgent(agent.id).agent
+    if (!selected || selected.provider !== agent.provider || selected.account_profile !== agent.account_profile) return
+    if (selected.account_profile === profile.profile_id) {
+      deps.flashFooter(`${deps.formatAgentLabel(selected)} account: ${providerAccountDisplayLabel(profile, selected.model)}`, "info")
+      return
+    }
     const catalog = await deps.getProviderCatalogForAgent(agent, agent.provider, profile.profile_id)
-    const provider = normalizeBackendProviderId(agent.provider)
-    const model = selectConfiguredModel(catalog, agent.model, provider)
+    // Catalog discovery can finish after a later profile command. Preserve its
+    // model/effort; a newer provider or account selection supersedes this one.
+    const current = deps.resolveSessionAgent(agent.id).agent
+    if (!current || current.provider !== agent.provider || current.account_profile !== agent.account_profile) return
+    const provider = normalizeBackendProviderId(current.provider)
+    const model = selectConfiguredModel(catalog, current.model, provider)
     if (!model) {
       deps.flashFooter(`no models are available for ${providerAccountDisplayLabel(profile)}`, "error")
       return
     }
-    const effort = selectConfiguredVariant(model, agent.effort)
+    const effort = selectConfiguredVariant(model, current.effort)
     const payload = await deps.updateAgentProfile!(deps.sessionState().id, agent.id, {
-      provider: agent.provider,
+      provider: current.provider,
       accountProfile: profile.profile_id,
-      model: model.id,
-      ...(effort ? { effort } : { clearEffort: true }),
+      // A later explicit selection already passed kernel validation. Let the
+      // kernel validate it for this account instead of replacing it from an
+      // earlier catalog snapshot.
+      ...(current.model !== agent.model || current.effort !== agent.effort ? {} : {
+        model: model.id,
+        ...(effort ? { effort } : { clearEffort: true }),
+      }),
     })
     deps.applySessionState(payload.session)
     await deps.refreshAgentPanes(payload.session)

@@ -43,6 +43,19 @@ export function renameRemoteMachineRequest(machineRef: string, alias: string) {
   }
 }
 
+export function listGatewayMachinesRequest() {
+  return { ListGatewayMachines: {} }
+}
+
+/** `relayToken` is the operator's client transport token; the kernel stores it and never returns it. */
+export function joinMachineLinkRequest(link: string, relayToken: string | null = null) {
+  return { JoinMachineLink: { link, ...(relayToken === null ? {} : { relay_token: relayToken }) } }
+}
+
+export function forgetGatewayMachineRequest(name: string) {
+  return { ForgetGatewayMachine: { name } }
+}
+
 export function createPairingInviteRequest(
   intent: "client" | "machine",
   alias: string | null = null,

@@ -250,6 +250,23 @@ fn app_route_claim(
     })
 }
 
+/// An occurrence no retry can deliver: logged, then acknowledged.
+fn refused(
+    delivery: &chariox_event_protocol::EventDeliveryEnvelope,
+    reason: &str,
+) -> Result<(), String> {
+    crate::logging::warn_with_fields(
+        "daemon.event_delivery",
+        "event delivery refused",
+        serde_json::json!({
+            "delivery_id": delivery.delivery_id,
+            "binding_id": delivery.binding_id,
+            "reason": reason,
+        }),
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,21 +379,4 @@ mod tests {
         .unwrap();
         assert_eq!(accepted, (Ok(()), Ok(()), Ok(())));
     }
-}
-
-/// An occurrence no retry can deliver: logged, then acknowledged.
-fn refused(
-    delivery: &chariox_event_protocol::EventDeliveryEnvelope,
-    reason: &str,
-) -> Result<(), String> {
-    crate::logging::warn_with_fields(
-        "daemon.event_delivery",
-        "event delivery refused",
-        serde_json::json!({
-            "delivery_id": delivery.delivery_id,
-            "binding_id": delivery.binding_id,
-            "reason": reason,
-        }),
-    );
-    Ok(())
 }

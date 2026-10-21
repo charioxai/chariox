@@ -190,16 +190,31 @@ async fn handle_client_frame(
             let direct = Arc::clone(direct);
             let identity = identity.clone();
             let outgoing_tx = outgoing_tx.clone();
+            let subscription_tasks = Arc::clone(subscription_tasks);
             requests.spawn(async move {
-                let outcome = handle_daemon_request(
+                let display_sender = encrypted_request.sender_public_key.clone();
+                let mut outcome = handle_daemon_request(
                     &direct.router,
                     &direct.command_sequence,
                     Some(identity),
                     encrypted_request,
                     &direct.command_result_cache,
+                    &subscription_tasks,
                     None,
                 )
                 .await;
+                if let Some((display_id, event_id, encrypted_event)) = outcome.display_event {
+                    if let Some(subscription_id) = super::super::browser_display::browser_display_delivery_id(
+                        &subscription_tasks, &display_id, &display_sender,
+                    ).await {
+                        if outgoing_tx.send_display_event(RelayEnvelope::DaemonEvent {
+                            subscription_id, event_id, encrypted_event,
+                        }).await.is_err() { return; }
+                    } else {
+                        outcome.encrypted_response = None;
+                        outcome.error = Some(relay_error("display_subscription_required", "MD-DISPLAY: register a fresh display subscription with the same sender identity", false));
+                    }
+                }
                 let _ = send_outgoing_envelope(
                     &outgoing_tx,
                     RelayEnvelope::ClientResponse {

@@ -131,7 +131,7 @@ async fn human_review(source_project: bool, legacy_local: bool) {
         let attempted = router
             .dispatch_authenticated_runtime_tool_call(
                 &auth,
-                crate::transport::runtime_tools::META_RESOLVE_RUNTIME_INTERACTION_TOOL,
+                "chariox.meta.resolve_runtime_interaction",
                 serde_json::json!({"interaction_id": id, "choice_id": "continue"}),
             )
             .await

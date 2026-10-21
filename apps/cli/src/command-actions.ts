@@ -60,6 +60,7 @@ import {
   handleRoomSlashCommand,
   type RoomCommandHandlerDeps,
 } from "./room-command-handler.js"
+import { handleRoomTerminalSlash, type RoomTerminalScreen } from "./room-terminal-slash.js"
 import {
   handleWorkspaceSlashCommand,
   handleWorktreeSlashCommand,
@@ -137,6 +138,7 @@ type CommandActionDeps =
   currentModelId: () => string
   currentVariantId: () => string
   currentProviderId: () => string
+  submitGoalPrompt?: (text: string, targetAgentId: string) => Promise<void>
   focusedAgentId: () => string | null
   createAgentPromptSchedule?: (
     sessionId: string,
@@ -162,6 +164,7 @@ type CommandActionDeps =
   reconnectRoomEventStream?: RoomCommandHandlerDeps["reconnectEventStream"]
   openRoomViewer?: RoomCommandHandlerDeps["openViewer"]
   captureRoomScreenshot?: RoomCommandHandlerDeps["captureScreenshot"]
+  roomTerminalScreen?: RoomTerminalScreen
   formatError: (error: unknown) => string
   prepareLocalGitWorktree?: (options: LocalGitWorktreeOptions) => Promise<string>
   attachBinding: (
@@ -173,6 +176,7 @@ type CommandActionDeps =
   getContextTransferStatus?: KernelCommandHandlerDeps["getContextTransferStatus"]
   listKernelAccessGrants?: KernelCommandHandlerDeps["listKernelAccessGrants"]
   revokeKernelAccessGrant?: KernelCommandHandlerDeps["revokeKernelAccessGrant"]
+  sendExtendKernelSudo?: (request: import("@chariox/kernel-client/kernel-types").ExtendKernelSudoRequest) => Promise<import("@chariox/kernel-client/kernel-types").KernelSudoTurn>
   exportDebugBundle?: KernelCommandHandlerDeps["exportDebugBundle"]
   transitionToNoSession: (message: string) => void
   updateSessionConfig: (
@@ -320,7 +324,17 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const handleKernelCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "kernel" }>,
   ): Promise<void> => {
-    await handleKernelSlashCommand(deps, command)
+    await handleKernelSlashCommand({
+      ...deps,
+      sudoWindows: () => deps.sessionState().sudo_windows ?? [],
+      ...(deps.sendExtendKernelSudo ? {
+        extendKernelSudo: (entryId: string, revision: number) => {
+          const attachmentId = deps.attachmentState()?.id
+          if (!attachmentId) throw new Error("attach to the session to extend sudo")
+          return deps.sendExtendKernelSudo!({ session_id: deps.sessionState().id, attachment_id: attachmentId, entry_id: entryId, revision })
+        },
+      } : {}),
+    }, command)
   }
 
   const handleRoomCommand = async (
@@ -328,6 +342,21 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   ): Promise<void> => {
     if (!deps.sendRoomEnvironmentRequest) {
       deps.flashFooter("Room environment controls are unavailable in this daemon", "error")
+      return
+    }
+    if (command.args[0] === "terminal") {
+      if (!deps.roomTerminalScreen) {
+        deps.flashFooter("Room terminals need the full-screen client", "error")
+        return
+      }
+      await handleRoomTerminalSlash({
+        isAttached: deps.isAttached,
+        sessionId: () => deps.sessionState().id,
+        send: deps.sendRoomEnvironmentRequest,
+        screen: deps.roomTerminalScreen,
+        appendNotice: deps.appendNotice,
+        flashFooter: deps.flashFooter,
+      }, command.args.slice(1))
       return
     }
     await handleRoomSlashCommand({
@@ -456,7 +485,19 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   const handleGoalCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "goal" }>,
   ): Promise<void> => {
-    await handleRootWorkflowShortcut(deps, ROOT_WORKFLOW_SHORTCUTS.goal, command.prompt)
+    if (!command.prompt.trim()) { deps.flashFooter("usage: /goal [--interval 1–60] <objective>", "error"); return }
+    if (!deps.isAttached()) { deps.flashFooter("/goal requires an attached session", "error"); return }
+    const agent = focusedSessionAgent(deps.sessionState(), deps.focusedAgentId())
+    if (!agent) { deps.flashFooter("/goal requires a focused agent in this session", "error"); return }
+    if (!deps.submitGoalPrompt) { deps.flashFooter("hybrid goals are unavailable; update this client", "error"); return }
+    let raw = command.raw
+    const control = /^(pause|resume|cancel|interval|edit)(?:\s+([\s\S]*))?$/.exec(command.prompt)
+    if (control && !control[2]?.startsWith("goal:")) {
+      const task = deps.sessionState().agent_tasks?.find((t) => t.agent_id === agent.id && t.goal && !["done", "cancelled"].includes(t.state))
+      if (!task?.goal) { deps.flashFooter("no active goal on the focused agent", "error"); return }
+      raw = `/goal ${control[1]} ${task.goal.id} ${task.revision}${control[2] ? ` ${control[2]}` : ""}`
+    }
+    await deps.submitGoalPrompt(raw, agent.id)
   }
 
   const handleWaitCommand = async (

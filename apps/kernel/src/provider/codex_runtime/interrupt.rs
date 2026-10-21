@@ -34,6 +34,7 @@ pub fn abort_codex_turn(
                 json!({"provider_run_id":provider_run_id,"error":error.to_string()}),
             );
         }
+        state.tool_snapshots = Default::default();
         return Ok(());
     };
     let deadline = Instant::now() + INTERRUPT_RETRY_TIMEOUT;
@@ -89,6 +90,7 @@ pub fn abort_codex_turn(
                     &mut state.turn_tracker,
                     &mut state.buffered_notifications,
                 );
+                state.tool_snapshots = Default::default();
                 return Ok(());
             }
             _ if Instant::now() >= deadline => {

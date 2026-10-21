@@ -6,6 +6,46 @@ use crate::local::{KernelConnectionClass, LocalDaemonRequest};
 
 const CANARY: &str = "MP-11-generated-test-only-secret";
 
+// MP-08 / MP-10 / MP-11: notification metadata remains usable through both
+// the typed executor and cached wire boundary for grants and sudo callers.
+#[test]
+fn external_response_preserves_workflow_notification_metadata() {
+    let source = serde_json::json!({
+        "source_id":"source", "owner_user_id":"local", "kernel_id":"home",
+        "session_id":"source-room", "workflow_id":"source-workflow",
+        "enabled":true, "available":true
+    });
+    let subscription = serde_json::json!({
+        "subscription_id":"subscription", "source_id":"source", "owner_user_id":"local",
+        "target_kernel_id":"home", "session_id":"target-room", "workflow_id":"target-workflow",
+        "publication_id":"publication", "endpoint_id":"endpoint", "queue_id":"queue",
+        "ttl_days":7, "source_available":true, "source_kernel_id":"home",
+        "events":"both", "filters":{"release":"candidate"}, "delivery_mode":"queue"
+    });
+    for value in [
+        serde_json::json!({"WorkflowNotificationSourceRegistered":{"source":source}}),
+        serde_json::json!({"WorkflowNotificationAttached":{"subscription":subscription}}),
+        serde_json::json!({"WorkflowNotificationDetached":{"subscription_id":"subscription"}}),
+        serde_json::json!({"WorkflowNotifications":{
+            "sources":[], "subscriptions":[subscription],
+            "diagnostics":[{"source_id":"source", "occurrence_id":"occurrence", "code":"expired"}]
+        }}),
+    ] {
+        let response: LocalDaemonResponse = serde_json::from_value(value).unwrap();
+        let expected = serde_json::to_value(&response).unwrap();
+        for class in [
+            KernelConnectionClass::ExternalAgent,
+            KernelConnectionClass::KernelAgent,
+        ] {
+            let projected = finish_response(&command(class), Ok(response.clone())).unwrap();
+            assert_eq!(serde_json::to_value(projected).unwrap(), expected);
+        }
+        let mut cached = expected.clone();
+        project_response_value(&mut cached).unwrap();
+        assert_eq!(cached, expected);
+    }
+}
+
 // MP-08 / MP-11: exercise executor projection BEFORE transport mapping for
 // both external grants and the sudo MCP caller, including nested cleanup.
 #[test]
@@ -311,6 +351,100 @@ fn external_response_terminal_retains_owner_replies() {
 }
 
 #[test]
+fn external_response_preserves_notification_metadata_and_sudo_extension() {
+    let source = serde_json::json!({
+        "source_id":"source", "owner_user_id":"owner", "kernel_id":"home",
+        "session_id":"room", "workflow_id":"workflow", "enabled":true,
+        "available":true, "name":"review", "output_fields":["finding"]
+    });
+    let subscription = serde_json::json!({
+        "subscription_id":"subscription", "source_id":"source", "owner_user_id":"owner",
+        "target_kernel_id":"worker", "target_kind":"workflow_endpoint", "session_id":"room",
+        "workflow_id":"workflow", "publication_id":"publication", "endpoint_id":"endpoint",
+        "queue_id":"queue", "ttl_days":7, "source_available":true,
+        "source_kernel_id":"home", "events":"success", "filters":{}, "delivery_mode":"queue"
+    });
+    let turn = serde_json::json!({
+        "entry_id":"sudo:window", "session_id":"room", "agent_id":"agent",
+        "owner_user_id":"owner", "terminal_id":"terminal", "prompt_id":"prompt",
+        "provider_run_id":"run", "task_id":"task", "duration_minutes":60,
+        "expires_at_ms":3600000, "revision":2, "warning_sent":false
+    });
+    let replies = [
+        serde_json::json!({"WorkflowNotificationSourceRegistered":{"source":source}}),
+        serde_json::json!({"WorkflowNotificationAttached":{"subscription":subscription}}),
+        serde_json::json!({"WorkflowNotificationDetached":{"subscription_id":"subscription"}}),
+        serde_json::json!({"WorkflowNotifications":{"sources":[],"subscriptions":[],"diagnostics":[]}}),
+        serde_json::json!({"KernelSudoExtended":{"turn":turn}}),
+    ];
+    for reply in replies {
+        let response: LocalDaemonResponse = serde_json::from_value(reply).unwrap();
+        let expected = serde_json::to_value(&response).unwrap();
+        for class in [
+            KernelConnectionClass::ExternalAgent,
+            KernelConnectionClass::KernelAgent,
+        ] {
+            let projected = finish_response(&command(class), Ok(response.clone())).unwrap();
+            assert_eq!(serde_json::to_value(projected).unwrap(), expected);
+        }
+        let mut raw = expected.clone();
+        project_response_value(&mut raw).unwrap();
+        assert_eq!(raw, expected);
+    }
+}
+
+#[test]
+fn external_response_tells_a_grant_holder_what_is_wrong_with_its_terminal() {
+    let caller = command(KernelConnectionClass::ExternalAgent);
+    let said = "this Room has no terminal `t-1`";
+    // The terminal service's refusal, here or on a worker (which answers through the relay).
+    for error in [
+        crate::room_terminal::refused_for_test(said),
+        DaemonError::RelayTransport {
+            operation: "relay request",
+            code: crate::room_terminal::REFUSED_CODE.into(),
+            message: said.into(),
+            retryable: false,
+        },
+    ] {
+        let told = finish_response(&caller, Err(error)).unwrap_err();
+        assert!(told.to_string().contains(said), "{told}");
+        assert_eq!(
+            crate::transport::kernel_protocol::map_kernel_error(&told).code,
+            crate::room_terminal::REFUSED_CODE
+        );
+    }
+    // The machine that relays a worker's refusal passes it on with its code and words.
+    let relayed =
+        crate::transport::kernel_protocol::map_kernel_error(&DaemonError::RelayTransport {
+            operation: "relay request",
+            code: crate::room_terminal::REFUSED_CODE.into(),
+            message: said.into(),
+            retryable: false,
+        });
+    assert_eq!(
+        (relayed.code.as_str(), relayed.message.as_str()),
+        (crate::room_terminal::REFUSED_CODE, said)
+    );
+    // Any other failure keeps its details in the host terminal.
+    for other in [
+        DaemonError::LocalTransport {
+            operation: "list sessions",
+            message: format!("{said} {CANARY}"),
+        },
+        DaemonError::RelayTransport {
+            operation: "relay request",
+            code: "transport_error".into(),
+            message: format!("{said} {CANARY}"),
+            retryable: false,
+        },
+    ] {
+        let hidden = finish_response(&caller, Err(other)).unwrap_err();
+        assert!(!hidden.to_string().contains(CANARY));
+    }
+}
+
+#[test]
 fn external_response_retains_only_exact_public_authority_errors() {
     let caller = command(KernelConnectionClass::ExternalAgent);
     let reasons = crate::runtime::kernel_access::Refusal::ALL.map(|reason| reason.message());
@@ -418,4 +552,30 @@ fn mp07_mp08_mp11_ssh_receipts_share_the_typed_and_cached_public_boundary() {
     let mut cached = expected.clone();
     project_response_value(&mut cached).unwrap();
     assert_eq!(cached, expected);
+}
+
+// MP-08 / MP-11: a renamed/missing session has an actionable, value-free error.
+#[test]
+fn mp11_missing_session_reason_is_public_without_echoing_private_reference() {
+    for class in [
+        KernelConnectionClass::ExternalAgent,
+        KernelConnectionClass::KernelAgent,
+    ] {
+        let caller = command(class);
+        let error = finish_response(
+            &caller,
+            Err(DaemonError::SessionNotFound {
+                session_id: CANARY.into(),
+            }),
+        )
+        .unwrap_err();
+        let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+        assert_eq!(mapped.code, "session_not_found");
+        assert!(
+            mapped.message.contains("session not found"),
+            "{}",
+            mapped.message
+        );
+        assert!(!mapped.message.contains(CANARY));
+    }
 }

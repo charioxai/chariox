@@ -1,3 +1,4 @@
+import { visibleUserConfigEntries, workspaceLiveSyncUiEnabled } from "@chariox/kernel-client/workspace-live-sync-mode"
 import type {
   CharioxUserConfigPayload,
   CharioxUserConfigSchemaPayload,
@@ -49,11 +50,12 @@ export async function handleConfigSlashCommand(
     return
   }
   if (subcommand === "workspace-live-sync") {
+    if (!workspaceLiveSyncUiEnabled) { deps.flashFooter("This command is unavailable", "error"); return } // MP-08 OWNER-20: discontinued.
     await setWorkspaceLiveSyncMode(deps, keyPath, rest)
     return
   }
   deps.flashFooter(
-    "usage: /config show | path | keys | schema | set <path> <value> | unset <path> | workspace-live-sync off|managed|tracked",
+    "usage: /config show | path | keys | schema | set <path> <value> | unset <path>",
     "error",
   )
 }
@@ -110,8 +112,9 @@ async function listUserConfigKeys(deps: ConfigCommandHandlerDeps): Promise<void>
     return
   }
   const payload = await deps.getUserConfigSchema()
-  deps.appendNotice(formatConfigSchemaKeys(payload.entries))
-  deps.flashFooter(`listed ${payload.entries.length} config key${payload.entries.length === 1 ? "" : "s"}`, "info")
+  const entries = visibleUserConfigEntries(payload.entries)
+  deps.appendNotice(formatConfigSchemaKeys(entries))
+  deps.flashFooter(`listed ${entries.length} config key${entries.length === 1 ? "" : "s"}`, "info")
 }
 
 async function showUserConfigSchema(deps: ConfigCommandHandlerDeps): Promise<void> {
@@ -120,7 +123,7 @@ async function showUserConfigSchema(deps: ConfigCommandHandlerDeps): Promise<voi
     return
   }
   const payload = await deps.getUserConfigSchema()
-  deps.appendNotice(JSON.stringify(payload.entries, null, 2))
+  deps.appendNotice(JSON.stringify(visibleUserConfigEntries(payload.entries), null, 2))
   deps.flashFooter(`listed ${payload.entries.length} config schema entr${payload.entries.length === 1 ? "y" : "ies"}`, "info")
 }
 

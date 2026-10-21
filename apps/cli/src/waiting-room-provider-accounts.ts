@@ -1,7 +1,8 @@
 import {
   providerAccountAdmissionBlocked,
-  providerAccountCapacityLabel,
   providerAccountCapacityResetLabel,
+  providerAccountName,
+  providerAccountStatusLabel,
   type ProviderAccountProfile,
 } from "@chariox/kernel-client"
 
@@ -82,8 +83,8 @@ export function defaultProviderAccountProfileId(
 }
 
 export function providerAccountDisplayLabel(profile: ProviderAccountProfile, model?: string | null): string {
-  const reset = providerAccountCapacityResetLabel(profile, Date.now(), model)
-  return `${providerAccountCapacityLabel(profile, Date.now(), model)}${reset ? ` · ${reset}` : ""} · ${profile.auth_state === "authenticated" ? "signed in" : profile.auth_state === "unknown" ? "sign-in not checked" : "needs sign-in"}`
+  const status = providerAccountStatusLabel(profile, Date.now(), model)
+  return status ? `${providerAccountName(profile, model)} · ${status}` : providerAccountName(profile, model)
 }
 
 export function selectedProviderAccountStartBlockReason(
@@ -97,9 +98,13 @@ export function selectedProviderAccountStartBlockReason(
   if (remoteExecution && remoteExecution.kind !== "local") return null
   if (profiles === undefined) return null
   const profile = selectedProviderAccount(profiles, provider, profileId)
-  if (!profile) {
-    return `${profileId ?? "default"} is not available on this kernel. Sign in on this machine, or copy login from the machine that owns the account.`
-  }
+  // MP-08 / MP-10 / MP-11: replicas and retained home aliases may be outside
+  // this inventory. The kernel resolves their namespace and authentication.
+  if (!profile && profileId && profileId !== "default") return null
+  // A Claude enrollment can be verified or recover through native login at
+  // launch. Saved observations alone cannot decide whether it can run.
+  if (providerAccountFamily(provider) === "claude"
+    && (profile?.auth_state === "unknown" || profile?.auth_state === "expired")) return null
   if (profile?.auth_state === "authenticated") {
     if (!providerAccountAdmissionBlocked(profile, Date.now(), model)) return null
     const reset = providerAccountCapacityResetLabel(profile, Date.now(), model)

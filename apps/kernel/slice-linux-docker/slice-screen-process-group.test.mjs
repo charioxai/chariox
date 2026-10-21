@@ -19,8 +19,9 @@ test("physical input watchdog stays in the kernel-owned process group", () => {
   assert.doesNotMatch(screenHelper, /timeout 10s xdotool "\$@"/)
 })
 
-test("physical keyboard integration stays tied to the reviewed Selkies pin", async () => {
-  const lock = JSON.parse(await readFile(path.join(directory, "selkies.lock.json"), "utf8"))
+test("physical keyboard integration uses the pinned backend and standalone fallback", async () => {
   const helper = await readFile(path.join(directory, "docker", "slice-keyboard.py"), "utf8")
-  assert.ok(helper.includes(lock.selkies.revision), "Selkies upgrade requires reviewing and validating the keyboard integration")
+  assert.match(helper, /from selkies\.input_handler import/)
+  assert.match(helper, /if not error\.name\.startswith\("selkies"\):\s+raise/)
+  assert.match(helper, /with_name\("x11-text-keyboard\.py"\)/)
 })

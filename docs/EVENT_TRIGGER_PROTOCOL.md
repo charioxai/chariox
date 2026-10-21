@@ -1,6 +1,6 @@
 # Event trigger protocol
 
-Status: implementation contract; local daemon protocol 491 (MP-08 / MP-10).
+Status: implementation contract; local daemon protocol 452 (MP-08 / MP-10).
 
 ## Boundaries
 
@@ -12,7 +12,7 @@ Agents never own subscriptions or emit workflow notifications.
 
 Protocol 365 retired direct AEGS-to-workflow bindings and their create/list/status/
 transfer/test requests, exported binding templates, `event_context`, `event_action`
-and reply tools. Protocol 491 explicitly amends the Apps-only rule to admit private
+and reply tools. Protocol 452 explicitly amends the Apps-only rule to admit private
 workflow sources. It does not restore direct AEGS bindings. AEGS implementations
 normalize provider events; AEDS routes these to App inboxes only. The kernel owns
 all inbox acceptance, queue admission, dispatch and run state.
@@ -93,7 +93,15 @@ App adapter has narrower 64 KiB payload/prompt ceilings; it does not silently
 truncate. Artifact references are metadata and confer no file, URL or credential
 access.
 
-## Private workflow notifications (local 491 / peer 101, developed as 483 / 82; MP-08 / MP-10 / MP-11)
+## Private workflow notifications (local 452 / peer 82, main: local 491 / peer 101; MP-08 / MP-10 / MP-11)
+
+MP-11 F8 is closed by the existing lease-scoped authorization: leased-resource
+requests must match the authenticated `LeaseCallerBinding`, and a mismatch
+returns typed `unauthorized`. Remote lease workers reject kernel-wide
+List/Subscribe/Unsubscribe/Deliver notification requests, including requests
+from authenticated same-owner hosted peers, because these requests have no
+agent or lease selector. A future notification selector requires a separately
+allocated protocol change; this decision changes no protocol shape or version.
 
 Workflows are a second source kind beside Apps. `RegisterWorkflowNotificationSource
 {session_id, workflow_ref, enabled, output_fields?}` controls **Send notifications
@@ -145,10 +153,10 @@ A 256-entry bound drops with its own diagnostic. These rules apply across kernel
 and arbitrary local graph changes, including A→B→A and A→B→C→A.
 
 The named notification router uses direct delivery locally and the existing E2EE
-relay peer channel remotely. Peer 101 (developed as 82) adds `ListWorkflowNotificationSources`,
+relay peer channel remotely. Peer 82 adds `ListWorkflowNotificationSources`,
 `SubscribeWorkflowNotifications {source_workflow_ref, target_ref}`,
 `UnsubscribeWorkflowNotifications` and `DeliverWorkflowNotification`. Each request
-carries the current peer `protocol_version` (101); incompatible peers fail before activation. Remote
+carries `protocol_version:82`; incompatible peers fail before activation. Remote
 requests require an unexpired sender-key-bound kernel or machine identity, matching
 realm and owner. The relay authenticates the registered sender kernel; Kernel claims
 also require an exact canonical sender subject. Existing home-kernel peer requests
@@ -212,7 +220,7 @@ host-file read or provider attachment promotion. There are at most 1,024 local s
 and active subscriptions per owner, 32 subscribers per source, 1,024 pending receipts
 and 16 MiB pending payload per subscription, measured as UTF-8 bytes for both new and
 already retained envelopes. Oversize/backpressure is diagnostic and cannot
-roll back successful workflow completion. Legacy accepted bytes retain their original
+roll back successful workflow completion. New envelope output, subject and fields use the shared secret redaction policy before source forwarding and receipt persistence. Delivery also protects retained pre-redaction envelopes before local queueing or peer forwarding. Legacy accepted bytes retain their original
 TTL; editing a binding's TTL affects new occurrences only, and admission of older
 pending occurrences and duplicate ACKs uses the fixed 30-day protocol ceiling.
 The current completion `status` is reserved while copying opaque trigger metadata,
@@ -302,6 +310,12 @@ Management protocol version 4 adds the reusable-connection lifecycle contract:
   returns a fresh inspection;
 - `POST /v1/connections/test-event` asks the provider adapter to construct an authentic
   test occurrence and sends it through the normal AEGS-to-AEDS delivery path;
+- `POST /v1/events/query` lists the webhooks the generator stored for an owner (delivery
+  ID, event type, connection scope and a short subject such as `#1026`, never the
+  provider payload, received/published times, status, attempts, last
+  error; never the prompt or reply context) and `POST /v1/events/replay` publishes one
+  of them to AEDS again with a fresh attempt budget. AEDS dedupes on the occurrence ID,
+  so replaying an event it already holds changes nothing;
 - existing authorization, connection query, resource paging, reconnect, revoke, and
   subscription-reconcile endpoints remain the corresponding begin-install,
   installation-status, resource-discovery, reconnect, disconnect, and reconcile

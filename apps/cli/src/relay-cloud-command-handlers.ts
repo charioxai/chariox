@@ -20,7 +20,7 @@ export type RelayCloudCommandHandlerDeps = CloudCommandLifecycleDeps & {
     profile: RelayCloudProfile,
     targetDaemonAlias: string,
     options?: { sessionId?: string | null },
-  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number; targetDaemonId?: string; profile?: RelayCloudProfile; issuer?: { endpoint: string; daemonId: string } }>
+  ) => Promise<{ relayUrl: string; relayToken: string; tokenExpiresAtMs: number; targetDaemonId?: string; sessionId?: string; profile?: RelayCloudProfile; issuer?: { endpoint: string; daemonId: string } }>
   logoutCloudRelay?: (profile: RelayCloudProfile, options?: { revokeClient?: boolean; revokeMachine?: boolean }) => Promise<void>
 }
 

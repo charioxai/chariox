@@ -987,6 +987,7 @@ mod receipt_reconciliation {
                 &home_public_key,
                 RelayPeerResponse::LeasedPromptReceiptQueried {
                     receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        rejection_reason: None,
                         home_prompt_id: prompt_id.clone(),
                         worker_provider_run_id: run_id.clone(),
                         phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
@@ -1459,6 +1460,7 @@ mod receipt_reconciliation {
                 &listener_home_public_key,
                 RelayPeerResponse::LeasedPromptReceiptQueried {
                     receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        rejection_reason: None,
                         home_prompt_id: listener_prompt_id.clone(),
                         worker_provider_run_id: "worker-run-completed-receipt".to_string(),
                         phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed,
@@ -1620,6 +1622,7 @@ mod receipt_reconciliation {
                 &home_public_key,
                 RelayPeerResponse::LeasedPromptReceiptQueried {
                     receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        rejection_reason: None,
                         home_prompt_id: prompt_id,
                         worker_provider_run_id: String::new(),
                         phase:
@@ -1750,6 +1753,7 @@ mod receipt_reconciliation {
                 &home_public_key,
                 RelayPeerResponse::LeasedPromptReceiptQueried {
                     receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        rejection_reason: None,
                         home_prompt_id: prompt_id,
                         worker_provider_run_id: "worker-run-after-retry".to_string(),
                         phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
@@ -1879,6 +1883,7 @@ mod receipt_reconciliation {
                 &listener_home_public_key,
                 RelayPeerResponse::LeasedPromptReceiptQueried {
                     receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        rejection_reason: None,
                         home_prompt_id: "different-home-prompt".to_string(),
                         worker_provider_run_id: "worker-run-conflicting-receipt".to_string(),
                         phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
@@ -1916,6 +1921,7 @@ mod receipt_reconciliation {
                 &listener_home_public_key,
                 RelayPeerResponse::LeasedPromptReceiptQueried {
                     receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        rejection_reason: None,
                         home_prompt_id: "different-home-prompt".to_string(),
                         worker_provider_run_id: "worker-run-conflicting-receipt".to_string(),
                         phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
@@ -1998,6 +2004,7 @@ mod receipt_reconciliation {
     #[test]
     fn exact_worker_receipt_selects_active_association_completed_drain_or_hold() {
         let active = crate::transport::relay_peer::LeasedPromptReceipt {
+            rejection_reason: None,
             home_prompt_id: "home-prompt-1".to_string(),
             worker_provider_run_id: "worker-run-1".to_string(),
             phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
@@ -2016,6 +2023,7 @@ mod receipt_reconciliation {
             &active_action
         ));
         let completed = crate::transport::relay_peer::LeasedPromptReceipt {
+            rejection_reason: None,
             home_prompt_id: "home-prompt-1".to_string(),
             worker_provider_run_id: "worker-run-2".to_string(),
             phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed,
@@ -2043,6 +2051,7 @@ mod receipt_reconciliation {
                         "home-prompt-1",
                         "lease-1",
                         Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                            rejection_reason: None,
                             home_prompt_id: "home-prompt-1".to_string(),
                             worker_provider_run_id: "worker-run-1".to_string(),
                             phase,
@@ -2058,6 +2067,7 @@ mod receipt_reconciliation {
                     "home-prompt-1",
                     "lease-1",
                     Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        rejection_reason: None,
                         home_prompt_id: "home-prompt-1".to_string(),
                         worker_provider_run_id: "worker-run-1".to_string(),
                         phase,
@@ -2077,6 +2087,7 @@ mod receipt_reconciliation {
                 "home-prompt-1",
                 "lease-1",
                 Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                    rejection_reason: None,
                     home_prompt_id: "other-prompt".to_string(),
                     worker_provider_run_id: "worker-run-3".to_string(),
                     phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
@@ -2091,6 +2102,7 @@ mod receipt_reconciliation {
     #[test]
     fn exact_unadmitted_worker_receipt_rejects_only_the_original_prompt_and_lease() {
         let rejected = crate::transport::relay_peer::LeasedPromptReceipt {
+            rejection_reason: None,
             home_prompt_id: "home-prompt-1".to_string(),
             worker_provider_run_id: String::new(),
             phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected,
@@ -2099,7 +2111,31 @@ mod receipt_reconciliation {
         };
         assert_eq!(
             remote_prompt_receipt_action("home-prompt-1", "lease-1", Some(rejected.clone())),
-            Ok(RemotePromptReceiptAction::RejectUnadmitted)
+            Ok(RemotePromptReceiptAction::RejectUnadmitted(None))
+        );
+        assert_eq!(
+            remote_prompt_receipt_action(
+                "home-prompt-1",
+                "lease-1",
+                Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                    rejection_reason: Some("account is signed out".to_string()),
+                    ..rejected.clone()
+                })
+            ),
+            Ok(RemotePromptReceiptAction::RejectUnadmitted(Some(
+                "account is signed out".to_string()
+            )))
+        );
+        assert_eq!(
+            remote_prompt_receipt_action(
+                "home-prompt-1",
+                "lease-1",
+                Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                    phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerDispatching,
+                    ..rejected.clone()
+                }),
+            ),
+            Err("worker admission of the exact prompt is still Dispatching with no accepted or rejected outcome")
         );
         for conflicting in [
             crate::transport::relay_peer::LeasedPromptReceipt {
@@ -2217,6 +2253,7 @@ mod receipt_reconciliation {
                 ));
                 Ok(RelayPeerResponse::LeasedPromptReceiptQueried {
                     receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        rejection_reason: None,
                         home_prompt_id: active_prompt_id,
                         worker_provider_run_id: "worker-receipt-run".to_string(),
                         phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,
@@ -2239,6 +2276,7 @@ mod receipt_reconciliation {
                 assert!(app.try_lock().is_ok());
                 Ok(RelayPeerResponse::LeasedPromptReceiptQueried {
                     receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        rejection_reason: None,
                         home_prompt_id: prompt_id.to_string(),
                         worker_provider_run_id: "worker-completed-run".to_string(),
                         phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Completed,
@@ -2428,6 +2466,19 @@ mod receipt_reconciliation {
             echoes[0].agent_id.as_deref(),
             Some(agent.id()),
             "MP-08 MP-10 remote echo must retain its home agent scope"
+        );
+        let prompt_row = runtime
+            .owned
+            .operational_history_store
+            .load_latest_user_prompt_events(session.id(), agent.id(), None, 8)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.prompt_id.as_deref() == Some(active.id()))
+            .map(|event| event.sequence);
+        assert!(prompt_row.is_some(), "recovered prompt should be stored");
+        assert_eq!(
+            echoes[0].sequence, prompt_row,
+            "MP-08 MP-10 (chariox#987 review) remote echo carries its prompt row's history sequence"
         );
         assert_eq!(
             echoes[0].provider_run_id,
@@ -2955,6 +3006,72 @@ mod projection_drain {
     }
 
     #[tokio::test]
+    async fn concurrent_projection_drains_reach_the_worker_one_at_a_time() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = make_receipt_reconciliation_fixture(&relay_url, "serial-drain").await;
+        fixture
+            .app
+            .lock()
+            .await
+            .mark_active_prompt_delivery(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some("worker-run-serial-drain".to_string()),
+                None,
+            )
+            .expect("delivered phase should persist");
+        let drain = || {
+            let runtime = fixture.runtime.clone();
+            let (session_id, agent_id) = (fixture.session_id.clone(), fixture.agent_id.clone());
+            tokio::spawn(async move {
+                runtime
+                    .drain_remote_prompt_projection_once(&session_id, &agent_id)
+                    .await
+            })
+        };
+        let next_request = || {
+            receive_fake_worker_peer_request(
+                &listener,
+                &fixture.worker_id,
+                &fixture.worker_machine_id,
+                &fixture.worker_public_key,
+                &fixture.worker_private_key,
+                None,
+            )
+        };
+        let answer = |request| {
+            send_fake_worker_peer_response(
+                request,
+                &fixture.worker_id,
+                &fixture.worker_private_key,
+                &fixture.home_public_key,
+                RelayPeerResponse::LeasedRuntimeProjectionDrained { event: None },
+            )
+        };
+
+        // A reply applied out of order would put a later output chunk before an
+        // earlier one, so a second drain must wait for the first reply.
+        let first = drain();
+        let first_request = next_request().await;
+        let second = drain();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(500), next_request())
+                .await
+                .is_err(),
+            "a second drain reached the worker while the first reply was outstanding"
+        );
+        answer(first_request).await;
+        assert!(first.await.unwrap().unwrap());
+        answer(next_request().await).await;
+        assert!(second.await.unwrap().unwrap());
+    }
+
+    #[tokio::test]
     async fn delivered_remote_prompt_restores_worker_run_before_restart_drain() {
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
@@ -3035,6 +3152,205 @@ mod projection_drain {
                 .remote_execution()
                 .and_then(|binding| binding.active_worker_provider_run_id.as_deref()),
             Some("provider-run-worker-1")
+        );
+    }
+
+    /// After a provider sign-in the worker answers the retained prompt on a successor run: the
+    /// home follows it, but only from a reply about the run its delivered prompt is bound to.
+    #[tokio::test]
+    async fn home_follows_a_worker_successor_run_only_for_the_delivered_prompt() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-successor",
+                "worktree-successor",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-successor",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let prompt = crate::session::PromptQueueItem::new(
+            "prompt-successor",
+            attachment.id(),
+            agent.id(),
+            "remote prompt",
+            crate::session::PromptStatus::Queued,
+        );
+        let prompt_id = match app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("remote prompt should start")
+        {
+            crate::session::PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+            crate::session::PromptSubmissionOutcome::Queued { .. } => {
+                panic!("remote prompt should start")
+            }
+        };
+        let (binding, provider_run_id, output_event, _) =
+            actual_worker_output_then_completion(session.id(), agent.id(), &prompt_id);
+        let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+            provider_run: Some(worker_run),
+            ..
+        } = &output_event
+        else {
+            panic!("the worker projects its run");
+        };
+        let successor_event = |session_id: &str, run_id: &str| {
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: session_id.to_string(),
+                home_agent_id: agent.id().to_string(),
+                provider_run_id: run_id.to_string(),
+                provider_run: Some(worker_run.clone().projected_for_home_agent_with_id(
+                    run_id.to_string(),
+                    session_id.to_string(),
+                    agent.id().to_string(),
+                )),
+                prompts: Vec::new(),
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: Vec::new(),
+            }
+        };
+        let bound = crate::agent::RemoteAgentBinding {
+            active_worker_provider_run_id: Some(provider_run_id.clone()),
+            ..binding
+        };
+        app.agents
+            .bind_remote_execution(agent.id(), bound.clone())
+            .expect("agent should bind to the worker");
+        app.mark_active_prompt_delivery(
+            session.id(),
+            agent.id(),
+            &prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(provider_run_id.clone()),
+            None,
+        )
+        .expect("delivery metadata should persist");
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let rebind = |previous: &str, event: &crate::transport::relay_peer::RelayPeerEvent| {
+            runtime
+                .rebind_remote_prompt_to_successor_run(
+                    session.id(),
+                    agent.id(),
+                    &bound,
+                    previous,
+                    event,
+                )
+                .expect("rebind should not error")
+        };
+
+        assert_eq!(
+            rebind(
+                &provider_run_id,
+                &successor_event("other-session", "run-next")
+            ),
+            None,
+            "a reply about another session is not followed"
+        );
+        assert_eq!(
+            rebind(
+                &provider_run_id,
+                &successor_event(session.id(), &provider_run_id)
+            ),
+            None,
+            "the run the home already follows is not a successor"
+        );
+        assert_eq!(
+            rebind("some-older-run", &successor_event(session.id(), "run-next")),
+            None,
+            "only the run the delivered prompt is bound to may hand over"
+        );
+        assert_eq!(
+            rebind(&provider_run_id, &successor_event(session.id(), "run-next")),
+            Some("run-next".to_string())
+        );
+        let agent_binding = runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .unwrap()
+            .remote_execution()
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            agent_binding.active_worker_provider_run_id.as_deref(),
+            Some("run-next")
+        );
+        let session_now = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap();
+        let delivered_on = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session_now, agent.id())
+            .and_then(|prompt| {
+                prompt
+                    .durable_delivery_provider_run_id()
+                    .map(str::to_string)
+            });
+        assert_eq!(delivered_on.as_deref(), Some("run-next"));
+        assert_eq!(
+            rebind(
+                &provider_run_id,
+                &successor_event(session.id(), "run-again")
+            ),
+            None,
+            "the old run no longer owns the binding"
+        );
+
+        // A successor that fails during its first drain arrives already ended: follow it only with
+        // the completion it ended with.
+        let ended_event =
+            |completions: Vec<crate::transport::relay_peer::RelayProjectedCompletion>| {
+                let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    home_session_id,
+                    home_agent_id,
+                    provider_run_id,
+                    provider_run: Some(run),
+                    ..
+                } = successor_event(session.id(), "run-final")
+                else {
+                    unreachable!()
+                };
+                let mut run = run;
+                run.mark_ended();
+                crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    home_session_id,
+                    home_agent_id,
+                    provider_run_id,
+                    provider_run: Some(run),
+                    prompts: Vec::new(),
+                    output_chunks: Vec::new(),
+                    notices: Vec::new(),
+                    completions,
+                }
+            };
+        assert_eq!(
+            rebind("run-next", &ended_event(Vec::new())),
+            None,
+            "an ended successor without its completion is not followed"
+        );
+        assert_eq!(
+            rebind(
+                "run-next",
+                &ended_event(vec![
+                    crate::transport::relay_peer::RelayProjectedCompletion {
+                        message_id: "completion-final".to_string(),
+                        completed_at_ms: 1,
+                        home_prompt_id: Some(prompt_id.clone()),
+                        provider_termination: None,
+                    }
+                ])
+            ),
+            Some("run-final".to_string())
         );
     }
 
@@ -3351,8 +3667,12 @@ mod projection_drain {
             "test-model",
         )
         .with_agent_id(agent.id());
-        let mut home_run = crate::provider::RuntimeProviderRun::new(
+        let home_provider_run_id = crate::provider::projected_leased_provider_run_id(
+            &binding.leased_agent_id,
             &provider_run_id,
+        );
+        let mut home_run = crate::provider::RuntimeProviderRun::new(
+            &home_provider_run_id,
             &request,
             crate::provider::ProviderLaunchResult {
                 endpoint_mode: crate::provider::AgentEndpointMode::External,
@@ -3369,10 +3689,10 @@ mod projection_drain {
         home_run.mark_running();
         app.providers_mut().insert_run_for_test(home_run.clone());
         app.sessions_mut()
-            .set_active_provider_run(session.id(), Some(provider_run_id.clone()))
+            .set_active_provider_run(session.id(), Some(home_provider_run_id.clone()))
             .expect("home run should be selected for the pre-completion snapshot");
         app.update_provider_run_projection(home_run.clone());
-        crate::transport::flow_control::note_prompt_started(&mut app, &provider_run_id);
+        crate::transport::flow_control::note_prompt_started(&mut app, &home_provider_run_id);
 
         let initial_snapshot =
             crate::runtime::projection::SessionSnapshotProjection::from_daemon_app(
@@ -3493,7 +3813,13 @@ mod projection_drain {
             1,
             "the worker completion callback must expose exactly one public completion"
         );
-        assert_eq!(completions[0].provider_run_id, provider_run_id);
+        assert_eq!(
+            completions[0].provider_run_id,
+            crate::provider::projected_leased_provider_run_id(
+                &binding.leased_agent_id,
+                &provider_run_id
+            )
+        );
         assert_eq!(
             completions[0].agent_id.as_deref(),
             Some(agent.id()),
@@ -4831,4 +5157,68 @@ mod dispatch_settlement {
         )
         .await;
     }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A10/G03: real partition/stop left the durable task Working.
+#[tokio::test]
+async fn a10_settled_remote_cancellation_cancels_only_its_durable_task() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+    let fixture = make_receipt_reconciliation_fixture("ws://127.0.0.1:9", "task-cancel").await;
+    let mut config = fixture.runtime.owned.config_projection.snapshot();
+    config.room_agent_tools = true;
+    fixture.runtime.owned.config_projection.update(config);
+    let owner = fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap()
+        .owner_user_id()
+        .to_string();
+    for prompt in [&fixture.dispatch.prompt_id, &fixture.successor_prompt_id] {
+        fixture
+            .runtime
+            .owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Begin {
+                owner: owner.clone(),
+                room: fixture.session_id.clone(),
+                agent: fixture.agent_id.clone(),
+                prompt: prompt.clone(),
+                run: None,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+    }
+    fixture
+        .runtime
+        .owned
+        .finalize_remote_prompt_cancellation_after_worker_settled(
+            &fixture.session_id,
+            &fixture.agent_id,
+            &fixture.dispatch.source_attachment_id,
+        )
+        .unwrap();
+    let tasks = fixture
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(&fixture.session_id), Some(&fixture.agent_id))
+        .unwrap();
+    assert_eq!(
+        tasks
+            .iter()
+            .find(|t| t.task_id == fixture.dispatch.prompt_id)
+            .unwrap()
+            .state,
+        ExecutionState::Cancelled
+    );
+    assert_eq!(
+        tasks
+            .iter()
+            .find(|t| t.task_id == fixture.successor_prompt_id)
+            .unwrap()
+            .state,
+        ExecutionState::Working
+    );
 }

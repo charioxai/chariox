@@ -19,7 +19,11 @@ mod history_tests;
 mod test_pause;
 
 #[cfg(test)]
+mod test_profile_revert;
+#[cfg(test)]
 mod test_provider_runs;
+#[cfg(test)]
+mod test_run_identity;
 
 const REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(60);
@@ -35,6 +39,43 @@ pub(crate) struct RemoteRuntimeProjectionOutcome {
 }
 
 impl<'a> RemoteLeaseRuntime<'a> {
+    // MP-08 / MP-10 / MP-11: native hook rows need the runtime-owned policy.
+    pub(crate) fn leased_native_output_pump_target(
+        &self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+    ) -> Result<Option<(String, Vec<String>)>, DaemonError> {
+        let leased = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
+            DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.into(),
+            }
+        })?;
+        if !self.app.execution_leases.contains_key(&leased.lease_id) {
+            return Err(DaemonError::ExecutionLeaseNotFound {
+                lease_id: leased.lease_id.clone(),
+            });
+        }
+        let Some(run) = self.app.providers.get_run(provider_run_id).ok() else {
+            return Ok(None);
+        };
+        if run.session_id() != leased.backing_session_id
+            || run.agent_instance_id() != Some(leased.backing_agent_id.as_str())
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "pump leased native output",
+                message: "provider run is not owned by the leased agent".into(),
+            });
+        }
+        Ok(
+            crate::provider::provider_run_uses_claude_native_bridge(&run).then(|| {
+                (
+                    leased.backing_session_id.clone(),
+                    vec![leased.backing_attachment_id.clone()],
+                )
+            }),
+        )
+    }
+
     pub(crate) fn drain_leased_runtime_projection(
         &mut self,
         leased_agent_id: &str,
@@ -79,10 +120,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
                 lease_id: leased_agent.lease_id.clone(),
             })?;
+        // A relaunch after a provider sign-in retains the home turn on a successor run; the home
+        // still names the ended one, so answer for the run that now carries the turn.
+        let provider_run_id = self.successor_provider_run_id(&leased_agent, provider_run_id);
+        let provider_run_id = provider_run_id.as_str();
         let home_prompt_id = leased_agent.active_home_prompt_id.clone().or_else(|| {
             replay_settled_completion
                 .then_some(())
-                .and_then(|()| leased_agent.replayable_completion.as_ref())
+                .and(leased_agent.replayable_completion.as_ref())
                 .filter(|completion| completion.provider_run_id == provider_run_id)
                 .and_then(|completion| completion.home_prompt_id.clone())
         });
@@ -100,15 +145,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
         let mut output_chunks = pumped_output_records
             .into_iter()
-            .chain(
-                self.app
-                    .terminal
-                    .drain_output_records(
-                        &leased_agent.backing_session_id,
-                        &leased_agent.backing_attachment_id,
-                    )
-                    .into_iter(),
-            )
+            .chain(self.app.terminal.drain_output_records(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_attachment_id,
+            ))
             .filter(|record| {
                 record.provider_run_id == provider_run_id
                     && record.kind != TerminalOutputKind::PromptEcho
@@ -309,9 +349,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             )
             .filter(|turn| {
                 turn.provider_run_id == provider_run_id
-                    && termination_prompt_id
-                        .as_deref()
-                        .is_none_or(|prompt_id| turn.prompt_id == prompt_id)
+                    && termination_prompt_id.is_none_or(|prompt_id| turn.prompt_id == prompt_id)
             })
             .and_then(|turn| turn.provider_termination);
         let mut completions = self
@@ -825,6 +863,25 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(true)
     }
 
+    fn successor_provider_run_id(&self, leased_agent: &LeasedAgent, requested: &str) -> String {
+        if leased_agent.active_home_prompt_id.is_none() {
+            return requested.to_string();
+        }
+        let ended = |run: &crate::provider::RuntimeProviderRun| {
+            run.state() == crate::provider::ProviderRunState::Ended
+        };
+        let current = self.app.providers.get_run_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        );
+        match (self.app.providers.get_run(requested), current) {
+            (Ok(requested_run), Some(current)) if ended(&requested_run) && !ended(&current) => {
+                current.id().to_string()
+            }
+            _ => requested.to_string(),
+        }
+    }
+
     pub(crate) fn pump_leased_runtime_projections(
         &mut self,
     ) -> Result<Vec<(String, RelayPeerEvent)>, DaemonError> {
@@ -1016,29 +1073,35 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             agent_id,
                             Some(provider_run_id.to_string()),
                         );
-                    let _ = self.app.agents.set_agent_runtime_profile(
-                        agent_id,
-                        projected_run.provider(),
-                        Some(projected_run.model().to_string()),
-                        projected_run.variant().map(str::to_string),
-                        projected_run.resume_state().clone(),
-                    );
+                    // Only the home commits a provider switch; a lagging event
+                    // of the previous provider's run must not revert it.
+                    if agent.provider() == projected_run.provider() {
+                        let _ = self.app.agents.set_agent_runtime_profile(
+                            agent_id,
+                            projected_run.provider(),
+                            Some(projected_run.model().to_string()),
+                            projected_run.variant().map(str::to_string),
+                            projected_run.resume_state().clone(),
+                        );
+                    }
                 }
             }
         }
+        // MP-08 / MP-10 / MP-11: home state uses the admitted projection ID;
+        // worker admission and peer requests keep the worker-local run ID.
         let recipient_attachment_ids = self.app.attachments.list_session_attachment_ids(session_id);
         for prompt in prompts {
             self.project_remote_native_prompt_started(
                 session_id,
                 agent_id,
-                provider_run_id,
+                &projected_provider_run_id,
                 prompt,
             )?;
         }
         for chunk in output_chunks {
             self.app.fan_out_output_for_agent(
                 session_id,
-                provider_run_id,
+                &projected_provider_run_id,
                 Some(agent_id),
                 chunk.kind.clone(),
                 chunk.merge_key.clone(),
@@ -1049,7 +1112,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         for notice in notices {
             self.app.record_notice_for_agent(
                 session_id,
-                Some(provider_run_id),
+                Some(projected_provider_run_id.as_str()),
                 Some(agent_id),
                 recipient_attachment_ids.clone(),
                 notice.clone(),
@@ -1100,7 +1163,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         for completion in &matching_completions {
             self.app.record_assistant_message_completion_for_agent(
                 session_id,
-                provider_run_id,
+                &projected_provider_run_id,
                 Some(agent_id),
                 recipient_attachment_ids.clone(),
                 &completion.message_id,
@@ -1124,7 +1187,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     self.app,
                     session_id,
                     &active_prompt,
-                    Some(provider_run_id),
+                    Some(projected_provider_run_id.as_str()),
                 );
             if !saw_completion && !workflow_output_ready {
                 return Ok(outcome);
@@ -1192,7 +1255,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     )?;
                     self.app.record_notice(
                         session_id,
-                        Some(provider_run_id),
+                        Some(projected_provider_run_id.as_str()),
                         recipient_attachment_ids.clone(),
                         notice_message,
                     );
@@ -1202,7 +1265,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         session_id,
                         agent_id,
                         &active_prompt,
-                        provider_run_id,
+                        &projected_provider_run_id,
                         projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                         projected_termination.clone(),
                     );
@@ -1212,7 +1275,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     outcome.provider_failed = provider_failed;
                     crate::transport::flow_control::clear_prompt_activity(
                         self.app,
-                        provider_run_id,
+                        &projected_provider_run_id,
                     );
                     let _ = crate::app::KernelSessionReadService::new(self.app)
                         .session_snapshot(session_id);
@@ -1240,15 +1303,18 @@ impl<'a> RemoteLeaseRuntime<'a> {
             self.record_projected_prompt_settlement(
                 session_id,
                 agent_id,
-                &completed,
-                provider_run_id,
+                &active_prompt,
+                &projected_provider_run_id,
                 projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                 projected_termination.clone(),
             );
             // A matching worker completion settles the same flow-control turn
             // started by native prompt projection. Clear it before publishing
             // the home snapshot, otherwise completed prompts remain WORKING.
-            crate::transport::flow_control::clear_prompt_activity(self.app, provider_run_id);
+            crate::transport::flow_control::clear_prompt_activity(
+                self.app,
+                &projected_provider_run_id,
+            );
             if let Ok(agent) = self.app.agents.get_agent(agent_id) {
                 if agent.remote_execution().is_some() {
                     let _ = self
@@ -1293,7 +1359,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     self.app,
                     session_id,
                     &completed,
-                    Some(provider_run_id),
+                    Some(projected_provider_run_id.as_str()),
                 )?;
             }
             if let Some(remote_execution) = remote_execution {
@@ -1365,8 +1431,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             }
                         }
                     };
+                    // The completion is committed: a focus refresh failure
+                    // must not lose it (A10: its home task still settles).
                     if started_next.is_none() {
-                        self.app.sync_focused_provider_run_if_idle(session_id)?;
+                        if let Err(error) = self.app.sync_focused_provider_run_if_idle(session_id) {
+                            crate::logging::warn_with_fields(
+                                "daemon.remote_prompt_dispatch",
+                                "focus refresh after a leased completion failed",
+                                serde_json::json!({"session_id": session_id, "error": error.to_string()}),
+                            );
+                        }
                     }
                     outcome.completions.push(PromptCompletion {
                         completed,
@@ -1609,9 +1683,9 @@ fn leased_provider_run_history_chunk_key(
     chunk: &RelayProjectedOutputChunk,
 ) -> String {
     format!(
-        "{}:{provider_run_id}:{}:{}:{}",
+        "{}:{provider_run_id}:{:?}:{}:{}",
         leased_agent.backing_session_id,
-        format!("{:?}", chunk.kind),
+        chunk.kind,
         chunk.merge_key.as_deref().unwrap_or(""),
         stable_bytes_hash(&chunk.bytes)
     )
@@ -1771,6 +1845,79 @@ mod explicit_completion_tests {
                 .state(),
             crate::provider::ProviderRunState::Running
         );
+    }
+
+    /// After a provider sign-in the worker relaunches the provider and keeps the home turn on a
+    /// successor run; a drain that still names the ended run answers for the successor.
+    #[test]
+    fn drain_of_an_ended_run_answers_for_its_successor_while_a_home_turn_is_active() {
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app =
+            crate::app::DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "home-kernel",
+                "session-1",
+                "agent-home-1",
+                false,
+                "user-home",
+            )
+            .expect("execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                "default",
+                Some("default".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("leased agent should be created");
+        let new_run = |id: &str| {
+            let mut run = provider_run(
+                id,
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+                "managed-dev-stub",
+                "managed-dev-stub",
+                ProviderClientInterface::Chariox,
+            );
+            run.mark_running();
+            run
+        };
+        let mut first = new_run("provider-run-first");
+        app.providers_mut().insert_run_for_test(first.clone());
+        first.mark_ended();
+        app.providers_mut().insert_run_for_test(first.clone());
+        app.providers_mut()
+            .insert_run_for_test(new_run("provider-run-successor"));
+
+        let drained_run_id = |app: &mut crate::app::DaemonApp| {
+            let (_, event) = RemoteLeaseRuntime::new(app)
+                .drain_leased_runtime_projection(&leased_agent.id, "provider-run-first", false)
+                .expect("drain should succeed")
+                .expect("the run state should be projected");
+            let RelayPeerEvent::LeasedRuntimeProjection {
+                provider_run_id, ..
+            } = event;
+            provider_run_id
+        };
+        assert_eq!(
+            drained_run_id(&mut app),
+            "provider-run-first",
+            "without a home turn the requested run is answered as asked"
+        );
+
+        app.leased_agents
+            .get_mut(&leased_agent.id)
+            .unwrap()
+            .active_home_prompt_id = Some("home-prompt-a".to_string());
+        assert_eq!(drained_run_id(&mut app), "provider-run-successor");
     }
 
     #[test]

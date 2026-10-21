@@ -20,6 +20,31 @@ pub(crate) fn finish_response(
 }
 
 fn protect_error(error: DaemonError) -> DaemonError {
+    // A machine file error says what to do next in words the kernel wrote from the
+    // agent's own path; it carries no provider or parser text.
+    if matches!(&error, DaemonError::MachineRequest { .. }) {
+        return error;
+    }
+    // A terminal on a worker answers in the same words, arriving through the relay.
+    if let DaemonError::RelayTransport { code, message, .. } = &error {
+        if crate::room_terminal::is_public_code(code) {
+            return DaemonError::MachineRequest {
+                code: code.clone(),
+                message: message.clone(),
+            };
+        }
+    }
+    // A terminal error ("this Room has no terminal `t`", "terminal `t` has ended; open a
+    // new terminal") is the kernel's own sentence about an id the agent sent.
+    if matches!(
+        &error,
+        DaemonError::LocalTransport {
+            operation: "room terminal",
+            ..
+        }
+    ) {
+        return error;
+    }
     // These exact lifecycle messages are kernel constants, never provider or
     // parser output. Preserve refusal/revocation so callers can react correctly.
     if matches!(&error, DaemonError::LocalTransport { operation: "kernel access", message }
@@ -88,7 +113,15 @@ response_policies! {
         CredentialsListed,
     ],
     Withhold => [
+        SessionViewAttached,
         SessionInviteCreated,
+        // MP-11: prototype user App views carry App frontends and channel data.
+        UserAppViewOpened,
+        UserAppViewsListed,
+        UserAppViewClosed,
+        UserAppViewFrontend,
+        UserAppViewCallResult,
+        UserAppViewsChanged,
         DebugBundleExported,
         McpServerInstalled,
         McpServerUpdated,
@@ -136,6 +169,12 @@ response_policies! {
         EnvironmentImportPreview,
         EnvironmentImportCommitted,
         ProjectEnvironmentPlan,
+        // MP-08/MP-11: user-domain browser, Notes and App replies show page,
+        // window and App content; external grant holders use the host terminal.
+        KernelBrowser,
+        Notes,
+        VisibleRegionCaptured,
+        UserDomainInteractionAnswered,
     ],
     Public => [
         // MP-07/MP-08/MP-11: receipt metadata only; SSH admission stays owner-scoped.
@@ -144,14 +183,26 @@ response_policies! {
         WorkflowNotificationAttached,
         WorkflowNotificationDetached,
         WorkflowNotifications,
+        HandoffResolved,
         RoomWorkflowRunsControlled,
         ActivePromptSteered,
         CloudRelayLoggedOut,
+        // MP-08 / MP-11: protection-filtered like ScreenshotCaptured and RoomBrowserArtifact.
         KernelSudoRequested,
+        KernelSudoExtended,
         KernelAccessGranted,
         KernelAccessGrantsListed,
         KernelAccessRevoked,
+        GatewayMachinesListed,
+        AttachmentsHeartbeated,
+        GatewayMachineJoined,
+        GatewayMachineForgotten,
+        MachineFileStat,
+        MachineDirectoryListed,
+        MachineFileChunk,
+        MachineFileWritten,
         RoomBrowserArtifact,
+        RoomTerminal,
         AppPublisherEnrollmentStatus,
         AppInstallOperationStatus,
         AppPackageUploadStatus,
@@ -194,6 +245,7 @@ response_policies! {
         ProviderRunLaunchAccepted,
         ProviderRunsLaunchAccepted,
         ProjectsListed,
+        ProjectPinned,
         ProjectRenamed,
         ProjectWorkspacesUpdated,
         ProjectArchived,
@@ -214,6 +266,7 @@ response_policies! {
         SessionsListed,
         SessionResolved,
         SessionState,
+        AgentTaskUpdated,
         RoomEnvironmentState,
         BrowserImportConsent,
         RoomEnvironmentSlice,
@@ -242,6 +295,8 @@ response_policies! {
         ProviderRun,
         ProviderRunSelectionUpdated,
         ProviderCatalog,
+        ClientCatalogRevisions,
+        ClientCatalogSnapshot,
         ProviderCommandCatalogs,
         McpServerUninstalled,
         EnvironmentRegistered,
@@ -348,6 +403,7 @@ response_policies! {
         ProviderProcessesTornDown,
         SessionHistoryOutline,
         SessionHistoryBlobContent,
+        SessionHistoryBlobContents,
         PromptInputHistory,
         PromptInputHistoryRecorded,
         PromptSettingsListed,
@@ -442,6 +498,8 @@ response_policies! {
         EventConnection,
         EventConnectionResourcesPage,
         EventConnectionTested,
+        EventConnectionEvents,
+        EventConnectionEventReplayed,
         EventConnectionDependencies,
         EventConnectionRemoved,
         EventDeliveryStatus,

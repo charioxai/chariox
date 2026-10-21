@@ -22,8 +22,7 @@ Unreadable registries recover as retired-unknown state scoped to that Room. The
 kernel logs the recovery without private material, replaces the damaged seal
 when storage permits, and withholds its prior history. Unavailable provenance
 matches no Vault key, so it cannot veto another Room's Vault mutation. Public
-Room deletion remains available. Because lost values cannot redact prior live
-echoes, pixels and terminal observations retain their fence until the existing
+Room deletion remains available. An unknown registry refuses fresh pixel and terminal observations until the existing
 verified fresh-environment provisioner clears it autonomously; fresh observations
 then flow normally while prior history stays withheld. No human step is added.
 
@@ -37,28 +36,23 @@ Unframed terminal bytes and streamed assistant/reasoning remain withheld when a
 registry protects that Room: chunk-local matching cannot catch split values.
 This requires no human clearance and does not block complete scrubbed tool results.
 
-MP-08/MP-11 fresh worker screenshots use `slice-observation-mask.py`. It re-locates
-Browser fields from trusted CDP layout and native fields from the exact approved
-X11 control. Browser frame offsets are bound to current document/frame identities.
-An isolated world observes browser visibility and scale without page overrides.
-Confirmed hidden tabs, departed documents, closed tabs, offscreen regions,
-unmapped native controls and Xlib-confirmed destroyed windows contribute no
-desktop pixels. The private capture helper returns only confirmed dead native
-XIDs to the kernel, which prunes and seals its target list, including when a
-subsequent capture fails. Dead controls cannot reappear in policy after restart. Departed document references become echo-only scans of the
-current page, including changed isolated frames. Current visible pages are scanned for delayed copies, even
-after the original protected tab closes.
-The helper compares freshly located regions before and after capturing, masks
-them with outward rounding and padding, and only then saves the PNG. Raw captures
-exist only in private temporary scratch, which is removed before a result returns.
-PNG output carries fresh RGB pixels without copied pre-redaction metadata.
+MP-08/MP-11 visual protection follows Miguel's 2026-10-09 fill-target model.
+The kernel records the exact browser frame/backend node and document/generation,
+or native window/process epoch and AT-SPI object, when it fills a Vault value.
+Every capture checks that target again. A still-filled plain input, textarea,
+contenteditable or native text entry contributes its rendered box, with small
+outward device-pixel padding. Password fields show dots and contribute no mask;
+a show-password toggle is checked on every capture and becomes covered.
+Navigation, generation change, removal and user clear/replacement retire the
+fill target. Registration alone does not mask pixels. There are no page-echo,
+container/order/bidi/budget, iframe, media, browser-chrome or whole-window masks.
 
-Raw Browser text echoes and opaque canvas/SVG/image/video/frame regions are masked
-as well. Browser chrome and link-status regions are masked because titles and URLs
-can echo a value outside DOM layout. A replaced top-level input can be re-located
-from raw value-bearing input layout without repeating secret insertion. Trusted
-`window.innerHeight` includes the horizontal scrollbar when deriving the desktop
-content origin. The slice taskbar disables title text and title tooltips.
+Fresh worker screenshots use `slice-observation-mask.py` and the shared browser
+fill-target collector/native AT-SPI tracker. Field placement is fenced around
+capture; a racing/unavailable browser measurement refuses that capture for
+retry. Native placement is best effort and creates no fallback window mask.
+Raw captures remain in private scratch and are removed before a result returns;
+PNG output carries fresh RGB pixels without copied capture metadata.
 
 Unknown regions, mismatched frames or failed capture drop only that observation.
 Re-location and fresh capture retry at most three times. Exhaustion returns
@@ -69,7 +63,8 @@ rotation retire the affected Rooms' active observation values on home and bound
 workers. Retired values remain zeroizing, scrub-only entries for that Room's
 lifetime, sealed with the existing runtime identity so restart cannot expose old
 echoes. They cannot resolve credentials, match Vault keys or authorize insertion.
-Targets and known-value text/pixel masking continue to protect prior echoes;
+Known-value text scrubbing continues to protect prior history; visual masks
+cover only still-live Vault-filled plain fields under the model above;
 rotation introduces no unknown state and the agent's committed credential write
 returns its normal scrubbed result. Room deletion removes both active and retired
 values. Controller seeds are Room-scoped and released with their controller lease.

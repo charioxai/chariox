@@ -13,7 +13,11 @@ pub(super) fn write_archive(
     let manifest_bytes = manifest_writer.into_inner();
     let mut archive_cleanup = FileCleanup::new(destination.to_path_buf());
     let encoder = GzBuilder::new().mtime(0).write(
-        BoundedFileWriter::new(file, MAX_PACKAGE_BYTES),
+        BoundedFileWriter::new(
+            file,
+            staging_root.to_path_buf(),
+            crate::managed_context::limits::disk_budget(staging_root),
+        ),
         Compression::default(),
     );
     let mut archive = tar::Builder::new(encoder);
@@ -141,14 +145,16 @@ impl Write for BoundedManifestWriter {
 
 struct BoundedFileWriter {
     file: File,
+    volume: PathBuf,
     written_bytes: u64,
     maximum_bytes: u64,
 }
 
 impl BoundedFileWriter {
-    fn new(file: File, maximum_bytes: u64) -> Self {
+    fn new(file: File, volume: PathBuf, maximum_bytes: u64) -> Self {
         Self {
             file,
+            volume,
             written_bytes: 0,
             maximum_bytes,
         }
@@ -164,9 +170,11 @@ impl Write for BoundedFileWriter {
         if self.written_bytes.saturating_add(bytes.len() as u64) > self.maximum_bytes {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "development context archive exceeds {} bytes",
-                    self.maximum_bytes
+                crate::managed_context::limits::disk_shortage(
+                    "development context archive",
+                    &self.volume,
+                    self.written_bytes,
+                    self.maximum_bytes,
                 ),
             ));
         }

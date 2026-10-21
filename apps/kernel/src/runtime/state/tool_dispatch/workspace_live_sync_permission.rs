@@ -27,24 +27,28 @@ pub(super) fn workspace_live_sync_permission_interaction(
         crate::session::RuntimeInteractionLevel::Warning,
         Some(title),
         message,
-        vec![
-            crate::session::RuntimeInteractionChoice::new(
-                "allow",
-                "Allow",
-                "allow",
-                Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
-            ),
-            crate::session::RuntimeInteractionChoice::new(
-                "deny",
-                "Deny",
-                "deny",
-                Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
-            ),
-        ],
+        allow_deny_choices(),
         None,
         None,
         None,
     ))
+}
+
+pub(super) fn allow_deny_choices() -> Vec<crate::session::RuntimeInteractionChoice> {
+    vec![
+        crate::session::RuntimeInteractionChoice::new(
+            "allow",
+            "Allow",
+            "allow",
+            Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
+        ),
+        crate::session::RuntimeInteractionChoice::new(
+            "deny",
+            "Deny",
+            "deny",
+            Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
+        ),
+    ]
 }
 
 fn workspace_live_sync_permission_message(
@@ -84,8 +88,7 @@ fn workspace_live_sync_permission_message(
             Ok((
                 "Workspace live sync patch approval".to_string(),
                 format!(
-                    "Allow applying this workspace live sync patch? First patch line: `{}`",
-                    patch_preview
+                    "Allow applying this workspace live sync patch? First patch line: `{patch_preview}`"
                 ),
             ))
         }

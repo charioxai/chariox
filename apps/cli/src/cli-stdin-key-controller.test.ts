@@ -101,6 +101,30 @@ test("cli stdin key controller delegates queued prompt shortcuts before command 
   ])
 })
 
+test("MP-08 / MP-10 queued-prompt Alt keys reach the strip while a focused interaction owns the prompt", () => {
+  for (const name of ["s", "c", "j", "k"]) {
+    const steered: CliStdinKeyEvent[] = []
+    const harness = createHarness({
+      promptFocused: true,
+      focusedInteractionActive: true,
+      parsedEvent: keyEvent(name, { meta: true }),
+      onQueuedPromptKey: (event) => { steered.push(event); return true },
+    })
+
+    assert.equal(harness.controller.handleData("x"), true, name)
+    assert.equal(steered.length, 1, name)
+    assert.equal(steered[0]?.alt, true, name)
+  }
+})
+
+test("MP-08 / MP-10 a focused interaction still owns every other key, including Alt+Up and Alt+Down", () => {
+  for (const parsedEvent of [keyEvent("x"), keyEvent("s"), keyEvent("up", { meta: true }), keyEvent("down", { meta: true }), keyEvent("s", { meta: true, shift: true })]) {
+    const harness = createHarness({ promptFocused: true, focusedInteractionActive: true, parsedEvent })
+    assert.equal(harness.controller.handleData("x"), true)
+    assert.ok(!harness.calls().some(call => call.startsWith("queued-prompt:")), parsedEvent.name)
+  }
+})
+
 test("cli stdin key controller lets command center own prompt input", () => {
   const harness = createHarness({
     promptFocused: true,
@@ -378,6 +402,9 @@ function createHarness(options: {
     toggleWorkspaceScreen: () => {
       calls.push("toggle-workspace")
     },
+    toggleTranscriptDetails: () => {
+      calls.push("toggle-details")
+    },
     isAttached: () => options.attached ?? false,
     workflowScreenActive: () => options.workflowScreenActive ?? false,
     cycleWorkflowCanvasNode: () => {
@@ -421,6 +448,18 @@ function createHarness(options: {
     calls: () => calls,
   }
 }
+
+// MP-08 / MP-10 (panes R11, PANE-05/D15): with app mouse off by default, Ctrl+O
+// is the keyboard path to open every tool call and thought of the pane.
+test("cli stdin key controller toggles transcript details on Ctrl+O when attached", () => {
+  const attached = createHarness({ parsedEvent: keyEvent("o", { ctrl: true }), attached: true })
+  assert.equal(attached.controller.handleData("x"), true)
+  assert.equal(attached.calls().includes("toggle-details"), true)
+
+  const detached = createHarness({ parsedEvent: keyEvent("o", { ctrl: true }), attached: false })
+  detached.controller.handleData("x")
+  assert.equal(detached.calls().includes("toggle-details"), false)
+})
 
 function keyEvent(name: string, options: {
   eventType?: string

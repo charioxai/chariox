@@ -71,11 +71,11 @@ fn leased_projection_compacts_finalized_output_keys_and_survives_store_restart()
 }
 
 #[test]
-fn leased_projection_compacts_tool_deltas_with_different_transcript_bytes() {
+fn leased_projection_compacts_cumulative_tool_snapshots_across_restart() {
     let (mut app, leased) = worker_lease();
     let mut output = String::new();
-    let mut first_delta = None;
-    let mut last_delta = None;
+    let mut first_snapshot = None;
+    let mut last_snapshot = None;
     for index in 0..1000 {
         output.push_str(&format!("line-{index}\n"));
         let bytes = serde_json::to_vec_pretty(&serde_json::json!({
@@ -93,9 +93,9 @@ fn leased_projection_compacts_tool_deltas_with_different_transcript_bytes() {
                 &bytes,
             );
         if index == 1 {
-            first_delta = Some(record.bytes.clone());
+            first_snapshot = Some(record.bytes.clone());
         }
-        last_delta = Some(record.bytes);
+        last_snapshot = Some(record.bytes);
         let projection = RemoteLeaseRuntime::new(&mut app)
             .drain_leased_runtime_projection(&leased.id, "run", false)
             .unwrap()
@@ -114,7 +114,13 @@ fn leased_projection_compacts_tool_deltas_with_different_transcript_bytes() {
     }
     let path = app.operational_history_store().path().to_path_buf();
     app.operational_history = crate::history::OperationalHistoryStore::open(path).unwrap();
-    for duplicate in [first_delta.unwrap(), last_delta.unwrap()] {
+    // A replay of the latest snapshot is a duplicate. A newly delivered shorter
+    // snapshot can be a provider reset, and its immediate replay is a duplicate.
+    for (duplicate, projects) in [
+        (last_snapshot.unwrap(), false),
+        (first_snapshot.as_ref().unwrap().clone(), true),
+        (first_snapshot.unwrap(), false),
+    ] {
         app.terminal_mut().fan_out_output(
             &leased.backing_session_id,
             "run",
@@ -124,10 +130,15 @@ fn leased_projection_compacts_tool_deltas_with_different_transcript_bytes() {
             vec![leased.backing_attachment_id.clone()],
             &duplicate,
         );
-        assert!(RemoteLeaseRuntime::new(&mut app)
+        let projection = RemoteLeaseRuntime::new(&mut app)
             .drain_leased_runtime_projection(&leased.id, "run", false)
-            .unwrap()
-            .is_none());
+            .unwrap();
+        assert_eq!(projection.is_some(), projects);
+        if let Some((_, RelayPeerEvent::LeasedRuntimeProjection { output_chunks, .. })) = projection
+        {
+            assert_eq!(output_chunks.len(), 1);
+            assert_eq!(output_chunks[0].bytes, duplicate);
+        }
     }
     assert_eq!(
         app.operational_history_store()

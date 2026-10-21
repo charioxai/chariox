@@ -197,7 +197,8 @@ export function createCommandCenterController<TBox = unknown>(
         if (!item) {
           return false
         }
-        if (promptAddsArgumentsToCommandCenterItem(item, options.getPromptText())) {
+        if (shouldBypassCommandCenterSubmitSelection(options.getPromptText())
+          || promptAddsArgumentsToCommandCenterItem(item, options.getPromptText())) {
           // Not handled: the prompt's own submit sends the typed command.
           return false
         }

@@ -11,6 +11,33 @@ const SYNTHETIC_TOKEN: &str = "app-liveness-token";
 
 #[test]
 fn app_resize_liveness_reconciliation_preserves_pty_terminal_diagnostic() {
+    app_liveness_diagnostic_fixture(false, false);
+}
+
+#[test]
+fn mp08_mp10_exit_keeps_diagnostic_after_output_was_drained() {
+    app_liveness_diagnostic_fixture(true, false);
+}
+
+#[test]
+fn mp08_mp11_native_exit_before_delivery_keeps_cause_without_prompt_or_secret() {
+    app_liveness_diagnostic_fixture(true, true);
+}
+
+fn app_liveness_diagnostic_fixture(drain_before_reconciliation: bool, native: bool) {
+    let worktree = crate::test_support::TestWorktree::new("native-exit-context");
+    let context = worktree.path().join("hidden-context.txt");
+    std::fs::write(&context, "private hidden context").unwrap();
+    std::fs::write(
+        worktree.path().join("active-prompt-id"),
+        "startup-workspace-trust:private-request",
+    )
+    .unwrap();
+    std::fs::write(
+        worktree.path().join("permission-recent.txt"),
+        "Quick safety check: trust this folder? private prompt sk-ant-secret-value",
+    )
+    .unwrap();
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = KernelSessionService::new(&mut app)
@@ -28,8 +55,12 @@ fn app_resize_liveness_reconciliation_preserves_pty_terminal_diagnostic() {
         .expect("attachment should attach");
     let request = LaunchProviderRequest::new(
         session.id(),
-        "dev-stub",
-        "dev-stub",
+        if native { "claude" } else { "dev-stub" },
+        if native {
+            "claude-headless"
+        } else {
+            "dev-stub"
+        },
         "default",
         "test-model",
     )
@@ -48,7 +79,9 @@ fn app_resize_liveness_reconciliation_preserves_pty_terminal_diagnostic() {
                     "printf '%s\\n' '{TERMINAL_DIAGNOSTIC} api_key={SYNTHETIC_API_KEY} token={SYNTHETIC_TOKEN}'; exit 1"
                 ),
             ],
-            pty_env: std::collections::BTreeMap::new(),
+            pty_env: if native {
+                std::collections::BTreeMap::from([("CHARIOX_CLAUDE_NATIVE_CONTEXT".into(), context.display().to_string())])
+            } else { std::collections::BTreeMap::new() },
             pty_env_remove: Vec::new(),
             working_directory: None,
             structured_endpoint: None,
@@ -105,6 +138,26 @@ fn app_resize_liveness_reconciliation_preserves_pty_terminal_diagnostic() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
+    // The real output pump drains the exit bytes before its liveness pass.
+    // That must not erase the provider's only explanation of the exit.
+    if drain_before_reconciliation {
+        let chunks = app
+            .pty
+            .drain_output(run.id())
+            .expect("exit output should drain");
+        assert!(!chunks.is_empty());
+    }
+    if native {
+        app.mark_active_prompt_delivery(
+            session.id(),
+            agent.id(),
+            &prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            Some(run.id().into()),
+            None,
+        )
+        .unwrap();
+    }
     let resize_result = app.resize_terminal(session.id(), 80, 24);
     assert!(
         matches!(
@@ -123,12 +176,31 @@ fn app_resize_liveness_reconciliation_preserves_pty_terminal_diagnostic() {
             .expect("app-level liveness reconciliation should retain the PTY diagnostic")
             .to_string()
     };
-    assert!(diagnostic.contains(TERMINAL_DIAGNOSTIC), "{diagnostic}");
-    assert!(diagnostic.contains("api_key"), "{diagnostic}");
-    assert!(diagnostic.contains("token"), "{diagnostic}");
-    assert_eq!(diagnostic.matches("[redacted]").count(), 2, "{diagnostic}");
-    assert!(!diagnostic.contains(SYNTHETIC_API_KEY), "{diagnostic}");
-    assert!(!diagnostic.contains(SYNTHETIC_TOKEN), "{diagnostic}");
+    if native {
+        assert!(
+            diagnostic.starts_with("Provider exited before the prompt was delivered:"),
+            "{diagnostic}"
+        );
+        assert!(diagnostic.contains("status 1"), "{diagnostic}");
+        assert!(diagnostic.contains("Retry"), "{diagnostic}");
+        assert!(diagnostic.contains("workspace trust"), "{diagnostic}");
+        for private in [
+            TERMINAL_DIAGNOSTIC,
+            "private prompt",
+            "hidden context",
+            "private-request",
+            "sk-ant-secret-value",
+        ] {
+            assert!(!diagnostic.contains(private), "{diagnostic}");
+        }
+    } else {
+        assert!(diagnostic.contains(TERMINAL_DIAGNOSTIC), "{diagnostic}");
+        assert!(diagnostic.contains("api_key"), "{diagnostic}");
+        assert!(diagnostic.contains("token"), "{diagnostic}");
+        assert_eq!(diagnostic.matches("[redacted]").count(), 2, "{diagnostic}");
+        assert!(!diagnostic.contains(SYNTHETIC_API_KEY), "{diagnostic}");
+        assert!(!diagnostic.contains(SYNTHETIC_TOKEN), "{diagnostic}");
+    }
 
     let session_state = app
         .sessions()

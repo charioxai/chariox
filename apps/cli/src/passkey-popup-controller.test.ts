@@ -21,7 +21,7 @@ const type = (h: ReturnType<typeof harness>, text: string) => {
   for (const sequence of Array.from(text)) h.popup.handleKey(key(sequence === " " ? "space" : sequence, { sequence }))
 }
 
-function harness() {
+function harness(serverClock?: import("./kernel-clock.js").KernelClock) {
   let connected = true
   let resolve!: () => void
   let reject!: (error: Error) => void
@@ -30,6 +30,7 @@ function harness() {
   const focus: string[] = []
   const popup = createPasskeyPopupController({
     connected: () => connected, onView() {},
+    ...(serverClock ? {serverClock} : {}),
     onOpen: () => focus.push("open"), onClose: () => focus.push("close"), scroll() {},
     respond: (prompt, choiceId, proof) => {
       requests.push(proof ? [prompt.interaction_id, choiceId, proof] : [prompt.interaction_id, choiceId])
@@ -132,7 +133,9 @@ test("a wrong passkey keeps the popup open and asks again", async () => {
   assert.equal(h.popup.view().error, "That passkey is not correct.")
   assert.equal(h.popup.view().passkey.length, 0)
   h.popup.handleKey(key("return"))
-  assert.equal(h.requests.length, 1, "an empty passkey is not sent")
+  assert.deepEqual(h.requests[1], ["p1", "approve"], "the kernel checks owner-wide presence")
+  h.reject("PASSKEY_REQUIRED: enter your passkey")
+  await settle()
   assert.equal(h.popup.view().error, "Enter your Chariox passkey to approve.")
 })
 
@@ -183,7 +186,7 @@ test("Esc hides the popup and only explicit focus brings it back", () => {
   assert.equal(h.popup.show("session-1", "unknown"), false)
 })
 
-test("this terminal's remember window approves without retyping until the kernel refuses", async () => {
+test("the kernel decides whether remembered presence still authorizes an approval", async () => {
   const h = harness()
   h.popup.apply([prompt("p1"), prompt("p2")])
   h.popup.show()
@@ -205,7 +208,18 @@ test("this terminal's remember window approves without retyping until the kernel
   await settle()
   assert.equal(h.popup.view().error, "Enter your Chariox passkey to approve.")
   h.popup.handleKey(key("return"))
-  assert.equal(h.requests.length, 2)
+  assert.deepEqual(h.requests[2], ["p2", "approve"])
+})
+
+test("a fresh terminal tries the owner's kernel remember window without local proof", async () => {
+  const h = harness()
+  h.popup.apply([prompt("remembered-in-another-client")])
+  h.popup.show()
+  h.popup.handleKey(key("return"))
+  assert.deepEqual(h.requests, [["remembered-in-another-client", "approve"]])
+  h.resolve()
+  await settle()
+  assert.equal(h.popup.view().count, 0)
 })
 
 test("a disconnected terminal sends nothing", () => {
@@ -270,7 +284,7 @@ test("access grants and extensions require a fresh passkey and let the owner cho
   h.popup.handleKey(key("return"))
   h.resolve(); await settle()
   for (const kind of ["access_grant", "access_extension"] as const) {
-    const access = { ...prompt(kind), kind, lifetime_minutes: 30, max_lifetime_minutes: 45 }
+    const access = { ...prompt(kind), kind, term: { minutes: 30 }, max_lifetime_minutes: 45 }
     h.popup.apply([access])
     h.popup.show()
     const count = h.requests.length
@@ -280,15 +294,40 @@ test("access grants and extensions require a fresh passkey and let the owner cho
     assert.match(h.popup.view().error!, /Enter your Chariox passkey/)
     h.popup.handleKey(key("tab"))
     assert.equal(h.popup.view().passkey.rememberMinutes, 0)
-    assert.equal(h.popup.view().passkey.accessLifetimeMinutes, 45)
+    assert.equal(h.popup.view().passkey.lifetime, 45)
     type(h, "fresh")
     h.popup.handleKey(key("return"))
-    assert.deepEqual(h.requests.at(-1), [kind, "approve", { passkey: "fresh", rememberMinutes: null, accessLifetimeMinutes: 45 }])
+    assert.deepEqual(h.requests.at(-1), [kind, "approve", { passkey: "fresh", rememberMinutes: null, accessLifetime: 45 }])
     h.resolve(); await settle()
   }
 })
 
-test("sudo always asks for a fresh passkey and has no remember or lifetime control", async () => {
+test("only a new access grant can last until the agent exits", async () => {
+  for (const [kind, afterMax] of [["access_grant", "until_exit"], ["access_extension", 5]] as const) {
+    const h = harness()
+    h.popup.apply([{ ...prompt(kind), kind, term: { minutes: 480 }, max_lifetime_minutes: 1440 }])
+    h.popup.show()
+    assert.equal(h.popup.view().passkey.lifetime, 480)
+    h.popup.handleKey(key("tab"))
+    assert.equal(h.popup.view().passkey.lifetime, 1440)
+    h.popup.handleKey(key("tab"))
+    assert.equal(h.popup.view().passkey.lifetime, afterMax, kind)
+    if (kind === "access_grant") {
+      type(h, "fresh")
+      h.popup.handleKey(key("return"))
+      assert.deepEqual(h.requests.at(-1), [kind, "approve", { passkey: "fresh", rememberMinutes: null, accessLifetime: "until_exit" }])
+    }
+  }
+})
+
+test("a request that asked for until-exit opens the popup on it", () => {
+  const h = harness()
+  h.popup.apply([{ ...prompt("access_grant"), kind: "access_grant", term: "until_holder_exits", max_lifetime_minutes: 1440 }])
+  h.popup.show()
+  assert.equal(h.popup.view().passkey.lifetime, "until_exit")
+})
+
+test("MP-08/MP-10/MP-11 A04 sudo asks for a fresh passkey and offers a 1-8 hour window", async () => {
   const h = harness()
   h.popup.apply([prompt("critical")])
   h.popup.show()
@@ -296,20 +335,85 @@ test("sudo always asks for a fresh passkey and has no remember or lifetime contr
   h.popup.handleKey(key("tab"))
   h.popup.handleKey(key("return"))
   h.resolve(); await settle()
-  const sudo = { ...prompt("sudo"), kind: "sudo" as const }
+  const sudo = { ...prompt("sudo"), kind: "sudo" as const, lifetime_minutes: 60, max_lifetime_minutes: 480 }
   assert.deepEqual(passkeyPromptsFromEvent([sudo]), [sudo])
   h.popup.apply([sudo])
   h.popup.show()
   const count = h.requests.length
   h.popup.handleKey(key("return"))
   await settle()
-  assert.equal(h.requests.length, count)
+  assert.equal(h.requests.length, count, "the remembered critical passkey never mints sudo")
   assert.match(h.popup.view().error!, /Enter your Chariox passkey/)
-  h.popup.handleKey(key("tab"))
+  assert.equal(h.popup.view().passkey.lifetime, 60)
+  const offered: Array<number | string> = [60]
+  for (let i = 0; i < 4; i++) {
+    h.popup.handleKey(key("tab"))
+    offered.push(h.popup.view().passkey.lifetime!)
+  }
+  assert.deepEqual(offered, [60, 120, 240, 480, 60])
   assert.equal(h.popup.view().passkey.rememberMinutes, 0)
-  assert.equal(h.popup.view().passkey.accessLifetimeMinutes, undefined)
+  h.popup.handleKey(key("tab"))
   type(h, "fresh")
   h.popup.handleKey(key("return"))
-  assert.deepEqual(h.requests.at(-1), ["sudo", "approve", { passkey: "fresh", rememberMinutes: null }])
+  assert.deepEqual(h.requests.at(-1), ["sudo", "approve", { passkey: "fresh", rememberMinutes: null, accessLifetime: 120 }])
   h.resolve(); await settle()
 })
+
+test("MP-08/MP-11 reconnect rejects stale acknowledgements and rechecks kernel presence", async () => {
+  const h = harness()
+  h.popup.apply([prompt("old")])
+  h.popup.show()
+  type(h, "pk")
+  h.popup.cycleRemember()
+  const pending = h.popup.approve()
+  h.popup.invalidateConnectionState()
+  h.resolve()
+  await pending
+  h.popup.apply([prompt("fresh")])
+  h.popup.show()
+  const check = h.popup.approve()
+  assert.deepEqual(h.requests[1], ["fresh", "approve"])
+  h.reject("PASSKEY_REQUIRED: enter your passkey")
+  await check
+  assert.match(h.popup.view().error ?? "", /Enter your Chariox passkey/)
+})
+
+test("MP-08/MP-11 resume keeps an already fresh prompt feed", () => {
+  const h = harness()
+  h.popup.invalidateConnectionState()
+  h.popup.apply([prompt("fresh")])
+  h.popup.invalidateConnectionState({preservePrompts: true})
+  assert.equal(h.popup.view().count, 1)
+  assert.equal(h.popup.view().prompt?.interaction_id, "fresh")
+})
+
+
+test("MP-08/MP-11 kernel countdown expires once and reports the unanswered extension", () => {
+  let now = 1_000
+  const h = harness({now: () => now, synchronize: async () => {}, invalidate() {}})
+  try {
+    h.popup.apply([{...prompt("timed"), kind: "access_extension", expires_at_ms: 4_000}])
+    assert.equal(h.popup.view().remainingMs, 3_000)
+    now = 4_001
+    h.popup.apply([])
+    assert.equal(h.popup.view().count, 0)
+    assert.deepEqual(h.notices, ["Extension request expired — access ended"])
+    h.popup.apply([])
+    assert.equal(h.notices.length, 1)
+  } finally {h.popup.dispose()}
+})
+
+for (const reason of ["expired", "answered", "revoked"] as const) {
+  test(`MP-08/MP-11 sudo closure ${reason} is authoritative with a lagging client clock`, () => {
+    const h = harness({now: () => 1_000, synchronize: async () => {}, invalidate() {}})
+    const pending = {...prompt("timed-sudo"), kind: "sudo" as const, expires_at_ms: 4_000}
+    const metadata = {kernel_now_ms: 4_001, closed: [{session_id: pending.session_id, interaction_id: pending.interaction_id, kind: pending.kind, expires_at_ms: pending.expires_at_ms, reason}]}
+    try {
+      h.popup.apply([pending], {kernel_now_ms: 1_000, closed: []})
+      h.popup.apply([], metadata)
+      h.popup.apply([], metadata)
+      assert.equal(h.popup.view().count, 0)
+      assert.deepEqual(h.notices, reason === "expired" ? ["Sudo request expired"] : [])
+    } finally {h.popup.dispose()}
+  })
+}

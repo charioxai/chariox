@@ -291,4 +291,6 @@ pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
     "terminal_relay_authorization_renewal_v1",
     "exact_prompt_cancellation_v499",
     "owner_managed_context_transfer_v1",
+    "machine_gateway_v1",
+    "room_terminal_v1",
 ];

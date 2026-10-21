@@ -144,6 +144,13 @@ impl CommandRouter {
         self.runtime_state.passkey_prompts_for(user_id)
     }
 
+    pub(crate) fn passkey_prompt_closure_reason(
+        &self,
+        prompt: &crate::local::PasskeyPrompt,
+    ) -> crate::local::PasskeyPromptClosureReason {
+        self.runtime_state.passkey_prompt_closure_reason(prompt)
+    }
+
     pub(crate) fn passkey_prompt_change_sequence(&self) -> u64 {
         self.runtime_state.passkey_prompt_change_sequence()
     }
@@ -246,6 +253,16 @@ impl CommandRouter {
     pub(crate) fn transport_remote_machines_snapshot(&self) -> Vec<RemoteMachineRecord> {
         let (machines, _) = self.remote_relay_inventory_projection.snapshot();
         machines
+    }
+
+    pub(crate) fn client_catalog_change_sequence(&self) -> u64 {
+        self.provider_catalog_projection.change_sequence()
+    }
+
+    pub(crate) async fn wait_for_client_catalog_change_after(&self, sequence: u64) {
+        self.provider_catalog_projection
+            .wait_for_change_after(sequence)
+            .await;
     }
 
     pub(crate) fn transport_provider_catalog_snapshot(&self) -> Option<OpenCodeProviderCatalog> {

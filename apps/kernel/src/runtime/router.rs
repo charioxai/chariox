@@ -31,12 +31,15 @@ mod dispatch;
 pub(crate) mod event_connection_lifecycle;
 mod kernel_access;
 mod managed_context_bridge;
+mod session_view;
 pub(crate) use managed_context_bridge::{
     RelayManagedContextArmRequest, RelayManagedContextChunkRequest,
 };
 mod app_event_routes;
+mod app_pre_lane;
 mod meta_runtime_command;
 mod pre_lane_dispatch;
+mod pre_lane_request;
 mod priority_dispatch;
 mod refresh_dispatch;
 mod relay_peer_bridge;
@@ -91,6 +94,7 @@ pub(crate) struct CommandRouter {
     terminal_output_executor: TerminalOutputExecutor,
     workspace_coordinator: WorkspaceCoordinator,
     provider_launch_pending: ProviderLaunchPendingTracker,
+    machine_gateway: Arc<crate::runtime::machine_gateway::MachineGateway>,
 }
 
 #[cfg(test)]
@@ -166,6 +170,13 @@ mod tests {
             )
             .expect("provider run should launch");
         app.update_provider_run_projection(provider_run.clone());
+        if app.config().room_agent_tools {
+            crate::test_support::admit_room_test_turn(app, session_id, agent_id);
+            return app
+                .providers()
+                .get_run_for_agent(session_id, agent_id)
+                .unwrap();
+        }
         provider_run
     }
 
@@ -202,6 +213,7 @@ mod tests {
     mod agent_messaging;
     mod agent_prompt_schedules;
     mod app_bindings;
+    mod app_capability_grants;
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     mod app_open;
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -209,9 +221,13 @@ mod tests {
     mod browser_import;
     mod credential_enrollment;
     mod interactive_command_admission;
+    mod kernel_browser;
     mod lease_worker_authority;
     mod m16_runtime_extension_registration;
     mod m23_metaagent_runtime_tools;
+    mod normal_stack;
+    #[cfg(unix)]
+    mod provider_login_copy;
     mod provider_projection;
     #[cfg(unix)]
     mod provider_setup_token;
@@ -219,11 +235,15 @@ mod tests {
     mod remote_agent_message_origin;
     mod remote_authorization;
     mod remote_workspace_live_sync_authorization;
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    mod user_app_views;
     // Kernel resource telemetry reads /proc; other platforms report it as unsupported.
     mod agent_workflow;
     #[cfg(target_os = "linux")]
     mod resource_telemetry;
     mod room_environment_placement;
+    #[cfg(unix)]
+    mod room_terminal;
     mod runtime_persistence;
     mod session_actor_projection;
     mod session_lifecycle_projection;
@@ -231,6 +251,7 @@ mod tests {
     mod stack_budget;
     mod status_projection;
     mod terminal_output_projection;
+    mod terminal_tools;
     mod workflow_revision;
 
     fn attach_request(session_id: &str, client_id: &str) -> LocalDaemonRequest {

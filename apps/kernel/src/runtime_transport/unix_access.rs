@@ -32,6 +32,13 @@ pub(super) async fn admit_frame(
     };
     if let Some(turn) = sudo {
         let verdict = match frame {
+            // A sudo window is one turn on this kernel; it does not reach other machines.
+            KernelIncomingFrame::Request {
+                machine: Some(_), ..
+            }
+            | KernelIncomingFrame::Subscribe {
+                machine: Some(_), ..
+            } => Err(Refusal::NotCovered),
             KernelIncomingFrame::Request { request, .. } => runtime_state
                 .authorize_sudo_request(&turn.entry_id, request)
                 .map(|_| ())
@@ -41,8 +48,13 @@ pub(super) async fn admit_frame(
                 attachment_id,
                 subscription_scope,
                 ..
-            } => (kernel_subscription_scope(subscription_scope.as_deref())
-                != KernelSubscriptionScope::WaitingRoomInventory
+            } => (session_id == &turn.session_id
+                && runtime_state
+                    .attachment_owner_user_id(attachment_id)
+                    .await
+                    .is_ok_and(|owner| owner == turn.owner_user_id)
+                && kernel_subscription_scope(subscription_scope.as_deref())
+                    != KernelSubscriptionScope::WaitingRoomInventory
                 && router
                     .session_id_for_attachment_access(attachment_id)
                     .as_deref()
@@ -89,9 +101,12 @@ pub(super) async fn admit_frame(
         );
         return Err(());
     }
+    // A grant request that names a machine is a gateway request: the gateway
+    // policy below refuses it, so it never raises a popup on this kernel.
     if let KernelIncomingFrame::Request {
         request_id,
         request: crate::local::LocalDaemonRequest::RequestKernelAccess(request),
+        machine: None,
         ..
     } = frame
     {
@@ -134,6 +149,7 @@ pub(super) async fn admit_frame(
                     &close_requested,
                     &health,
                     KernelOutgoingFrame::Response {
+                        machine: None,
                         request_id,
                         response: Box::new(None),
                         error: Some(KernelTransportError {
@@ -183,6 +199,7 @@ pub(super) async fn admit_frame(
                 &close_requested,
                 &health,
                 KernelOutgoingFrame::Response {
+                    machine: None,
                     request_id,
                     response: Box::new(response),
                     error,
@@ -208,6 +225,18 @@ pub(super) async fn admit_frame(
             None if runtime_state.access_ended_for(peer) => Err(Refusal::Ended),
             None => Err(Refusal::NotCovered),
             Some(grant) => match frame {
+                // The target kernel owns the interaction and the session; the
+                // origin checks the grant and the request shape only.
+                KernelIncomingFrame::Request {
+                    request,
+                    machine: Some(_),
+                    ..
+                } => runtime_state
+                    .authorize_gateway_request(&grant.summary.grant_id, request)
+                    .map_err(|error| Refusal::of(&error)),
+                KernelIncomingFrame::Subscribe {
+                    machine: Some(_), ..
+                } => Ok(()),
                 KernelIncomingFrame::Request { request, .. } => runtime_state
                     .authorize_external_request(&grant.summary.grant_id, request)
                     .map_err(|error| Refusal::of(&error)),
@@ -274,6 +303,7 @@ fn deny_frame(
         close_requested,
         &runtime.transport_health,
         KernelOutgoingFrame::Response {
+            machine: None,
             request_id,
             response: Box::new(None),
             error: Some(KernelTransportError {
@@ -363,4 +393,258 @@ pub(super) fn command_cache_id(peer: &ProcessIdentity, command: &KernelCommand) 
         command.command_id,
     ])
     .to_string()
+}
+
+/// What a grant holder asks of the machine gateway.
+pub(super) enum GatewayRoute {
+    List,
+    Forward {
+        machine: String,
+        request: Box<crate::local::LocalDaemonRequest>,
+    },
+}
+
+const SUBSCRIPTION_SILENCE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Serves an admitted subscription on another machine: the target's events are
+/// relayed to this connection until the agent unsubscribes or the machine stops
+/// answering, which the agent is told with the subscribe request's own id.
+pub(super) async fn serve_gateway_subscription(
+    connection: &IncomingConnection<'_>,
+    request_id: String,
+    machine: String,
+    request: crate::runtime::machine_gateway::SubscribeRequest,
+) {
+    let IncomingConnection {
+        runtime,
+        router,
+        connection_state,
+        outgoing_tx,
+        close_tx,
+        close_requested,
+        ..
+    } = *connection;
+    let gateway = Arc::clone(router.machine_gateway());
+    let health = runtime.transport_health.clone();
+    let (outgoing_tx, close_tx, close_requested) = (
+        outgoing_tx.clone(),
+        close_tx.clone(),
+        Arc::clone(close_requested),
+    );
+    let task = tokio::spawn(async move {
+        let send = |frame| {
+            try_send_outgoing_frame(
+                &outgoing_tx,
+                &close_tx,
+                &close_requested,
+                &health,
+                frame,
+                None,
+                None,
+            )
+        };
+        let subscription = match gateway.subscribe(&machine, request).await {
+            Ok(subscription) => subscription,
+            Err(failure) => {
+                send(KernelOutgoingFrame::Response {
+                    machine: Some(machine),
+                    request_id,
+                    response: Box::new(None),
+                    error: Some(failure.transport_error()),
+                });
+                return;
+            }
+        };
+        let crate::runtime::machine_gateway::ForwardedSubscription {
+            ack, mut events, ..
+        } = subscription;
+        if !send(KernelOutgoingFrame::Response {
+            machine: Some(machine.clone()),
+            request_id: request_id.clone(),
+            response: Box::new(Some(ack)),
+            error: None,
+        }) {
+            return;
+        }
+        let mut last_event_id = None;
+        // The machine sends a heartbeat every 5 s; silence for six of them means it is gone
+        // (the relay does not say so when a target dies with a subscription open).
+        while let Ok(Some((event_id, body))) =
+            tokio::time::timeout(SUBSCRIPTION_SILENCE, events.recv()).await
+        {
+            let Ok(event) = serde_json::from_slice::<KernelEvent>(&body) else {
+                continue;
+            };
+            last_event_id = Some(event_id);
+            // An event an external peer may not see is skipped, not offered to the writer:
+            // a denied frame stops it for good.
+            if !super::outbound::is_public_event(&event) {
+                continue;
+            }
+            if !send(KernelOutgoingFrame::Event {
+                event_id,
+                machine: Some(machine.clone()),
+                event: Box::new(event),
+            }) {
+                return;
+            }
+        }
+        let ended = crate::runtime::machine_gateway::GatewayError::SubscriptionEnded {
+            name: machine.clone(),
+            last_event_id,
+        };
+        send(KernelOutgoingFrame::Response {
+            machine: Some(machine),
+            request_id,
+            response: Box::new(None),
+            error: Some(ended.transport_error()),
+        });
+    });
+    let mut state = connection_state.lock().await;
+    if let Some(previous) = state.watch_task.replace(task) {
+        previous.abort();
+    }
+}
+
+/// Serves an admitted gateway request and answers on the same connection. The
+/// permit bounds concurrent gateway requests like any other request.
+pub(super) fn serve_gateway(
+    connection: &IncomingConnection<'_>,
+    caller: &KernelCaller,
+    request_id: String,
+    command_id: Option<String>,
+    route: GatewayRoute,
+) {
+    let IncomingConnection {
+        runtime,
+        router,
+        inbound_request_admission,
+        connection_inbound_request_permits,
+        outgoing_tx,
+        close_tx,
+        close_requested,
+        ..
+    } = *connection;
+    let permit = match inbound_request_admission.try_acquire(
+        connection_inbound_request_permits,
+        &KernelCommandPriority::Normal,
+    ) {
+        Ok(permit) => permit,
+        Err(error) => {
+            runtime.transport_health.record_inbound_overload_rejection();
+            let _ = try_send_outgoing_frame(
+                outgoing_tx,
+                close_tx,
+                close_requested,
+                &runtime.transport_health,
+                KernelOutgoingFrame::Response {
+                    machine: None,
+                    request_id,
+                    response: Box::new(None),
+                    error: Some(KernelTransportError {
+                        code: "kernel_request_overloaded".into(),
+                        message: format!("kernel request admission queue overloaded: {error}"),
+                        retryable: true,
+                    }),
+                },
+                None,
+                None,
+            );
+            return;
+        }
+    };
+    let grant_id = caller.caller_id.clone();
+    let harness = router
+        .runtime_state()
+        .access_grant_summary(&grant_id)
+        .map(|grant| {
+            std::path::Path::new(&grant.holder_executable)
+                .file_name()
+                .map_or_else(
+                    || grant.holder_executable.clone(),
+                    |n| n.to_string_lossy().into(),
+                )
+        })
+        .unwrap_or_else(|| "unknown".into());
+    let router = Arc::clone(router);
+    let health = runtime.transport_health.clone();
+    let (outgoing_tx, close_tx, close_requested) = (
+        outgoing_tx.clone(),
+        close_tx.clone(),
+        Arc::clone(close_requested),
+    );
+    tokio::spawn(async move {
+        let _permit = permit;
+        let command_id = command_id.unwrap_or_else(|| request_id.clone());
+        let origin = crate::runtime::machine_gateway::Origin { grant_id, harness };
+        let echoed = match &route {
+            GatewayRoute::Forward { machine, .. } => Some(machine.clone()),
+            GatewayRoute::List => None,
+        };
+        let started = std::time::Instant::now();
+        let audited = match &route {
+            GatewayRoute::Forward { machine, request }
+                if !crate::runtime::machine_gateway::ledger::is_repeatable(request) =>
+            {
+                Some((
+                    machine.clone(),
+                    crate::runtime::machine_gateway::ledger::variant_name(request),
+                ))
+            }
+            _ => None,
+        };
+        let outcome = match route {
+            GatewayRoute::Forward { machine, request } => {
+                let gateway = router.machine_gateway();
+                let answered = gateway
+                    .forward(
+                        &machine,
+                        &origin,
+                        &command_id,
+                        &request,
+                        crate::runtime::machine_gateway::ledger::deadline_for(&request),
+                    )
+                    .await;
+                if let Ok(response) = &answered {
+                    gateway.note_forwarded(&machine, &origin, &request, response);
+                }
+                answered
+            }
+            GatewayRoute::List => router.machine_gateway().machines().await.map(|machines| {
+                serde_json::to_value(crate::local::LocalDaemonResponse::GatewayMachinesListed {
+                    machines,
+                })
+                .expect("machine list serializes")
+            }),
+        };
+        if let Some((machine, kind)) = audited {
+            router.runtime_state().audit_gateway_forward(
+                &origin.grant_id,
+                &machine,
+                &kind,
+                outcome
+                    .as_ref()
+                    .map_or_else(|failure| failure.code(), |_| "ok"),
+                u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            );
+        }
+        let (response, error) = match outcome {
+            Ok(value) => (Some(value), None),
+            Err(failure) => (None, Some(failure.transport_error())),
+        };
+        let _ = try_send_outgoing_frame(
+            &outgoing_tx,
+            &close_tx,
+            &close_requested,
+            &health,
+            KernelOutgoingFrame::Response {
+                machine: echoed,
+                request_id,
+                response: Box::new(response),
+                error,
+            },
+            None,
+            None,
+        );
+    });
 }

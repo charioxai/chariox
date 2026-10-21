@@ -231,13 +231,13 @@ impl KernelRuntimeOwnedState {
         started: &crate::app::StartedProviderLaunch,
         binding: Option<crate::provider::ProviderRuntimeBinding>,
     ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
-        let previous_active_run = started
-            .previous_active_run_id
-            .as_deref()
-            .and_then(|run_id| self.provider_store.get_run(run_id).ok());
         let run = self
             .provider_store
             .finish_current_launch(&started.run, binding)?;
+        crate::app::ProviderProcessTracker::bind_endpoint_identity(
+            &self.provider_process_tracking,
+            &run,
+        );
         self.session_store
             .set_active_provider_run(run.session_id(), Some(run.id().to_string()))?;
         let _ = self.session_snapshot(run.session_id())?;
@@ -274,9 +274,6 @@ impl KernelRuntimeOwnedState {
                 Some(run.id()),
                 None,
             )?;
-        }
-        if let Some(previous_active_run) = previous_active_run.as_ref() {
-            self.prepare_provider_switch_context_handoff(previous_active_run, &run);
         }
         self.provider_run_projection.update(run.clone());
         Ok(run)

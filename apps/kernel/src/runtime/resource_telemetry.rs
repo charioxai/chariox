@@ -243,6 +243,10 @@ fn read_meminfo_kib(contents: &str, key: &str) -> Result<u64, DaemonError> {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(
+    clippy::useless_conversion,
+    reason = "statvfs field widths vary between Linux architectures"
+)]
 fn read_disk_metrics(path: &Path) -> Result<KernelResourceTelemetryDisk, DaemonError> {
     if !path.is_dir() {
         return Err(telemetry_error(format!(

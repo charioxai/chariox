@@ -172,6 +172,25 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn mp08_index_walks_a_workspace_beyond_twenty_thousand_files() {
+    let fixture = Fixture::new();
+    for directory in 0..25 {
+        let directory = fixture.0.join(format!("d{directory}"));
+        std::fs::create_dir(&directory).unwrap();
+        for file in 0..1_000 {
+            std::fs::write(directory.join(format!("f{file}.txt")), b"x").unwrap();
+        }
+    }
+    std::fs::write(
+        fixture.0.join("config.ts"),
+        b"const a = process.env.DATABASE_URL\n",
+    )
+    .unwrap();
+    let index = index_project_environment(&fixture.workspaces(), &BTreeMap::new()).unwrap();
+    assert_eq!(index.references.len(), 1);
+}
+
+#[test]
 fn mp08_resolver_captures_only_referenced_names_and_refreshes_values() {
     let fixture = Fixture::new();
     std::fs::write(
@@ -269,6 +288,57 @@ fn mp08_resolver_rejects_symlink_fifo_and_ambiguous_assignments() {
     );
     assert!(vault.0.lock().unwrap().is_empty());
     assert!(resolver::open_workspace_file(&fixture.0, "../escape").is_err());
+}
+
+#[test]
+fn mp08_store_persists_the_evidence_of_a_workspace_with_tens_of_thousands_of_files() {
+    let fixture = Fixture::new();
+    let mut paths = Vec::new();
+    for directory in 0..45 {
+        let relative = format!("d{directory}");
+        std::fs::create_dir(fixture.0.join(&relative)).unwrap();
+        for file in 0..1_000 {
+            let relative = format!("{relative}/file-{file}.txt");
+            std::fs::write(fixture.0.join(&relative), relative.as_bytes()).unwrap();
+            paths.push(relative);
+        }
+    }
+    let evidence = ProjectEnvironmentEvidence::capture(
+        &fixture.workspaces(),
+        &BTreeMap::from([("web".to_string(), paths)]),
+    )
+    .unwrap();
+    let mut manifest = fixture_manifest(vec![]);
+    manifest.evidence_digest = evidence.digest();
+    let state = StoredProjectEnvironment {
+        source: None,
+        manifest,
+        evidence,
+        reported_missing: Default::default(),
+        reviewed_manifest: None,
+        last_review: None,
+    };
+    let store = ProjectEnvironmentStore::new(&fixture.0.join("private"));
+    store.save(&state).unwrap();
+    assert_eq!(store.load("fixture-project").unwrap(), Some(state));
+}
+
+// The workspace count is not bounded: a transfer of many repositories captures evidence for all.
+#[test]
+fn mp08_evidence_covers_more_than_thirty_two_workspaces() {
+    let fixture = Fixture::new();
+    let mut workspaces = BTreeMap::new();
+    let mut paths = BTreeMap::new();
+    for index in 0..40 {
+        let name = format!("repo-{index}");
+        let root = fixture.0.join(&name);
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("package-lock.json"), name.as_bytes()).unwrap();
+        workspaces.insert(name.clone(), root);
+        paths.insert(name, vec!["package-lock.json".to_string()]);
+    }
+    let evidence = ProjectEnvironmentEvidence::capture(&workspaces, &paths).unwrap();
+    assert_eq!(evidence.files.len(), 40);
 }
 
 #[test]
@@ -1210,6 +1280,374 @@ fn mp08_mp10_configfile_reference_reaches_discovery_without_contents() {
     assert!(!prompt.contains("synthetic-private-value") && !prompt.contains("synthetic-pem-value"));
 }
 
+// MP-08 / MP-10 / MP-11: Gitignored files have no count ceiling. Only a bounded
+// set is offered to the utility, hand-placed files first; the kernel decides the rest.
+#[test]
+fn mp08_discovery_decides_a_gitignored_inventory_beyond_the_prompt_budget() {
+    let mut candidates: Vec<_> = (0..30_000)
+        .map(|index| ProjectPrivateFileCandidate {
+            workspace_id: "web".into(),
+            path: format!("generated/bucket-{}/entry-{index}.txt", index % 97),
+            bytes: 10,
+            secret_looking: false,
+        })
+        .collect();
+    // A single hand-placed file sorts after every bulk file but must still be offered.
+    candidates.push(ProjectPrivateFileCandidate {
+        workspace_id: "web".into(),
+        path: "zz-config/local.json".into(),
+        bytes: 10,
+        secret_looking: false,
+    });
+    let manifest = fixture_manifest(vec![]);
+    let input = ProjectEnvironmentDiscoveryInput {
+        project_id: manifest.project_id.clone(),
+        evidence_digest: manifest.evidence_digest.clone(),
+        // The first export reports every inventory file as changed.
+        changed_paths: BTreeMap::from([(
+            "web".to_string(),
+            candidates.iter().map(|c| c.path.clone()).collect(),
+        )]),
+        previous_manifest: None,
+        references: vec![],
+        private_files: candidates.clone(),
+        revision: None,
+    };
+    let prompt = project_environment_discovery_prompt(&input).unwrap();
+    assert!(prompt.len() < 64 * 1024, "{}", prompt.len());
+    let offered = discovery::offered_private_files(&candidates);
+    assert_eq!(offered.len(), 32, "a real turn loses track of long lists");
+    assert_eq!(offered[0].path, "zz-config/local.json");
+    assert!(prompt.contains("zz-config/local.json"));
+    let left_out = candidates
+        .iter()
+        .find(|candidate| !offered.iter().any(|o| o.path == candidate.path))
+        .unwrap()
+        .clone();
+    assert!(!prompt.contains(&left_out.path));
+    let mut answer = manifest;
+    answer.private_files = offered
+        .iter()
+        .map(|candidate| ProjectPrivateFileDecision {
+            workspace_id: candidate.workspace_id.clone(),
+            path: candidate.path.clone(),
+            bring: false,
+            reason: "Generated cache".into(),
+            secret_looking: false,
+        })
+        .collect();
+    let offered = offered.len();
+    let decided = parse_project_environment_discovery_output(
+        &serde_json::to_string(&answer).unwrap(),
+        &input,
+    )
+    .unwrap();
+    let reviewed = |manifest: &ProjectEnvironmentManifest| {
+        manifest
+            .private_files
+            .iter()
+            .filter(|file| file.reason != UNREVIEWED_PRIVATE_FILE_REASON)
+            .count()
+    };
+    assert_eq!(reviewed(&decided), offered);
+    assert_eq!(decided.private_files.len(), candidates.len());
+    // The candidate's size echoed beside a decision is ignored, not an invalid answer.
+    let mut echoed: serde_json::Value = serde_json::to_value(&answer).unwrap();
+    echoed["private_files"][0]["bytes"] = 10.into();
+    parse_project_environment_discovery_output(&echoed.to_string(), &input).unwrap();
+    // An earlier explicit decision for a file beyond the offered set survives.
+    let mut previous = fixture_manifest(vec![]);
+    previous.private_files = vec![ProjectPrivateFileDecision {
+        workspace_id: "web".into(),
+        path: left_out.path.clone(),
+        bring: true,
+        reason: "Needed local tooling".into(),
+        secret_looking: false,
+    }];
+    let revised_input = ProjectEnvironmentDiscoveryInput {
+        previous_manifest: Some(previous.clone()),
+        ..input.clone()
+    };
+    let kept = parse_project_environment_discovery_output(
+        &serde_json::to_string(&answer).unwrap(),
+        &revised_input,
+    )
+    .unwrap();
+    assert_eq!(reviewed(&kept), offered + 1);
+    assert!(kept.private_files.contains(&previous.private_files[0]));
+    // A model that derails partway (an entry without `bring`) leaves the rest undecided, not failed.
+    let mut partial: serde_json::Value = serde_json::to_value(&answer).unwrap();
+    let items = partial["private_files"].as_array_mut().unwrap();
+    items.truncate(20);
+    items.push(serde_json::json!({"workspace_id": "web", "path": "generated/bucket-1/entry-1.txt", "bytes": 10}));
+    let partial = parse_project_environment_discovery_output(&partial.to_string(), &input).unwrap();
+    assert_eq!(reviewed(&partial), 20);
+    assert_eq!(partial.private_files.len(), candidates.len());
+    // A decision for a file it was never offered, or a duplicate, is ignored.
+    let mut noisy = answer.clone();
+    noisy.private_files[0].path = "not-in-the-inventory".into();
+    noisy.private_files.push(noisy.private_files[1].clone());
+    let noisy =
+        parse_project_environment_discovery_output(&serde_json::to_string(&noisy).unwrap(), &input)
+            .unwrap();
+    assert_eq!(reviewed(&noisy), offered - 1);
+}
+
+fn discovery_input_for(
+    candidates: Vec<ProjectPrivateFileCandidate>,
+    changed: Vec<String>,
+    references: Vec<ProjectEnvironmentEntry>,
+) -> ProjectEnvironmentDiscoveryInput {
+    let manifest = fixture_manifest(vec![]);
+    ProjectEnvironmentDiscoveryInput {
+        project_id: manifest.project_id,
+        evidence_digest: manifest.evidence_digest,
+        changed_paths: BTreeMap::from([("web".to_string(), changed)]),
+        previous_manifest: None,
+        references,
+        private_files: candidates,
+        revision: None,
+    }
+}
+
+fn one_directory_candidates(count: usize) -> Vec<ProjectPrivateFileCandidate> {
+    (0..count)
+        .map(|index| ProjectPrivateFileCandidate {
+            workspace_id: "web".into(),
+            path: format!("local-assets/chunk-{index:05}.js"),
+            bytes: 10,
+            secret_looking: false,
+        })
+        .collect()
+}
+
+// A model reply that is valid JSON but not an object is an invalid answer, never a panic.
+#[test]
+fn mp08_discovery_rejects_output_that_is_not_an_object() {
+    let input = discovery_input_for(vec![], vec![], vec![]);
+    for output in ["[]", "true", "\"x\"", "3", "null"] {
+        let error = parse_project_environment_discovery_output(output, &input)
+            .expect_err(output)
+            .to_string();
+        assert!(
+            error.contains("invalid Project environment discovery output"),
+            "{output}: {error}"
+        );
+    }
+}
+
+// The prompt is built from bounded input: tracked changed paths no reference or offered file
+// uses cannot push the export over the prompt limit.
+#[test]
+fn mp08_discovery_prompt_stays_bounded_with_many_tracked_changed_paths() {
+    let mut reference = entry("DATABASE_URL", ProjectEnvironmentLocator::Missing);
+    reference.uses[0].path = "src/db.ts".into();
+    let mut changed: Vec<String> = (0..30_000)
+        .map(|index| {
+            format!(
+                "packages/pkg-{}/src/module-{index:05}/index.ts",
+                index % 300
+            )
+        })
+        .collect();
+    changed.push("src/db.ts".into());
+    let input = discovery_input_for(vec![], changed, vec![reference]);
+    let prompt = project_environment_discovery_prompt(&input).unwrap();
+    assert!(prompt.len() < 64 * 1024, "{}", prompt.len());
+    assert!(prompt.contains("src/db.ts") && prompt.contains("DATABASE_URL"));
+    assert!(!prompt.contains("module-00042"));
+}
+
+// Nothing drops silently: files the utility is not shown stay as explicit leave-behind
+// decisions the owner can see and select in the review.
+#[test]
+fn mp08_discovery_keeps_unoffered_ignored_files_as_visible_leave_behind_decisions() {
+    for count in [33, 5_000] {
+        let candidates = one_directory_candidates(count);
+        let input = discovery_input_for(
+            candidates.clone(),
+            candidates.iter().map(|c| c.path.clone()).collect(),
+            vec![],
+        );
+        let offered = discovery::offered_private_files(&candidates);
+        assert_eq!(offered.len(), 32);
+        let mut answer = fixture_manifest(vec![]);
+        answer.private_files = offered
+            .iter()
+            .map(|candidate| ProjectPrivateFileDecision {
+                workspace_id: candidate.workspace_id.clone(),
+                path: candidate.path.clone(),
+                bring: true,
+                reason: "Needed local tooling".into(),
+                secret_looking: false,
+            })
+            .collect();
+        let manifest = parse_project_environment_discovery_output(
+            &serde_json::to_string(&answer).unwrap(),
+            &input,
+        )
+        .unwrap();
+        assert_eq!(
+            manifest.private_files.len(),
+            count,
+            "every candidate has a decision"
+        );
+        let unreviewed = manifest
+            .private_files
+            .iter()
+            .filter(|file| file.reason == UNREVIEWED_PRIVATE_FILE_REASON)
+            .collect::<Vec<_>>();
+        assert_eq!(unreviewed.len(), count - 32);
+        assert!(unreviewed.iter().all(|file| !file.bring));
+        assert_eq!(
+            manifest
+                .private_files
+                .iter()
+                .filter(|file| file.bring)
+                .count(),
+            32
+        );
+
+        // The review says how many were not offered and lists paths in its details.
+        let mut state = review_state();
+        state.manifest = manifest;
+        let review = ProjectEnvironmentReview::build(&state, "p", "t", "code".into(), true, false);
+        let row = review
+            .rows
+            .iter()
+            .find(|row| row.label == "Not reviewed")
+            .unwrap();
+        assert!(
+            row.summary.contains(&(count - 32).to_string()),
+            "{}",
+            row.summary
+        );
+        assert!(review.files.len() < 1_000, "{}", review.files.len());
+        assert!(review
+            .files
+            .iter()
+            .any(|file| file.reason == UNREVIEWED_PRIVATE_FILE_REASON));
+        let collapsed =
+            ProjectEnvironmentReview::build(&state, "p", "t", "code".into(), false, false);
+        assert!(collapsed
+            .files
+            .iter()
+            .all(|file| file.reason != UNREVIEWED_PRIVATE_FILE_REASON));
+
+        // One action copies them all (secret-looking files stay behind); another skips them again.
+        state.manifest.private_files[count - 1].secret_looking = true;
+        let moved = set_unreviewed_project_private_files(&mut state, true);
+        assert_eq!(moved, count - 32 - 1);
+        assert_eq!(
+            state
+                .manifest
+                .private_files
+                .iter()
+                .filter(|file| file.bring)
+                .count(),
+            count - 1
+        );
+        state.manifest.validate().unwrap();
+        let brought = ProjectEnvironmentReview::build(&state, "p", "t", "code".into(), true, false);
+        assert!(brought.files.len() < 1_000, "{}", brought.files.len());
+        assert_eq!(
+            unreviewed_project_private_files(&state.manifest),
+            (1, count - 32 - 1)
+        );
+        set_unreviewed_project_private_files(&mut state, false);
+        assert_eq!(
+            state
+                .manifest
+                .private_files
+                .iter()
+                .filter(|file| file.bring)
+                .count(),
+            32
+        );
+        let after = ProjectEnvironmentReview::build(&state, "p", "t", "code".into(), true, false);
+        assert!(after.rows.iter().any(|row| row.label == "Not reviewed"));
+    }
+}
+
+// With more not-reviewed files than one page lists, every file stays individually selectable:
+// by paging, by search, and after bringing them all (to leave a single one behind).
+#[test]
+fn mp08_review_keeps_individual_controls_for_every_not_reviewed_file() {
+    let count = 133;
+    let mut state = review_state();
+    state.manifest.private_files = one_directory_candidates(count)
+        .into_iter()
+        .map(|candidate| ProjectPrivateFileDecision {
+            workspace_id: candidate.workspace_id,
+            path: candidate.path,
+            bring: false,
+            reason: UNREVIEWED_PRIVATE_FILE_REASON.into(),
+            secret_looking: false,
+        })
+        .collect();
+    let last = state.manifest.private_files[count - 1].path.clone();
+    let listed = |state: &StoredProjectEnvironment, view: &UnreviewedFilesView| {
+        ProjectEnvironmentReview::build_with_view(state, "p", "t", "code".into(), true, false, view)
+            .files
+            .into_iter()
+            .map(|file| file.path)
+            .collect::<Vec<_>>()
+    };
+    let first_page = listed(&state, &UnreviewedFilesView::default());
+    assert_eq!(first_page.len(), LISTED_UNREVIEWED_FILES);
+    assert!(!first_page.contains(&last));
+    // Page two reaches the rest.
+    let second = UnreviewedFilesView {
+        offset: LISTED_UNREVIEWED_FILES,
+        query: String::new(),
+    };
+    assert!(listed(&state, &second).contains(&last));
+    // Search reaches it from the first page.
+    let found = UnreviewedFilesView {
+        offset: 0,
+        query: last.to_uppercase(),
+    };
+    assert_eq!(listed(&state, &found), vec![last.clone()]);
+    assert_eq!(found.matching(&state.manifest), 1);
+
+    // Bringing everything keeps the files listed, so one can still be left behind.
+    set_unreviewed_project_private_files(&mut state, true);
+    let after_bring = listed(&state, &second);
+    assert!(after_bring.contains(&last));
+    let id = project_environment_item_id("web", &last);
+    flip_project_environment_item(&mut state, &id, true).unwrap();
+    let decision = state
+        .manifest
+        .private_files
+        .iter()
+        .find(|file| file.path == last)
+        .unwrap();
+    assert!(!decision.bring);
+    assert_eq!(
+        state
+            .manifest
+            .private_files
+            .iter()
+            .filter(|f| f.bring)
+            .count(),
+        count - 1
+    );
+}
+
+// A workspace with more ignored files than any fixed ceiling still exports.
+#[test]
+fn mp08_discovery_decides_every_ignored_file_of_a_very_large_inventory() {
+    let candidates = one_directory_candidates(30_000);
+    let input = discovery_input_for(vec![], vec![], vec![]);
+    let input = ProjectEnvironmentDiscoveryInput {
+        private_files: candidates,
+        ..input
+    };
+    let answer = serde_json::to_string(&fixture_manifest(vec![])).unwrap();
+    let manifest = parse_project_environment_discovery_output(&answer, &input).unwrap();
+    assert_eq!(manifest.private_files.len(), 30_000);
+}
+
 // MP-08 / MP-10 / MP-11: A declaration named password is code evidence, not a config secret.
 #[test]
 fn mp08_mp10_reference_code_changes_invalidate_discovery() {
@@ -1724,7 +2162,7 @@ fn mp08_mp10_mp11_foreign_owned_mounted_config_is_private_and_transactional() {
         return;
     }
     // A UID-dropped worker must not depend on a private TMPDIR's ancestors.
-    let fixture = Fixture::new_in(Path::new("/tmp"));
+    let fixture = Fixture::new_in(Path::new("/var/tmp"));
     std::fs::set_permissions(&fixture.0, std::fs::Permissions::from_mode(0o775)).unwrap();
     let directory = std::ffi::CString::new(fixture.0.as_os_str().as_encoded_bytes()).unwrap();
     assert_eq!(unsafe { libc::chown(directory.as_ptr(), 0, 31001) }, 0);

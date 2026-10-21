@@ -1,0 +1,17 @@
+{
+  "state_keys": ["browser_lockdown", "chrome_window", "generation", "state", "tabs", "viewport"],
+  "chrome_window_keys": ["active_tab_id", "window_generation"],
+  "browser_lockdown": ["managed", "unavailable"],
+  "response": {
+    "KernelBrowser": {
+      "result": {
+        "state": "ready",
+        "generation": 7,
+        "tabs": [],
+        "viewport": { "width": 1280, "height": 800, "device_scale_factor": 2 },
+        "chrome_window": { "window_generation": 3, "active_tab_id": "tab-2" },
+        "browser_lockdown": "managed"
+      }
+    }
+  }
+}

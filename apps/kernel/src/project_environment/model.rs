@@ -60,6 +60,13 @@ pub struct ProjectEnvironmentEntry {
     pub status: ProjectEnvironmentEntryStatus,
 }
 
+/// The reason of a leave-behind decision for an ignored file no utility turn reviewed.
+pub const UNREVIEWED_PRIVATE_FILE_REASON: &str =
+    "Not reviewed: too many ignored files for one review";
+/// The reason after the owner brought every unreviewed ignored file with one action.
+pub const BROUGHT_UNREVIEWED_PRIVATE_FILE_REASON: &str =
+    "Brought with all not-reviewed ignored files";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectPrivateFileDecision {
@@ -123,9 +130,6 @@ impl ProjectEnvironmentManifest {
             || !self.evidence_digest.bytes().all(|b| b.is_ascii_hexdigit())
         {
             return Err("invalid Project environment manifest identity or bounds");
-        }
-        if self.private_files.len() > 20_000 {
-            return Err("private file decision bounds exceeded");
         }
         let mut paths = BTreeSet::new();
         for file in &self.private_files {
@@ -215,7 +219,13 @@ impl ProjectEnvironmentManifest {
                 return Err("invalid Project environment hint");
             }
         }
-        if serde_json::to_vec(self)
+        // Ignored-file decisions have no count ceiling (each is checked above; the stored state has
+        // its own byte bound), so only the rest of the manifest is held to the parser bound.
+        let rest = ProjectEnvironmentManifest {
+            private_files: Vec::new(),
+            ..self.clone()
+        };
+        if serde_json::to_vec(&rest)
             .map_err(|_| "invalid Project environment manifest")?
             .len()
             > 1024 * 1024

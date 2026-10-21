@@ -178,6 +178,9 @@ export function relayCloudProfile(
 }
 
 export async function saveRelayCloudProfile(profile: RelayCloudProfile | null) {
+  const current = (await loadPreferences()).relay?.cloud
+  const owner = (value: RelayCloudProfile | null | undefined) => JSON.stringify([value?.apiUrl, value?.userId, value?.accountId, value?.realmId])
+  if (owner(current) !== owner(profile)) await (await import("./client-view-cache.js")).clearClientViews()
   await updatePreferences((current) => mergeRelayCloudProfile(current, profile))
 }
 

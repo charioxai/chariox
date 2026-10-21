@@ -35,7 +35,7 @@ impl KernelRuntimeState {
         id: &str,
         login: &crate::provider::ProviderLoginStart,
     ) -> Result<bool, DaemonError> {
-        self.wait_for_account_login_state(session_id, agent_id, owner, id, login)
+        self.wait_for_account_login_state(session_id, agent_id, owner, id, login, None)
             .await
             .map(|state| state == ProviderLoginProcessState::Succeeded)
     }
@@ -49,9 +49,10 @@ impl KernelRuntimeState {
         owner: &str,
         id: &str,
         login: &crate::provider::ProviderLoginStart,
+        title: Option<&str>,
     ) -> Result<ProviderLoginProcessState, DaemonError> {
         let result = self
-            .drive_account_login(session_id, agent_id, owner, id, login)
+            .drive_account_login(session_id, agent_id, owner, id, login, title)
             .await;
         let _ = self
             .update_provider_login_interaction(session_id, agent_id, id, None)
@@ -80,6 +81,7 @@ impl KernelRuntimeState {
         owner: &str,
         id: &str,
         login: &crate::provider::ProviderLoginStart,
+        title: Option<&str>,
     ) -> Result<ProviderLoginProcessState, DaemonError> {
         let Some(login_id) = login.login_id.as_deref() else {
             return Ok(ProviderLoginProcessState::Failed);
@@ -120,6 +122,7 @@ impl KernelRuntimeState {
             if login.login_kind != "terminal_setup_token" {
                 projection.terminal_output_base64 = status.terminal_output_base64;
             }
+            // The step is the template's own phase; a recovery only swaps the displayed title for the machine name.
             let next_phase = template.title().map(str::to_string);
             if receiver.is_none() || next_phase != phase {
                 if receiver.is_some() {
@@ -131,7 +134,7 @@ impl KernelRuntimeState {
                     agent_id,
                     template.kind(),
                     template.level(),
-                    next_phase.clone(),
+                    title.map(str::to_string).or_else(|| next_phase.clone()),
                     template.message(),
                     template.choices().to_vec(),
                     template.custom_choice().cloned(),

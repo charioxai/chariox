@@ -28,11 +28,12 @@ use launch_args::claude_launch_args;
 #[cfg(test)]
 pub(crate) use mcp_config::CLAUDE_MCP_CONFIG_PLACEHOLDER;
 pub(crate) use mcp_config::{materialize_runtime_claude_mcp_config, ClaudeMcpConfigFile};
-use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
 pub(crate) use native_tui::{
-    ensure_claude_native_hidden_context_fits, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
+    claude_native_hidden_context_room, ensure_claude_native_hidden_context_fits,
+    fit_claude_native_hidden_context, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
     CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
 };
+use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
 pub(crate) use usage_probe::{
     probe_claude_account_usage, verify_claude_account_credential, ClaudeCredentialCheckError,
 };
@@ -146,6 +147,7 @@ fn plan_claude_launch_unlocked(
             "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
             native.context_file.display().to_string(),
         );
+        pty_env.insert("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS".into(), "1".into());
         pty_env.insert(
             "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
             native.context_response_dir.display().to_string(),
@@ -197,6 +199,7 @@ fn plan_claude_launch_unlocked(
             "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
             native.context_file.display().to_string(),
         );
+        pty_env.insert("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS".into(), "1".into());
         pty_env.insert(
             "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
             native.context_response_dir.display().to_string(),
@@ -246,6 +249,10 @@ fn plan_claude_launch_unlocked(
     let mut pty_env = claude_process_env();
     pty_env.extend(request.provider_account_env.clone());
     pty_env.insert(
+        "CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE".into(),
+        "dispatched".into(),
+    );
+    pty_env.insert(
         "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
         native.events_file.display().to_string(),
     );
@@ -253,6 +260,7 @@ fn plan_claude_launch_unlocked(
         "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
         native.context_file.display().to_string(),
     );
+    pty_env.insert("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS".into(), "1".into());
     pty_env.insert(
         "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
         native.context_response_dir.display().to_string(),
@@ -577,10 +585,9 @@ fn is_executable_file(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        return path
-            .metadata()
+        path.metadata()
             .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false);
+            .unwrap_or(false)
     }
     #[cfg(not(unix))]
     {
@@ -872,6 +879,13 @@ mod tests {
         assert_eq!(
             launch
                 .pty_env
+                .get("CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE")
+                .map(String::as_str),
+            Some("dispatched")
+        );
+        assert_eq!(
+            launch
+                .pty_env
                 .get("DISABLE_AUTOUPDATER")
                 .map(String::as_str),
             Some("1")
@@ -917,6 +931,9 @@ mod tests {
         assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
         assert_eq!(launch.process_label, "claude:headless");
         assert_eq!(launch.structured_endpoint, None);
+        assert!(!launch
+            .pty_env
+            .contains_key("CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE"));
         assert!(!launch.pty_args.iter().any(|arg| arg == "-p"));
         assert!(!launch.pty_args.iter().any(|arg| arg == "stream-json"));
         assert!(launch
@@ -946,6 +963,21 @@ mod tests {
             0o600
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn selected_claude_profile_removes_ambient_cloud_provider_selectors() {
+        let removed = super::claude_provider_env_remove(None);
+        for name in [
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_USE_FOUNDRY",
+        ] {
+            assert!(
+                removed.iter().any(|value| value == name),
+                "{name} must be removed"
+            );
+        }
     }
 
     #[test]

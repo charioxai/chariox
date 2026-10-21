@@ -208,8 +208,11 @@ async fn resolve_projection_target_public_key(
     }
     let config = router.relay_config_snapshot();
     let target_kernel = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        let discovery =
-            crate::runtime::cloud_api_client::relay_metadata_discovery_config(&config).await?;
+        let discovery = crate::runtime::cloud_api_client::relay_metadata_discovery_config_for(
+            &config,
+            target_daemon_id,
+        )
+        .await?;
         relay_discovery::get_live_kernel(&discovery, target_daemon_id).await
     })
     .await

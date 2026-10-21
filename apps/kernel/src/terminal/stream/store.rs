@@ -4,6 +4,10 @@ use std::hash::{Hash, Hasher};
 const TERMINAL_STREAM_SHARD_COUNT: usize = 64;
 
 #[derive(Debug, Clone)]
+#[allow(
+    clippy::type_complexity,
+    reason = "Keep the explicit TerminalStreamStore state or return type at the existing boundary"
+)]
 pub struct TerminalStreamStore {
     shards: Arc<[StdMutex<TerminalStreamService>]>,
     health_store: TerminalStreamHealthStore,
@@ -188,6 +192,7 @@ impl TerminalStreamStore {
             agent_id,
             kind,
             merge_key,
+            None,
             prompt_origin,
             None,
             recipient_attachment_ids,
@@ -203,6 +208,7 @@ impl TerminalStreamStore {
         agent_id: Option<&str>,
         kind: TerminalOutputKind,
         merge_key: Option<String>,
+        prompt_id: Option<String>,
         prompt_origin: Option<PromptOrigin>,
         source_attachment_id: Option<String>,
         recipient_attachment_ids: Vec<String>,
@@ -218,6 +224,7 @@ impl TerminalStreamStore {
                 agent_id,
                 kind,
                 merge_key,
+                prompt_id,
                 prompt_origin,
                 source_attachment_id,
                 recipient_attachment_ids,
@@ -334,6 +341,7 @@ impl TerminalStreamStore {
         prompt_origin: Option<PromptOrigin>,
         source_attachment_id: &str,
         merge_key: Option<String>,
+        sequence: Option<u64>,
         recipient_attachment_ids: Vec<String>,
         bytes: &[u8],
     ) -> TerminalOutputRecord {
@@ -349,6 +357,7 @@ impl TerminalStreamStore {
                 prompt_origin,
                 source_attachment_id,
                 merge_key,
+                sequence,
                 recipient_attachment_ids,
                 bytes,
             );

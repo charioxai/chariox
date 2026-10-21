@@ -93,7 +93,7 @@ for (const repositoryState of ["not-repository", "unborn"] as const) {
     try {
       await h.controller.applyInventory(inventory("mac", "/Users/miguel"))
       assert.deepEqual(waitingRoomWorktreeOptions(), [])
-      assert.match(waitingRoomWorktreeDisabledHint()!, repositoryState === "unborn" ? /no commits.*create a commit/ : /No git repository.*git init/)
+      assert.match(waitingRoomWorktreeDisabledHint()!, repositoryState === "unborn" ? /no commits.*create a commit/ : /Worktrees not available/)
       const rows = waitingRoomStartRows({ focus: "worktree", providerId: "opencode", worktreeSelectionId: "create-worktree" } as WaitingRoomState,
         { providerId: "opencode", model: null, effort: "" },
         { modelOptions: [], remote: {}, targets: { workspacePath: h.workspace(), worktreePath: h.workspace() }, inventoryLoading: false, loadingText: "loading", visibleSessionCount: 0, titleWidth: 24 })
@@ -339,5 +339,14 @@ test("MP-08/MP-11 periodic inventory refresh never rebuilds an attached session'
     visible = true
     await controller.applyInventory(inventory("mac", "/w"))
     assert.ok(renders > 0)
+  } finally { clearWaitingRoomWorktreeInventory() }
+})
+
+test("MP-02 MP-08 OWNER-13 TUI disables worktrees from inventory before its read resolves", async () => {
+  const h = harness("not-repository")
+  try {
+    const pending = h.controller.applyInventory({...inventory("mac", "/Users/miguel/project"), launchTarget: {workspaceId: "/Users/miguel/project", worktreeId: "/Users/miguel/project", repositoryState: "not-repository"}})
+    assert.equal(waitingRoomWorktreeDisabledHint(), "Worktrees not available")
+    await pending
   } finally { clearWaitingRoomWorktreeInventory() }
 })

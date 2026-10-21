@@ -1,8 +1,18 @@
+use std::sync::Arc;
+
 use super::CommandRouter;
 use crate::error::DaemonError;
 use crate::local::{KernelConnectionClass, LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::command::{command_caller_user_id, KernelCommand};
+use crate::runtime::command_latency::{log_command_completed, log_command_received, CommandTrace};
 use crate::runtime::kernel_access::error;
+
+fn denied(message: &str) -> DaemonError {
+    DaemonError::MachineRequest {
+        code: "kernel_access_denied".into(),
+        message: message.into(),
+    }
+}
 
 impl CommandRouter {
     pub(super) fn authorize_external_request(
@@ -10,11 +20,46 @@ impl CommandRouter {
         command: &KernelCommand,
         request: &LocalDaemonRequest,
     ) -> Result<(), DaemonError> {
+        // These public routes are human frontend channels; agents use the
+        // focus-admitted MCP seam. Refuse before generic session-grant lookup
+        // so expired/foreign grants cannot flatten the same admission denial.
+        if !command.is_terminal_caller()
+            && matches!(
+                request,
+                LocalDaemonRequest::KernelBrowser(_)
+                    | LocalDaemonRequest::RespondToHandoff(_)
+                    | LocalDaemonRequest::Notes(_)
+                    | LocalDaemonRequest::CaptureVisibleRegion(_)
+                    | LocalDaemonRequest::OpenUserAppView(_)
+                    | LocalDaemonRequest::ListUserAppViews(_)
+                    | LocalDaemonRequest::CloseUserAppView(_)
+                    | LocalDaemonRequest::GetUserAppViewFrontend(_)
+                    | LocalDaemonRequest::CallUserAppView(_)
+                    | LocalDaemonRequest::SubscribeUserAppViews(_)
+                    | LocalDaemonRequest::AnswerUserDomainInteraction(_)
+            )
+        {
+            return Err(DaemonError::UserDomainRefused {
+                reason: crate::error::UserDomainRefusalReason::NotGranted,
+            });
+        }
+        if self.runtime_state.room_agent_tools_enabled()
+            && !command.is_terminal_caller()
+            && (matches!(
+                request,
+                LocalDaemonRequest::FocusAgent(_) | LocalDaemonRequest::CycleAgentFocus(_)
+            ) || matches!(request, LocalDaemonRequest::GrantAgentExtension(grant) if grant.kind == crate::local::ExtensionKind::App))
+        {
+            return Err(crate::runtime::room_tool_admission::denied(
+                "owner focus and App acquisition require a terminal decision; agents use approved resource tools",
+            ));
+        }
         if let Some(authority) = command.external_grant_id() {
             self.runtime_state
                 .authorize_external_request(&authority, request)?;
         }
-        Ok(())
+        self.runtime_state
+            .authorize_prompt_attachment_role(command, request)
     }
 
     pub(crate) fn kernel_local_socket_path(&self) -> std::path::PathBuf {
@@ -41,6 +86,166 @@ impl CommandRouter {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn machine_gateway(&self) -> &Arc<crate::runtime::machine_gateway::MachineGateway> {
+        &self.machine_gateway
+    }
+
+    pub(super) async fn list_gateway_machines(
+        &self,
+        command: &KernelCommand,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        if !matches!(
+            command.caller.connection_class,
+            Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
+        ) {
+            return Err(error(
+                "only a Chariox terminal or local grant holder can list machines",
+            ));
+        }
+        let machines = self
+            .machine_gateway
+            .machines()
+            .await
+            .map_err(|failure| error(format!("{}: {}", failure.code(), failure.message())))?;
+        Ok(LocalDaemonResponse::GatewayMachinesListed { machines })
+    }
+
+    /// The gateway's own requests: attachment heartbeats, machine files and pairing.
+    /// They follow the same role policy and command log as every public request.
+    pub(super) async fn dispatch_machine_request(
+        &self,
+        command: &KernelCommand,
+        request: &LocalDaemonRequest,
+    ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+        if !matches!(
+            request,
+            LocalDaemonRequest::HeartbeatAttachments(_)
+                | LocalDaemonRequest::JoinMachineLink(_)
+                | LocalDaemonRequest::ForgetGatewayMachine(_)
+                | LocalDaemonRequest::StatMachineFile(_)
+                | LocalDaemonRequest::ListMachineDirectory(_)
+                | LocalDaemonRequest::ReadMachineFile(_)
+                | LocalDaemonRequest::WriteMachineFile(_)
+        ) {
+            return None;
+        }
+        let trace = CommandTrace::from_command(command);
+        log_command_received(&trace);
+        let result = match crate::runtime::kernel_runtime_role_policy::ensure_public_request_allowed(
+            &self.config_projection.snapshot(),
+            request,
+        ) {
+            Err(refused) => Err(refused),
+            Ok(()) => match request {
+                LocalDaemonRequest::HeartbeatAttachments(heartbeat) => {
+                    self.heartbeat_attachments(command, heartbeat).await
+                }
+                LocalDaemonRequest::JoinMachineLink(_)
+                | LocalDaemonRequest::ForgetGatewayMachine(_) => {
+                    self.machine_pairing(command, request).await
+                }
+                _ => self.machine_file(command, request).await,
+            },
+        };
+        log_command_completed(&trace, &result);
+        Some(result)
+    }
+
+    /// Records the terminal heartbeat of the caller's own attachments; any that
+    /// is gone, in another session or owned by someone else is reported lapsed.
+    pub(super) async fn heartbeat_attachments(
+        &self,
+        command: &KernelCommand,
+        request: &crate::local::HeartbeatAttachmentsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let owner = crate::runtime::command::command_caller_user_id(command);
+        let mut lapsed = Vec::new();
+        for attachment in &request.attachments {
+            let mine = self
+                .runtime_state
+                .attachment_owner_user_id(&attachment.attachment_id)
+                .await
+                .is_ok_and(|id| id == owner);
+            let alive = mine
+                && self
+                    .runtime_state
+                    .record_terminal_attachment_heartbeat(
+                        &attachment.session_id,
+                        &attachment.attachment_id,
+                        crate::session::unix_epoch_ms(),
+                    )
+                    .await
+                    .is_ok();
+            if !alive {
+                lapsed.push(attachment.attachment_id.clone());
+            }
+        }
+        Ok(LocalDaemonResponse::AttachmentsHeartbeated { lapsed })
+    }
+
+    /// Pairing the gateway with a machine, or forgetting one, is a person's act at
+    /// a Chariox terminal; a grant holder or a forwarded request never reaches it.
+    async fn machine_pairing(
+        &self,
+        command: &KernelCommand,
+        request: &LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let owner = command.is_terminal_caller()
+            && command_caller_user_id(command) == self.config_projection.local_owner_user_id();
+        if !owner {
+            return Err(denied(
+                "only the kernel's owner at a Chariox terminal can pair or forget a machine",
+            ));
+        }
+        let outcome = match request {
+            LocalDaemonRequest::JoinMachineLink(join) => self
+                .machine_gateway
+                .join(join.clone())
+                .await
+                .map(|machine| LocalDaemonResponse::GatewayMachineJoined { machine }),
+            LocalDaemonRequest::ForgetGatewayMachine(forget) => self
+                .machine_gateway
+                .forget(&forget.name)
+                .map(|kernel_id| LocalDaemonResponse::GatewayMachineForgotten { kernel_id }),
+            _ => unreachable!("filtered above"),
+        };
+        outcome.map_err(|failure| DaemonError::MachineRequest {
+            code: failure.code().into(),
+            message: failure.message(),
+        })
+    }
+
+    /// The machine file requests belong to the kernel's owner, at a Chariox terminal
+    /// or as a local grant holder (or the gateway acting for one).
+    async fn machine_file(
+        &self,
+        command: &KernelCommand,
+        request: &LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        use crate::runtime::machine_files as files;
+        let owner = matches!(
+            command.caller.connection_class,
+            Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
+        ) && command_caller_user_id(command)
+            == self.config_projection.local_owner_user_id();
+        if !owner {
+            return Err(denied(
+                "only the kernel's owner at a Chariox terminal or as a local grant holder can use machine files",
+            ));
+        }
+        let request = request.clone();
+        // Hashing and copying a large file must not stall the request loop.
+        let outcome = tokio::task::spawn_blocking(move || match &request {
+            LocalDaemonRequest::StatMachineFile(r) => files::stat(r),
+            LocalDaemonRequest::ListMachineDirectory(r) => files::list(r),
+            LocalDaemonRequest::ReadMachineFile(r) => files::read(r),
+            LocalDaemonRequest::WriteMachineFile(r) => files::write(r),
+            _ => unreachable!("filtered above"),
+        })
+        .await;
+        outcome.unwrap_or_else(|join| Err(error(format!("machine file task failed: {join}"))))
     }
 
     pub(super) fn dispatch_kernel_access(
@@ -88,5 +293,61 @@ impl CommandRouter {
             }
             _ => unreachable!(),
         }))
+    }
+}
+
+#[cfg(test)]
+mod user_domain_admission_tests {
+    use super::*;
+    use crate::runtime::command::KernelCommandSource;
+
+    #[test]
+    fn revoked_grants_and_transport_peers_get_the_same_bounded_frontend_refusal() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let app =
+                crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+            let router = CommandRouter::with_interactive_capacity(
+                std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+                4,
+            );
+            for request in [
+                LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+                    command: crate::local::KernelBrowserCommand::State,
+                }),
+                LocalDaemonRequest::ListUserAppViews(crate::local::ListUserAppViewsRequest {}),
+            ] {
+                for class in [
+                    KernelConnectionClass::ExternalAgent,
+                    KernelConnectionClass::KernelAgent,
+                    KernelConnectionClass::RelayPeer,
+                    KernelConnectionClass::Unauthenticated,
+                ] {
+                    let mut command = KernelCommand::from_local_request_with_source(
+                        "invalid-admission",
+                        KernelCommandSource::RelayPeer,
+                        None,
+                        None,
+                        &request,
+                    );
+                    command.caller.connection_class = Some(class);
+                    command.caller.caller_id = "revoked-grant".into();
+                    let error = router
+                        .authorize_external_request(&command, &request)
+                        .unwrap_err();
+                    assert!(matches!(
+                        error,
+                        DaemonError::UserDomainRefused {
+                            reason: crate::error::UserDomainRefusalReason::NotGranted
+                        }
+                    ));
+                    assert_eq!(error.to_string(), "User-domain request refused");
+                }
+            }
+            router.runtime_state.shutdown_cleanup().await.unwrap();
+        });
     }
 }

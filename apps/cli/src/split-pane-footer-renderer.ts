@@ -15,7 +15,8 @@ import {
   formatSplitPaneFooterParts,
   type StatusBadgeTone,
 } from "./split-pane-footer.js"
-import { sessionAgentPaneStatusBadgeForSession } from "@chariox/kernel-client/session-runtime-status"
+import { sessionAgentPaneStatusBadgeForSession, sessionAgentTaskStatus } from "@chariox/kernel-client/session-runtime-status"
+import { providerRunForPromptSelection } from "@chariox/kernel-client/prompt-provider-selection"
 import { renderStatusBadgeLabel } from "./status-badge-renderer.js"
 import { theme } from "./theme.js"
 
@@ -33,6 +34,7 @@ type SplitPaneFooterSlotState = {
   parts: Partial<SplitPaneFooterTextGroup>
   taskParts: SplitPaneFooterTaskGroup
   badgeTexts: TextRenderable[]
+  goalText?: TextRenderable
 }
 
 type SplitPaneFooterTaskGroup = {
@@ -183,6 +185,9 @@ function ensureFooterRenderables(
   footerRow.add(badgeBox)
   footerRow.add(infoBox)
   footerBox.add(taskBox)
+  state.goalText = new TextRenderable(renderer, { wrapMode: "word", flexShrink: 0 })
+  state.goalText.visible = false
+  footerBox.add(state.goalText)
   footerBox.add(footerRow)
   state.parts = nextParts
   state.taskParts = nextTaskParts
@@ -199,6 +204,7 @@ function clearFooter(
   }
   renderStatusBadgeTexts(state.badgeTexts, "", "idle", options)
   renderTaskParts(state.taskParts, null)
+  if (state.goalText) state.goalText.visible = false
   clearFooterParts(state.parts)
   footerBox?.requestRender()
 }
@@ -242,14 +248,23 @@ function renderFooter(
     ? options.metaagentTasks.find((entry) => entry.metaagent_id === agent.id) ?? null
     : null
   renderTaskParts(state.taskParts, task)
-  renderStatusBadgeTexts(state.badgeTexts, badge.label, badge.tone, options)
-  const activeRun = options.providerRun && options.providerRun.agent_instance_id === agent?.id
+  const goals = options.session?.agent_tasks?.filter((task) => task.goal && task.agent_id === agent?.id) ?? []
+  const goalStatus = agent && options.session && goals.length
+    ? sessionAgentTaskStatus({ ...options.session, agent_tasks: goals }, agent.id) : null
+  if (state.goalText) {
+    state.goalText.visible = Boolean(goalStatus)
+    state.goalText.content = goalStatus?.label ?? ""
+    state.goalText.fg = goalStatus?.tone === "error" ? theme.error : theme.textMuted
+  }
+  renderStatusBadgeTexts(state.badgeTexts, badge.label.startsWith("GOAL ") ? badge.label.split(":")[0]! : badge.label, badge.tone, options)
+  const run = agent ? providerRunForPromptSelection(options.providerRun, agent) : null
+  const activeRun = run
     ? {
-        agentInstanceId: options.providerRun.agent_instance_id,
-        provider: options.providerRun.provider,
-        accountProfile: options.providerRun.account_profile,
-        model: options.providerRun.model,
-        variant: options.providerRun.variant,
+        agentInstanceId: run.agent_instance_id,
+        provider: run.provider,
+        accountProfile: run.account_profile,
+        model: run.model,
+        variant: run.variant,
       }
     : null
   const provider = activeRun?.provider

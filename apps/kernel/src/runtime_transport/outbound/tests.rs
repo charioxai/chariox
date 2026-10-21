@@ -93,7 +93,7 @@ fn outbound_generated_every_event_variant_hides_worker_credentials() {
         }
     }
     assert_eq!(
-        delivered, 21,
+        delivered, 23,
         "MP-11 current public events remain deliverable"
     );
 }
@@ -238,4 +238,62 @@ fn outbound_preserves_kernel_error_codes_and_retries_without_error_payloads() {
     let frame = serde_json::json!({"type":"response","request_id":"sudo","response":null,
         "error":{"code":"local_transport_error","message":message,"retryable":true}});
     assert_eq!(project_payload(frame.clone()).unwrap(), frame);
+}
+
+// EA2-19: only the decoder's own message about the agent's request is readable.
+#[test]
+fn outbound_lets_a_grant_holder_read_why_its_request_did_not_parse_and_nothing_else() {
+    let error = serde_json::from_str::<crate::local::LocalDaemonRequest>(r#"{"CreateSessoin":{}}"#)
+        .unwrap_err();
+    let decode = crate::transport::request_decode_error::message(
+        crate::transport::request_decode_error::DECODE_PREFIX,
+        &error,
+    );
+    let frame = |message: &str| {
+        serde_json::json!({"type":"response","request_id":"r","response":null,
+        "error":{"code":"invalid_request","message":message,"retryable":false}})
+    };
+    assert_eq!(
+        project_payload(frame(&decode)).unwrap()["error"]["message"],
+        decode
+    );
+    assert!(decode.contains("CreateSessoin"));
+    for other in [
+        CANARY.to_string(),
+        format!("provider said: {CANARY}"),
+        format!("invalid request payload {CANARY}"),
+    ] {
+        let projected = project_payload(frame(&other)).unwrap();
+        assert!(!projected.to_string().contains(CANARY), "{other}");
+    }
+}
+
+// MP-08 / MP-11: cached and socket errors retain the same safe lookup reason.
+#[test]
+fn mp11_missing_session_socket_reason_is_public_without_private_details() {
+    let projected = project_error(&serde_json::json!({
+        "code": "session_not_found", "message": CANARY, "retryable": false,
+    }));
+    assert_eq!(projected.code, "session_not_found");
+    assert!(
+        projected.message.contains("session not found"),
+        "{}",
+        projected.message
+    );
+    assert!(!projected.message.contains(CANARY));
+}
+
+// EA2-12: a forwarded stream starts with events an external peer may not see (the
+// target's pending passkey prompts). Offering one to the writer stops it for good,
+// so the forwarder asks first.
+#[test]
+fn a_forwarded_stream_offers_the_writer_only_events_an_external_peer_may_see() {
+    assert!(is_public_event(&KernelEvent::Heartbeat {
+        session_id: "s".into()
+    }));
+    assert!(!is_public_event(&KernelEvent::PasskeyPromptsChanged {
+        prompts: Vec::new(),
+        kernel_now_ms: 0,
+        closed: Vec::new(),
+    }));
 }

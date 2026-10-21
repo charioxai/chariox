@@ -468,7 +468,7 @@ function createdSessionFooter(
   const label = session.alias ?? session.id
   const worktree = session.worktree_id ? ` in ${session.worktree_id}` : ""
   const slice = sliceRef ? ` · slice ${sliceRef}` : ""
-  return `created session ${label}${worktree}${slice} · workspace live sync ${createdSessionLiveSyncMode(session)}`
+  return `created session ${label}${worktree}${slice}`
 }
 
 function createdSessionLiveSyncMode(session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>): string {

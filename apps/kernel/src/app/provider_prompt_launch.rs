@@ -5,6 +5,55 @@ use crate::error::DaemonError;
 use crate::provider::{LaunchProviderRequest, ProviderRunState};
 
 impl DaemonApp {
+    pub(crate) fn reusable_leased_claude_run_for_agent(
+        &self,
+        session_id: &str,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<Option<crate::provider::RuntimeProviderRun>, DaemonError> {
+        if crate::provider::canonical_provider_family(agent.provider()) != Some("claude")
+            || !self.leased_agents.values().any(|lease| {
+                lease.backing_session_id == session_id && lease.backing_agent_id == agent.id()
+            })
+        {
+            return Ok(None);
+        }
+        let Some(run) = self.providers.get_run_for_agent(session_id, agent.id()) else {
+            return Ok(None);
+        };
+        if !self
+            .provider_run_projection
+            .is_leased_provider_run(run.id())
+            || run.owner_user_id() != agent.owner_user_id()
+            || crate::provider::canonical_provider_family(run.provider()) != Some("claude")
+            || !matches!(
+                run.state(),
+                ProviderRunState::Starting | ProviderRunState::Running
+            )
+        {
+            return Ok(None);
+        }
+        let owner = self.provider_account_authority_owner_for_agent(agent)?;
+        let run_owner = crate::account_profile::provider_account_authority_for_run(
+            &self.config,
+            &self.provider_account_profiles,
+            &run,
+        )?;
+        if owner != run_owner {
+            return Ok(None);
+        }
+        let selected = self.provider_account_profiles.get(
+            &owner,
+            agent.provider(),
+            agent.provider_account_profile(),
+        )?;
+        let launched = self.provider_account_profiles.get(
+            &run_owner,
+            run.provider(),
+            run.account_profile(),
+        )?;
+        Ok((selected.profile_id == launched.profile_id).then_some(run))
+    }
+
     pub(crate) fn ensure_prompt_provider_run_for_agent(
         &mut self,
         session_id: &str,
@@ -12,8 +61,14 @@ impl DaemonApp {
     ) -> Result<String, DaemonError> {
         self.retire_finished_turn_substitute_run(session_id, agent_id)?;
         let (agent, turn_substitute) = self.agent_launch_profile(self.agents.get_agent(agent_id)?);
+        // A leased live process already holds the home's launch credential.
+        // Worker-local login and Project changes must not replace that authority.
+        if let Some(run) = self.reusable_leased_claude_run_for_agent(session_id, &agent)? {
+            return Ok(run.id().to_string());
+        }
+        let account_owner = self.provider_account_authority_owner_for_agent(&agent)?;
         self.provider_account_profiles.require_agent_authenticated(
-            &self.config,
+            &account_owner,
             &agent,
             "ensure prompt provider run for agent",
         )?;

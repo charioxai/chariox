@@ -134,7 +134,6 @@ async fn machine_terminal_create_and_key_bound_join_use_only_scoped_runtime_toke
         "kernel-fixture",
         CloudTerminalClientOptions {
             pair_account_client: true,
-            target_alias: Some("friendly-name".into()),
             ..Default::default()
         },
     )
@@ -147,7 +146,6 @@ async fn machine_terminal_create_and_key_bound_join_use_only_scoped_runtime_toke
         CloudTerminalClientOptions {
             public_key_thumbprint: Some("a".repeat(64)),
             ttl_ms: Some(crate::runtime::cloud_relay_control::CLOUD_RELAY_CLIENT_TOKEN_TTL_MS),
-            target_alias: Some("friendly-name".into()),
             ..Default::default()
         },
     )
@@ -190,7 +188,6 @@ async fn account_terminal_pairs_with_bearer_and_uses_session_instead_of_machine_
         CloudTerminalClientOptions {
             pair_account_client: true,
             client_alias: Some("CLI terminal".into()),
-            target_alias: Some("friendly-name".into()),
             session_id: Some("shared-session".into()),
             public_key_thumbprint: Some("b".repeat(64)),
             ..Default::default()
@@ -217,7 +214,11 @@ async fn account_terminal_pairs_with_bearer_and_uses_session_instead_of_machine_
     assert!(body.get("allowUnpairedClientSubject").is_none());
     assert_eq!(
         body["allowedTargets"],
-        serde_json::json!(["kernel-fixture", "friendly-name"])
+        serde_json::json!(["kernel-fixture"])
+    );
+    assert!(
+        body["ttlMs"].as_u64().unwrap() <= 15 * 60_000,
+        "MP-08/MP-11 account CLIENT scope ceiling"
     );
     assert_eq!(body["sessionId"], "shared-session");
     assert_eq!(body["publicKeyThumbprint"], "b".repeat(64));
@@ -365,4 +366,44 @@ async fn enrolled_kernel_rejects_foreign_and_malformed_subjects_without_network(
         std::io::ErrorKind::WouldBlock
     );
     assert_eq!(profile.client_id, None);
+}
+
+#[tokio::test]
+async fn gateway_registration_names_the_gateway_subject_and_uses_only_the_kernel_credential() {
+    let (url, fixture) = server(&["/kernels/gateway-client"]);
+    let mut enrolled = profile(url);
+    enrolled.kernel_id = Some("kernel-fixture".into());
+    enrolled.kernel_credential = Some("synthetic-kernel-credential".into());
+    crate::runtime::cloud_api_client::register_cloud_gateway_client(
+        &enrolled,
+        "agent-gateway",
+        &"c".repeat(64),
+        "Agent gateway of Studio",
+    )
+    .await
+    .unwrap();
+    let request = fixture.join().unwrap().remove(0);
+    assert_eq!(request.authorization, None);
+    assert_eq!(
+        request.body["kernelCredential"],
+        "synthetic-kernel-credential"
+    );
+    assert_eq!(request.body["kernelId"], "kernel-fixture");
+    assert_eq!(
+        request.body["clientId"],
+        kernel_client_subject("kernel-fixture", "agent-gateway").unwrap()
+    );
+    assert_eq!(request.body["publicKeyThumbprint"], "c".repeat(64));
+    assert_eq!(request.body["alias"], "Agent gateway of Studio");
+    assert!(request.body.get("machineCredential").is_none());
+
+    let machine_only = crate::runtime::cloud_api_client::register_cloud_gateway_client(
+        &profile("http://127.0.0.1:9".into()),
+        "agent-gateway",
+        &"c".repeat(64),
+        "Agent gateway of Studio",
+    )
+    .await
+    .unwrap_err();
+    assert!(machine_only.to_string().contains("own Cloud enrollment"));
 }

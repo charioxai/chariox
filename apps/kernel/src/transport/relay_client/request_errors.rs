@@ -7,10 +7,16 @@ use crate::local::LocalDaemonRequest;
 
 pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
     match error {
+        DaemonError::UserDomainRefused { reason } => {
+            relay_error(reason.code(), &error.to_string(), false)
+        }
         DaemonError::AgentWorkerCleanup { source, .. } => {
             let mut mapped = map_relay_error(source);
             mapped.message = error.to_string();
             mapped
+        }
+        DaemonError::MachineRequest { code, .. } => {
+            relay_error(code.as_str(), &error.to_string(), false)
         }
         DaemonError::SessionNotFound { .. } => {
             relay_error("session_not_found", &error.to_string(), false)
@@ -37,6 +43,16 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         {
             relay_error(
                 crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
+                &error.to_string(),
+                false,
+            )
+        }
+        DaemonError::LocalTransport { operation, .. }
+            if *operation
+                == crate::transport::relay_peer::ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION =>
+        {
+            relay_error(
+                crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE,
                 &error.to_string(),
                 false,
             )
@@ -112,6 +128,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::AttachToSession(_) => "session.attach",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
+        LocalDaemonRequest::SubmitPrompt(_) => "prompt.submit",
         LocalDaemonRequest::GetRoomEnvironmentState(_) => "environment.state.get",
         LocalDaemonRequest::GetRoomEnvironmentEvents(_) => "environment.events.get",
         LocalDaemonRequest::ListRoomEnvironmentActionHistory(_) => "environment.history.list",
@@ -131,6 +148,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::SetRoomBrowserBar(_) => "environment.browser_bar.set",
         LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(_) => "environment.input.takeover",
         LocalDaemonRequest::ReleaseRoomEnvironmentInput(_) => "environment.input.release",
+        LocalDaemonRequest::RoomTerminal(_) => "terminal.room",
         LocalDaemonRequest::SubmitRoomEnvironmentAction(_) => "environment.action.submit",
         LocalDaemonRequest::SubmitRoomEnvironmentBrowserAction(_) => {
             "environment.browser_action.submit"
@@ -139,6 +157,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CancelRoomEnvironmentAction(_) => "environment.action.cancel",
         LocalDaemonRequest::GetSessionHistoryOutline(_) => "session.history.outline.get",
         LocalDaemonRequest::GetSessionHistoryBlobContent(_) => "session.history.blob.get",
+        LocalDaemonRequest::GetSessionHistoryBlobContents(_) => "session.history.blobs.get",
         LocalDaemonRequest::ListSlices(_) => "slice.list",
         LocalDaemonRequest::CreateSlice(_) => "slice.create",
         LocalDaemonRequest::GetSlice(_) => "slice.get",
@@ -207,6 +226,18 @@ mod tests {
             message: "temporary read failure".into(),
         };
         assert!(map_relay_error(&transient).retryable);
+    }
+
+    #[test]
+    fn a_leased_prompt_account_refusal_is_a_definitive_pre_admission_code() {
+        let error = DaemonError::LocalTransport {
+            operation: "admit leased prompt account",
+            message: "selected claude account `work` is not authenticated".into(),
+        };
+        let mapped = map_relay_error(&error);
+        assert_eq!(mapped.code, "provider_account_unusable");
+        assert!(!mapped.retryable);
+        assert_eq!(mapped.message, error.to_string());
     }
 
     #[test]
@@ -301,6 +332,29 @@ mod tests {
         assert_eq!(relay_error.code, "target_disconnected");
         assert_eq!(relay_error.message, "target daemon disconnected from relay");
         assert!(relay_error.retryable);
+    }
+
+    #[test]
+    fn mp08_room_computer_policy_refusals_retain_codes_across_relay() {
+        use crate::error::UserDomainRefusalReason;
+        for reason in [
+            UserDomainRefusalReason::NotFocusedAgent,
+            UserDomainRefusalReason::ForeignOwner,
+            UserDomainRefusalReason::StaleEpoch,
+            UserDomainRefusalReason::StaleReference,
+            UserDomainRefusalReason::NotGranted,
+            UserDomainRefusalReason::SensitiveRequiresFocus,
+        ] {
+            let mapped = map_relay_error(&DaemonError::UserDomainRefused { reason });
+            assert_eq!(mapped.code, reason.code());
+            assert_eq!(mapped.message, "User-domain request refused");
+            assert!(!mapped.retryable);
+        }
+        let untrusted = map_relay_error(&DaemonError::LocalTransport {
+            operation: "controller.fixture",
+            message: "user_domain_not_granted: untrusted text".into(),
+        });
+        assert_eq!(untrusted.code, "transport_error");
     }
 
     #[test]

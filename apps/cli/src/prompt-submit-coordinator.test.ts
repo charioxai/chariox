@@ -71,6 +71,14 @@ test("prompt submit coordinator lets handled slash commands stop routing", async
   assert.deepEqual(harness.calls(), ["ensure", "slash:/session list"])
 })
 
+test("prompt submit coordinator lets an active project-name entry consume slash-looking text first", async () => {
+  const harness = createHarness({ promptText: "/stop", attached: false, nameEntryHandled: true, slashHandled: true, detachedSlashHandled: true })
+
+  await harness.coordinator.submit()
+
+  assert.deepEqual(harness.calls(), ["ensure", "name-entry:/stop"])
+})
+
 test("prompt submit coordinator allows slash commands on workflow screen", async () => {
   const harness = createHarness({ promptText: "/session list", workflowScreen: true, slashHandled: true })
 
@@ -80,11 +88,11 @@ test("prompt submit coordinator allows slash commands on workflow screen", async
 })
 
 test("prompt submit coordinator routes provider namespace prompts before attached checks", async () => {
-  const harness = createHarness({ promptText: "@codex hello", providerHandled: true, attached: false })
+  const harness = createHarness({ promptText: "/codex help", providerHandled: true, attached: false })
 
   await harness.coordinator.submit()
 
-  assert.deepEqual(harness.calls(), ["ensure", "slash:@codex hello", "provider:@codex hello"])
+  assert.deepEqual(harness.calls(), ["ensure", "provider:/codex help"])
   assert.deepEqual(harness.footerMessages(), [])
 })
 
@@ -110,7 +118,7 @@ test("prompt submit coordinator bootstraps detached waiting-room prompts once", 
 
   await harness.coordinator.submit()
 
-  assert.deepEqual(harness.calls(), ["ensure", "slash:hello", "provider:hello", "bootstrap:hello", "normal:hello"])
+  assert.deepEqual(harness.calls(), ["ensure", "bootstrap:hello", "normal:hello"])
   assert.equal(harness.clearCount(), 0)
 })
 
@@ -123,7 +131,7 @@ test("prompt submit coordinator keeps detached prompt draft when bootstrap handl
 
   await harness.coordinator.submit()
 
-  assert.deepEqual(harness.calls(), ["ensure", "slash:hello", "provider:hello", "bootstrap:hello"])
+  assert.deepEqual(harness.calls(), ["ensure", "bootstrap:hello"])
   assert.equal(harness.clearCount(), 0)
 })
 
@@ -138,7 +146,7 @@ test("prompt submit coordinator blocks detached attachments without bootstrappin
   await harness.coordinator.submit()
 
   assert.equal(harness.footerMessages().at(-1)?.message, "attachments require an open session")
-  assert.deepEqual(harness.calls(), ["ensure", "slash:hello", "provider:hello"])
+  assert.deepEqual(harness.calls(), ["ensure"])
   assert.equal(harness.clearCount(), 0)
 })
 
@@ -157,11 +165,11 @@ test("prompt submit coordinator lets detached slash policy stop routing", async 
 test("prompt submit coordinator routes attached workflow and normal prompts", async () => {
   const workflowHarness = createHarness({ promptText: "run workflow", workflowScreen: true })
   await workflowHarness.coordinator.submit()
-  assert.deepEqual(workflowHarness.calls(), ["ensure", "slash:run workflow", "provider:run workflow", "workflow:run workflow"])
+  assert.deepEqual(workflowHarness.calls(), ["ensure", "workflow:run workflow"])
 
   const normalHarness = createHarness({ promptText: "hello" })
   await normalHarness.coordinator.submit()
-  assert.deepEqual(normalHarness.calls(), ["ensure", "slash:hello", "provider:hello", "normal:hello"])
+  assert.deepEqual(normalHarness.calls(), ["ensure", "normal:hello"])
 })
 
 function createHarness(options: {
@@ -170,6 +178,7 @@ function createHarness(options: {
   workflowScreen?: boolean
   instructionsEditorOpen?: boolean
   slashHandled?: boolean
+  nameEntryHandled?: boolean
   providerHandled?: boolean
   attached?: boolean | (() => boolean)
   detachedSlashHandled?: boolean
@@ -197,6 +206,11 @@ function createHarness(options: {
       clearCount += 1
     },
     workflowScreenShowing: () => options.workflowScreen ?? false,
+    submitProjectNameEntry: async (rawPrompt) => {
+      if (!options.nameEntryHandled) return false
+      calls.push(`name-entry:${rawPrompt}`)
+      return true
+    },
     submitWorkspaceShellCommand: async (rawPrompt) => {
       calls.push(`workspace:${rawPrompt}`)
       if (options.submitWorkspaceShellCommand) {

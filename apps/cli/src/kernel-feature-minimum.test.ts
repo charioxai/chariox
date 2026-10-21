@@ -76,12 +76,29 @@ test("MP-08/MP-11 owner context copy requires its allocated C5 protocol 520", ()
   assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 520))
 })
 
+test("integration received-event listing and replay require protocol 551", () => {
+  for (const request of [{ ListEventConnectionEvents: { connection_id: "c", limit: 50 } },
+    { ReplayEventConnectionEvent: { connection_id: "c", delivery_id: "d" } }]) {
+    assert.throws(() => requireKernelFeatureProtocol(request, 520), /Integration received events needs protocol ≥551/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 551))
+  }
+})
+
 // MP-08 / MP-10: VERSION(P01).
 test("standalone and reserved Project Environment operations require protocol 487", () => {
   for (const kind of ["GetProjectEnvironment", "ApplyProjectEnvironment", "PreviewEnvironmentImport", "CommitEnvironmentImport"]) {
     assert.throws(() => requireKernelFeatureProtocol({ [kind]: {} }, 472), /Project Environment needs protocol ≥487/)
     assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 487))
   }
+})
+
+
+test("MD-stack user App and browser surfaces require union protocol 443", () => {
+  for (const name of ["OpenUserAppView", "ListUserAppViews", "CloseUserAppView", "GetUserAppViewFrontend", "CallUserAppView", "SubscribeUserAppViews", "AnswerUserDomainInteraction"]) {
+    assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 417), /443/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 443))
+  }
+  assert.throws(() => requireKernelFeatureProtocol({KernelBrowser: {command:{op:"input"}}},416), /443/)
 })
 
 // MP-08 / MP-10 / MP-11: old decoders may ignore an optional cancellation fence.
@@ -103,6 +120,23 @@ test("MP-08 / MP-11 automation inject refuses 490 before transport", () => {
 
 test("MP-08 / MP-11 automation injection requires a confirmed kernel generation", () => {
   for (const version of [undefined, 0, NaN]) assert.throws(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{delivery_mode:"inject"}}, version), /kernel support unknown.*491/)
+})
+
+// MP-08/MP-10/MP-11: only the allocated resume contract may cross transport.
+test("MP-08/MP-10/MP-11 display resumption refuses unknown and pre-525 kernels", () => {
+  for (const op of ["display_suspend", "display_resume"]) {
+    const request = { KernelBrowser: { command: { op, subscription_id: "old", generation: 7 } } }
+    for (const version of [undefined, 0, NaN, 524.5, 517, 519, 524]) {
+      assert.throws(() => requireKernelFeatureProtocol(request, version), /Display resumption needs protocol ≥525/)
+    }
+    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 525))
+  }
+})
+
+test("MP-08/MP-10/MP-11 shared Room offers require525 before an older kernel silently opens Selkies",()=>{
+ const request={GetSliceDisplayEndpoint:{slice_ref:"s",shared_display:{codecs:["avc1.420033"],bitrate:8000000,device_scale_factor:2}}}
+ assert.throws(()=>requireKernelFeatureProtocol(request,524),/Room shared display needs protocol ≥525/)
+ assert.doesNotThrow(()=>requireKernelFeatureProtocol(request,525))
 })
 
 // MP-07 / MP-08 / MP-11: SSH variants first shipped in the allocated C5 union.

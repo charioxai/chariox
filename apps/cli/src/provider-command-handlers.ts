@@ -37,7 +37,7 @@ export type ProviderCommandHandlerDeps = {
   cancelProviderLogin?: (loginId: string) => Promise<ProviderLoginStatus>
   readSecret?: (prompt: string) => Promise<string>
   storeProviderSetupToken?: (profile: string, value: string, replace: boolean) => Promise<{ replaced: boolean }>
-  logoutProvider?: (provider: string, accountProfile?: string) => Promise<ProviderLogoutOutcome>
+  logoutProvider?: (provider: string, accountProfile?: string, endEverywhere?: boolean) => Promise<ProviderLogoutOutcome>
   listProviderAccountProfiles?: (provider?: string | null) => Promise<ProviderAccountProfile[]>
   createProviderAccountProfile?: (provider: string, label: string) => Promise<ProviderAccountProfile>
   linkProviderAccountProfile?: (provider: string, label: string, path: string) => Promise<ProviderAccountProfile>
@@ -138,7 +138,8 @@ export async function handleProviderSlashCommand(
     return
   }
   if (action === "logout") {
-    await logoutProvider(deps, maybeProvider ?? deps.currentProviderId(), maybeProfile)
+    const [logoutTarget, logoutProfile] = rest.slice(1).filter((value) => value !== "--everywhere")
+    await logoutProvider(deps, logoutTarget ?? deps.currentProviderId(), logoutProfile, parts.includes("--everywhere"))
     return
   }
   if (action === "reauth") {
@@ -309,6 +310,7 @@ async function logoutProvider(
   deps: ProviderCommandHandlerDeps,
   provider: string,
   accountProfile?: string,
+  endEverywhere = false,
 ): Promise<void> {
   if (!deps.logoutProvider) {
     deps.flashFooter("provider logout is not available in this daemon", "error")
@@ -316,9 +318,9 @@ async function logoutProvider(
   }
   const resolvedAccount = await resolveProviderAccountReference(deps, provider, accountProfile)
   if (resolvedAccount === null) return
-  const outcome = await deps.logoutProvider(provider, resolvedAccount)
+  const outcome = await deps.logoutProvider(provider, resolvedAccount, endEverywhere)
   const message = outcome.kind === "logged_out"
-    ? `${providerAccountSubject(outcome.result.provider, await providerAccountPublicLabel(deps, outcome.result.provider, outcome.result.account_profile))} logged out`
+    ? `${providerAccountSubject(outcome.result.provider, await providerAccountPublicLabel(deps, outcome.result.provider, outcome.result.account_profile))} logged out${outcome.result.local_only ? " on this machine only; other machines keep their copy (use --everywhere to end it on all)" : ""}`
     : formatProviderLoginNotice(outcome.workflow, "logout started", await providerAccountPublicLabel(deps, outcome.workflow.provider, outcome.workflow.account_profile))
   deps.appendNotice(message)
   deps.flashFooter(message, "info")
@@ -530,7 +532,7 @@ async function presentUrl(deps: ProviderCommandHandlerDeps, url: string, handoff
 }
 
 function providerAccountSubject(provider: string, accountLabel: string): string {
-  return accountLabel === "Account unavailable" ? provider : `${provider}/${accountLabel}`
+  return accountLabel === "Account status not checked" ? provider : `${provider}/${accountLabel}`
 }
 
 /// Extracts a `--method <name>` enrollment selection from the token stream,
@@ -608,13 +610,13 @@ async function providerAccountPublicLabel(
   provider: string,
   accountProfile: string | null | undefined,
 ): Promise<string> {
-  if (!deps.listProviderAccountProfiles) return "Account unavailable"
+  if (!deps.listProviderAccountProfiles) return "Account status not checked"
   const profile = selectedProviderAccount(
     await deps.listProviderAccountProfiles(provider),
     provider,
     accountProfile ?? undefined,
   )
-  return profile ? providerAccountDisplayLabel(profile) : "Account unavailable"
+  return profile ? providerAccountDisplayLabel(profile) : "Account status not checked"
 }
 
 async function handleProviderProcessesCommand(

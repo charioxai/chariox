@@ -172,6 +172,7 @@ impl Kernel {
             Some(identity),
             request,
             &self.direct.command_result_cache,
+            &Default::default(),
             Some(&self.direct),
         )
         .await;
@@ -544,6 +545,7 @@ fn mp11_grant_minting_requires_relay_carrier_and_bound_live_identity() {
             Some(browser.identity()),
             request,
             &kernel.direct.command_result_cache,
+            &Default::default(),
             None,
         )
         .await;
@@ -641,7 +643,10 @@ fn mp11_authority_tracks_pairing_origin_and_kernel_key() {
 #[test]
 fn mp08_mp11_local_browser_wire_is_bound_to_protocol473() {
     use sha2::{Digest, Sha256};
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 520);
+    assert_eq!(
+        crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let payload = EncryptedRelayPayload {
         sender_public_key: "key".into(),
         nonce: "nonce".into(),
@@ -740,6 +745,7 @@ async fn renew(
         Some(identity),
         request,
         &kernel.direct.command_result_cache,
+        &Default::default(),
         if via_relay {
             Some(&kernel.direct)
         } else {
@@ -1185,12 +1191,14 @@ fn mp11_admitted_direct_command_settles_once_after_disconnect_and_relay_retry() 
             "direct session did not close"
         );
         let _ = release.send(());
+        let display_subscriptions = Default::default();
         let retry = handle_daemon_request(
             &kernel.direct.router,
             &kernel.direct.command_sequence,
             Some(browser.identity()),
             encrypted.clone(),
             &kernel.direct.command_result_cache,
+            &display_subscriptions,
             Some(&kernel.direct),
         );
         let outcome = timeout(Duration::from_secs(2), retry)
@@ -1208,6 +1216,7 @@ fn mp11_admitted_direct_command_settles_once_after_disconnect_and_relay_retry() 
             Some(browser.identity()),
             encrypted,
             &kernel.direct.command_result_cache,
+            &Default::default(),
             Some(&kernel.direct),
         )
         .await;
@@ -1234,6 +1243,7 @@ fn mp11_admitted_direct_command_settles_once_after_disconnect_and_relay_retry() 
             Some(browser.identity()),
             sessions,
             &kernel.direct.command_result_cache,
+            &Default::default(),
             Some(&kernel.direct),
         )
         .await;
@@ -1271,6 +1281,7 @@ async fn terminal_request(
         Some(identity),
         request,
         &kernel.direct.command_result_cache,
+        &Default::default(),
         if via_relay {
             Some(&kernel.direct)
         } else {

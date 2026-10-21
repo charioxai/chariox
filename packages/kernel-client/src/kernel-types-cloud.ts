@@ -126,6 +126,18 @@ export type RemoteMachineRecord = {
   provider_accounts?: ProviderAccountSummary[]
 }
 
+/** A machine this kernel forwards requests to; `via` tells whether Cloud or a self-hosted relay carries it. */
+export type GatewayMachineRecord = {
+  name: string
+  kernel_id: string
+  machine_id: string
+  machine_alias: string | null
+  status: "online" | "offline"
+  last_seen_ms: number | null
+  gateway_ready: boolean
+  via: "hosted" | "self_hosted"
+}
+
 export type SliceRecord = {
   source_slice_ref?: string | null
   id: string
@@ -252,7 +264,7 @@ export type SliceDisplayBackend = "novnc" | "selkies"
 
 export type SliceDisplayEndpoint = {
   slice_id: string
-  kind: SliceDisplayBackend | "chariox_viewer" | "external"
+  kind: SliceDisplayBackend | "chariox_viewer" | "external" | "shared"
   url: string
   access: "local" | "tunnel" | "public"
   expires_at_ms?: number | null
@@ -260,6 +272,7 @@ export type SliceDisplayEndpoint = {
   stream_protocol?: string | null
   stream_id?: string | null
   peer_public_key?: string | null
+  shared_display?: RoomDisplayBinding | null
 }
 
 export type PairedClientRecord = {
@@ -366,6 +379,7 @@ export type WaitingRoomInventorySnapshot = {
   remote_kernels?: RelayKernelPresence[]
   terminals?: TerminalRecord[]
   launch_target?: {
+    repository_state?: "ready" | "not-repository" | "unborn" | null
     workspace_id: string
     worktree_id: string
     workspace_label?: string | null
@@ -486,3 +500,7 @@ export type WorkspacePullRequestRecord = {
   draft: boolean
   generated_at_ms: number
 }
+
+// MP-08/MP-10/MP-11: protocol 525 Room viewer, no input authority.
+export type RoomDisplayBinding={generation:number;subscription_id:string;codec:string;bitrate:number;device_scale_factor:1|2;source:{kind:"desktop";surface_id:string;generation:string;width:number;height:number};resumed?:boolean}
+export type RoomDisplayOffer={codecs:readonly string[];bitrate:number;device_scale_factor:1|2;resume_hint?:string}

@@ -10,6 +10,7 @@ import {
   externalProviderObservedProviderStatusShouldRender,
   historyEntryExternalProviderObservedMetadata,
   promptOriginExternalProviderObservedMetadata,
+  sessionHistoryEntryIsExternalProviderObserved,
   transcriptExternalProviderObservedTurnMetadata,
   type ExternalProviderObservedTranscriptFields,
 } from "./external-provider-observation.js"
@@ -39,7 +40,11 @@ import {
 } from "./transcript-entry-state.js"
 import { applyTranscriptProviderChunk } from "./transcript-stream-state.js"
 import { providerTranscriptRoleForKind } from "./transcript-kind-role.js"
-import { sessionHistoryEntryKindTranscriptRole } from "./session-history-outline.js"
+import {
+  sessionHistoryEntryKindTranscriptRole,
+  sessionHistoryOutlineBlobDisplay,
+  sessionHistoryOutlineBlobToolId,
+} from "./session-history-outline.js"
 import {
   orderedSessionHistoryOutlineItems,
   orderedSessionHistoryOutlineTurns,
@@ -50,6 +55,7 @@ import {
   type SessionHistoryOutlineTurnPromptMetadata,
 } from "./session-history-outline.js"
 import { mergeAdjacentSessionHistoryPageEntries } from "./session-history-page-entries.js"
+import { expandSessionHistoryPageSequences } from "./session-history-page-sequences.js"
 import type {
   SessionHistoryEntry,
   SessionHistoryExternalObservation,
@@ -117,7 +123,7 @@ export function hydrateSessionHistoryTranscriptEntries(
   historyEntries: SessionHistoryPageEntry[],
   hydrateOptions: SessionHistoryTranscriptHydrateOptions = {},
 ): SessionHistoryTranscriptEntry[] {
-  const mergedHistoryEntries = mergeAdjacentSessionHistoryPageEntries(historyEntries)
+  const mergedHistoryEntries = mergeAdjacentSessionHistoryPageEntries(historyEntries.flatMap(expandSessionHistoryPageSequences))
   let entries: SessionHistoryTranscriptEntry[] = []
   const tools = new Map<string, ToolTranscriptUpdate>()
   let nextId = 0
@@ -144,6 +150,7 @@ export function hydrateSessionHistoryTranscriptEntries(
       providerRunId: options.providerRunId,
       mergeAdjacentUnkeyedRoles: ["reasoning"],
       metadata: {
+        historySequence: options.historySequence,
         source: options.source,
         externalProvider: options.externalProvider,
         externalProviderSessionId: options.externalProviderSessionId,
@@ -181,6 +188,9 @@ export function hydrateSessionHistoryTranscriptEntries(
       historyFragmentStart: pageEntry.fragment_start,
       historyFragmentEnd: pageEntry.fragment_end,
       historyTotalChars: pageEntry.total_chars,
+      ...(!sessionHistoryEntryIsExternalProviderObserved(pageEntry.entry)
+        && pageEntry.fragment_start === 0 && pageEntry.fragment_end === pageEntry.total_chars
+        ? { historySequence: pageEntry.entry_index } : {}),
     }
     if (pageEntry.entry.provider_run_id !== undefined) entryOptions.providerRunId = pageEntry.entry.provider_run_id
     if (currentTurnId > 0) entryOptions.turnId = currentTurnId
@@ -267,8 +277,12 @@ export function hydrateSessionHistoryTranscriptEntries(
 }
 
 export function hydrateSessionHistoryOutlineAgentEntries(
-  agent: SessionHistoryOutlineAgent,
+  agent: SessionHistoryOutlineAgent & {
+    /** Blob contents loaded with the outline: their rows replace the placeholders. */
+    readonly loadedBlobs?: readonly SessionHistoryBlobContent[]
+  },
 ): SessionHistoryTranscriptEntry[] {
+  const loadedBlobs = new Map((agent.loadedBlobs ?? []).map((content) => [content.blob_id, content.entries]))
   const entries: SessionHistoryTranscriptEntry[] = []
   let nextId = 0
   let activeTurnId: number | null = null
@@ -300,6 +314,11 @@ export function hydrateSessionHistoryOutlineAgentEntries(
     appendPageEntries([turn.user_prompt])
     let adjacentPageEntries: SessionHistoryPageEntry[] = []
     for (const item of orderedSessionHistoryOutlineItems(turn)) {
+      const loaded = item.kind === "blob" ? loadedBlobs.get(item.blob.blob_id) : undefined
+      if (loaded) {
+        adjacentPageEntries.push(...loaded)
+        continue
+      }
       if (item.kind === "blob") {
         appendPageEntries(adjacentPageEntries)
         adjacentPageEntries = []
@@ -322,26 +341,50 @@ export function hydrateSessionHistoryOutlineAgentEntries(
   return applyTranscriptDisplayState(entries, [], activeTurnId) as SessionHistoryTranscriptEntry[]
 }
 
+// Placeholders are keyed by blob id: entry ids are renumbered whenever an
+// earlier blob in the transcript expands.
 export function replaceSessionHistoryBlobPlaceholder(
   entries: SessionHistoryTranscriptEntry[],
-  entryId: number,
+  blobId: string,
   content: SessionHistoryBlobContent,
   collapsedTurnIds: readonly number[],
 ): SessionHistoryTranscriptEntry[] {
-  const placeholder = entries.find((entry) => entry.id === entryId)
-  if (!placeholder?.historyBlobId) {
+  const placeholder = entries.find((entry) => entry.historyBlobId === blobId)
+  if (!placeholder) {
     return entries
   }
+  const hydrated = hydrateHistoryPlaceholder(placeholder, content)
+  const activeTurnId = transcriptHistoryTurnIsOpen(placeholder) ? placeholder.turnId ?? null : null
+  const replaced = entries.flatMap((entry) => entry === placeholder ? hydrated : [entry])
+  return applyTranscriptDisplayState(
+    reindexTranscriptEntries(replaced, 0),
+    collapsedTurnIds,
+    activeTurnId,
+  ) as SessionHistoryTranscriptEntry[]
+}
+
+// MP-08 / MP-10: materialize a batch in one pass, with one final reindex and
+// display projection. Stable blob identities survive replacement of siblings.
+export function replaceSessionHistoryBlobPlaceholders(
+  entries: SessionHistoryTranscriptEntry[],
+  contents: readonly { agentId: string; content: SessionHistoryBlobContent }[],
+  collapsedTurnIds: readonly number[],
+): SessionHistoryTranscriptEntry[] {
+  const byBlob = new Map(contents.map(({ agentId, content }) => [agentId + ":" + content.blob_id, content]))
+  const replaced = entries.flatMap((entry) => {
+    const content = byBlob.get(entry.historyBlobAgentId + ":" + entry.historyBlobId)
+    return content ? hydrateHistoryPlaceholder(entry, content) : [entry]
+  })
+  return applyTranscriptDisplayState(reindexTranscriptEntries(replaced, 0), collapsedTurnIds) as SessionHistoryTranscriptEntry[]
+}
+
+function hydrateHistoryPlaceholder(placeholder: SessionHistoryTranscriptEntry, content: SessionHistoryBlobContent): SessionHistoryTranscriptEntry[] {
   const turnId = placeholder.turnId
   const externalMetadata = transcriptEntryExternalMetadata(placeholder) ?? {}
   const promptMetadata: SessionHistoryOutlineTurnPromptMetadata = {
     ...(placeholder.promptOrigin !== undefined ? { promptOrigin: placeholder.promptOrigin } : {}),
     ...(placeholder.sourceAttachmentId !== undefined ? { sourceAttachmentId: placeholder.sourceAttachmentId } : {}),
   }
-  const activeTurnId = transcriptHistoryTurnIsOpen(placeholder)
-    && typeof turnId === "number"
-    ? turnId
-    : null
   const hydrated = hydrateSessionHistoryPageEntriesForTurn(content.entries, turnId, placeholder.promptId ?? null).map((entry) => {
     const next: SessionHistoryTranscriptEntry = {
       ...entry,
@@ -360,22 +403,17 @@ export function replaceSessionHistoryBlobPlaceholder(
       promptMetadata,
     )
   })
-  const replaced = entries.flatMap((entry) => entry.id === entryId ? hydrated : [entry])
-  return applyTranscriptDisplayState(
-    reindexTranscriptEntries(replaced, 0),
-    collapsedTurnIds,
-    activeTurnId,
-  ) as SessionHistoryTranscriptEntry[]
+  return hydrated
 }
 
 export function markSessionHistoryBlobLoading(
   entries: SessionHistoryTranscriptEntry[],
-  entryId: number,
+  blobId: string,
   loading: boolean,
   error?: string | null,
 ): SessionHistoryTranscriptEntry[] {
   return entries.map((entry) => {
-    if (entry.id !== entryId || !entry.historyBlobId) {
+    if (entry.historyBlobId !== blobId) {
       return entry
     }
     const next: SessionHistoryTranscriptEntry = {
@@ -438,6 +476,7 @@ function applySessionHistoryTranscriptMetadata(
 }
 
 type SessionHistoryTranscriptMetadataOptions = {
+  historySequence?: number
   providerRunId?: string | null | undefined
   source?: SessionHistoryTranscriptEntry["source"] | undefined
   externalProvider?: string | null | undefined
@@ -543,8 +582,11 @@ function outlineBlobTranscriptEntry(
   promptId: string | null,
   id: number,
 ): SessionHistoryTranscriptEntry {
+  const display = sessionHistoryOutlineBlobDisplay(blob)
+  const toolId = sessionHistoryOutlineBlobToolId(blob)
   return {
     id,
+    ...(toolId ? { mergeKey: toolId } : {}),
     role: sessionHistoryOutlineBlobTranscriptRole(blob.kind),
     text: "",
     sourceText: "",
@@ -552,8 +594,9 @@ function outlineBlobTranscriptEntry(
     promptId,
     blobCollapsible: true,
     blobCollapsed: true,
-    blobTitle: blob.title,
-    blobSummary: blob.summary,
+    blobTitle: display.title,
+    blobSummary: display.summary,
+    ...(display.icon ? { blobIcon: display.icon } : {}),
     historyBlobId: blob.blob_id,
     historyBlobAgentId: agentId,
     historyBlobLoaded: false,
@@ -574,4 +617,35 @@ function sessionHistoryOutlineBlobTranscriptRole(
   return role === "reasoning" || role === "error" || role === "status"
     ? role
     : "tool"
+}
+
+// MP-08 / MP-10 (panes R11): when a pane is rebuilt from history at turn end,
+// a tool call the client already has in full keeps its loaded row instead of
+// turning back into an unloaded placeholder.
+export function adoptLoadedLiveToolRows<TEntry extends SessionHistoryTranscriptEntry>(
+  historyEntries: readonly TEntry[],
+  liveEntries: readonly SessionHistoryTranscriptEntry[],
+): TEntry[] {
+  const loaded = new Map<string, SessionHistoryTranscriptEntry>()
+  for (const entry of liveEntries) {
+    if (entry.role === "tool" && entry.mergeKey && !entry.historyBlobId && entry.sourceText) {
+      loaded.set(entry.mergeKey, entry)
+    }
+  }
+  return historyEntries.map((entry) => {
+    const live = entry.role === "tool" && entry.historyBlobId && entry.mergeKey
+      ? loaded.get(entry.mergeKey)
+      : undefined
+    if (!live) {
+      return entry
+    }
+    const { historyBlobId: _blobId, historyBlobAgentId: _blobAgentId, blobTitle: _title, blobSummary: _summary, blobIcon: _icon, ...rest } = entry
+    return {
+      ...rest,
+      text: live.text,
+      sourceText: live.sourceText,
+      historyBlobLoaded: true,
+      blobCollapsed: live.blobCollapsed ?? true,
+    } as TEntry
+  })
 }

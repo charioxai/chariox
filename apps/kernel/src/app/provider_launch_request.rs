@@ -104,12 +104,23 @@ impl DaemonApp {
         if crate::provider::canonical_provider_family(&request.provider)
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
-            let account_owner_user_id =
+            let execution_owner_user_id = self.provider_account_owner_for_execution(
+                &request.session_id,
+                request.agent_id.as_deref(),
+            )?;
+            let account_owner_user_id = if execution_owner_user_id
+                == crate::account_profile::provider_account_authority_owner_user_id(
+                    &self.config,
+                    &request.owner_user_id,
+                ) {
                 crate::account_profile::provider_account_authority_for_launch(
                     &self.config,
                     &self.provider_account_profiles,
                     &request,
-                )?;
+                )?
+            } else {
+                execution_owner_user_id
+            };
             let profile = if request.client_interface.is_chariox() {
                 refresh_provider_usage_before_launch(
                     &self.provider_account_profiles,

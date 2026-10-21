@@ -110,6 +110,8 @@ pub(crate) async fn execute_event_catalog_request_with_client(
             | LocalDaemonRequest::ObserveEventConnectionAuthorization(_)
             | LocalDaemonRequest::RefreshEventConnection(_)
             | LocalDaemonRequest::TestEventConnection(_)
+            | LocalDaemonRequest::ListEventConnectionEvents(_)
+            | LocalDaemonRequest::ReplayEventConnectionEvent(_)
             | LocalDaemonRequest::ReconnectEventConnection(_)
             | LocalDaemonRequest::ListEventConnectionResources(_)
             | LocalDaemonRequest::RemoveEventConnection(_)
@@ -335,6 +337,12 @@ fn event_generator_ids_from_management_request(
             connection_generator(&request.connection_id)
         }
         LocalDaemonRequest::TestEventConnection(request) => {
+            connection_generator(&request.connection_id)
+        }
+        LocalDaemonRequest::ListEventConnectionEvents(request) => {
+            connection_generator(&request.connection_id)
+        }
+        LocalDaemonRequest::ReplayEventConnectionEvent(request) => {
             connection_generator(&request.connection_id)
         }
         LocalDaemonRequest::ReconnectEventConnection(request) => {
@@ -691,6 +699,48 @@ async fn execute_event_connection_request(
             })
             .await?;
             Ok(LocalDaemonResponse::EventConnectionTested { result })
+        }
+        LocalDaemonRequest::ListEventConnectionEvents(request) => {
+            let connection = require_connection(registry, caller_user_id, &request.connection_id)?;
+            let targets = targets.clone();
+            let management_client = management_client.clone();
+            let owner_id = owner_id.clone();
+            let page = blocking_aegs(move || {
+                post_aegs_json(
+                    &management_client,
+                    &targets,
+                    &connection.generator_id,
+                    "/v1/events/query",
+                    &chariox_event_protocol::AegsReceivedEventQuery {
+                        generator_id: connection.generator_id.clone(),
+                        owner_id,
+                        limit: request.limit,
+                    },
+                )
+            })
+            .await?;
+            Ok(LocalDaemonResponse::EventConnectionEvents { page })
+        }
+        LocalDaemonRequest::ReplayEventConnectionEvent(request) => {
+            let connection = require_connection(registry, caller_user_id, &request.connection_id)?;
+            let targets = targets.clone();
+            let management_client = management_client.clone();
+            let owner_id = owner_id.clone();
+            let result = blocking_aegs(move || {
+                post_aegs_json(
+                    &management_client,
+                    &targets,
+                    &connection.generator_id,
+                    "/v1/events/replay",
+                    &chariox_event_protocol::AegsReceivedEventReplayRequest {
+                        generator_id: connection.generator_id.clone(),
+                        owner_id,
+                        delivery_id: request.delivery_id,
+                    },
+                )
+            })
+            .await?;
+            Ok(LocalDaemonResponse::EventConnectionEventReplayed { result })
         }
         LocalDaemonRequest::ReconnectEventConnection(request) => {
             let connection = require_connection(registry, caller_user_id, &request.connection_id)?;
@@ -1223,7 +1273,7 @@ impl AegsActionFailure {
     /// A sent request the generator did not refuse (no answer, or a 5xx from
     /// it or a gateway in front of it) may have acted.
     pub(crate) fn outcome_unknown(&self) -> bool {
-        self.sent && self.status.map_or(true, |status| status >= 500)
+        self.sent && self.status.is_none_or(|status| status >= 500)
     }
 }
 impl std::fmt::Display for AegsActionFailure {

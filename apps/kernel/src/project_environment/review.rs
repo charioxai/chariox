@@ -45,6 +45,90 @@ pub struct ProjectEnvironmentReviewInput {
     pub uses: Vec<ProjectEnvironmentUse>,
 }
 
+/// Not-reviewed ignored files shown with their own choice per page of the expanded review; the
+/// bulk actions still cover all of them.
+pub const LISTED_UNREVIEWED_FILES: usize = 100;
+
+fn unreviewed(file: &ProjectPrivateFileDecision) -> bool {
+    file.reason == UNREVIEWED_PRIVATE_FILE_REASON
+}
+
+fn unreviewed_or_brought(file: &ProjectPrivateFileDecision) -> bool {
+    unreviewed(file) || file.reason == BROUGHT_UNREVIEWED_PRIVATE_FILE_REASON
+}
+
+/// Which not-reviewed ignored files the expanded review lists: one page of those whose path
+/// contains `query`, so the owner can reach every file by paging or searching.
+#[derive(Debug, Clone, Default)]
+pub struct UnreviewedFilesView {
+    pub offset: usize,
+    pub query: String,
+}
+
+impl UnreviewedFilesView {
+    fn matches<'a>(
+        &'a self,
+        manifest: &'a ProjectEnvironmentManifest,
+    ) -> impl Iterator<Item = &'a ProjectPrivateFileDecision> {
+        let query = self.query.to_lowercase();
+        manifest
+            .private_files
+            .iter()
+            .filter(|file| unreviewed_or_brought(file))
+            .filter(move |file| file.path.to_lowercase().contains(&query))
+    }
+
+    pub fn matching(&self, manifest: &ProjectEnvironmentManifest) -> usize {
+        self.matches(manifest).count()
+    }
+}
+
+/// How many ignored files the owner may still bring with one action, and how many they brought.
+pub fn unreviewed_project_private_files(manifest: &ProjectEnvironmentManifest) -> (usize, usize) {
+    let left = manifest
+        .private_files
+        .iter()
+        .filter(|f| unreviewed(f))
+        .count();
+    let brought = manifest
+        .private_files
+        .iter()
+        .filter(|f| f.reason == BROUGHT_UNREVIEWED_PRIVATE_FILE_REASON)
+        .count();
+    (left, brought)
+}
+
+/// One action for every ignored file no utility turn reviewed: bring them all (secret and runtime
+/// files stay behind) or leave them. Returns how many decisions changed.
+pub fn set_unreviewed_project_private_files(
+    state: &mut StoredProjectEnvironment,
+    bring: bool,
+) -> usize {
+    let mut moved = 0;
+    for file in state.manifest.private_files.iter_mut().filter(|file| {
+        unreviewed(file) || (!bring && file.reason == BROUGHT_UNREVIEWED_PRIVATE_FILE_REASON)
+    }) {
+        if bring
+            && (file.secret_looking
+                || secret_looking_project_path(&file.path)
+                || crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(
+                    &file.path,
+                ))
+        {
+            continue;
+        }
+        file.bring = bring;
+        file.reason = if bring {
+            BROUGHT_UNREVIEWED_PRIVATE_FILE_REASON
+        } else {
+            UNREVIEWED_PRIVATE_FILE_REASON
+        }
+        .into();
+        moved += 1;
+    }
+    moved
+}
+
 pub fn project_environment_item_id(workspace: &str, name: &str) -> String {
     format!(
         "{:x}",
@@ -70,9 +154,30 @@ impl ProjectEnvironmentReview {
         expanded: bool,
         unattended: bool,
     ) -> Self {
+        Self::build_with_view(
+            state,
+            project,
+            target,
+            code,
+            expanded,
+            unattended,
+            &UnreviewedFilesView::default(),
+        )
+    }
+
+    pub fn build_with_view(
+        state: &StoredProjectEnvironment,
+        project: &str,
+        target: &str,
+        code: String,
+        expanded: bool,
+        unattended: bool,
+        view: &UnreviewedFilesView,
+    ) -> Self {
         let old = state.reviewed_manifest.as_ref();
         let manifest = &state.manifest;
         let brought = manifest.private_files.iter().filter(|f| f.bring).count();
+        let (unreviewed_left, _) = unreviewed_project_private_files(manifest);
         let selected: Vec<_> = manifest
             .entries
             .iter()
@@ -86,7 +191,7 @@ impl ProjectEnvironmentReview {
         for entry in &selected {
             sources.insert(locator_source(&entry.locator));
         }
-        Self {
+        let mut review = Self {
             schema_version: 1,
             project_name: project.into(),
             target_name: target.into(),
@@ -130,6 +235,15 @@ impl ProjectEnvironmentReview {
             files: manifest
                 .private_files
                 .iter()
+                .filter(|file| {
+                    !unreviewed(file) && file.reason != BROUGHT_UNREVIEWED_PRIVATE_FILE_REASON
+                })
+                .chain(
+                    view.matches(manifest)
+                        .filter(|_| expanded)
+                        .skip(view.offset)
+                        .take(LISTED_UNREVIEWED_FILES),
+                )
                 .map(|file| ProjectEnvironmentReviewFile {
                     id: project_environment_item_id(&file.workspace_id, &file.path),
                     path: file.path.clone(),
@@ -157,7 +271,16 @@ impl ProjectEnvironmentReview {
                     uses: entry.uses.clone(),
                 })
                 .collect(),
+        };
+        if unreviewed_left > 0 {
+            review.rows.push(ProjectEnvironmentReviewRow {
+                label: "Not reviewed".into(),
+                summary: format!(
+                    "{unreviewed_left} ignored files were not reviewed and stay behind; details list {LISTED_UNREVIEWED_FILES} at a time, with next, previous and search"
+                ),
+            });
         }
+        review
     }
 }
 fn locator_source(locator: &ProjectEnvironmentLocator) -> String {

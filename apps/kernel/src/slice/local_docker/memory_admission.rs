@@ -19,6 +19,7 @@ const DOCKER_ENGINE_RESERVE_MB: u64 = 512;
 const MIB: u64 = 1024 * 1024;
 #[cfg(all(unix, test))]
 const UNIX_ENGINE_ADMISSION_LOCK_PATH: &str = "/tmp/chariox-docker-memory-admission.lock";
+#[cfg(any(test, windows))]
 const WINDOWS_ENGINE_ADMISSION_LOCK_NAME: &str = r"Global\CharioxDockerMemoryAdmission";
 static PROCESS_ADMISSION_LOCK: Mutex<()> = Mutex::new(());
 
@@ -87,6 +88,7 @@ impl fmt::Display for SliceMemoryAdmissionRejection {
     }
 }
 
+#[cfg(test)]
 pub(super) fn default_slice_memory_bytes() -> u64 {
     u64::from(DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB) * MIB
 }
@@ -293,10 +295,12 @@ fn acquire_engine_admission_lock() -> Result<EngineAdmissionLock, DaemonError> {
     }
 }
 
+#[cfg(any(test, windows))]
 fn windows_engine_admission_lock_name() -> &'static str {
     WINDOWS_ENGINE_ADMISSION_LOCK_NAME
 }
 
+#[cfg(any(test, windows))]
 fn windows_engine_admission_lock_name_wide() -> Vec<u16> {
     windows_engine_admission_lock_name()
         .encode_utf16()

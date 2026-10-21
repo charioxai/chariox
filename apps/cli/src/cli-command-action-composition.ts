@@ -1,3 +1,5 @@
+import { withAgentTaskUpdate } from "@chariox/kernel-client/agent-task-state"
+import type { AgentTaskExecution } from "@chariox/kernel-client/kernel-types"
 import { getManagedContextTransferStatus } from "./managed-environment-api.js"
 import { getCloudClientControlProfile } from "./cloud-client-control.js"
 import { appHostOperationIds, type AppHostTerminal } from "./app-host-action.js"
@@ -15,6 +17,7 @@ import { buildHostedCloudViewUrl } from "./cloud-command-lifecycle.js"
 import { importExternalProviderAgent } from "./external-provider-session-api.js"
 import { openExternalUrl } from "./external-url.js"
 import type { ProviderLoginLinkOptions } from "./provider-login-link.js"
+import type { SessionSelection } from "./session-lifecycle.js"
 import { formatAgentLabel } from "./agent-label.js"
 import { grantAgentApp, revokeAgentApp } from "./app-binding-api.js"
 import {
@@ -95,7 +98,7 @@ import {
   validateScript,
   testConnector,
 } from "./extension-api.js"
-import { deleteKernel, exportDebugBundle, getDaemonHealth, listKernelAccessGrants, revokeKernelAccessGrant } from "./kernel-api.js"
+import { deleteKernel, exportDebugBundle, extendKernelSudo, getDaemonHealth, listKernelAccessGrants, revokeKernelAccessGrant } from "./kernel-api.js"
 import {
   mergeRelayCloudProfile,
   mergeUiPreferences,
@@ -136,7 +139,10 @@ import {
   addSshMachine,
   removeSshMachine,
   approveRemoteMachine,
+  forgetGatewayMachine,
   forgetRemoteMachine,
+  joinMachineLink,
+  listGatewayMachines,
   listRemoteMachineKernels,
   listRemoteMachines,
   renameRemoteMachine,
@@ -165,7 +171,7 @@ import {
   updateMetaagentTask,
 } from "./session-api.js"
 import { SESSION_CONFIG_RESPONSE_LAYOUT_KEY } from "@chariox/kernel-client/session-config-projection"
-import { createAgentPromptScheduleRequest } from "@chariox/kernel-client/ipc-requests"
+import { submitPromptRequest, createAgentPromptScheduleRequest } from "@chariox/kernel-client/ipc-requests"
 import { formatSessionList } from "./sessions.js"
 import {
   createSlice,
@@ -183,9 +189,9 @@ import {
   restoreSliceBackup,
   saveSliceState,
   startSliceProviderLogin,
-  startSlice,
   stopSlice,
 } from "./slice-api.js"
+import { startSliceShowingProgress } from "./slice-start-progress.js"
 import {
   attachWorkspaceLink,
   createWorkspaceLink,
@@ -199,9 +205,11 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
+  userAppViews?: { handle(args: string[]): Promise<boolean>; hostOfferIds?(): Promise<string[]> }
   cloudClient?: CloudClient
   kernelConnected?: () => boolean
   appHostTerminal?: AppHostTerminal
+  roomTerminalScreen?: import("./room-terminal-slash.js").RoomTerminalScreen
   lastViewedAppHostOperationId?: () => string | undefined
   appFileInstaller?: AppFileInstaller
   appDevLoop?: AppDevLoop
@@ -235,6 +243,7 @@ export type CliCommandActionCompositionDeps = {
   appendCloudNotice: AnyFn
   formatError: AnyFn
   attachBinding: AnyFn
+  beginSessionSelection?: (session: { id: string }) => SessionSelection | null
   transitionToNoSession: AnyFn
   applyProviderSelection: AnyFn
   applyAccountSelection: AnyFn
@@ -480,6 +489,24 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     currentAccountProfileId: () => currentAccountProfileId?.() || options.accountProfile || "default",
     currentExecutionMode,
     currentPermissionLevel,
+    submitGoalPrompt: async (text, targetAgentId) => {
+      const attachment = attachmentState()
+      if (!attachment) throw new Error("goal needs an attached terminal")
+      const response = await client.send<{ PromptSubmitted?: { session: RuntimeSession }; SessionState?: { session: RuntimeSession }; AgentTaskUpdated?: { session_id: string; task: AgentTaskExecution } }>(submitPromptRequest(sessionState().id, attachment.id, targetAgentId, text, []))
+      if (response.AgentTaskUpdated) {
+        const update = response.AgentTaskUpdated
+        if (update.session_id !== sessionState().id || update.task.agent_id !== targetAgentId) throw new Error("foreign goal control confirmation")
+        deps.applySessionState(withAgentTaskUpdate(sessionState(), update.session_id, update.task))
+        requestRootRender()
+        return
+      }
+      const payload = response.PromptSubmitted ?? response.SessionState
+      if (!payload?.session) throw new Error("goal admission did not return session state")
+      deps.applySessionState(payload.session)
+      await deps.refreshAgentPanes(payload.session)
+      deps.rebuildTranscript()
+      requestRootRender()
+    },
     focusedAgentId,
     multiAgentResponseLayout,
     maxAgentsPerScreen,
@@ -496,6 +523,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       return true
     },
     openRoomViewer,
+    ...(deps.roomTerminalScreen ? { roomTerminalScreen: deps.roomTerminalScreen } : {}),
     captureRoomScreenshot: async () => {
       const attachment = attachmentState()
       if (!attachment) throw new Error("Room screenshot capture requires an active attachment")
@@ -508,6 +536,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     },
     sendWorkflowEventPublicationRequest: (request) => client.send(request),
     sendAppRequest: (request) => client.send(request),
+    ...(deps.userAppViews ? { userAppViews: deps.userAppViews } : {}),
     ...(deps.appFileInstaller ? { appFileInstaller: deps.appFileInstaller } : {}),
     ...(deps.appDevLoop ? { appDevLoop: deps.appDevLoop } : {}),
     ...(deps.appPublisherEnrollment ? { appPublisherEnrollment: deps.appPublisherEnrollment } : {}),
@@ -523,6 +552,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       createSessionInvite(client, sessionId, expiresInMs, maxUses, collaborationLevel),
     joinSessionInvite: (inviteToken, userId) => joinSessionInvite(client, inviteToken, userId),
     attachBinding: (session, createdSession) => attachBinding(session, createdSession),
+    beginSessionSelection: reference => deps.beginSessionSelection?.({ id: reference }) ?? null,
     resolveSession: (reference, workspace) => resolveSession(client, reference, workspace),
     listSessions: () => listSessions(client),
     deleteSessionByRef: (reference, workspace) => deleteSessionByRef(client, reference, workspace),
@@ -531,6 +561,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     getContextTransferStatus: contextId => getManagedContextTransferStatus(client, contextId),
     listKernelAccessGrants: () => listKernelAccessGrants(client),
     revokeKernelAccessGrant: (id) => revokeKernelAccessGrant(client, id),
+    sendExtendKernelSudo: (request) => extendKernelSudo(client, request),
     exportDebugBundle: (sessionId, label) => exportDebugBundle(client, sessionId, label),
     assignSessionAlias: (sessionId, alias) => aliasSession(client, sessionId, alias),
     aliasAgent: (sessionId, agentId, alias) => aliasAgent(client, sessionId, agentId, alias),
@@ -576,7 +607,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     storeProviderSetupToken: (profile, value, replace) => storeProviderSetupToken(client, profile, value, replace, {
       ...(isAttached() ? { sessionId: sessionState().id, agentId: focusedAgentId() } : {}),
     }),
-    logoutProvider: (provider, accountProfile) => logoutProvider(client, provider, accountProfile),
+    logoutProvider: (provider, accountProfile, endEverywhere) => logoutProvider(client, provider, accountProfile, endEverywhere),
     listProviderAccountProfiles: (provider) => listProviderAccountProfiles(client, provider),
     createProviderAccountProfile: (provider, label) => createProviderAccountProfile(client, provider, label),
     linkProviderAccountProfile: (provider, label, path) => linkProviderAccountProfile(client, provider, label, path),
@@ -645,6 +676,9 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     approveRemoteMachine: (machineRef) => approveRemoteMachine(client, machineRef),
     forgetRemoteMachine: (machineRef) => forgetRemoteMachine(client, machineRef),
     renameRemoteMachine: (machineRef, alias) => renameRemoteMachine(client, machineRef, alias),
+    joinMachineLink: (link, relayToken) => joinMachineLink(client, link, relayToken),
+    listGatewayMachines: () => listGatewayMachines(client),
+    forgetGatewayMachine: (name) => forgetGatewayMachine(client, name),
     listSlices: async () => {
       const slices = await listSlices(client)
       setSlicesState(slices)
@@ -657,7 +691,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     },
     getSlice: async (sliceRef) => getSlice(client, sliceRef),
     startSlice: async (sliceRef) => {
-      const slice = await startSlice(client, sliceRef)
+      const slice = await startSliceShowingProgress(client, sliceRef, (message) => flashFooter(message, "info"))
       setSlicesState(await listSlices(client))
       return slice
     },

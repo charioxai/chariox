@@ -3,6 +3,7 @@ use super::*;
 mod capability_room_authority;
 mod control_authority;
 mod credential_authority;
+mod gateway_authority;
 mod inner_authority;
 mod input_control_authority;
 mod meta_authority;
@@ -22,13 +23,12 @@ impl KernelRuntimeState {
                 owner_user_id: session.owner_user_id().into(),
                 holder_pid: holder.pid,
                 holder_executable: holder.executable.clone(),
-                lifetime_minutes: 30,
-                expires_at_ms: crate::session::unix_epoch_ms() + 1_800_000,
+                holder_harness: None,
+                term: KernelAccessTerm::Minutes(30),
+                expires_at_ms: Some(crate::session::unix_epoch_ms() + 1_800_000),
             },
             holder,
-            deadline: Instant::now() + Duration::from_secs(1800),
-            notice: Instant::now() + Duration::from_secs(1500),
-            notice_sent: false,
+            clock: Some(GrantClock::new(30, 5)),
         };
         self.owned
             .kernel_access
@@ -136,8 +136,16 @@ impl KernelRuntimeState {
         let mut state = self.owned.kernel_access.lock().unwrap();
         for grant in state.grants.values_mut() {
             match action {
-                "expire" => grant.deadline = Instant::now() - Duration::from_millis(1),
-                "notice" => grant.notice = Instant::now() - Duration::from_millis(1),
+                "expire" => {
+                    if let Some(clock) = grant.clock.as_mut() {
+                        clock.deadline = Instant::now() - Duration::from_millis(1);
+                    }
+                }
+                "notice" => {
+                    if let Some(clock) = grant.clock.as_mut() {
+                        clock.notice = Instant::now() - Duration::from_millis(1);
+                    }
+                }
                 "reuse" => grant.holder.start = grant.holder.start.wrapping_add(1),
                 _ => panic!("unknown test control"),
             }
@@ -230,4 +238,85 @@ async fn kernel_access_popup_works_before_first_session_and_expires_on_shared_bo
         assert_eq!(rx.await.unwrap().status, "timed_out");
         assert!(state.passkey_prompts_for(owner).is_empty());
     }
+}
+
+// EA2-01: a grant that lasts until its holder exits has no deadline, however
+// much time passes, while a timed grant of the same holder ends at its own.
+#[tokio::test]
+async fn until_exit_grant_outlives_every_deadline_but_not_its_holder() {
+    let app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let state = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+        std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+        32,
+    )
+    .runtime_state();
+    let live_holder = process::inspect(std::process::id()).unwrap().0;
+    let grant = |id: &str, term, clock, holder: ProcessIdentity| Grant {
+        summary: KernelAccessGrant {
+            grant_id: id.into(),
+            owner_user_id: "local".into(),
+            holder_pid: holder.pid,
+            holder_executable: holder.executable.clone(),
+            holder_harness: None,
+            term,
+            expires_at_ms: None,
+        },
+        holder,
+        clock,
+    };
+    let mut reused = live_holder.clone();
+    reused.start = reused.start.wrapping_add(1);
+    {
+        let mut access = state.owned.kernel_access.lock().unwrap();
+        access.grants.insert(
+            "timed".into(),
+            grant(
+                "timed",
+                KernelAccessTerm::Minutes(480),
+                Some(GrantClock::new(480, 5)),
+                live_holder.clone(),
+            ),
+        );
+        access.grants.insert(
+            "until-exit".into(),
+            grant(
+                "until-exit",
+                KernelAccessTerm::UntilHolderExits,
+                None,
+                live_holder.clone(),
+            ),
+        );
+        access.grants.insert(
+            "until-exit-pid-reused".into(),
+            grant(
+                "until-exit-pid-reused",
+                KernelAccessTerm::UntilHolderExits,
+                None,
+                reused,
+            ),
+        );
+    }
+    state.sweep_kernel_access_at(Instant::now() + Duration::from_secs(48 * 3600));
+    let mut live = state
+        .owned
+        .kernel_access
+        .lock()
+        .unwrap()
+        .grants
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    live.sort();
+    assert_eq!(live, ["until-exit"]);
+    // Neither grant may ask the owner to extend it: only a clock can.
+    state.sweep_kernel_access_at(Instant::now() + Duration::from_secs(96 * 3600));
+    assert!(state
+        .owned
+        .kernel_access
+        .lock()
+        .unwrap()
+        .grants
+        .contains_key("until-exit"));
 }

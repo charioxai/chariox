@@ -519,6 +519,7 @@ async fn remove_client_peer_unsubscribes_active_and_pending_daemon_subscriptions
     routes.set_subscription(
         "active-subscription".to_string(),
         ActiveEventRoute {
+            display: false,
             daemon_key: daemon_key.clone(),
             client_sender,
         },
@@ -530,6 +531,7 @@ async fn remove_client_peer_unsubscribes_active_and_pending_daemon_subscriptions
             client_request_id: "client-request-pending".to_string(),
             daemon_key: daemon_key.clone(),
             kind: PendingRequestKind::Subscribe {
+                display: false,
                 subscription_id: "pending-subscription".to_string(),
                 client_public_key: "pending-public-key".to_string(),
             },
@@ -760,6 +762,7 @@ async fn slow_event_consumer_cleanup_case() -> bool {
     routes.set_subscription(
         "slow-subscription".to_string(),
         ActiveEventRoute {
+            display: false,
             daemon_key: daemon_key.clone(),
             client_sender: sender.clone(),
         },
@@ -767,6 +770,7 @@ async fn slow_event_consumer_cleanup_case() -> bool {
     routes.set_subscription(
         "other-subscription".to_string(),
         ActiveEventRoute {
+            display: false,
             daemon_key: daemon_key.clone(),
             client_sender: other_sender,
         },
@@ -1437,7 +1441,7 @@ async fn silent_peer_is_removed_within_original_heartbeat_bound() {
         .unwrap();
     });
     let (mut client, _) =
-        tokio_tungstenite::connect_async(format!("ws://{address}/?chariox_transport=chunks-v1"))
+        tokio_tungstenite::connect_async(format!("ws://{address}/?chariox_transport=chunks-v2"))
             .await
             .unwrap();
     let mut registration = daemon_registration("silent-peer");
@@ -1459,4 +1463,271 @@ async fn silent_peer_is_removed_within_original_heartbeat_bound() {
         .unwrap();
     assert!(registry.read().await.peers.is_empty());
     drop(client);
+}
+
+// MP-08 / MP-10 / MP-11: a healthy peer acknowledging many small frames in one
+// read must never lose its connection (browser control WebSocket 1006).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn burst_of_small_frame_receipts_keeps_the_connection() {
+    use futures_util::{SinkExt, StreamExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let registry_for_connection = registry.clone();
+    let mut task = tokio::spawn(async move {
+        let (stream, peer) = listener.accept().await.unwrap();
+        handle_connection(
+            stream,
+            peer,
+            registry_for_connection,
+            RelayAuthVerifier::shared(Some("public-fixture".into())),
+            Arc::new(AtomicU64::new(0)),
+        )
+        .await
+    });
+    let (mut client, _) =
+        tokio_tungstenite::connect_async(format!("ws://{address}/?chariox_transport=chunks-v2"))
+            .await
+            .unwrap();
+    let mut registration = daemon_registration("burst-peer");
+    registration.auth_token = "public-fixture".to_string();
+    client
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::DaemonRegister { registration })
+                .unwrap()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let sender = loop {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        if let Some(peer) = registry.read().await.peers.values().next() {
+            break peer.sender.clone();
+        }
+    };
+    // More small frames than the wire window admits, sent without blocking the reader.
+    const FRAMES: usize = 4000;
+    tokio::spawn(async move {
+        for n in 0..FRAMES {
+            let request = format!(r#"{{"kind":"daemon_request","relay_request_id":"small-{n}"}}"#);
+            sender.send(Message::Text(request.into())).await.unwrap();
+        }
+        sender
+            .send(Message::Text(
+                r#"{"kind":"daemon_request","relay_request_id":"after-burst"}"#.into(),
+            ))
+            .await
+            .unwrap();
+    });
+    let mut receiver = crate::frame_transport::FrameReceiver::default();
+    let mut receipts = Vec::new();
+    // The wire window admits many small frames; read until it stalls on credit.
+    while let Ok(Some(Ok(Message::Text(text)))) =
+        tokio::time::timeout(Duration::from_millis(300), client.next()).await
+    {
+        receipts.extend(receiver.receive(&text).unwrap().1);
+    }
+    assert!(receipts.len() > 64, "the window must admit a receipt burst");
+    // One flush: the relay reads the whole receipt burst before its writer can drain it.
+    for receipt in receipts {
+        client.feed(Message::Text(receipt.into())).await.unwrap();
+    }
+    client.flush().await.unwrap();
+    loop {
+        let Message::Text(text) = tokio::time::timeout(Duration::from_secs(3), client.next())
+            .await
+            .expect("the connection must survive a receipt burst")
+            .expect("the relay must not end the stream")
+            .expect("the relay must not drop the socket")
+        else {
+            continue;
+        };
+        let (complete, receipt) = receiver.receive(&text).unwrap();
+        if let Some(receipt) = receipt {
+            client.send(Message::Text(receipt.into())).await.unwrap();
+        }
+        if complete.is_some_and(|text| text.contains("after-burst")) {
+            break;
+        }
+    }
+    assert!(!task.is_finished());
+    drop(client);
+    let _ = tokio::time::timeout(Duration::from_secs(3), &mut task).await;
+}
+
+#[tokio::test]
+async fn mp11_binary_event_routes_only_for_its_registered_daemon_and_realm() {
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let routes = registry.read().await.route_index();
+    let daemon = DaemonKey::new("realm", "kernel");
+    let (sender, mut receiver) = mpsc::channel(2);
+    routes.set_subscription(
+        "sub".into(),
+        ActiveEventRoute {
+            display: false,
+            daemon_key: daemon.clone(),
+            client_sender: sender,
+        },
+    );
+    let header = crate::binary_event::EventHeader {
+        kind: "daemon_event".into(),
+        subscription_id: "sub".into(),
+        event_id: 31,
+        sender_public_key: "opaque-key".into(),
+        nonce: "abcdefghijklmnop".into(),
+    };
+    let bytes = crate::binary_event::encode(&header, &[37; 1024]).unwrap();
+    let counter = AtomicU64::new(0);
+    for wrong in [
+        DaemonKey::new("other-realm", "kernel"),
+        DaemonKey::new("realm", "other-kernel"),
+    ] {
+        assert!(
+            !route_daemon_binary_event(&registry, &routes, &wrong, &counter, &bytes)
+                .await
+                .unwrap()
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+    assert!(
+        route_daemon_binary_event(&registry, &routes, &daemon, &counter, &bytes)
+            .await
+            .unwrap()
+    );
+    let Message::Binary(delivered) = receiver.recv().await.unwrap() else {
+        panic!("expected binary event");
+    };
+    let (header, ciphertext) = crate::binary_event::decode(&delivered).unwrap();
+    assert_eq!(header.kind, "client_event");
+    assert_eq!(header.subscription_id, "sub");
+    assert_eq!(header.event_id, 31);
+    assert_eq!(ciphertext, &[37; 1024]);
+    assert!(
+        route_daemon_binary_event(&registry, &routes, &daemon, &counter, &delivered)
+            .await
+            .is_err()
+    );
+}
+
+// MP-08 / MP-10 / MP-11: a v1 receiver must never see multiplexed v2 frames.
+#[tokio::test]
+async fn mp08_mp10_mp11_old_chunk_capability_is_rejected_before_registration() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let captured = registry.clone();
+    let task = tokio::spawn(async move {
+        let (stream, peer) = listener.accept().await.unwrap();
+        handle_connection(
+            stream,
+            peer,
+            captured,
+            RelayAuthVerifier::shared(Some("public-fixture".into())),
+            Arc::new(AtomicU64::new(0)),
+        )
+        .await
+    });
+    let error =
+        tokio_tungstenite::connect_async(format!("ws://{address}/?chariox_transport=chunks-v1"))
+            .await
+            .unwrap_err();
+    assert!(
+        matches!(error,tokio_tungstenite::tungstenite::Error::Http(response) if response.status()==426)
+    );
+    assert!(task.await.unwrap().is_err());
+    assert!(registry.read().await.peers.is_empty());
+}
+
+#[tokio::test]
+async fn mp11_initial535_pin_is_checked_at_the_subscription_sender_transaction() {
+    use futures_util::poll;
+    let key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
+    let original_addr = peer_addr(39_001);
+    let replacement_addr = peer_addr(39_002);
+    let client_addr = peer_addr(39_003);
+    let (original_tx, mut original_rx) = mpsc::channel(8);
+    let (replacement_tx, mut replacement_rx) = mpsc::channel(8);
+    let (client_tx, mut client_rx) = mpsc::channel(8);
+    let registration = daemon_registration("daemon-1");
+    let mut state = RelayRegistry::default();
+    state.daemons.insert(key.clone(), registration.clone());
+    state.daemon_peers.insert(key.clone(), original_addr);
+    state.peers.insert(
+        original_addr,
+        daemon_peer(original_tx.clone(), registration.clone()),
+    );
+    let routes = state.route_index();
+    routes.set_daemon_sender(key.clone(), original_tx);
+    let registry = Arc::new(RwLock::new(state));
+    let verifier = RelayAuthVerifier::shared(None);
+    let counter = AtomicU64::new(0);
+    let mut identity = None;
+    let mut expiry = None;
+    // Park admission at its registry write, then place a replacement writer
+    // immediately after it. Tokio's fair lock makes the post-ack routing read
+    // observe that replacement, without timing sleeps or production hooks.
+    let held = registry.read().await;
+    let admitting = super::client_connect::admit(
+        RelayEnvelope::ClientConnectDisplayResume {
+            auth_token: "client-token".into(),
+            target: ClientTarget {
+                daemon_id: Some("daemon-1".into()),
+                daemon_alias: None,
+            },
+            expected_daemon_public_key: registration.public_key.clone(),
+            registration: crate::protocol::InitialDisplayResumeRegistration {
+                request_id: "resume-request".into(),
+                subscription_id: "fresh-route".into(),
+                session_id: "old-delivery".into(),
+                attachment_id: "1".into(),
+                client_public_key: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".into(),
+            },
+        },
+        super::client_connect::ClientConnectContext {
+            registry: &registry,
+            routes: &routes,
+            auth_verifier: &verifier,
+            peer_addr: client_addr,
+            outgoing_tx: &client_tx,
+            relay_request_counter: &counter,
+            verified_identity: &mut identity,
+            auth_expiry_deadline: &mut expiry,
+            initial_resume_negotiated: true,
+        },
+    );
+    tokio::pin!(admitting);
+    assert!(poll!(admitting.as_mut()).is_pending());
+    let replacing = registry.write();
+    tokio::pin!(replacing);
+    assert!(poll!(replacing.as_mut()).is_pending());
+    drop(held);
+    assert!(poll!(admitting.as_mut()).is_pending());
+    let Message::Text(ack) = client_rx
+        .try_recv()
+        .expect("MP-11 reach the admitted-before-routing seam")
+    else {
+        panic!("expected connect ack")
+    };
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&ack).unwrap()["kind"],
+        "client_connected"
+    );
+    let mut replacing = replacing.await;
+    let mut replacement = registration;
+    replacement.public_key = "replacement-home-key".into();
+    replacing.daemons.insert(key.clone(), replacement.clone());
+    replacing.daemon_peers.insert(key.clone(), replacement_addr);
+    replacing.peers.insert(
+        replacement_addr,
+        daemon_peer(replacement_tx.clone(), replacement),
+    );
+    routes.set_daemon_sender(key, replacement_tx);
+    drop(replacing);
+    let _ = admitting.await.unwrap();
+    assert!(
+        replacement_rx.try_recv().is_err(),
+        "MP-11 an initial535 registration crossed its expected home key after admission"
+    );
+    assert!(original_rx.try_recv().is_err());
+    assert_eq!(registry.read().await.pending_request_count(), 0);
 }

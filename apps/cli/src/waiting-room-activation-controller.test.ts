@@ -127,7 +127,7 @@ test("waiting room activation creates and attaches sessions with launch defaults
     "updateSlice:slice-1",
     "createSession",
     "attachBinding",
-    "flash:info:created session Review in /worktree · slice slice-1 · workspace live sync config default",
+    "flash:info:created session Review in /worktree · slice slice-1",
   ])
 })
 
@@ -185,7 +185,7 @@ test("waiting room waits for kernel-owned Project setup before attaching an ordi
   releaseSetup()
   await pending
   assert.deepEqual(harness.calls.slice(0, 4), [
-    "createSession", "prepareProjectEnvironment", "attachBinding", "flash:info:created session Review in /worktree · workspace live sync config default",
+    "createSession", "prepareProjectEnvironment", "attachBinding", "flash:info:created session Review in /worktree",
   ])
 })
 
@@ -239,7 +239,7 @@ test("waiting room activation creates and starts new headed slices before sessio
     "updateSlice:slice-created",
     "createSession",
     "attachBinding",
-    "flash:info:created session Review in /worktree · slice slice-created · workspace live sync config default",
+    "flash:info:created session Review in /worktree · slice slice-created",
   ])
 })
 
@@ -461,7 +461,7 @@ test("waiting room activation sends an exact repository subset to a new slice", 
   })
 })
 
-test("waiting room activation reports explicit created-session live sync mode", async () => {
+test("waiting room activation does not report the discontinued live sync mode", async () => {
   const launch: WaitingRoomLaunchConfig = {
     provider: "opencode",
     model: "gpt-5.4",
@@ -479,7 +479,7 @@ test("waiting room activation reports explicit created-session live sync mode", 
   assert.deepEqual(harness.calls.slice(-3), [
     "createSession",
     "attachBinding",
-    "flash:info:created session Review in /worktree · workspace live sync tracked (selected workspace/worktree only; other repositories unrestricted)",
+    "flash:info:created session Review in /worktree",
   ])
   assert.equal(harness.createdLaunches[0]?.launch.workspaceLiveSyncMode, "tracked")
 })
@@ -504,7 +504,7 @@ test("waiting room prompt bootstrap creates from launch defaults without using f
     "connectKernel",
     "createSession",
     "attachBinding",
-    "flash:info:created session Review in /worktree · workspace live sync config default",
+    "flash:info:created session Review in /worktree",
   ])
   assert.deepEqual(harness.attachedSessions, [{
     sessionId: "created-session",
@@ -738,7 +738,7 @@ test("waiting room activation creates the session on the prepared managed kernel
     "attachBinding",
     "assertManagedLaunchActive",
     "commitManagedLaunch",
-    "flash:info:created session Review in /worktree · workspace live sync config default",
+    "flash:info:created session Review in /worktree",
   ])
 })
 

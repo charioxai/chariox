@@ -8,9 +8,10 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { runtimeReleaseFixture } from './app-runtime-release-fixture.mjs';
-import { SLICE_CONTEXT, SLICE_PROVISIONER, assemble, exportSliceBuildContext, parseArgs, signBundle, verifyBundle } from './release-bundle.mjs';
+import { SLICE_CONTEXT, SLICE_IMAGE, SLICE_PROVISIONER, assemble, exportSliceBuildContext, parseArgs, signBundle, verifyBundle } from './release-bundle.mjs';
 import { signRuntimeRelease } from './sign-app-runtime-release.mjs';
 import { SLICE_DOCKERFILE } from './slice-build-context.mjs';
+import { ARCHIVE, DESCRIPTOR, SCHEMA as SLICE_IMAGE_SCHEMA } from './slice-image-archive.mjs';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const commit = 'a'.repeat(40);
@@ -31,7 +32,7 @@ async function bundleInputs(root, target) {
   const libexec = target === 'linux-x64' ? ['chariox-app-storage', 'chariox-app-runtime-install'] : ['chariox-app-runtime-install'];
   for (const name of libexec) await put(join(executables, 'libexec', name), `#!/bin/sh\necho ${name}\n`, 0o755);
   const source = join(root, 'source-root');
-  for (const name of ['install-root.sh', 'install-user.sh', 'start-kernel.sh']) await put(join(source, 'deploy/local-linux', name), '#!/bin/sh\n', 0o755);
+  for (const name of ['install-browser-dependencies.sh', 'install-root.sh', 'install-user.sh', 'start-kernel.sh']) await put(join(source, 'deploy/local-linux', name), '#!/bin/sh\n', 0o755);
   for (const name of ['chariox-kernel.service', 'chariox-app-bwrap.apparmor']) await put(join(source, 'deploy/local-linux', name), name);
   await put(join(source, 'deploy/managed-kernel/chariox-app-storage.service'), '[Unit]\n');
   await mkdir(join(source, 'deploy/release-bundle'), { recursive: true });
@@ -42,10 +43,17 @@ async function bundleInputs(root, target) {
   await put(join(sliceBuildContext, 'apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh'), '#!/bin/sh\n', 0o755);
   await put(join(sliceBuildContext, SLICE_DOCKERFILE), 'FROM scratch\nCOPY deploy/managed-kernel/provider-versions.env /pins/\n');
   await put(join(sliceBuildContext, 'deploy/managed-kernel/provider-versions.env'), '# public version pins\n');
+  // What slice-image-archive.mjs export wrote after the provisioner built the image from that context.
+  const sliceImage = join(root, 'slice-image');
+  const archive = Buffer.from('docker save bytes, gzip compressed in a real release');
+  await put(join(sliceImage, ARCHIVE), archive);
+  await put(join(sliceImage, DESCRIPTOR), JSON.stringify({ schema: SLICE_IMAGE_SCHEMA, architecture: target === 'darwin-arm64' ? 'arm64' : 'amd64', tag: `chariox-slice-release:${'c'.repeat(64)}`,
+    runtimeSourceRevision: `sha256:${'c'.repeat(64)}`, relayPeerProtocolVersion: '128', rootfsLayers: [`sha256:${'d'.repeat(64)}`],
+    archive: { name: ARCHIVE, size: archive.length, sha256: sha256(archive) } }));
   const releaseKey = generateKeyPairSync('ed25519').privateKey;
   const releaseKeyPath = join(root, 'bundle-release.pem');
   await put(releaseKeyPath, releaseKey.export({ type: 'pkcs8', format: 'pem' }), 0o600);
-  return { executables, sourceRoot: source, sliceBuildContext, releaseKeyPath, releasePublic: keyHex(releaseKey) };
+  return { executables, sourceRoot: source, sliceBuildContext, sliceImage, releaseKeyPath, releasePublic: keyHex(releaseKey) };
 }
 
 async function fixture(context, { target = 'linux-x64', runtimeCommit = commit } = {}) {
@@ -67,6 +75,7 @@ async function fixture(context, { target = 'linux-x64', runtimeCommit = commit }
   await put(join(runtime, '.runtime-lease'), '', 0o444);
   const options = {
     platform: target, version: '0.2.0', sourceCommit: commit, executables: inputs.executables, sliceBuildContext: inputs.sliceBuildContext,
+    sliceImage: inputs.sliceImage,
     runtime, runtimePublicKey: keyHex(runtimeKey), sourceRoot: inputs.sourceRoot, output: join(root, 'out', `chariox-0.2.0-${target}`),
   };
   return { root, options, runtimeKey, releaseKeyPath: inputs.releaseKeyPath, releasePublic: inputs.releasePublic };
@@ -82,7 +91,7 @@ test('a Linux bundle is assembled, signed and verified, and any change is refuse
   assert.equal(manifest.macosSigning, null);
   assert.deepEqual(manifest.files.map(file => file.path), [
     'LICENSE', 'bin/chariox', 'bin/chariox-app-package', 'bin/chariox-kernel', 'bin/chariox-relay',
-    'deploy/local-linux/chariox-app-bwrap.apparmor', 'deploy/local-linux/chariox-kernel.service', 'deploy/local-linux/install-root.sh',
+    'deploy/local-linux/chariox-app-bwrap.apparmor', 'deploy/local-linux/chariox-kernel.service', 'deploy/local-linux/install-browser-dependencies.sh', 'deploy/local-linux/install-root.sh',
     'deploy/local-linux/install-user.sh', 'deploy/local-linux/start-kernel.sh', 'deploy/managed-kernel/chariox-app-storage.service',
     'install.sh', 'libexec/chariox-app-runtime-install', 'libexec/chariox-app-storage',
     'runtime/.runtime-lease', 'runtime/chariox-app-worker', 'runtime/libnode.so.137', 'runtime/runtime-inventory.json',
@@ -91,6 +100,7 @@ test('a Linux bundle is assembled, signed and verified, and any change is refuse
     'share/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh',
     'share/chariox/slice-build-context/apps/kernel/slice-linux-docker/runtime-source-roots.txt',
     'share/chariox/slice-build-context/deploy/managed-kernel/provider-versions.env',
+    'share/chariox/slice-image/chariox-slice-linux.tar.gz', 'share/chariox/slice-image/slice-image.json',
   ]);
   const mode = path => manifest.files.find(file => file.path === path).mode;
   assert.deepEqual(['bin/chariox', 'install.sh', 'runtime/chariox-app-worker', 'runtime/libnode.so.137', 'LICENSE',
@@ -118,6 +128,18 @@ test('a Linux bundle is assembled, signed and verified, and any change is refuse
   await assert.rejects(verifyBundle(options.output, releasePublic), /missing LICENSE/);
 });
 
+test('the signed manifest binds the slice image archive, so a swapped image is refused', async (context) => {
+  const { options, releaseKeyPath, releasePublic } = await fixture(context);
+  await assemble(options);
+  await signBundle(options.output, releaseKeyPath);
+  const archive = join(options.output, 'share/chariox/slice-image', ARCHIVE);
+  const original = await readFile(archive);
+  await writeFile(archive, Buffer.concat([original.subarray(0, -1), Buffer.from('X')]));
+  await assert.rejects(verifyBundle(options.output, releasePublic), /slice-image\/chariox-slice-linux\.tar\.gz does not match the manifest/);
+  await writeFile(archive, original);
+  assert.equal((await verifyBundle(options.output, releasePublic)).platform, 'linux-x64');
+});
+
 test('assembly refuses inputs that are not the release it names', async (context) => {
   const { root, options } = await fixture(context);
   const refused = async (change, pattern) => {
@@ -129,6 +151,11 @@ test('assembly refuses inputs that are not the release it names', async (context
   await refused({ version: 'v0.2' }, /semantic version/);
   await refused({ platform: 'windows-x64' }, /--platform must be one of/);
   await refused({ macosSigningReceipt: join(root, 'receipt.json') }, /only to macOS bundles/);
+  await refused({ sliceImage: undefined }, /--slice-image is required/);
+  await refused({ sliceImage: join(root, 'missing') }, /slice-image\.json is missing/);
+  await writeFile(join(options.sliceImage, ARCHIVE), 'not the archive the descriptor lists');
+  await refused({}, /does not match the SHA-256 in slice-image\.json|is not the \d+ byte file/);
+  await writeFile(join(options.sliceImage, ARCHIVE), 'docker save bytes, gzip compressed in a real release');
   await refused({ sliceBuildContext: join(root, 'missing') }, /slice build context's .*runtime-source-roots\.txt is missing/);
   const darwin = await fixture(context, { target: 'darwin-arm64' });
   await refused({ runtime: darwin.options.runtime, runtimePublicKey: darwin.options.runtimePublicKey }, /runtime target darwin-arm64 is not linux-x64/);
@@ -177,8 +204,15 @@ test('a macOS bundle carries only executables the signing receipt codesigned and
   assert.deepEqual(manifest.macosSigning, { identity: receipt.identity, teamId: 'TEAM123456', notarySubmissionId: 'submission-1',
     receiptSha256: sha256(await readFile(receiptPath)) });
   assert.ok(!manifest.files.some(file => file.path.startsWith('deploy/') || file.path === 'install.sh' || file.path.includes('chariox-app-storage')));
+  // Docker Desktop on Apple Silicon loads the arm64 image from the signed bundle; an amd64 one would never run there.
+  assert.ok(manifest.files.some(file => file.path === `${SLICE_IMAGE}/${ARCHIVE}`));
+  assert.equal(JSON.parse(await readFile(join(options.output, SLICE_IMAGE, DESCRIPTOR), 'utf8')).architecture, 'arm64');
   await signBundle(options.output, releaseKeyPath);
   assert.equal((await verifyBundle(options.output, releasePublic)).platform, 'darwin-arm64');
+  const descriptorPath = join(options.sliceImage, DESCRIPTOR);
+  const descriptor = JSON.parse(await readFile(descriptorPath, 'utf8'));
+  await writeFile(descriptorPath, JSON.stringify({ ...descriptor, architecture: 'amd64' }));
+  await assert.rejects(assemble({ ...options, macosSigningReceipt: receiptPath, output: `${options.output}-amd64` }), /is a amd64 image, this bundle needs arm64/);
 });
 
 test('the release key must be private to the signer, and arguments are exact', async (context) => {
@@ -202,12 +236,12 @@ test('a bundle carries the runtime that the production signer released outside t
   const output = join(f.root, 'out', 'chariox-0.2.0-linux-x64');
   const assembled = await assemble({ platform: 'linux-x64', version: '0.2.0', sourceCommit: f.proof.sourceCommit,
     executables: inputs.executables, runtime: f.options.output, runtimePublicKey: receipt.publicKeyHex,
-    sliceBuildContext: inputs.sliceBuildContext, sourceRoot: inputs.sourceRoot, output });
+    sliceBuildContext: inputs.sliceBuildContext, sliceImage: inputs.sliceImage, sourceRoot: inputs.sourceRoot, output });
   assert.deepEqual(assembled.runtime, { inventorySha256: receipt.inventorySha256, publicKeyHex: receipt.publicKeyHex });
   await signBundle(output, inputs.releaseKeyPath);
   assert.equal((await verifyBundle(output, inputs.releasePublic)).runtime.inventorySha256, receipt.inventorySha256);
   await assert.rejects(assemble({ platform: 'linux-x64', version: '0.2.0', sourceCommit: 'c'.repeat(40), executables: inputs.executables,
-    runtime: f.options.output, runtimePublicKey: receipt.publicKeyHex, sliceBuildContext: inputs.sliceBuildContext,
+    runtime: f.options.output, runtimePublicKey: receipt.publicKeyHex, sliceBuildContext: inputs.sliceBuildContext, sliceImage: inputs.sliceImage,
     sourceRoot: inputs.sourceRoot, output: `${output}-other` }), /runtime source/);
 });
 
@@ -251,7 +285,10 @@ test('the bundle and install.sh put the slice build context where a release kern
   assert.equal(constant('RELEASE_SLICE_BUILD_CONTEXT'), SLICE_CONTEXT);
   assert.equal(constant('SLICE_DOCKER_PROVISIONER'), SLICE_PROVISIONER);
   const installer = await readFile(join(repository, 'deploy/release-bundle/install.sh'), 'utf8');
-  assert.equal(installer.match(/^context=(\S+)$/m)?.[1], constant('SYSTEM_SLICE_BUILD_CONTEXT'));
+  assert.equal(installer.match(/^install_tree "\$stage\/share\/chariox\/slice-build-context" (\S+)$/m)?.[1], constant('SYSTEM_SLICE_BUILD_CONTEXT'));
+  // The provisioner looks for the signed image in ../slice-image, beside either context location.
+  assert.equal(installer.match(/^install_tree "\$stage\/(\S+)" \S+\/slice-image$/m)?.[1], SLICE_IMAGE);
+  assert.equal(dirname(constant('SYSTEM_SLICE_BUILD_CONTEXT')), dirname(installer.match(/^install_tree "\$stage\/\S+" (\S+\/slice-image)$/m)[1]));
 });
 
 // install.sh checks the bundle with python3 and OpenSSL 3 (Ed25519 raw verification), as on a Linux host.
@@ -285,6 +322,22 @@ test('install.sh --check accepts only the bundle and runtime signed by their key
   await writeFile(sdkSource, 'changed');
   assert.match(check(releasePublic).stderr, /runtime\/sdk\/src\/index\.js does not match the signed manifest/);
   assert.match(execFileSync(join(options.output, 'install.sh'), ['--help'], { encoding: 'utf8' }), /usage: sudo \.\/install\.sh/);
+});
+
+test('install.sh --check verifies a large slice image in bounded memory', { skip: !opensslEd25519 && 'needs Linux with OpenSSL 3' }, async (context) => {
+  const { options, releaseKeyPath, releasePublic } = await fixture(context);
+  // Larger than the address space the check below may use: reading the archive whole cannot succeed.
+  const size = 192 * 1024 * 1024, archive = Buffer.alloc(size, 7);
+  await writeFile(join(options.sliceImage, ARCHIVE), archive);
+  const descriptorPath = join(options.sliceImage, DESCRIPTOR);
+  const descriptor = JSON.parse(await readFile(descriptorPath, 'utf8'));
+  descriptor.archive = { name: ARCHIVE, size, sha256: sha256(archive) };
+  await writeFile(descriptorPath, JSON.stringify(descriptor));
+  await assemble(options);
+  await signBundle(options.output, releaseKeyPath);
+  const checked = spawnSync('sh', ['-c', 'ulimit -v 150000 && exec "$0" --check --release-key "$1"', join(options.output, 'install.sh'), releasePublic], { encoding: 'utf8' });
+  assert.equal(checked.status, 0, checked.stderr);
+  assert.match(checked.stdout, /signed by the release key/);
 });
 
 // MP-07 / MP-08 / MP-10 / MP-11: resolve inputs from the exported artifact,

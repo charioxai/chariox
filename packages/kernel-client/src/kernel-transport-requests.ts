@@ -4,6 +4,7 @@ export type KernelTransportRequest =
     request_id: string
     command_id: string
     request: unknown
+    machine?: string
   }
   | {
     type: "subscribe"
@@ -12,6 +13,7 @@ export type KernelTransportRequest =
     attachment_id: string
     subscription_scope: string | null
     resume_from_event_id: number | null
+    machine?: string
   }
   | {
     type: "unsubscribe"
@@ -28,7 +30,9 @@ export type KernelTransportControlRequest =
   }
   | { type: "unsubscribe" }
 
-export function normalizeWebSocketRequest(requestId: string, request: unknown): KernelTransportRequest {
+export type KernelRequestRoute = { machine?: string | undefined; commandId?: string | undefined }
+
+export function normalizeWebSocketRequest(requestId: string, request: unknown, route: KernelRequestRoute = {}): KernelTransportRequest {
   const transportRequest = extractTransportRequest(request)
   if (transportRequest?.type === "subscribe") {
     return {
@@ -38,6 +42,7 @@ export function normalizeWebSocketRequest(requestId: string, request: unknown): 
       attachment_id: transportRequest.attachment_id,
       subscription_scope: transportRequest.subscription_scope ?? null,
       resume_from_event_id: transportRequest.resume_from_event_id ?? null,
+      ...(route.machine === undefined ? {} : { machine: route.machine }),
     }
   }
   if (transportRequest?.type === "unsubscribe") {
@@ -49,8 +54,9 @@ export function normalizeWebSocketRequest(requestId: string, request: unknown): 
   return {
     type: "request",
     request_id: requestId,
-    command_id: requestId,
+    command_id: route.commandId ?? requestId,
     request,
+    ...(route.machine === undefined ? {} : { machine: route.machine }),
   }
 }
 

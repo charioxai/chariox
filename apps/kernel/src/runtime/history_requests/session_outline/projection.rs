@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::error::DaemonError;
 use crate::history::{
@@ -46,12 +46,12 @@ fn event_projects_as_outline_blob(event: &HistoryEvent) -> bool {
     if event_needs_outline_blob(event) {
         return true;
     }
-    match event.kind {
+    !matches!(
+        event.kind,
         HistoryEventKind::ProviderOutput
-        | HistoryEventKind::ProviderStatus
-        | HistoryEventKind::Notice => false,
-        _ => true,
-    }
+            | HistoryEventKind::ProviderStatus
+            | HistoryEventKind::Notice
+    )
 }
 
 fn is_steering_prompt_event(event: &HistoryEvent) -> bool {
@@ -71,6 +71,7 @@ fn outline_blob_from_event(event: HistoryEvent) -> Option<SessionHistoryOutlineB
     let total_chars = entry.text.chars().count();
     Some(SessionHistoryOutlineBlob {
         blob_id: blob_id(event.sequence, event.sequence),
+        steering: is_steering_prompt_event(&event),
         kind: entry.kind,
         title: blob_title(entry.kind),
         summary: blob_summary(entry.kind, &entry.text),
@@ -79,6 +80,7 @@ fn outline_blob_from_event(event: HistoryEvent) -> Option<SessionHistoryOutlineB
         entry_count: 1,
         total_chars,
         timestamp_ms: event.timestamp_ms,
+        preview: outline_blob_preview(&[&event]),
     })
 }
 
@@ -88,25 +90,19 @@ pub(super) fn outline_blobs_from_events(
     summary_sequences: &BTreeSet<u64>,
     forced_blob_sequences: &BTreeSet<u64>,
 ) -> Vec<SessionHistoryOutlineBlob> {
-    let candidates = events
-        .iter()
-        .filter(|event| event.sequence != prompt_sequence)
-        .filter(|event| {
-            !summary_sequences.contains(&event.sequence)
+    let is_candidate = |event: &HistoryEvent| {
+        event.sequence != prompt_sequence
+            && (!summary_sequences.contains(&event.sequence)
                 || event_needs_outline_blob(event)
-                || forced_blob_sequences.contains(&event.sequence)
-        })
-        .filter(|event| {
-            forced_blob_sequences.contains(&event.sequence) || event_projects_as_outline_blob(event)
-        })
-        .filter(|event| {
-            event
+                || forced_blob_sequences.contains(&event.sequence))
+            && (forced_blob_sequences.contains(&event.sequence)
+                || event_projects_as_outline_blob(event))
+            && event
                 .to_session_history_entry()
                 .is_some_and(|entry| !entry.is_external_provider_observed_state_signal())
-        })
-        .collect::<Vec<_>>();
+    };
     let mut blobs = Vec::new();
-    for group in outline_blob_event_groups(&candidates) {
+    for group in outline_blob_event_groups(events, is_candidate) {
         blobs.extend(
             group
                 .chunks(MAX_OUTLINE_EVENTS_PER_BLOB)
@@ -116,24 +112,89 @@ pub(super) fn outline_blobs_from_events(
     blobs
 }
 
-fn outline_blob_event_groups<'a>(events: &[&'a HistoryEvent]) -> Vec<Vec<&'a HistoryEvent>> {
+/// One blob per tool call and per thought (provider merge key); other kinds
+/// group by kind. A blob never spans a transcript entry rendered inline, so
+/// its content stays in output order between the entries around it. The one
+/// exception is a later snapshot of a tool call already seen (OpenCode stores
+/// "running" and "completed" as rows a sentence can fall between): it joins
+/// the call's blob, which keeps the call's first position.
+fn outline_blob_event_groups(
+    events: &[HistoryEvent],
+    is_candidate: impl Fn(&HistoryEvent) -> bool,
+) -> Vec<Vec<&HistoryEvent>> {
     let mut groups = Vec::<Vec<&HistoryEvent>>::new();
+    let mut tool_call_groups = HashMap::<String, usize>::new();
+    let mut open_group = false;
     for event in events {
-        let kind = event.to_session_history_entry().map(|entry| entry.kind);
-        let same_kind = groups
-            .last()
-            .and_then(|group| group.first())
-            .and_then(|first| first.to_session_history_entry().map(|entry| entry.kind))
-            == kind;
-        if same_kind {
-            if let Some(group) = groups.last_mut() {
-                group.push(*event);
+        if !is_candidate(event) {
+            if event_projects_as_outline_entry(event) || is_steering_prompt_event(event) {
+                open_group = false;
             }
-        } else {
-            groups.push(vec![*event]);
+            continue;
         }
+        let identity = outline_blob_identity(event);
+        if let Some(index) =
+            outline_blob_tool_call_id(&identity).and_then(|call_id| tool_call_groups.get(call_id))
+        {
+            groups[*index].push(event);
+            open_group = *index == groups.len() - 1;
+            continue;
+        }
+        let continues = open_group
+            && groups
+                .last()
+                .and_then(|group| group.first())
+                .is_some_and(|first| outline_blob_identity(first) == identity);
+        match groups.last_mut() {
+            Some(group) if continues => group.push(event),
+            _ => groups.push(vec![event]),
+        }
+        if let Some(call_id) = outline_blob_tool_call_id(&identity) {
+            tool_call_groups.insert(call_id.to_string(), groups.len() - 1);
+        }
+        open_group = true;
     }
     groups
+}
+
+fn outline_blob_tool_call_id(
+    identity: &(Option<SessionHistoryEntryKind>, Option<String>),
+) -> Option<&str> {
+    match identity {
+        (Some(SessionHistoryEntryKind::ProviderTool), Some(call_id)) => Some(call_id),
+        _ => None,
+    }
+}
+
+/// A blob's events: a tool call's blob may span rows of other entries
+/// (see `outline_blob_event_groups`), which belong to those entries.
+pub(super) fn outline_blob_content_events(events: Vec<HistoryEvent>) -> Vec<HistoryEvent> {
+    let call_id = events
+        .first()
+        .map(outline_blob_identity)
+        .and_then(|identity| outline_blob_tool_call_id(&identity).map(str::to_string));
+    match call_id {
+        Some(call_id) => events
+            .into_iter()
+            .filter(|event| {
+                outline_blob_tool_call_id(&outline_blob_identity(event)) == Some(call_id.as_str())
+            })
+            .collect(),
+        None => events,
+    }
+}
+
+fn outline_blob_identity(
+    event: &HistoryEvent,
+) -> (Option<SessionHistoryEntryKind>, Option<String>) {
+    let entry = event.to_session_history_entry();
+    let identity = entry.as_ref().and_then(|entry| match entry.kind {
+        SessionHistoryEntryKind::ProviderTool => provider_tool_call_id(entry),
+        SessionHistoryEntryKind::ProviderReasoning => entry.merge_key.clone(),
+        SessionHistoryEntryKind::UserPrompt => entry.merge_key.clone(),
+        _ => None,
+    });
+    (entry.map(|entry| entry.kind), identity)
 }
 
 fn outline_blob_from_event_group(events: &[&HistoryEvent]) -> Option<SessionHistoryOutlineBlob> {
@@ -156,6 +217,7 @@ fn outline_blob_from_event_group(events: &[&HistoryEvent]) -> Option<SessionHist
         .unwrap_or(first_event.timestamp_ms);
     Some(SessionHistoryOutlineBlob {
         blob_id: blob_id(sequence_start, sequence_end),
+        steering: is_steering_prompt_event(first_event),
         kind: first_entry.kind,
         title: grouped_blob_title(
             first_entry.kind,
@@ -165,13 +227,106 @@ fn outline_blob_from_event_group(events: &[&HistoryEvent]) -> Option<SessionHist
                 events.len()
             },
         ),
-        summary: format!("{} entries, {} chars", events.len(), total_chars),
+        summary: match first_entry.kind {
+            SessionHistoryEntryKind::ProviderTool => events
+                .last()
+                .and_then(|event| event.to_session_history_entry())
+                .map(|entry| blob_summary(entry.kind, &entry.text))
+                .unwrap_or_default(),
+            SessionHistoryEntryKind::ProviderError => compact_blob_summary(&first_entry.text),
+            _ => format!("{} entries, {} chars", events.len(), total_chars),
+        },
         sequence_start,
         sequence_end,
         entry_count: events.len(),
         total_chars,
         timestamp_ms,
+        preview: outline_blob_preview(events),
     })
+}
+
+/// A tool call's snapshot without its output (later snapshots win), or the
+/// first line of a thought; enough for clients to title the row.
+fn outline_blob_preview(events: &[&HistoryEvent]) -> Option<String> {
+    let entries = events
+        .iter()
+        .filter_map(|event| event.to_session_history_entry())
+        .collect::<Vec<_>>();
+    match entries.first()?.kind {
+        SessionHistoryEntryKind::ProviderTool => {
+            let mut snapshot = serde_json::Map::new();
+            for entry in &entries {
+                if let Some(serde_json::Value::Object(fields)) = provider_tool_payload(&entry.text)
+                {
+                    snapshot.extend(fields);
+                }
+            }
+            if snapshot.is_empty() {
+                return None;
+            }
+            for key in [
+                "output",
+                "text",
+                "error",
+                "aggregatedOutput",
+                "contentItems",
+                "result",
+                "agentsStates",
+            ] {
+                snapshot.remove(key);
+            }
+            // Patch rows keep only the changed paths, not the diffs.
+            if let Some(raw) = snapshot.remove("raw") {
+                if let Some(paths) = changed_paths_preview(&raw) {
+                    snapshot.insert("raw".to_string(), serde_json::Value::String(paths));
+                }
+            }
+            let mut snapshot = serde_json::Value::Object(snapshot);
+            truncate_preview_strings(&mut snapshot);
+            serde_json::to_string(&snapshot).ok()
+        }
+        SessionHistoryEntryKind::ProviderReasoning => {
+            let text = entries
+                .iter()
+                .map(|entry| entry.text.as_str())
+                .collect::<String>();
+            Some(first_line(&text)).filter(|line| !line.is_empty())
+        }
+        _ => None,
+    }
+}
+
+fn changed_paths_preview(raw: &serde_json::Value) -> Option<String> {
+    let changes = serde_json::from_str::<Vec<serde_json::Value>>(raw.as_str()?).ok()?;
+    let paths = changes
+        .iter()
+        .filter_map(|change| {
+            let path = change.get("path")?.clone();
+            let mut preview = serde_json::Map::from_iter([("path".to_string(), path)]);
+            if let Some(kind) = change.get("kind") {
+                preview.insert("kind".to_string(), kind.clone());
+            }
+            Some(serde_json::Value::Object(preview))
+        })
+        .collect::<Vec<_>>();
+    (!paths.is_empty()).then(|| serde_json::Value::Array(paths).to_string())
+}
+
+fn truncate_preview_strings(value: &mut serde_json::Value) {
+    const MAX_PREVIEW_STRING_CHARS: usize = 512;
+    match value {
+        serde_json::Value::String(text) if text.chars().count() > MAX_PREVIEW_STRING_CHARS => {
+            *text = format!(
+                "{}…",
+                text.chars()
+                    .take(MAX_PREVIEW_STRING_CHARS)
+                    .collect::<String>()
+            );
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(truncate_preview_strings),
+        serde_json::Value::Object(fields) => fields.values_mut().for_each(truncate_preview_strings),
+        _ => {}
+    }
 }
 
 fn unique_provider_tool_call_count(events: &[&HistoryEvent]) -> usize {
@@ -270,6 +425,18 @@ pub(super) fn outline_page_entry_from_event_group(
         .map(|entry| entry.text)
         .collect::<String>();
     let total_chars = text.chars().count();
+    // MP-08 / MP-10: complete inline groups need every original replay identity too.
+    if total_chars <= MAX_OUTLINE_INLINE_CHARS {
+        let rows = crate::session_history_page::coalesce_history_page_entries(
+            ordered_events
+                .iter()
+                .filter_map(|event| page_entry_from_event((**event).clone()))
+                .collect(),
+        );
+        if rows.len() == 1 && rows[0].sequence_end.is_some() {
+            return rows.into_iter().next();
+        }
+    }
     let fragment_end = total_chars.min(MAX_OUTLINE_INLINE_CHARS);
     page_entry.entry.text = text.chars().take(fragment_end).collect();
     page_entry.fragment_start = 0;
@@ -298,6 +465,9 @@ fn page_entry_from_event_with_inline_limit(
     }
     Some(SessionHistoryPageEntry {
         entry_index: event.sequence as usize,
+        sequence_end: None,
+        sequence_byte_lengths: Vec::new(),
+        sequence_indices: Vec::new(),
         fragment_start: 0,
         fragment_end,
         total_chars,
@@ -357,7 +527,10 @@ fn blob_summary(kind: SessionHistoryEntryKind, text: &str) -> String {
             return summary;
         }
     }
-    if kind == SessionHistoryEntryKind::ProviderStatus {
+    if matches!(
+        kind,
+        SessionHistoryEntryKind::ProviderStatus | SessionHistoryEntryKind::ProviderError
+    ) {
         return compact_blob_summary(text);
     }
     first_line(text)
@@ -422,6 +595,39 @@ mod tests {
     use crate::history::{HistoryEventTurnContext, SessionHistoryEntry};
     use crate::terminal::TerminalOutputKind;
 
+    // MP-08 / MP-10 / MP-11: a hydrated failure must still explain itself.
+    #[test]
+    fn mp08_mp11_grouped_error_blob_retains_exit_cause_and_recovery() {
+        let cause = "Provider exited before the prompt was delivered: provider process exited with status 143. Retry the prompt to start a new provider run.";
+        let event = |sequence, text: &str| {
+            HistoryEvent::transcript(
+                sequence,
+                &SessionHistoryEntry::provider_output(
+                    "session-1",
+                    "provider-run-1",
+                    Some("agent-1"),
+                    TerminalOutputKind::ProviderError,
+                    None,
+                    text.to_string(),
+                ),
+                HistoryEventTurnContext::default(),
+            )
+        };
+        let first = event(1, cause);
+        let second = event(2, "Request not carried out; it was dropped.");
+        let blob = outline_blob_from_event_group(&[&first, &second]).unwrap();
+        assert!(blob.summary.contains("status 143"), "{}", blob.summary);
+        assert!(
+            blob.summary.contains("Retry the prompt"),
+            "{}",
+            blob.summary
+        );
+        assert_eq!(blob.entry_count, 2);
+        assert!(blob.summary.chars().count() <= 240);
+        let single = outline_blob_from_event(first).unwrap();
+        assert!(single.summary.contains("Retry the prompt"));
+    }
+
     #[test]
     fn grouped_blob_titles_are_user_facing() {
         assert_eq!(
@@ -447,10 +653,6 @@ mod tests {
 
         assert_eq!(blob.entry_count, 2);
         assert_eq!(blob.title, "1 tool called");
-        assert_eq!(
-            blob.summary,
-            format!("2 entries, {} chars", blob.total_chars)
-        );
     }
 
     #[test]
@@ -470,10 +672,6 @@ mod tests {
 
         assert_eq!(blob.entry_count, 4);
         assert_eq!(blob.title, "2 tools called");
-        assert_eq!(
-            blob.summary,
-            format!("4 entries, {} chars", blob.total_chars)
-        );
     }
 
     #[test]
@@ -543,6 +741,120 @@ mod tests {
 
         assert_eq!(blob.entry_count, 2);
         assert_eq!(blob.title, "1 tool called");
+    }
+
+    // MP-08 / MP-10 (panes R7): the Codex outline blob `history:760:787`
+    // spanned tool 3, the assistant sentence after it and tool 4; clients then
+    // merged both calls into one row and moved the sentence below it.
+    #[test]
+    fn tool_blobs_are_one_per_call_and_never_span_inline_text() {
+        let events = vec![
+            command_event(1, "call-3", "running", "cat README.md"),
+            command_event(2, "call-3", "completed", "cat README.md"),
+            transcript_event(3, TerminalOutputKind::ProviderOutput, "msg-1", "Read it."),
+            command_event(4, "call-4", "running", "ls -la"),
+            command_event(5, "call-4", "completed", "ls -la"),
+        ];
+
+        let blobs = outline_blobs_from_events(&events, 0, &BTreeSet::new(), &BTreeSet::new());
+
+        assert_eq!(
+            blobs
+                .iter()
+                .map(|blob| (blob.sequence_start, blob.sequence_end))
+                .collect::<Vec<_>>(),
+            vec![(1, 2), (4, 5)]
+        );
+        assert_eq!(blobs[0].summary, "$ cat README.md");
+        let preview: serde_json::Value =
+            serde_json::from_str(blobs[1].preview.as_deref().expect("tool preview")).unwrap();
+        assert_eq!(
+            preview,
+            serde_json::json!({
+                "id": "call-4",
+                "tool": "bash",
+                "status": "completed",
+                "input": { "command": "ls -la" },
+            })
+        );
+    }
+
+    #[test]
+    fn reasoning_blobs_are_one_per_thought_with_its_first_line() {
+        let events = vec![
+            transcript_event(
+                1,
+                TerminalOutputKind::ProviderReasoning,
+                "r-1",
+                "**Planning**\n",
+            ),
+            transcript_event(2, TerminalOutputKind::ProviderReasoning, "r-1", "more"),
+            transcript_event(
+                3,
+                TerminalOutputKind::ProviderReasoning,
+                "r-2",
+                "Checking output",
+            ),
+        ];
+
+        let blobs = outline_blobs_from_events(&events, 0, &BTreeSet::new(), &BTreeSet::new());
+
+        assert_eq!(
+            blobs
+                .iter()
+                .map(|blob| (
+                    blob.sequence_start,
+                    blob.sequence_end,
+                    blob.preview.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, 2, Some("**Planning**")),
+                (3, 3, Some("Checking output"))
+            ]
+        );
+    }
+
+    fn command_event(sequence: u64, call_id: &str, status: &str, command: &str) -> HistoryEvent {
+        provider_tool_event_with_text(
+            sequence,
+            call_id,
+            serde_json::json!({
+                "id": call_id,
+                "tool": "bash",
+                "status": status,
+                "input": { "command": command },
+                "output": "x".repeat(2_000),
+            })
+            .to_string(),
+        )
+    }
+
+    fn transcript_event(
+        sequence: u64,
+        kind: TerminalOutputKind,
+        merge_key: &str,
+        text: &str,
+    ) -> HistoryEvent {
+        HistoryEvent::transcript(
+            sequence,
+            &SessionHistoryEntry::provider_output(
+                "session-1",
+                "provider-run-1",
+                Some("agent-1"),
+                kind,
+                Some(merge_key.to_string()),
+                text.to_string(),
+            ),
+            HistoryEventTurnContext {
+                session_id: Some("session-1".to_string()),
+                agent_id: Some("agent-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
+                prompt_id: Some("prompt-1".to_string()),
+                provider_run_id: Some("provider-run-1".to_string()),
+                ..HistoryEventTurnContext::default()
+            },
+        )
     }
 
     fn provider_tool_event(sequence: u64, call_id: &str, status: &str) -> HistoryEvent {

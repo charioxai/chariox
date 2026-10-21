@@ -1,8 +1,10 @@
-import type { PasskeyPrompt } from "@chariox/kernel-client/kernel-types"
+import type { PasskeyPrompt, PasskeyPromptClosure } from "@chariox/kernel-client/kernel-types"
 import type { InteractionPasskeyProof } from "./ipc-requests.js"
+import { approvalExpiredMessage, type KernelClock } from "./kernel-clock.js"
 
 /** Optional remember window after a verified passkey: off, 5 or 15 minutes. */
 export const PASSKEY_REMEMBER_MINUTES = [0, 5, 15] as const
+export const SUDO_WINDOW_MINUTES = [60, 120, 240, 480] as const
 const PASSKEY_MAX_LENGTH = 512
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/
 const PASSKEY_PASTE_REFUSED = `Paste not added: a passkey is one line of at most ${PASSKEY_MAX_LENGTH} characters, without control characters.`
@@ -45,6 +47,18 @@ export type PasskeyPopupPaste = {
   stopPropagation(): void
 }
 
+/** What an access or sudo popup answer asks for: minutes, or (access grants only) until the agent exits. */
+export type AccessLifetime = number | typeof UNTIL_AGENT_EXITS
+
+export const UNTIL_AGENT_EXITS = "until_exit"
+
+/** The lifetime a popup starts on: the kernel's sudo window, or the term of an access request. */
+function startingLifetime(prompt: PasskeyPrompt): AccessLifetime | null {
+  if (prompt.kind === "sudo") return prompt.lifetime_minutes ?? null
+  if (prompt.term === "until_holder_exits") return UNTIL_AGENT_EXITS
+  return prompt.term?.minutes ?? null
+}
+
 export type PasskeyPopupView = {
   /** The popup is shown; otherwise pending prompts only show an indicator. */
   open: boolean
@@ -52,21 +66,23 @@ export type PasskeyPopupView = {
   index: number
   prompt: PasskeyPrompt | null
   /** Hidden entry: only the passkey's length ever leaves the controller. */
-  passkey: { length: number; rememberMinutes: number; accessLifetimeMinutes?: number | null }
+  passkey: { length: number; rememberMinutes: number; lifetime?: AccessLifetime | null }
   pending: boolean
   connected: boolean
   error: string | null
+  detailsOpen?: boolean
+  remainingMs?: number | null
 }
 
 const isText = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0
 
 /** The well-formed prompts of a `passkey_prompts_changed` event. */
-export function passkeyPromptsFromEvent(prompts: unknown): PasskeyPrompt[] {
+export function passkeyPromptsFromEvent(prompts: unknown, userAppViews = false): PasskeyPrompt[] {
   if (!Array.isArray(prompts)) return []
   return prompts.filter((item): item is PasskeyPrompt => {
     const prompt = item as Partial<PasskeyPrompt> | null
     return !!prompt && ["critical_approval", "access_grant", "access_extension", "sudo"].includes(prompt.kind ?? "")
-      && isText(prompt.session_id) && isText(prompt.interaction_id)
+      && (isText(prompt.session_id) || (userAppViews && prompt.session_id === "" && prompt.kind === "critical_approval")) && isText(prompt.interaction_id)
       && typeof prompt.title === "string" && typeof prompt.message === "string"
       && isText(prompt.approve_choice_id) && isText(prompt.refuse_choice_id)
       && prompt.approve_choice_id !== prompt.refuse_choice_id
@@ -84,7 +100,7 @@ function passkeyKeyText(event: PasskeyPopupKey): string {
   return event.shift ? event.name.toLocaleUpperCase() : event.name
 }
 
-const promptKey = (prompt: PasskeyPrompt) => `${prompt.session_id}\u001f${prompt.interaction_id}`
+const promptKey = (prompt: Pick<PasskeyPrompt, "session_id" | "interaction_id">) => `${prompt.session_id}\u001f${prompt.interaction_id}`
 
 /** Protocol 403: the kernel's passkey prompts as one popup on this terminal,
  * attached to a session or not. The passkey is typed only here. The kernel
@@ -97,18 +113,26 @@ export function createPasskeyPopupController(deps: {
   scroll(direction: -1 | 1): void
   respond(prompt: PasskeyPrompt, choiceId: string, proof?: InteractionPasskeyProof): Promise<unknown>
   notify(message: string): void
+  serverClock?: KernelClock
 }) {
   let prompts: PasskeyPrompt[] = []
   let index = 0
+  let detailsOpen = false
   let hidden = true
   let open = false
   // The passkey lives only here until it is sent, then it is dropped.
   let value = ""
   let remember = 0
-  let accessLifetime: number | null = null
+  let accessLifetime: AccessLifetime | null = null
   // This terminal's own remember window; the kernel remains the authority.
   let rememberedUntil = 0
+  let connectionEpoch = 0
   let pending: object | null = null
+  let pendingKey: string | null = null
+  let expiryTimer: ReturnType<typeof setTimeout> | null = null
+  let clockRead = false
+  let authoritativeFeed = false
+  const awaitingClosure = new Map<string, PasskeyPrompt["kind"]>()
   let error: string | null = null
   let disposed = false
   let claimedInputTurn = false
@@ -120,11 +144,13 @@ export function createPasskeyPopupController(deps: {
   const current = () => prompts[index] ?? null
   const view = (): PasskeyPopupView => ({
     open, count: prompts.length, index, prompt: current(),
-    passkey: { length: Array.from(value).length, rememberMinutes: remember, ...(current()?.kind !== "critical_approval" && current()?.lifetime_minutes ? { accessLifetimeMinutes: accessLifetime ?? current()?.lifetime_minutes ?? null } : {}) },
+    passkey: { length: Array.from(value).length, rememberMinutes: remember, ...(current() && current()!.kind !== "critical_approval" && startingLifetime(current()!) !== null ? { lifetime: accessLifetime ?? startingLifetime(current()!) } : {}) },
+    detailsOpen,
     pending: pending !== null, connected: deps.connected(), error,
+    remainingMs: current() && deps.serverClock?.now() != null ? Math.max(0, current()!.expires_at_ms - deps.serverClock.now()!) : null,
   })
   const render = () => { if (!disposed) deps.onView(view()) }
-  const clearEntry = () => { value = ""; remember = 0; accessLifetime = null; error = null }
+  const clearEntry = () => { detailsOpen = false; value = ""; remember = 0; accessLifetime = null; error = null }
   const syncOpen = () => {
     const next = prompts.length > 0 && !hidden && !disposed
     if (next === open) return
@@ -155,28 +181,60 @@ export function createPasskeyPopupController(deps: {
     reselect(shown)
     syncOpen()
   }
+  const refreshExpiry = () => {
+    if (expiryTimer) clearTimeout(expiryTimer)
+    expiryTimer = null
+    if (disposed || !prompts.length || !deps.serverClock) return
+    const now = deps.serverClock.now()
+    if (now === null && !clockRead) {
+      clockRead = true
+      void deps.serverClock.synchronize().catch(() => {}).finally(() => {
+        clockRead = false
+        if (!disposed && deps.serverClock?.now() != null) { refreshExpiry(); render() }
+      })
+    }
+    const shown = current()
+    const expired = prompts.filter(prompt => now !== null && prompt.expires_at_ms <= now && promptKey(prompt) !== pendingKey)
+    for (const prompt of expired) {
+      answered.add(promptKey(prompt))
+      if (!authoritativeFeed) deps.notify(approvalExpiredMessage(prompt.kind))
+    }
+    if (expired.length) {
+      const keys = new Set(expired.map(promptKey))
+      prompts = prompts.filter(prompt => !keys.has(promptKey(prompt)))
+      reselect(shown)
+      syncOpen()
+    }
+    if (prompts.length) {
+      const delay = Math.min(1_000, ...prompts.map(prompt => now !== null && prompt.expires_at_ms > now ? prompt.expires_at_ms - now + 1 : 1_000))
+      expiryTimer = setTimeout(() => { refreshExpiry(); render() }, delay)
+    }
+  }
   const send = async (prompt: PasskeyPrompt, choiceId: string, proof?: InteractionPasskeyProof) => {
+    const epoch = connectionEpoch
     const token = {}
     pending = token
+    pendingKey = promptKey(prompt)
     error = null
     render()
     try {
       await (proof ? deps.respond(prompt, choiceId, proof) : deps.respond(prompt, choiceId))
-      if (proof?.rememberMinutes) rememberedUntil = Date.now() + proof.rememberMinutes * 60_000
+      if (epoch !== connectionEpoch) return
       settle(prompt)
     } catch (failure) {
+      if (epoch !== connectionEpoch) return
       const refusal = passkeyRefusal(failure)
       if (refusal === "PASSKEY_ALREADY_ANSWERED") {
         settle(prompt)
         deps.notify(PASSKEY_REFUSALS[refusal]!)
       } else {
-        if (refusal === "PASSKEY_REQUIRED") rememberedUntil = 0
         if (current() && promptKey(current()!) === promptKey(prompt)) {
           error = refusal ? PASSKEY_REFUSALS[refusal]! : UNCONFIRMED
         }
       }
     } finally {
-      if (pending === token) pending = null
+      if (pending === token) { pending = null; pendingKey = null }
+      refreshExpiry()
       render()
     }
   }
@@ -184,7 +242,9 @@ export function createPasskeyPopupController(deps: {
     const prompt = current()
     if (!open || !prompt || pending || !deps.connected()) return
     const typed = value
-    if (!typed && (prompt.kind !== "critical_approval" || Date.now() >= rememberedUntil)) {
+    // Another terminal may have opened the owner's remember window. Ordinary
+    // approvals always let the kernel check it; new authority needs fresh proof.
+    if (!typed && prompt.kind !== "critical_approval") {
       error = PASSKEY_REFUSALS.PASSKEY_REQUIRED!
       render()
       return
@@ -192,7 +252,7 @@ export function createPasskeyPopupController(deps: {
     const minutes = prompt.kind === "critical_approval" ? remember : 0
     value = ""
     await send(prompt, prompt.approve_choice_id,
-      typed ? { passkey: typed, rememberMinutes: minutes || null, ...(["access_grant", "access_extension"].includes(prompt.kind) ? { accessLifetimeMinutes: accessLifetime ?? prompt.lifetime_minutes } : {}) } : undefined)
+      typed ? { passkey: typed, rememberMinutes: minutes || null, ...(["access_grant", "access_extension", "sudo"].includes(prompt.kind) ? { accessLifetime: accessLifetime ?? startingLifetime(prompt) } : {}) } : undefined)
   }
   const refuse = async () => {
     const prompt = current()
@@ -201,13 +261,18 @@ export function createPasskeyPopupController(deps: {
     await send(prompt, prompt.refuse_choice_id)
   }
   const cycleRemember = () => {
-    if (!open) return
+    if (!open || pending) return
     const prompt = current()
     if (prompt && prompt.kind !== "critical_approval") {
       const max = prompt.max_lifetime_minutes
-      if (!max || !prompt.lifetime_minutes) return
-      const options = [...new Set([prompt.lifetime_minutes, 5, 15, 30, 60, 120, max])].filter(m => m <= max).sort((a,b) => a-b)
-      accessLifetime = options[(options.indexOf(accessLifetime ?? prompt.lifetime_minutes) + 1) % options.length]!
+      const start = startingLifetime(prompt)
+      if (!max || start === null) return
+      // Sudo windows: one hour by default, 2, 4 or 8 hours per fresh passkey.
+      const minutes = prompt.kind === "sudo" ? SUDO_WINDOW_MINUTES : [typeof start === "number" ? start : 0, 5, 15, 30, 60, 120, max]
+      const options: AccessLifetime[] = [...new Set(minutes)].filter(m => m > 0 && m <= max).sort((a, b) => a - b)
+      // Only a new access grant can last until its agent exits; an extension adds time.
+      if (prompt.kind === "access_grant") options.push(UNTIL_AGENT_EXITS)
+      accessLifetime = options[(options.indexOf(accessLifetime ?? start) + 1) % options.length]!
       render()
       return
     }
@@ -215,24 +280,57 @@ export function createPasskeyPopupController(deps: {
     remember = options[(options.indexOf(remember) + 1) % options.length]!
     render()
   }
+  const toggleDetails = () => { if (current()?.sudo_request) { detailsOpen = !detailsOpen; render() } }
   const hide = () => {
     hidden = true
     syncOpen()
     render()
   }
   return {
-    view, approve, refuse, cycleRemember, hide,
+    view, approve, refuse, cycleRemember, hide, toggleDetails,
+    invalidateConnectionState(options: { readonly preservePrompts?: boolean } = {}) {
+      connectionEpoch++
+      pending = null
+      pendingKey = null
+      deps.serverClock?.invalidate()
+      clockRead = false
+      if (!options.preservePrompts) {
+        prompts = []
+        answered.clear()
+        awaitingClosure.clear()
+        authoritativeFeed = false
+      }
+      hidden = true
+      clearEntry()
+      syncOpen()
+      refreshExpiry()
+      render()
+    },
     isOpen: () => open,
     ownsInput: () => open || claimedInputTurn,
     /** The kernel's current set, from `passkey_prompts_changed`. A prompt
      * that arrives shows an indicator; F8 or a click explicitly opens it. */
-    apply(next: PasskeyPrompt[]) {
+    apply(next: PasskeyPrompt[], metadata?: {kernel_now_ms?: number; closed?: PasskeyPromptClosure[]}) {
+      if (typeof metadata?.kernel_now_ms === "number" && Number.isFinite(metadata.kernel_now_ms) && metadata.kernel_now_ms >= 0) {
+        authoritativeFeed = true
+        deps.serverClock?.observe?.(metadata.kernel_now_ms)
+        for (const closed of metadata.closed ?? []) {
+          const key = promptKey(closed)
+          if (awaitingClosure.get(key) === closed.kind && closed.reason === "expired") deps.notify(approvalExpiredMessage(closed.kind))
+          awaitingClosure.delete(key)
+        }
+        for (const prompt of next) awaitingClosure.set(promptKey(prompt), prompt.kind)
+        while (awaitingClosure.size > 128) awaitingClosure.delete(awaitingClosure.keys().next().value!)
+      }
+      // Inspect the old set before a timeout-removal feed drops it.
+      refreshExpiry()
       const shown = current()
       const listed = new Set(next.map(promptKey))
       for (const key of answered) if (!listed.has(key)) answered.delete(key)
       prompts = next.filter((prompt) => !answered.has(promptKey(prompt)))
       reselect(shown)
       syncOpen()
+      refreshExpiry()
       render()
     },
     /** Shows the popup on this prompt; false when this terminal has none. */
@@ -298,6 +396,7 @@ export function createPasskeyPopupController(deps: {
         deps.scroll(event.name === "pageup" ? -1 : 1)
         return true
       }
+      if (event.ctrl && event.name === "d") { toggleDetails(); return true }
       if (pending) return true
       if (event.ctrl && event.name === "r") { void refuse(); return true }
       if (event.ctrl || event.meta || event.alt) return true
@@ -324,6 +423,8 @@ export function createPasskeyPopupController(deps: {
     },
     dispose() {
       disposed = true
+      if (expiryTimer) clearTimeout(expiryTimer)
+      deps.serverClock?.invalidate()
       clearEntry()
       if (open) { open = false; deps.onClose() }
     },

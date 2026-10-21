@@ -89,6 +89,42 @@ pub struct AgentActiveTurnProjection {
 }
 
 impl SessionSnapshotProjection {
+    // MP-08 / MP-10 / MP-11: one policy for local, hosted and replay snapshots.
+    pub(crate) fn redacted_for_user(
+        mut self,
+        user_id: &str,
+        history: &crate::durable_state::DurableKernelStateStore,
+    ) -> Result<Self, DaemonError> {
+        self.room_workflows = super::RoomWorkflowInventory::project_with_history(
+            &self.session,
+            user_id,
+            Some(history),
+        )?;
+        self.session = self
+            .session
+            .redacted_for_user_with_workflow_history(user_id, history)?;
+        self.agent_activity =
+            crate::runtime::session_projection_refresh::redact_agent_activity_for_session(
+                self.agent_activity,
+                &self.session,
+            );
+        if self
+            .provider_run
+            .as_ref()
+            .and_then(|run| run.agent_instance_id())
+            .is_some_and(|agent_id| {
+                !self
+                    .session
+                    .agents()
+                    .iter()
+                    .any(|agent| agent.id() == agent_id && agent.visible_in_freeform())
+            })
+        {
+            self.provider_run = None;
+        }
+        Ok(self)
+    }
+
     pub fn from_daemon_app(
         app: &mut DaemonApp,
         session_id: &str,
@@ -208,7 +244,7 @@ pub(crate) fn agent_activity_for_session_projection(
             }
         };
         let provider_busy = provider_turn_activity.is_some()
-            && provider_run.as_ref().map_or(true, |run| {
+            && provider_run.as_ref().is_none_or(|run| {
                 matches!(
                     run.state(),
                     ProviderRunState::Starting | ProviderRunState::Running
@@ -317,6 +353,10 @@ fn agent_prompt_runtime_status_is_active_prompt(status: &AgentPromptRuntimeStatu
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing active_turn_projection operation signature and explicit context arguments"
+)]
 fn active_turn_projection(
     prompt_id: String,
     provider_run_id: Option<String>,

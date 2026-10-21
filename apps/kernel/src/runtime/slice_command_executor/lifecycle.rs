@@ -587,6 +587,10 @@ pub(super) async fn execute_start_slice_request(
     .await
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing execute_start_slice_request_with_relaunch_manifests operation signature and explicit context arguments"
+)]
 async fn execute_start_slice_request_with_relaunch_manifests(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
@@ -653,7 +657,7 @@ async fn execute_start_slice_request_with_relaunch_manifests(
     };
     runtime_state.record_slice_audit_event(&initial_record, "start", "accepted", None, None)?;
     ensure_cloud_relay_connection(runtime_state, config_projection).await?;
-    let relay = local_docker_slice_relay(config_projection, &initial_record).await?;
+    let mut relay = local_docker_slice_relay(config_projection, &initial_record).await?;
     let initial_slice = runtime_state.mark_slice_starting(
         &request.slice_ref,
         crate::slice::SliceRelayEndpoint {
@@ -662,7 +666,6 @@ async fn execute_start_slice_request_with_relaunch_manifests(
         },
     )?;
     let supervisor_slice = initial_slice.clone();
-    let supervisor_relay = Some(relay.clone());
     let mut docker_options =
         crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
     if start_mode == SliceStartMode::RestoreSavedState {
@@ -688,6 +691,47 @@ async fn execute_start_slice_request_with_relaunch_manifests(
         SliceStartMode::RestoreSavedState => crate::slice::LocalDockerSliceAction::Provision,
         SliceStartMode::RecoverExistingContainer => crate::slice::LocalDockerSliceAction::Recover,
     };
+    if docker_action == crate::slice::LocalDockerSliceAction::Provision
+        && relay.uses_shared_relay()
+        && !crate::slice::managed_docker_broker_configured()
+    {
+        let build_slice = initial_slice.clone();
+        let build_options = docker_options.clone();
+        let build = Box::new(move || {
+            crate::slice::run_local_docker_slice_action(
+                &build_slice,
+                crate::slice::LocalDockerSliceAction::BuildImage,
+                None,
+                None,
+                None,
+                &build_options,
+            )
+        });
+        relay = match build_image_then_mint_relay(build, || {
+            local_docker_slice_relay(config_projection, &initial_record)
+        })
+        .await
+        {
+            Ok(relay) => relay,
+            Err(error) => {
+                let _ =
+                    runtime_state.mark_slice_operation_failed(&request.slice_ref, "start", &error);
+                let _ = runtime_state.record_slice_audit_event(
+                    &initial_record,
+                    "start",
+                    "failed",
+                    None,
+                    Some(&error.to_string()),
+                );
+                return Err(error);
+            }
+        };
+        // The image is current now; the provision step must not build it again.
+        if docker_options.build_image == crate::config::SliceImageBuildPolicy::Always {
+            docker_options.build_image = crate::config::SliceImageBuildPolicy::Auto;
+        }
+    }
+    let supervisor_relay = Some(relay.clone());
     let discovery_config = match provision_and_prepare_worker_discovery(
         runtime_state,
         config_projection,
@@ -853,6 +897,25 @@ async fn execute_start_slice_request_with_relaunch_manifests(
     }
     runtime_state.record_slice_audit_event(&slice, "start", "completed", None, None)?;
     Ok(LocalDaemonResponse::SliceStarted { slice })
+}
+
+// A first image build can outlast the relay-token TTL, so the token the
+// container starts with is minted only after the build.
+async fn build_image_then_mint_relay<Mint, Minted>(
+    build: super::worker_discovery::SliceWorkerProvision,
+    mint: Mint,
+) -> Result<crate::slice::LocalDockerSliceRelay, DaemonError>
+where
+    Mint: FnOnce() -> Minted,
+    Minted: std::future::Future<Output = Result<crate::slice::LocalDockerSliceRelay, DaemonError>>,
+{
+    tokio::task::spawn_blocking(build)
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.start",
+            message: format!("slice image build task failed: {error}"),
+        })??;
+    mint().await
 }
 
 async fn inherit_managed_slice_git_credentials(
@@ -1361,7 +1424,7 @@ fn hosted_slice_token_installation_matches(
 ) -> bool {
     slice_id == expected_slice_id
         && nonce == expected_nonce
-        && peer_version >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+        && peer_version >= crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION
 }
 
 async fn wait_for_hosted_slice_relay_activation(
@@ -1457,6 +1520,7 @@ async fn wait_for_hosted_slice_relay_activation(
                 Ok(Ok(crate::transport::relay_peer::RelayPeerResponse::Pong {
                     value,
                     daemon_id,
+                    ..
                 })) if value == ping_value && daemon_id == worker.kernel_id => return Ok(()),
                 Ok(Ok(_)) => {
                     last_probe_error = Some(DaemonError::LocalTransport {
@@ -1659,7 +1723,7 @@ mod tests {
     }
 
     #[test]
-    fn mp08_mp10_mp11_browser_artifact_peer_71_hosted_install_gate() {
+    fn mp08_mp10_mp11_browser_artifact_peer_minimum_hosted_install_gate() {
         // Test real encrypted peer receipts; all keys are disposable product identities.
         let home = crate::config::DaemonConfig::for_tests();
         let worker = crate::config::DaemonConfig::for_tests();
@@ -1853,5 +1917,38 @@ mod tests {
         assert_eq!(relay.container_relay_url, None);
         assert_eq!(relay.relay_token, "slice-local-kernel-1-slice-1");
         assert_eq!(relay.cloud_relay_config_json, None);
+    }
+
+    #[tokio::test]
+    async fn slow_image_build_does_not_outlive_the_container_relay_token() {
+        let ttl = std::time::Duration::from_millis(150);
+        let start = std::time::Instant::now();
+        let relay = build_image_then_mint_relay(
+            Box::new(move || {
+                std::thread::sleep(ttl * 2);
+                Ok(())
+            }),
+            || async {
+                Ok(crate::slice::LocalDockerSliceRelay {
+                    relay_url: "wss://relay.example.test".to_string(),
+                    container_relay_url: Some("wss://relay.example.test".to_string()),
+                    relay_token: start.elapsed().as_millis().to_string(),
+                    owner_public_key: None,
+                    cloud_relay_config_json: None,
+                    worker_machine_id: None,
+                })
+            },
+        )
+        .await
+        .expect("slow build should still produce a relay");
+
+        let minted_ms: u128 = relay
+            .relay_token
+            .parse()
+            .expect("test token is its mint time");
+        assert!(
+            start.elapsed().as_millis() - minted_ms < ttl.as_millis(),
+            "the container token must be minted after the build, not before it"
+        );
     }
 }

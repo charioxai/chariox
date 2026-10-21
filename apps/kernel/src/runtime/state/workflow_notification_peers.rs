@@ -7,7 +7,7 @@ use crate::durable_state::{
     workflow_notifications::{self as store, NotificationOperation, NotificationOutcome},
 };
 use crate::local::*;
-const VERSION: u32 = crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
+pub(super) const VERSION: u32 = crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
 const TIMEOUT: Duration = Duration::from_secs(3);
 
 impl KernelRuntimeState {
@@ -214,7 +214,9 @@ impl KernelRuntimeState {
         owner: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.ensure_notification_profile_owner(owner)?;
-        if matches!(&request, LocalDaemonRequest::ListWorkflowNotifications(_)) {
+        if self.notification_grant().is_none()
+            && matches!(&request, LocalDaemonRequest::ListWorkflowNotifications(_))
+        {
             self.refresh_notification_sources(owner).await?;
         }
         if let LocalDaemonRequest::DetachWorkflowNotification(request) = &request {
@@ -230,6 +232,13 @@ impl KernelRuntimeState {
                         && s.target_kernel_id == self.owned.config_projection.snapshot().daemon_id
                 })
                 .ok_or_else(|| store::error("notification not attached"))?;
+            if self.notification_grant().is_some()
+                && sub.source_kernel_id != self.owned.config_projection.snapshot().daemon_id
+            {
+                return Err(store::error(
+                    "shared access cannot detach remote workflow notifications",
+                ));
+            }
             self.owned
                 .durable_state_store
                 .notify(NotificationOperation::Detach {
@@ -291,7 +300,13 @@ impl KernelRuntimeState {
                     ));
                 }
             }
-            return Ok(LocalDaemonResponse::WorkflowNotificationAttached { subscription });
+            return self
+                .attached_within_grant(subscription)
+                .map(
+                    |subscription| LocalDaemonResponse::WorkflowNotificationAttached {
+                        subscription,
+                    },
+                );
         }
         Ok(result)
     }
@@ -395,6 +410,7 @@ impl KernelRuntimeState {
                                     && s.source_kernel_id == kernel
                                     && s.target_kernel_id == home
                             })
+                            .filter(|s| self.owned.notification_grant_live(s))
                             .ok_or_else(|| store::error("notification not attached"))?;
                         let target = WorkflowNotificationTarget::resolve(
                             &sessions,
@@ -421,9 +437,9 @@ impl KernelRuntimeState {
                             _ => Err(store::error("notification admission failed")),
                         }
                     }
-                    _ => Err(store::error(
-                        "workflow notification requires peer protocol 101",
-                    )),
+                    _ => Err(store::error(format!(
+                        "workflow notification requires peer protocol {VERSION}"
+                    ))),
                 }
             })
     }
@@ -511,6 +527,8 @@ impl KernelRuntimeState {
 
 #[cfg(test)]
 mod tests {
+    mod local_access;
+
     use super::*;
     use crate::durable_state::workflow_notifications::tests::{cleanup, Fixture};
     use crate::{
@@ -633,7 +651,7 @@ mod tests {
         panic!("MP-08 / MP-10: fixture kernel did not register");
     }
     #[test]
-    fn local_relay_98_subscribe_offline_retry_ack_loss_dedup_queue_and_unsubscribe() {
+    fn local_relay_current_subscribe_offline_retry_ack_loss_dedup_queue_and_unsubscribe() {
         std::thread::Builder::new()
             .stack_size(32 * 1024 * 1024)
             .spawn(|| {

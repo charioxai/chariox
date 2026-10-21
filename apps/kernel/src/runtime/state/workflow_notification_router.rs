@@ -53,6 +53,8 @@ impl KernelRuntimeState {
         owner: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.ensure_notification_profile_owner(owner)?;
+        let shared_access = self.notification_grant().is_some();
+        let home = self.owned.config_projection.snapshot().daemon_id;
         self.owned
             .durable_state_store
             .with_workflow_runtime_transition_lock(|| {
@@ -119,6 +121,9 @@ impl KernelRuntimeState {
                                     && source_available(&sessions, s)
                             })
                             .or_else(|| {
+                                if shared_access {
+                                    return None;
+                                }
                                 self.owned
                                     .durable_state_store
                                     .notification_cached_sources(owner)
@@ -138,6 +143,11 @@ impl KernelRuntimeState {
                                     })
                             })
                             .ok_or_else(|| store::error("source not available"))?;
+                        if shared_access && source.kernel_id != home {
+                            return Err(store::error(
+                                "shared access cannot attach remote workflow notifications",
+                            ));
+                        }
                         let session = sessions.get_session(&request.session_id)?;
                         if session.owner_user_id() != owner {
                             return Err(store::error("notification target not owner"));
@@ -176,7 +186,7 @@ impl KernelRuntimeState {
                             events: request.events,
                             filters: request.filters,
                         };
-                        let operation = if source.kernel_id == session.host_daemon_id() {
+                        let mut operation = if source.kernel_id == session.host_daemon_id() {
                             NotificationOperation::Attach {
                                 subscription,
                                 target,
@@ -184,6 +194,12 @@ impl KernelRuntimeState {
                         } else {
                             NotificationOperation::RemoteAttach { subscription }
                         };
+                        if let Some(grant) = self.notification_grant() {
+                            operation = NotificationOperation::Granted {
+                                grant,
+                                attach: Box::new(operation),
+                            };
+                        }
                         match self.owned.durable_state_store.notify(operation)? {
                             NotificationOutcome::Subscription(subscription) => {
                                 Ok(LocalDaemonResponse::WorkflowNotificationAttached {
@@ -199,17 +215,26 @@ impl KernelRuntimeState {
                                 "notification inventory requires the session owner",
                             ));
                         }
-                        let (mut sources, mut subscriptions, diagnostics) = self
+                        let (mut sources, mut subscriptions, mut diagnostics) = self
                             .owned
                             .durable_state_store
                             .notification_inventory(owner)?;
+                        if shared_access {
+                            sources.retain(|s| s.kernel_id == home);
+                            subscriptions.retain(|s| s.source_kernel_id == home);
+                            diagnostics
+                                .retain(|d| sources.iter().any(|s| s.source_id == d.source_id));
+                        }
                         for source in &mut sources {
                             source.available = source_available(&sessions, source);
                         }
-                        let cached = self
-                            .owned
-                            .durable_state_store
-                            .notification_cached_sources(owner)?;
+                        let cached = if shared_access {
+                            vec![]
+                        } else {
+                            self.owned
+                                .durable_state_store
+                                .notification_cached_sources(owner)?
+                        };
                         for sub in &mut subscriptions {
                             sub.source_available = sources
                                 .iter()
@@ -303,65 +328,69 @@ impl KernelRuntimeOwnedState {
                 let operation = self
                     .durable_state_store
                     .with_workflow_runtime_transition_lock(|| {
-                        let mut sessions = self.session_store.write();
-                        let (sources, _, _) = self
-                            .durable_state_store
-                            .notification_inventory(&sub.owner_user_id)?;
-                        // Deletion/transfer leave pending rows alone; they naturally expire.
-                        if !accepted
-                            && !sources.iter().any(|s| {
-                                s.source_id == env.source_id && source_available(&sessions, s)
-                            })
-                        {
-                            return Ok(false);
-                        }
-                        let target = WorkflowNotificationTarget::resolve(
-                            &sessions,
-                            &sub.owner_user_id,
-                            &sub.session_id,
-                            &sub.publication_id,
-                            Some(&sub.queue_id),
-                        )
-                        .map_err(|e| store::error(e.to_string()))?;
-                        if sessions.get_session(&sub.session_id)?.owner_user_id()
-                            != sub.owner_user_id
-                            || target.target().endpoint_id != sub.endpoint_id
-                        {
-                            return Err(store::error("notification target changed"));
-                        }
-                        if accepted {
-                            let prepared = PreparedNotification::prepare(
-                                &mut sessions,
-                                sub.clone(),
-                                env.clone(),
-                            )?;
-                            let after = prepared.after.clone();
-                            self.durable_state_store
-                                .notify(NotificationOperation::Queue(Box::new(prepared)))?;
-                            sessions.restore_session(after);
-                            Ok(true)
-                        } else {
-                            match self.durable_state_store.notify(
-                                NotificationOperation::Accept {
-                                    subscription: sub.clone(),
-                                    envelope: env.clone(),
-                                },
-                            )? {
-                                NotificationOutcome::Ack(_) => {
-                                    // Local acceptance shares the source receipt: Accepted
-                                    // already promoted it. Terminal ACKs must retire any
-                                    // remaining retryable source work, just like peer ACKs.
-                                    self.durable_state_store.notify(
-                                        NotificationOperation::Acknowledge {
-                                            subscription_id: sub.subscription_id.clone(),
-                                            occurrence_id: env.occurrence_id.clone(),
-                                        },
-                                    )?;
-                                    Ok(false)
-                                }
-                                _ => Err(store::error("unexpected notification ACK")),
+                        self.with_live_notification_grant(&sub, |require_grant| {
+                            let mut sessions = self.session_store.write();
+                            let (sources, _, _) = self
+                                .durable_state_store
+                                .notification_inventory(&sub.owner_user_id)?;
+                            // Deletion/transfer leave pending rows alone; they naturally expire.
+                            if !accepted
+                                && !sources.iter().any(|s| {
+                                    s.source_id == env.source_id && source_available(&sessions, s)
+                                })
+                            {
+                                return Ok(false);
                             }
-                        }
+                            let target = WorkflowNotificationTarget::resolve(
+                                &sessions,
+                                &sub.owner_user_id,
+                                &sub.session_id,
+                                &sub.publication_id,
+                                Some(&sub.queue_id),
+                            )
+                            .map_err(|e| store::error(e.to_string()))?;
+                            if sessions.get_session(&sub.session_id)?.owner_user_id()
+                                != sub.owner_user_id
+                                || target.target().endpoint_id != sub.endpoint_id
+                            {
+                                return Err(store::error("notification target changed"));
+                            }
+                            if accepted {
+                                let prepared = PreparedNotification::prepare(
+                                    &mut sessions,
+                                    sub.clone(),
+                                    env.clone(),
+                                )?;
+                                let after = prepared.after.clone();
+                                require_grant()?;
+                                self.durable_state_store
+                                    .notify(NotificationOperation::Queue(Box::new(prepared)))?;
+                                sessions.restore_session(after);
+                                Ok(true)
+                            } else {
+                                require_grant()?;
+                                match self.durable_state_store.notify(
+                                    NotificationOperation::Accept {
+                                        subscription: sub.clone(),
+                                        envelope: env.clone(),
+                                    },
+                                )? {
+                                    NotificationOutcome::Ack(_) => {
+                                        // Local acceptance shares the source receipt: Accepted
+                                        // already promoted it. Terminal ACKs must retire any
+                                        // remaining retryable source work, just like peer ACKs.
+                                        self.durable_state_store.notify(
+                                            NotificationOperation::Acknowledge {
+                                                subscription_id: sub.subscription_id.clone(),
+                                                occurrence_id: env.occurrence_id.clone(),
+                                            },
+                                        )?;
+                                        Ok(false)
+                                    }
+                                    _ => Err(store::error("unexpected notification ACK")),
+                                }
+                            }
+                        })
                     });
                 if matches!(operation, Ok(true)) {
                     queued_sessions.insert(sub.session_id.clone());
@@ -710,6 +739,394 @@ mod tests {
         };
         assert!(!sources[0].available);
         assert!(!subscriptions[0].source_available);
+        drop(runtime);
+        cleanup(f);
+    }
+    // MP-08 / MP-10 / MP-11 (review 914 P1): an attachment made under an external
+    // access grant ends with that grant; the owner's own attachments survive.
+    #[tokio::test]
+    async fn external_grant_notification_subscription_ends_with_its_grant() {
+        for end in ["revoke", "expiry", "process_exit", "restart"] {
+            let mut f = Fixture::new();
+            let (a, _, _) = f.workflow("source");
+            let (_, _, granted) = f.workflow("granted-target");
+            let (owner_target, _, owned) = f.workflow("owner-target");
+            let mut kernel = runtime(&mut f);
+            let LocalDaemonResponse::WorkflowNotificationSourceRegistered { source } = kernel
+                .execute_workflow_notification_request(
+                    LocalDaemonRequest::RegisterWorkflowNotificationSource(
+                        RegisterWorkflowNotificationSourceRequest {
+                            session_id: f.session.clone(),
+                            workflow_ref: a.clone(),
+                            enabled: true,
+                            output_fields: None,
+                        },
+                    ),
+                    "local",
+                )
+                .unwrap()
+            else {
+                panic!()
+            };
+            let attach = |publication_ref: &str| {
+                LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
+                    delivery_mode: NotificationDeliveryMode::Queue,
+                    session_id: f.session.clone(),
+                    source_id: source.source_id.clone(),
+                    publication_ref: publication_ref.into(),
+                    queue_ref: None,
+                    ttl_days: 7,
+                    events: WorkflowNotificationEvents::Both,
+                    filters: serde_json::Value::Null,
+                })
+            };
+            let grant = kernel.insert_access_grant_for_test(&f.session);
+            let external = attach(&granted);
+            kernel
+                .with_external_command_authority(Some((grant.as_str(), &external)))
+                .execute_workflow_notification_command(external.clone(), "local")
+                .await
+                .unwrap();
+            kernel
+                .execute_workflow_notification_command(attach(&owned), "local")
+                .await
+                .unwrap();
+            f.complete(
+                &a,
+                "after-grant-end",
+                None,
+                crate::session::WorkflowRunStatus::Completed,
+                "kernel output",
+            );
+            kernel
+                .owned
+                .session_store
+                .write()
+                .restore_session(f.sessions.get_session(&f.session).unwrap());
+            match end {
+                "revoke" => {
+                    kernel
+                        .revoke_kernel_access(Some("local"), Some(&grant), "owner")
+                        .unwrap();
+                }
+                "restart" => {
+                    drop(kernel);
+                    f.store = crate::durable_state::DurableKernelStateStore::open_owned(
+                        f.root.join("kernel.sqlite"),
+                    )
+                    .unwrap();
+                    kernel = runtime(&mut f);
+                }
+                // Not yet swept: delivery itself must re-check the grant.
+                _ => {
+                    let mut access = kernel.owned.kernel_access.lock().unwrap();
+                    let live = access.grants.get_mut(&grant).unwrap();
+                    if end == "expiry" {
+                        live.clock.as_mut().unwrap().deadline =
+                            std::time::Instant::now() - std::time::Duration::from_millis(1);
+                    } else {
+                        live.holder.start = live.holder.start.wrapping_add(1);
+                    }
+                }
+            }
+            kernel.owned.route_workflow_notifications();
+            let session = kernel.owned.session_store.get_session(&f.session).unwrap();
+            let queued = session
+                .workflow_queued_prompts()
+                .iter()
+                .map(|q| q.workflow_id().to_owned())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                queued,
+                vec![owner_target.clone()],
+                "{end}: grant-bound delivery"
+            );
+            kernel.sweep_kernel_access();
+            let (_, subscriptions, _) = kernel
+                .owned
+                .durable_state_store
+                .notification_inventory("local")
+                .unwrap();
+            assert_eq!(
+                subscriptions
+                    .iter()
+                    .map(|s| s.workflow_id.clone())
+                    .collect::<Vec<_>>(),
+                vec![owner_target.clone()],
+                "{end}: only the owner's subscription remains active"
+            );
+            drop(kernel);
+            cleanup(f);
+        }
+    }
+    // MP-08 / MP-10 / MP-11 (review 914 @c8bf9ce1e P2): an accepted candidate
+    // selected before its grant is revoked must not reach the target queue.
+    #[tokio::test]
+    async fn revoked_grant_fences_an_already_selected_accepted_notification() {
+        let mut f = Fixture::new();
+        let (a, _, _) = f.workflow("source");
+        let (_, _, granted) = f.workflow("granted-target");
+        let kernel = runtime(&mut f);
+        let LocalDaemonResponse::WorkflowNotificationSourceRegistered { source } = kernel
+            .execute_workflow_notification_request(
+                LocalDaemonRequest::RegisterWorkflowNotificationSource(
+                    RegisterWorkflowNotificationSourceRequest {
+                        session_id: f.session.clone(),
+                        workflow_ref: a.clone(),
+                        enabled: true,
+                        output_fields: None,
+                    },
+                ),
+                "local",
+            )
+            .unwrap()
+        else {
+            panic!()
+        };
+        let external =
+            LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
+                delivery_mode: NotificationDeliveryMode::Queue,
+                session_id: f.session.clone(),
+                source_id: source.source_id.clone(),
+                publication_ref: granted,
+                queue_ref: None,
+                ttl_days: 7,
+                events: WorkflowNotificationEvents::Both,
+                filters: serde_json::Value::Null,
+            });
+        let grant = kernel.insert_access_grant_for_test(&f.session);
+        kernel
+            .with_external_command_authority(Some((grant.as_str(), &external)))
+            .execute_workflow_notification_command(external.clone(), "local")
+            .await
+            .unwrap();
+        f.complete(
+            &a,
+            "selected-before-revoke",
+            None,
+            crate::session::WorkflowRunStatus::Completed,
+            "kernel output",
+        );
+        let store = kernel.owned.durable_state_store.clone();
+        let now = crate::session::unix_epoch_ms();
+        for (subscription, envelope) in store.notification_candidates(false, now, 8).unwrap() {
+            store
+                .notify(NotificationOperation::Accept {
+                    subscription,
+                    envelope,
+                })
+                .unwrap();
+        }
+        let [(sub, env)]: [_; 1] = store
+            .notification_candidates(true, now, 8)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let prepared = {
+            let mut sessions = kernel.owned.session_store.write();
+            PreparedNotification::prepare(&mut sessions, sub.clone(), env).unwrap()
+        };
+        kernel
+            .revoke_kernel_access(Some("local"), Some(&grant), "owner")
+            .unwrap();
+        let live = kernel.owned.notification_grant_live(&sub);
+        let queued = store
+            .notify(NotificationOperation::Queue(Box::new(prepared)))
+            .is_ok();
+        assert_eq!(
+            (live, queued),
+            (false, false),
+            "retired authority must reject even an already prepared queue write"
+        );
+        let db = rusqlite::Connection::open(f.root.join("runtime/state.db")).unwrap();
+        let receipt: (String, Option<String>) = db
+            .query_row(
+                "SELECT state,queued_prompt_id FROM app_outbox WHERE automation_id=?1",
+                [&sub.subscription_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(receipt, ("accepted".into(), None));
+        drop(db);
+        drop(kernel);
+        cleanup(f);
+    }
+    #[tokio::test]
+    async fn a02_security_g11_retained_workflow_run_without_live_registration_is_reconciled() {
+        use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+        for status in [
+            crate::session::WorkflowRunStatus::Completed,
+            crate::session::WorkflowRunStatus::Failed,
+            crate::session::WorkflowRunStatus::Stopped,
+        ] {
+            let mut f = Fixture::new();
+            let (workflow, _, _) = f.workflow("g11");
+            let runtime = runtime(&mut f);
+            let mut config = runtime.owned.config_projection.snapshot();
+            config.room_agent_tools = true;
+            runtime.owned.config_projection.update(config);
+            let now = crate::session::unix_epoch_ms();
+            f.store
+                .agent_lifecycle(Operation::Begin {
+                    owner: "local".into(),
+                    room: f.session.clone(),
+                    agent: "agent".into(),
+                    prompt: "g11-retained".into(),
+                    run: Some("fixture-provider".into()),
+                    now,
+                })
+                .unwrap();
+            f.store
+                .agent_lifecycle(Operation::RegisterObligation {
+                    owner: "local".into(),
+                    room: f.session.clone(),
+                    agent: "agent".into(),
+                    prompt: "g11-retained".into(),
+                    run: Some("fixture-provider".into()),
+                    id: "g11-workflow".into(),
+                    kind: "workflow_run".into(),
+                    resource: Some("completed-run".into()),
+                    now,
+                })
+                .unwrap();
+            f.store
+                .agent_lifecycle(Operation::DispatchReceipt {
+                    id: "g11-workflow".into(),
+                    accepted: true,
+                    resource: Some("completed-run".into()),
+                })
+                .unwrap();
+            // Retained pre-fix workflow_run rows had no live completion registration.
+            for reg in f.store.agent_registrations("g11-retained").unwrap() {
+                f.store
+                    .agent_lifecycle(Operation::Unsubscribe {
+                        task: "g11-retained".into(),
+                        prompt: "g11-retained".into(),
+                        registration: reg.id,
+                    })
+                    .unwrap();
+            }
+            f.store
+                .agent_lifecycle(Operation::Block {
+                    task: "g11-retained".into(),
+                    prompt: "g11-retained".into(),
+                    reason: "reconcile missing workflow completion".into(),
+                })
+                .unwrap();
+            f.complete(&workflow, "completed-run", None, status, "fixture output");
+            runtime
+                .owned
+                .session_store
+                .write()
+                .restore_session(f.sessions.get_session(&f.session).unwrap());
+            runtime.sweep_agent_lifecycle().await.unwrap();
+            let task = f
+                .store
+                .agent_tasks(Some(&f.session), Some("agent"))
+                .unwrap()
+                .into_iter()
+                .find(|t| t.task_id == "g11-retained")
+                .unwrap();
+            assert_ne!(task.obligations[0].status,"open","MP-08 / MP-10 / MP-11 G11: terminal actual workflow_run obligation must be reconciled");
+            assert_eq!(
+                task.state,
+                ExecutionState::Blocked,
+                "explicit owner block remains authoritative"
+            );
+            drop(runtime);
+            cleanup(f);
+        }
+    }
+    #[test]
+    fn a02_security_g11_workflow_child_binds_only_the_invoking_task() {
+        use crate::durable_state::agent_lifecycle::Operation;
+        let mut f = Fixture::new();
+        let runtime = runtime(&mut f);
+        let mut config = runtime.owned.config_projection.snapshot();
+        config.room_agent_tools = true;
+        runtime.owned.config_projection.update(config);
+        for (parent, workflow_run) in [("parent", "invoked-run"), ("peer", "other-run")] {
+            f.store
+                .agent_lifecycle(Operation::Begin {
+                    owner: "local".into(),
+                    room: f.session.clone(),
+                    agent: parent.into(),
+                    prompt: parent.into(),
+                    run: Some("parent-provider".into()),
+                    now: 1,
+                })
+                .unwrap();
+            for (kind, resource) in [("delegate", "agent"), ("workflow_run", workflow_run)] {
+                let id = format!("{parent}-{kind}");
+                f.store
+                    .agent_lifecycle(Operation::RegisterObligation {
+                        owner: "local".into(),
+                        room: f.session.clone(),
+                        agent: parent.into(),
+                        prompt: parent.into(),
+                        run: Some("parent-provider".into()),
+                        id: id.clone(),
+                        kind: kind.into(),
+                        resource: Some(resource.into()),
+                        now: 1,
+                    })
+                    .unwrap();
+                f.store
+                    .agent_lifecycle(Operation::DispatchReceipt {
+                        id,
+                        accepted: true,
+                        resource: Some(resource.into()),
+                    })
+                    .unwrap();
+            }
+        }
+        let old = crate::session::PromptQueueItem::new(
+            "old-child",
+            "user-attachment",
+            "agent",
+            "unrelated peer review",
+            crate::session::PromptStatus::Running,
+        );
+        runtime
+            .owned
+            .settle_agent_task(&f.session, "agent", &old, "fixture-provider", false)
+            .unwrap();
+        assert!(
+            f.store
+                .agent_tasks(Some(&f.session), Some("parent"))
+                .unwrap()[0]
+                .obligations[0]
+                .completion_task_id
+                .is_none(),
+            "unrelated first child task cannot bind a delegation"
+        );
+        let prompt = crate::session::PromptQueueItem::new(
+            "workflow-child",
+            "workflow-attachment",
+            "agent",
+            "invoked workflow review",
+            crate::session::PromptStatus::Running,
+        )
+        .with_workflow_context("invoked-run", "node");
+        runtime
+            .owned
+            .settle_agent_task(&f.session, "agent", &prompt, "fixture-provider", false)
+            .unwrap();
+        let parent = f
+            .store
+            .agent_tasks(Some(&f.session), Some("parent"))
+            .unwrap()
+            .remove(0);
+        assert_eq!(parent.obligations[0].completion_task_id.as_deref(),Some("workflow-child"),"MP-08 / MP-10 / MP-11 G11: accepted workflow invocation must bind its exact child task");
+        let peer = f
+            .store
+            .agent_tasks(Some(&f.session), Some("peer"))
+            .unwrap()
+            .remove(0);
+        assert!(
+            peer.obligations[0].completion_task_id.is_none(),
+            "another parent invocation cannot consume this child result"
+        );
         drop(runtime);
         cleanup(f);
     }

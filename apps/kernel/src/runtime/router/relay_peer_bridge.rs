@@ -4,6 +4,18 @@ use crate::runtime::native_interaction_bridge::forward_relay_native_interaction;
 use crate::runtime::relay_peer_runtime_executor as relay_peer_runtime;
 
 impl CommandRouter {
+    // MP-08/MP-09/MP-10/MP-11 A10: the bridge only wires the worker service.
+    pub(crate) async fn relay_leased_watched_process(
+        &self,
+        leased: &str,
+        action: crate::transport::relay_peer::LeasedWatchedProcessAction,
+    ) -> Result<Option<crate::durable_state::agent_lifecycle::LeasedProcessReceipt>, DaemonError>
+    {
+        self.runtime_state
+            .relay_leased_watched_process(leased, action)
+            .await
+    }
+
     pub(crate) fn relay_workflow_notification(
         &self,
         kernel: &str,
@@ -430,6 +442,17 @@ impl CommandRouter {
             data_base64,
         )
         .await
+    }
+
+    pub(crate) async fn relay_room_terminal(
+        &self,
+        leased_agent_id: &str,
+        actor: crate::room_terminal::TerminalActor,
+        operation: crate::local::RoomTerminalOperation,
+    ) -> Result<crate::local::RoomTerminalResult, DaemonError> {
+        self.runtime_state
+            .relay_room_terminal(leased_agent_id, actor, operation)
+            .await
     }
 
     pub(crate) async fn relay_resize_leased_provider_terminal(

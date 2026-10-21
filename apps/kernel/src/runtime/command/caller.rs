@@ -98,6 +98,18 @@ impl KernelCaller {
         })
     }
 
+    /// MP-08/MP-10/MP-11: one admitted Cloud-free terminal identity for RPCs
+    /// and display metadata. Transport tokens never supply its authority.
+    pub(crate) fn from_paired_terminal(grant: crate::config::PersistedClientPairing) -> Self {
+        let mut caller = Self::for_relay_request(None);
+        caller.caller_id = grant.client_id.clone();
+        caller.client_id = Some(grant.client_id);
+        caller.user_id = Some(DEFAULT_LOCAL_USER_ID.into());
+        caller.public_key_thumbprint = Some(grant.public_key_thumbprint);
+        caller.connection_class = Some(KernelConnectionClass::Terminal);
+        caller
+    }
+
     pub fn from_relay_identity(identity: RelayCallerIdentity) -> Self {
         let connection_class = relay_connection_class(Some(&identity));
         let (caller_kind, client_id, machine_id) = match identity.subject_kind {
@@ -156,7 +168,13 @@ impl KernelCommand {
     /// This identity was supplied by the local transport or authenticated relay
     /// admission. It is never read from an interaction's response payload.
     pub(crate) fn is_terminal_caller(&self) -> bool {
-        self.caller.metaagent_id.is_none()
-            && self.caller.connection_class == Some(KernelConnectionClass::Terminal)
+        self.caller.is_terminal_caller()
+    }
+}
+
+impl KernelCaller {
+    pub(crate) fn is_terminal_caller(&self) -> bool {
+        self.metaagent_id.is_none()
+            && self.connection_class == Some(KernelConnectionClass::Terminal)
     }
 }

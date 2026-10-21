@@ -209,6 +209,10 @@ impl DaemonApp {
             self.providers
                 .apply_runtime_binding(started.run.id(), binding)?;
         }
+        ProviderProcessTracker::bind_endpoint_identity(
+            &self.provider_process_tracking,
+            &started.run,
+        );
         self.finish_provider_launch_success(&started.run)
     }
 
@@ -419,7 +423,12 @@ impl DaemonApp {
                 Some(run.id()),
                 None,
             )?;
-            let _ = self.advance_next_queued_prompt(run.session_id(), agent_id)?;
+            if !self
+                .prompt_state_owner
+                .has_idle_queue_promotion(run.session_id(), agent_id)
+            {
+                let _ = self.advance_next_queued_prompt(run.session_id(), agent_id)?;
+            }
             crate::app::KernelSessionReadService::new(self).session_snapshot(run.session_id())?;
         }
         self.update_provider_run_projection(run.clone());
@@ -433,6 +442,7 @@ impl DaemonApp {
         self.launch_provider_with_lease(request, false)
     }
 
+    #[cfg(test)]
     pub(crate) fn launch_leased_provider(
         &mut self,
         request: LaunchProviderRequest,

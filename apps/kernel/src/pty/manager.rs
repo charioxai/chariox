@@ -5,10 +5,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::Notify;
 
+use super::input_backlog::PtyInputBacklog;
 use crate::error::DaemonError;
 use crate::provider::RuntimeProviderRun;
 
@@ -17,8 +19,78 @@ const PTY_INPUT_QUEUE_LIMIT: usize = 64;
 const PTY_DIAGNOSTIC_TAIL_LIMIT: usize = 8 * 1024;
 const PTY_READER_STACK_BYTES: usize = 256 * 1024;
 const PTY_WRITER_STACK_BYTES: usize = 128 * 1024;
+/// Input is written in slices so an interrupt can cancel the rest of a large
+/// paste while one slice waits for the program to read.
+const PTY_INPUT_SLICE_BYTES: usize = 1024;
+/// How long an interrupt waits for the writer to drop the input it cancelled.
+const PTY_INTERRUPT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 type PtyOutputFilter = Box<dyn FnMut(&[u8]) -> Vec<u8> + Send>;
+
+// MP-08 / MP-10 / MP-11: retain the terminal descriptor in the ordered input
+// writer so cancelling an owned, unacknowledged composer also discards unread
+// prompt/Enter bytes. Provider-native drafts never use this operation.
+#[cfg(unix)]
+fn clone_input_terminal(master: &dyn MasterPty) -> std::io::Result<Option<std::fs::File>> {
+    use std::os::fd::BorrowedFd;
+    master
+        .as_raw_fd()
+        .map(|fd| {
+            // The master remains alive throughout this clone.
+            unsafe { BorrowedFd::borrow_raw(fd) }
+                .try_clone_to_owned()
+                .map(Into::into)
+        })
+        .transpose()
+}
+
+#[cfg(not(unix))]
+fn clone_input_terminal(_master: &dyn MasterPty) -> std::io::Result<Option<std::fs::File>> {
+    Ok(None)
+}
+
+#[cfg(unix)]
+fn discard_unread_input(terminal: Option<&std::fs::File>) -> std::io::Result<()> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let terminal =
+        terminal.ok_or_else(|| std::io::Error::other("PTY input flush is unavailable"))?;
+    // Flush the slave's unread input, never the master's input (provider output).
+    // Open only for this operation so provider exit still produces PTY EOF.
+    #[cfg(target_os = "linux")]
+    let slave_fd = unsafe {
+        libc::ioctl(
+            terminal.as_raw_fd(),
+            libc::TIOCGPTPEER,
+            libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
+        )
+    };
+    #[cfg(not(target_os = "linux"))]
+    let slave_fd = {
+        static NAME_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = NAME_LOCK
+            .lock()
+            .map_err(|_| std::io::Error::other("PTY name lock is poisoned"))?;
+        let name = unsafe { libc::ptsname(terminal.as_raw_fd()) };
+        if name.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        unsafe { libc::open(name, libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) }
+    };
+    if slave_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let slave = unsafe { std::fs::File::from_raw_fd(slave_fd) };
+    if unsafe { libc::tcflush(slave.as_raw_fd(), libc::TCIFLUSH) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+fn discard_unread_input(_terminal: Option<&std::fs::File>) -> std::io::Result<()> {
+    Err(std::io::Error::other("PTY input flush is unavailable"))
+}
 
 #[cfg(unix)]
 fn disable_pty_input_echo(
@@ -77,6 +149,20 @@ fn terminate_pty_process_group(master: &dyn MasterPty, process_group: Option<i32
     }
 }
 
+/// Discard what was written to the master and the program has not read yet:
+/// the pending buffers of the slave side (flushed from the master) and the
+/// slave's line-discipline read buffer. Returns whether both were flushed.
+#[cfg(unix)]
+fn discard_unread_input_after_interrupt(master_fd: std::os::fd::RawFd) -> bool {
+    use std::os::fd::FromRawFd;
+    if unsafe { libc::tcflush(master_fd, libc::TCOFLUSH) } != 0 {
+        return false;
+    }
+    // Borrowed for this call only; the manager still owns the descriptor.
+    let master = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(master_fd) });
+    discard_unread_input(Some(&master)).is_ok()
+}
+
 #[cfg(not(unix))]
 fn terminate_pty_process_group(_master: &dyn MasterPty, _process_group: Option<i32>) {}
 
@@ -84,11 +170,17 @@ fn terminate_pty_process_group(_master: &dyn MasterPty, _process_group: Option<i
 pub(crate) struct PtyInputWriter {
     provider_run_id: String,
     input_tx: SyncSender<PtyInputRequest>,
+    /// Input queued or mid-write: pending while the writer may be stuck behind
+    /// a program that does not read it.
+    backlog: Arc<PtyInputBacklog>,
 }
 
 struct PtyInputRequest {
     provider_run_id: String,
+    /// The backlog generation it was queued under.
+    generation: u64,
     bytes: Vec<u8>,
+    discard_unread: bool,
     completion_tx: Option<SyncSender<Result<(), String>>>,
 }
 
@@ -384,12 +476,42 @@ impl PtyManager {
         self.spawn_with_output_filter(request, credentials, scrub_ambient_credentials, None)
     }
 
+    /// Spawn a program whose tty keeps the kernel's input echo, for a person
+    /// or an agent typing into a shell. Provider PTYs never echo. It is the
+    /// user's own shell, so it keeps their SSH agent and Git settings.
+    pub fn spawn_interactive(&mut self, request: PtySpawnRequest) -> Result<(), DaemonError> {
+        self.spawn_pty(
+            request,
+            &crate::provider::ProviderCredentialEnvironment::default(),
+            false,
+            None,
+            true,
+        )
+    }
+
     pub(crate) fn spawn_with_output_filter(
         &mut self,
         request: PtySpawnRequest,
         credentials: &crate::provider::ProviderCredentialEnvironment,
         scrub_ambient_credentials: bool,
+        output_filter: Option<PtyOutputFilter>,
+    ) -> Result<(), DaemonError> {
+        self.spawn_pty(
+            request,
+            credentials,
+            scrub_ambient_credentials,
+            output_filter,
+            false,
+        )
+    }
+
+    fn spawn_pty(
+        &mut self,
+        request: PtySpawnRequest,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+        scrub_ambient_credentials: bool,
         mut output_filter: Option<PtyOutputFilter>,
+        keep_input_echo: bool,
     ) -> Result<(), DaemonError> {
         if let Some(process_key) = self.process_aliases.get(&request.provider_run_id) {
             self.output_signal
@@ -417,7 +539,14 @@ impl PtyManager {
                 provider_run_id: request.provider_run_id.clone(),
                 message: error.to_string(),
             })?;
-        disable_pty_input_echo(pair.master.as_ref(), &request.provider_run_id)?;
+        if !keep_input_echo {
+            disable_pty_input_echo(pair.master.as_ref(), &request.provider_run_id)?;
+        }
+        let input_terminal =
+            clone_input_terminal(pair.master.as_ref()).map_err(|error| DaemonError::PtySpawn {
+                provider_run_id: request.provider_run_id.clone(),
+                message: error.to_string(),
+            })?;
 
         let mut command = CommandBuilder::new(request.program);
         for arg in request.args {
@@ -470,6 +599,8 @@ impl PtyManager {
                 message: error.to_string(),
             })?;
         let (input_tx, input_rx) = mpsc::sync_channel(PTY_INPUT_QUEUE_LIMIT);
+        let backlog = Arc::new(PtyInputBacklog::default());
+        let writer_backlog = backlog.clone();
         let writer_provider_run_id = request.provider_run_id.clone();
         let writer_process_key = request.process_key.clone();
         let writer_output_signal = self.output_signal.clone();
@@ -477,7 +608,14 @@ impl PtyManager {
             .name(format!("chariox-pty-writer-{}", request.provider_run_id))
             .stack_size(PTY_WRITER_STACK_BYTES)
             .spawn(move || {
-                run_pty_writer(writer, input_rx, writer_process_key, writer_output_signal)
+                run_pty_writer(
+                    writer,
+                    input_terminal,
+                    input_rx,
+                    writer_process_key,
+                    writer_output_signal,
+                    writer_backlog,
+                )
             });
         if let Err(error) = writer_thread {
             let _ = child.kill();
@@ -490,6 +628,7 @@ impl PtyManager {
         let input_writer = PtyInputWriter {
             provider_run_id: writer_provider_run_id,
             input_tx,
+            backlog,
         };
 
         let (output_tx, output_rx) = mpsc::sync_channel(PTY_OUTPUT_QUEUE_LIMIT);
@@ -604,11 +743,7 @@ impl PtyManager {
 impl PtyInputWriter {
     pub(crate) fn write_input(&self, input: &[u8]) -> Result<(), DaemonError> {
         let (completion_tx, completion_rx) = mpsc::sync_channel(1);
-        self.send_request(PtyInputRequest {
-            provider_run_id: self.provider_run_id.clone(),
-            bytes: input.to_vec(),
-            completion_tx: Some(completion_tx),
-        })?;
+        self.send_request(input, Some(completion_tx), false)?;
         completion_rx
             .recv()
             .map_err(|error| DaemonError::PtyWrite {
@@ -622,15 +757,28 @@ impl PtyInputWriter {
     }
 
     pub(crate) fn enqueue_input(&self, input: &[u8]) -> Result<(), DaemonError> {
-        self.send_request(PtyInputRequest {
-            provider_run_id: self.provider_run_id.clone(),
-            bytes: input.to_vec(),
-            completion_tx: None,
-        })
+        self.send_request(input, None, false)
     }
 
-    fn send_request(&self, request: PtyInputRequest) -> Result<(), DaemonError> {
+    pub(crate) fn enqueue_owned_composer_abort(&self, input: &[u8]) -> Result<(), DaemonError> {
+        self.send_request(input, None, true)
+    }
+
+    fn send_request(
+        &self,
+        input: &[u8],
+        completion_tx: Option<SyncSender<Result<(), String>>>,
+        discard_unread: bool,
+    ) -> Result<(), DaemonError> {
+        let request = PtyInputRequest {
+            provider_run_id: self.provider_run_id.clone(),
+            generation: self.backlog.queued(),
+            bytes: input.to_vec(),
+            discard_unread,
+            completion_tx,
+        };
         self.input_tx.try_send(request).map_err(|error| {
+            self.backlog.unqueued();
             let message = match error {
                 TrySendError::Full(_) => {
                     format!("PTY input queue reached its {PTY_INPUT_QUEUE_LIMIT}-request limit")
@@ -647,17 +795,39 @@ impl PtyInputWriter {
 
 fn run_pty_writer(
     mut writer: Box<dyn Write + Send>,
+    input_terminal: Option<std::fs::File>,
     input_rx: Receiver<PtyInputRequest>,
     process_key: String,
     output_signal: PtyOutputSignal,
+    backlog: Arc<PtyInputBacklog>,
 ) {
     while let Ok(request) = input_rx.recv() {
         output_signal.prefer_alias(&process_key, &request.provider_run_id);
-        let result = writer
-            .write_all(&request.bytes)
-            .and_then(|_| writer.flush());
-        let result = result.map_err(|error| error.to_string());
+        let mut written = 0;
+        let mut result = if request.discard_unread {
+            discard_unread_input(input_terminal.as_ref()).map_err(|error| error.to_string())
+        } else {
+            Ok(())
+        };
+        if result.is_ok() {
+            for slice in request.bytes.chunks(PTY_INPUT_SLICE_BYTES) {
+                if backlog.is_cancelled(request.generation) {
+                    break;
+                }
+                if let Err(error) = writer.write_all(slice).and_then(|_| writer.flush()) {
+                    result = Err(error.to_string());
+                    break;
+                }
+                written += slice.len();
+            }
+        }
         let failed = result.is_err();
+        if result.is_ok() && written < request.bytes.len() {
+            backlog.finished_cancelled(request.bytes.len() - written);
+            result = Err("input cancelled by an interrupt".to_string());
+        } else {
+            backlog.finished();
+        }
         if let Some(completion_tx) = request.completion_tx {
             let _ = completion_tx.send(result);
         }
@@ -761,6 +931,17 @@ impl PtyManager {
     /// public output queue so launch-failure cleanup cannot erase the only
     /// useful Bubblewrap/provider diagnostic.
     pub(crate) fn early_exit_diagnostic(&mut self, provider_run_id: &str) -> Option<String> {
+        self.exited_output_diagnostic(provider_run_id).or_else(|| {
+            self.poll_process_state(provider_run_id)
+                .ok()?
+                .is_exited()
+                .then(|| "managed provider process exited before endpoint readiness".to_string())
+        })
+    }
+
+    /// A bounded retained tail, including when the output pump already drained
+    /// the queue. An empty exit must not manufacture an endpoint-startup cause.
+    pub(crate) fn exited_output_diagnostic(&mut self, provider_run_id: &str) -> Option<String> {
         let state = self.poll_process_state(provider_run_id).ok()?;
         if !state.is_exited() {
             return None;
@@ -774,11 +955,7 @@ impl PtyManager {
         let bytes = snapshot_pty_diagnostic_tail(&process.diagnostic_tail);
         let raw = String::from_utf8_lossy(&bytes);
         let diagnostic = crate::provider::sanitize_provider_diagnostic(&raw);
-        Some(if diagnostic.is_empty() {
-            "managed provider process exited before endpoint readiness".to_string()
-        } else {
-            diagnostic
-        })
+        (!diagnostic.is_empty()).then_some(diagnostic)
     }
 
     pub fn poll_process_state(
@@ -830,6 +1007,108 @@ impl PtyManager {
                     provider_run_id: provider_run_id.to_string(),
                 })?;
         Ok(process.child.process_id())
+    }
+
+    /// The foreground process group of the PTY, or `None` once the session
+    /// has no controlling terminal left (the child exited).
+    #[cfg(unix)]
+    pub fn foreground_process_group(
+        &self,
+        provider_run_id: &str,
+    ) -> Result<Option<i32>, DaemonError> {
+        let process_key = self.resolve_process_key(provider_run_id)?;
+        let process =
+            self.processes
+                .get(&process_key)
+                .ok_or_else(|| DaemonError::PtyProcessNotFound {
+                    provider_run_id: provider_run_id.to_string(),
+                })?;
+        Ok(process.master.process_group_leader())
+    }
+
+    /// Deliver an interrupt, quit or suspend key as the signal the terminal
+    /// would raise, when earlier input is stuck unread in the writer queue and
+    /// the key would only wait behind it. Like the terminal itself, this also
+    /// discards the input that was still unread, unless the program set
+    /// NOFLSH. Returns the bytes of input dropped when `key` was consumed;
+    /// `None` means the caller writes it as ordinary input.
+    #[cfg(unix)]
+    pub fn signal_key_behind_blocked_input(
+        &self,
+        provider_run_id: &str,
+        key: u8,
+    ) -> Result<Option<usize>, DaemonError> {
+        let process_key = self.resolve_process_key(provider_run_id)?;
+        let process =
+            self.processes
+                .get(&process_key)
+                .ok_or_else(|| DaemonError::PtyProcessNotFound {
+                    provider_run_id: provider_run_id.to_string(),
+                })?;
+        let backlog = &process.input_writer.backlog;
+        if !backlog.is_pending() {
+            return Ok(None);
+        }
+        let Some(fd) = process.master.as_raw_fd() else {
+            return Ok(None);
+        };
+        let mut attributes = std::mem::MaybeUninit::<libc::termios>::uninit();
+        if unsafe { libc::tcgetattr(fd, attributes.as_mut_ptr()) } != 0 {
+            return Ok(None);
+        }
+        let attributes = unsafe { attributes.assume_init() };
+        if attributes.c_lflag & libc::ISIG == 0 {
+            return Ok(None);
+        }
+        let signal = [
+            (libc::VINTR, libc::SIGINT),
+            (libc::VQUIT, libc::SIGQUIT),
+            (libc::VSUSP, libc::SIGTSTP),
+        ]
+        .into_iter()
+        .find(|(index, _)| attributes.c_cc[*index] == key)
+        .map(|(_, signal)| signal);
+        let (Some(signal), Some(group)) = (signal, process.master.process_group_leader()) else {
+            return Ok(None);
+        };
+        // Never signal a group id that could mean "every process".
+        if group <= 1 {
+            return Ok(None);
+        }
+        let flush = attributes.c_lflag & libc::NOFLSH == 0;
+        let mut discarded = true;
+        if flush {
+            // The writer drops what is queued and the rest of the request it
+            // is writing. Discarding in between frees the slice it waits on,
+            // and discarding again removes that slice, so no stale input is
+            // left for whatever reads the terminal next.
+            backlog.cancel();
+            discarded &= discard_unread_input_after_interrupt(fd);
+            discarded &= backlog.wait_until_idle(PTY_INTERRUPT_DRAIN_TIMEOUT);
+            discarded &= discard_unread_input_after_interrupt(fd);
+        }
+        let dropped = backlog.take_dropped_bytes();
+        if unsafe { libc::killpg(group, signal) } != 0 {
+            return Ok(None);
+        }
+        if !discarded {
+            return Err(DaemonError::PtyWrite {
+                provider_run_id: provider_run_id.to_string(),
+                message:
+                    "the interrupt was delivered, but earlier input could not be fully discarded"
+                        .to_string(),
+            });
+        }
+        Ok(Some(dropped))
+    }
+
+    #[cfg(not(unix))]
+    pub fn signal_key_behind_blocked_input(
+        &self,
+        _provider_run_id: &str,
+        _key: u8,
+    ) -> Result<Option<usize>, DaemonError> {
+        Ok(None)
     }
 
     pub fn remove_process(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
@@ -1034,6 +1313,7 @@ impl Default for PtyManager {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
 
@@ -1042,8 +1322,8 @@ mod tests {
     };
 
     use super::{
-        mpsc, run_pty_writer, PtyInputRequest, PtyInputWriter, PtyManager, PtyOutputSignal,
-        PtyProcessState, PtySpawnRequest, PTY_INPUT_QUEUE_LIMIT,
+        mpsc, run_pty_writer, PtyInputBacklog, PtyInputRequest, PtyInputWriter, PtyManager,
+        PtyOutputSignal, PtyProcessState, PtySpawnRequest, PTY_INPUT_QUEUE_LIMIT,
     };
 
     struct AttributionProbeWriter {
@@ -1721,12 +2001,59 @@ mod tests {
             .expect("PTY process should stop");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn owned_composer_abort_discards_unread_prompt_but_keeps_provider_output() {
+        use std::io::{Read, Write};
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let mut master_fd = -1;
+        let mut slave_fd = -1;
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master_fd,
+                    &mut slave_fd,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            },
+            0
+        );
+        let mut master = unsafe { std::fs::File::from_raw_fd(master_fd) };
+        let mut slave = unsafe { std::fs::File::from_raw_fd(slave_fd) };
+        let mut attrs = std::mem::MaybeUninit::<libc::termios>::uninit();
+        assert_eq!(
+            unsafe { libc::tcgetattr(slave.as_raw_fd(), attrs.as_mut_ptr()) },
+            0
+        );
+        let mut attrs = unsafe { attrs.assume_init() };
+        unsafe { libc::cfmakeraw(&mut attrs) };
+        assert_eq!(
+            unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &attrs) },
+            0
+        );
+        master.write_all(b"owned unacknowledged prompt\r").unwrap();
+        slave.write_all(b"retained provider output").unwrap();
+        // Wait for the PTY line discipline, without allowing the provider to read.
+        thread::sleep(Duration::from_millis(30));
+        super::discard_unread_input(Some(&master)).unwrap();
+        master.write_all(b"\x03\x15").unwrap();
+        let mut abort = [0; 2];
+        slave.read_exact(&mut abort).unwrap();
+        assert_eq!(abort, [3, 21]);
+        let mut output = [0; 24];
+        master.read_exact(&mut output).unwrap();
+        assert_eq!(&output, b"retained provider output");
+    }
+
     #[test]
     fn enqueued_input_is_bounded_without_waiting_for_a_blocked_writer() {
         let (input_tx, _input_rx) = mpsc::sync_channel(PTY_INPUT_QUEUE_LIMIT);
         let writer = PtyInputWriter {
             provider_run_id: "provider-run-blocked".to_string(),
             input_tx,
+            backlog: Arc::new(PtyInputBacklog::default()),
         };
 
         for _ in 0..PTY_INPUT_QUEUE_LIMIT {
@@ -1853,14 +2180,18 @@ mod tests {
         };
         let (input_tx, input_rx) = mpsc::sync_channel(1);
         let (completion_tx, completion_rx) = mpsc::sync_channel(1);
+        let backlog = Arc::new(PtyInputBacklog::default());
+        let generation = backlog.queued();
         let writer_thread = thread::spawn({
             let output_signal = output_signal.clone();
             move || {
                 run_pty_writer(
                     Box::new(probe),
+                    None,
                     input_rx,
                     process_key.to_string(),
                     output_signal,
+                    backlog,
                 )
             }
         });
@@ -1868,7 +2199,9 @@ mod tests {
         input_tx
             .send(PtyInputRequest {
                 provider_run_id: first_run.to_string(),
+                generation,
                 bytes: b"first input".to_vec(),
+                discard_unread: false,
                 completion_tx: Some(completion_tx),
             })
             .expect("probe input should queue");

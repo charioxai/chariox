@@ -51,7 +51,7 @@ test("formatToolDisplay normalizes OpenCode Chariox read tool aliases", async ()
   const display = formatToolDisplay(input)
 
   assert.equal(display.summary, expect.summary)
-  assert.equal(display.title, "read")
+  assert.equal(display.title, "Read seed.txt")
   assert.deepEqual(display.blocks.map((block) => block.kind), expect.blocks)
   assert.match(JSON.stringify(display.blocks), /TOOL_DISPLAY_FIXTURE_SEED/)
 })
@@ -97,7 +97,7 @@ test("formatToolDisplay unwraps live MCP envelopes for Chariox read output", () 
     }),
   })
 
-  assert.equal(display.title, "read")
+  assert.equal(display.title, "Read src/app.ts")
   assert.equal(display.summary, "src/app.ts")
   assert.deepEqual(display.blocks, [
     { kind: "code", language: "typescript", text: "export const value = 1" },
@@ -130,7 +130,7 @@ test("formatToolDisplay unwraps live MCP envelopes for Chariox mutation output",
   })
   const patch = display.blocks.find((block) => block.kind === "patch")
 
-  assert.equal(display.title, "patch")
+  assert.equal(display.title, "Edited src/app.ts (+1 −1)")
   assert.equal(display.summary, "Patched src/app.ts")
   assert.equal(patch?.kind, "patch")
   assert.deepEqual(patch?.files[0]?.previewLines, [
@@ -154,9 +154,9 @@ test("formatToolDisplay distinguishes home-proxy tool calls", () => {
   const markdown = formatToolTranscriptUpdate(update)
   const display = formatToolDisplay(update)
 
-  assert.match(markdown, /^\*\*home_lookup\*\* · HOME-PROXY · COMPLETED/)
-  assert.equal(display.title, "home-proxy · home_lookup")
-  assert.equal(display.collapsed.title, "home-proxy · home_lookup · COMPLETED")
+  assert.match(markdown, /^\*\*Called home lookup\*\* · HOME-PROXY · COMPLETED/)
+  assert.equal(display.title, "home-proxy · Called home lookup")
+  assert.equal(display.collapsed.title, "home-proxy · Called home lookup · COMPLETED")
 })
 
 test("formatToolDisplay distinguishes worker-local tool calls", () => {
@@ -174,9 +174,9 @@ test("formatToolDisplay distinguishes worker-local tool calls", () => {
   const markdown = formatToolTranscriptUpdate(update)
   const display = formatToolDisplay(update)
 
-  assert.match(markdown, /^\*\*worker_lookup\*\* · WORKER-LOCAL · COMPLETED/)
-  assert.equal(display.title, "worker-local · worker_lookup")
-  assert.equal(display.collapsed.title, "worker-local · worker_lookup · COMPLETED")
+  assert.match(markdown, /^\*\*Called worker lookup\*\* · WORKER-LOCAL · COMPLETED/)
+  assert.equal(display.title, "worker-local · Called worker lookup")
+  assert.equal(display.collapsed.title, "worker-local · Called worker lookup · COMPLETED")
 })
 
 test("provider status helpers map OpenCode status text to activity labels", () => {
@@ -221,9 +221,9 @@ test("formatToolDisplay distinguishes skill snapshot tool calls", () => {
   const markdown = formatToolTranscriptUpdate(update)
   const display = formatToolDisplay(update)
 
-  assert.match(markdown, /^\*\*skill_context\*\* · SKILL SNAPSHOT · COMPLETED/)
-  assert.equal(display.title, "skill snapshot · skill_context")
-  assert.equal(display.collapsed.title, "skill snapshot · skill_context · COMPLETED")
+  assert.match(markdown, /^\*\*Called skill context\*\* · SKILL SNAPSHOT · COMPLETED/)
+  assert.equal(display.title, "skill snapshot · Called skill context")
+  assert.equal(display.collapsed.title, "skill snapshot · Called skill context · COMPLETED")
 })
 
 test("formatToolTranscriptUpdate keeps legacy markdown summaries stable", () => {
@@ -271,7 +271,7 @@ test("buildApplyPatchNewPreview hides old-side lines", () => {
   })
   assert.ok(file)
   assert.deepEqual(buildApplyPatchNewPreview(file), [
-    { kind: "meta", text: "@@ -1,2 +1,2 @@" },
+    { kind: "meta", text: "@@" },
     { kind: "added", text: "after()" },
     { kind: "context", text: "context()" },
   ])

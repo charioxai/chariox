@@ -2,6 +2,13 @@
 
 **Status:** Draft, 2026-09-30, revised 2026-10-06. MP-08 / MP-10 / MP-11: owner correction grants the whole local kernel; no access levels or session scope. Owner decisions of 2026-09-30 and 2026-10-01 recorded; no lead proposals remain open. This is an independent milestone, not part of Chariox Apps Phase 2.
 
+MP-08 / MP-10 / MP-11 A04 update (protocol 484): the current sudo contract is
+[`KERNEL_SUDO.md`](KERNEL_SUDO.md). Hour-scale windows bind the owner-authorized
+work and fresh-passkey typed operation scopes; sudo cannot answer approvals.
+The historical D2/D3/D14/D16 one-turn and approval rules below are superseded
+for sudo by that contract. Main's whole-local-kernel external grants and
+structured requester identity remain unchanged.
+
 ## Summary
 
 Today, on a laptop kernel, any process running as the owner's OS user can connect to the local kernel websocket and act as the owner. That includes an agent's own shell tool. Phase 1 of Chariox Apps closes the most dangerous consequence of this: approving a critical action now requires the Chariox passkey at approval time. The passkey is the vault passphrase.
@@ -22,7 +29,7 @@ Every grant, extension and `/sudo` needs the passkey, typed only into a kernel-o
 - **D3. What a sudoagent may do.** It may answer critical approvals, including payments: "if the user gives sudo, it should be able to run potentially whatever, even payments". It may use the vault and create entries through kernel-owned flows, as agents do today. It still may not mint grants, read secret values, or change the passphrase.
 - **D4. No inheritance.** Agents spawned by a sudoagent or an external agent are normal agents.
 - **D5. Extension.** An external agent's access can be extended before it expires, so a legitimate agent is not cut short.
-- **D6. Access strata.** (1) Chariox terminals: the human. (2) External agents: only the local kernel on the same machine, with access to every session and ordinary operation of that local kernel granted by the user (owner correction, 2026-10-06). This is the Chariox server endpoint that external agents connect to today, where they can act as the user. (3) Sudoagents: one turn. (4) Future and out of scope: the Chariox assistant, or root agent, with access to the whole Chariox system and all of the user's kernels across machines, which it discovers through Chariox Cloud. Chariox terminals will later gain the same Cloud-based kernel discovery. The design must leave room for this stratum.
+- **D6. Access strata.** (1) Chariox terminals: the human. (2) External agents: the local kernel on the same machine, with access to every session and ordinary operation of that local kernel granted by the user (owner correction, 2026-10-06), and, through that kernel's gateway, the user's other machines (External Agents v2, 2026-10-20). The agent only ever talks to its local kernel; the local kernel forwards over the relay as a terminal would. This is the Chariox server endpoint that external agents connect to today, where they can act as the user. (3) Sudoagents: one turn. (4) Future and out of scope: the Chariox assistant, or root agent, with access to the whole Chariox system and all of the user's kernels across machines, which it discovers through Chariox Cloud. Chariox terminals will later gain the same Cloud-based kernel discovery. The design must leave room for this stratum.
 - **D7. Retire the agent-terminal MCP.** External agents use only the access path of this plan: a grant through the popup. The external agent-terminal MCP of PR #15, which was never merged or tested, is superseded; #15 is closed and its branch deleted (section 9.2, PR 0).
 - **D8. External agents may request `/sudo`** (lead proposal P1, confirmed). The request appears as the terminal popup, and the passkey is typed only there (section 7.1).
 - **D9. No tokens; external agent access is per process** (P3, confirmed): "we don't do the token thing and instead once an external agent tries to connect, we show passphrase, and allow that PID to connect for as long as access has been granted". The kernel authorizes the requesting process, as the OS identifies it, for the whole local kernel until expiry (extendable), revocation or process exit. Its OS descendants count as the same agent; Chariox agents it spawns do not (D4). This needs the Unix socket endpoint, which is part of the core external-agent step (section 6).
@@ -157,7 +164,7 @@ The passkey belongs to the vault of the kernel that verifies it. For a remote or
 | Stratum | Who | Reaches | Authority | Granted by | Ends |
 |---|---|---|---|---|---|
 | 1. Chariox terminals | The human, at the TUI, web, remote TUI, and native clients later | Its kernel, locally or through the relay | The owner's. Passkey popups appear here (section 5.2). | The step 1 local token (#701), or the relay (section 9.1) | Disconnect |
-| 2. External agents | An agent Chariox did not launch, such as a provider CLI in the user's own shell | Only the local kernel on the same machine, through its Unix socket (D9) | The user’s on the whole local kernel for ordinary requests, without critical approvals (section 5.4) | The passkey popup (section 5.3) | Expiry unless extended, revocation, or process exit |
+| 2. External agents | An agent Chariox did not launch, such as a provider CLI in the user's own shell | The local kernel on the same machine, through its Unix socket (D9), and the user's other machines through that kernel's gateway | The user’s on the whole local kernel for ordinary requests, without critical approvals (section 5.4) | The passkey popup (section 5.3) | Expiry unless extended, revocation, or process exit |
 | 3. Sudoagents | A Chariox agent running one `/sudo` turn | Its kernel | The user's on its kernel, including critical approvals, with no cap (D14) | `/sudo` and the passkey popup | The turn yields or is interrupted |
 | 4. Root agent (future) | The Chariox assistant | All of the user's kernels, discovered through Chariox Cloud | The whole Chariox system | Cloud, building on the P2.13 account-level authenticator (D10) | Future design |
 
@@ -200,7 +207,7 @@ Each grant, and each queued or running sudo turn, is a kernel-side record:
 | `authorized_by` | The terminal and user id that entered the passkey, the passkey audit event, and for a requested `/sudo`, the requesting external agent. |
 | `expires_at` | Stratum 2 only. A sudo turn has no time expiry. |
 
-An external agent acts as the user on its LOCAL kernel: list/create/attach all sessions, prompt and spawn agents, run and schedule workflows, install and bind Apps, answer routine approvals, and use the Vault through kernel-owned flows. No access levels or per-session scope exist. A local kernel’s internal leased-worker execution remains its own business; the holder may not attach to another kernel or send kernel-peer requests.
+An external agent acts as the user on its LOCAL kernel: list/create/attach all sessions, prompt and spawn agents, run and schedule workflows, install and bind Apps, answer routine approvals, and use the Vault through kernel-owned flows. No access levels or per-session scope exist. A local kernel’s internal leased-worker execution remains its own business; the holder reaches other machines only through the local kernel's gateway (`docs/PROTOCOL.md`, machine gateway) and may not send kernel-peer requests.
 
 An external holder cannot answer critical or passkey-required approvals (including payments), mint or extend grants, change the passkey/access policy, or read/export secret values. Credential handles and kernel-owned credential creation/use remain available. It may REQUEST `/sudo` for a local agent in any local session; every request raises the same terminal popup and requires a fresh user passkey. No remember window applies, and the external holder itself never gains sudo authority.
 
@@ -218,7 +225,7 @@ grant_extend_notice_minutes = 5
 request_timeout_minutes = 10
 ```
 
-The user picks a grant's lifetime in the popup, up to `grant_max_minutes`. Each extension starts a new term under the same limit. A grant also ends when its bound process exits. A sudo turn has no lifetime setting: it lasts exactly one turn (D2). The owner approved these defaults on 2026-10-06; no term may exceed 24 hours.
+The owner set external-agent grants to 8 hours by default and 24 hours at most; out-of-range older configs are clamped at load with a warning. The user picks a grant's lifetime in the popup, up to `grant_max_minutes`, or "until the agent exits" (protocol 568; opt-in, never the default, no deadline and no extension popup: it ends with the bound process, a revoke, a passkey rotation or a kernel restart). Each extension starts a new term under the same limit. A grant also ends when its bound process exits. Sudo uses owner-authorized windows; see KERNEL_SUDO.md.
 
 ### 5.6 Revocation
 

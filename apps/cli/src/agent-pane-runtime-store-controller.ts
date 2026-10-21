@@ -11,6 +11,7 @@ export function createAgentPaneRuntimeStoreController<
   const toolStates = new Map<string, Map<string, TToolUpdate>>()
 
   return {
+    hasMountedSurface: (agentId: string) => (entryRenderables.get(agentId)?.size ?? 0) > 0 || emptyRenderables.has(agentId),
     scrollboxes,
     entryRenderables,
     emptyRenderables,

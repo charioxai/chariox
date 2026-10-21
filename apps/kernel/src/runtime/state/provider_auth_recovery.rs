@@ -20,7 +20,7 @@ impl Drop for RecoveryClaim {
 }
 
 impl KernelRuntimeState {
-    pub(super) fn publish_credential_copy_notices(&self, session_id: &str) {
+    pub(super) async fn publish_credential_copy_notices(&self, session_id: &str) {
         let config = self.owned.config_projection.snapshot();
         for agent in self
             .owned
@@ -29,13 +29,29 @@ impl KernelRuntimeState {
             .into_iter()
             .filter(|agent| agent.session_id() == session_id && agent.remote_execution().is_none())
         {
-            let Ok(owner) = crate::account_profile::provider_account_authority_owner_for_profile(
-                &config,
-                &self.owned.provider_account_profiles,
-                agent.owner_user_id(),
-                agent.provider(),
-                agent.provider_account_profile(),
-            ) else {
+            // Notices can wait for the next pump; ready provider output cannot.
+            let Some(owner) = self.try_with_app_side_effect(|app| {
+                app.provider_account_owner_for_execution(session_id, Some(agent.id()))
+            }) else {
+                return;
+            };
+            let Ok(owner) = owner.and_then(|owner| {
+                if owner
+                    != crate::account_profile::provider_account_authority_owner_user_id(
+                        &config,
+                        agent.owner_user_id(),
+                    )
+                {
+                    return Ok(owner);
+                }
+                crate::account_profile::provider_account_authority_owner_for_profile(
+                    &config,
+                    &self.owned.provider_account_profiles,
+                    agent.owner_user_id(),
+                    agent.provider(),
+                    agent.provider_account_profile(),
+                )
+            }) else {
                 continue;
             };
             if let Ok(Some(message)) = self
@@ -59,6 +75,27 @@ impl KernelRuntimeState {
                 );
             }
         }
+    }
+
+    pub(super) async fn resolved_provider_account_owner_for_run(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<String, DaemonError> {
+        let owner = self.provider_account_owner_for_run(run).await?;
+        let config = self.owned.config_projection.snapshot();
+        if owner
+            != crate::account_profile::provider_account_authority_owner_user_id(
+                &config,
+                run.owner_user_id(),
+            )
+        {
+            return Ok(owner);
+        }
+        crate::account_profile::provider_account_authority_for_run(
+            &config,
+            &self.owned.provider_account_profiles,
+            run,
+        )
     }
 
     pub(super) fn try_provider_auth_recovery<'a>(
@@ -95,11 +132,7 @@ impl KernelRuntimeState {
             let Some(agent_id) = run.agent_instance_id() else {
                 return Ok(false);
             };
-            let owner = crate::account_profile::provider_account_authority_for_run(
-                &self.owned.config_projection.snapshot(),
-                &self.owned.provider_account_profiles,
-                run,
-            )?;
+            let owner = self.resolved_provider_account_owner_for_run(run).await?;
             let setup_token = run.adapter_key() == "claude"
                 && crate::provider::provider_account_credential_registered(
                     &owner,
@@ -151,27 +184,43 @@ impl KernelRuntimeState {
             if session.active_interaction_for_agent(agent_id).is_some() {
                 return Ok(false);
             }
-            let provider = provider_label(run.adapter_key());
-            let receiver = if setup_token {
+            let provider = provider_label(run.adapter_key()).to_string();
+            let machine = machine_label(&self.owned.config_projection.snapshot());
+            let reason = crate::provider::renewal_failure::renewal_failure_reason(message);
+            if !setup_token {
+                // Only this machine's profile: other machines and profiles keep their state.
+                let _ = self.owned.provider_account_profiles.mark_needs_sign_in(
+                    &owner,
+                    run.adapter_key(),
+                    run.account_profile(),
+                );
+            }
+            let sudo_entry = self
+                .sudo_for_provider_run(run.id())
+                .ok()
+                .map(|turn| turn.entry_id);
+            let receiver = if setup_token || sudo_entry.is_some() {
                 // An official authentication refusal is already enough to
                 // start OAuth. The shared popup shows its link directly.
-                let _ = self.owned.provider_account_profiles.update_observation(
-                    &owner,
-                    "claude",
-                    run.account_profile(),
-                    crate::account_profile::ProviderAccountAuthState::Expired,
-                    None,
-                    None,
-                    None,
-                    None,
-                );
+                if setup_token {
+                    let _ = self.owned.provider_account_profiles.update_observation(
+                        &owner,
+                        "claude",
+                        run.account_profile(),
+                        crate::account_profile::ProviderAccountAuthState::Expired,
+                        None,
+                        None,
+                        None,
+                        None,
+                    );
+                }
                 None
             } else {
                 Some(self.create_runtime_interaction(run.session_id(), RuntimeInteraction::new(
                     &id, agent_id, RuntimeInteractionKind::Choice, RuntimeInteractionLevel::Warning,
-                    Some(format!("Log in to {provider} on this machine")),
-                    "The provider could not renew its login. Credentials will stay on this machine.",
-                    vec![choice("login", "Log in", RuntimeInteractionChoiceStyle::Primary),
+                    Some(format!("Sign in again on {machine}")),
+                    format!("{provider} on {machine}: {reason}. Other machines are not affected. The new sign-in stays on {machine}."),
+                    vec![choice("login", "Sign in", RuntimeInteractionChoiceStyle::Primary),
                         choice("cancel", "Cancel", RuntimeInteractionChoiceStyle::Secondary)],
                     None, Some(600), None,
                 )).await?)
@@ -181,7 +230,9 @@ impl KernelRuntimeState {
             let run = run.clone();
             tokio::spawn(async move {
                 let _claim = claim;
-                let outcome = state.recover_provider_login(&run, &id, receiver).await;
+                let outcome = state
+                    .recover_provider_login(&run, &id, receiver, sudo_entry)
+                    .await;
                 if outcome.is_ok_and(|succeeded| succeeded) {
                     let _permit = state.provider_runtime_lanes.acquire(run.id()).await;
                     let current = state
@@ -196,7 +247,7 @@ impl KernelRuntimeState {
                     }
                     // Reload the official harness so its in-memory auth cannot retain the invalidated copy.
                     if state
-                        .restart_provider_after_login(&run, prompt.as_ref())
+                        .restart_provider_after_login(&run, prompt.as_ref(), _claim)
                         .await
                         .is_ok()
                     {
@@ -205,15 +256,16 @@ impl KernelRuntimeState {
                 }
                 // Settle through the ordinary failure path without triggering recovery again.
                 let _permit = state.provider_runtime_lanes.acquire(run.id()).await;
-                let message =
-                    "Provider login did not complete; retry after logging in on this machine.";
+                let message = format!(
+                    "{provider} sign-in on {machine} did not complete ({reason}); sign in again on {machine}, then retry."
+                );
                 if let Some(started) = failed_launch.as_ref() {
                     state
                         .fail_provider_launch_in_lane(
                             started,
                             &DaemonError::LocalTransport {
                                 operation: "provider login recovery",
-                                message: message.into(),
+                                message: message.clone(),
                             },
                         )
                         .await;
@@ -222,7 +274,7 @@ impl KernelRuntimeState {
                         .fail_owned_provider_prompt_with_termination_if_matches(
                             run.session_id(),
                             run.id(),
-                            message,
+                            &message,
                             true,
                             Some(prompt.id()),
                             None,
@@ -266,12 +318,17 @@ impl KernelRuntimeState {
         };
         self.enqueue_prompt_dispatch_after_liveness_with_acceptance(&dispatch, &self.owned)
             .await
+            .map(|acceptance| {
+                acceptance
+                    != super::local_prompt_dispatch_runtime::PromptDispatchAcceptance::Dropped
+            })
     }
 
     async fn restart_provider_after_login(
         &self,
         run: &crate::provider::RuntimeProviderRun,
         prompt: Option<&crate::session::PromptQueueItem>,
+        claim: RecoveryClaim,
     ) -> Result<(), DaemonError> {
         let agent_id = agent_id_for(run);
         let config = self.owned.config_projection.snapshot();
@@ -296,6 +353,8 @@ impl KernelRuntimeState {
         let request = self
             .prepare_provider_launch_request_with_vault(request, "resume after provider login")
             .await?;
+        // Capture the still-live grant before retiring the official harness.
+        let sudo = self.sudo_for_provider_run(run.id()).ok();
         self.retire_owned_provider_run_after_terminal_failure(run.session_id(), run.id())
             .await;
         self.spawn_provider_relaunch(
@@ -310,6 +369,8 @@ impl KernelRuntimeState {
             let agent_id = agent_id.to_string();
             let previous_run = run.id().to_string();
             tokio::spawn(async move {
+                // Keep recovery's bounded hold until the replacement is bound.
+                let _claim = claim;
                 // Relaunch retains the admitted prompt; dispatch only when the replacement is ready.
                 let outcome = tokio::time::timeout(Duration::from_secs(60), async {
                     loop {
@@ -322,6 +383,13 @@ impl KernelRuntimeState {
                                 && run.state() == crate::provider::ProviderRunState::Running
                             {
                                 let _permit = state.provider_runtime_lanes.acquire(run.id()).await;
+                                if let Some(original) = sudo.as_ref() {
+                                    if !state
+                                        .rebind_sudo_after_provider_login(original, &run, &prompt)?
+                                    {
+                                        return Ok(false);
+                                    }
+                                }
                                 return state.redispatch_after_provider_login(&run, &prompt).await;
                             }
                         }
@@ -404,6 +472,7 @@ impl KernelRuntimeState {
         run: &crate::provider::RuntimeProviderRun,
         id: &str,
         receiver: Option<tokio::sync::oneshot::Receiver<PendingInteractionResolution>>,
+        sudo_entry: Option<String>,
     ) -> Result<bool, DaemonError> {
         let automatic = receiver.is_none();
         if let Some(receiver) = receiver {
@@ -415,11 +484,15 @@ impl KernelRuntimeState {
                 return Ok(false);
             }
         }
-        let owner = crate::account_profile::provider_account_authority_for_run(
-            &self.owned.config_projection.snapshot(),
-            &self.owned.provider_account_profiles,
-            run,
-        )?;
+        // A queued recovery must not outlive the work that authorized it.
+        if sudo_entry.as_deref().is_some_and(|entry| {
+            self.sudo_for_provider_run(run.id())
+                .ok()
+                .is_none_or(|turn| turn.entry_id != entry)
+        }) {
+            return Ok(false);
+        }
+        let owner = self.resolved_provider_account_owner_for_run(run).await?;
         let response = crate::runtime::provider_auth_control::execute_start_provider_login_request(
             self,
             &owner,
@@ -448,6 +521,10 @@ impl KernelRuntimeState {
                 &owner,
                 &progress_id,
                 &login,
+                Some(&format!(
+                    "Sign in again on {}",
+                    machine_label(&self.owned.config_projection.snapshot())
+                )),
             )
             .await;
         // MP-08/MP-11: only the execution kernel can read this login store.
@@ -493,6 +570,15 @@ fn provider_login_outcome_notice(
     Some(outcome)
 }
 
+fn machine_label(config: &crate::config::DaemonConfig) -> String {
+    config
+        .host_machine_alias
+        .as_deref()
+        .map(str::trim)
+        .filter(|alias| !alias.is_empty())
+        .unwrap_or(&config.host_machine_id)
+        .to_string()
+}
 fn agent_id_for(run: &crate::provider::RuntimeProviderRun) -> &str {
     run.agent_instance_id().unwrap_or_default()
 }

@@ -11,7 +11,9 @@ codesigned runtime inventory (#681).
 - **One release bundle per platform**, built and signed by CI from one tagged
   commit. Phase 1 platforms: **macOS arm64** (`darwin-arm64`) and **Linux x86_64**
   (`linux-x64`).
-- **Everything prebuilt.** Users need no Rust, Node, Bun or pnpm.
+- **Prebuilt CLI and kernel (MP-07 / MP-08 / MP-11).** Users need no Rust, Bun
+  or pnpm. Claude native-TUI hooks require Node on the provider execution
+  machine; the kernel owns those hooks.
 - **One version number** for the whole bundle and everything in it.
 - **Keys stay with the owner.** CI signs with keys held in a protected GitHub
   environment. No agent or script creates, stores or prints a release key.
@@ -29,6 +31,25 @@ codesigned runtime inventory (#681).
 | Signed App runtime | native artifact, launcher, sandbox, SDK bundle | `runtime/` |
 | Linux installer | `deploy/local-linux`, `deploy/release-bundle/install.sh` | `deploy/`, `install.sh` |
 | Slice build context | Committed runtime source roots and Dockerfile inputs | `share/chariox/slice-build-context/` |
+| Slice image (Linux) | The image built from that context: `docker save` archive, gzip, and `slice-image.json` | `share/chariox/slice-image/` |
+
+**The slice image (Linux).** A first slice start used to compile the kernel and relay and
+install the apt, Node and Selkies stages on the user's machine (about 30 minutes). The
+`slice-image` release job now builds the image from the exported slice build context with
+`provision-linux-docker-slice.sh build-image`, and `scripts/slice-image-archive.mjs export`
+writes `chariox-slice-linux.tar.gz` and `slice-image.json` (runtime-source and protocol
+labels, root filesystem layer digests, archive size and SHA-256). `release-bundle.mjs
+assemble --slice-image` puts both in the signed manifest, so `install.sh` verifies them like
+every other file and installs them to `/usr/lib/chariox/slice-image`, beside the build
+context. The provisioner finds `../slice-image` next to its context, checks the descriptor
+against the context's runtime-source revision and protocol, verifies the archive digest,
+runs `docker load`, checks the loaded layers against the descriptor and tags the image. A
+release install never falls back to a local build: a missing, foreign or altered image
+fails with the step to take. Source and development checkouts have no `slice-image`
+directory and keep building locally. The archive always travels inside the signed release
+bundle: there is no registry or download path. The macOS bundle carries a linux/arm64 image
+(built on a native arm64 runner) for Docker Desktop on Apple Silicon, and the macOS package
+installs it to `/usr/local/share/chariox/slice-image`, beside the build context.
 
 **The CLI/TUI executable.** `compile.mjs` embeds:
 - the Bun runtime;
@@ -57,6 +78,7 @@ chariox-<version>-<platform>/
   libexec/             chariox-app-runtime-install, chariox-app-storage (Linux)
   runtime/             the signed App runtime release, unchanged
   share/chariox/slice-build-context/  committed inputs used to build slice images
+  share/chariox/slice-image/          Linux only: prebuilt slice image archive and descriptor
   deploy/              Linux only: local-linux/ installer and the units it installs
   install.sh           Linux only: checked root install step
   LICENSE

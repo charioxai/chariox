@@ -224,7 +224,7 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
     state: &Arc<RwLock<RelayClientState>>,
     target: ClientTarget,
     target_public_key: &str,
-    request: RelayPeerRequest,
+    mut request: RelayPeerRequest,
     response_timeout: Duration,
     authorize: impl Fn() -> Result<(), DaemonError> + Send + Sync,
 ) -> Result<RelayPeerResponseWaiter, DaemonError> {
@@ -251,16 +251,7 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
     let cleanup_resource =
         cleanup_request_resource(&request).map(|(code, id)| (code, id.to_string()));
     let expected_public_key = target_public_key.to_string();
-    let plaintext = serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
-        operation: "serialize relay peer request",
-        message: error.to_string(),
-    })?;
-    let encrypted_request = relay_crypto::encrypt_payload_for_peer(
-        &config.relay_private_key,
-        target_public_key,
-        &plaintext,
-    )?;
-    let (request_id, response_rx, outgoing_tx) = {
+    let (request_id, response_rx, outgoing_tx, encrypted_request) = {
         let mut guard = state.write().await;
         // No await separates this check from inserting and enqueuing the request.
         authorize()?;
@@ -270,13 +261,25 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
                 message: "relay is not connected".to_string(),
             });
         };
+        // Sealed only now, so waiting for the state is charged to a forwarded decision.
+        request.rebase_decision_budget();
+        let plaintext =
+            serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
+                operation: "serialize relay peer request",
+                message: error.to_string(),
+            })?;
+        let encrypted_request = relay_crypto::encrypt_payload_for_peer(
+            &config.relay_private_key,
+            target_public_key,
+            &plaintext,
+        )?;
         guard.next_peer_request_id += 1;
         let request_id = format!("daemon-peer-{}", guard.next_peer_request_id);
         let (response_tx, response_rx) = oneshot::channel();
         guard
             .pending_peer_requests
             .insert(request_id.clone(), response_tx);
-        (request_id, response_rx, outgoing_tx)
+        (request_id, response_rx, outgoing_tx, encrypted_request)
     };
     let trace = RelayPeerRequestTrace::new(
         &request_id,
@@ -491,6 +494,18 @@ pub async fn enqueue_peer_request_via_connected_relay_with_timeout(
     .await
 }
 
+/// MP-08/MP-11: a managed slice already holds its provisioner-bound HOME key;
+/// its slice runtime token is not admitted for relay metadata discovery.
+pub(crate) fn managed_slice_home_public_key(
+    config: &crate::config::DaemonConfig,
+    target_ref: &str,
+) -> Option<String> {
+    let owner = config.managed_slice_relay_owner_public_key.as_ref()?;
+    let binding = config.room_environment_worker_binding.as_ref()?;
+    (binding.home_kernel_id == target_ref && binding.home_public_key == *owner)
+        .then(|| owner.clone())
+}
+
 pub(crate) async fn enqueue_peer_request_via_connected_relay_authorized(
     config: &crate::config::DaemonConfig,
     state: &Arc<RwLock<RelayClientState>>,
@@ -509,15 +524,22 @@ pub(crate) async fn enqueue_peer_request_via_connected_relay_authorized(
             message: "peer target must include daemon id or alias".to_string(),
         })?
         .to_string();
-    let cached_public_key = state.read().await.peer_public_key(&target_ref);
+    let cached_public_key = state
+        .read()
+        .await
+        .peer_public_key(&target_ref)
+        .or_else(|| managed_slice_home_public_key(config, &target_ref));
     let target_public_key = match cached_public_key {
         Some(public_key) if relay_crypto::decode_public_key(&public_key).is_ok() => public_key,
         stale_public_key => {
             if stale_public_key.is_some() {
                 state.write().await.forget_peer_public_key(&target_ref);
             }
-            let discovery =
-                crate::runtime::cloud_api_client::relay_metadata_discovery_config(config).await?;
+            let discovery = crate::runtime::cloud_api_client::relay_metadata_discovery_config_for(
+                config,
+                &target_ref,
+            )
+            .await?;
             let kernel = relay_discovery::get_live_kernel(&discovery, &target_ref).await?;
             authorize()?;
             let public_key = kernel.public_key;
@@ -772,7 +794,7 @@ async fn send_peer_request_via_temporary_connection_with_optional_timeout_authen
 async fn send_peer_request_via_temporary_connection_authorized_inner(
     config: &crate::config::DaemonConfig,
     target: ClientTarget,
-    request: RelayPeerRequest,
+    mut request: RelayPeerRequest,
     response_timeout: Option<Duration>,
     authorize: impl Fn() -> Result<(), DaemonError> + Send + Sync,
     #[cfg(test)] test_trace: &mut relay_discovery::TemporaryPeerTestTrace,
@@ -809,7 +831,8 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
     // MP-08 / MP-10 / MP-11: temporary peer discovery must use a metadata
     // grant, while registration below retains the original kernel grant.
     let discovery_config =
-        crate::runtime::cloud_api_client::relay_metadata_discovery_config(config).await?;
+        crate::runtime::cloud_api_client::relay_metadata_discovery_config_for(config, target_ref)
+            .await?;
     #[cfg(test)]
     let kernel = {
         let peer_call_id = test_trace.peer_call_id();
@@ -834,15 +857,6 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
     #[cfg(not(test))]
     let kernel = relay_discovery::get_live_kernel(&discovery_config, target_ref).await?;
     authorize()?;
-    let plaintext = serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
-        operation: "serialize relay peer request",
-        message: error.to_string(),
-    })?;
-    let encrypted_request = relay_crypto::encrypt_payload_for_peer(
-        &config.relay_private_key,
-        &kernel.public_key,
-        &plaintext,
-    )?;
     #[cfg(test)]
     test_trace.record("registered_peer_connect_started", None);
     let transport_timeout = Duration::from_millis(config.relay_request_timeout_ms);
@@ -852,7 +866,7 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
     let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
     let (mut socket, _) = timeout(
         connect_timeout,
-        connect_async(chariox_relay::frame_transport::transport_url(&relay_url)),
+        crate::transport::relay_socket_connect::connect(&relay_url),
     )
     .await
     .map_err(|_| DaemonError::LocalTransport {
@@ -915,6 +929,16 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
         let _ = socket.close(None).await;
         return Err(error);
     }
+    request.rebase_decision_budget();
+    let plaintext = serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
+        operation: "serialize relay peer request",
+        message: error.to_string(),
+    })?;
+    let encrypted_request = relay_crypto::encrypt_payload_for_peer(
+        &config.relay_private_key,
+        &kernel.public_key,
+        &plaintext,
+    )?;
     socket
         .send(Message::Text(
             serde_json::to_string(&RelayEnvelope::DaemonPeerRequest {
@@ -1077,10 +1101,8 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
         None => Ok(read_response.await),
     };
     let result = response.unwrap_or_else(|_| {
-        let message = format!(
-            "timed out waiting for relay peer response after {}ms",
-            response_timeout_ms
-        );
+        let message =
+            format!("timed out waiting for relay peer response after {response_timeout_ms}ms");
         trace.log_completed("timeout", Some(&message), None);
         Err(DaemonError::LocalTransport {
             operation: "read temporary relay peer response",
@@ -1161,6 +1183,84 @@ mod relay_rtt_tests {
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
 
+    // MP-08/MP-11 (r36b): a managed slice worker's runtime token is not admitted
+    // for relay metadata; its provisioner-bound HOME key must be used instead.
+    #[tokio::test]
+    async fn managed_slice_reaches_bound_home_without_metadata_socket() {
+        let home_config = crate::config::DaemonConfig::for_tests();
+        let mut worker_config = crate::config::DaemonConfig::for_tests();
+        worker_config.relay_url = Some("ws://127.0.0.1:1".to_string());
+        worker_config.relay_request_timeout_ms = 1;
+        worker_config.managed_slice_relay_owner_public_key =
+            Some(home_config.relay_public_key.clone());
+        worker_config.room_environment_worker_binding =
+            Some(crate::config::RoomEnvironmentWorkerBinding {
+                home_kernel_id: "home-1".into(),
+                home_public_key: home_config.relay_public_key.clone(),
+                session_id: "room".into(),
+                slice_id: "slice-1".into(),
+                provisioned_slice_id: None,
+            });
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(4);
+        state
+            .write()
+            .await
+            .test_set_connected_sender(outgoing_tx, "ws://127.0.0.1:1");
+        let responder_state = Arc::clone(&state);
+        let worker_public_key = worker_config.relay_public_key.clone();
+        let home_private_key = home_config.relay_private_key.clone();
+        let responder = tokio::spawn(async move {
+            let Some(RelayEnvelope::DaemonPeerRequest {
+                request_id,
+                encrypted_request,
+                ..
+            }) = priority_rx.recv().await
+            else {
+                panic!("expected a peer request to HOME");
+            };
+            relay_crypto::decrypt_payload_for_private_key(&home_private_key, &encrypted_request)
+                .expect("HOME decrypts with its bound key");
+            let response = RelayPeerResponse::Pong {
+                value: "home".to_string(),
+                daemon_id: "home-1".to_string(),
+                relay_peer_protocol_version: None,
+            };
+            let encrypted_response = relay_crypto::encrypt_payload_for_peer(
+                &home_private_key,
+                &worker_public_key,
+                &serde_json::to_vec(&response).unwrap(),
+            )
+            .unwrap();
+            resolve_pending_peer_response(
+                &responder_state,
+                request_id,
+                RelayPeerResponseEnvelope {
+                    from_daemon_id: "home-1".to_string(),
+                    encrypted_response: Some(encrypted_response),
+                    error: None,
+                },
+            )
+            .await;
+        });
+        let response = send_peer_request_via_connected_relay_with_timeout(
+            &worker_config,
+            &state,
+            ClientTarget {
+                daemon_id: Some("home-1".to_string()),
+                daemon_alias: None,
+            },
+            RelayPeerRequest::Ping {
+                value: "home".to_string(),
+            },
+            Duration::from_millis(500),
+        )
+        .await
+        .expect("the bound HOME key must not need relay metadata");
+        responder.await.unwrap();
+        assert!(matches!(response, RelayPeerResponse::Pong { .. }));
+    }
+
     #[tokio::test]
     async fn connected_peer_request_uses_cached_key_and_custom_timeout_without_metadata_socket() {
         let mut sender_config = crate::config::DaemonConfig::for_tests();
@@ -1204,6 +1304,7 @@ mod relay_rtt_tests {
             let response = RelayPeerResponse::Pong {
                 value: "cached".to_string(),
                 daemon_id: "worker-1".to_string(),
+                relay_peer_protocol_version: None,
             };
             let encrypted_response = relay_crypto::encrypt_payload_for_peer(
                 &target_private_key,
@@ -1245,6 +1346,7 @@ mod relay_rtt_tests {
             RelayPeerResponse::Pong {
                 value: "cached".to_string(),
                 daemon_id: "worker-1".to_string(),
+                relay_peer_protocol_version: None,
             }
         );
     }
@@ -1346,6 +1448,7 @@ mod relay_rtt_tests {
             let response = RelayPeerResponse::Pong {
                 value: "recovered".to_string(),
                 daemon_id: "worker-1".to_string(),
+                relay_peer_protocol_version: None,
             };
             let encrypted_response = relay_crypto::encrypt_payload_for_peer(
                 &target_private_key,
@@ -1387,6 +1490,7 @@ mod relay_rtt_tests {
             RelayPeerResponse::Pong {
                 value: "recovered".to_string(),
                 daemon_id: "worker-1".to_string(),
+                relay_peer_protocol_version: None,
             }
         );
     }

@@ -81,9 +81,6 @@ fn hash_entry(
                 break;
             }
             *bytes += count as u64;
-            if *bytes > MAX_MATERIALIZED_CONTEXT_BYTES {
-                return Err(import_error("published entry exceeds byte budget"));
-            }
             hash.update(&buffer[..count]);
         }
     } else if metadata.is_dir() {

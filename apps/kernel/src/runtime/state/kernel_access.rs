@@ -1,10 +1,11 @@
 use super::KernelRuntimeState;
 use crate::error::DaemonError;
+use crate::local::KernelAccessTerm;
 use crate::local::*;
 use crate::runtime::kernel_access::{
     error,
     process::{self, ProcessIdentity},
-    Grant, Refusal,
+    Grant, GrantClock, Refusal,
 };
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
 use std::time::{Duration, Instant};
@@ -75,6 +76,7 @@ impl KernelRuntimeState {
         drop(state);
         let mut audit_error = sudo_result.err();
         for grant in revoked {
+            self.retire_notification_grants(Some(&grant.summary.grant_id));
             if let Err(error) = self.audit_access(&grant.summary, "revoked", Some(reason)) {
                 audit_error.get_or_insert(error);
             }
@@ -118,26 +120,20 @@ impl KernelRuntimeState {
 
     /// Called by both the pump and each request/delivery. Revocations do not wait for inbound traffic.
     pub(crate) fn sweep_kernel_access(&self) {
+        self.sweep_kernel_access_at(Instant::now());
+    }
+
+    fn sweep_kernel_access_at(&self, now: Instant) {
         self.sweep_sudo();
         let mut state = self
             .owned
             .kernel_access
             .lock()
             .expect("access state poisoned");
-        let now = Instant::now();
         let expired = state
             .grants
             .iter()
-            .filter_map(|(id, grant)| {
-                let reason = if now >= grant.deadline {
-                    Some("expiry")
-                } else if !grant.holder.alive() {
-                    Some("process_exit")
-                } else {
-                    None
-                };
-                reason.map(|reason| (id.clone(), reason))
-            })
+            .filter_map(|(id, grant)| Some((id.clone(), grant.ended_reason(now)?)))
             .collect::<Vec<_>>();
         let removed = expired
             .into_iter()
@@ -148,6 +144,7 @@ impl KernelRuntimeState {
         }
         drop(state);
         for (grant, reason) in removed {
+            self.retire_notification_grants(Some(&grant.summary.grant_id));
             self.cancel_access_prompt(&grant.summary, "extension");
             let _ = self.audit_access(
                 &grant.summary,
@@ -210,6 +207,16 @@ impl KernelRuntimeState {
             .is_some_and(|grant| grant.holder.contains(peer))
     }
 
+    pub(crate) fn access_grant_summary(&self, id: &str) -> Option<KernelAccessGrant> {
+        self.owned
+            .kernel_access
+            .lock()
+            .expect("access state poisoned")
+            .grants
+            .get(id)
+            .map(|grant| grant.summary.clone())
+    }
+
     pub(crate) fn list_kernel_access(&self, owner: &str) -> Vec<KernelAccessGrant> {
         self.sweep_kernel_access();
         self.owned
@@ -242,11 +249,13 @@ impl KernelRuntimeState {
             .snapshot()
             .user_config
             .kernel_access;
-        let minutes = request
-            .lifetime_minutes
-            .unwrap_or(config.grant_default_minutes);
-        if minutes == 0 || minutes > config.grant_max_minutes {
-            return Err(error("requested lifetime exceeds kernel access policy"));
+        let term = request
+            .term
+            .unwrap_or(KernelAccessTerm::Minutes(config.grant_default_minutes));
+        if let KernelAccessTerm::Minutes(minutes) = term {
+            if minutes == 0 || minutes > config.grant_max_minutes {
+                return Err(error("requested lifetime exceeds kernel access policy"));
+            }
         }
         let id = format!("access-{:016x}", rand::random::<u64>());
         let key = (holder.pid, holder.start, holder.executable.clone());
@@ -255,8 +264,10 @@ impl KernelRuntimeState {
             owner_user_id: self.owned.config_projection.local_owner_user_id(),
             holder_pid: holder.pid,
             holder_executable: holder.executable.clone(),
-            lifetime_minutes: minutes,
-            expires_at_ms: 0,
+            holder_harness: crate::runtime::kernel_access::requester::project(&holder)
+                .provider_harness,
+            term,
+            expires_at_ms: None,
         };
         let generation = {
             let mut state = self
@@ -292,7 +303,7 @@ impl KernelRuntimeState {
             .pending
             .remove(&key)
             .is_some_and(|pending| pending.grant_id == summary.grant_id);
-        let minutes = result?;
+        let term = result?;
         if !admitted || state.generation != generation || !holder.contains(&peer) {
             self.audit_access(&summary, "revoked", Some("authorization_invalidated"))?;
             return Err(error(
@@ -300,21 +311,23 @@ impl KernelRuntimeState {
             ));
         }
         let mut summary = summary;
-        summary.lifetime_minutes = minutes;
-        summary.expires_at_ms =
-            crate::session::unix_epoch_ms().saturating_add(u64::from(minutes) * 60_000);
+        summary.term = term;
+        let clock = match term {
+            KernelAccessTerm::Minutes(minutes) => {
+                summary.expires_at_ms = Some(
+                    crate::session::unix_epoch_ms().saturating_add(u64::from(minutes) * 60_000),
+                );
+                Some(GrantClock::new(minutes, config.grant_extend_notice_minutes))
+            }
+            KernelAccessTerm::UntilHolderExits => None,
+        };
         self.audit_access(&summary, "granted", None)?;
         state.grants.insert(
             id,
             Grant {
                 summary: summary.clone(),
                 holder,
-                deadline: Instant::now() + Duration::from_secs(u64::from(minutes) * 60),
-                notice: Instant::now()
-                    + Duration::from_secs(
-                        u64::from(minutes.saturating_sub(config.grant_extend_notice_minutes)) * 60,
-                    ),
-                notice_sent: false,
+                clock,
             },
         );
         Ok(summary)
@@ -326,10 +339,11 @@ impl KernelRuntimeState {
         holder: &ProcessIdentity,
         action: &str,
         timeout_sec: u64,
-    ) -> Result<u32, DaemonError> {
+    ) -> Result<KernelAccessTerm, DaemonError> {
         self.audit_access(grant, "requested", Some(action))?;
         let remaining = grant
             .expires_at_ms
+            .unwrap_or_default()
             .saturating_sub(crate::session::unix_epoch_ms())
             .div_ceil(60_000);
         let requester = crate::runtime::kernel_access::requester::project(holder);
@@ -375,24 +389,12 @@ impl KernelRuntimeState {
         .await;
         match answer {
             Ok(Ok(answer)) if answer.choice_id.as_deref() == Some("approve") => {
-                let minutes = answer
-                    .reply
-                    .as_deref()
-                    .and_then(|reply| reply.parse::<u32>().ok())
-                    .unwrap_or(grant.lifetime_minutes);
-                if minutes == 0
-                    || minutes
-                        > self
-                            .owned
-                            .config_projection
-                            .snapshot()
-                            .user_config
-                            .kernel_access
-                            .grant_max_minutes
-                {
-                    return Err(error("approval lifetime exceeds the current policy"));
+                // The answer path already checked the reply against policy.
+                match answer.reply.as_deref().filter(|reply| !reply.is_empty()) {
+                    None => Ok(grant.term),
+                    Some(reply) => KernelAccessTerm::from_reply(reply)
+                        .ok_or_else(|| error("approval term is not recognised")),
                 }
-                Ok(minutes)
             }
             _ => {
                 self.audit_access(grant, "refused", Some("refused_or_timeout"))?;
@@ -405,6 +407,8 @@ impl KernelRuntimeState {
 
     pub(crate) fn pump_kernel_access(&self) {
         self.sweep_kernel_access();
+        // Dead-man for sudo window timers: the kernel pump enforces and alerts too.
+        self.pump_sudo_windows(None);
         let notices = {
             let mut state = self
                 .owned
@@ -415,24 +419,24 @@ impl KernelRuntimeState {
                 .grants
                 .values_mut()
                 .filter_map(|grant| {
-                    if grant.notice_sent || Instant::now() < grant.notice {
+                    let clock = grant.clock.as_mut()?;
+                    if clock.notice_sent || Instant::now() < clock.notice {
                         return None;
                     }
-                    grant.notice_sent = true;
-                    Some(grant.clone())
+                    clock.notice_sent = true;
+                    Some((grant.summary.clone(), grant.holder.clone(), clock.deadline))
                 })
                 .collect::<Vec<_>>()
         };
-        for grant in notices {
+        for (summary, holder, deadline) in notices {
             let runtime = self.clone();
             tokio::spawn(async move {
-                let seconds = grant
-                    .deadline
+                let seconds = deadline
                     .saturating_duration_since(Instant::now())
                     .as_secs()
                     .max(1);
-                let Ok(minutes) = runtime
-                    .access_decision(&grant.summary, &grant.holder, "extension", seconds)
+                let Ok(KernelAccessTerm::Minutes(minutes)) = runtime
+                    .access_decision(&summary, &holder, "extension", seconds)
                     .await
                 else {
                     return;
@@ -449,19 +453,16 @@ impl KernelRuntimeState {
                     .kernel_access
                     .lock()
                     .expect("access state poisoned");
-                if let Some(current) = state.grants.get_mut(&grant.summary.grant_id) {
+                if let Some(current) = state.grants.get_mut(&summary.grant_id) {
+                    let Some(clock) = current.clock.as_mut() else {
+                        return;
+                    };
                     let minutes = minutes.min(config.grant_max_minutes);
-                    current.summary.lifetime_minutes = minutes;
-                    current.summary.expires_at_ms =
-                        crate::session::unix_epoch_ms().saturating_add(u64::from(minutes) * 60_000);
-                    current.deadline =
-                        Instant::now() + Duration::from_secs(u64::from(minutes) * 60);
-                    current.notice = Instant::now()
-                        + Duration::from_secs(
-                            u64::from(minutes.saturating_sub(config.grant_extend_notice_minutes))
-                                * 60,
-                        );
-                    current.notice_sent = false;
+                    current.summary.term = KernelAccessTerm::Minutes(minutes);
+                    current.summary.expires_at_ms = Some(
+                        crate::session::unix_epoch_ms().saturating_add(u64::from(minutes) * 60_000),
+                    );
+                    *clock = GrantClock::new(minutes, config.grant_extend_notice_minutes);
                     let _ = runtime.audit_access(&current.summary, "extended", None);
                 }
             });

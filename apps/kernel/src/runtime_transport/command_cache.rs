@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, BufWriter, Write};
 use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
@@ -107,9 +107,18 @@ pub(crate) struct CommandFingerprint {
     session_id: Option<String>,
     attachment_id: Option<String>,
     request_hash: u64,
+    // MD-N3 / MP-11: browser/note receipts belong to the authenticated terminal identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    browser_caller: Option<crate::runtime::command::KernelCaller>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    browser_protection_revision: Option<u64>,
 }
 
 impl CommandFingerprint {
+    pub(crate) fn with_browser_protection_revision(mut self, revision: Option<u64>) -> Self {
+        self.browser_protection_revision = revision;
+        self
+    }
     pub(crate) fn from_command_and_request(
         command: &KernelCommand,
         request: &LocalDaemonRequest,
@@ -122,6 +131,12 @@ impl CommandFingerprint {
             session_id: command.session_id.clone(),
             attachment_id: command.attachment_id.clone(),
             request_hash: stable_hash64(&request_bytes),
+            browser_caller: matches!(
+                request,
+                LocalDaemonRequest::KernelBrowser(_) | LocalDaemonRequest::Notes(_)
+            )
+            .then(|| command.caller.clone()),
+            browser_protection_revision: None,
         }
     }
 }
@@ -133,6 +148,27 @@ pub(crate) enum CommandReservation {
 }
 
 pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
+    if matches!(request, LocalDaemonRequest::GetSliceDisplayEndpoint(request) if request.shared_display.is_some())
+    {
+        return false;
+    }
+    if matches!(
+        request,
+        LocalDaemonRequest::CaptureVisibleRegion(_)
+            | LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+                command: crate::local::KernelBrowserCommand::DisplayNext { .. }
+                    | crate::local::KernelBrowserCommand::DisplaySuspend { .. }
+                    | crate::local::KernelBrowserCommand::DisplayResume { .. }
+                    | crate::local::KernelBrowserCommand::DisplayAck { .. }
+                    | crate::local::KernelBrowserCommand::ListGrants
+                    | crate::local::KernelBrowserCommand::SubscribeGrants { .. }
+                    | crate::local::KernelBrowserCommand::GrantRoomComputer { .. }
+                    | crate::local::KernelBrowserCommand::RevokeGrants { .. }
+                    | crate::local::KernelBrowserCommand::MirrorNext { .. }
+            })
+    ) {
+        return false;
+    }
     // App requests and browser-import consent must reach owner authorization and
     // current durable state. Their own owner-scoped ledgers deduplicate retries;
     // this older transport fingerprint does not carry the caller, and cached
@@ -144,6 +180,17 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
     !matches!(
         request,
         LocalDaemonRequest::RequestKernelSudo(_)
+            | LocalDaemonRequest::ExtendKernelSudo(_)
+            // File contents are never kept in the result cache, and a heartbeat is
+            // only ever fresh; a replay of either is safe to run again.
+            | LocalDaemonRequest::ReadMachineFile(_)
+            | LocalDaemonRequest::HeartbeatAttachments(_)
+            // The result carries a relay token that joins a terminal; it is
+            // never kept in this cache, on disk or in memory.
+            | LocalDaemonRequest::CreateTerminalPairingLink(_)
+            // MP-11 A07: physical owner input carrying a value is never
+            // fingerprinted, cached or replayed.
+            | LocalDaemonRequest::RespondToHandoff(_)
             | LocalDaemonRequest::RequestKernelAccess(_)
             | LocalDaemonRequest::ListKernelAccessGrants(_)
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)
@@ -167,6 +214,13 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::ListAppAutomations(_)
             | LocalDaemonRequest::ConfigureAppAutomation(_)
             | LocalDaemonRequest::DisableAppAutomation(_)
+            | LocalDaemonRequest::OpenUserAppView(_)
+            | LocalDaemonRequest::ListUserAppViews(_)
+            | LocalDaemonRequest::CloseUserAppView(_)
+            | LocalDaemonRequest::GetUserAppViewFrontend(_)
+            | LocalDaemonRequest::CallUserAppView(_)
+            | LocalDaemonRequest::SubscribeUserAppViews(_)
+            | LocalDaemonRequest::AnswerUserDomainInteraction(_)
             | LocalDaemonRequest::OpenAppView(_)
             | LocalDaemonRequest::SetAppViewPanel(_)
             | LocalDaemonRequest::UninstallApp(_)
@@ -336,6 +390,7 @@ impl CommandResultCache {
             ReceiptRetention::default()
         };
         let mut retained = read_persistent_results(&path, retention)?;
+        restrict_to_owner(&path)?;
         let count = retained.entries.len();
         retained
             .entries
@@ -642,6 +697,20 @@ impl CommandResultCache {
     }
 
     #[cfg(test)]
+    pub(super) async fn completed_browser_caller(
+        &self,
+        command_id: &str,
+    ) -> Option<crate::runtime::command::KernelCaller> {
+        self.completed_results_snapshot()
+            .await
+            .into_iter()
+            .find(|entry| entry.command_id == command_id)?
+            .result
+            .fingerprint
+            .browser_caller
+    }
+
+    #[cfg(test)]
     pub(super) async fn insert_completed_for_test(
         &self,
         command_id: String,
@@ -684,6 +753,8 @@ impl CommandResultCache {
             session_id: None,
             attachment_id: None,
             request_hash: stable_hash64(bytes),
+            browser_caller: None,
+            browser_protection_revision: None,
         }
     }
 
@@ -695,6 +766,8 @@ impl CommandResultCache {
             session_id: None,
             attachment_id: None,
             request_hash: stable_hash64(command_type.as_bytes()),
+            browser_caller: None,
+            browser_protection_revision: None,
         }
     }
 
@@ -839,7 +912,7 @@ fn read_persistent_results_with_receipt_fence(
         if retention.at_most_once && supports_expiry && line == RECEIPT_EXPIRY_FENCE {
             continue;
         }
-        let jsonl_bytes = line.as_bytes().len().saturating_add(1) as u64;
+        let jsonl_bytes = line.len().saturating_add(1) as u64;
         if jsonl_bytes > COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES {
             if retention.at_most_once {
                 return Err(io::Error::other("oversized at-most-once receipt"));
@@ -854,10 +927,10 @@ fn read_persistent_results_with_receipt_fence(
             compact_after_load = true;
             continue;
         };
-        if !should_persist_completed_result(&entry.result.fingerprint) {
-            if retention.at_most_once {
-                return Err(io::Error::other("unexpected at-most-once receipt type"));
-            }
+        // An at-most-once journal keeps a receipt for every request it reserved
+        // (the machine gateway ledger also answers approvals); the exclusion
+        // list only trims ordinary result caches.
+        if !retention.at_most_once && !should_persist_completed_result(&entry.result.fingerprint) {
             compact_after_load = true;
             continue;
         }
@@ -958,7 +1031,9 @@ fn persistent_result_jsonl_bytes(entry: &PersistentCommandResult) -> io::Result<
 fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
     !matches!(
         fingerprint.command_type.as_str(),
-        "credential_enrollment.interaction.request"
+        "kernel_browser"
+            | "notes"
+            | "credential_enrollment.interaction.request"
             | "external_provider_session.list"
             | "interaction.respond"
             | "native_provider.interaction.request"
@@ -974,24 +1049,46 @@ fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
     )
 }
 
+/// Results can carry secrets a client asked for, so only the kernel's user reads the file.
+fn restrict_to_owner(path: &std::path::Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    match fs::set_permissions(path, fs::Permissions::from_mode(0o600)) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
 fn append_persistent_result(path: &PathBuf, entry: &PersistentCommandResult) -> io::Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = BufWriter::new(
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(path)?,
+    );
     serde_json::to_writer(&mut file, entry).map_err(io::Error::other)?;
-    file.write_all(b"\n")
+    file.write_all(b"\n")?;
+    file.flush()
 }
 
 fn rewrite_persistent_results(
     path: &PathBuf,
     entries: &[PersistentCommandResult],
 ) -> io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let tmp_path = path.with_extension("jsonl.tmp");
-    let mut file = fs::File::create(&tmp_path)?;
+    let mut file = BufWriter::new(
+        fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp_path)?,
+    );
     // A downgraded kernel must not treat a missing expired identity as new.
     // Preserve this fail-closed fence through every payload compaction.
     match fs::metadata(ReceiptRetention::marker_path(path)) {
@@ -1004,7 +1101,8 @@ fn rewrite_persistent_results(
         serde_json::to_writer(&mut file, entry).map_err(io::Error::other)?;
         file.write_all(b"\n")?;
     }
-    file.sync_all()?;
+    file.flush()?;
+    file.get_ref().sync_all()?;
     fs::rename(tmp_path, path)?;
     if let Some(parent) = path.parent() {
         fs::File::open(parent)?.sync_all()?;
@@ -1014,3 +1112,6 @@ fn rewrite_persistent_results(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod notes_tests;

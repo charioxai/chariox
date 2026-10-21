@@ -30,6 +30,10 @@ pub(crate) struct BrowserImportRelayResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing KernelIncomingFrame typed actor payload layout"
+)]
 pub(crate) enum KernelIncomingFrame {
     Request {
         request_id: String,
@@ -39,6 +43,9 @@ pub(crate) enum KernelIncomingFrame {
         causation_id: Option<String>,
         #[serde(default)]
         correlation_id: Option<String>,
+        /// Protocol 568: forward this request through the machine gateway.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machine: Option<String>,
         request: LocalDaemonRequest,
     },
     Subscribe {
@@ -49,6 +56,9 @@ pub(crate) enum KernelIncomingFrame {
         subscription_scope: Option<String>,
         #[serde(default)]
         resume_from_event_id: Option<u64>,
+        /// Protocol 568: subscribe on this machine through the gateway.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machine: Option<String>,
     },
     Unsubscribe {
         request_id: String,
@@ -67,11 +77,19 @@ pub(crate) struct KernelTransportError {
 pub(crate) enum KernelOutgoingFrame {
     Response {
         request_id: String,
+        /// Protocol 568: the machine that answered a forwarded request, so a
+        /// client can tell a forwarded answer from a local one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machine: Option<String>,
         response: Box<Option<Value>>,
         error: Option<KernelTransportError>,
     },
     Event {
         event_id: u64,
+        /// Protocol 568: the machine whose subscription produced this event; its
+        /// `event_id` counts on that machine's stream. Absent for this kernel's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machine: Option<String>,
         event: Box<KernelEvent>,
     },
 }
@@ -79,6 +97,10 @@ pub(crate) enum KernelOutgoingFrame {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub(crate) enum KernelEvent {
+    KernelBrowserFrame {
+        subscription_id: String,
+        frame: Value,
+    },
     TerminalOutput {
         records: Vec<TerminalOutputRecord>,
     },
@@ -100,12 +122,24 @@ pub(crate) enum KernelEvent {
         room_workflows: crate::runtime::projection::RoomWorkflowInventory,
         session: Box<RuntimeSession>,
         provider_run: Box<Option<PublicProviderRun>>,
+        #[allow(
+            clippy::box_collection,
+            reason = "Keeps the protocol enum payload bounded independently of map header size"
+        )]
         agent_activity: Box<BTreeMap<String, AgentRuntimeActivity>>,
         #[serde(default)]
         agent_activity_revision: u64,
     },
+    AgentTaskUpdated {
+        session_id: String,
+        task: Box<crate::durable_state::agent_lifecycle::AgentTaskExecution>,
+    },
     AgentActivityChanged {
         session_id: String,
+        #[allow(
+            clippy::box_collection,
+            reason = "Keeps the protocol enum payload bounded independently of map header size"
+        )]
         agent_activity: Box<BTreeMap<String, AgentRuntimeActivity>>,
         #[serde(default)]
         agent_activity_revision: u64,
@@ -147,6 +181,9 @@ pub(crate) enum KernelEvent {
         sessions: Vec<WaitingRoomPublicSessionSummary>,
         removed_session_ids: Vec<String>,
     },
+    ClientCatalogChanged {
+        revision: u64,
+    },
     ProviderCatalogChanged {
         generated_at_ms: u64,
         catalog: OpenCodeProviderCatalog,
@@ -183,6 +220,8 @@ pub(crate) enum KernelEvent {
     /// closes. Never replayed: each subscription sends the current set.
     PasskeyPromptsChanged {
         prompts: Vec<PasskeyPrompt>,
+        kernel_now_ms: u64,
+        closed: Vec<crate::local::PasskeyPromptClosure>,
     },
 }
 
@@ -264,6 +303,10 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
             "agent_activity": agent_activity,
             "agent_activity_revision": agent_activity_revision,
         }),
+        KernelEvent::AgentTaskUpdated { session_id, task } => serde_json::json!({
+            "event_id": event_id, "event": "agent_task_updated", "session_id": session_id,
+            "task_id": task.task_id, "revision": task.revision, "state": task.state,
+        }),
         KernelEvent::AgentActivityChanged {
             session_id,
             agent_activity,
@@ -336,6 +379,9 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
                 })
             }).collect::<Vec<_>>(),
         }),
+        KernelEvent::ClientCatalogChanged { revision } => {
+            serde_json::json!({ "event_id": event_id, "event": "client_catalog_changed", "revision": revision })
+        }
         KernelEvent::ProviderCatalogChanged {
             generated_at_ms,
             catalog,
@@ -367,7 +413,7 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
             "status": workflow_run.status(),
             "active_node_run_id": workflow_run.active_node_run_id(),
         }),
-        KernelEvent::PasskeyPromptsChanged { prompts } => serde_json::json!({
+        KernelEvent::PasskeyPromptsChanged { prompts, .. } => serde_json::json!({
             "event_id": event_id,
             "event": "passkey_prompts_changed",
             "prompt_count": prompts.len(),
@@ -568,6 +614,88 @@ pub(crate) fn session_metadata_changed_event(
     })
 }
 
+/// MP-08/MP-10/MP-11: local and relay subscribers share the decision about
+/// replacing a full session snapshot with smaller projection events.
+// MP-08 / MP-09 / MP-10 / MP-11 A12: one delta selection for every terminal transport.
+pub(crate) fn session_projection_changed_events(
+    snapshot: &SessionSnapshotProjection,
+    previous: Option<&SessionSnapshotProjection>,
+) -> Vec<KernelEvent> {
+    [
+        agent_activity_changed_event(snapshot, previous),
+        provider_run_changed_event(snapshot, previous),
+        session_metadata_changed_event(snapshot, previous),
+        runtime_interactions_changed_event(snapshot, previous),
+    ]
+    .into_iter()
+    .flatten()
+    .chain(agent_task_updated_events(snapshot, previous))
+    .collect()
+}
+
+fn agent_task_updated_events(
+    snapshot: &SessionSnapshotProjection,
+    previous: Option<&SessionSnapshotProjection>,
+) -> Vec<KernelEvent> {
+    let Some(previous) = previous else {
+        return vec![];
+    };
+    snapshot
+        .session
+        .agent_tasks()
+        .iter()
+        .filter(|task| !previous.session.agent_tasks().contains(task))
+        .cloned()
+        .map(|task| KernelEvent::AgentTaskUpdated {
+            session_id: snapshot.session.id().to_owned(),
+            task: Box::new(task),
+        })
+        .collect()
+}
+
+pub(crate) fn can_skip_session_snapshot(
+    snapshot: &SessionSnapshotProjection,
+    previous_snapshot: Option<&SessionSnapshotProjection>,
+    emitted_projection_delta: bool,
+) -> bool {
+    // Smaller events do not carry window status. Keep the full snapshot when
+    // a window opens, warns, extends or ends alongside another projection delta.
+    emitted_projection_delta
+        && previous_snapshot.is_some_and(|previous| {
+            if previous.session.sudo_windows() != snapshot.session.sudo_windows() {
+                return false;
+            }
+            if previous.session.agent_tasks() == snapshot.session.agent_tasks() {
+                return true;
+            }
+            // MP-08/MP-10: task events carry no prompt, agent, activity or
+            // provider state. Preserve a snapshot for accompanying changes.
+            if previous.provider_run != snapshot.provider_run
+                || previous.agent_activity != snapshot.agent_activity
+            {
+                return false;
+            }
+            // Task updates have no removal event.
+            let task_ids = snapshot
+                .session
+                .agent_tasks()
+                .iter()
+                .map(|task| task.task_id.as_str())
+                .collect::<BTreeSet<_>>();
+            if previous
+                .session
+                .agent_tasks()
+                .iter()
+                .any(|task| !task_ids.contains(task.task_id.as_str()))
+            {
+                return false;
+            }
+            let mut previous_session = previous.session.clone();
+            previous_session.set_agent_tasks(snapshot.session.agent_tasks().to_vec());
+            previous_session == snapshot.session
+        })
+}
+
 pub(crate) fn runtime_interactions_changed_event(
     snapshot: &SessionSnapshotProjection,
     previous_snapshot: Option<&SessionSnapshotProjection>,
@@ -633,11 +761,13 @@ fn changed_workflow_runs(
 
 pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
     match event {
+        KernelEvent::KernelBrowserFrame { .. } => "kernel_browser_frame",
         KernelEvent::TerminalOutput { .. } => "terminal_output",
         KernelEvent::RuntimeNotices { .. } => "runtime_notices",
         KernelEvent::AssistantMessageCompleted { .. } => "assistant_message_completed",
         KernelEvent::RoomWorkflowsChanged { .. } => "room_workflows_changed",
         KernelEvent::SessionSnapshot { .. } => "session_snapshot",
+        KernelEvent::AgentTaskUpdated { .. } => "agent_task_updated",
         KernelEvent::AgentActivityChanged { .. } => "agent_activity_changed",
         KernelEvent::ProviderRunChanged { .. } => "provider_run_changed",
         KernelEvent::SessionMetadataChanged { .. } => "session_metadata_changed",
@@ -647,6 +777,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::RemoteMachinesChanged { .. } => "remote_machines_changed",
         KernelEvent::WaitingRoomInventoryChanged { .. } => "waiting_room_inventory_changed",
         KernelEvent::WaitingRoomRowsChanged { .. } => "waiting_room_rows_changed",
+        KernelEvent::ClientCatalogChanged { .. } => "client_catalog_changed",
         KernelEvent::ProviderCatalogChanged { .. } => "provider_catalog_changed",
         KernelEvent::SlicesChanged { .. } => "slices_changed",
         KernelEvent::WorkflowDesignOp { .. } => "workflow_design_op",
@@ -660,6 +791,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
 
 pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
     match event {
+        KernelEvent::KernelBrowserFrame { .. } => None,
         KernelEvent::TerminalOutput { records } => {
             records.first().map(|record| record.session_id.as_str())
         }
@@ -669,6 +801,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::AssistantMessageCompleted { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::RoomWorkflowsChanged { inventory } => Some(&inventory.session_id),
         KernelEvent::SessionSnapshot { session, .. } => Some(session.id()),
+        KernelEvent::AgentTaskUpdated { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::AgentActivityChanged { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::ProviderRunChanged { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::SessionMetadataChanged { session_id, .. } => Some(session_id.as_str()),
@@ -678,6 +811,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::RemoteMachinesChanged { .. } => None,
         KernelEvent::WaitingRoomInventoryChanged { .. } => None,
         KernelEvent::WaitingRoomRowsChanged { .. } => None,
+        KernelEvent::ClientCatalogChanged { .. } => None,
         KernelEvent::ProviderCatalogChanged { .. } => None,
         KernelEvent::SlicesChanged { .. } => None,
         KernelEvent::WorkflowDesignOp { design_op } => Some(design_op.session_id.as_str()),
@@ -709,6 +843,7 @@ pub(crate) fn subscription_event_stream_id(session_id: &str, attachment_id: &str
 
 pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id: &str) -> bool {
     match event {
+        KernelEvent::KernelBrowserFrame { .. } => false,
         KernelEvent::TerminalOutput { records } => records.iter().any(|record| {
             record
                 .recipient_attachment_ids
@@ -730,6 +865,7 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
             .any(|id| id == attachment_id),
         KernelEvent::RoomWorkflowsChanged { .. }
         | KernelEvent::SessionSnapshot { .. }
+        | KernelEvent::AgentTaskUpdated { .. }
         | KernelEvent::AgentActivityChanged { .. }
         | KernelEvent::ProviderRunChanged { .. }
         | KernelEvent::SessionMetadataChanged { .. }
@@ -739,6 +875,7 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         | KernelEvent::RemoteMachinesChanged { .. }
         | KernelEvent::WaitingRoomInventoryChanged { .. }
         | KernelEvent::WaitingRoomRowsChanged { .. }
+        | KernelEvent::ClientCatalogChanged { .. }
         | KernelEvent::ProviderCatalogChanged { .. }
         | KernelEvent::SlicesChanged { .. }
         | KernelEvent::WorkflowDesignOp { .. }
@@ -814,6 +951,8 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::ExternalRequestFailed { code, retryable } => {
             kernel_error(code, error, *retryable)
         }
+        DaemonError::UserDomainRefused { reason } => kernel_error(reason.code(), error, false),
+        DaemonError::MachineRequest { code, .. } => kernel_error(code.as_str(), error, false),
         DaemonError::AgentWorkerCleanup { source, .. } => {
             let mut mapped = map_kernel_error(source);
             mapped.message = error.to_string();
@@ -846,6 +985,18 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         {
             kernel_error("credential_vault_locked", error, false)
         }
+        // A terminal on another machine refuses in the terminal service's own words; they
+        // are passed on as they came, so the caller that sent the id reads them.
+        DaemonError::RelayTransport {
+            code,
+            message,
+            retryable,
+            ..
+        } if crate::room_terminal::is_public_code(code) => KernelTransportError {
+            code: code.clone(),
+            message: message.clone(),
+            retryable: *retryable,
+        },
         // Keep the stable local transport code/message for CLI and app
         // clients, while preserving the relay's structured retryability.
         DaemonError::RelayTransport { retryable, .. } => {

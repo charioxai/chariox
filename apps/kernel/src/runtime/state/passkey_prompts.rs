@@ -12,17 +12,19 @@ use std::sync::{Arc, Mutex};
 
 use super::{KernelRuntimeOwnedState, KernelRuntimeState, RuntimeChangeSignal};
 use crate::error::DaemonError;
-use crate::local::{PasskeyPrompt, PasskeyPromptKind};
+use crate::local::{
+    KernelAccessTerm, PasskeyPrompt, PasskeyPromptClosureReason, PasskeyPromptKind,
+};
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeSession};
 
 pub(crate) const PASSKEY_ALREADY_ANSWERED: &str = "PASSKEY_ALREADY_ANSWERED";
-/// Answered prompts remembered, so a late answer is told so.
-const ANSWERED_MEMORY: usize = 64;
+/// Recent definitive outcomes, including answers needed by late replies.
+const CLOSURE_MEMORY: usize = 64;
 
 #[derive(Debug, Default)]
 pub(super) struct PasskeyPromptBoard {
     changes: RuntimeChangeSignal,
-    answered: Mutex<VecDeque<(String, String)>>,
+    closures: Mutex<VecDeque<(String, String, PasskeyPromptClosureReason)>>,
 }
 
 impl PasskeyPromptBoard {
@@ -32,29 +34,46 @@ impl PasskeyPromptBoard {
     }
 
     pub(super) fn record_answered(&self, session_id: &str, interaction_id: &str) {
-        let mut answered = self.answered.lock().expect("passkey prompts poisoned");
-        if answered.len() == ANSWERED_MEMORY {
-            answered.pop_front();
+        self.record_closed(
+            session_id,
+            interaction_id,
+            PasskeyPromptClosureReason::Answered,
+        );
+    }
+
+    pub(super) fn record_closed(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        reason: PasskeyPromptClosureReason,
+    ) {
+        let mut closed = self.closures.lock().expect("passkey prompts poisoned");
+        if closed.len() == CLOSURE_MEMORY {
+            closed.pop_front();
         }
-        answered.push_back((session_id.to_owned(), interaction_id.to_owned()));
-        drop(answered);
+        closed.push_back((session_id.to_owned(), interaction_id.to_owned(), reason));
+        drop(closed);
         self.record_change();
     }
 
     /// A prompt raised again under the same id is open again.
     pub(super) fn forget_answered(&self, session_id: &str, interaction_id: &str) {
-        self.answered
+        self.closures
             .lock()
             .expect("passkey prompts poisoned")
-            .retain(|(session, id)| session != session_id || id != interaction_id);
+            .retain(|(session, id, _)| session != session_id || id != interaction_id);
     }
 
-    fn was_answered(&self, session_id: &str, interaction_id: &str) -> bool {
-        self.answered
+    pub(super) fn was_answered(&self, session_id: &str, interaction_id: &str) -> bool {
+        self.closures
             .lock()
             .expect("passkey prompts poisoned")
             .iter()
-            .any(|(session, id)| session == session_id && id == interaction_id)
+            .any(|(session, id, reason)| {
+                session == session_id
+                    && id == interaction_id
+                    && *reason == PasskeyPromptClosureReason::Answered
+            })
     }
 }
 
@@ -99,6 +118,7 @@ pub(super) fn passkey_prompt_for_scope(
     };
     let timeout_ms = interaction.timeout_sec().unwrap_or_default() * 1000;
     Ok(Some(Arc::new(PasskeyPrompt {
+        sudo_request: interaction.sudo_request().cloned(),
         requester: interaction.requester().cloned(),
         kind: match interaction.kernel_operation_id().unwrap_or_default() {
             id if id.starts_with("access-grant:") => PasskeyPromptKind::AccessGrant,
@@ -118,6 +138,7 @@ pub(super) fn passkey_prompt_for_scope(
         refuse_choice_id: refuse.id().to_owned(),
         requested_at_ms: interaction.requested_at_ms(),
         expires_at_ms: registered_at_ms.saturating_add(timeout_ms),
+        term: None,
         lifetime_minutes: None,
         max_lifetime_minutes: None,
     })))
@@ -125,6 +146,11 @@ pub(super) fn passkey_prompt_for_scope(
 
 impl KernelRuntimeOwnedState {
     fn passkey_prompts_for(&self, user_id: &str) -> Vec<PasskeyPrompt> {
+        let _mutation = self
+            .pending_interactions
+            .mutation
+            .lock()
+            .expect("interaction mutation poisoned");
         let now = std::time::Instant::now();
         let mut prompts = self
             .pending_interactions
@@ -139,6 +165,7 @@ impl KernelRuntimeOwnedState {
             })
             .filter_map(|pending| pending.passkey_prompt.as_deref().cloned())
             .collect::<Vec<_>>();
+        drop(_mutation); // Never hold interaction mutation while taking the access-grant lock.
         let access = self.kernel_access.lock().expect("access state poisoned");
         for prompt in &mut prompts {
             if matches!(
@@ -156,7 +183,11 @@ impl KernelRuntimeOwnedState {
                         .find(|g| g.grant_id == id)
                         .or_else(|| access.grants.get(id).map(|g| &g.summary))
                 }) {
-                    prompt.lifetime_minutes = Some(grant.lifetime_minutes);
+                    prompt.term = Some(grant.term);
+                    // Clients that predate 568 read the minutes from here.
+                    if let KernelAccessTerm::Minutes(minutes) = grant.term {
+                        prompt.lifetime_minutes = Some(minutes);
+                    }
                     prompt.max_lifetime_minutes = Some(
                         self.config_projection
                             .snapshot()
@@ -168,6 +199,13 @@ impl KernelRuntimeOwnedState {
             }
         }
         drop(access);
+        for prompt in &mut prompts {
+            if prompt.kind == PasskeyPromptKind::Sudo && !prompt.interaction_id.contains(":scope:")
+            {
+                prompt.lifetime_minutes = Some(super::sudo::SUDO_DEFAULT_MINUTES);
+                prompt.max_lifetime_minutes = super::sudo::SUDO_WINDOW_MINUTES.last().copied();
+            }
+        }
         prompts.sort_by(|a, b| {
             (a.requested_at_ms, &a.interaction_id).cmp(&(b.requested_at_ms, &b.interaction_id))
         });
@@ -205,6 +243,42 @@ impl KernelRuntimeState {
     /// The passkey prompts pending for `user_id`, oldest first.
     pub(crate) fn passkey_prompts_for(&self, user_id: &str) -> Vec<PasskeyPrompt> {
         self.owned.passkey_prompts_for(user_id)
+    }
+
+    pub(crate) fn passkey_prompt_closure_reason(
+        &self,
+        prompt: &PasskeyPrompt,
+    ) -> PasskeyPromptClosureReason {
+        let _mutation = self
+            .owned
+            .pending_interactions
+            .mutation
+            .lock()
+            .expect("interaction mutation poisoned");
+        if let Some(reason) = self
+            .owned
+            .passkey_prompts
+            .closures
+            .lock()
+            .expect("passkey prompts poisoned")
+            .iter()
+            .rev()
+            .find(|(session, id, _)| session == &prompt.session_id && id == &prompt.interaction_id)
+            .map(|(_, _, reason)| *reason)
+        {
+            return reason;
+        }
+        let pending = self.owned.pending_interactions.write();
+        if pending.get(&prompt.interaction_id).is_some_and(|pending| {
+            pending.session_id == prompt.session_id
+                && pending
+                    .kernel_operation_deadline
+                    .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        }) {
+            PasskeyPromptClosureReason::Expired
+        } else {
+            PasskeyPromptClosureReason::Revoked
+        }
     }
 
     pub(crate) fn passkey_prompt_change_sequence(&self) -> u64 {

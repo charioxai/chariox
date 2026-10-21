@@ -16,7 +16,13 @@ use std::{
         unix::{fs::MetadataExt, net::UnixStream},
     },
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
+
+/// How long a start waits for the helper to finish releasing the installation's
+/// previous lease. A slow loop-device teardown (udev still holding the device)
+/// outlasts the release's own deadline but settles in the helper by itself.
+const BUSY_PATIENCE: Duration = Duration::from_secs(60);
 
 pub(in crate::worker_process) struct Lease {
     stream: UnixStream,
@@ -26,7 +32,7 @@ pub(in crate::worker_process) struct Lease {
     pub package: Option<Dir>,
     pub runtime: Option<Dir>,
     path: PathBuf,
-    local_mount_ids: [u64; 2],
+    _local_mount_ids: [u64; 2],
     released: bool,
 }
 #[derive(Serialize)]
@@ -48,8 +54,8 @@ enum Operation<'a> {
     },
 }
 
-/// Before its first install commits, an installation's committed generation is
-/// 0: there is no committed data to snapshot, and the helper refuses 0.
+// Before its first install commits, an installation's committed generation is
+// 0: there is no committed data to snapshot, and the helper refuses 0.
 
 /// The helper's authenticated per-UID socket, served by root.
 fn connect(uid: u32) -> Result<UnixStream> {
@@ -100,6 +106,24 @@ pub(in crate::worker_process) fn delete(owner: &str, installation: &str) -> Resu
         Err(Error::RecoveryRequired)
     }
 }
+/// Sends the acquire on a fresh connection (the helper drops one it refused).
+/// A busy refusal is retried until `patience` is spent, then reported as is.
+fn exchange(
+    connect: impl Fn() -> Result<UnixStream>,
+    request: &model::Request,
+    patience: Duration,
+) -> Result<(UnixStream, Reply)> {
+    let deadline = Instant::now() + patience;
+    loop {
+        let mut stream = connect()?;
+        wire::send(&mut stream, request)?;
+        let reply: Reply = wire::receive(&stream, 150)?;
+        if reply.status != Error::Busy.to_string() || Instant::now() >= deadline {
+            return Ok((stream, reply));
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
 impl Lease {
     /// Borrowed only during synchronous native launch. The parent sends no
     /// requests until that child has closed this duplicate before bwrap exec.
@@ -148,9 +172,7 @@ impl Lease {
         );
         request.validate()?;
         let name = model::installation_name(owner, installation)?;
-        let mut stream = connect(uid)?;
-        wire::send(&mut stream, &request)?;
-        let reply: Reply = wire::receive(&stream, 150)?;
+        let (stream, reply) = exchange(|| connect(uid), &request, BUSY_PATIENCE)?;
         if reply.status != "acquired" || reply.code.is_some() {
             return Err(reply.refusal());
         }
@@ -187,7 +209,7 @@ impl Lease {
             package: None,
             runtime: None,
             path,
-            local_mount_ids,
+            _local_mount_ids: local_mount_ids,
             released: false,
         })
     }
@@ -250,8 +272,8 @@ impl Lease {
     #[cfg(test)]
     pub fn mount_observations(&self) -> [(u64, u64); 2] {
         [
-            (self.grant.data_mount_id, self.local_mount_ids[0]),
-            (self.grant.temporary_mount_id, self.local_mount_ids[1]),
+            (self.grant.data_mount_id, self._local_mount_ids[0]),
+            (self.grant.temporary_mount_id, self._local_mount_ids[1]),
         ]
     }
     /// Call after the worker cgroup is empty and every broker/worker directory
@@ -351,6 +373,47 @@ fn acquire_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn serve(status: &'static str) -> Result<UnixStream> {
+        let (client, mut server) = UnixStream::pair()?;
+        client.set_nonblocking(true)?;
+        server.set_nonblocking(true)?;
+        std::thread::spawn(move || {
+            let _: serde_json::Value = wire::receive(&server, 5).unwrap();
+            let reply = Reply {
+                status: status.into(),
+                grant: None,
+                code: None,
+                host_disk: None,
+            };
+            wire::send(&mut server, &reply).unwrap();
+        });
+        Ok(client)
+    }
+
+    #[test]
+    fn acquire_waits_while_the_helper_settles_the_previous_lease() {
+        let request = acquire_request(
+            "owner",
+            "installation",
+            1,
+            None,
+            "app-11111111111111111111111111111111",
+        );
+        let answers =
+            std::sync::Mutex::new(vec!["acquired", "app_storage_busy", "app_storage_busy"]);
+        let (_, reply) = exchange(
+            || serve(answers.lock().unwrap().pop().unwrap()),
+            &request,
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        assert_eq!(reply.status, "acquired");
+        assert!(answers.lock().unwrap().is_empty());
+        // Patience spent: the busy refusal is returned, not retried forever.
+        let (_, reply) = exchange(|| serve("app_storage_busy"), &request, Duration::ZERO).unwrap();
+        assert_eq!(reply.refusal(), Error::RecoveryRequired);
+    }
 
     #[test]
     fn acquire_request_preserves_absent_and_committed_generations_on_the_wire() {

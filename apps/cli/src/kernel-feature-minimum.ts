@@ -10,6 +10,7 @@ type FeatureMinimum = { feature: string; minimum: number }
 const features: Record<string, FeatureMinimum> = {
   AddSshMachine: { feature: "SSH machine management", minimum: requests.sshMachineMinimumProtocolVersion },
   RemoveSshMachine: { feature: "SSH machine management", minimum: requests.sshMachineMinimumProtocolVersion },
+  GetClientCatalogRevisions: { feature: "Catalog revisions", minimum: requests.clientCatalogRevisionsMinimumProtocolVersion },
   CloudRelayStatus: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
   StartCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
   PollCloudRelayLogin: { feature: "Kernel Cloud ownership", minimum: requests.kernelOwnershipMinimumProtocolVersion },
@@ -22,6 +23,9 @@ const features: Record<string, FeatureMinimum> = {
   ControlRoomWorkflowRuns: { feature: "Room workflow run controls", minimum: 491 },
   SteerActivePrompt: { feature: "Active prompt steering", minimum: requests.activePromptSteeringMinimumProtocolVersion },
   GetProjectEnvironment: { feature: "Project Environment", minimum: requests.projectEnvironmentMinimumProtocolVersion },
+  ...Object.fromEntries(["OpenUserAppView", "ListUserAppViews", "CloseUserAppView", "GetUserAppViewFrontend", "CallUserAppView", "SubscribeUserAppViews", "AnswerUserDomainInteraction"].map(name => [name, { feature: "User-domain App views", minimum: requests.userAppViewsMinimumProtocolVersion }])),
+  CaptureVisibleRegion: { feature: "Visible region capture", minimum: requests.visibleRegionCaptureMinimumProtocolVersion },
+  KernelBrowser: { feature: "Kernel browser", minimum: requests.kernelBrowserMinimumProtocolVersion },
   AcceptAppHostAction: { feature: "App host actions", minimum: requests.appHostActionMinimumProtocolVersion },
   RevokeAppFileGrants: { feature: "App file revocation", minimum: requests.appFileRevokeMinimumProtocolVersion },
   RestoreAppDataSnapshot: { feature: "App data snapshot restore", minimum: requests.appDataSnapshotRestoreMinimumProtocolVersion },
@@ -43,6 +47,8 @@ const features: Record<string, FeatureMinimum> = {
   RetryRoomEnvironment: { feature: "Room environment lifecycle", minimum: requests.roomEnvironmentLifecycleMinimumProtocolVersion },
   GetManagedEnvironmentReimagePreflight: { feature: "Managed environment reimage preflight", minimum: requests.managedEnvironmentReimagePreflightMinimumProtocolVersion },
   AdjustProjectEnvironment: { feature: "Project environment adjustment", minimum: projectEnvironmentAdjustmentMinimumProtocolVersion },
+  ListEventConnectionEvents: { feature: "Integration received events", minimum: requests.integrationReceivedEventsMinimumProtocolVersion },
+  ReplayEventConnectionEvent: { feature: "Integration received events", minimum: requests.integrationReceivedEventsMinimumProtocolVersion },
   GetKernelResourceTelemetry: { feature: "Kernel resource telemetry", minimum: requests.kernelResourceTelemetryMinimumProtocolVersion },
 }
 
@@ -54,7 +60,15 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
   const name = Object.keys(envelope)[0]!
   const payload = record(envelope[name])
   let feature = Object.hasOwn(features, name) ? features[name] : undefined
-  if (requests.isGuardedKernelControl(request)) {
+  if (name === "GetSliceDisplayEndpoint" && payload?.shared_display) {
+    feature = { feature: "Room shared display", minimum: requests.kernelDisplayResumeMinimumProtocolVersion }
+  } else if (name === "KernelBrowser" && ["display_suspend", "display_resume"].includes(String(record(payload?.command)?.op))) {
+    feature = { feature: "Display resumption", minimum: requests.kernelDisplayResumeMinimumProtocolVersion }
+  } else if (name === "KernelBrowser" && record(payload?.command)?.op === "computer") {
+    feature = { feature: "MP-08 owned Computer desktop", minimum: requests.kernelComputerMinimumProtocolVersion }
+  } else if (name === "KernelBrowser" && ["grant_leased_computer", "revoke_leased_computer"].includes(String(record(payload?.command)?.op))) {
+    feature = { feature: "MP-08 leased Computer grant", minimum: requests.leasedComputerMinimumProtocolVersion }
+  } else if (requests.isGuardedKernelControl(request)) {
     feature = name === "KeepManagedEnvironmentRunning"
       ? { feature: "Managed environment keep running", minimum: requests.managedEnvironmentKeepRunningMinimumProtocolVersion }
       : { feature: "Disposable worker control", minimum: requests.disposableWorkerControlMinimumProtocolVersion }
@@ -86,7 +100,7 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
 export function requireKernelFeatureProtocol(request: unknown, protocolVersion: number | undefined): void {
   const feature = kernelFeatureMinimum(request)
   if (protocolVersion === undefined || !Number.isInteger(protocolVersion) || protocolVersion < 1) {
-    if (feature?.feature === "Exact prompt cancellation" || feature?.feature === "App automation injection") {
+    if (feature?.feature === "Exact prompt cancellation" || feature?.feature === "App automation injection" || feature?.feature === "Display resumption") {
       throw new KernelProtocolMinimumError(`kernel support unknown: ${feature.feature} needs protocol ≥${feature.minimum}; reconnect to an updated kernel`)
     }
     return

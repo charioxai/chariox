@@ -18,6 +18,24 @@ pub(super) fn export_overlay(
     Ok((entries, size))
 }
 
+/// The verification pass re-reads the worktree and compares digests; it never writes objects.
+pub(super) fn verify_overlay(
+    worktree: &Path,
+    repository_id: &str,
+    staging_root: &Path,
+    manifest_budget: &mut ManifestMemoryBudget,
+    vault_enabled: bool,
+) -> Result<(Vec<DevelopmentOverlayEntry>, u64), DaemonError> {
+    let (entries, size, _) = collect_overlay(
+        worktree,
+        repository_id,
+        staging_root,
+        manifest_budget,
+        vault_enabled,
+    )?;
+    Ok((entries, size))
+}
+
 type CollectedOverlay = (
     Vec<DevelopmentOverlayEntry>,
     u64,
@@ -273,10 +291,15 @@ pub(super) fn store_overlay_object(
     let object_path = format!("repositories/{repository_id}/objects/{sha256}");
     if stored_objects.insert(sha256.clone()) {
         *overlay_size_bytes = overlay_size_bytes.saturating_add(size_bytes);
-        if *overlay_size_bytes > MAX_OVERLAY_BYTES_PER_REPOSITORY {
-            return Err(context_error(format!(
-                "repository dirty overlay exceeds {MAX_OVERLAY_BYTES_PER_REPOSITORY} bytes"
-            )));
+        let room = crate::managed_context::limits::memory_budget();
+        if *overlay_size_bytes > room {
+            return Err(context_error(
+                crate::managed_context::limits::memory_shortage(
+                    "repository dirty overlay",
+                    *overlay_size_bytes,
+                    room,
+                ),
+            ));
         }
         pending.insert(object_path.clone(), zeroize::Zeroizing::new(bytes));
     }
@@ -569,6 +592,18 @@ pub(super) fn stage_objects(
     vault: Option<&vault_artifacts::ExportVault<'_>>,
 ) -> Result<(), DaemonError> {
     for (object, bytes) in pending {
+        // Plain and sealed writes alike must leave the volume its reserve.
+        let room = crate::managed_context::limits::disk_budget(staging);
+        if bytes.len() as u64 > room {
+            return Err(context_error(
+                crate::managed_context::limits::disk_shortage(
+                    "repository dirty overlay",
+                    staging,
+                    bytes.len() as u64,
+                    room,
+                ),
+            ));
+        }
         let items = items_for_object(&object, &bytes, entries);
         if let Some(vault) = vault {
             vault.stage(staging, &object, &bytes, items)?;

@@ -87,3 +87,19 @@ test("other desktop actions and execs keep the ordinary control deadline", () =>
   assert.equal(dockerControlPolicy(["exec", "-u", "root", ...plain.slice(3), "start"]).timeout, 30_000)
   assert.equal(dockerControlPolicy(["exec", "-u", "slice", "chariox-slice-owned", "test", "-s", "/fixture"]).timeout, 30_000)
 })
+
+test("MP-08 MP-10 MP-11 broker reports first-start progress lines while the provisioner still runs", async context => {
+ const logRoot=await mkdtemp(join(tmpdir(),"chariox-broker-progress-"))
+ context.after(()=>rm(logRoot,{recursive:true,force:true}))
+ const seen=[]
+ let stillRunningAtFirstLine
+ const result=await runBrokerCommand("/usr/bin/python3",["-c",`import sys,time
+for line in ["[slice-linux] progress: Loading the slice image 10 MB of 100 MB (10%)","[slice-linux] docker secret=hunter2","[slice-linux] progress: caf\\xe9 not ascii","[slice-linux] progress: Starting the slice container"]:
+ print(line,file=sys.stderr,flush=True)
+ time.sleep(.3)
+`],{env:process.env,maxBuffer:4096,logRoot,onProgress:line=>{stillRunningAtFirstLine??=Date.now();seen.push([line,Date.now()])}})
+ const finished=Date.now()
+ assert.deepEqual(seen.map(([line])=>line),["[slice-linux] progress: Loading the slice image 10 MB of 100 MB (10%)","[slice-linux] progress: Starting the slice container"])
+ assert(finished-stillRunningAtFirstLine>=600,"the first line must arrive well before the producer exits")
+ assert.equal(result.status,0)
+})

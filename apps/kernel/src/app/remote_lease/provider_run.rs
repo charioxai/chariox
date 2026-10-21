@@ -6,6 +6,10 @@ use crate::transport::relay_peer::RequiredRemoteMcp;
 use super::mcp_availability::provider_run_mcp_set_matches;
 use super::RemoteLeaseRuntime;
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing LeasedProviderRunMatch typed actor payload layout"
+)]
 pub(crate) enum LeasedProviderRunMatch {
     Ready(String),
     LaunchRequired(LaunchProviderRequest),
@@ -234,6 +238,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 // existing metadata sync queues an in-place provider refresh;
                 // do not replace it with a managed run while refresh is pending.
                 return Err(native_runtime_catalog_refresh_pending_error());
+            }
+            if active && !environment_matches {
+                return Err(DaemonError::LocalTransport {
+                    operation: "remote Project environment reload",
+                    message: "the worker provider run has an active turn and changed Project inputs; retry after the active turn completes so HOME can supply the next launch credential".into(),
+                });
             }
             if active && !mcp_matches {
                 return Err(DaemonError::LocalTransport {

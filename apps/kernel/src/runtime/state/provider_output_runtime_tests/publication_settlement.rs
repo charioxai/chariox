@@ -6,6 +6,9 @@ async fn assert_completed_publication_output_settlement(
     client_interface: crate::provider::ProviderClientInterface,
     waits_for_provider_completion: bool,
 ) {
+    crate::test_support::isolated_env_test!();
+    #[cfg(unix)]
+    let _claude = (adapter_key == "claude").then(crate::test_support::TestClaudeExecutable::new);
     let worktree = crate::test_support::TestWorktree::new("publication-claim");
     let mut app =
         crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())

@@ -1,3 +1,4 @@
+import type { GatewayMachineRecord } from "@chariox/kernel-client/kernel-types"
 import type { LocalIpcClient } from "./ipc.js"
 import type {
   WaitingRoomRemoteKernelView,
@@ -7,7 +8,10 @@ import {
   addSshMachineRequest,
   removeSshMachineRequest,
   approveRemoteMachineRequest,
+  forgetGatewayMachineRequest,
   forgetRemoteMachineRequest,
+  joinMachineLinkRequest,
+  listGatewayMachinesRequest,
   listRemoteMachineKernelsRequest,
   listRemoteMachinesRequest,
   renameRemoteMachineRequest,
@@ -70,4 +74,19 @@ export async function addSshMachine(client: LocalIpcClient, host: string, option
 export async function removeSshMachine(client: LocalIpcClient, installId: string): Promise<SshMachineResult> {
   const response = await client.send<Record<string, unknown>>(removeSshMachineRequest(installId))
   return expectVariant<{ machine: SshMachineResult }>(response, "SshMachine").machine
+}
+
+export async function joinMachineLink(client: LocalIpcClient, link: string, relayToken: string | null): Promise<GatewayMachineRecord> {
+  const response = await client.send<Record<string, unknown>>(joinMachineLinkRequest(link, relayToken))
+  return expectVariant<{ machine: GatewayMachineRecord }>(response, "GatewayMachineJoined").machine
+}
+
+export async function listGatewayMachines(client: LocalIpcClient): Promise<GatewayMachineRecord[]> {
+  const response = await client.send<Record<string, unknown>>(listGatewayMachinesRequest())
+  return expectVariant<{ machines: GatewayMachineRecord[] }>(response, "GatewayMachinesListed").machines
+}
+
+export async function forgetGatewayMachine(client: LocalIpcClient, name: string): Promise<void> {
+  const response = await client.send<Record<string, unknown>>(forgetGatewayMachineRequest(name))
+  expectVariant<{ kernel_id: string }>(response, "GatewayMachineForgotten")
 }

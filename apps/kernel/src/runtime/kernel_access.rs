@@ -7,15 +7,53 @@ use crate::local::KernelAccessGrant;
 use process::ProcessIdentity;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// The clock of a timed grant. A grant that lasts until its holder exits has none.
+#[derive(Clone)]
+pub(crate) struct GrantClock {
+    pub(crate) deadline: Instant,
+    pub(crate) notice: Instant,
+    pub(crate) notice_sent: bool,
+}
+
+impl GrantClock {
+    /// A clock for a grant of `minutes`, whose "extend?" notice comes
+    /// `notice_minutes` before the deadline.
+    pub(crate) fn new(minutes: u32, notice_minutes: u32) -> Self {
+        let now = Instant::now();
+        Self {
+            deadline: now + Duration::from_secs(u64::from(minutes) * 60),
+            notice: now
+                + Duration::from_secs(u64::from(minutes.saturating_sub(notice_minutes)) * 60),
+            notice_sent: false,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct Grant {
     pub(crate) summary: KernelAccessGrant,
     pub(crate) holder: ProcessIdentity,
-    pub(crate) deadline: Instant,
-    pub(crate) notice: Instant,
-    pub(crate) notice_sent: bool,
+    pub(crate) clock: Option<GrantClock>,
+}
+
+impl Grant {
+    /// Why the grant has ended at `now`, if it has: its deadline passed or
+    /// its holder (or a process reusing its identity) is gone.
+    pub(crate) fn ended_reason(&self, now: Instant) -> Option<&'static str> {
+        if self
+            .clock
+            .as_ref()
+            .is_some_and(|clock| now >= clock.deadline)
+        {
+            Some("expiry")
+        } else if !self.holder.alive() {
+            Some("process_exit")
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Default)]

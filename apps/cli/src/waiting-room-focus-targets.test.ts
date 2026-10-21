@@ -23,7 +23,6 @@ test("waiting room focus targets preserve menu order and sorted session indexes"
     "effort",
     "workspace",
     "worktree",
-    "live-sync",
     "collaborators",
     "slice",
     "join-sessions",

@@ -1,3 +1,5 @@
+import { parseSlashCommand } from "./commands.js"
+import { parseProviderNamespaceCommand } from "@chariox/kernel-client/provider-namespace-command"
 import { SESSION_NEW_ERROR_HINT } from "./sessions.js"
 import { isWorkspaceShellCommand } from "./workspace-shell.js"
 import type { WaitingRoomPromptBootstrapResult } from "./waiting-room-prompt-bootstrap-controller.js"
@@ -13,6 +15,7 @@ export type PromptSubmitCoordinatorDeps = {
   getPendingAttachmentCount: () => number
   clearPromptText: () => void
   workflowScreenShowing: () => boolean
+  submitProjectNameEntry?: (rawPrompt: string) => boolean | Promise<boolean>
   submitWorkspaceShellCommand: (rawPrompt: string) => Promise<void>
   workflowNodeInstructionsEditorOpen: () => boolean
   submitSlashCommand: (
@@ -50,6 +53,9 @@ export function createPromptSubmitCoordinator(
 
       deps.ensureBackgroundPollersStarted()
 
+      const projectNameEntry = deps.submitProjectNameEntry?.(rawPrompt)
+      if (projectNameEntry === true || (projectNameEntry && await projectNameEntry)) return
+
       const preparation = promptSubmitPreparationDecision({
         rawPrompt,
         pendingAttachmentCount: deps.getPendingAttachmentCount(),
@@ -80,14 +86,16 @@ export function createPromptSubmitCoordinator(
       if (!deps.isAttached() && await deps.submitDetachedSlashCommand?.(rawPrompt)) {
         return
       }
-      const handledCommand = await deps.submitSlashCommand(rawPrompt, {
-        allowSlashCommandSubmission: preparation.allowSlashCommandSubmission,
-        trimmedPrompt: preparation.trimmedPrompt,
-      })
+      const handledCommand = parseSlashCommand(rawPrompt)
+        ? await deps.submitSlashCommand(rawPrompt, {
+          allowSlashCommandSubmission: preparation.allowSlashCommandSubmission,
+          trimmedPrompt: preparation.trimmedPrompt,
+        })
+        : false
       if (handledCommand) {
         return
       }
-      if (await deps.submitProviderNamespacePrompt(rawPrompt)) {
+      if (parseProviderNamespaceCommand(rawPrompt) && await deps.submitProviderNamespacePrompt(rawPrompt)) {
         return
       }
       if (!deps.isAttached()) {

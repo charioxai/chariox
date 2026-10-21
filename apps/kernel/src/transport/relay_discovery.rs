@@ -11,7 +11,7 @@ use std::{
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::time::timeout;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 
 use chariox_relay::protocol::{
     RelayEnvelope, RelayKernelPresence, RelayMachinePresence, RelayMetadataQuery,
@@ -20,6 +20,8 @@ use chariox_relay::protocol::{
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 
+mod credentials;
+pub(crate) use credentials::{metadata_discovery_config, with_metadata_token};
 pub(crate) mod authorization;
 
 static RELAY_METADATA_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -525,11 +527,32 @@ async fn query_relay_once_with_test_trace(
     query_relay_once_inner(config, query, Some(trace)).await
 }
 
-async fn query_relay_once_inner(
+// MP-08 / MP-10 / MP-11: keep relay TLS discovery out of every caller's
+// inline future frame; the body keeps admission, receipts and timeouts deferred.
+type RelayMetadataFuture<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<RelayEnvelope, DaemonError>> + Send + 'a>,
+>;
+
+#[inline(never)]
+fn query_relay_once_inner<'a>(
+    config: &'a DaemonConfig,
+    query: RelayMetadataQuery,
+    #[cfg(test)] trace: Option<&'a mut TemporaryPeerTestTrace>,
+) -> RelayMetadataFuture<'a> {
+    #[cfg(test)]
+    let pending = query_relay_once_body(config, query, trace);
+    #[cfg(not(test))]
+    let pending = query_relay_once_body(config, query);
+    Box::pin(pending)
+}
+
+async fn query_relay_once_body(
     config: &DaemonConfig,
     query: RelayMetadataQuery,
     #[cfg(test)] mut trace: Option<&mut TemporaryPeerTestTrace>,
 ) -> Result<RelayEnvelope, DaemonError> {
+    let discovery_config = metadata_discovery_config(config).await?;
+    let config = &discovery_config;
     let relay_url = config
         .relay_url
         .clone()
@@ -550,7 +573,7 @@ async fn query_relay_once_inner(
     let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
     let (mut socket, _) = timeout(
         request_timeout,
-        connect_async(chariox_relay::frame_transport::transport_url(&relay_url)),
+        crate::transport::relay_socket_connect::connect(&relay_url),
     )
     .await
     .map_err(|_| {
@@ -666,6 +689,11 @@ async fn query_relay_once_inner(
                         request_id: response_id,
                         ..
                     } if response_id == &request_id => Ok(response),
+                    // MP-08/MP-11: the relay closes refused metadata admission.
+                    RelayEnvelope::Close { reason } => Err(DaemonError::LocalTransport {
+                        operation: "relay metadata admission",
+                        message: format!("relay refused metadata request: {reason}"),
+                    }),
                     _ => Err(DaemonError::LocalTransport {
                         operation: "decode relay metadata response",
                         message: "relay metadata response does not match request".to_string(),
@@ -745,6 +773,40 @@ mod tests {
 
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
+
+    #[tokio::test]
+    async fn metadata_query_reports_the_relay_refusal_reason() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            let _ = socket.next().await;
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&RelayEnvelope::Close {
+                        reason: "relay token action not allowed".to_string(),
+                    })
+                    .unwrap()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            let _ = timeout(Duration::from_secs(1), socket.next()).await;
+        });
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some(format!("ws://{addr}"));
+        config.relay_token = Some("metadata-fixture-token".to_string());
+        config.relay_request_timeout_ms = 1_000;
+        let error = query_relay_once(&config, RelayMetadataQuery::ListLiveMachines)
+            .await
+            .expect_err("a refused metadata request is an error");
+        server.await.unwrap();
+        assert!(
+            error.to_string().contains("relay token action not allowed"),
+            "MP-08: the relay refusal must not be reported as a mismatched reply: {error}"
+        );
+    }
 
     #[tokio::test]
     async fn metadata_query_rejects_response_for_another_request() {

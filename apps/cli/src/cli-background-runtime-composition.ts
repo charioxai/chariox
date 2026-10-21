@@ -1,3 +1,5 @@
+import { withAgentTaskUpdate } from "@chariox/kernel-client/agent-task-state"
+import { sessionHasActiveGoalClock } from "@chariox/kernel-client/session-runtime-status"
 import { createEffect, onCleanup, onMount } from "solid-js"
 
 import { createBackgroundPollerStartupController } from "./background-poller-startup-controller.js"
@@ -6,6 +8,7 @@ import {
   createConnectionHealthWatchdogController,
 } from "./connection-health-watchdog-controller.js"
 import { createDaemonActivityController } from "./daemon-activity-controller.js"
+import { recordPaneKernelEvent } from "./pane-first-frame-timing.js"
 import { createKernelEventDispatchController } from "./kernel-event-dispatch-controller.js"
 import { createKernelEventController } from "./kernel-event-controller.js"
 import { createKernelResyncController } from "./kernel-resync-controller.js"
@@ -322,10 +325,10 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
         if (!deps.isAttached()) {
           return
         }
-        const currentSession = deps.sessionState()
-        const latestSession = await deps.getSessionState(currentSession.id)
-        deps.applySessionState(latestSession)
-        await deps.refreshAgentPanes(latestSession)
+        if (!deps.sessionState().agents.some((agent: {id: string}) => agent.id === agentId)) return
+        // Use the shared hydrator's room and attachment checks after its read.
+        const latestSession = await deps.hydrateCurrentAttachedSession("external provider history")
+        if (!latestSession || deps.sessionState().id !== latestSession.id) return
         deps.syncVisibleTranscriptPreview()
         deps.appLogger?.debug?.("refreshed external provider history", {
           session_id: latestSession.id,
@@ -569,6 +572,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     applyProviderRunChanged,
     applySessionMetadataChanged,
     applyRuntimeInteractionsChanged,
+    applyAgentTaskUpdated: (sessionId, task) => { applyDeltaSessionState(sessionId, session => withAgentTaskUpdate(session, sessionId, task)) },
     applyWorkflowRunUpdated,
     applyWorkflowDesignOp,
     scheduleSharedPromptInputHistoryRefresh: deps.scheduleSharedPromptInputHistoryRefresh,
@@ -693,6 +697,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
 
   const disposeKernelEventHandler = deps.supportsKernelEventStream
     ? deps.client.onKernelEvent((event: any) => {
+      recordPaneKernelEvent(event)
       void handleKernelEvent(event)
     })
     : () => {}
@@ -733,6 +738,8 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
       deps.setWorkingAnimationFrame((value: number) => value + 1)
     },
     sessionStatusMode: deps.sessionStatusMode,
+    hasWaitingDeadline: () => deps.sessionState().agent_tasks?.some((task: { state: string }) => task.state === "waiting") ?? false,
+    hasGoalClock: () => sessionHasActiveGoalClock(deps.sessionState()),
     splitAgentResponseMode: deps.splitAgentResponseMode,
     updateSessionChrome: deps.updateSessionChrome,
     renderSplitPaneFooters: deps.renderSplitPaneFooters,
@@ -783,6 +790,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     ensureBackgroundPollersStarted,
     processKernelTerminalOutputRecord: kernelEventController.processTerminalOutputRecord,
     recordDaemonActivity,
+    handleKernelSessionUnavailable,
   }
 }
 

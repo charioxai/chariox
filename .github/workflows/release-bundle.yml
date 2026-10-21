@@ -115,7 +115,7 @@ jobs:
           pnpm --filter @chariox/cli run build
           pnpm --filter @chariox/cli run test:compile
           bun apps/cli/scripts/compile.mjs --target ${{ matrix.platform }} --outfile unsigned/bin/chariox --version "$VERSION"
-          # --version, --help and native-Claude hooks with neither Node nor Bun on PATH.
+          # MP-07 / MP-08 / MP-11: standalone --version/--help with no Node or Bun on PATH.
           node apps/cli/scripts/release-smoke.mjs unsigned/bin/chariox "$VERSION"
       - name: Compile generic Chariox Setup (MP-07 / MP-08 / MP-11)
         env:
@@ -132,11 +132,53 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # The Linux bundle ships the slice image built from the exact slice build context it
+  # carries, so a first slice start loads a signed image instead of compiling one.
+  slice-image:
+    needs: [prepare]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-24.04
+          # Docker Desktop on Apple Silicon runs linux/arm64: the macOS bundle carries this one, built natively.
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      COMMIT: ${{ needs.prepare.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Build the slice image from the exported slice build context
+        run: |
+          node scripts/release-bundle.mjs slice-context --source-commit "$COMMIT" --output "$RUNNER_TEMP/slice-build-context"
+          CHARIOX_SLICE_BUILD_IMAGE=always CHARIOX_SLICE_CARGO_BUILD_JOBS=4 \
+            bash "$RUNNER_TEMP/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh" build-image
+      - name: Export the image archive and its descriptor
+        # Not beside the context: the provisioner would take a sibling slice-image for a release install.
+        run: node scripts/slice-image-archive.mjs export --image chariox-slice-linux:0.1.0 --output "$RUNNER_TEMP/slice-image-out"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slice-image-${{ matrix.target }}
+          path: ${{ runner.temp }}/slice-image-out
+          if-no-files-found: error
+          retention-days: 7
+
   linux:
-    needs: [prepare, build]
+    needs: [prepare, build, slice-image]
     runs-on: ubuntu-24.04
     environment: release
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: read
       actions: read
@@ -162,6 +204,10 @@ jobs:
           path: ${{ runner.temp }}/runtime-input
           run-id: ${{ inputs.runtime_input_run }}
           github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: slice-image-linux-x64
+          path: ${{ runner.temp }}/slice-image
       - name: Sign the App runtime inventory (existing release signer)
         env:
           RUNTIME_RELEASE_KEY: ${{ secrets.CHARIOX_RUNTIME_RELEASE_KEY }}
@@ -185,7 +231,7 @@ jobs:
           node scripts/release-bundle.mjs slice-context --source-commit "$COMMIT" --output "$RUNNER_TEMP/slice-build-context"
           node scripts/release-bundle.mjs assemble --platform linux-x64 --version "$VERSION" --source-commit "$COMMIT" \
             --executables "$RUNNER_TEMP/executables" --runtime "$RUNNER_TEMP/runtime" \
-            --slice-build-context "$RUNNER_TEMP/slice-build-context" \
+            --slice-build-context "$RUNNER_TEMP/slice-build-context" --slice-image "$RUNNER_TEMP/slice-image" \
             --runtime-public-key "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).publicKeyHex' "$RUNNER_TEMP/runtime-receipt.json")" \
             --output "$out/$BUNDLE"
           (umask 077; printf '%s\n' "$RELEASE_KEY" > "$RUNNER_TEMP/release.pem")
@@ -204,7 +250,7 @@ jobs:
           retention-days: 30
 
   macos:
-    needs: [prepare, build]
+    needs: [prepare, build, slice-image]
     runs-on: macos-15
     environment: release
     timeout-minutes: 60
@@ -272,6 +318,10 @@ jobs:
             --trusted-builder-key "$RUNNER_TEMP/runtime-builder.pub.pem" --signing-key "$RUNNER_TEMP/runtime-release.pem" \
             --codesigned "$RUNNER_TEMP/runtime-codesigned" --codesign-identity "$CHARIOX_CODESIGN_IDENTITY" \
             --output "$RUNNER_TEMP/runtime" > "$RUNNER_TEMP/runtime-receipt.json"
+      - uses: actions/download-artifact@v4
+        with:
+          name: slice-image-linux-arm64
+          path: ${{ runner.temp }}/slice-image
       - name: Assemble, sign and verify the bundle
         env:
           RELEASE_KEY: ${{ secrets.CHARIOX_RELEASE_KEY }}
@@ -282,7 +332,7 @@ jobs:
           node scripts/release-bundle.mjs slice-context --source-commit "$COMMIT" --output "$RUNNER_TEMP/slice-build-context"
           node scripts/release-bundle.mjs assemble --platform darwin-arm64 --version "$VERSION" --source-commit "$COMMIT" \
             --executables "$RUNNER_TEMP/signed" --runtime "$RUNNER_TEMP/runtime" \
-            --slice-build-context "$RUNNER_TEMP/slice-build-context" \
+            --slice-build-context "$RUNNER_TEMP/slice-build-context" --slice-image "$RUNNER_TEMP/slice-image" \
             --macos-signing-receipt "$RUNNER_TEMP/macos-signing-receipt.json" \
             --runtime-public-key "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).publicKeyHex' "$RUNNER_TEMP/runtime-receipt.json")" \
             --output "$out/$BUNDLE"

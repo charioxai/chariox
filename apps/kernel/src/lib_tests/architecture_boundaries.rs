@@ -25,8 +25,26 @@ fn transport_output_pump_is_ready_run_driven() {
             "transport output pump must consume ready-run identities, not `{forbidden}`"
         );
     }
-    assert!(pump.contains("take_ready_provider_run_ids"));
-    assert!(pump.contains("take_due_provider_run_ids"));
+    let output = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/runtime/state/provider_output_pump_runtime.rs"),
+    )
+    .expect("independent provider output source should be readable");
+    // MP-08 / MP-10 / MP-11: maintenance must not compete for readiness.
+    assert!(!pump.contains("take_ready_provider_run_ids"));
+    assert!(!pump.contains("take_due_provider_run_ids"));
+    assert!(output.contains("take_ready_provider_run_ids"));
+    assert!(output.contains("take_due_provider_run_ids"));
+    for forbidden in [
+        "pump_active_prompt_outputs",
+        "list_sessions",
+        "list_non_ended_sessions_including_hidden",
+    ] {
+        assert!(
+            !output.contains(forbidden),
+            "output pump must consume ready-run identities, not `{forbidden}`"
+        );
+    }
 }
 
 #[test]

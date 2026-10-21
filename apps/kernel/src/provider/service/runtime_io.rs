@@ -16,6 +16,10 @@ use super::super::{
 };
 use super::ProviderProcessService;
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing ProviderRuntimeBinding typed actor payload layout"
+)]
 pub(crate) enum ProviderRuntimeBinding {
     Claude(ClaudeRuntimeBinding),
     Codex(CodexRuntimeBinding),
@@ -223,6 +227,10 @@ impl ProviderProcessService {
         self.run_actor_mailbox.stop_run(provider_run_id);
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing enqueue_structured_prompt_submit operation signature and explicit context arguments"
+    )]
     pub(crate) fn enqueue_structured_prompt_submit(
         &mut self,
         session_id: String,
@@ -235,6 +243,7 @@ impl ProviderProcessService {
         hidden_system_context: &str,
         attachments: &[PromptAttachment],
         mode: PromptAssemblyMode,
+        private_assessment_evidence: Option<crate::prompt_assembly::AssessmentEvidence>,
         steering: bool,
     ) -> Result<(), DaemonError> {
         if let Ok(active_run) = self.get_run_mut(run.id()) {
@@ -249,7 +258,8 @@ impl ProviderProcessService {
                 ),
             });
         }
-        let mode = if mode == PromptAssemblyMode::MetaagentProviderTurn {
+        let assessment_only = mode == PromptAssemblyMode::AssessmentTurn;
+        let mode = if assessment_only || mode == PromptAssemblyMode::MetaagentProviderTurn {
             mode
         } else if run.client_interface().is_chariox() {
             PromptAssemblyMode::NormalProviderTurn
@@ -260,7 +270,7 @@ impl ProviderProcessService {
             "{hidden_system_context}\n\n{}",
             crate::prompt_assembly::agent_message_origin_context(origin_prompt_id)
         );
-        let envelope = PromptAssemblyService::from_env()?
+        let mut envelope = PromptAssemblyService::from_env()?
             .assemble_provider_turn(
                 run,
                 prompt,
@@ -269,6 +279,9 @@ impl ProviderProcessService {
                 mode,
             )?
             .with_steering(steering);
+        if assessment_only {
+            envelope.private_assessment_evidence = private_assessment_evidence;
+        }
         self.run_actor_mailbox.spawn_submit(
             session_id,
             provider_run_id,
@@ -279,14 +292,15 @@ impl ProviderProcessService {
         )
     }
 
-    pub(crate) fn run_structured_utility_prompt(
+    pub(crate) fn enqueue_structured_utility_prompt(
         &mut self,
         run: &RuntimeProviderRun,
         visible_user_prompt: &str,
         hidden_system_context: &str,
         timeout: std::time::Duration,
         policy: super::super::ProviderUtilityExecutionPolicy,
-    ) -> Result<String, DaemonError> {
+        admission: Option<crate::provider::ProviderUtilityAdmission>,
+    ) -> Result<std::sync::mpsc::Receiver<Result<String, DaemonError>>, DaemonError> {
         if !self.run_uses_structured_prompt_io(run) {
             return Err(DaemonError::LocalTransport {
                 operation: "run structured utility prompt",
@@ -296,7 +310,7 @@ impl ProviderProcessService {
                 ),
             });
         }
-        let envelope = if policy.is_metadata_only() {
+        let envelope = if policy.sends_bare_prompt() {
             crate::prompt_assembly::PromptEnvelope::new(
                 visible_user_prompt,
                 hidden_system_context,
@@ -312,12 +326,13 @@ impl ProviderProcessService {
                 PromptAssemblyMode::UtilityTurn,
             )?
         };
-        self.run_actor_mailbox.run_utility(
+        self.run_actor_mailbox.enqueue_utility(
             run.id().to_string(),
             run.clone(),
             envelope,
             timeout,
             policy,
+            admission,
         )
     }
 
@@ -419,6 +434,14 @@ impl ProviderProcessService {
         self.run_actor_mailbox.drain_finished_output_polls()
     }
 
+    pub(crate) fn drain_finished_structured_output_poll_jobs_for_run(
+        &mut self,
+        run_id: &str,
+    ) -> Vec<FinishedProviderOutputPollJob> {
+        self.run_actor_mailbox
+            .drain_finished_output_polls_for_run(run_id)
+    }
+
     #[cfg(test)]
     pub(crate) fn push_finished_structured_prompt_submit_for_test(
         &mut self,
@@ -472,7 +495,7 @@ impl ProviderProcessService {
         let mut run = self.get_run(provider_run_id)?;
         if let Some(model) = batch.resolved_model.as_deref() {
             let model = if run.adapter_key() == "claude" {
-                normalize_claude_selection_model(model)
+                resolved_claude_model(run.model(), model)
             } else {
                 model.to_string()
             };
@@ -519,7 +542,7 @@ impl ProviderProcessService {
         }
         if let Some(model) = batch.resolved_model.as_deref() {
             let model = if adapter_key == "claude" {
-                normalize_claude_selection_model(model)
+                resolved_claude_model(run.model(), model)
             } else {
                 model.to_string()
             };
@@ -699,6 +722,19 @@ impl ProviderProcessService {
     }
 }
 
+/// The model Claude reports for a turn, kept on the selection's 1M-token
+/// context: Claude names the base model without the `[1m]` it runs.
+fn resolved_claude_model(selected: &str, resolved: &str) -> String {
+    let resolved = normalize_claude_selection_model(resolved);
+    if selected.to_ascii_lowercase().ends_with("[1m]")
+        && !resolved.to_ascii_lowercase().ends_with("[1m]")
+    {
+        format!("{resolved}[1m]")
+    } else {
+        resolved
+    }
+}
+
 fn normalize_claude_selection_model(model: &str) -> String {
     model
         .trim()
@@ -790,6 +826,47 @@ mod tests {
 
         assert_eq!(run.resume_state().codex_thread_id(), Some("thread-1"));
         assert_eq!(run.provider_session_id(), Some("thread-1"));
+    }
+
+    #[test]
+    fn a_resolved_claude_model_keeps_the_one_million_token_selection() {
+        crate::test_support::isolated_env_test!();
+        #[cfg(unix)]
+        let _claude = crate::test_support::TestClaudeExecutable::new();
+        let mut providers = ProviderProcessService::new();
+        let run_id = |providers: &mut ProviderProcessService, model: &str| {
+            providers
+                .start_run_provider_only(LaunchProviderRequest::new(
+                    "session-1",
+                    "claude",
+                    "claude",
+                    "default",
+                    model,
+                ))
+                .expect("provider run should start")
+                .run()
+                .id()
+                .to_string()
+        };
+        let batch = crate::provider::ProviderPromptSignalBatch {
+            resolved_model: Some("claude/claude-sonnet-5-5".to_string()),
+            ..Default::default()
+        };
+
+        for (selected, resolved) in [
+            ("sonnet[1m]", "claude-sonnet-5-5[1m]"),
+            ("sonnet", "claude-sonnet-5-5"),
+        ] {
+            let run_id = run_id(&mut providers, selected);
+            let preview = providers
+                .preview_structured_output_metadata(&run_id, &batch)
+                .expect("preview");
+            assert_eq!(preview.model(), resolved);
+            providers
+                .apply_structured_output_metadata(&run_id, &batch)
+                .expect("apply");
+            assert_eq!(providers.get_run(&run_id).unwrap().model(), resolved);
+        }
     }
 
     #[test]

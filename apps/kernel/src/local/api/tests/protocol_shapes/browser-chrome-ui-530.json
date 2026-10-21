@@ -1,0 +1,28 @@
+{
+  "state_keys": ["browser_lockdown", "chrome_window", "generation", "state", "tabs", "viewport"],
+  "chrome_window_keys": ["active_tab_id", "auxiliary", "window_generation"],
+  "auxiliary_keys": ["auxiliary_id", "height", "width", "x", "y"],
+  "browser_lockdown": ["managed", "unavailable"],
+  "requests": [
+    {"KernelBrowser": {"command": {"op": "display_subscribe", "tab_id": "t", "generation": 2, "codecs": ["png", "avc1.420033"], "bitrate": 2000000, "device_scale_factor": 2,
+      "target": {"kind": "browser_auxiliary", "window_generation": 7, "auxiliary_id": 4}}}},
+    {"KernelBrowser": {"command": {"op": "display_input", "tab_id": "t", "generation": 2, "document_id": "d", "binding_id": "b", "sequence": 7,
+      "input": {"kind": "click", "x": 120, "y": 20, "button": "middle"}}}},
+    {"KernelBrowser": {"command": {"op": "display_input", "tab_id": "t", "generation": 2, "document_id": "d", "binding_id": "b", "sequence": 7,
+      "input": {"kind": "click", "x": 120, "y": 20, "button": "right"}}}},
+    {"KernelBrowser": {"command": {"op": "display_input", "tab_id": "t", "generation": 2, "document_id": "d", "binding_id": "b", "sequence": 7,
+      "input": {"kind": "drag", "x": 120, "y": 20, "to_x": 380, "to_y": 22}}}}
+  ],
+  "response": {
+    "KernelBrowser": {
+      "result": {
+        "state": "ready",
+        "generation": 7,
+        "tabs": [],
+        "viewport": { "width": 1280, "height": 800, "device_scale_factor": 2 },
+        "chrome_window": { "window_generation": 3, "active_tab_id": "tab-2", "auxiliary": [{ "auxiliary_id": 4, "x": 1020, "y": 70, "width": 248, "height": 420 }] },
+        "browser_lockdown": "managed"
+      }
+    }
+  }
+}

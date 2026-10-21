@@ -181,6 +181,9 @@ pub(crate) fn provider_auth_env_vars(provider: &str) -> &'static [&'static str] 
             "ANTHROPIC_AUTH_TOKEN",
             "ANTHROPIC_BASE_URL",
             "ANTHROPIC_CUSTOM_HEADERS",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_USE_FOUNDRY",
             "CLAUDE_CODE_OAUTH_TOKEN",
             "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
             "CLAUDE_CODE_OAUTH_SCOPES",
@@ -921,6 +924,8 @@ struct RegistryDocument {
     version: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     credential_copy_notices: Vec<copy_notice::CredentialCopyNotice>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    credential_copies_issued: Vec<copy_notice::IssuedCredentialCopy>,
     #[serde(default)]
     profiles: Vec<StoredProviderAccountProfile>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -940,6 +945,7 @@ impl Default for RegistryDocument {
         Self {
             version: REGISTRY_VERSION,
             credential_copy_notices: Vec::new(),
+            credential_copies_issued: Vec::new(),
             profiles: Vec::new(),
             pending_replica_cleanup: Vec::new(),
         }
@@ -1153,9 +1159,7 @@ impl ProviderAccountProfileRegistry {
             .iter()
             .filter(|profile| {
                 profile.public.owner_user_id == owner_user_id
-                    && provider
-                        .as_deref()
-                        .is_none_or(|provider| profile.public.provider == provider)
+                    && provider.is_none_or(|provider| profile.public.provider == provider)
             })
             .map(|profile| project_usage_freshness(profile.public.clone()))
             .collect())
@@ -1205,14 +1209,18 @@ impl ProviderAccountProfileRegistry {
         let profile = self.get(owner_user_id, provider, profile_id)?;
         // MP-08/MP-10/MP-11: a registered Claude token is admitted to the
         // kernel's first-use check. Unknown/expired observations must not ask
-        // the user to replace a potentially valid token before that check.
-        let deferred_claude_check = profile.auth_state != ProviderAccountAuthState::Authenticated
-            && profile.provider == "claude"
-            && crate::provider::provider_account_credential_registered(
+        // the user to replace a potentially valid token before that check. A
+        // home's Claude replica holds no token: the home supplies it to every
+        // launch of the lease, and that launch runs the same check.
+        let deferred_claude_check = matches!(
+            profile.auth_state,
+            ProviderAccountAuthState::Unknown | ProviderAccountAuthState::Expired
+        ) && profile.provider == "claude"
+            && (crate::provider::provider_account_credential_registered(
                 owner_user_id,
                 "claude",
                 &profile.profile_id,
-            )?;
+            )? || self.is_home_token_claude_replica(owner_user_id, &profile.profile_id)?);
         if profile.auth_state == ProviderAccountAuthState::Authenticated || deferred_claude_check {
             if let Some(block) = provider_account_usage_block(
                 &profile.provider,
@@ -1256,6 +1264,17 @@ impl ProviderAccountProfileRegistry {
 
     pub(crate) fn require_agent_authenticated(
         &self,
+        owner_user_id: &str,
+        agent: &crate::agent::AgentInstance,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        self.require_agent_authenticated_with(owner_user_id, agent, operation, false)
+    }
+
+    /// Worker-side admission of a leased prompt: a Claude replica carries no credentials, so an
+    /// unobserved one is admitted and the home's per-launch credential is checked at launch.
+    pub(crate) fn require_leased_agent_authenticated(
+        &self,
         config: &crate::config::DaemonConfig,
         agent: &crate::agent::AgentInstance,
         operation: &'static str,
@@ -1263,15 +1282,37 @@ impl ProviderAccountProfileRegistry {
         let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
             return Ok(());
         };
-        let owner_user_id = provider_account_authority_owner_for_profile(
+        let owner = provider_account_authority_owner_for_profile(
             config,
             self,
             agent.owner_user_id(),
             provider,
             agent.provider_account_profile(),
         )?;
+        self.require_agent_authenticated_with(&owner, agent, operation, true)
+    }
+
+    fn require_agent_authenticated_with(
+        &self,
+        owner_user_id: &str,
+        agent: &crate::agent::AgentInstance,
+        operation: &'static str,
+        launch_credential_may_follow: bool,
+    ) -> Result<(), DaemonError> {
+        let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
+            return Ok(());
+        };
+        if launch_credential_may_follow && provider == "claude" {
+            let profile = self.get(owner_user_id, provider, agent.provider_account_profile())?;
+            if matches!(
+                profile.auth_state,
+                ProviderAccountAuthState::Unknown | ProviderAccountAuthState::NotConfigured
+            ) {
+                return Ok(());
+            }
+        }
         self.require_authenticated(
-            &owner_user_id,
+            owner_user_id,
             provider,
             agent.provider_account_profile(),
             agent.model(),
@@ -1294,6 +1335,10 @@ impl ProviderAccountProfileRegistry {
             .map(|profile| profile.public.clone())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing update_observation operation signature and explicit context arguments"
+    )]
     pub fn update_observation(
         &self,
         owner_user_id: &str,
@@ -1375,6 +1420,25 @@ impl ProviderAccountProfileRegistry {
         Ok(result)
     }
 
+    /// The provider refused this machine's stored login. Keep who it was and
+    /// what it covered so the user can see which account to sign in to again.
+    pub fn mark_needs_sign_in(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<ProviderAccountProfile, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let mut document = self.write_document()?;
+        let profile =
+            resolve_stored_profile_mut(&mut document, owner_user_id, provider, profile_id)?;
+        profile.public.auth_state = ProviderAccountAuthState::Expired;
+        profile.public.last_validated_at_ms = Some(crate::session::unix_epoch_ms());
+        let result = profile.public.clone();
+        self.persist_locked(&document)?;
+        Ok(result)
+    }
+
     pub fn mark_logged_out(
         &self,
         owner_user_id: &str,
@@ -1427,6 +1491,29 @@ impl ProviderAccountProfileRegistry {
         let result = profile.public.clone();
         self.persist_locked(&document)?;
         Ok(result)
+    }
+
+    /// Records usage observed in provider output. Usage is advisory account
+    /// metadata: a leased worker run carries the home kernel's profile, which
+    /// this registry may not contain, and must never drop the output with it.
+    pub(crate) fn record_observed_usage(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+        usage: ProviderAccountUsageSnapshot,
+    ) {
+        if let Err(error) = self.update_usage(owner_user_id, provider, profile_id, usage) {
+            crate::logging::debug_with_fields(
+                "daemon.provider",
+                "observed provider usage not recorded",
+                serde_json::json!({
+                    "provider": provider,
+                    "account_profile": profile_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
 
     pub(crate) fn acquire_usage_refresh_attempt(
@@ -2225,7 +2312,7 @@ impl ProviderAccountProfileRegistry {
                 require_replica_root_identity(managed_parent, profile_id, expected_root_identity)?;
                 managed_parent.rename(profile_id, rollback_name)?;
                 require_replica_root_identity(
-                    &managed_parent,
+                    managed_parent,
                     rollback_name,
                     expected_root_identity,
                 )?;
@@ -2567,6 +2654,27 @@ impl ProviderAccountProfileRegistry {
         Ok(())
     }
 
+    /// A lease replica of a home Claude account carries no credential file:
+    /// the worker refuses one and the home supplies its token to every launch.
+    /// A deployment replica must carry one and validate it first.
+    fn is_home_token_claude_replica(
+        &self,
+        owner_user_id: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        {
+            let document = self.read_document()?;
+            let stored = resolve_stored_profile(&document, owner_user_id, "claude", profile_id)?;
+            if !stored.materialized_replica || stored.managed_context_replica.is_some() {
+                return Ok(false);
+            }
+        }
+        let environment = self.resolve_environment(owner_user_id, "claude", profile_id)?;
+        Ok(environment
+            .get("CLAUDE_CONFIG_DIR")
+            .is_some_and(|dir| !Path::new(dir).join(".credentials.json").exists()))
+    }
+
     pub(crate) fn is_legacy_unpinned_replica(
         &self,
         owner_user_id: &str,
@@ -2781,7 +2889,7 @@ impl ProviderAccountProfileRegistry {
             let registry_restore_error = self.persist_locked(&document).err();
             let root_restore_error = retained.as_ref().and_then(|(root, identity, parent)| {
                 let name = root.file_name()?.to_str()?;
-                require_replica_root_identity(&parent, name, *identity)
+                require_replica_root_identity(parent, name, *identity)
                     .and_then(|_| {
                         if parent.exists(profile_id)? {
                             return Err(registry_error(
@@ -4186,11 +4294,21 @@ fn find_stored_profile<'a>(
                 && profile.public.is_default
         })
     } else {
-        document.profiles.iter().find(|profile| {
-            profile.public.owner_user_id == owner_user_id
-                && profile.public.provider == provider
-                && profile.public.profile_id == profile_id
-        })
+        let in_namespace = |profile: &&StoredProviderAccountProfile| {
+            profile.public.owner_user_id == owner_user_id && profile.public.provider == provider
+        };
+        document
+            .profiles
+            .iter()
+            .filter(in_namespace)
+            .find(|profile| profile.public.profile_id == profile_id)
+            .or_else(|| {
+                document
+                    .profiles
+                    .iter()
+                    .filter(in_namespace)
+                    .find(|profile| profile.public.label == profile_id)
+            })
     }
 }
 
@@ -4774,7 +4892,7 @@ fn remove_managed_root(root: &Path, registry_path: &Path) -> Result<(), DaemonEr
             ));
         };
         let parent = managed_fs::ManagedProviderParent::open(registry_path, owner, provider)?;
-        return parent.remove(name);
+        parent.remove(name)
     }
     #[cfg(not(unix))]
     {
@@ -7354,6 +7472,7 @@ mod tests {
 
     #[test]
     fn default_claude_profile_inherits_the_host_environment() {
+        crate::test_support::isolated_env_test!();
         let (root, registry) = fixture();
         registry
             .migrate_effective_defaults("owner-a", &root.join("home"))
@@ -8438,6 +8557,7 @@ mod tests {
 
     #[test]
     fn default_alias_tracks_selected_provider_default() {
+        crate::test_support::isolated_env_test!();
         let (root, registry) = fixture();
         let native_default = registry
             .migrate_effective_defaults("owner-a", &root.join("home"))
