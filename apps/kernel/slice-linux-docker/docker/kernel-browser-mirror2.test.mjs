@@ -512,6 +512,16 @@ test('MP-10 M2: completed stylesheet bodies do not wait for Page resource-conten
  assert.equal(await mirror.crossOriginSheet(world,'https://public.example/style.css'),body.toString());assert.deepEqual(calls,[]);
 });
 
+// mirrorfix F2 (Amazon search mirrored unstyled): every Amazon sheet href ends in `#<revision>`, which CDP never reports.
+test('a cross-origin stylesheet whose href has a fragment is read by its request URL',async()=>{
+ const body=Buffer.from('body{color:green}'),asked=[];
+ const world={connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
+ const mirror=new Mirror2({host:{browser:{responseBodies:{async read(_world,address){asked.push(address);return address==='https://public.example/s.css?AUIClients/X'?body:null}}}}});
+ mirror.evaluate=async(_world,expression)=>{assert(expression.includes(body.toString()));return body.toString()};
+ assert.equal(await mirror.crossOriginSheet(world,'https://public.example/s.css?AUIClients/X#1353983-T1'),body.toString());
+ assert.deepEqual(asked,['https://public.example/s.css?AUIClients/X']);
+});
+
 test('MP-10 M2: first-packet font bytes use the completed response before the Page content gate',async()=>{
  const body=Buffer.alloc(48);body.write('wOF2');const calls=[];
  const world={connection:{async send(method){calls.push(method);throw Error('unrelated document resources are still loading')}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
