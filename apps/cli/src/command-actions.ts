@@ -406,6 +406,8 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         const response = await deps.sendRoomEnvironmentRequest(getProjectEnvironmentManifestRequest(session.project_id, deps.focusedAgentId())) as { ProjectEnvironmentManifest?: {manifest?: ProjectEnvironmentManifest | null} }
         const manifest = response.ProjectEnvironmentManifest?.manifest
         deps.appendNotice(manifest ? `Environment\n${projectEnvironmentPanelLines(manifest).join("\n")}\n/env project adjust — Change something...` : "No saved Project environment yet")
+        // The Environment carries the Project's skills; /skills environment manages them.
+        await skillsCommand(["environment"])
       }
       return
     }

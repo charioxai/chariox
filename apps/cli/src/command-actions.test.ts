@@ -333,10 +333,14 @@ test("MP-08 / MP-10 / MP-11 /env project shows saved decisions and Adjust opens 
       requests.push(request)
       return {ProjectEnvironmentManifest: {manifest: {schema_version: 1, project_id: "project-1", evidence_digest: "a".repeat(64), entries: [], private_files: [{workspace_id: "web", path: "notes.md", bring: true, reason: "Project notes"}], toolchain_hints: [], package_hints: [], service_hints: []}}} as T
     },
+    sendSkillsRequest: async ({SkillsV2: request}: {SkillsV2: {action: string}}) => request.action === "loads"
+      ? {kind: "loads", records: []}
+      : {kind: "catalog", revision: 3, skills: [], packages: [], native: [], metadata_budget_percent: 1},
     appendNotice: (message: string) => notices.push(message),
   }))
   await handlers.handleEnvCommand({kind: "env", raw: "/env project", args: ["project"]})
   assert.match(notices[0]!, /Bring notes.md — Project notes/)
+  assert.match(notices[1]!, /Skills · catalog revision 3[\s\S]*Project:\n {2}no skills installed/)
   await handlers.handleEnvCommand({kind: "env", raw: "/env project adjust", args: ["project", "adjust"]})
   assert.deepEqual(requests, [{GetProjectEnvironmentManifest: {projectId: "project-1", agentId: "agent-1"}}, {AdjustProjectEnvironment: {sessionId: "session-1", agentId: "agent-1"}}])
 })
