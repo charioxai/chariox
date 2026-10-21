@@ -96,11 +96,7 @@ pub(super) fn start(
             ))
         };
     }
-    if t.state != ExecutionState::Working
-        || t.task_id != t.prompt_id
-        || !t.obligations.is_empty()
-        || t.completion_check.is_some()
-    {
+    if t.state != ExecutionState::Working || t.task_id != t.prompt_id || !t.obligations.is_empty() {
         return Err(error("goal admission must precede work"));
     }
     t.goal = Some(AgentGoal {
@@ -174,10 +170,7 @@ pub(super) fn work_end(t: &mut AgentTaskExecution, has_answer: bool, now: u64) -
         return false;
     }
     let revision = completion::objective_revision(t);
-    let count = t.goal.as_ref().map_or_else(
-        || t.completion_check.as_ref().unwrap().check_count,
-        |g| g.check_count,
-    ) + 1;
+    let count = t.goal.as_ref().map_or(0, |g| g.check_count) + 1;
     let prompt = format!("goal-check-{}-{}-{}", t.task_id, revision, count);
     let check = GoalEvaluation {
         origin: "completion_check".into(),
@@ -193,10 +186,6 @@ pub(super) fn work_end(t: &mut AgentTaskExecution, has_answer: bool, now: u64) -
     if let Some(g) = &mut t.goal {
         g.check_count = count;
         g.evaluation = Some(check);
-    } else {
-        let c = t.completion_check.as_mut().unwrap();
-        c.check_count = count;
-        c.evaluation = Some(check);
     }
     t.pending_prompt_id = Some(prompt);
     t.state = ExecutionState::Working;
@@ -266,7 +255,6 @@ pub(super) fn evaluate(
                 t.wait = None;
                 t.reason.clear();
                 if let Some(g) = &mut t.goal { g.final_answer = Some(final_answer); g.evidence = evidence; g.next_check_in_ms = None; }
-                else { let c = t.completion_check.as_mut().unwrap(); c.final_answer = Some(final_answer); c.evidence = evidence; }
             }
         }
         Some(Assessment::Continue { reason }) if !reason.trim().is_empty() => {
@@ -321,17 +309,6 @@ pub(super) fn evaluate(
 }
 
 fn continue_work(t: &mut AgentTaskExecution, reason: &str) -> bool {
-    if t.goal.is_none() {
-        if t.correction_used {
-            blocked(t, "Plain request remains incomplete after one correction; owner must resume or cancel");
-            return false;
-        }
-        t.correction_used = true;
-        t.wait = None;
-        t.reason = reason.into();
-        t.pending_prompt_id = Some(format!("task-correction-{}", t.task_id));
-        return true;
-    }
     if t.no_progress_wakes >= NO_PROGRESS_LIMIT {
         blocked(t, "Goal repeated continuation without handled progress; owner must inspect and explicitly resume");
         return false;

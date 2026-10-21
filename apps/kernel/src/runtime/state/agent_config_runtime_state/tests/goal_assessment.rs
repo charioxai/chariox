@@ -296,8 +296,12 @@ async fn a10_completion_assesses_leased_public_result_without_requesting_private
             run: Some(run.into()),
             now: 1,
         },
-        Operation::EnableCompletionCheck {
+        Operation::StartGoal {
             task: prompt.into(),
+            owner: "owner".into(),
+            objective: "Check the kernel health".into(),
+            minutes: 10,
+            now: 1,
         },
         Operation::Settle {
             room: room.clone(),
@@ -384,8 +388,12 @@ async fn mp11_protected_assessment_context_omits_public_withheld_answer() {
             run: Some("run".into()),
             now: 1,
         },
-        Operation::EnableCompletionCheck {
+        Operation::StartGoal {
             task: "protected-work".into(),
+            owner: "owner".into(),
+            objective: "Check the kernel health".into(),
+            minutes: 10,
+            now: 1,
         },
         Operation::Settle {
             room: room.clone(),
@@ -425,7 +433,7 @@ async fn mp11_protected_assessment_context_omits_public_withheld_answer() {
     assert_eq!(data["answer_coverage"]["visibility"], "protected");
     let mut leased = task.clone();
     leased
-        .completion_check
+        .goal
         .as_mut()
         .unwrap()
         .evaluation
@@ -468,8 +476,12 @@ async fn mp11_protected_completion_reads_private_result_and_keeps_history_withhe
             run: Some("run".into()),
             now,
         },
-        Operation::EnableCompletionCheck {
+        Operation::StartGoal {
             task: "private-work".into(),
+            owner: "local-user".into(),
+            objective: "Check the kernel health".into(),
+            minutes: 10,
+            now: 1,
         },
         Operation::Settle {
             room: room.clone(),
@@ -604,8 +616,12 @@ async fn mp11_neutral_assessment_uses_private_work_result_without_public_or_dura
         })
         .unwrap();
     store
-        .agent_lifecycle(Operation::EnableCompletionCheck {
+        .agent_lifecycle(Operation::StartGoal {
             task: "private-work-input".into(),
+            owner: "local-user".into(),
+            objective: "Check the kernel health".into(),
+            minutes: 10,
+            now: 1,
         })
         .unwrap();
     let work = crate::session::PromptQueueItem::new(
