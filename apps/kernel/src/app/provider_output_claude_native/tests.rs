@@ -4148,7 +4148,7 @@ fn claude_native_typed_skill_reaches_the_hook_context() {
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .unwrap();
-    let attachment = crate::app::KernelSessionService::new(&mut app)
+    let _attached_client = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
             "typed-skill-client",
