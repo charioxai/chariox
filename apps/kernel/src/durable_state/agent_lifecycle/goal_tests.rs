@@ -1294,6 +1294,45 @@ fn r16_continue_still_rejects_unknown_authority_or_invalid_reference_type() {
     }
 }
 
+// MP-08 / MP-10 / MP-11: an empty assessor capture is "no verdict", never an
+// answer that ends the task Done. It gets one more check, then a definitive Blocked.
+#[test]
+fn r3_empty_assessor_capture_is_no_verdict_then_blocked() {
+    let f = Fixture::new();
+    plain(&f);
+    f.settle("p", true);
+    let id = f.task().pending_prompt_id.unwrap();
+    f.begin(&id);
+    let Outcome::Settled { task, correction } = f.apply(Operation::EvaluateGoal {
+        task: "p".into(),
+        prompt: id,
+        result: "  ".into(),
+        work_answer: Some("public work answer".into()),
+        now: 4,
+    }) else {
+        panic!()
+    };
+    assert_eq!(task.state, ExecutionState::Working);
+    assert!(correction && task.correction_used);
+    let correction_id = task.pending_prompt_id.unwrap();
+    f.begin(&correction_id);
+    f.settle(&correction_id, true);
+    let id = f.task().pending_prompt_id.unwrap();
+    f.begin(&id);
+    let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
+        task: "p".into(),
+        prompt: id,
+        result: String::new(),
+        work_answer: Some("public work answer".into()),
+        now: 5,
+    }) else {
+        panic!()
+    };
+    assert_eq!(task.state, ExecutionState::Blocked);
+    assert!(task.reason.contains("no verdict"), "{}", task.reason);
+    assert!(task.completion_check.unwrap().final_answer.is_none());
+}
+
 // MP-08 / MP-10 / MP-11: real r22 Codex emitted a syntactically broken first
 // assessment after reporting and acknowledging the exact new child result.
 #[test]

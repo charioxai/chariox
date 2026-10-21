@@ -277,9 +277,12 @@ pub(super) fn evaluate(
     // MP-08 / MP-10 / MP-11: a plain request gets one correction. Once
     // that work has a public answer and zero unresolved obligations, further
     // assessor notes are information, not an owner action or a goal loop.
+    // An empty capture is "no verdict": it is neither information nor an answer.
+    let has_reply = !result.is_empty();
     let plain_correction_finished = t.goal.is_none()
         && t.correction_used
         && valid
+        && has_reply
         && !t
             .obligations
             .iter()
@@ -288,6 +291,7 @@ pub(super) fn evaluate(
     // instead of assessing it) carries no verdict; the public answer stands.
     let answered_instead = t.goal.is_none()
         && valid
+        && has_reply
         && !result.contains('{')
         && work_answer.as_deref().is_some_and(|a| !a.trim().is_empty())
         && !t
@@ -318,8 +322,13 @@ pub(super) fn evaluate(
             && work_answer.as_deref().is_some_and(|answer| !answer.trim().is_empty())
             && !t.obligations.iter().any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
             && serde_json::from_str::<serde_json::Value>(result).is_err() => {
-                again = continue_work(&mut t, "The completion check returned malformed JSON. Review the existing public answer and handled receipts, then report the result once. Do not rerun completed work merely to repair this check");
+                again = continue_work(&mut t, if has_reply {
+                    "The completion check returned malformed JSON. Review the existing public answer and handled receipts, then report the result once. Do not rerun completed work merely to repair this check"
+                } else {
+                    "The completion check returned no verdict. Review the existing public answer and handled receipts, then report the result once. Do not rerun completed work merely to repair this check"
+                });
         }
+        None if valid && !has_reply => blocked(&mut t, "The completion check returned no verdict twice; explicitly resume to run it again"),
         None => blocked(&mut t, "Goal evaluation timed out, was malformed or stale; inspect the receipt and explicitly resume"),
         Some(Assessment::Blocked { reason }) if !reason.trim().is_empty() => blocked(&mut t, &reason),
         Some(Assessment::Achieved { final_answer, evidence }) if !final_answer.trim().is_empty() && !evidence.is_empty() && evidence.iter().all(|e| !e.trim().is_empty()) => {
