@@ -195,6 +195,10 @@ jobs:
         # MP-01/MP-03: inner-slice/shared-host launch assembly validates bwrap.
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
 
+      - name: Install native display build dependencies
+        # Clippy builds --all-features, which compiles the native-display C sources.
+        run: sudo apt-get install -y xvfb libx11-dev libxext-dev libxdamage-dev libxcomposite-dev libxtst-dev libx264-dev libavcodec-dev libavutil-dev libyuv-dev libwebp-dev
+
       - name: Allow unprivileged user namespaces for Bubblewrap
         # Ubuntu 24.04 runners set kernel.apparmor_restrict_unprivileged_userns=1, which blocks
         # bwrap's UID map; product hosts load chariox-slice-provider.apparmor instead
@@ -224,6 +228,9 @@ jobs:
         run: |
           node --test scripts/clippy-changed-lines-gate.test.mjs
           node scripts/clippy-changed-lines-gate.mjs
+        env:
+          CHARIOX_NATIVE_DISPLAY_INCLUDE: /usr/include
+          CHARIOX_NATIVE_DISPLAY_LIB: /usr/lib/x86_64-linux-gnu
 
       - name: Install official provider test harnesses
         run: |
@@ -242,7 +249,6 @@ jobs:
         # MP-08/MP-10/MP-11 (#933 review 8): the Linux kernel's XShm/x264
         # worker (unsafe FFI, sessions, C harnesses on a real Xvfb).
         run: |
-          sudo apt-get install -y xvfb libx11-dev libxext-dev libxdamage-dev libxcomposite-dev libxtst-dev libx264-dev libavcodec-dev libavutil-dev libyuv-dev libwebp-dev
           cargo test -p chariox-kernel --lib --features native-display display_native
           node --test apps/browser-display/native-capture-*.test.mjs
         env:
