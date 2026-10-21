@@ -7,8 +7,7 @@ struct FaultStore {
 }
 
 impl FaultStore {
-    /// The writer reads the variable when the store opens; it is unset again
-    /// right away so no other store in this process sees it.
+    /// The store reads its fault directory when it opens, on this thread only.
     fn open(name: &str, faults: &[&str]) -> Self {
         let root = std::env::temp_dir().join(format!(
             "chariox-agent-faults-{name}-{:016x}",
@@ -18,13 +17,11 @@ impl FaultStore {
         for fault in faults {
             std::fs::write(root.join("faults").join(fault), "").unwrap();
         }
-        std::env::set_var("CHARIOX_AGENT_FAULT_DIR", root.join("faults"));
-        let store = DurableKernelStateStore::open_owned(root.join("state.sqlite"));
-        std::env::remove_var("CHARIOX_AGENT_FAULT_DIR");
-        Self {
-            store: store.unwrap(),
-            root,
-        }
+        let store = {
+            let _faults = faults::TestFaultDir::set(&root.join("faults"));
+            DurableKernelStateStore::open_owned(root.join("state.sqlite")).unwrap()
+        };
+        Self { store, root }
     }
     fn begin(&self, prompt: &str) -> Result<Outcome, crate::error::DaemonError> {
         self.store.agent_lifecycle(Operation::Begin {

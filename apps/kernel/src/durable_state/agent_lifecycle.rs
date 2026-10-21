@@ -281,7 +281,9 @@ pub(super) fn execute(db: &mut Connection, request: Request, faults: &faults::Ag
                 e.to_string()
             }));
         }
-        if let Some((kind, operation)) = duplicate {
+        // A scheduler tick that fired nothing delivered nothing.
+        let delivered = !matches!(&value, Outcome::Wakes(fired) if fired.is_empty());
+        if let Some((kind, operation)) = duplicate.filter(|_| delivered) {
             redeliver(db, faults, kind, operation);
         }
         Ok(value)
