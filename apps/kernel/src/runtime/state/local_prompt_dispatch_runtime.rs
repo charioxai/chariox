@@ -702,25 +702,27 @@ impl KernelRuntimeState {
         let dispatch_for_write = dispatch.clone();
         let write_task = tokio::task::spawn_blocking(move || {
             if !owned_for_write.ensure_prompt_dispatch_matches_active_prompt(&dispatch_for_write)? {
-                return Err(DaemonError::LocalTransport {
-                    operation: "dispatch prompt",
-                    message: "prompt changed before PTY dispatch".into(),
-                });
+                return Ok(PromptDispatchAcceptance::Dropped);
             }
             owned_for_write.bind_agent_event_submission(&dispatch_for_write)?;
-            writer.write_input(&provider_pty_input)
+            writer.write_input(&provider_pty_input)?;
+            Ok(PromptDispatchAcceptance::Submitted)
         });
-        match tokio::time::timeout(std::time::Duration::from_secs(15), write_task).await {
-            Ok(result) => result.map_err(|error| DaemonError::LocalTransport {
-                operation: "write provider PTY input",
-                message: error.to_string(),
-            })??,
-            Err(_) => {
-                return Err(DaemonError::PtyWrite {
-                    provider_run_id,
-                    message: "timed out after 15 seconds of provider backpressure".to_string(),
-                });
-            }
+        let acceptance =
+            match tokio::time::timeout(std::time::Duration::from_secs(15), write_task).await {
+                Ok(result) => result.map_err(|error| DaemonError::LocalTransport {
+                    operation: "write provider PTY input",
+                    message: error.to_string(),
+                })??,
+                Err(_) => {
+                    return Err(DaemonError::PtyWrite {
+                        provider_run_id,
+                        message: "timed out after 15 seconds of provider backpressure".to_string(),
+                    });
+                }
+            };
+        if acceptance == PromptDispatchAcceptance::Dropped {
+            return Ok(acceptance);
         }
         owned.consume_delivered_turn_context(
             &dispatch.session_id,
@@ -3374,6 +3376,60 @@ pub(in crate::runtime::state) mod tests {
             .owned
             .prompt_dispatch_matches_active_prompt(&steering_dispatch)
             .expect("dispatch match should evaluate"));
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_pty_write_drops_the_pending_dispatch() {
+        let (_worktree, mut runtime, session_id, agent_id, attachment_id, prompt_id, run_id) =
+            runtime_with_active_prompt().await;
+        let dispatch = dispatch(
+            &session_id,
+            &agent_id,
+            &attachment_id,
+            &run_id,
+            &prompt_id,
+            "active prompt",
+            None,
+            false,
+        );
+        let writer_requested = Arc::new(tokio::sync::Notify::new());
+        runtime.observe_app_lock_wait_for_test(Arc::clone(&writer_requested));
+        let app = Arc::clone(&runtime.app);
+        let app_guard = app.lock().await;
+        let task_runtime = runtime.clone();
+        let pending = tokio::spawn(async move {
+            task_runtime
+                .enqueue_prompt_dispatch_after_liveness_with_acceptance(
+                    &dispatch,
+                    &task_runtime.owned,
+                )
+                .await
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            writer_requested.notified(),
+        )
+        .await
+        .expect("dispatch should reach its PTY writer lookup");
+        // Hold the writer lookup after admission so cancellation wins before
+        // the blocking write rechecks ownership, without relying on scheduling.
+        let cancellation = runtime
+            .owned
+            .cancel_local_prompt(&session_id, &agent_id, &attachment_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            cancellation.cancellation.prompt.status(),
+            PromptStatus::Cancelling
+        );
+        drop(app_guard);
+        let result = pending.await.unwrap();
+        assert!(
+            matches!(result, Ok(PromptDispatchAcceptance::Dropped)),
+            "cancelled dispatch should be dropped: {result:?}"
+        );
+        assert!(provider_inputs_containing(&runtime, "active prompt").is_empty());
+        assert!(failed_requests(&runtime, &agent_id).is_empty());
     }
 
     #[tokio::test]
