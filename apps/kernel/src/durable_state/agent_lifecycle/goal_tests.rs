@@ -1091,3 +1091,43 @@ fn owner_refusal_blocks_with_the_reason_and_resume() {
     );
     assert_eq!(completion::evaluation(&blocked).unwrap().paused_at_ms, None);
 }
+
+// #1044 P1 on the goal ledger: an unacknowledged receipt of a clean source exit
+// ("settling") must never let any verdict sequence save Done; the persisted task reloads valid.
+#[test]
+fn a12_settling_obligation_never_saves_done_on_repeated_verdicts() {
+    let f = Fixture::new();
+    goal(&f, 10);
+    f.register();
+    f.subscribe();
+    f.apply(Operation::SourceOutcome {
+        now: 2,
+        public_answer: None,
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "result".into(),
+        success: true,
+    });
+    assert_eq!(f.task().obligations[0].status, "settling");
+    f.settle("p", true);
+    let claim =
+        serde_json::json!({"status":"achieved","final_answer":"done","evidence":["history"]});
+    for verdict in [
+        assessment("continue"),
+        assessment("continue"),
+        claim.clone(),
+        claim,
+    ] {
+        let t = check(&f, verdict);
+        let saved = f.task();
+        assert_eq!(saved, t);
+        assert_ne!(saved.state, ExecutionState::Done);
+        assert_eq!(saved.obligations[0].status, "settling");
+        let Some(id) = saved.pending_prompt_id else {
+            break;
+        };
+        f.begin(&id);
+        f.settle(&id, true);
+    }
+    assert_eq!(f.task().state, ExecutionState::Blocked);
+}
