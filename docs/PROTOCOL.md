@@ -4951,7 +4951,7 @@ prompt-scoped live rows.
 ### Skills v2 wire contract — MP-08 / MP-10 / MP-11
 
 Local daemon **533**, relay peer **141** reserve the Skills v2 instruction
-catalog contract; local **554** / peer **162** add the leased-worker native
+catalog contract; local **571** / peer **179** add the leased-worker native
 inventory request below (no client-visible shape changed; the client minimum
 stays 533/141). `SkillsV2` wraps a tagged `action` request and a tagged `kind`
 result. The canonical Rust shapes are `skill/v2.rs`; shared TypeScript and Swift
@@ -4986,9 +4986,9 @@ catalog revision, awaits the verified receipt, and prepends hidden context that
 names the worker's verified roots (Auto skills point to their SKILL.md there;
 selected bodies are inline). The worker holds no catalog and never resolves
 skills itself; Chariox list/load_skill/manage_skills and load receipts are
-forwarded to and recorded on the home (see peer 162 below); a failed transfer
+forwarded to and recorded on the home (see peer 179 below); a failed transfer
 refuses the turn.
-Peer 162 adds `ReadLeasedSkillNativeInventory` (home to its leased worker; the
+Peer 179 adds `ReadLeasedSkillNativeInventory` (home to its leased worker; the
 authenticated lease home only) answered by `LeasedSkillNativeInventory`, which
 carries the worker harness's native entries (and, on request, one entry's
 Details). The home uses it for the Skills screen, the `$` picker, dispatch-time
@@ -5008,7 +5008,7 @@ the acknowledged tool skill ID and full digest. A cancelled/held turn or lost
 tool response cannot create load history. Provider completion settlement retains
 failed acknowledgement work for retry; replay is idempotent. A skill the
 worker's harness already exposes is neither listed twice nor transferred.
-`SubmitLeasedPrompt.native_skill_selections` (peer 162, omitted when empty)
+`SubmitLeasedPrompt.native_skill_selections` (peer 179, omitted when empty)
 carries the source-bound `From <Provider>` selections the home validated against
 that inventory, with the `catalog_revision` that inventory was read at (a
 selection's identity includes the inventory binding). The worker applies its own harness invocation to them (Claude
