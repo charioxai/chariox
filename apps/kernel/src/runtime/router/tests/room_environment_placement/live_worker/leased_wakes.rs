@@ -280,9 +280,14 @@ async fn leased_delegate_completion_wakes_the_home_delegator(worker_completes: b
     fixture.stop().await;
     assert_eq!(events.len(), 1, "one completion event: {events:?}");
     assert_eq!(events[0].kind, "source_completed", "{events:?}");
-    assert_eq!(
-        events[0].payload["public_answer"]["excerpt"], "MP-10 A10 delegated answer",
-        "MP-08/MP-10/MP-11 R947: completion carries the worker's actual answer"
+    // The home history carries the leased turn under its projected run id; the
+    // managed stub echoes its input before the answer, a real provider does not.
+    let excerpt = events[0].payload["public_answer"]["excerpt"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        excerpt.ends_with("MP-10 A10 delegated answer"),
+        "MP-08/MP-10/MP-11 R947: completion carries the worker's actual answer: {excerpt}"
     );
     assert!(
         child_tasks.iter().all(|task| task
@@ -365,9 +370,12 @@ async fn leased_requested_reply_carries_worker_answer() {
     fixture.stop().await;
     assert_eq!(replies.len(), 1);
     assert_eq!(replies[0].kind, "source_completed");
-    assert_eq!(
-        replies[0].payload["public_answer"]["excerpt"],
-        "MP-10 A10 requested reply answer"
+    let excerpt = replies[0].payload["public_answer"]["excerpt"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        excerpt.ends_with("MP-10 A10 requested reply answer"),
+        "{excerpt}"
     );
 }
 

@@ -584,7 +584,9 @@ impl KernelRuntimeState {
         settlement: (AgentTaskExecution, bool),
         prompt: &crate::session::PromptQueueItem,
     ) {
-        if let Err(error) = Box::pin(self.finish_agent_task_settlement(Some(settlement), prompt)).await {
+        if let Err(error) =
+            Box::pin(self.finish_agent_task_settlement(Some(settlement), prompt)).await
+        {
             tracing::warn!(%error, prompt_id=%prompt.id(),
                 "MP-08/MP-10/MP-11 A02: stopped task resources kept for the ledger sweep");
         }

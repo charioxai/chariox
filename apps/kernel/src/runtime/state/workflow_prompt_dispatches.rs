@@ -10,7 +10,10 @@ pub(super) struct WorkflowPromptDispatches {
     pub(super) starting_metaagent_tasks: Vec<crate::session::QueuedMetaagentTask>,
     /// Tasks an acknowledged Stop cancelled; their owned work is cancelled next.
     pub(super) stopped_task_settlements: Vec<(
-        (crate::durable_state::agent_lifecycle::AgentTaskExecution, bool),
+        (
+            crate::durable_state::agent_lifecycle::AgentTaskExecution,
+            bool,
+        ),
         crate::session::PromptQueueItem,
     )>,
     /// A prompt may be admitted to a busy provider queue without producing a dispatch yet.
