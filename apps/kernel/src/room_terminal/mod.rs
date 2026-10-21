@@ -26,6 +26,12 @@ pub(crate) fn is_public_code(code: &str) -> bool {
     code == REFUSED_CODE
 }
 
+/// A refusal in the terminal service's own words, for a caller outside the service whose
+/// sentence an outside agent must be able to read (`is_public_code`).
+pub(crate) fn refusal(message: String) -> crate::error::DaemonError {
+    service::refused(message)
+}
+
 #[cfg(test)]
 pub(crate) fn refused_for_test(message: &str) -> crate::error::DaemonError {
     service::refused(message.to_string())

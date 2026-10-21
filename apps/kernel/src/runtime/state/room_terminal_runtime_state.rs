@@ -394,7 +394,7 @@ fn worker_unreachable(worker_kernel_id: &str, error: DaemonError) -> DaemonError
         return error;
     }
     tracing::warn!(%error, worker_kernel_id, "Room terminal worker could not be reached");
-    refused(
+    crate::room_terminal::refusal(
         "the machine that runs this agent could not be reached, so its terminals are unavailable; retry, and if it keeps failing ask the user to check that machine"
             .to_string(),
     )
@@ -424,7 +424,9 @@ mod tests {
 
     #[test]
     fn a_worker_refusal_passes_through_as_it_came() {
-        let refusal = refused("terminal `t1` has exited; open a new terminal".to_string());
+        let refusal = crate::room_terminal::refusal(
+            "terminal `t1` has exited; open a new terminal".to_string(),
+        );
         let DaemonError::MachineRequest { message, .. } = worker_unreachable("slice:m:1", refusal)
         else {
             panic!("still a refusal");
