@@ -21,18 +21,22 @@ pub(super) fn label(kernel: &RelayKernelPresence) -> String {
         .unwrap_or_else(|| kernel.kernel_id.clone())
 }
 
-/// How this kernel names itself to its owner: `<machine>/<alias>`, or the machine alone
-/// when the kernel has no alias.
+/// `<machine>/<alias>`, or the machine alone when the kernel has no alias of its own.
+pub(super) fn machine_and_alias(machine: &str, alias: Option<&str>) -> String {
+    match alias.map(str::trim) {
+        Some(alias) if !alias.is_empty() && alias != machine => format!("{machine}/{alias}"),
+        _ => machine.to_string(),
+    }
+}
+
+/// How this kernel names itself to its owner.
 pub(super) fn own_name(config: &crate::config::DaemonConfig) -> String {
     let machine = config
         .host_machine_alias
         .clone()
         .filter(|alias| !alias.trim().is_empty())
         .unwrap_or_else(|| config.host_machine_id.clone());
-    match config.daemon_alias.as_deref().map(str::trim) {
-        Some(alias) if !alias.is_empty() && alias != machine => format!("{machine}/{alias}"),
-        _ => machine,
-    }
+    machine_and_alias(&machine, config.daemon_alias.as_deref())
 }
 
 fn qualified(kernel: &RelayKernelPresence) -> String {

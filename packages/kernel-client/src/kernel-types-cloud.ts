@@ -133,7 +133,7 @@ export type GatewayKernelRecord = {
   machine_id: string
   machine_alias: string | null
   label: string
-  status: "online" | "offline"
+  status: "online" | "offline" | "unpaired"
   last_seen_ms: number | null
   gateway_ready: boolean
   via: "hosted" | "self_hosted"

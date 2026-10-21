@@ -14,7 +14,7 @@ use super::error::GatewayError;
 use super::link::{Link, LinkFailure};
 use super::names;
 use super::paired::PairedKernel;
-use super::{KernelGateway, REQUEST_COUNTER};
+use super::{map_failure, KernelGateway, REQUEST_COUNTER};
 use crate::local::{
     GatewayKernel, GatewayKernelStatus, GatewayKernelVia, LocalDaemonRequest, RelayStatusRequest,
 };
@@ -111,11 +111,7 @@ impl KernelGateway {
                     kernel_id: probed.presence.kernel_id.clone(),
                     machine_id: probed.presence.machine_id.clone(),
                     machine_alias: probed.presence.machine_alias.clone(),
-                    status: if probed.online {
-                        GatewayKernelStatus::Online
-                    } else {
-                        GatewayKernelStatus::Offline
-                    },
+                    status: probed.status,
                     last_seen_ms: probed.last_seen_ms,
                     gateway_ready: is_gateway_ready(&probed.presence),
                     via: GatewayKernelVia::SelfHosted,
@@ -127,18 +123,20 @@ impl KernelGateway {
     /// Asks one paired kernel for its status over its own link and keeps what it says.
     async fn probe(&self, target: PairedKernel) -> Probed {
         let mut presence = target.presence;
-        let answered = match self.link_for(&presence.kernel_id, &presence).await {
-            Ok(link) => status_of(&link).await.ok(),
-            Err(_) => None,
+        let answer = match self.link_for(&presence.kernel_id, &presence).await {
+            Ok(link) => status_of(&link)
+                .await
+                .map_err(|failure| map_failure(&presence.kernel_id, failure)),
+            Err(error) => Err(error),
         };
-        let online = answered.is_some();
-        if let Some(status) = answered {
+        let status = status_after(&answer);
+        if let Ok(answered) = answer {
             self.last_answer
                 .lock()
                 .expect("last answer poisoned")
                 .insert(presence.kernel_id.clone(), crate::session::unix_epoch_ms());
             let before = presence.clone();
-            status.apply_to(&mut presence);
+            answered.apply_to(&mut presence);
             if presence != before {
                 // The pairing stays valid whether or not the update could be stored.
                 let _ = self.paired.save(PairedKernel {
@@ -157,7 +155,7 @@ impl KernelGateway {
             .unwrap_or(0);
         Probed {
             presence,
-            online,
+            status,
             last_seen_ms,
         }
     }
@@ -165,8 +163,17 @@ impl KernelGateway {
 
 struct Probed {
     presence: RelayKernelPresence,
-    online: bool,
+    status: GatewayKernelStatus,
     last_seen_ms: u64,
+}
+
+/// A kernel that answered is online; one that refused this gateway is unpaired, not offline.
+fn status_after(answer: &Result<TargetStatus, GatewayError>) -> GatewayKernelStatus {
+    match answer {
+        Ok(_) => GatewayKernelStatus::Online,
+        Err(error) if error.code() == "kernel_unpaired" => GatewayKernelStatus::Unpaired,
+        Err(_) => GatewayKernelStatus::Offline,
+    }
 }
 
 #[cfg(test)]
@@ -212,6 +219,25 @@ mod tests {
         let ambiguous = named(&kernels, "shared").unwrap_err();
         assert_eq!(ambiguous.code(), "kernel_ambiguous");
         assert!(ambiguous.message().contains("k-x") && ambiguous.message().contains("k-y"));
+    }
+
+    #[test]
+    fn a_kernel_that_refused_the_gateway_is_unpaired_not_offline() {
+        let name = "b3".to_string();
+        let answered = Ok(TargetStatus {
+            capabilities: Vec::new(),
+            kernel_alias: None,
+            machine_alias: None,
+        });
+        assert_eq!(status_after(&answered), GatewayKernelStatus::Online);
+        assert_eq!(
+            status_after(&Err(GatewayError::Unpaired { name: name.clone() })),
+            GatewayKernelStatus::Unpaired
+        );
+        assert_eq!(
+            status_after(&Err(GatewayError::Offline { name })),
+            GatewayKernelStatus::Offline
+        );
     }
 
     // A pairing link carries ids only; the kernel's own status gives the names `--kernel` accepts.

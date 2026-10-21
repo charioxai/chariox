@@ -66,6 +66,8 @@ pub struct HeartbeatAttachmentsRequest {
 pub enum GatewayKernelStatus {
     Online,
     Offline,
+    /// The kernel is reachable but its owner removed this gateway there: pair it again.
+    Unpaired,
 }
 
 /// Where the kernel list comes from (the inventory source).
