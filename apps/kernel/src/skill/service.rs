@@ -3,7 +3,7 @@
 use super::{
     catalog::{failure, safe_locator, SkillCatalogSet},
     frontmatter::parse_frontmatter,
-    package::package_skill_directory,
+    package::{instruction_body, package_skill_directory},
     resolver::*,
     selection::explicit_skill_names,
     source_access::SkillSourceAccess,
@@ -415,17 +415,7 @@ impl SkillCatalogService {
             }
             // Deliver the bytes that were hashed, not a separate pathname read
             // that could observe another file between verification and delivery.
-            let body_file = current
-                .files
-                .iter()
-                .find(|file| file.path == "SKILL.md")
-                .ok_or_else(|| failure("verified skill has no instruction body"))?;
-            let body = String::from_utf8(
-                base64::engine::general_purpose::STANDARD
-                    .decode(&body_file.content_base64)
-                    .map_err(|_| failure("invalid verified skill body"))?,
-            )
-            .map_err(|_| failure("verified skill body must be UTF-8"))?;
+            let body = instruction_body(&current)?;
             let wrapper = format!(
                 "\nSkill {} ({}) at {}:\n{}\n",
                 row.skill.name,

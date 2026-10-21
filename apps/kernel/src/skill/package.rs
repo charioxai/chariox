@@ -232,6 +232,20 @@ pub(crate) fn package_digest(files: &[CharioxSkillPackageFile]) -> String {
     }
     format!("{:x}", hasher.finalize())
 }
+/// The exact SKILL.md bytes that were hashed into the package identity.
+pub(crate) fn instruction_body(package: &CharioxSkillPackage) -> Result<String, DaemonError> {
+    let body_file = package
+        .files
+        .iter()
+        .find(|file| file.path == "SKILL.md")
+        .ok_or_else(|| failure("verified skill has no instruction body"))?;
+    String::from_utf8(
+        base64::engine::general_purpose::STANDARD
+            .decode(&body_file.content_base64)
+            .map_err(|_| failure("invalid verified skill body"))?,
+    )
+    .map_err(|_| failure("verified skill body must be UTF-8"))
+}
 pub(crate) fn package_skill_directory(
     skill_dir: &Path,
 ) -> Result<CharioxSkillPackage, DaemonError> {
