@@ -229,6 +229,19 @@ impl SkillDispatchService {
         let remaining =
             crate::skill::resolver::remaining_turn_budget(None, None, prompt.prompt().len() as u64);
         let generation = format!("{}:{}:remote", session_id, prompt.id());
+        // The worker's current provider run still holds what it was given earlier;
+        // a new run, a lease recreation or a compaction re-attaches the loads.
+        let live_run = self.runs.get_for_agent(session_id, agent_id).filter(|run| {
+            crate::provider::worker_provider_run_id_from_projected_leased_id(
+                leased_agent_id,
+                run.id(),
+            )
+            .is_some()
+        });
+        let live_run_id = match &live_run {
+            Some(run) => self.live_context_run_id(session_id, agent_id, run)?,
+            None => None,
+        };
         let context = service.pinned_turn_from_snapshot(
             &catalog,
             Some(project_id),
@@ -245,7 +258,7 @@ impl SkillDispatchService {
             budget_percent,
             remaining,
             &generation,
-            None,
+            live_run_id,
         )?;
         // Native duplicates retain home load authority, but never transfer a body/package.
         let auto_rows: Vec<_> = rows

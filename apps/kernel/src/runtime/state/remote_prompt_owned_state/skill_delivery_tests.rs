@@ -580,3 +580,142 @@ async fn second_named_kernel_ordinary_local_turn_is_not_refused_by_the_skills_ca
     let _ = std::fs::remove_dir_all(&root);
     assert!(prepared.unwrap().skill_delivery.is_none());
 }
+
+// MP-08 / MP-10: an explicitly loaded skill reaches a leased worker once per worker
+// provider run; a new worker run re-attaches it.
+#[tokio::test]
+async fn leased_follow_up_turn_does_not_repeat_a_load_the_worker_run_holds() {
+    use crate::skill::service::SkillCatalogService;
+    let (runtime, session_id, agent_id, attachment, binding) =
+        super::tests::mp11_fixture(crate::DaemonConfig::for_tests()).await;
+    let config = runtime.owned.config_projection.snapshot();
+    let service = SkillCatalogService::new(
+        SkillCatalogStorage::new(
+            config.user_config_path.parent().unwrap(),
+            runtime.owned.durable_state_store.clone(),
+        )
+        .unwrap(),
+    );
+    let mutation = SkillCatalogMutation {
+        scope: SkillScope::Chariox, expected_revision: 0,
+        actions: vec![SkillCatalogAction::Install {
+            source: SkillInstallSource::Content { skill_md: "---\nname: review\ndescription: Review safely\ndisable-model-invocation: true\n---\nReview source.\n".into() },
+            collision: SkillCollisionAction::Reject, package_id: None,
+        }],
+    };
+    let prepared = service.prepare(&mutation).unwrap();
+    let catalog = service.publish_authorized(&mutation, &prepared).unwrap();
+    let skill = &catalog.catalogs[0].skills[0];
+    let selection = SkillSelection::Chariox {
+        skill_id: skill.id.clone(),
+        name: skill.name.clone(),
+        catalog_revision: catalog.revision,
+    };
+    let project_run = |worker_run: &str| {
+        let projected =
+            crate::provider::projected_leased_provider_run_id(&binding.leased_agent_id, worker_run);
+        let mut run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+            worker_run,
+            "worker-session".into(),
+            Some(binding.leased_agent_id.clone()),
+            "dev-stub".into(),
+        );
+        run.mark_running();
+        let run = run.projected_for_home_agent_with_id(&projected, &session_id, &agent_id);
+        runtime
+            .owned
+            .provider_run_projection
+            .update_remote_snapshot(run);
+    };
+    let turn = |id: &str, text: &str, selections: Vec<SkillSelection>| {
+        let submission = runtime
+            .owned
+            .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt: crate::session::PromptQueueItem::new(
+                    id,
+                    &attachment,
+                    &agent_id,
+                    text,
+                    crate::session::PromptStatus::Queued,
+                )
+                .with_skill_selections(selections)
+                .with_user_skill_syntax(true),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .unwrap()
+            .unwrap();
+        runtime
+            .owned
+            .settle_remote_dispatch_if_current(
+                &submission.remote_dispatch.unwrap(),
+                Some("worker-run-1"),
+            )
+            .unwrap();
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .unwrap()
+    };
+    let remote = |prompt_id: &str| {
+        super::super::skills_dispatch::prepare_remote_turn(
+            &runtime,
+            &session_id,
+            &agent_id,
+            prompt_id,
+            &binding.leased_agent_id,
+            &[],
+        )
+        .unwrap()
+    };
+    project_run("worker-run-1");
+    let first = turn("load-turn", "$review inspect source", vec![selection]);
+    assert_eq!(remote(first.id()).unwrap().packages.len(), 1);
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let context = RemoteWorkspaceLiveSyncContext {
+        home_kernel_id: config.daemon_id.clone(),
+        home_session_id: session_id.clone(),
+        home_agent_id: agent_id.clone(),
+        home_prompt_id: Some(first.id().into()),
+        leased_agent_id: binding.leased_agent_id.clone(),
+        worker_kernel_id: binding.worker_kernel_id.clone(),
+        worker_machine_id: binding.worker_machine_id.clone(),
+        worker_provider_run_id: "worker-run-1".into(),
+        worker_worktree_path: session.worktree_id().into(),
+        worker_workspace_identity: crate::io::WorkspaceIdentity::local("fixture"),
+    };
+    acknowledge(&runtime, &context, serde_json::json!({"delivery":"prompt"}))
+        .await
+        .unwrap();
+    runtime
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_only(&session, &agent_id);
+    let second = turn("follow-up", "continue reviewing", vec![]);
+    assert!(
+        remote(second.id()).is_none_or(|turn| turn.packages.is_empty()),
+        "the worker run already holds the load"
+    );
+    runtime
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_only(&session, &agent_id);
+    project_run("worker-run-2");
+    let third = turn("after-restart", "continue reviewing", vec![]);
+    assert_eq!(
+        remote(third.id()).unwrap().packages.len(),
+        1,
+        "a new worker run lost the load"
+    );
+}

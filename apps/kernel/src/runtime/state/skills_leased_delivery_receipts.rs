@@ -42,6 +42,10 @@ pub(in crate::runtime::state) fn acknowledge_leased_delivery(
             .map_err(|_| failure("invalid leased skill delivery acknowledgement"))?;
         service(state).record_pending_loads(
             &leased_run_id(&context.leased_agent_id),
+            &crate::provider::projected_leased_provider_run_id(
+                &context.leased_agent_id,
+                &context.worker_provider_run_id,
+            ),
             &context.home_session_id,
             &context.home_agent_id,
             prompt_id,

@@ -100,11 +100,21 @@ impl SkillDispatchService {
                 leased_receipts::LeasedSkillAcknowledgement::Prompt,
             );
         }
-        self.record_pending_loads(run.id(), session_id, agent_id, prompt_id, admitted)
+        self.record_pending_loads(
+            run.id(),
+            run.id(),
+            session_id,
+            agent_id,
+            prompt_id,
+            admitted,
+        )
     }
+    /// `run_id` finds the turn's authority; `stored_run_id` is the provider run the
+    /// delivered load belongs to (a leased turn is admitted before its worker run exists).
     pub(super) fn record_pending_loads(
         &self,
         run_id: &str,
+        stored_run_id: &str,
         session_id: &str,
         agent_id: &str,
         prompt_id: &str,
@@ -167,8 +177,12 @@ impl SkillDispatchService {
                             && pending.prompt_id == record.prompt_id
                             && pending.context_generation == record.context_generation
                     }) {
+                        let stored = SkillLoadRecord {
+                            run_id: stored_run_id.into(),
+                            ..record
+                        };
                         service.storage.record_load_at_revision(
-                            &record,
+                            &stored,
                             Some(&current.project_id),
                             current.catalog_revision,
                         )?;
