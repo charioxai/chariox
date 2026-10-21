@@ -269,6 +269,125 @@ async fn leased_skill_native_duplicate_retains_manual_receipt_and_next_turn_load
     assert_eq!(next.native_selections, vec![native.selection]);
 }
 
+// A Claude copy that cannot acknowledge its own load cannot own the turn's one
+// body: the home transfers its equal Chariox copy and delivers that instead.
+#[tokio::test]
+async fn leased_claude_native_copy_without_ack_is_delivered_by_chariox() {
+    use crate::skill::service::SkillCatalogService;
+    let (runtime, session_id, agent_id, attachment, binding) =
+        super::tests::mp11_fixture(crate::DaemonConfig::for_tests()).await;
+    let config = runtime.owned.config_projection.snapshot();
+    let storage = SkillCatalogStorage::new(
+        config.user_config_path.parent().unwrap(),
+        runtime.owned.durable_state_store.clone(),
+    )
+    .unwrap();
+    let service = SkillCatalogService::new(storage.clone());
+    let mutation = SkillCatalogMutation {
+        scope: SkillScope::Chariox,
+        expected_revision: 0,
+        actions: vec![SkillCatalogAction::Install {
+            source: SkillInstallSource::Content {
+                skill_md: "---\nname: review\ndescription: Review safely\n---\nReview source.\n"
+                    .into(),
+            },
+            collision: SkillCollisionAction::Reject,
+            package_id: None,
+        }],
+    };
+    let prepared = service.prepare(&mutation).unwrap();
+    let catalog = service.publish_authorized(&mutation, &prepared).unwrap();
+    let skill = catalog.catalogs[0].skills[0].clone();
+    let native = NativeSkillEntry {
+        selection: SkillSelection::Native {
+            entry_id: "native-review".into(),
+            name: skill.name.clone(),
+            provider: "claude".into(),
+            account_profile: "account".into(),
+            execution_id: "worker-run-1".into(),
+            inventory_revision: "native-revision".into(),
+        },
+        description: skill.description.clone(),
+        digest: Some(skill.digest.clone()),
+        exposure: NativeSkillExposure::Confirmed,
+        default_state: SkillState::Auto,
+        complete_manifest: true,
+        supports_load_ack: false,
+        discovery_error: None,
+    };
+    let submission = runtime
+        .owned
+        .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+            session_id: session_id.clone(),
+            prompt: crate::session::PromptQueueItem::new(
+                "claude-dedupe-turn",
+                &attachment,
+                &agent_id,
+                "$review inspect source",
+                crate::session::PromptStatus::Queued,
+            )
+            .with_skill_selections(vec![SkillSelection::Chariox {
+                skill_id: skill.id.clone(),
+                name: skill.name.clone(),
+                catalog_revision: catalog.revision,
+            }])
+            .with_user_skill_syntax(true),
+            force_queue: false,
+            refresh_projection: true,
+        })
+        .unwrap()
+        .unwrap();
+    runtime
+        .owned
+        .settle_remote_dispatch_if_current(
+            &submission.remote_dispatch.unwrap(),
+            Some("worker-run-1"),
+        )
+        .unwrap();
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let prompt = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &agent_id)
+        .unwrap();
+    let remote = super::super::skills_dispatch::prepare_remote_turn(
+        &runtime,
+        &session_id,
+        &agent_id,
+        prompt.id(),
+        &binding.leased_agent_id,
+        &[native],
+    )
+    .unwrap()
+    .expect("the Chariox copy is delivered");
+    assert!(remote.native_selections.is_empty());
+    assert_eq!(remote.set.manifest.skills.len(), 1);
+    assert_eq!(remote.set.packages.len(), 1);
+    let context = remote
+        .hidden_context(&[crate::transport::relay_peer::RemoteSkillMaterialization {
+            skill_id: skill.id.clone(),
+            name: "review".into(),
+            version_hash: skill.digest.clone(),
+            materialized_root: "/worker/review".into(),
+        }])
+        .unwrap();
+    assert_eq!(context.matches("Review source.").count(), 1, "{context:?}");
+    let authority = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &agent_id)
+        .unwrap()
+        .skill_turn_authority()
+        .cloned()
+        .unwrap();
+    assert_eq!(authority.pending_loads.len(), 1);
+    assert!(authority.prompt_delivery_skill_ids.contains(&skill.id));
+}
+
 #[tokio::test]
 async fn leased_skill_receipts_wait_for_delivery_and_bind_tool_digest() {
     let (runtime, context, storage, _) = fixture().await;

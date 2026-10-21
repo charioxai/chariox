@@ -133,18 +133,21 @@ pub(super) fn bind_remote_roots(
             Ok(())
         })
 }
-/// Native duplicates retain home load authority, but never transfer a body/package.
+/// Native duplicates retain home load authority, but never transfer a body/package,
+/// unless this turn delivers the Chariox copy because the native one cannot acknowledge.
 fn remote_skill_set(
     service: &SkillCatalogService,
     catalog: &SkillCatalogSet,
     project_id: &str,
     rows: &[SkillProjection],
+    chariox_delivered: &BTreeSet<&str>,
 ) -> Result<RemoteSkillSet, DaemonError> {
     let mut entries = Vec::new();
     let mut packages = Vec::new();
     for row in rows.iter().filter(|row| {
         row.effective_state != SkillState::Off
-            && !matches!(row.delivery, SkillDelivery::ProvidedBy { .. })
+            && (!matches!(row.delivery, SkillDelivery::ProvidedBy { .. })
+                || chariox_delivered.contains(row.skill.id.as_str()))
     }) {
         let root = service.verified_package_root(&row.skill)?;
         packages.push(crate::skill::package_skill_directory(&root)?);
@@ -192,6 +195,7 @@ impl RemoteSkillTurn {
                 "\nSkill {} ({}) at {}:\n{}\n",
                 body.name, body.digest, root, body.body
             ));
+            text.extend(crate::skill::resolver::conflict_notice(body));
         }
         Ok(text)
     }
@@ -208,7 +212,13 @@ impl SkillDispatchService {
         let catalog = service.storage.snapshot()?;
         let session = self.sessions.get_session(session_id)?;
         let rows = crate::skill::resolver::projections(&catalog, Some(session.project_id()), &[]);
-        let set = remote_skill_set(&service, &catalog, session.project_id(), &rows)?;
+        let set = remote_skill_set(
+            &service,
+            &catalog,
+            session.project_id(),
+            &rows,
+            &BTreeSet::new(),
+        )?;
         Ok((!set.manifest.skills.is_empty()).then_some(set))
     }
     fn remote_turn_needs_native_inventory(
@@ -332,7 +342,13 @@ impl SkillDispatchService {
             })
             .cloned()
             .collect();
-        let set = remote_skill_set(&service, &catalog, project_id, &rows)?;
+        let chariox_delivered = context
+            .loaded
+            .iter()
+            .filter(|body| !matches!(body.delivery, SkillDelivery::ProvidedBy { .. }))
+            .map(|body| body.skill_id.as_str())
+            .collect();
+        let set = remote_skill_set(&service, &catalog, project_id, &rows, &chariox_delivered)?;
         let run_id = leased_run_id(leased_agent_id);
         let mut authority = SkillTurnAuthority {
             catalog_revision: catalog.revision,

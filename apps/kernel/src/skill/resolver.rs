@@ -183,6 +183,19 @@ pub fn admit_load<'a>(
     }
 }
 
+/// A delivered Chariox body can be contradicted by a different same-named native
+/// copy that the model reaches through its harness's own skill tool (Claude,
+/// OpenCode). One line settles which instructions win.
+pub fn conflict_notice(body: &SkillResolvedBody) -> Option<String> {
+    match &body.delivery {
+        SkillDelivery::Conflict { provider, .. } if provider != "codex" => Some(format!(
+            "\nA different provider-native skill named {} exists; use only the instructions above for it.\n",
+            body.name
+        )),
+        _ => None,
+    }
+}
+
 pub fn validate_native_selection<'a>(
     selection: &SkillSelection,
     native: &'a [NativeSkillEntry],

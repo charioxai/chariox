@@ -387,26 +387,29 @@ impl SkillCatalogService {
                 explicit.clone()
             };
             let row = admit_load(&rows, &id, &previous_explicit)?;
+            // A native copy that cannot acknowledge its own load cannot own the
+            // one body of this turn: Chariox delivers its equal copy instead.
+            let mut delivery = row.delivery.clone();
             if let SkillDelivery::ProvidedBy { entry_id, .. } = &row.delivery {
                 let entry = native.iter().find(|entry| matches!(&entry.selection, SkillSelection::Native { entry_id: id, .. } if id == entry_id)).ok_or_else(|| failure("native duplicate inventory changed; refresh Skills"))?;
-                if !entry.supports_load_ack {
-                    return Err(failure("provider-native skill has no supported load acknowledgement seam; refresh Skills or disable the native copy before using Chariox delivery"));
+                if entry.supports_load_ack {
+                    if !native_selections.contains(&entry.selection) {
+                        native_selections.push(entry.selection.clone());
+                    }
+                    // Native delivery is responsible for the one acknowledged body.
+                    loaded.push(SkillResolvedBody {
+                        skill_id: row.skill.id.clone(),
+                        name: row.skill.name.clone(),
+                        digest: row.skill.digest.clone(),
+                        root: String::new(),
+                        body: String::new(),
+                        files: vec![],
+                        reason,
+                        delivery: row.delivery.clone(),
+                    });
+                    continue;
                 }
-                if !native_selections.contains(&entry.selection) {
-                    native_selections.push(entry.selection.clone());
-                }
-                // Native delivery is responsible for the one acknowledged body.
-                loaded.push(SkillResolvedBody {
-                    skill_id: row.skill.id.clone(),
-                    name: row.skill.name.clone(),
-                    digest: row.skill.digest.clone(),
-                    root: String::new(),
-                    body: String::new(),
-                    files: vec![],
-                    reason,
-                    delivery: row.delivery.clone(),
-                });
-                continue;
+                delivery = SkillDelivery::Chariox;
             }
             let root = self.verified_package_root(&row.skill)?;
             let current = package_skill_directory(&root)?;
@@ -435,7 +438,7 @@ impl SkillCatalogService {
                 body,
                 files: row.skill.files.clone(),
                 reason,
-                delivery: row.delivery.clone(),
+                delivery,
             });
         }
         let metadata = metadata_context(&rows, context_capacity, budget_percent)?;

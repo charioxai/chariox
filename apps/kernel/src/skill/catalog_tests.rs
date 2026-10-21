@@ -746,7 +746,7 @@ fn skills_v2_equal_native_content_keeps_one_picker_row_across_independent_states
     );
 }
 #[test]
-fn skills_v2_missing_native_ack_fails_selection_without_duplicate_delivery() {
+fn skills_v2_native_copy_without_ack_delivers_one_chariox_body() {
     let f = StorageFixture::new();
     let (service, set) = service_install(
         &f,
@@ -760,7 +760,7 @@ fn skills_v2_missing_native_ack_fails_selection_without_duplicate_delivery() {
         .text
         .is_empty());
     assert!(picker_native_entries(&rows, &inventory).is_empty());
-    assert!(service
+    let turn = service
         .pinned_turn(
             None,
             "agent1",
@@ -771,11 +771,98 @@ fn skills_v2_missing_native_ack_fails_selection_without_duplicate_delivery() {
             Some(128_000),
             1.0,
             8192,
-            "g1"
+            "g1",
         )
-        .unwrap_err()
-        .to_string()
-        .contains("load acknowledgement"));
+        .unwrap();
+    assert_eq!(turn.loaded.len(), 1);
+    assert_eq!(turn.loaded[0].delivery, SkillDelivery::Chariox);
+    assert!(turn.loaded[0].body.contains("BODY"));
+    assert!(
+        turn.native_selections.is_empty(),
+        "the native copy cannot acknowledge, so it must not also be invoked"
+    );
+}
+
+#[test]
+fn skills_v2_native_copy_with_ack_keeps_the_native_pass_through() {
+    let f = StorageFixture::new();
+    let (service, set) = service_install(
+        &f,
+        "---\nname: review\ndescription: review code\n---\nBODY\n",
+    );
+    let inventory = vec![native(&set.catalogs[0].skills[0].digest)];
+    let turn = service
+        .pinned_turn(
+            None,
+            "agent1",
+            "session1",
+            "$review",
+            &[],
+            &inventory,
+            Some(128_000),
+            1.0,
+            8192,
+            "g1",
+        )
+        .unwrap();
+    assert_eq!(turn.loaded.len(), 1);
+    assert!(matches!(
+        turn.loaded[0].delivery,
+        SkillDelivery::ProvidedBy { .. }
+    ));
+    assert!(turn.loaded[0].body.is_empty());
+    assert_eq!(turn.native_selections, vec![inventory[0].selection.clone()]);
+}
+
+#[test]
+fn skills_v2_conflicting_native_copy_body_is_delivered_once_per_run() {
+    let f = StorageFixture::new();
+    let (service, _) = service_install(
+        &f,
+        "---\nname: review\ndescription: review code\n---\nCHARIOX BODY\n",
+    );
+    let inventory = vec![native(&"b".repeat(64))];
+    let turn = |prompt: &str| {
+        service
+            .pinned_turn_from_snapshot(
+                &f.storage.snapshot().unwrap(),
+                None,
+                "a",
+                "s",
+                prompt,
+                &[],
+                &inventory,
+                Some(128_000),
+                1.0,
+                8192,
+                "g",
+                Some("run-1"),
+            )
+            .unwrap()
+    };
+    let first = turn("$review");
+    assert_eq!(first.loaded.len(), 1);
+    assert!(matches!(
+        first.loaded[0].delivery,
+        SkillDelivery::Conflict { .. }
+    ));
+    f.storage
+        .record_load(&SkillLoadRecord {
+            skill_id: first.loaded[0].skill_id.clone(),
+            digest: first.loaded[0].digest.clone(),
+            session_id: "s".into(),
+            agent_id: "a".into(),
+            run_id: "run-1".into(),
+            prompt_id: "p".into(),
+            reason: SkillLoadReason::Explicit,
+            context_generation: "g".into(),
+            delivered_at_ms: 1,
+        })
+        .unwrap();
+    assert!(
+        turn("later question").loaded.is_empty(),
+        "the run already holds the body, and the conflict line rides only with a body"
+    );
 }
 
 #[test]

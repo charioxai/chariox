@@ -140,6 +140,7 @@ pub fn prepare_skill_delivery(
             "\nSkill {} ({}) at {}:\n{}\n",
             skill.name, skill.digest, skill.root, skill.body
         ));
+        hidden_context.extend(crate::skill::resolver::conflict_notice(skill));
     }
     let selected_names: Vec<_> = explicit_selections
         .iter()
@@ -260,6 +261,35 @@ mod tests {
             assert!(delivery.codex_input.is_empty());
             assert!(!delivery.visible_prompt.contains("selected instructions"));
         }
+    }
+    #[test]
+    fn a_delivered_body_with_a_different_native_namesake_says_which_instructions_win() {
+        for (provider, notice) in [("claude", true), ("opencode", true), ("codex", false)] {
+            let mut context = context("review");
+            context.loaded[0].delivery = SkillDelivery::Conflict {
+                provider: provider.into(),
+                entry_id: "native-review".into(),
+                native_digest: "b".repeat(64),
+            };
+            let delivery =
+                prepare_skill_delivery(provider, "$review", &context, &inventory(), &[]).unwrap();
+            let (body, after) = delivery
+                .hidden_context
+                .split_once("selected instructions")
+                .unwrap();
+            assert!(body.contains("review"));
+            assert_eq!(
+                after.contains("A different provider-native skill named review exists"),
+                notice,
+                "{provider}: {after:?}"
+            );
+        }
+        let delivery =
+            prepare_skill_delivery("claude", "$review", &context("review"), &inventory(), &[])
+                .unwrap();
+        assert!(!delivery
+            .hidden_context
+            .contains("different provider-native"));
     }
     #[test]
     fn explicit_uppercase_chip_can_resolve_without_rewriting_shell_variables_in_code() {
