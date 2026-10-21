@@ -1,6 +1,6 @@
 // MP-08 / MP-10 / MP-11: a `$name` typed in Claude's own composer on a leased worker
 // resolves against the home's name view and the lease's verified cache.
-use super::skill_hook_fakes::{DeliverSkill, PassthroughPolicy, TYPED_RECEIPTS};
+use super::skill_hook_fakes::{DeliverSkill, PassthroughPolicy, TypedReceipt, TYPED_RECEIPTS};
 use super::*;
 use crate::skill::{
     leased_names::{LeasedSkillName, LeasedSkillNames},
@@ -176,12 +176,12 @@ impl Worker {
         (delivered, prompt_id)
     }
 
-    fn receipts_for(&self, prompt_id: &str) -> Vec<(String, String, String, Option<String>)> {
+    fn receipts_for(&self, prompt_id: &str) -> Vec<TypedReceipt> {
         TYPED_RECEIPTS
             .lock()
             .unwrap()
             .iter()
-            .filter(|receipt| receipt.0 == prompt_id)
+            .filter(|receipt| receipt.prompt_id == prompt_id)
             .cloned()
             .collect()
     }
@@ -205,13 +205,13 @@ fn leased_worker_typed_skill_reaches_the_hook_context_and_reports_its_load_home(
     );
     assert_eq!(
         worker.receipts_for(&prompt_id),
-        vec![(
-            prompt_id.clone(),
-            worker.skill_id.clone(),
-            worker.digest.clone(),
+        vec![TypedReceipt {
+            prompt_id: prompt_id.clone(),
+            skill_id: worker.skill_id.clone(),
+            digest: worker.digest.clone(),
             // The home has no dispatched turn for text typed on the worker.
-            None
-        )]
+            home_prompt_id: None,
+        }]
     );
 }
 

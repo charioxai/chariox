@@ -3940,10 +3940,16 @@ mod skill_hook_fakes {
     use super::*;
     pub(super) static HOOK_RECEIPTS: std::sync::Mutex<Vec<String>> =
         std::sync::Mutex::new(Vec::new());
-    /// Typed worker loads handed to the bridge: prompt, skill ID, digest, home prompt.
-    pub(super) static TYPED_RECEIPTS: std::sync::Mutex<
-        Vec<(String, String, String, Option<String>)>,
-    > = std::sync::Mutex::new(Vec::new());
+    /// A typed worker load handed to the bridge.
+    #[derive(Clone, Debug, PartialEq)]
+    pub(super) struct TypedReceipt {
+        pub(super) prompt_id: String,
+        pub(super) skill_id: String,
+        pub(super) digest: String,
+        pub(super) home_prompt_id: Option<String>,
+    }
+    pub(super) static TYPED_RECEIPTS: std::sync::Mutex<Vec<TypedReceipt>> =
+        std::sync::Mutex::new(Vec::new());
     pub(super) struct DeliverSkill;
     impl crate::provider::skill_delivery::SkillPromptBridge for DeliverSkill {
         fn acknowledge_hook_context(
@@ -3982,13 +3988,11 @@ mod skill_hook_fakes {
             TYPED_RECEIPTS
                 .lock()
                 .unwrap()
-                .extend(skills.iter().map(|skill| {
-                    (
-                        prompt_id.to_string(),
-                        skill.skill_id.clone(),
-                        skill.digest.clone(),
-                        context.home_prompt_id.clone(),
-                    )
+                .extend(skills.iter().map(|skill| TypedReceipt {
+                    prompt_id: prompt_id.to_string(),
+                    skill_id: skill.skill_id.clone(),
+                    digest: skill.digest.clone(),
+                    home_prompt_id: context.home_prompt_id.clone(),
                 }));
             Ok(())
         }
