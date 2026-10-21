@@ -2819,6 +2819,7 @@ fn worker_after_login_recovery(
     home_session_id: &str,
     home_agent_id: &str,
     home_prompt_id: &str,
+    replacement_ended: bool,
 ) -> WorkerAfterLoginRecovery {
     let mut config = crate::config::DaemonConfig::for_tests();
     config.accept_remote_leases = true;
@@ -2905,9 +2906,10 @@ fn worker_after_login_recovery(
     retired.mark_ended();
     worker.providers_mut().insert_run_for_test(retired);
     let replacement_run_id = "worker-run-after-login".to_string();
+    let mut replacement = worker_run(&replacement_run_id);
     worker
         .providers_mut()
-        .insert_run_for_test(worker_run(&replacement_run_id));
+        .insert_run_for_test(replacement.clone());
     worker.fan_out_output_for_agent(
         &leased_agent.backing_session_id,
         &replacement_run_id,
@@ -2924,6 +2926,10 @@ fn worker_after_login_recovery(
             Some(&replacement_run_id),
         )
         .expect("worker prompt should settle on the replacement run");
+    if replacement_ended {
+        replacement.mark_ended();
+        worker.providers_mut().insert_run_for_test(replacement);
+    }
     WorkerAfterLoginRecovery {
         app: worker,
         leased_agent_id: leased_agent.id,
@@ -3706,6 +3712,17 @@ mod projection_drain {
     /// prompt on a replacement run: the home must show that run's output and one completion.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn home_shows_the_replacement_run_after_worker_provider_login_recovery() {
+        home_shows_the_replacement_run(false).await;
+    }
+
+    /// The replacement may exit before the home's first drain; its output, termination and
+    /// completion must still reach the home through the retired run id the home asks about.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn home_shows_an_already_ended_replacement_run_after_worker_provider_login_recovery() {
+        home_shows_the_replacement_run(true).await;
+    }
+
+    async fn home_shows_the_replacement_run(replacement_ended: bool) {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("fake relay listener should bind");
@@ -3750,7 +3767,8 @@ mod projection_drain {
             panic!("remote prompt should start");
         };
         let prompt_id = prompt.id().to_string();
-        let worker = worker_after_login_recovery(session.id(), agent.id(), &prompt_id);
+        let worker =
+            worker_after_login_recovery(session.id(), agent.id(), &prompt_id, replacement_ended);
         let binding = crate::agent::RemoteAgentBinding {
             worker_kernel_id: worker_id.to_string(),
             worker_machine_id: worker_machine_id.to_string(),
