@@ -271,8 +271,10 @@ class TraversalTest(unittest.TestCase):
         snapshot = lambda protection: self.driver.snapshot([{'pid': 200, 'started': '1'}], [{'pid': 200, 'started': '1'}], protection)
         self.assertEqual(snapshot({'pages': [page]})['masks'], [[106, 126, 28, 28]])
         self.assertEqual(snapshot({'pages': [page]})['browser_withheld'], 0)
-        # Unmeasured, moved/resized windows and disagreeing native sizes have no fill placement.
-        for protection in [None, {'pages': [{**page, 'window': [101, 80, 300, 200]}]}, {'pages': [{**page, 'native': [300, 100]}]}, {'pages': [{**page, 'native': None}]}]:
+        # A larger emulated viewport still covers the measured native Tab.
+        self.assertEqual(snapshot({'pages': [{**page, 'native': [300, 100]}]})['masks'], [[106, 186, 28, 28]])
+        # Unmeasured, moved/resized windows and disagreeing native widths have no fill placement.
+        for protection in [None, {'pages': [{**page, 'window': [101, 80, 300, 200]}]}, {'pages': [{**page, 'native': [250, 160]}]}, {'pages': [{**page, 'native': None}]}]:
             self.assertEqual(snapshot(protection)['masks'], [])
             self.assertEqual(snapshot(protection)['browser_withheld'], 0 if protection is None else 1)
         # Browser accessibility content remains withheld from the structured tree.

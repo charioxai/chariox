@@ -201,6 +201,26 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(byte_count)
     }
 
+    /// The worker-side Room and folder a leased agent runs in.
+    pub(crate) fn leased_terminal_target(
+        &self,
+        leased_agent_id: &str,
+    ) -> Result<(String, PathBuf), DaemonError> {
+        let leased_agent = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
+            DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            }
+        })?;
+        let session = self
+            .app
+            .sessions
+            .get_session(&leased_agent.backing_session_id)?;
+        Ok((
+            leased_agent.backing_session_id.clone(),
+            PathBuf::from(session.worktree_id()),
+        ))
+    }
+
     pub(crate) fn resize_leased_provider_terminal(
         &mut self,
         leased_agent_id: &str,

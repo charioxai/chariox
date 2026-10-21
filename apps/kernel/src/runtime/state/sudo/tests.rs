@@ -1781,9 +1781,9 @@ async fn sudo_revocation_removes_authority_and_reports_failed_durable_end_receip
     assert_eq!(events.last().unwrap().payload["outcome"], "restart_dropped");
 }
 
-// MP-08/MP-10/MP-11 F4: executable labels stay on one kernel-authored line.
+// MP-08/MP-10/MP-11: requester identity stays separate from display prose.
 #[tokio::test]
-async fn sudo_review_requester_path_has_no_control_characters() {
+async fn sudo_review_uses_verified_requester_instead_of_summary_path() {
     let f = fixture();
     let grant_id = f.state.insert_access_grant_for_test(&f.request.session_id);
     let path = "/workspace/provider\nlabel\tend";
@@ -1797,22 +1797,30 @@ async fn sudo_review_requester_path_has_no_control_characters() {
         .unwrap()
         .summary
         .holder_executable = path.into();
+    let verified_executable = f
+        .state
+        .owned
+        .kernel_access
+        .lock()
+        .unwrap()
+        .grants
+        .get(&grant_id)
+        .unwrap()
+        .holder
+        .executable
+        .clone();
     let state = f.state.clone();
     let request = external_request(&f);
     let task = tokio::spawn(async move { state.request_kernel_sudo(&grant_id, request).await });
     let prompt = popup(&f.state).await;
-    let prelude = prompt
-        .message
-        .split("Requester-supplied prompt:\n")
-        .next()
-        .unwrap();
-    let clean =
-        !prelude.contains(['\n', '\r', '\t']) && prelude.contains(&path.escape_debug().to_string());
+    let requester = prompt.requester.as_ref().unwrap();
+    assert_eq!(requester.executable, verified_executable);
+    let clean = !prompt.message.contains(path) && !prompt.message.contains(['\r', '\t']);
     f.state
         .revoke_sudo(Some("local"), None, "fixture_cleanup")
         .unwrap();
     assert!(task.await.unwrap().is_err());
-    assert!(clean, "requester executable must be escaped in the prelude");
+    assert!(clean, "requester executable must stay out of display prose");
 }
 
 // MP-08/MP-10/MP-11 F6: auth and enrollment never reach scope approval.
@@ -1927,4 +1935,70 @@ async fn legacy_sudo_message_keeps_full_task_beyond_structured_summary() {
         .await
         .unwrap();
     assert!(waiting.await.unwrap().is_err());
+}
+
+#[tokio::test]
+async fn terminal_commands_use_only_the_exact_live_sudo_turn() {
+    let f = fixture();
+    let agent = f.request.target_agent_id.as_deref().unwrap();
+    f.state
+        .owned
+        .agent_store
+        .update_agent_config(
+            agent,
+            None,
+            Some(Some(crate::provider::AgentPermissionLevel::Required)),
+            None,
+            None,
+        )
+        .unwrap();
+    let turn = running(&f);
+    let call = || {
+        f.state.dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            crate::transport::runtime_tools::TERMINAL_OPEN_TOOL,
+            serde_json::json!({"command": ["/bin/cat"]}),
+        )
+    };
+    let admitted = tokio::time::timeout(Duration::from_secs(2), call()).await;
+    assert!(
+        admitted.is_ok(),
+        "a live sudo turn asked for terminal approval"
+    );
+    let admitted = admitted.unwrap().unwrap();
+    assert!(admitted.ok);
+    let id = admitted.payload["terminal"]["terminal_id"]
+        .as_str()
+        .unwrap();
+    let sent = tokio::time::timeout(
+        Duration::from_secs(2),
+        f.state.dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            crate::transport::runtime_tools::TERMINAL_SEND_TOOL,
+            serde_json::json!({"terminal_id": id, "text": "sudo-input", "enter": true}),
+        ),
+    )
+    .await
+    .expect("a sudo terminal_send must not ask for approval")
+    .unwrap();
+    assert!(sent.ok);
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&turn.session_id)
+        .unwrap();
+    f.state
+        .owned
+        .prompt_state_owner
+        .cancel_active_prompt_only(&session, &turn.agent_id)
+        .unwrap();
+    assert!(!f.state.sudo_live(&turn));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), call())
+            .await
+            .is_err(),
+        "terminal approval was bypassed after sudo ended"
+    );
+    f.state.owned.room_terminals.end_session(&turn.session_id);
 }

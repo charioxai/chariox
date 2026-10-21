@@ -209,6 +209,7 @@ export type CliCommandActionCompositionDeps = {
   cloudClient?: CloudClient
   kernelConnected?: () => boolean
   appHostTerminal?: AppHostTerminal
+  roomTerminalScreen?: import("./room-terminal-slash.js").RoomTerminalScreen
   lastViewedAppHostOperationId?: () => string | undefined
   appFileInstaller?: AppFileInstaller
   appDevLoop?: AppDevLoop
@@ -522,6 +523,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       return true
     },
     openRoomViewer,
+    ...(deps.roomTerminalScreen ? { roomTerminalScreen: deps.roomTerminalScreen } : {}),
     captureRoomScreenshot: async () => {
       const attachment = attachmentState()
       if (!attachment) throw new Error("Room screenshot capture requires an active attachment")

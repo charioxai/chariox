@@ -29,29 +29,29 @@ impl KernelRuntimeState {
             .into_iter()
             .filter(|agent| agent.session_id() == session_id && agent.remote_execution().is_none())
         {
-            let Ok(owner) = self
-                .with_app_side_effect(|app| {
-                    app.provider_account_owner_for_execution(session_id, Some(agent.id()))
-                })
-                .await
-                .and_then(|owner| {
-                    if owner
-                        != crate::account_profile::provider_account_authority_owner_user_id(
-                            &config,
-                            agent.owner_user_id(),
-                        )
-                    {
-                        return Ok(owner);
-                    }
-                    crate::account_profile::provider_account_authority_owner_for_profile(
+            // Notices can wait for the next pump; ready provider output cannot.
+            let Some(owner) = self.try_with_app_side_effect(|app| {
+                app.provider_account_owner_for_execution(session_id, Some(agent.id()))
+            }) else {
+                return;
+            };
+            let Ok(owner) = owner.and_then(|owner| {
+                if owner
+                    != crate::account_profile::provider_account_authority_owner_user_id(
                         &config,
-                        &self.owned.provider_account_profiles,
                         agent.owner_user_id(),
-                        agent.provider(),
-                        agent.provider_account_profile(),
                     )
-                })
-            else {
+                {
+                    return Ok(owner);
+                }
+                crate::account_profile::provider_account_authority_owner_for_profile(
+                    &config,
+                    &self.owned.provider_account_profiles,
+                    agent.owner_user_id(),
+                    agent.provider(),
+                    agent.provider_account_profile(),
+                )
+            }) else {
                 continue;
             };
             if let Ok(Some(message)) = self

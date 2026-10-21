@@ -242,6 +242,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     mod resource_telemetry;
     mod room_environment_placement;
+    #[cfg(unix)]
+    mod room_terminal;
     mod runtime_persistence;
     mod session_actor_projection;
     mod session_lifecycle_projection;
@@ -249,6 +251,7 @@ mod tests {
     mod stack_budget;
     mod status_projection;
     mod terminal_output_projection;
+    mod terminal_tools;
     mod workflow_revision;
 
     fn attach_request(session_id: &str, client_id: &str) -> LocalDaemonRequest {

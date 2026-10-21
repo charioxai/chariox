@@ -182,6 +182,7 @@ response_policies! {
         MachineFileChunk,
         MachineFileWritten,
         RoomBrowserArtifact,
+        RoomTerminal,
         AppPublisherEnrollmentStatus,
         AppInstallOperationStatus,
         AppPackageUploadStatus,

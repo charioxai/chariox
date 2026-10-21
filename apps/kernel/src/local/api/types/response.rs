@@ -41,6 +41,7 @@ pub enum LocalDaemonResponse {
     KernelBrowser { result: serde_json::Value, },
     Notes { result: NoteResult, },
     VisibleRegionCaptured { capture: VisibleRegionCapture },
+    RoomTerminal { result: RoomTerminalResult },
     AppPublisherEnrollmentStatus { operation: AppPublisherEnrollmentSummary, },
     AppInstallOperationStatus { operation: AppInstallOperationSummary, },
     AppPackageUploadStatus { upload: AppPackageUploadSummary, },

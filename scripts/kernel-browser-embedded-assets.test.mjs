@@ -30,11 +30,11 @@ test("MP-08/MP-10/MP-11 embedded host imports all controller dependencies outsid
 });
 
 
-test("MP-08/MP-10/MP-11 mirror host imports without the optional video transport", async () => {
+test("MP-08/MP-10/MP-11 mirror host imports without optional WebCodecs and compositor modules", async () => {
   const inventory = await readFile(source, "utf8");
   const assets = [...inventory.matchAll(/"([^"/]+\.(?:mjs|py))",\s*include_bytes!\("([^"]+)"\)/g)];
-  const video = new Set(["kernel-browser-display.mjs", "kernel-browser-display-credit.mjs",
-    "kernel-browser-webcodecs.mjs", "kernel-browser-native.mjs", "kernel-browser-compositor.mjs"]);
+  // Visible-page fallback shares the native capture and display modules.
+  const video = new Set(["kernel-browser-webcodecs.mjs", "kernel-browser-compositor.mjs"]);
   const directory = await mkdtemp(path.join(tmpdir(), "chariox-mirror-only-"));
   try {
     for (const [, name, relative] of assets) {

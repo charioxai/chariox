@@ -633,6 +633,10 @@ impl KernelRuntimeState {
                         .as_deref()
                         .filter(|_| profile_receipt_is_new)
                     {
+                        // Permanent profile refusal needs a durable receipt even
+                        // though cold credential preflight delays admission.
+                        runtime
+                            .begin_leased_prompt_receipt(&replay_leased_agent_id, home_prompt_id)?;
                         runtime.reject_leased_prompt_receipt(
                             &replay_leased_agent_id,
                             home_prompt_id,

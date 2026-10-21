@@ -159,6 +159,7 @@ mod room_environment_state;
 mod room_screenshot;
 mod room_secret_observation;
 mod room_shared_display;
+mod room_terminal_runtime_state;
 mod runtime_tool_call_activity;
 mod visible_region_capture;
 pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
@@ -235,6 +236,7 @@ struct KernelRuntimeOwnedState {
     room_display_leases: room_shared_display::RoomDisplayLeases,
     room_secret_observations: room_secret_observation::RoomSecretObservations,
     kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations,
+    room_terminals: crate::room_terminal::RoomTerminalService,
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
@@ -728,6 +730,7 @@ impl KernelRuntimeState {
             room_computer_revoked,
             sudo_windows,
             pending_agent_context_handoffs,
+            room_terminals,
         ) = {
             let started = Instant::now();
             loop {
@@ -747,6 +750,7 @@ impl KernelRuntimeState {
                         app.room_computer_revoked.clone(),
                         app.sudo_window_projection(),
                         app.pending_agent_context_handoff_store(),
+                        app.room_terminals(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -964,6 +968,7 @@ impl KernelRuntimeState {
                     config.private_runtime_state_root().join("kernel-browser/observations"),
                     BTreeSet::new(),
                 ).with_identity(&config.relay_private_key),
+                room_terminals,
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
                 room_browser_health_inflight: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
@@ -1059,6 +1064,7 @@ impl KernelRuntimeState {
                 project_environment_setups,
             },
         };
+        runtime.link_room_terminals_to_managed_kernel();
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
         // Access grants are process-bound and never survive a kernel restart.

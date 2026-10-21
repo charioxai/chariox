@@ -26,8 +26,6 @@ mod history;
 mod kernel_access;
 mod kernel_browser;
 mod kernel_computer;
-mod machine_files;
-mod machine_gateway;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
@@ -43,6 +41,7 @@ mod request;
 mod resource_telemetry;
 mod response;
 mod room_environment;
+mod room_terminal;
 mod screenshot;
 mod session_control;
 mod slice;
@@ -71,8 +70,6 @@ pub use history::*;
 pub use kernel_access::*;
 pub use kernel_browser::*;
 pub use kernel_computer::*;
-pub use machine_files::*;
-pub use machine_gateway::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
@@ -88,6 +85,7 @@ pub use request::*;
 pub use resource_telemetry::*;
 pub use response::*;
 pub use room_environment::*;
+pub use room_terminal::*;
 pub use screenshot::*;
 pub use session_control::*;
 pub use slice::*;
@@ -342,7 +340,5 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: allocated 556 adds `KernelBrowser` `state_wait`: a parked state read
 /// replacing the viewer's 250 ms poll.
 /// MP-08/MP-10/MP-11: allocated 567 adds the mirror v2 `fonts` op's `absent` (stack families the native machine lacks).
-/// External agents v2 (provisional, the coordinator renumbers by landing order): 568 replaces
-/// `lifetime_minutes` on access requests, grants and popups with a typed term that can be
-/// `until_holder_exits`.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 568;
+/// Provisional 569 carries the Room terminal service (`RoomTerminal`).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 569;

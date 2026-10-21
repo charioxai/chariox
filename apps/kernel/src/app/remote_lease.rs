@@ -91,6 +91,7 @@ pub(crate) enum LeasedAgentCleanupPhase {
     Attachment,
     Agent,
     BackingSessionEnd,
+    BackingTerminals,
     BackingSessionDelete,
 }
 
@@ -107,7 +108,8 @@ impl LeasedAgentCleanupPhase {
             Self::Provider => Some(Self::Attachment),
             Self::Attachment => Some(Self::Agent),
             Self::Agent => Some(Self::BackingSessionEnd),
-            Self::BackingSessionEnd => Some(Self::BackingSessionDelete),
+            Self::BackingSessionEnd => Some(Self::BackingTerminals),
+            Self::BackingTerminals => Some(Self::BackingSessionDelete),
             Self::BackingSessionDelete => None,
         }
     }
@@ -119,6 +121,7 @@ impl LeasedAgentCleanupPhase {
             Self::Attachment => "leased_agent.cleanup.attachment",
             Self::Agent => "leased_agent.cleanup.agent",
             Self::BackingSessionEnd => "leased_agent.cleanup.session_end",
+            Self::BackingTerminals => "leased_agent.cleanup.terminals",
             Self::BackingSessionDelete => "leased_agent.cleanup.session_delete",
         }
     }
@@ -862,6 +865,17 @@ impl<'a> RemoteLeaseRuntime<'a> {
                             .end_session(&agent.backing_session_id)
                             .map(|_| ())
                     }
+                }
+                LeasedAgentCleanupPhase::BackingTerminals => {
+                    // Terminals live beside the session, not in it. They are
+                    // swept only once the Room has ended: an open that raced
+                    // the cleanup then sees the end and removes its own shell.
+                    if !backing_session_still_used {
+                        self.app
+                            .room_terminals
+                            .end_session(&agent.backing_session_id);
+                    }
+                    Ok(())
                 }
                 LeasedAgentCleanupPhase::BackingSessionDelete => (|| {
                     self.app
