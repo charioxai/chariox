@@ -35,6 +35,46 @@ impl KernelRuntimeState {
         &self,
         context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.authorize_forwarded_context_for_prompt_states(
+            context,
+            &[crate::session::PromptStatus::Running],
+        )
+    }
+
+    /// The worker reports a delivery receipt while the home turn is still being
+    /// dispatched: that receipt is what lets the dispatch settle, so the exact
+    /// prompt is admitted in either state.
+    pub(crate) fn authorize_forwarded_delivery_receipt_context(
+        &self,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.authorize_forwarded_context_for_prompt_states(
+            context,
+            &[
+                crate::session::PromptStatus::Running,
+                crate::session::PromptStatus::Dispatching,
+            ],
+        )
+    }
+
+    /// The tool-specific admission for a forwarded capability tool call.
+    pub(crate) fn authorize_forwarded_capability_tool_context(
+        &self,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        tool_name: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        if tool_name == super::skills_dispatch::LEASED_SKILL_DELIVERY_ACK {
+            self.authorize_forwarded_delivery_receipt_context(context)
+        } else {
+            self.authorize_forwarded_workspace_context(context)
+        }
+    }
+
+    fn authorize_forwarded_context_for_prompt_states(
+        &self,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        admitted_prompt_states: &[crate::session::PromptStatus],
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
         self.authorize_current_forwarded_binding()?;
         let agent = self.owned.agent_store.get_agent(&context.home_agent_id)?;
         let session = self
@@ -55,8 +95,7 @@ impl KernelRuntimeState {
                 .prompt_state_owner
                 .active_prompt_for_agent(&session, agent.id())
                 .is_some_and(|prompt| {
-                    prompt.id() == expected
-                        && prompt.status() == crate::session::PromptStatus::Running
+                    prompt.id() == expected && admitted_prompt_states.contains(&prompt.status())
                 })
         });
         if agent.session_id() != context.home_session_id
@@ -189,9 +228,13 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         // Binding mutation and admission use the same app mutation lane.
         match request {
+            RelayPeerRequest::ForwardCapabilityRuntimeTool {
+                context, tool_name, ..
+            } => self
+                .authorize_forwarded_capability_tool_context(context, tool_name)
+                .map(|_| ()),
             RelayPeerRequest::ForwardWorkspaceLiveSyncRuntimeTool { context, .. }
             | RelayPeerRequest::FinalizeWorkspaceLiveSyncRuntimeTool { context, .. }
-            | RelayPeerRequest::ForwardCapabilityRuntimeTool { context, .. }
             | RelayPeerRequest::ForwardMetaRuntimeTool { context, .. } => self
                 .authorize_forwarded_workspace_context(context)
                 .map(|_| ()),

@@ -388,7 +388,7 @@ impl KernelRuntimeState {
         DaemonError,
     > {
         self.with_app_side_effect(|_| {
-            self.authorize_forwarded_workspace_context(&context)?;
+            self.authorize_forwarded_capability_tool_context(&context, &tool_name)?;
             // Agent messages retain the exact home-turn origin contract.
             if (crate::transport::runtime_tools::canonical_agent_messaging_tool_name(&tool_name)
                 == Some(crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL)

@@ -44,7 +44,7 @@ pub(in crate::runtime::state) fn acknowledge_leased_delivery(
     // The caller holds the app mutation lane while checking the authenticated binding
     // and committing receipts; record_pending_loads separately holds prompt ownership.
     {
-        state.authorize_forwarded_workspace_context(context)?;
+        state.authorize_forwarded_delivery_receipt_context(context)?;
         let acknowledgement: LeasedSkillAcknowledgement = serde_json::from_value(arguments)
             .map_err(|_| failure("invalid leased skill delivery acknowledgement"))?;
         if let LeasedSkillAcknowledgement::Typed {

@@ -9,6 +9,18 @@ async fn fixture() -> (
     SkillCatalogStorage,
     String,
 ) {
+    fixture_with_dispatch(true).await
+}
+
+/// `settled` is false while the worker has not yet acknowledged the submit.
+async fn fixture_with_dispatch(
+    settled: bool,
+) -> (
+    KernelRuntimeState,
+    RemoteWorkspaceLiveSyncContext,
+    SkillCatalogStorage,
+    String,
+) {
     let (runtime, session_id, agent_id, attachment, binding) =
         super::tests::mp11_fixture(crate::DaemonConfig::for_tests()).await;
     let submission = runtime
@@ -37,11 +49,21 @@ async fn fixture() -> (
         .session_store
         .get_session(&session_id)
         .unwrap();
-    let prompt = runtime
+    let mut prompt = runtime
         .owned
         .prompt_state_owner
         .active_prompt_for_agent(&session, &agent_id)
         .unwrap();
+    if !settled {
+        // A promoted queued prompt stays Dispatching until its worker settles the submit.
+        let mut dispatching = prompt.clone();
+        dispatching.set_status(crate::session::PromptStatus::Dispatching);
+        assert!(runtime
+            .owned
+            .prompt_state_owner
+            .replace_active_prompt_if_matches(&session, &agent_id, &prompt, dispatching.clone()));
+        prompt = dispatching;
+    }
     let run_id = super::super::skills_dispatch::leased_run_id(&binding.leased_agent_id);
     let record = |skill: &str, reason| SkillLoadRecord {
         skill_id: skill.into(),
@@ -433,6 +455,41 @@ async fn leased_skill_receipts_wait_for_delivery_and_bind_tool_digest() {
     assert!(loads.iter().all(
         |r| r.prompt_id == context.home_prompt_id.as_deref().unwrap() && r.delivered_at_ms > 0
     ));
+}
+
+// The headless worker acknowledges its submit only after the hook delivered the
+// body, and reports that receipt while the home turn is still Dispatching.
+#[tokio::test]
+async fn leased_delivery_receipt_is_admitted_while_the_home_turn_is_dispatching() {
+    let (runtime, context, storage, _) = fixture_with_dispatch(false).await;
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&context.home_session_id)
+        .unwrap();
+    let prompt = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &context.home_agent_id)
+        .unwrap();
+    assert_eq!(prompt.status(), crate::session::PromptStatus::Dispatching);
+    acknowledge(&runtime, &context, serde_json::json!({"delivery":"prompt"}))
+        .await
+        .unwrap();
+    assert_eq!(storage.loads(&context.home_session_id).unwrap().len(), 1);
+    // Every other forwarded tool still needs the running turn, and a receipt
+    // still needs the exact prompt.
+    let peer = runtime.with_relay_peer_authority(
+        crate::runtime::relay_peer_authority::test_peer_authority(&context.worker_kernel_id),
+    );
+    assert!(peer
+        .authorize_forwarded_workspace_context(&context)
+        .is_err());
+    let mut other = context.clone();
+    other.home_prompt_id = Some("another-prompt".into());
+    assert!(peer
+        .authorize_forwarded_delivery_receipt_context(&other)
+        .is_err());
 }
 
 #[tokio::test]
