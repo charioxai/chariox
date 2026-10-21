@@ -261,14 +261,79 @@ impl SkillDispatchService {
         agent_id: &str,
         run: &'a RuntimeProviderRun,
     ) -> Result<Option<&'a str>, DaemonError> {
-        let pending = self.history.load_agent_compaction_boundary(
+        let intact = self.context_survives_compaction(
             session_id,
             agent_id,
             run.provider(),
             run.account_profile(),
             super::context_handoff::native_session_id(run),
         )?;
-        Ok(pending.is_none().then(|| run.id()))
+        Ok(intact.then(|| run.id()))
+    }
+    fn context_survives_compaction(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider: &str,
+        account: &str,
+        native_session: Option<&str>,
+    ) -> Result<bool, DaemonError> {
+        Ok(self
+            .history
+            .load_agent_compaction_boundary(
+                session_id,
+                agent_id,
+                provider,
+                account,
+                native_session,
+            )?
+            .is_none())
+    }
+    /// The projected id of the worker provider run that still holds this agent's earlier
+    /// loads. The home's remote binding names the worker run even when no client keeps
+    /// its projection alive; the projection is only the fallback.
+    fn live_leased_run_id(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        leased_agent_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        let agent = self.agents.get_agent(agent_id)?;
+        let bound = agent
+            .remote_execution()
+            .filter(|binding| binding.leased_agent_id == leased_agent_id)
+            .and_then(|binding| binding.active_worker_provider_run_id.as_deref())
+            .map(|worker_run| {
+                crate::provider::projected_leased_provider_run_id(leased_agent_id, worker_run)
+            });
+        let projected = self.runs.get_for_agent(session_id, agent_id).filter(|run| {
+            crate::provider::worker_provider_run_id_from_projected_leased_id(
+                leased_agent_id,
+                run.id(),
+            )
+            .is_some()
+        });
+        let intact = match &projected {
+            Some(run) => self.context_survives_compaction(
+                session_id,
+                agent_id,
+                run.provider(),
+                run.account_profile(),
+                super::context_handoff::native_session_id(run),
+            )?,
+            None => self.context_survives_compaction(
+                session_id,
+                agent_id,
+                agent.provider(),
+                agent.provider_account_profile(),
+                agent
+                    .provider_resume_state()
+                    .provider_session_id(agent.provider()),
+            )?,
+        };
+        Ok(intact
+            .then(|| bound.or_else(|| projected.map(|run| run.id().to_string())))
+            .flatten())
     }
     fn prepare_remote(
         &self,
@@ -304,17 +369,7 @@ impl SkillDispatchService {
         let generation = format!("{}:{}:remote", session_id, prompt.id());
         // The worker's current provider run still holds what it was given earlier;
         // a new run, a lease recreation or a compaction re-attaches the loads.
-        let live_run = self.runs.get_for_agent(session_id, agent_id).filter(|run| {
-            crate::provider::worker_provider_run_id_from_projected_leased_id(
-                leased_agent_id,
-                run.id(),
-            )
-            .is_some()
-        });
-        let live_run_id = match &live_run {
-            Some(run) => self.live_context_run_id(session_id, agent_id, run)?,
-            None => None,
-        };
+        let live_run_id = self.live_leased_run_id(session_id, agent_id, leased_agent_id)?;
         let context = service.pinned_turn_from_snapshot(
             &catalog,
             Some(project_id),
@@ -331,7 +386,7 @@ impl SkillDispatchService {
             budget_percent,
             remaining,
             &generation,
-            live_run_id,
+            live_run_id.as_deref(),
         )?;
         // Native duplicates retain home load authority, but never transfer a body/package.
         let auto_rows: Vec<_> = rows

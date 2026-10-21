@@ -763,6 +763,17 @@ async fn second_named_kernel_ordinary_local_turn_is_not_refused_by_the_skills_ca
 // provider run; a new worker run re-attaches it.
 #[tokio::test]
 async fn leased_follow_up_turn_does_not_repeat_a_load_the_worker_run_holds() {
+    leased_load_is_delivered_once_per_worker_run(true).await;
+}
+
+// No terminal client keeps the home projection of the run alive (IPC submit, an idle
+// TUI): the agent's remote binding still names the worker run that holds the load.
+#[tokio::test]
+async fn leased_follow_up_turn_without_a_projected_run_does_not_repeat_a_load() {
+    leased_load_is_delivered_once_per_worker_run(false).await;
+}
+
+async fn leased_load_is_delivered_once_per_worker_run(projected: bool) {
     use crate::skill::service::SkillCatalogService;
     let (runtime, session_id, agent_id, attachment, binding) =
         super::tests::mp11_fixture(crate::DaemonConfig::for_tests()).await;
@@ -790,6 +801,9 @@ async fn leased_follow_up_turn_does_not_repeat_a_load_the_worker_run_holds() {
         catalog_revision: catalog.revision,
     };
     let project_run = |worker_run: &str| {
+        if !projected {
+            return;
+        }
         let projected =
             crate::provider::projected_leased_provider_run_id(&binding.leased_agent_id, worker_run);
         let mut run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
@@ -805,7 +819,7 @@ async fn leased_follow_up_turn_does_not_repeat_a_load_the_worker_run_holds() {
             .provider_run_projection
             .update_remote_snapshot(run);
     };
-    let turn = |id: &str, text: &str, selections: Vec<SkillSelection>| {
+    let turn = |id: &str, worker_run: &str, text: &str, selections: Vec<SkillSelection>| {
         let submission = runtime
             .owned
             .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
@@ -828,7 +842,7 @@ async fn leased_follow_up_turn_does_not_repeat_a_load_the_worker_run_holds() {
             .owned
             .settle_remote_dispatch_if_current(
                 &submission.remote_dispatch.unwrap(),
-                Some("worker-run-1"),
+                Some(worker_run),
             )
             .unwrap();
         let session = runtime
@@ -854,7 +868,12 @@ async fn leased_follow_up_turn_does_not_repeat_a_load_the_worker_run_holds() {
         .unwrap()
     };
     project_run("worker-run-1");
-    let first = turn("load-turn", "$review inspect source", vec![selection]);
+    let first = turn(
+        "load-turn",
+        "worker-run-1",
+        "$review inspect source",
+        vec![selection],
+    );
     // The Manual skill is transferred with every turn; only its body rides a load.
     let roots = |turn: &super::super::skills_dispatch::RemoteSkillTurn| {
         let skill = &turn.set.manifest.skills[0];
@@ -893,7 +912,7 @@ async fn leased_follow_up_turn_does_not_repeat_a_load_the_worker_run_holds() {
         .owned
         .prompt_state_owner
         .complete_active_prompt_only(&session, &agent_id);
-    let second = turn("follow-up", "continue reviewing", vec![]);
+    let second = turn("follow-up", "worker-run-1", "continue reviewing", vec![]);
     assert!(
         remote(second.id()).is_none_or(|turn| !roots(&turn).contains("Review source.")),
         "the worker run already holds the load"
@@ -903,7 +922,12 @@ async fn leased_follow_up_turn_does_not_repeat_a_load_the_worker_run_holds() {
         .prompt_state_owner
         .complete_active_prompt_only(&session, &agent_id);
     project_run("worker-run-2");
-    let third = turn("after-restart", "continue reviewing", vec![]);
+    let third = turn(
+        "after-restart",
+        "worker-run-2",
+        "continue reviewing",
+        vec![],
+    );
     assert!(
         roots(&remote(third.id()).unwrap()).contains("Review source."),
         "a new worker run lost the load"
