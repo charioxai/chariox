@@ -40,6 +40,7 @@ impl HostedClient {
         client_id: &str,
         thumbprint: &str,
         grant_id: &str,
+        kernel_alias: Option<&str>,
         target: &str,
     ) -> Result<(), GatewayError> {
         let mut state = self.state.lock().await;
@@ -49,17 +50,11 @@ impl HostedClient {
         if state.registered_for.contains(grant_id) {
             return Ok(());
         }
-        let local = profile
-            .machine_alias
-            .as_deref()
-            .filter(|alias| !alias.trim().is_empty())
-            .or(profile.machine_id.as_deref())
-            .unwrap_or("this machine");
         register_cloud_gateway_client(
             profile,
             client_id,
             thumbprint,
-            &format!("Agent gateway of {local}"),
+            &client_name(profile, kernel_alias),
         )
         .await
         .map_err(|error| GatewayError::Unreachable {
@@ -83,6 +78,24 @@ impl HostedClient {
     /// The grants that were live at the revoke have ended: the next grant registers afresh.
     pub(super) async fn reopen(&self) {
         self.state.lock().await.revoked = false;
+    }
+}
+
+/// The row the owner sees in the clients list. A machine can run several of the user's
+/// kernels, each with its own gateway, so the kernel's alias tells the rows apart.
+fn client_name(profile: &PersistedCloudRelayProfile, kernel_alias: Option<&str>) -> String {
+    let machine = profile
+        .machine_alias
+        .as_deref()
+        .filter(|alias| !alias.trim().is_empty())
+        .or(profile.machine_id.as_deref())
+        .unwrap_or("this machine");
+    match kernel_alias
+        .map(str::trim)
+        .filter(|alias| !alias.is_empty())
+    {
+        Some(alias) if alias != machine => format!("Agent gateway of {machine}/{alias}"),
+        _ => format!("Agent gateway of {machine}"),
     }
 }
 
@@ -129,13 +142,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_clients_list_row_names_the_kernel_when_a_machine_runs_several() {
+        let profile = enrolled("http://unused".into());
+        assert_eq!(client_name(&profile, None), "Agent gateway of Studio");
+        assert_eq!(client_name(&profile, Some("  ")), "Agent gateway of Studio");
+        assert_eq!(
+            client_name(&profile, Some("Studio")),
+            "Agent gateway of Studio"
+        );
+        assert_eq!(
+            client_name(&profile, Some("dev")),
+            "Agent gateway of Studio/dev"
+        );
+    }
+
     async fn register(
         hosted: &HostedClient,
         profile: &PersistedCloudRelayProfile,
         grant: &str,
     ) -> Result<(), GatewayError> {
         hosted
-            .ensure_registered(profile, "agent-gateway", &"d".repeat(64), grant, "b3")
+            .ensure_registered(profile, "agent-gateway", &"d".repeat(64), grant, None, "b3")
             .await
     }
 
