@@ -11,6 +11,9 @@ pub(crate) use leased_processes::LeasedProcessMutation;
 pub use leased_processes::{LeasedProcessBinding, LeasedProcessReceipt};
 mod delivery_waits;
 #[cfg(test)]
+mod fault_tests;
+pub(crate) mod faults;
+#[cfg(test)]
 mod goal_tests;
 pub(crate) mod goals;
 mod migration;
@@ -226,7 +229,7 @@ impl DurableKernelStateStore {
         .collect()
     }
 }
-pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
+pub(super) fn execute(db: &mut Connection, request: Request, faults: &faults::AgentFaults) -> bool {
     // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: no objective or operation payload in diagnostics.
     let trace = match &request.operation {
         Operation::ControlGoal { task, action, .. } => match action.as_str() {
@@ -246,8 +249,19 @@ pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sql)?;
         let begun = std::time::Instant::now();
+        let duplicate = faults
+            .duplicates_deliveries()
+            .then(|| {
+                faults::delivery_kind(&request.operation)
+                    .map(|kind| (kind, request.operation.clone()))
+            })
+            .flatten();
         let value = apply(&tx, request.operation)?;
         let applied = std::time::Instant::now();
+        if faults.writer_fails() {
+            drop(tx);
+            return Err(error("agent lifecycle write failed (CHARIOX_AGENT_FAULT_DIR/writer-fail); nothing was committed"));
+        }
         let committed = tx.commit();
         if let Some((key, action)) = trace {
             crate::runtime::command_latency::log_goal_writer_phases(
@@ -267,10 +281,25 @@ pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
                 e.to_string()
             }));
         }
+        if let Some((kind, operation)) = duplicate {
+            redeliver(db, faults, kind, operation);
+        }
         Ok(value)
     })();
     let _ = request.response.send(result);
     uncertain
+}
+/// G05 drill: the same delivery arrives again after the first committed.
+fn redeliver(db: &mut Connection, faults: &faults::AgentFaults, kind: &str, operation: Operation) {
+    let outcome = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(sql)
+        .and_then(|tx| {
+            let applied = apply(&tx, operation).map(|_| ());
+            tx.commit().map_err(sql)?;
+            applied
+        });
+    faults.record_duplicate(kind, outcome.as_ref().err());
 }
 fn load(tx: &Transaction<'_>, id: &str) -> Result<AgentTaskExecution, DaemonError> {
     let row: Option<(String, String, String, String)> = tx

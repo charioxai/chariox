@@ -1492,6 +1492,7 @@ fn run_durable_writer(
     receiver: Receiver<DurableWriterRequest>,
     health: Arc<DurableWriterHealth>,
 ) {
+    let agent_faults = agent_lifecycle::faults::AgentFaults::from_env();
     struct MarkStopped(Arc<DurableWriterHealth>);
     impl Drop for MarkStopped {
         fn drop(&mut self) {
@@ -1585,7 +1586,7 @@ fn run_durable_writer(
                 continue;
             }
             DurableWriterRequest::AgentLifecycle(request) => {
-                if agent_lifecycle::execute(&mut connection, *request) {
+                if agent_lifecycle::execute(&mut connection, *request, &agent_faults) {
                     health.fatal.store(true, Ordering::Release);
                     health.stopped_uncertain.store(true, Ordering::Release);
                     break;
