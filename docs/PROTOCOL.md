@@ -4838,7 +4838,7 @@ authority for its own sessions, agents, terminals and files.
 - Forwarding: one relay client connection per target (key-bound 5-minute client token from the kernel's Cloud
   credential when hosted, replaced before it expires, closed after 5 idle minutes). The gateway key pair is made
   by the kernel on first use and never returned by any request. The encrypted request is
-  `{command_id, request, on_behalf_of: {origin_kernel, grant_id, harness}}`. A target that advertises the
+  `{command_id, request, on_behalf_of: {origin_kernel, origin_name?, grant_id, harness}}`. `origin_name` is how the origin kernel names itself to its owner (`<machine>/<alias>`); the target lists the gateway as `Agent gateway of <origin_name>` in its paired clients, and as `Agent gateway of <origin_kernel>` when it is absent. A target that advertises the
   `kernel_gateway_v1` capability (in `RelayStatus.capabilities` and relay presence) refuses the human-only set for
   any request that carries `on_behalf_of`, classifies `RespondToInteraction` from its own pending interactions and
   never needs the origin's grant. A target without it rejects the envelope; the gateway then sends a plain

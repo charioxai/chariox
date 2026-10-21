@@ -169,7 +169,7 @@ fn gateway_client_record(
 ) -> crate::local::PairedClientRecord {
     crate::local::PairedClientRecord {
         client_id: origin.client_id(),
-        alias: Some(format!("Agent gateway of {}", origin.origin_kernel)),
+        alias: Some(format!("Agent gateway of {}", origin.display_name())),
         terminal_type: Some(TerminalType::Cli),
         public_key_thumbprint: origin.key_thumbprint,
         paired_at_ms: origin.first_seen_ms,

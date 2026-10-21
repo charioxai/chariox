@@ -92,6 +92,7 @@ async fn the_target_refuses_the_human_only_set_without_knowing_the_origin_grant(
     let (state, _) = state_with_live_grant();
     let on_behalf_of = crate::local::OnBehalfOf {
         origin_kernel: "origin-kernel".into(),
+        origin_name: None,
         grant_id: "grant-that-lives-only-at-the-origin".into(),
         harness: "claude".into(),
     };

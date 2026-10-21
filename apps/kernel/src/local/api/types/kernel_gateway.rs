@@ -7,6 +7,10 @@ use super::*;
 #[serde(deny_unknown_fields)]
 pub struct OnBehalfOf {
     pub origin_kernel: String,
+    /// What the origin kernel is called to its owner (`<machine>/<alias>`), shown in the
+    /// target's paired clients; absent when the origin has no alias.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_name: Option<String>,
     pub grant_id: String,
     pub harness: String,
 }

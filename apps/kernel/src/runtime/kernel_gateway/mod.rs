@@ -101,12 +101,12 @@ impl KernelGateway {
     pub(crate) fn admit_origin(
         &self,
         client_public_key: &str,
-        origin_kernel: Option<&str>,
+        origin: Option<origins::Named<'_>>,
     ) -> Result<bool, crate::error::DaemonError> {
         origins::admit(
             &origins::path_in(&self.config.snapshot().private_runtime_state_root()),
             client_public_key,
-            origin_kernel,
+            origin,
             crate::session::unix_epoch_ms(),
         )
     }
@@ -143,8 +143,10 @@ impl KernelGateway {
         }
         let mut envelope = serde_json::json!({"command_id": command_id, "request": request});
         if gateway_ready {
+            let own = self.config.snapshot();
             envelope["on_behalf_of"] = serde_json::to_value(OnBehalfOf {
-                origin_kernel: self.config.snapshot().daemon_id,
+                origin_name: Some(names::own_name(&own)),
+                origin_kernel: own.daemon_id,
                 grant_id: origin.grant_id.clone(),
                 harness: origin.harness.clone(),
             })

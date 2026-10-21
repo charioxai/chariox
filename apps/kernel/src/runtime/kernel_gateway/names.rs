@@ -21,6 +21,20 @@ pub(super) fn label(kernel: &RelayKernelPresence) -> String {
         .unwrap_or_else(|| kernel.kernel_id.clone())
 }
 
+/// How this kernel names itself to its owner: `<machine>/<alias>`, or the machine alone
+/// when the kernel has no alias.
+pub(super) fn own_name(config: &crate::config::DaemonConfig) -> String {
+    let machine = config
+        .host_machine_alias
+        .clone()
+        .filter(|alias| !alias.trim().is_empty())
+        .unwrap_or_else(|| config.host_machine_id.clone());
+    match config.daemon_alias.as_deref().map(str::trim) {
+        Some(alias) if !alias.is_empty() && alias != machine => format!("{machine}/{alias}"),
+        _ => machine,
+    }
+}
+
 fn qualified(kernel: &RelayKernelPresence) -> String {
     format!("{}/{}", machine_name(kernel), label(kernel))
 }
@@ -171,5 +185,18 @@ mod tests {
         ]);
         let order: Vec<&str> = listed.iter().map(|k| k.name.as_str()).collect();
         assert_eq!(order, ["b3/dev", "b3/main", "mac/dev", "mac/main"]);
+    }
+
+    #[test]
+    fn a_kernel_names_itself_by_its_machine_and_its_alias() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.host_machine_id = "machine-1".into();
+        assert_eq!(own_name(&config), "machine-1");
+        config.host_machine_alias = Some("mac".into());
+        assert_eq!(own_name(&config), "mac");
+        config.daemon_alias = Some(" dev ".into());
+        assert_eq!(own_name(&config), "mac/dev");
+        config.daemon_alias = Some("mac".into());
+        assert_eq!(own_name(&config), "mac");
     }
 }

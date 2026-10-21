@@ -171,10 +171,12 @@ pub(super) async fn handle_prepared_daemon_request(
             };
             // A gateway of another kernel is listed with the paired clients; once the owner
             // revoked it here, its key gets nothing, whether or not it names its origin.
-            let origin = request
-                .on_behalf_of
-                .as_ref()
-                .map(|c| c.origin_kernel.as_str());
+            let origin = request.on_behalf_of.as_ref().map(|c| {
+                crate::runtime::kernel_gateway::origins::Named {
+                    kernel: c.origin_kernel.as_str(),
+                    name: c.origin_name.as_deref(),
+                }
+            });
             match router
                 .kernel_gateway()
                 .admit_origin(&client_public_key, origin)

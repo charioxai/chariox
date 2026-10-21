@@ -21,6 +21,9 @@ const SEEN_REFRESH_MS: u64 = 60_000;
 pub(crate) struct GatewayOrigin {
     pub(crate) key_thumbprint: String,
     pub(crate) origin_kernel: String,
+    /// How the origin names itself to its owner; absent in files written before it existed.
+    #[serde(default)]
+    pub(crate) origin_name: Option<String>,
     pub(crate) first_seen_ms: u64,
     pub(crate) last_seen_ms: u64,
     pub(crate) revoked: bool,
@@ -30,6 +33,18 @@ impl GatewayOrigin {
     pub(crate) fn client_id(&self) -> String {
         format!("{CLIENT_PREFIX}{}", self.key_thumbprint)
     }
+
+    /// What the owner sees in the paired clients list.
+    pub(crate) fn display_name(&self) -> &str {
+        self.origin_name.as_deref().unwrap_or(&self.origin_kernel)
+    }
+}
+
+/// The origin a gateway request names for itself.
+#[derive(Clone, Copy)]
+pub(crate) struct Named<'a> {
+    pub(crate) kernel: &'a str,
+    pub(crate) name: Option<&'a str>,
 }
 
 /// What the cache holds per file, so a revoke is seen by the next request.
@@ -83,7 +98,7 @@ fn with<R>(
 pub(crate) fn admit(
     path: &Path,
     client_public_key: &str,
-    origin_kernel: Option<&str>,
+    origin: Option<Named<'_>>,
     now_ms: u64,
 ) -> Result<bool, DaemonError> {
     let thumbprint = public_key_thumbprint(client_public_key);
@@ -91,17 +106,26 @@ pub(crate) fn admit(
         match origins.iter_mut().find(|o| o.key_thumbprint == thumbprint) {
             Some(known) if known.revoked => (false, false),
             Some(known) => {
+                let Some(origin) = origin else {
+                    return (true, false);
+                };
+                // A renamed origin shows its new name at once; a busy one rewrites `last_seen_ms` rarely.
+                let renamed = known.origin_name.as_deref() != origin.name;
                 let stale = now_ms.saturating_sub(known.last_seen_ms) >= SEEN_REFRESH_MS;
-                if origin_kernel.is_some() && stale {
+                if renamed {
+                    known.origin_name = origin.name.map(str::to_owned);
+                }
+                if renamed || stale {
                     known.last_seen_ms = now_ms;
                 }
-                (true, origin_kernel.is_some() && stale)
+                (true, renamed || stale)
             }
-            None => match origin_kernel {
+            None => match origin {
                 Some(origin) => {
                     origins.push(GatewayOrigin {
                         key_thumbprint: thumbprint,
-                        origin_kernel: origin.to_string(),
+                        origin_kernel: origin.kernel.to_string(),
+                        origin_name: origin.name.map(str::to_owned),
                         first_seen_ms: now_ms,
                         last_seen_ms: now_ms,
                         revoked: false,
@@ -154,6 +178,13 @@ pub(crate) fn reinstate(
 mod tests {
     use super::*;
 
+    fn mac(name: Option<&'static str>) -> Option<Named<'static>> {
+        Some(Named {
+            kernel: "mac-kernel",
+            name,
+        })
+    }
+
     fn file() -> PathBuf {
         let dir = PathBuf::from(std::env::var("TMPDIR").unwrap_or_else(|_| "/var/tmp".into()))
             .join(format!(
@@ -172,7 +203,7 @@ mod tests {
         assert!(admit(&path, "terminal-key", None, 1).unwrap());
         assert!(entries(&path).unwrap().is_empty());
         for at in [10, 20, 100_000] {
-            assert!(admit(&path, "gateway-key", Some("mac-kernel"), at).unwrap());
+            assert!(admit(&path, "gateway-key", mac(None), at).unwrap());
         }
         let listed = entries(&path).unwrap();
         assert_eq!(listed.len(), 1);
@@ -184,7 +215,7 @@ mod tests {
         assert!(revoke(&path, "agent-gateway:unknown").unwrap().is_none());
         assert!(revoke(&path, &id).unwrap().unwrap().revoked);
         // The key is refused with or without a name, and the other key still works.
-        assert!(!admit(&path, "gateway-key", Some("mac-kernel"), 200_000).unwrap());
+        assert!(!admit(&path, "gateway-key", mac(None), 200_000).unwrap());
         assert!(!admit(&path, "gateway-key", None, 200_001).unwrap());
         assert!(admit(&path, "terminal-key", None, 3).unwrap());
         // A restart reads the same answer from the file.
@@ -195,7 +226,7 @@ mod tests {
         assert!(reinstate(&path, &public_key_thumbprint("gateway-key"))
             .unwrap()
             .is_some());
-        assert!(admit(&path, "gateway-key", Some("mac-kernel"), 400_000).unwrap());
+        assert!(admit(&path, "gateway-key", mac(None), 400_000).unwrap());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -204,6 +235,21 @@ mod tests {
                 0o600
             );
         }
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_gateway_is_listed_by_the_name_its_kernel_gives_and_a_rename_shows_at_once() {
+        let path = file();
+        assert!(admit(&path, "gateway-key", mac(Some("mac/dev")), 10).unwrap());
+        assert_eq!(entries(&path).unwrap()[0].display_name(), "mac/dev");
+        // Soon after, so no `last_seen_ms` refresh is due: the new name is still stored.
+        assert!(admit(&path, "gateway-key", mac(Some("mac/main")), 20).unwrap());
+        assert_eq!(entries(&path).unwrap()[0].display_name(), "mac/main");
+        // A kernel without a name is listed by its id, as a file written before names was.
+        assert!(admit(&path, "other-key", mac(None), 30).unwrap());
+        let listed = entries(&path).unwrap();
+        assert_eq!(listed[1].display_name(), "mac-kernel");
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

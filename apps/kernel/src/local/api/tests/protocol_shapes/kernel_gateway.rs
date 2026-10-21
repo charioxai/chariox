@@ -48,6 +48,7 @@ fn kernel_gateway_protocol_568_shapes_and_hash() {
     ));
     let on_behalf_of = OnBehalfOf {
         origin_kernel: "kernel-mac".into(),
+        origin_name: Some("mac/main".into()),
         grant_id: "grant-1".into(),
         harness: "claude".into(),
     };
@@ -116,6 +117,6 @@ fn kernel_gateway_protocol_568_shapes_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "95e001f7e82162df9eaf59c7204629dcdfc2e1b1a30444e78a5f1e8c1ed5477f"
+        "3392afcfcfdb6b3ad9ef9e89adc30abee92ee909715109eb6d926426ccb61d44"
     );
 }
