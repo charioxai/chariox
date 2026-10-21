@@ -1,4 +1,5 @@
 //! MP-08 / MP-10 / MP-11: harness-native skills of a leased worker, asked by the home kernel.
+use super::skills_dispatch::ReportedWorkerRun;
 use super::*;
 use crate::app::RemoteLeaseRuntime;
 use crate::skill::v2::{NativeSkillDetails, NativeSkillEntry, SkillSelection};
@@ -104,17 +105,23 @@ impl KernelRuntimeState {
     pub(super) async fn remote_dispatch_native_entries(
         &self,
         agent: &crate::agent::AgentInstance,
-    ) -> Result<Vec<NativeSkillEntry>, DaemonError> {
+    ) -> Result<(Vec<NativeSkillEntry>, ReportedWorkerRun), DaemonError> {
         if !super::skills_catalog_runtime::catalog_available(&self.owned.durable_state_store) {
-            return Ok(vec![]);
+            return Ok((vec![], ReportedWorkerRun::Unknown));
         }
         let revision = self.skills_catalog_service()?.storage.snapshot()?.revision;
         let (inventory, _) = self
             .remote_skill_native_inventory(agent, revision, false, None)
             .await?;
-        Ok(inventory
-            .map(|inventory| inventory.entries)
-            .unwrap_or_default())
+        Ok(match inventory {
+            None => (vec![], ReportedWorkerRun::NoRun),
+            Some(inventory) => (
+                inventory.entries,
+                inventory
+                    .provider_run_id
+                    .map_or(ReportedWorkerRun::Unknown, ReportedWorkerRun::Live),
+            ),
+        })
     }
 
     /// Picker and inventory reads meet a lease the restarted worker no longer knows
@@ -329,6 +336,7 @@ impl KernelRuntimeState {
                 Some(LeasedSkillNativeInventory {
                     entries: inventory.entries,
                     revision: inventory.revision,
+                    provider_run_id: Some(run.id().to_string()),
                 }),
                 details,
             ))

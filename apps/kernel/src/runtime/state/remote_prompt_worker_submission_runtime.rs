@@ -958,7 +958,7 @@ impl KernelRuntimeState {
                     crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT, agent.provider());
                 // MP-08 / MP-10: the home delivers its own catalog revision; the worker
                 // never resolves skills itself and a failed transfer refuses the turn.
-                let native = if super::skills_dispatch::remote_turn_needs_native_inventory(
+                let (native, worker_run) = if super::skills_dispatch::remote_turn_needs_native_inventory(
                     &callback_state,
                     &skill_session_id,
                     agent.id(),
@@ -966,7 +966,7 @@ impl KernelRuntimeState {
                 )? {
                     callback_state.remote_dispatch_native_entries(&agent).await?
                 } else {
-                    vec![]
+                    (vec![], super::skills_dispatch::ReportedWorkerRun::Unknown)
                 };
                 let (hidden_system_context, native_skill_selections) = match super::skills_dispatch::prepare_remote_turn(
                     &callback_state,
@@ -975,6 +975,7 @@ impl KernelRuntimeState {
                     &skill_prompt_id,
                     &remote_execution.leased_agent_id,
                     &native,
+                    &worker_run,
                 )? {
                     Some(turn) => {
                         let native_skill_selections = crate::transport::relay_peer::LeasedNativeSkills {

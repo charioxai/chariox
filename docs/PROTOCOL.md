@@ -4993,7 +4993,10 @@ authenticated lease home only) answered by `LeasedSkillNativeInventory`, which
 carries the worker harness's native entries (and, on request, one entry's
 Details). The home uses it for the Skills screen, the `$` picker, dispatch-time
 dedupe and `list_skills`/`load_skill` of a leased agent; `inventory: null`
-means the provider has not started on the worker. Chariox `list_skills`,
+means the provider has not started on the worker. Its optional
+`provider_run_id` names the worker run the lease has when the home reads it
+before a turn; a run other than the one holding earlier loads (or none) makes
+the home attach those loads again on that turn. Chariox `list_skills`,
 `load_skill` and `manage_skills` of a leased agent are the existing
 `ForwardCapabilityRuntimeTool` forwarding: the home keeps a per-turn authority
 keyed by the lease (`leased:<leased_agent_id>`), `load_skill` names the root

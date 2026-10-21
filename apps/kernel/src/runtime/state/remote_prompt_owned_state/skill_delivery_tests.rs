@@ -237,6 +237,7 @@ async fn leased_skill_native_duplicate_retains_manual_receipt_and_next_turn_load
         prompt.id(),
         &binding.leased_agent_id,
         &[native.clone()],
+        &super::super::skills_dispatch::ReportedWorkerRun::Unknown,
     )
     .unwrap()
     .unwrap();
@@ -383,6 +384,7 @@ async fn leased_claude_native_copy_without_ack_is_delivered_by_chariox() {
         prompt.id(),
         &binding.leased_agent_id,
         &[native],
+        &super::super::skills_dispatch::ReportedWorkerRun::Unknown,
     )
     .unwrap()
     .expect("the Chariox copy is delivered");
@@ -764,17 +766,31 @@ async fn second_named_kernel_ordinary_local_turn_is_not_refused_by_the_skills_ca
 // saw settle is the run it expects; a run it sees change re-attaches the load.
 #[tokio::test]
 async fn leased_follow_up_turn_does_not_repeat_a_load_the_worker_run_holds() {
-    leased_load_is_delivered_once_per_worker_run(false).await;
+    leased_load_is_delivered_once_per_worker_run(Relaunch::Settled).await;
 }
 
 // The home projection of a different worker run than the last settled one is a run
 // the home cannot vouch for: the load is delivered again.
 #[tokio::test]
 async fn leased_turn_re_attaches_a_load_when_the_projected_worker_run_differs() {
-    leased_load_is_delivered_once_per_worker_run(true).await;
+    leased_load_is_delivered_once_per_worker_run(Relaunch::Projected).await;
 }
 
-async fn leased_load_is_delivered_once_per_worker_run(project_new_run: bool) {
+// A worker relaunch the home never saw settle or project: the worker names the run that
+// takes the turn when the home reads its inventory, and the load rides that turn.
+#[tokio::test]
+async fn leased_turn_re_attaches_a_load_when_the_worker_reports_a_new_run_at_turn_start() {
+    leased_load_is_delivered_once_per_worker_run(Relaunch::ReportedAtTurnStart).await;
+}
+
+enum Relaunch {
+    Settled,
+    Projected,
+    ReportedAtTurnStart,
+}
+
+async fn leased_load_is_delivered_once_per_worker_run(relaunch: Relaunch) {
+    use super::super::skills_dispatch::ReportedWorkerRun;
     use crate::skill::service::SkillCatalogService;
     let (runtime, session_id, agent_id, attachment, binding) =
         super::tests::mp11_fixture(crate::DaemonConfig::for_tests()).await;
@@ -861,7 +877,7 @@ async fn leased_load_is_delivered_once_per_worker_run(project_new_run: bool) {
             .unwrap();
         complete(worker_run);
     };
-    let remote = |prompt_id: &str| {
+    let remote_reported = |prompt_id: &str, worker_run: ReportedWorkerRun| {
         super::super::skills_dispatch::prepare_remote_turn(
             &runtime,
             &session_id,
@@ -869,9 +885,11 @@ async fn leased_load_is_delivered_once_per_worker_run(project_new_run: bool) {
             prompt_id,
             &binding.leased_agent_id,
             &[],
+            &worker_run,
         )
         .unwrap()
     };
+    let remote = |prompt_id: &str| remote_reported(prompt_id, ReportedWorkerRun::Unknown);
     // The Manual skill is transferred with every turn; only its body rides a load.
     let roots = |turn: &super::super::skills_dispatch::RemoteSkillTurn| {
         let skill = &turn.set.manifest.skills[0];
@@ -909,19 +927,44 @@ async fn leased_load_is_delivered_once_per_worker_run(project_new_run: bool) {
     complete("worker-run-1");
     let second = submit("follow-up", "continue reviewing", vec![]);
     assert!(
-        remote(&second.prompt_id).is_none_or(|turn| !roots(&turn).contains("Review source.")),
+        remote_reported(
+            &second.prompt_id,
+            ReportedWorkerRun::Live("worker-run-1".into())
+        )
+        .is_none_or(|turn| !roots(&turn).contains("Review source.")),
         "the worker run already holds the load"
     );
-    // The worker relaunched: the home sees it only as the next settlement or projection.
-    if project_new_run {
-        settle(&second, "worker-run-1");
-        project_run("worker-run-2");
-    } else {
-        settle(&second, "worker-run-2");
-    }
+    // The worker relaunched: the home sees it as the next settlement or projection, or
+    // only from the worker's own report when the next turn starts.
+    let reported = match relaunch {
+        Relaunch::Projected => {
+            settle(&second, "worker-run-1");
+            project_run("worker-run-2");
+            ReportedWorkerRun::Unknown
+        }
+        Relaunch::Settled => {
+            settle(&second, "worker-run-2");
+            ReportedWorkerRun::Unknown
+        }
+        Relaunch::ReportedAtTurnStart => {
+            settle(&second, "worker-run-1");
+            ReportedWorkerRun::Live("worker-run-2".into())
+        }
+    };
     let third = submit("after-restart", "continue reviewing", vec![]);
+    if matches!(relaunch, Relaunch::ReportedAtTurnStart) {
+        assert!(
+            remote(&third.prompt_id).is_none_or(|turn| !roots(&turn).contains("Review source.")),
+            "without the worker's report the home assumes the held run"
+        );
+        assert!(
+            roots(&remote_reported(&third.prompt_id, ReportedWorkerRun::NoRun).unwrap())
+                .contains("Review source."),
+            "a lease without a provider run starts a new one"
+        );
+    }
     assert!(
-        roots(&remote(&third.prompt_id).unwrap()).contains("Review source."),
+        roots(&remote_reported(&third.prompt_id, reported).unwrap()).contains("Review source."),
         "a new worker run lost the load"
     );
 }
@@ -1029,6 +1072,7 @@ async fn leased_turn_transfers_manual_skills_and_names_them_without_advertising_
         prompt.id(),
         &binding.leased_agent_id,
         &[],
+        &super::super::skills_dispatch::ReportedWorkerRun::Unknown,
     )
     .unwrap()
     .expect("a Manual skill is transferred with the turn");

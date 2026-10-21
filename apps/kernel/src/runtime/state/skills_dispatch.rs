@@ -88,6 +88,17 @@ pub(super) fn prepare_remote_launch_skills(
 ) -> Result<Option<RemoteSkillSet>, DaemonError> {
     service(state).prepare_remote_launch(session_id)
 }
+/// The leased agent's worker provider run as the worker reported it when the home
+/// read its native inventory just before the turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ReportedWorkerRun {
+    /// Not read for this turn, or the worker predates the report.
+    Unknown,
+    /// The lease has no provider run: the turn starts a new one.
+    NoRun,
+    /// The worker-local id of the run that takes the turn.
+    Live(String),
+}
 pub(super) fn prepare_remote_turn(
     state: &KernelRuntimeState,
     session_id: &str,
@@ -95,8 +106,16 @@ pub(super) fn prepare_remote_turn(
     prompt_id: &str,
     leased_agent_id: &str,
     native: &[NativeSkillEntry],
+    worker_run: &ReportedWorkerRun,
 ) -> Result<Option<RemoteSkillTurn>, DaemonError> {
-    service(state).prepare_remote(session_id, agent_id, prompt_id, leased_agent_id, native)
+    service(state).prepare_remote(
+        session_id,
+        agent_id,
+        prompt_id,
+        leased_agent_id,
+        native,
+        worker_run,
+    )
 }
 /// A leased turn with no effective skill, no native selection and no `$name`
 /// syntax gains nothing from the worker's harness inventory: skip the round trip.
@@ -292,14 +311,16 @@ impl SkillDispatchService {
             .is_none())
     }
     /// The projected id of the worker provider run that still holds this agent's earlier
-    /// loads. The home learns a run only when a turn settles on it, so the last settled
-    /// run is the run the next turn is assumed to use. A home projection of another run
-    /// means the home cannot say which run that is: nothing is assumed held.
+    /// loads. The home learns a run when a turn settles on it, so the last settled run is
+    /// the run the next turn is assumed to use. A home projection of another run means the
+    /// home cannot say which run that is, and a worker that reports another run (or none)
+    /// at turn start relaunched unseen: nothing is assumed held.
     fn live_leased_run_id(
         &self,
         session_id: &str,
         agent_id: &str,
         leased_agent_id: &str,
+        worker_run: &ReportedWorkerRun,
     ) -> Result<Option<String>, DaemonError> {
         let agent = self.agents.get_agent(agent_id)?;
         let projected = self.runs.get_for_agent(session_id, agent_id).filter(|run| {
@@ -316,6 +337,15 @@ impl SkillDispatchService {
             (None, Some(settled)) => settled,
             (None, None) => return Ok(None),
         };
+        match worker_run {
+            ReportedWorkerRun::Unknown => {}
+            ReportedWorkerRun::NoRun => return Ok(None),
+            ReportedWorkerRun::Live(run) => {
+                if crate::provider::projected_leased_provider_run_id(leased_agent_id, run) != live {
+                    return Ok(None);
+                }
+            }
+        }
         let intact = match &projected {
             Some(run) => self.context_survives_compaction(
                 session_id,
@@ -343,6 +373,7 @@ impl SkillDispatchService {
         prompt_id: &str,
         leased_agent_id: &str,
         native: &[NativeSkillEntry],
+        worker_run: &ReportedWorkerRun,
     ) -> Result<Option<RemoteSkillTurn>, DaemonError> {
         let session = self.sessions.get_session(session_id)?;
         let prompt = self
@@ -370,7 +401,8 @@ impl SkillDispatchService {
         let generation = format!("{}:{}:remote", session_id, prompt.id());
         // The worker's current provider run still holds what it was given earlier;
         // a new run, a lease recreation or a compaction re-attaches the loads.
-        let live_run_id = self.live_leased_run_id(session_id, agent_id, leased_agent_id)?;
+        let live_run_id =
+            self.live_leased_run_id(session_id, agent_id, leased_agent_id, worker_run)?;
         let context = service.pinned_turn_from_snapshot(
             &catalog,
             Some(project_id),

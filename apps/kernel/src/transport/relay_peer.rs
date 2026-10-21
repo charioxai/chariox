@@ -341,6 +341,10 @@ impl LeasedNativeSkills {
 pub struct LeasedSkillNativeInventory {
     pub entries: Vec<crate::skill::v2::NativeSkillEntry>,
     pub revision: String,
+    /// The worker provider run the leased agent has when the home reads this
+    /// before a turn: the run that takes the turn. Absent from older workers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
