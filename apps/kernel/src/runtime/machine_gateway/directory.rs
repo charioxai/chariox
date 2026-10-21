@@ -139,10 +139,32 @@ pub(super) fn names_of(kernel: &RelayKernelPresence) -> Vec<String> {
 }
 
 pub(super) fn is_gateway_ready(kernel: &RelayKernelPresence) -> bool {
-    kernel
-        .capabilities
-        .iter()
-        .any(|value| value == GATEWAY_CAPABILITY)
+    advertises(kernel, GATEWAY_CAPABILITY)
+}
+
+/// A kernel that runs the Room terminal service says so; an older one would only answer
+/// that it cannot read the request.
+const ROOM_TERMINAL_CAPABILITY: &str = "room_terminal_v1";
+
+fn advertises(kernel: &RelayKernelPresence, capability: &str) -> bool {
+    kernel.capabilities.iter().any(|value| value == capability)
+}
+
+/// Why this request cannot go to this kernel, in words that say what to do, or `None`.
+pub(super) fn incompatibility(
+    kernel: &RelayKernelPresence,
+    request: &crate::local::LocalDaemonRequest,
+) -> Option<String> {
+    use crate::local::LocalDaemonRequest;
+    match request {
+        LocalDaemonRequest::RespondToInteraction(_) if !is_gateway_ready(kernel) => Some(format!(
+            "it predates the {GATEWAY_CAPABILITY} contract that classifies approvals itself"
+        )),
+        LocalDaemonRequest::RoomTerminal(_) if !advertises(kernel, ROOM_TERMINAL_CAPABILITY) => {
+            Some("it predates Room terminals; update that machine's Chariox kernel".into())
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -201,6 +223,26 @@ mod tests {
     fn directory(kernels: Vec<RelayKernelPresence>) -> (Directory, Arc<Fixed>) {
         let source = Arc::new(Fixed(Mutex::new(kernels)));
         (Directory::new(source.clone()), source)
+    }
+
+    #[test]
+    fn a_machine_without_room_terminals_is_incompatible_before_anything_is_sent() {
+        use crate::local::{LocalDaemonRequest, RoomTerminalOperation, RoomTerminalRequest};
+        let terminal = LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
+            session_id: "s".into(),
+            acting_agent: None,
+            host_agent: None,
+            operation: RoomTerminalOperation::List,
+        });
+        let older = kernel("k-old", None, "old", true);
+        assert!(incompatibility(&older, &terminal)
+            .unwrap()
+            .contains("Room terminals"));
+        let mut current = older.clone();
+        current.capabilities.push(ROOM_TERMINAL_CAPABILITY.into());
+        assert_eq!(incompatibility(&current, &terminal), None);
+        let list = LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest);
+        assert_eq!(incompatibility(&older, &list), None);
     }
 
     #[tokio::test]

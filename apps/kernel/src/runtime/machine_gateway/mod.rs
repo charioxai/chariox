@@ -130,12 +130,10 @@ impl MachineGateway {
     ) -> Result<Value, GatewayError> {
         let kernel = self.resolve(machine).await?;
         let gateway_ready = is_gateway_ready(&kernel);
-        if !gateway_ready && matches!(request, LocalDaemonRequest::RespondToInteraction(_)) {
+        if let Some(detail) = directory::incompatibility(&kernel, request) {
             return Err(GatewayError::Incompatible {
                 name: machine.into(),
-                detail: format!(
-                    "it predates the {GATEWAY_CAPABILITY} contract that classifies approvals itself"
-                ),
+                detail,
             });
         }
         let mut envelope = serde_json::json!({"command_id": command_id, "request": request});

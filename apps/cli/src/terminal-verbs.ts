@@ -20,7 +20,7 @@ const ESCAPES = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b
 type Flag = string | true | undefined
 export type TerminalFlags = {
   cols?: Flag; rows?: Flag; title?: Flag; session?: Flag; terminal?: Flag; since?: Flag
-  waitMs?: Flag; for?: Flag; timeout?: Flag; noEnter: boolean
+  waitMs?: Flag; for?: Flag; timeout?: Flag; hostAgent?: Flag; noEnter: boolean
 }
 
 function required(value: Flag, flag: string): string {
@@ -54,7 +54,10 @@ function plainText(base64: string): string {
 }
 
 export async function runTerminalVerb(verb: TerminalVerb, positionals: readonly string[], flags: TerminalFlags, send: SendRequest): Promise<unknown> {
-  const target: RoomTerminalTarget = { sessionId: required(flags.session, "--session") }
+  const target: RoomTerminalTarget = {
+    sessionId: required(flags.session, "--session"),
+    ...(typeof flags.hostAgent === "string" ? { hostAgent: flags.hostAgent } : {}),
+  }
   if (verb === "open") {
     const command = positionals.length ? positionals : undefined
     const reply = await send(openRoomTerminalRequest(target,

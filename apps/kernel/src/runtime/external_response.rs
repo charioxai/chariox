@@ -25,6 +25,17 @@ fn protect_error(error: DaemonError) -> DaemonError {
     if matches!(&error, DaemonError::MachineRequest { .. }) {
         return error;
     }
+    // A terminal error ("this Room has no terminal `t`", "terminal `t` has ended; open a
+    // new terminal") is the kernel's own sentence about an id the agent sent.
+    if matches!(
+        &error,
+        DaemonError::LocalTransport {
+            operation: "room terminal",
+            ..
+        }
+    ) {
+        return error;
+    }
     // These exact lifecycle messages are kernel constants, never provider or
     // parser output. Preserve refusal/revocation so callers can react correctly.
     if matches!(&error, DaemonError::LocalTransport { operation: "kernel access", message }

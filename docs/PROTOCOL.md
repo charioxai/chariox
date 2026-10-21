@@ -4879,6 +4879,18 @@ authority for its own sessions, agents, terminals and files.
   any request that carries `on_behalf_of`, classifies `RespondToInteraction` from its own pending interactions and
   never needs the origin's grant. A target without it rejects the envelope; the gateway then sends a plain
   request for everything except `RespondToInteraction`, which is refused with `machine_incompatible`.
+- Terminals: `RoomTerminal` is forwarded like any request. It is repeatable by `operation` (`list`, `snapshot`,
+  `read_output`, `wait`); `open`, `input`, `resize` and `close` go through the ledger, so a retried `input` never types
+  twice. The origin waits the usual 30 s plus the request's own `wait_ms` / `timeout_ms` (at most 240 s). A target
+  advertises `room_terminal_v1` (in `RelayStatus.capabilities` and relay presence); the gateway refuses
+  `RoomTerminal` to a machine without it with `machine_incompatible`, before sending anything. A grant holder is told
+  the terminal service's own sentence ("this Room has no terminal ...") instead of a withheld-detail message.
+- The gateway on the target: a request carrying `on_behalf_of` records its sender, keyed by the relay's
+  authenticated client key (`gateway-origins.json`), and `ListPairedClients` lists it as `Agent gateway of <origin
+  kernel>` with client id `agent-gateway:<thumbprint>`. `RevokePairedClient` on that id refuses the key from then on,
+  with or without `on_behalf_of` (the origin reports `machine_unpaired`). An unreadable list refuses gateway
+  requests only. `KernelAccessGrant.holder_harness` (`codex`, `claude`, `opencode`; absent when unknown) names the
+  provider harness the kernel recognised, for display.
 - At most once: every non-read request (repeatable means a variant that starts with List, Get, Search, Stat or Heartbeat)
   is reserved in the target's durable gateway ledger (`gateway-ledger.jsonl`, at-most-once receipts, 512 entries)
   before it runs and settled after. A retry with the same `command_id` returns the original result; a retry of an

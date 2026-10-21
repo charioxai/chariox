@@ -13,6 +13,7 @@ const TIMEOUT: Flag = { name: "--timeout", value: "SECONDS" }
 const OVERWRITE: Flag = { name: "--overwrite" }
 const SESSION: Flag = { name: "--session", value: "SESSION_ID" }
 const TERMINAL: Flag = { name: "--terminal", value: "TERMINAL_ID" }
+const HOST_AGENT: Flag = { name: "--host-agent", value: "AGENT_ID" }
 
 export const COMMANDS: readonly CommandSpec[] = [
   { name: "guide", flags: [], summary: "print this guide" },
@@ -35,27 +36,27 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "terminal open",
-    flags: [MACHINE, SESSION, { name: "--cols", value: "N" }, { name: "--rows", value: "N" }, { name: "--title", value: "TITLE" }, TIMEOUT, SOCKET],
+    flags: [MACHINE, SESSION, HOST_AGENT, { name: "--cols", value: "N" }, { name: "--rows", value: "N" }, { name: "--title", value: "TITLE" }, TIMEOUT, SOCKET],
     summary: "open a terminal in that Room (a login shell, or the argv after --); it keeps running when you disconnect",
   },
-  { name: "terminal list", flags: [MACHINE, SESSION, TIMEOUT, SOCKET], summary: "the Room's terminals with their output offsets" },
+  { name: "terminal list", flags: [MACHINE, SESSION, TIMEOUT, SOCKET], summary: "the Room's terminals with their output offsets; one that shows host_agent runs on that agent's machine: pass it as --host-agent" },
   {
     name: "terminal send",
-    flags: [MACHINE, SESSION, TERMINAL, { name: "--no-enter" }, TIMEOUT, SOCKET],
+    flags: [MACHINE, SESSION, TERMINAL, HOST_AGENT, { name: "--no-enter" }, TIMEOUT, SOCKET],
     args: ["TEXT"],
     summary: "type TEXT and Enter; prints after_offset, the offset to read from",
   },
   {
     name: "terminal read",
-    flags: [MACHINE, SESSION, TERMINAL, { name: "--since", value: "OFFSET" }, { name: "--wait-ms", value: "MS" }, SOCKET],
+    flags: [MACHINE, SESSION, TERMINAL, HOST_AGENT, { name: "--since", value: "OFFSET" }, { name: "--wait-ms", value: "MS" }, SOCKET],
     summary: "the output after OFFSET as text and next_offset; gap true means it scrolled out: use list for a fresh offset",
   },
   {
     name: "terminal wait",
-    flags: [MACHINE, SESSION, TERMINAL, { name: "--for", value: "finished|waiting_for_input|output_contains=TEXT" }, { name: "--since", value: "OFFSET" }, TIMEOUT, SOCKET],
-    summary: "block until that happens or --timeout seconds pass (default 60); prints fired (null on timeout) and the screen",
+    flags: [MACHINE, SESSION, TERMINAL, HOST_AGENT, { name: "--for", value: "finished|waiting_for_input|output_contains=TEXT" }, { name: "--since", value: "OFFSET" }, TIMEOUT, SOCKET],
+    summary: "block until that happens or --timeout seconds pass (default 60); prints fired (null on timeout) and the screen. Only output after OFFSET counts: pass send's after_offset as --since",
   },
-  { name: "terminal close", flags: [MACHINE, SESSION, TERMINAL, TIMEOUT, SOCKET], summary: "end the terminal and everything running in it" },
+  { name: "terminal close", flags: [MACHINE, SESSION, TERMINAL, HOST_AGENT, TIMEOUT, SOCKET], summary: "end the terminal and everything running in it" },
   { name: "files stat", flags: [MACHINE, { name: "--sha256" }, TIMEOUT, SOCKET], args: ["PATH"], summary: "kind, size, modified time and optionally sha256 of a file; partial_size is an unfinished upload" },
   { name: "files ls", flags: [MACHINE, TIMEOUT, SOCKET], args: ["PATH"], summary: "list a directory" },
   { name: "files get", flags: [MACHINE, OVERWRITE, TIMEOUT, SOCKET], args: ["REMOTE_PATH", "LOCAL_PATH"], summary: "download a file, verified by sha256; prints size, bytes received and resumed_from" },
@@ -156,6 +157,7 @@ export function guideText(): string {
     "   put and get resume after an interruption: run the same command again.",
     "6. Run long commands: chariox terminal open|send|read|wait|close --machine NAME --session ID ...",
     "   Terminals belong to the Room and keep running if you disconnect; read them later with --since.",
+    "   They need a session: take one from ListSessions or make one with CreateSession (see Requests below).",
     "",
     "Commands:",
     ...commands,

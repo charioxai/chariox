@@ -394,6 +394,31 @@ fn external_response_preserves_notification_metadata_and_sudo_extension() {
 }
 
 #[test]
+fn external_response_tells_a_grant_holder_what_is_wrong_with_its_terminal() {
+    let caller = command(KernelConnectionClass::ExternalAgent);
+    let said = "this Room has no terminal `t-1`";
+    let error = finish_response(
+        &caller,
+        Err(DaemonError::LocalTransport {
+            operation: "room terminal",
+            message: said.into(),
+        }),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains(said));
+    // Any other failure keeps its details in the host terminal.
+    let other = finish_response(
+        &caller,
+        Err(DaemonError::LocalTransport {
+            operation: "list sessions",
+            message: format!("{said} {CANARY}"),
+        }),
+    )
+    .unwrap_err();
+    assert!(!other.to_string().contains(CANARY));
+}
+
+#[test]
 fn external_response_retains_only_exact_public_authority_errors() {
     let caller = command(KernelConnectionClass::ExternalAgent);
     let reasons = crate::runtime::kernel_access::Refusal::ALL.map(|reason| reason.message());

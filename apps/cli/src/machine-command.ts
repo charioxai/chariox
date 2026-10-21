@@ -182,7 +182,7 @@ export async function runMachineCommand(argv: string[]): Promise<boolean> {
       const terminalFlags: TerminalFlags = {
         cols: flags.get("--cols"), rows: flags.get("--rows"), title: flags.get("--title"), session: flags.get("--session"),
         terminal: flags.get("--terminal"), since: flags.get("--since"), waitMs: flags.get("--wait-ms"), for: flags.get("--for"),
-        timeout: flags.get("--timeout"), noEnter: flags.has("--no-enter"),
+        timeout: flags.get("--timeout"), hostAgent: flags.get("--host-agent"), noEnter: flags.has("--no-enter"),
       }
       // A wait or long read is answered when it ends: the request may take that long, plus the usual margin.
       const timeoutSeconds = terminalVerb === "wait" || terminalVerb === "read"

@@ -67,3 +67,14 @@ test("a command that needs a session or terminal names the missing flag", async 
   await assert.rejects(runTerminalVerb("list", [], { noEnter: false }, send), /--session/)
   await assert.rejects(runTerminalVerb("close", [], { noEnter: false, session: "s1" }, send), /--terminal/)
 })
+
+test("a terminal on a worker or slice agent is driven with --host-agent on every request", async () => {
+  const { sent, send } = recorder([
+    { RoomTerminal: { result: { result: "snapshot", snapshot: { terminal: summary(7), output_offset: 7, screen_text: "" } } } },
+    { RoomTerminal: { result: { result: "input", input: { accepted: true, driver: { state: "busy" } } } } },
+    { RoomTerminal: { result: { result: "closed" } } },
+  ])
+  await runTerminalVerb("send", ["ls"], flags({ hostAgent: "worker-agent" }), send)
+  await runTerminalVerb("close", [], flags({ hostAgent: "worker-agent" }), send)
+  assert.deepEqual(sent.map(request => request.RoomTerminal.host_agent), ["worker-agent", "worker-agent", "worker-agent"])
+})

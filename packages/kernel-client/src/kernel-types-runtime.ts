@@ -490,6 +490,8 @@ export type KernelAccessGrant = {
   owner_user_id: string
   holder_pid: number
   holder_executable: string
+  /** Which provider's harness the kernel recognised the holder as; display only. */
+  holder_harness?: "codex" | "claude" | "opencode"
   /** Protocol 568: replaces `lifetime_minutes`. */
   term: KernelAccessTerm
   /** Absent for `until_holder_exits`. */
