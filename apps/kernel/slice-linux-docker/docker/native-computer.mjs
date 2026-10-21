@@ -125,7 +125,6 @@ export class NativeComputer {
       // MP-11: native repeats and clipboard/middle-button paste cannot fence
       // every text-producing event. Agents use focused text or a single chord.
       if(command._agent_input && (['hold','pointer_hold','drag','clipboard_write'].includes(input.kind) || input.button===2))throw new UserDomainRefusal('sensitive_requires_focus');
-      if(command._agent_input && (policy?.values?.length || policy?.targets?.length))throw new UserDomainRefusal('sensitive_requires_focus');
       // MP-11: the helper gates every agent key/text/click on the clipboard owner.
       let admission={};
       if(command._agent_input) {

@@ -673,37 +673,13 @@ async fn execute_local(
             }
             // MP-11 R1: refuse unfenced agent mutations before a physical
             // helper is spawned; human and approved Vault actors retain their paths.
-            if actor_id.starts_with("agent:") {
-                if crate::runtime::computer_input_action::agent_native_input_is_unfenced(&action) {
-                    return Err(crate::error::HostFailure::Refused(
-                        crate::error::UserDomainRefusalReason::SensitiveRequiresFocus,
-                    )
-                    .into_daemon("room_computer"));
-                }
-                // MP-11 review R2: registered/unknown protection fences both
-                // text and shortcuts. Never pass registry values to a keyboard.
-                // #904 review @61b0a4ac6: clicks and AT-SPI actions can activate
-                // Paste, and a registered value in an ordinary native field has
-                // no password role for clipboard-owner admission to see.
-                if matches!(
-                    &action,
-                    crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardKey { .. }
-                    | crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardText { .. }
-                    | crate::transport::room_browser_controller::RoomComputerInputAction::PointerClick { .. }
-                    | crate::transport::room_browser_controller::RoomComputerInputAction::TargetAction { .. }
-                ) {
-                    let policy = state.owned.room_secret_observations.capture_policy(session_id)?;
-                    let policy: serde_json::Value = serde_json::from_str(&policy)
-                        .map_err(|_| controller_route_error("protection unavailable"))?;
-                    if policy["unknown"] == true
-                        || policy["values"].as_array().is_none_or(|values| !values.is_empty())
-                        || policy["targets"].as_array().is_none_or(|targets| !targets.is_empty())
-                    {
-                        return Err(crate::error::HostFailure::Refused(
-                            crate::error::UserDomainRefusalReason::SensitiveRequiresFocus,
-                        ).into_daemon("room_computer"));
-                    }
-                }
+            if actor_id.starts_with("agent:")
+                && crate::runtime::computer_input_action::agent_native_input_is_unfenced(&action)
+            {
+                return Err(crate::error::HostFailure::Refused(
+                    crate::error::UserDomainRefusalReason::SensitiveRequiresFocus,
+                )
+                .into_daemon("room_computer"));
             }
             let execution = computer_input_executions
                 .begin(session_id, &action_id)
