@@ -346,3 +346,45 @@ async fn sweep_assesses_an_answered_leased_turn_by_its_worker_history_run() {
     );
     assert_ne!(task.state, ExecutionState::Working);
 }
+
+// accam A02-S03: a structured provider (Codex) acknowledges the owner's Stop
+// with an abort receipt and no terminal event. That receipt ends the task as
+// Cancelled; it must not stay Working until the supervisor blocks it.
+#[tokio::test]
+async fn acknowledged_stop_cancels_the_task_with_its_open_work() {
+    let turn = started_turn("a02-s03-acknowledged-stop");
+    {
+        let mut app = turn.app.lock().await;
+        app.prompt_owner_begin_cancelling_active_prompt(&turn.session_id, &turn.agent_id)
+            .unwrap();
+        app.providers_mut().inject_finished_abort_for_test(
+            crate::provider::FinishedProviderPromptAbortJob {
+                session_id: turn.session_id.clone(),
+                provider_run_id: turn.run_id.clone(),
+                prompt_id: turn.prompt.id().into(),
+                result: Ok(()),
+            },
+        );
+    }
+    let runtime = owned_runtime_state(&turn.app).await;
+    begin(&runtime, &turn);
+    runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::RegisterObligation {
+            owner: "local".into(),
+            room: turn.session_id.clone(),
+            agent: turn.agent_id.clone(),
+            prompt: turn.prompt.id().into(),
+            run: Some(turn.run_id.clone()),
+            id: "build".into(),
+            kind: "process".into(),
+            resource: None,
+            now: 1,
+        })
+        .unwrap();
+    runtime.reap_structured_prompt_jobs_and_dispatch();
+    let task = task_of(&runtime, &turn);
+    assert_eq!(task.state, ExecutionState::Cancelled, "{}", task.reason);
+    assert!(task.wait.is_none());
+}

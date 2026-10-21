@@ -91,6 +91,14 @@ impl KernelRuntimeState {
         if event.state != "pending" {
             return Ok(());
         }
+        // An explicitly stopped agent stays stopped: messages, urgent ones too,
+        // stay pending and visible until the owner prompts it again.
+        if active.is_none()
+            && event.kind == "message"
+            && tasks.last().is_some_and(|t| t.stopped_by_owner())
+        {
+            return Ok(());
+        }
         if active.is_none()
             && event.kind != "message"
             && tasks.iter().any(|t| {

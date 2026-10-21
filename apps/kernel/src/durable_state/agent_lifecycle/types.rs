@@ -35,6 +35,13 @@ pub struct AgentTaskExecution {
     pub correction_used: bool,
     pub pending_prompt_id: Option<String>,
 }
+impl AgentTaskExecution {
+    /// The owner stopped this turn; the agent stays stopped until prompted again.
+    pub(crate) fn stopped_by_owner(&self) -> bool {
+        self.state == ExecutionState::Cancelled
+            && self.reason == super::supervision::OWNER_CANCELLED_REASON
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentObligation {
     pub id: String,

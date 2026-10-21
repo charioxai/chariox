@@ -1077,6 +1077,12 @@ impl KernelRuntimeState {
                     .await;
             });
         }
+        for (settlement, prompt) in dispatches.stopped_task_settlements {
+            let state = self.clone();
+            tokio::spawn(async move {
+                state.finish_stopped_agent_task(settlement, &prompt).await;
+            });
+        }
         for task in dispatches.starting_metaagent_tasks {
             let state = self.clone();
             tokio::spawn(async move {
@@ -1594,6 +1600,12 @@ impl KernelRuntimeState {
                             &dispatch.provider_run_id,
                             &dispatch.prompt_id,
                         ) {
+                            let settlement = state.owned.settle_stopped_agent_task(
+                                &dispatch.session_id,
+                                &agent_id,
+                                &prompt,
+                                &dispatch.provider_run_id,
+                            );
                             let _ = state
                                 .owned
                                 .workflow_cancel_prompt(&dispatch.session_id, &prompt);
@@ -1605,6 +1617,9 @@ impl KernelRuntimeState {
                                     &dispatch.prompt_id,
                                     Some(&dispatch.provider_run_id),
                                 );
+                            if let Some(settlement) = settlement {
+                                state.finish_stopped_agent_task(settlement, &prompt).await;
+                            }
                         }
                         PromptAbortDispatchOutcome::Done
                     }

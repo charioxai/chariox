@@ -383,6 +383,16 @@ impl KernelRuntimeOwnedState {
             } else {
                 // Some providers do not emit a terminal event after a successful
                 // abort; its acknowledgement settles only the interrupted prompt.
+                if let Some(settlement) = self.settle_stopped_agent_task(
+                    &finished.session_id,
+                    &agent_id,
+                    &prompt,
+                    &finished.provider_run_id,
+                ) {
+                    follow_ups
+                        .stopped_task_settlements
+                        .push((settlement, prompt.clone()));
+                }
                 let _ = self.workflow_cancel_prompt(&finished.session_id, &prompt);
                 if let Ok(cancellation) = self
                     .finalize_local_prompt_cancellation_with_queued_advance(

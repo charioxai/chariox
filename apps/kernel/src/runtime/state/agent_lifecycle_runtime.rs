@@ -225,6 +225,22 @@ impl KernelRuntimeOwnedState {
     }
     /// `answer_run` names the run in the turn's public history; for a leased
     /// turn that is the worker run the projection records (A10).
+    /// The owner's Stop ended this prompt without a terminal provider event:
+    /// its task ends Cancelled now, not when the supervisor finds it idle.
+    pub(super) fn settle_stopped_agent_task(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &crate::session::PromptQueueItem,
+        run: &str,
+    ) -> Option<(AgentTaskExecution, bool)> {
+        self.settle_agent_task(room, agent, prompt, run, true)
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, room_id=%room, agent_id=%agent, prompt_id=%prompt.id(),
+                    "MP-08/MP-10/MP-11 A02: stopped turn kept for the ledger sweep");
+                None
+            })
+    }
     pub(super) fn settle_agent_task_answered_by(
         &self,
         room: &str,
@@ -561,6 +577,17 @@ impl KernelRuntimeState {
             .get_agent(agent_id)
             .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_string())
             .unwrap_or_else(|_| "Agent".into())
+    }
+    /// Cancels the owned work of a task an acknowledged Stop settled.
+    pub(super) async fn finish_stopped_agent_task(
+        &self,
+        settlement: (AgentTaskExecution, bool),
+        prompt: &crate::session::PromptQueueItem,
+    ) {
+        if let Err(error) = Box::pin(self.finish_agent_task_settlement(Some(settlement), prompt)).await {
+            tracing::warn!(%error, prompt_id=%prompt.id(),
+                "MP-08/MP-10/MP-11 A02: stopped task resources kept for the ledger sweep");
+        }
     }
     pub(super) async fn finish_agent_task_settlement(
         &self,

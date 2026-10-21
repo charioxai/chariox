@@ -410,6 +410,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         _ => Err(error("invalid supervision operation")),
     }
 }
+pub(super) const OWNER_CANCELLED_REASON: &str =
+    "Owner cancelled; owned resource cancellation remains supervised until physical settlement";
 pub(super) fn cancel_intent(
     tx: &Transaction<'_>,
     task: &mut AgentTaskExecution,
@@ -420,9 +422,7 @@ pub(super) fn cancel_intent(
     }
     task.state = ExecutionState::Cancelled;
     task.wait = None;
-    task.reason =
-        "Owner cancelled; owned resource cancellation remains supervised until physical settlement"
-            .into();
+    task.reason = OWNER_CANCELLED_REASON.into();
     for obligation in &mut task.obligations {
         if matches!(obligation.status.as_str(), "failed" | "settling")
             || matches!(obligation.kind.as_str(), "reply" | "message")

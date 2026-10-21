@@ -165,6 +165,101 @@ async fn a02_review_non_structured_delivery_is_accepted_not_escalated() {
     assert_eq!(delivered.state, "accepted");
 }
 
+// accam A02-S03: an explicitly stopped agent stays stopped. A later urgent
+// message stays pending; it runs once the owner prompts the agent again.
+#[tokio::test]
+async fn stopped_agent_keeps_messages_pending_until_the_owner_prompts_it() {
+    use crate::durable_state::agent_lifecycle::{occurrence, ExecutionState, Operation, Outcome};
+    let worktree = crate::test_support::TestWorktree::new("a02-s03-stopped-receiver");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    app.launch_provider(
+        crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "claude-code",
+            "default",
+            "sonnet",
+        )
+        .with_agent_id(agent.id()),
+    )
+    .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    let turn = |prompt: &str, cancelled: bool| {
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: "local".into(),
+                room: session.id().into(),
+                agent: agent.id().into(),
+                prompt: prompt.into(),
+                run: Some("run".into()),
+                now: 1,
+            })
+            .unwrap();
+        let Outcome::Settled { task, .. } = store
+            .agent_lifecycle(Operation::Settle {
+                room: session.id().into(),
+                agent: agent.id().into(),
+                prompt: prompt.into(),
+                run: "run".into(),
+                has_answer: !cancelled,
+                cancelled,
+                now: 2,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
+        task
+    };
+    assert_eq!(turn("stopped-turn", true).state, ExecutionState::Cancelled);
+    let mut message = occurrence(
+        session.id(),
+        agent.id(),
+        "peer",
+        "urgent-message",
+        "message",
+        serde_json::json!({"message":"Urgent: rerun the build"}),
+    );
+    message.urgent = true;
+    let Outcome::Event(event) = store.agent_lifecycle(Operation::Occur(message)).unwrap() else {
+        panic!()
+    };
+    let prompt = format!("agent-event-{}-{}", agent.id(), event.sequence);
+    runtime
+        .deliver_agent_inbox(session.id(), agent.id())
+        .await
+        .unwrap();
+    assert!(
+        store
+            .agent_event_for_prompt(session.id(), agent.id(), &prompt)
+            .unwrap()
+            .is_none(),
+        "a stopped agent must not run the message"
+    );
+    assert!(store
+        .agent_pending_inbox_recipients()
+        .unwrap()
+        .contains(&(session.id().to_string(), agent.id().to_string())));
+    assert_eq!(turn("owner-prompt", false).state, ExecutionState::Done);
+    runtime
+        .deliver_agent_inbox(session.id(), agent.id())
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .agent_event_for_prompt(session.id(), agent.id(), &prompt)
+            .unwrap()
+            .expect("the owner's prompt ends the stop")
+            .state,
+        "accepted"
+    );
+}
+
 // MP-08/MP-10/MP-11 #914 round 3: exercise admission, withdrawal and periodic retry.
 #[tokio::test]
 async fn a02_r3_pre_io_rejection_retries_without_tasks_or_client_notice() {
