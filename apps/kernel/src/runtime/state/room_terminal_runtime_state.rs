@@ -244,6 +244,7 @@ impl KernelRuntimeState {
         };
         let timeout = Duration::from_millis(relay_config.relay_request_timeout_ms)
             .max(Duration::from_millis(blocking) + Duration::from_secs(20));
+        let worker_kernel_id = binding.worker_kernel_id.clone();
         let response =
             crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
                 &relay_config,
@@ -259,7 +260,8 @@ impl KernelRuntimeState {
                 timeout,
                 || self.authorize_current_external_command(),
             )
-            .await?;
+            .await
+            .map_err(|error| worker_unreachable(&worker_kernel_id, error))?;
         match response {
             RelayPeerResponse::RoomTerminal { result } => Ok(result),
             other => Err(refused(format!(
@@ -381,5 +383,52 @@ fn refused(message: String) -> DaemonError {
     DaemonError::LocalTransport {
         operation: OPERATION,
         message,
+    }
+}
+
+/// A worker that cannot be reached, in one sentence an outside agent can act on. The
+/// transport's detail stays in the kernel log; the worker's own refusals pass through as
+/// they came.
+fn worker_unreachable(worker_kernel_id: &str, error: DaemonError) -> DaemonError {
+    if matches!(error, DaemonError::MachineRequest { .. }) {
+        return error;
+    }
+    tracing::warn!(%error, worker_kernel_id, "Room terminal worker could not be reached");
+    refused(
+        "the machine that runs this agent could not be reached, so its terminals are unavailable; retry, and if it keeps failing ask the user to check that machine"
+            .to_string(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unreachable_worker_is_one_sentence_without_the_transport_detail() {
+        let failure = worker_unreachable(
+            "slice:m:1",
+            DaemonError::LocalTransport {
+                operation: "send relay peer request",
+                message: "get_live_kernel: kernel slice:m:1 is not currently visible on relay"
+                    .to_string(),
+            },
+        );
+        let DaemonError::MachineRequest { code, message } = failure else {
+            panic!("a public terminal refusal");
+        };
+        assert!(crate::room_terminal::is_public_code(&code));
+        assert!(message.contains("could not be reached"));
+        assert!(!message.contains("slice:m:1") && !message.contains("relay"));
+    }
+
+    #[test]
+    fn a_worker_refusal_passes_through_as_it_came() {
+        let refusal = refused("terminal `t1` has exited; open a new terminal".to_string());
+        let DaemonError::MachineRequest { message, .. } = worker_unreachable("slice:m:1", refusal)
+        else {
+            panic!("still a refusal");
+        };
+        assert_eq!(message, "terminal `t1` has exited; open a new terminal");
     }
 }
