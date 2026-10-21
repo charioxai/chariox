@@ -314,6 +314,75 @@ fn managed_broker_slice_does_not_require_docker_in_the_kernel_namespace() {
 
 #[cfg(unix)]
 #[test]
+fn image_build_starts_a_stopped_docker_engine_before_building() {
+    crate::test_support::isolated_env_test!();
+    use std::os::unix::fs::PermissionsExt;
+
+    let _lock = crate::env_lock::lock();
+    let root = test_root("image-build-docker-start");
+    let bin = root.join("bin");
+    let started = root.join("colima-started");
+    let provisioner = root.join("provision.sh");
+    std::fs::create_dir_all(&bin).expect("fake launcher directory should create");
+    let write_script = |path: &std::path::Path, body: String| {
+        std::fs::write(path, body).expect("fake script should write");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("fake script should become executable");
+    };
+    write_script(
+        &bin.join("docker"),
+        format!(
+            "#!/bin/sh\n[ \"$1\" = info ] && [ -e '{}' ]\n",
+            started.display()
+        ),
+    );
+    write_script(
+        &bin.join("colima"),
+        format!("#!/bin/sh\n: > '{}'\n", started.display()),
+    );
+    write_script(&provisioner, "#!/bin/sh\nexit 0\n".to_string());
+    let saved: Vec<_> = [
+        "PATH",
+        "CHARIOX_SLICE_DOCKER_PROVISIONER",
+        "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED",
+    ]
+    .into_iter()
+    .map(|name| (name, std::env::var_os(name)))
+    .collect();
+    let mut path = bin.clone().into_os_string();
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    std::env::set_var("PATH", path);
+    std::env::set_var("CHARIOX_SLICE_DOCKER_PROVISIONER", &provisioner);
+    std::env::remove_var("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED");
+
+    let options = LocalDockerSliceOptions::from_config(&DaemonConfig::for_tests());
+    let result = run_local_docker_slice_action(
+        &test_record(),
+        LocalDockerSliceAction::BuildImage,
+        None,
+        None,
+        None,
+        &options,
+    );
+    let engine_was_started = started.exists();
+    // Restore before assertions so a RED test cannot contaminate the suite.
+    for (name, value) in saved {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        engine_was_started,
+        "the image build skipped the Docker engine start: {result:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn disk_pressure_admission_fault_probe() {
     crate::test_support::isolated_env_test!();
     use std::os::unix::fs::PermissionsExt;

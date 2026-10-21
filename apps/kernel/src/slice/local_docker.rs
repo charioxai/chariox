@@ -235,13 +235,22 @@ pub fn run_local_docker_slice_action(
     } else {
         None
     };
+    // The image build runs before provisioning and needs a running engine too.
+    if matches!(
+        action,
+        LocalDockerSliceAction::BuildImage
+            | LocalDockerSliceAction::Provision
+            | LocalDockerSliceAction::RestoreState
+            | LocalDockerSliceAction::Recover
+    ) {
+        ensure_host_docker_ready()?;
+    }
     let _memory_admission = if matches!(
         action,
         LocalDockerSliceAction::Provision
             | LocalDockerSliceAction::RestoreState
             | LocalDockerSliceAction::Recover
     ) {
-        ensure_host_docker_ready()?;
         snapshot_pause::recover(record, options)?;
         let memory_admission = memory_admission::admit_slice_start(record, action, options)?;
         if action == LocalDockerSliceAction::Provision {
