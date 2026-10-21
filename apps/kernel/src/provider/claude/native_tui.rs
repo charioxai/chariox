@@ -829,8 +829,9 @@ mod tests {
                 child
             }).collect::<Vec<_>>();
             let mut chunks = Vec::new();
-            for child in children {
-                let output = child.wait_with_output().unwrap();
+            for (_, output) in
+                outputs_in_completion_order(children.into_iter().enumerate().collect())
+            {
                 assert!(
                     output.status.success(),
                     "dispatched print context must not require a native response: {}",
@@ -846,6 +847,22 @@ mod tests {
             }
             assert_eq!(chunks.concat(), context);
         }
+    }
+
+    /// Claude appends each prompt hook's additionalContext in the order the
+    /// hooks finish, so the chunks must arrive in that order.
+    fn outputs_in_completion_order(
+        children: Vec<(usize, std::process::Child)>,
+    ) -> Vec<(usize, std::process::Output)> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let count = children.len();
+        for (index, child) in children {
+            let sender = sender.clone();
+            std::thread::spawn(move || {
+                let _ = sender.send((index, child.wait_with_output().unwrap()));
+            });
+        }
+        receiver.iter().take(count).collect()
     }
 
     #[test]
@@ -908,9 +925,8 @@ mod tests {
                 )
                 .unwrap();
             }
-            let mut chunks = vec![String::new(); CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS];
-            for (index, child) in children {
-                let output = child.wait_with_output().unwrap();
+            let mut chunks = Vec::new();
+            for (_, output) in outputs_in_completion_order(children) {
                 if wanted.is_none() {
                     assert_eq!(
                         output.status.code(),
@@ -930,7 +946,7 @@ mod tests {
                         .as_str()
                         .unwrap();
                     assert!(chunk.len() <= CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES);
-                    chunks[index] = chunk.to_string();
+                    chunks.push(chunk.to_string());
                 }
             }
             if let Some(context) = wanted {
