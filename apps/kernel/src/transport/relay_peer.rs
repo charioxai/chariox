@@ -147,6 +147,10 @@ pub const PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE: &str = "project_environment_s
 // Preserve the serialized peer action and its existing public Rust fields.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the versioned leased-process request shape."
+)]
 pub enum LeasedWatchedProcessAction {
     Start {
         wake: crate::durable_state::agent_lifecycle::AgentWake,

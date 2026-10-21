@@ -107,6 +107,8 @@ pub struct RuntimeProviderRun {
     #[serde(skip)]
     metadata_only_discovery: bool,
     #[serde(skip)]
+    utility_system_prompt_file: Option<PathBuf>,
+    #[serde(skip)]
     project_environment_revision: Option<String>,
     #[serde(default, skip_serializing_if = "AgentExecutionMode::is_build")]
     execution_mode: AgentExecutionMode,
@@ -193,6 +195,7 @@ impl RuntimeProviderRun {
             read_only_discovery: false,
             turn_substitute: request.turn_substitute.clone(),
             metadata_only_discovery: false,
+            utility_system_prompt_file: None,
             project_environment_revision: request.project_environment_revision.clone(),
             execution_mode: request.execution_mode.unwrap_or_default(),
             permission_level: request.permission_level.unwrap_or_default(),
@@ -264,6 +267,7 @@ impl RuntimeProviderRun {
             read_only_discovery: false,
             turn_substitute: None,
             metadata_only_discovery: false,
+            utility_system_prompt_file: None,
             project_environment_revision: None,
             execution_mode: AgentExecutionMode::default(),
             permission_level: AgentPermissionLevel::default(),
@@ -554,7 +558,24 @@ impl RuntimeProviderRun {
                     .to_string(),
             ]);
         }
+        if let Some(path) = &self.utility_system_prompt_file {
+            args.extend([
+                "--append-system-prompt-file".into(),
+                path.display().to_string(),
+            ]);
+        }
         super::managed_isolation::fresh_provider_child_args(&self.pty_args, args)
+    }
+
+    /// Only the isolated Claude assessment clone receives this private input file.
+    /// It is kept so a model-retry rebuild of the fresh command still carries it.
+    pub(in crate::provider) fn append_claude_utility_system_prompt_file(
+        &mut self,
+        path: &std::path::Path,
+    ) {
+        debug_assert!(self.metadata_only_discovery && self.adapter_key() == "claude");
+        self.utility_system_prompt_file = Some(path.to_path_buf());
+        self.pty_args = self.metadata_only_claude_args();
     }
 
     pub(crate) fn read_only_discovery(&self) -> bool {
