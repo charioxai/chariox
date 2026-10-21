@@ -43,9 +43,9 @@ pub(super) fn claude_plugin_skill_roots(
             .cloned()
             .unwrap_or_else(|| vec![installs.clone()]);
         let Some(install) = installs.iter().find(|install| {
-            install["projectPath"].as_str().map_or(true, |project| {
-                project_dirs.iter().any(|dir| Path::new(project) == *dir)
-            })
+            install["projectPath"]
+                .as_str()
+                .is_none_or(|project| project_dirs.iter().any(|dir| Path::new(project) == *dir))
         }) else {
             continue;
         };
