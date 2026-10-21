@@ -760,20 +760,21 @@ async fn second_named_kernel_ordinary_local_turn_is_not_refused_by_the_skills_ca
 }
 
 // MP-08 / MP-10: an explicitly loaded skill reaches a leased worker once per worker
-// provider run; a new worker run re-attaches it.
+// provider run. The home learns the run only when a turn settles, so a worker run it
+// saw settle is the run it expects; a run it sees change re-attaches the load.
 #[tokio::test]
 async fn leased_follow_up_turn_does_not_repeat_a_load_the_worker_run_holds() {
-    leased_load_is_delivered_once_per_worker_run(true).await;
-}
-
-// No terminal client keeps the home projection of the run alive (IPC submit, an idle
-// TUI): the agent's remote binding still names the worker run that holds the load.
-#[tokio::test]
-async fn leased_follow_up_turn_without_a_projected_run_does_not_repeat_a_load() {
     leased_load_is_delivered_once_per_worker_run(false).await;
 }
 
-async fn leased_load_is_delivered_once_per_worker_run(projected: bool) {
+// The home projection of a different worker run than the last settled one is a run
+// the home cannot vouch for: the load is delivered again.
+#[tokio::test]
+async fn leased_turn_re_attaches_a_load_when_the_projected_worker_run_differs() {
+    leased_load_is_delivered_once_per_worker_run(true).await;
+}
+
+async fn leased_load_is_delivered_once_per_worker_run(project_new_run: bool) {
     use crate::skill::service::SkillCatalogService;
     let (runtime, session_id, agent_id, attachment, binding) =
         super::tests::mp11_fixture(crate::DaemonConfig::for_tests()).await;
@@ -801,9 +802,6 @@ async fn leased_load_is_delivered_once_per_worker_run(projected: bool) {
         catalog_revision: catalog.revision,
     };
     let project_run = |worker_run: &str| {
-        if !projected {
-            return;
-        }
         let projected =
             crate::provider::projected_leased_provider_run_id(&binding.leased_agent_id, worker_run);
         let mut run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
@@ -819,7 +817,16 @@ async fn leased_load_is_delivered_once_per_worker_run(projected: bool) {
             .provider_run_projection
             .update_remote_snapshot(run);
     };
-    let turn = |id: &str, worker_run: &str, text: &str, selections: Vec<SkillSelection>| {
+    let session = || {
+        runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap()
+    };
+    // The real order: the home prepares the turn, dispatches it, and learns the worker
+    // run from the settlement. No test code touches the binding or the projection.
+    let submit = |id: &str, text: &str, selections: Vec<SkillSelection>| {
         let submission = runtime
             .owned
             .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
@@ -838,23 +845,21 @@ async fn leased_load_is_delivered_once_per_worker_run(projected: bool) {
             })
             .unwrap()
             .unwrap();
+        submission.remote_dispatch.unwrap()
+    };
+    // Completion clears the binding's active worker run, as in the real flow.
+    let complete = |worker_run: &str| {
         runtime
             .owned
-            .settle_remote_dispatch_if_current(
-                &submission.remote_dispatch.unwrap(),
-                Some(worker_run),
-            )
+            .complete_remote_prompt_owner(&session_id, &agent_id, worker_run, None)
             .unwrap();
-        let session = runtime
-            .owned
-            .session_store
-            .get_session(&session_id)
-            .unwrap();
+    };
+    let settle = |dispatch: &crate::app::KernelRemotePromptDispatch, worker_run: &str| {
         runtime
             .owned
-            .prompt_state_owner
-            .active_prompt_for_agent(&session, &agent_id)
-            .unwrap()
+            .settle_remote_dispatch_if_current(dispatch, Some(worker_run))
+            .unwrap();
+        complete(worker_run);
     };
     let remote = |prompt_id: &str| {
         super::super::skills_dispatch::prepare_remote_turn(
@@ -867,13 +872,6 @@ async fn leased_load_is_delivered_once_per_worker_run(projected: bool) {
         )
         .unwrap()
     };
-    project_run("worker-run-1");
-    let first = turn(
-        "load-turn",
-        "worker-run-1",
-        "$review inspect source",
-        vec![selection],
-    );
     // The Manual skill is transferred with every turn; only its body rides a load.
     let roots = |turn: &super::super::skills_dispatch::RemoteSkillTurn| {
         let skill = &turn.set.manifest.skills[0];
@@ -885,51 +883,45 @@ async fn leased_load_is_delivered_once_per_worker_run(projected: bool) {
         }])
         .unwrap()
     };
-    let first_turn = remote(first.id()).unwrap();
+    let first = submit("load-turn", "$review inspect source", vec![selection]);
+    let first_turn = remote(&first.prompt_id).unwrap();
     assert_eq!(first_turn.set.packages.len(), 1);
     assert!(roots(&first_turn).contains("Review source."));
-    let session = runtime
+    runtime
         .owned
-        .session_store
-        .get_session(&session_id)
+        .settle_remote_dispatch_if_current(&first, Some("worker-run-1"))
         .unwrap();
     let context = RemoteWorkspaceLiveSyncContext {
         home_kernel_id: config.daemon_id.clone(),
         home_session_id: session_id.clone(),
         home_agent_id: agent_id.clone(),
-        home_prompt_id: Some(first.id().into()),
+        home_prompt_id: Some(first.prompt_id.clone()),
         leased_agent_id: binding.leased_agent_id.clone(),
         worker_kernel_id: binding.worker_kernel_id.clone(),
         worker_machine_id: binding.worker_machine_id.clone(),
         worker_provider_run_id: "worker-run-1".into(),
-        worker_worktree_path: session.worktree_id().into(),
+        worker_worktree_path: session().worktree_id().into(),
         worker_workspace_identity: crate::io::WorkspaceIdentity::local("fixture"),
     };
     acknowledge(&runtime, &context, serde_json::json!({"delivery":"prompt"}))
         .await
         .unwrap();
-    runtime
-        .owned
-        .prompt_state_owner
-        .complete_active_prompt_only(&session, &agent_id);
-    let second = turn("follow-up", "worker-run-1", "continue reviewing", vec![]);
+    complete("worker-run-1");
+    let second = submit("follow-up", "continue reviewing", vec![]);
     assert!(
-        remote(second.id()).is_none_or(|turn| !roots(&turn).contains("Review source.")),
+        remote(&second.prompt_id).is_none_or(|turn| !roots(&turn).contains("Review source.")),
         "the worker run already holds the load"
     );
-    runtime
-        .owned
-        .prompt_state_owner
-        .complete_active_prompt_only(&session, &agent_id);
-    project_run("worker-run-2");
-    let third = turn(
-        "after-restart",
-        "worker-run-2",
-        "continue reviewing",
-        vec![],
-    );
+    // The worker relaunched: the home sees it only as the next settlement or projection.
+    if project_new_run {
+        settle(&second, "worker-run-1");
+        project_run("worker-run-2");
+    } else {
+        settle(&second, "worker-run-2");
+    }
+    let third = submit("after-restart", "continue reviewing", vec![]);
     assert!(
-        roots(&remote(third.id()).unwrap()).contains("Review source."),
+        roots(&remote(&third.prompt_id).unwrap()).contains("Review source."),
         "a new worker run lost the load"
     );
 }

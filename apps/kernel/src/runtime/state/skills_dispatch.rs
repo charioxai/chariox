@@ -29,6 +29,7 @@ struct SkillDispatchService {
     prompts: crate::runtime::prompt_state::PromptStateOwner,
     runs: crate::runtime::projection::ProviderRunProjectionStore,
     inventories: Arc<super::skills_native_inventory::SkillInventories>,
+    settled_worker_runs: Arc<super::skills_settled_worker_runs::SettledWorkerRuns>,
     history: crate::history::OperationalHistoryStore,
 }
 fn failure(message: &str) -> DaemonError {
@@ -57,6 +58,7 @@ fn service(state: &KernelRuntimeState) -> SkillDispatchService {
         prompts: owned.prompt_state_owner.clone(),
         runs: owned.provider_run_projection.clone(),
         inventories: owned.skill_inventories.clone(),
+        settled_worker_runs: owned.settled_worker_runs.clone(),
         history: owned.operational_history_store.clone(),
     }
 }
@@ -290,8 +292,9 @@ impl SkillDispatchService {
             .is_none())
     }
     /// The projected id of the worker provider run that still holds this agent's earlier
-    /// loads. The home's remote binding names the worker run even when no client keeps
-    /// its projection alive; the projection is only the fallback.
+    /// loads. The home learns a run only when a turn settles on it, so the last settled
+    /// run is the run the next turn is assumed to use. A home projection of another run
+    /// means the home cannot say which run that is: nothing is assumed held.
     fn live_leased_run_id(
         &self,
         session_id: &str,
@@ -299,13 +302,6 @@ impl SkillDispatchService {
         leased_agent_id: &str,
     ) -> Result<Option<String>, DaemonError> {
         let agent = self.agents.get_agent(agent_id)?;
-        let bound = agent
-            .remote_execution()
-            .filter(|binding| binding.leased_agent_id == leased_agent_id)
-            .and_then(|binding| binding.active_worker_provider_run_id.as_deref())
-            .map(|worker_run| {
-                crate::provider::projected_leased_provider_run_id(leased_agent_id, worker_run)
-            });
         let projected = self.runs.get_for_agent(session_id, agent_id).filter(|run| {
             crate::provider::worker_provider_run_id_from_projected_leased_id(
                 leased_agent_id,
@@ -313,6 +309,13 @@ impl SkillDispatchService {
             )
             .is_some()
         });
+        let settled = self.settled_worker_runs.last(agent_id, leased_agent_id);
+        let live = match (&projected, settled) {
+            (Some(run), Some(settled)) if run.id() != settled => return Ok(None),
+            (Some(run), _) => run.id().to_string(),
+            (None, Some(settled)) => settled,
+            (None, None) => return Ok(None),
+        };
         let intact = match &projected {
             Some(run) => self.context_survives_compaction(
                 session_id,
@@ -331,9 +334,7 @@ impl SkillDispatchService {
                     .provider_session_id(agent.provider()),
             )?,
         };
-        Ok(intact
-            .then(|| bound.or_else(|| projected.map(|run| run.id().to_string())))
-            .flatten())
+        Ok(intact.then_some(live))
     }
     fn prepare_remote(
         &self,

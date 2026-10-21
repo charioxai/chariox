@@ -284,6 +284,7 @@ struct KernelRuntimeOwnedState {
     terminal_stream: crate::terminal::TerminalStreamStore,
     runtime_projection_changes: Arc<RuntimeChangeSignal>,
     skill_inventories: Arc<skills_native_inventory::SkillInventories>,
+    settled_worker_runs: Arc<skills_settled_worker_runs::SettledWorkerRuns>,
     workflow_design_events: WorkflowDesignEventStore,
     workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     workspace_live_sync_coordinator: Arc<Mutex<crate::io::ArtifactEditCoordinator>>,
@@ -542,6 +543,7 @@ pub(crate) use skills_catalog_runtime::control_capabilities;
 mod skills_dispatch;
 mod skills_native_inventory;
 mod skills_remote;
+mod skills_settled_worker_runs;
 mod skills_subscription;
 mod skills_turn_authority;
 mod structured_provider_output_runtime;
@@ -1013,6 +1015,7 @@ impl KernelRuntimeState {
                 terminal_stream,
                 runtime_projection_changes: Arc::new(RuntimeChangeSignal::default()),
                 skill_inventories: Arc::default(),
+                settled_worker_runs: Arc::default(),
                 workflow_design_events,
                 workspace_coordinator,
                 workspace_live_sync_coordinator: Arc::new(Mutex::new(

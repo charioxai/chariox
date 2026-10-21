@@ -83,7 +83,12 @@ impl KernelRuntimeOwnedState {
         drop(sessions);
         if settled.is_some() {
             activity_mutation.record();
-            if delivered_run_id.is_some() {
+            if let Some(worker_run_id) = delivered_run_id {
+                self.settled_worker_runs.record(
+                    &dispatch.agent_id,
+                    &dispatch.leased_agent_id,
+                    worker_run_id,
+                );
                 // Receipt reconciliation reaches this same durable acknowledgement path.
                 self.clear_accepted_remote_lease_context(dispatch);
             }
