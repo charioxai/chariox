@@ -25,6 +25,14 @@ COPY packages packages
 COPY apps/server/package.json apps/server/package.json
 RUN pnpm install --frozen-lockfile
 COPY apps/server apps/server
+# The server build runs the protocol pin check, which reads these files.
+COPY scripts/generate-protocol-versions.mjs scripts/generate-protocol-versions.mjs
+COPY scripts/lib/protocol-versions.mjs scripts/lib/protocol-versions.mjs
+COPY fixtures/protocol-versions.json fixtures/historical-workflow-protocol.json fixtures/
+COPY apps/kernel/managed-upgrade-protocol-transitions.json apps/kernel/managed-upgrade-protocol-transitions.json
+COPY apps/kernel/src/local/api/types.rs apps/kernel/src/local/api/types.rs
+COPY apps/kernel/src/transport/relay_peer.rs apps/kernel/src/transport/relay_peer.rs
+COPY docker/publication/Dockerfile docker/publication/Dockerfile
 RUN pnpm --filter @chariox/tool-display run build \
   && pnpm --filter @chariox/server run build
 

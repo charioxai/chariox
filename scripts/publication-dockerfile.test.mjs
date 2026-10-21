@@ -1,5 +1,8 @@
 import assert from "node:assert/strict"
+import { cpSync, mkdtempSync, rmSync } from "node:fs"
 import { readFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { basename, join } from "node:path"
 import { spawnSync } from "node:child_process"
 import { test } from "node:test"
 
@@ -214,4 +217,26 @@ test("publication egress image runs only the dedicated unprivileged gateway", ()
     "the unprivileged gateway must remain readable when the build context was checked out under umask 077",
   )
   assert.doesNotMatch(egressDockerfile, /COPY apps|COPY packages|COPY \. \/|npm install/)
+})
+
+test("publication JS build stage holds every file the protocol pin check reads", () => {
+  const stageStart = dockerfile.indexOf("AS js-builder")
+  const stageEnd = dockerfile.indexOf("\nFROM ", stageStart)
+  const copies = [...dockerfile.slice(stageStart, stageEnd).matchAll(/^COPY (?!--)(.+)$/gm)]
+    .map((match) => match[1].trim().split(/\s+/))
+  const context = new URL("../", import.meta.url).pathname
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "publication-js-builder-"))
+  try {
+    for (const [...parts] of copies) {
+      const destination = parts.pop()
+      for (const source of parts) {
+        const target = destination.endsWith("/") ? join(root, destination, basename(source)) : join(root, destination)
+        cpSync(join(context, source), target, { recursive: true, filter: (path) => !path.includes("node_modules") })
+      }
+    }
+    const check = spawnSync(process.execPath, ["scripts/generate-protocol-versions.mjs", "--check"], { cwd: root, encoding: "utf8" })
+    assert.equal(check.status, 0, check.stderr)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
