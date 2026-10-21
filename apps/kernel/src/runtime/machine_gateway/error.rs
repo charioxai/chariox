@@ -20,6 +20,8 @@ pub(crate) enum GatewayError {
     Unpaired {
         name: String,
     },
+    /// The owner revoked this kernel's gateway in the Cloud clients list.
+    GatewayRevoked,
     Incompatible {
         name: String,
         detail: String,
@@ -55,7 +57,7 @@ impl GatewayError {
             Self::Ambiguous { .. } => "machine_ambiguous",
             Self::Offline { .. } => "machine_offline",
             Self::Unreachable { .. } => "machine_unreachable",
-            Self::Unpaired { .. } => "machine_unpaired",
+            Self::Unpaired { .. } | Self::GatewayRevoked => "machine_unpaired",
             Self::Incompatible { .. } => "machine_incompatible",
             Self::RequestTimeout { .. } => "machine_request_timeout",
             Self::ConnectionLost { .. } | Self::SubscriptionEnded { .. } => {
@@ -84,6 +86,7 @@ impl GatewayError {
             Self::Unpaired { name } => format!(
                 "Machine \"{name}\" does not accept this kernel. Pair it again from a Chariox terminal."
             ),
+            Self::GatewayRevoked => "This kernel's agent gateway was revoked in the Cloud clients list and the agent access grants ended. Ask the user to approve a new agent access request.".to_string(),
             Self::Incompatible { name, detail } => format!(
                 "Machine \"{name}\" cannot run this request ({detail}). Update the Chariox kernel on that machine."
             ),

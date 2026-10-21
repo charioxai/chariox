@@ -6,6 +6,7 @@
 //! its own state. The agent never sees a relay token, key or Cloud credential.
 mod directory;
 mod error;
+mod hosted;
 mod identity;
 mod inventory;
 mod join;
@@ -57,6 +58,7 @@ pub(crate) struct MachineGateway {
     links: Mutex<HashMap<String, Arc<Link>>>,
     ledger: OnceLock<ledger::GatewayLedger>,
     keeper: keeper::Keeper,
+    hosted: hosted::HostedClient,
     paired: Arc<paired::PairedMachines>,
     /// When each paired machine last answered, for the self-hosted list.
     last_answer: std::sync::Mutex<HashMap<String, u64>>,
@@ -86,6 +88,7 @@ impl MachineGateway {
             links: Mutex::new(HashMap::new()),
             ledger: OnceLock::new(),
             keeper: keeper::Keeper::default(),
+            hosted: hosted::HostedClient::new(),
             paired,
             last_answer: std::sync::Mutex::new(HashMap::new()),
         }
@@ -236,7 +239,12 @@ impl MachineGateway {
                 kernel_id: Some(kernel.kernel_id.clone()),
             });
         }
-        crate::runtime::cloud_relay_connection_executor::kernel_client_connection(
+        if let Some(profile) = &config.cloud_relay {
+            self.hosted
+                .ensure_registered(profile, GATEWAY_CLIENT_ID, &identity.thumbprint, machine)
+                .await?;
+        }
+        match crate::runtime::cloud_relay_connection_executor::kernel_client_connection(
             &self.runtime_state,
             &self.config,
             kernel,
@@ -245,10 +253,27 @@ impl MachineGateway {
             Some(identity.thumbprint.clone()),
         )
         .await
-        .map_err(|error| GatewayError::Unreachable {
-            name: machine.into(),
-            detail: error.to_string(),
-        })
+        {
+            Ok(connection) => Ok(connection),
+            Err(error) if hosted::is_revoked(&error) => Err(self.gateway_revoked().await),
+            Err(error) => Err(GatewayError::Unreachable {
+                name: machine.into(),
+                detail: error.to_string(),
+            }),
+        }
+    }
+
+    /// The owner revoked this kernel's gateway in the Cloud clients list. That ends
+    /// every agent access grant; a new grant registers the gateway again.
+    async fn gateway_revoked(&self) -> GatewayError {
+        self.hosted.forget().await;
+        if let Err(error) = self
+            .runtime_state
+            .revoke_kernel_access(None, None, "gateway_revoked")
+        {
+            tracing::warn!(%error, "could not end agent access grants after the gateway was revoked");
+        }
+        GatewayError::GatewayRevoked
     }
 
     fn identity(&self) -> Result<GatewayIdentity, GatewayError> {
