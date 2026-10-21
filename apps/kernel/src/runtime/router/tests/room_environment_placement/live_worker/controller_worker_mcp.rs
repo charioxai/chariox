@@ -2296,9 +2296,9 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     );
     assert_eq!(action.arguments, None);
 
-    // MP-11 (#904 R2 and review @61b0a4ac6): the approved native secret above
-    // stays registered for this Room, so agent text and clicks (which can
-    // Paste it elsewhere) are refused below; pointer moves and scrolls forward.
+    // UX-first: the approved native secret above stays registered for this
+    // Room, but ordinary agent input still forwards; only unfenced mutations
+    // are refused below.
     let input_cases = [
         (
             "slice_mouse",
@@ -2336,21 +2336,9 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         );
     }
 
-    // MP-11 R1/R2: agent mutations with no protection fence are refused on
-    // the real home/worker route; approved Vault above and ordinary input remain.
+    // MP-11 R1: agent mutations with no protection fence are refused on the
+    // real home/worker route; ordinary input after the Vault fill is forwarded.
     for (tool, arguments) in [
-        (
-            "slice_mouse",
-            json!({"action":"click","x":220,"y":260,"button":"right"}),
-        ),
-        (
-            "slice_mouse",
-            json!({"action":"double_click","x":320,"y":360}),
-        ),
-        (
-            "slice_keyboard",
-            json!({"action":"type","text":"Grüße 世界"}),
-        ),
         (
             "slice_mouse",
             json!({"action":"drag","x":120,"y":160,"to_x":720,"to_y":560,"button":"middle"}),
@@ -2358,10 +2346,6 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         (
             "slice_clipboard_write",
             json!({"text":"Clipboard Grüße 世界"}),
-        ),
-        (
-            "slice_keyboard",
-            json!({"action":"key","key":"ctrl+shift+p","repeat":3}),
         ),
         (
             "slice_keyboard",
@@ -2374,10 +2358,6 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         (
             "slice_mouse",
             json!({"action":"click","x":120,"y":160,"button":"middle"}),
-        ),
-        (
-            "slice_keyboard",
-            json!({"action":"key","key":"CTRL+v","repeat":2}),
         ),
     ] {
         let error = fixture
@@ -2392,6 +2372,36 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
                 .contains("user_domain_sensitive_requires_focus"),
             "{error}"
         );
+    }
+    for (tool, arguments) in [
+        (
+            "slice_mouse",
+            json!({"action":"click","x":220,"y":260,"button":"right"}),
+        ),
+        (
+            "slice_mouse",
+            json!({"action":"double_click","x":320,"y":360}),
+        ),
+        (
+            "slice_keyboard",
+            json!({"action":"type","text":"Grüße 世界"}),
+        ),
+        (
+            "slice_keyboard",
+            json!({"action":"key","key":"ctrl+shift+p","repeat":3}),
+        ),
+        (
+            "slice_keyboard",
+            json!({"action":"key","key":"CTRL+v","repeat":2}),
+        ),
+    ] {
+        let result = fixture
+            .worker
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(&input_token, tool, arguments.clone())
+            .await
+            .unwrap_or_else(|error| panic!("{tool} {arguments}: {error}"));
+        assert!(result.ok, "{tool} {arguments}: {:?}", result.payload);
     }
 
     let action_count_before_invalid = fixture
@@ -2461,15 +2471,21 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         "worker must not create parallel Room authority for any Computer tool"
     );
 
-    assert_eq!(
-        std::fs::read_to_string(&screen_log).expect("worker Computer tool log"),
-        concat!(
+    let log = std::fs::read_to_string(&screen_log).expect("worker Computer tool log");
+    assert!(
+        log.starts_with(concat!(
             "computer-secret-input-ok\n",
             "move 120 160\n",
             "pointer-scroll 640 400 -3 5\n",
-        ),
-        "provider Computer tools must use the shared physical input adapter",
+        )),
+        "provider Computer tools must use the shared physical input adapter: {log}",
     );
+    for refused in ["drag", "hold", "clipboard-write"] {
+        assert!(
+            !log.contains(refused),
+            "refused {refused} reached the helper: {log}"
+        );
+    }
 
     dispatch_json(
         &fixture.home,
