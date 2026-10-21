@@ -544,6 +544,10 @@ impl Kernel {
             ))
             .await
             .unwrap();
+        // Requests on another connection must wait until this observer is
+        // subscribed, or a grant popup can be published before it is listening.
+        let subscribed = response(&mut popups, "popups").await;
+        assert!(subscribed["error"].is_null(), "{subscribed}");
         let kernel = Self {
             root,
             child,

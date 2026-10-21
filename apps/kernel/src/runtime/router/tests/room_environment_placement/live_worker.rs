@@ -552,6 +552,13 @@ impl LiveWorker {
             }
         }
         assert!(failures.is_empty(), "fixture shutdown: {failures:?}");
+        // Drain the owners before their state directories are removed. Stopping
+        // relay tasks alone leaves deferred history and state writes in flight.
+        self.home.shutdown_cleanup().await.expect("home shutdown");
+        self.worker
+            .shutdown_cleanup()
+            .await
+            .expect("worker shutdown");
         for address in &self.relay_addresses {
             drop(
                 tokio::net::TcpListener::bind(address)
