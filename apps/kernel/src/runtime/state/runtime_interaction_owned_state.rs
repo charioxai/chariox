@@ -117,6 +117,7 @@ impl KernelRuntimeOwnedState {
     /// `passkey_verified`: the answer proved the owner's presence (see
     /// `critical_approval_passkey`); a choice that requires the passkey is
     /// refused without it.
+    #[cfg(test)]
     pub(super) fn resolve_runtime_interaction(
         &self,
         session_id: &str,
@@ -139,6 +140,8 @@ impl KernelRuntimeOwnedState {
     }
 
     /// Carries the authenticated answering connection into the locked resolver.
+    // Keep the shared terminal answer contract used across runtime interaction callers.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn resolve_terminal_runtime_interaction(
         &self,
         session_id: &str,
@@ -209,6 +212,8 @@ impl KernelRuntimeOwnedState {
         )
     }
 
+    // Keep the existing answer and authorization fields at the locked resolution boundary.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn resolve_runtime_interaction_authorized(
         &self,
         session_id: &str,

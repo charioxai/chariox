@@ -38,6 +38,8 @@ impl KernelRuntimeState {
             message,
         })
     }
+    // Keep authenticated peer identity explicit alongside the peer protocol fields.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn execute_bound_room_shared_display_open(
         &self,
         home: &str,

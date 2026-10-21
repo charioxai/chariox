@@ -217,8 +217,6 @@ pub struct DaemonApp {
     completed_execution_lease_deletions: VecDeque<String>,
     #[cfg(test)]
     leased_runtime_projection_pauses: BTreeMap<String, std::sync::Weak<()>>,
-    #[cfg(test)]
-    leased_projection_after_output_drain: Option<Box<dyn FnOnce(&mut DaemonApp) + Send>>,
     leased_agent_cleanup_phases: BTreeMap<String, remote_lease::LeasedAgentCleanupPhase>,
     #[cfg(test)]
     leased_agent_cleanup_failures: BTreeMap<String, remote_lease::LeasedAgentCleanupPhase>,
@@ -438,8 +436,6 @@ impl DaemonApp {
             completed_execution_lease_deletions: VecDeque::new(),
             #[cfg(test)]
             leased_runtime_projection_pauses: BTreeMap::new(),
-            #[cfg(test)]
-            leased_projection_after_output_drain: None,
             leased_agent_cleanup_phases: BTreeMap::new(),
             #[cfg(test)]
             leased_agent_cleanup_failures: BTreeMap::new(),
@@ -784,6 +780,7 @@ impl DaemonApp {
         self.workflow_design_events.clone()
     }
 
+    #[cfg(test)]
     pub(crate) fn terminal_mut(&mut self) -> &TerminalStreamStore {
         &self.terminal
     }

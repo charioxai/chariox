@@ -13,6 +13,8 @@ const PAYLOAD_LIMIT: usize = 1024 * 1024;
 
 // MP-08/MP-10: preserve the configured path/authority/query exactly.
 // Older relays ignore this optional HTTP handshake header.
+// Preserve the public tungstenite error type used by connection callers.
+#[allow(clippy::result_large_err)]
 pub fn connection_request(
     url: &str,
 ) -> Result<

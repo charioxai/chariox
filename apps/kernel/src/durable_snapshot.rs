@@ -181,6 +181,15 @@ impl DurableCheckpointPolicy {
     }
 }
 
+pub(crate) struct DurableSnapshotSources {
+    pub(crate) durable_state: DurableKernelStateStore,
+    pub(crate) sessions: SessionStateStore,
+    pub(crate) agents: AgentServiceStore,
+    pub(crate) slices: SliceStore,
+    pub(crate) metaagent_events: MetaagentEventStore,
+    pub(crate) room_computer_revoked: Arc<Mutex<std::collections::BTreeSet<String>>>,
+}
+
 #[derive(Clone)]
 pub(crate) struct DurableSnapshotScheduler {
     owner_id: String,
@@ -198,44 +207,29 @@ impl DurableSnapshotScheduler {
     #[cfg(test)]
     pub(crate) fn new(
         owner_id: impl Into<String>,
-        durable_state: DurableKernelStateStore,
-        sessions: SessionStateStore,
-        agents: AgentServiceStore,
-        slices: SliceStore,
-        metaagent_events: MetaagentEventStore,
-        room_computer_revoked: Arc<Mutex<std::collections::BTreeSet<String>>>,
+        sources: DurableSnapshotSources,
         interval_events: u64,
     ) -> Self {
         Self::new_with_policy(
             owner_id,
-            durable_state,
-            sessions,
-            agents,
-            slices,
-            metaagent_events,
-            room_computer_revoked,
+            sources,
             DurableCheckpointPolicy::event_count_only(interval_events),
         )
     }
 
     pub(crate) fn new_with_policy(
         owner_id: impl Into<String>,
-        durable_state: DurableKernelStateStore,
-        sessions: SessionStateStore,
-        agents: AgentServiceStore,
-        slices: SliceStore,
-        metaagent_events: MetaagentEventStore,
-        room_computer_revoked: Arc<Mutex<std::collections::BTreeSet<String>>>,
+        sources: DurableSnapshotSources,
         policy: DurableCheckpointPolicy,
     ) -> Self {
         Self {
             owner_id: owner_id.into(),
-            durable_state,
-            sessions,
-            agents,
-            slices,
-            metaagent_events,
-            room_computer_revoked,
+            durable_state: sources.durable_state,
+            sessions: sources.sessions,
+            agents: sources.agents,
+            slices: sources.slices,
+            metaagent_events: sources.metaagent_events,
+            room_computer_revoked: sources.room_computer_revoked,
             policy,
             checkpoint_marker: Arc::new(Mutex::new(None)),
         }
@@ -601,12 +595,14 @@ mod tests {
 
         let scheduler = DurableSnapshotScheduler::new(
             app.config().daemon_id.clone(),
-            app.durable_state_store(),
-            app.session_state_store(),
-            app.agents().clone(),
-            app.slices(),
-            app.metaagent_event_store(),
-            app.room_computer_revoked.clone(),
+            DurableSnapshotSources {
+                durable_state: app.durable_state_store(),
+                sessions: app.session_state_store(),
+                agents: app.agents().clone(),
+                slices: app.slices(),
+                metaagent_events: app.metaagent_event_store(),
+                room_computer_revoked: app.room_computer_revoked.clone(),
+            },
             10,
         );
         let outcome = scheduler.tick_once().expect("tick should succeed");
@@ -654,12 +650,14 @@ mod tests {
 
         let scheduler = DurableSnapshotScheduler::new(
             app.config().daemon_id.clone(),
-            app.durable_state_store(),
-            app.session_state_store(),
-            app.agents().clone(),
-            app.slices(),
-            app.metaagent_event_store(),
-            app.room_computer_revoked.clone(),
+            DurableSnapshotSources {
+                durable_state: app.durable_state_store(),
+                sessions: app.session_state_store(),
+                agents: app.agents().clone(),
+                slices: app.slices(),
+                metaagent_events: app.metaagent_event_store(),
+                room_computer_revoked: app.room_computer_revoked.clone(),
+            },
             1,
         );
         let outcome = scheduler.tick_once().expect("tick should succeed");
@@ -685,12 +683,14 @@ mod tests {
         let durable_state = app.durable_state_store();
         let scheduler = DurableSnapshotScheduler::new(
             app.config().daemon_id.clone(),
-            durable_state.clone(),
-            app.session_state_store(),
-            app.agents().clone(),
-            app.slices(),
-            app.metaagent_event_store(),
-            app.room_computer_revoked.clone(),
+            DurableSnapshotSources {
+                durable_state: durable_state.clone(),
+                sessions: app.session_state_store(),
+                agents: app.agents().clone(),
+                slices: app.slices(),
+                metaagent_events: app.metaagent_event_store(),
+                room_computer_revoked: app.room_computer_revoked.clone(),
+            },
             1,
         );
         let (attempted_tx, attempted_rx) = std::sync::mpsc::channel();
@@ -731,12 +731,14 @@ mod tests {
             .expect("session should be created");
         let scheduler = DurableSnapshotScheduler::new(
             app.config().daemon_id.clone(),
-            app.durable_state_store(),
-            app.session_state_store(),
-            app.agents().clone(),
-            app.slices(),
-            app.metaagent_event_store(),
-            app.room_computer_revoked.clone(),
+            DurableSnapshotSources {
+                durable_state: app.durable_state_store(),
+                sessions: app.session_state_store(),
+                agents: app.agents().clone(),
+                slices: app.slices(),
+                metaagent_events: app.metaagent_event_store(),
+                room_computer_revoked: app.room_computer_revoked.clone(),
+            },
             1,
         );
         let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));

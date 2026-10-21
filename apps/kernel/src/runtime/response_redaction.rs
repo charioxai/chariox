@@ -700,8 +700,8 @@ mod tests {
             };
             assert_eq!(next_cursor.as_deref(), Some("cursor-1"));
             assert_eq!(workflow_runs.len(), 2);
-            assert_eq!(workflow_runs[0].invocation_prompt().is_some(), true);
-            assert_eq!(workflow_runs[1].invocation_prompt().is_some(), true);
+            assert!(workflow_runs[0].invocation_prompt().is_some());
+            assert!(workflow_runs[1].invocation_prompt().is_some());
         }
     }
 
@@ -720,7 +720,7 @@ mod tests {
                 let LocalDaemonResponse::WorkflowRun { workflow_run } = response else {
                     panic!("unexpected response")
                 };
-                assert_eq!(workflow_run.invocation_prompt().is_some(), true);
+                assert!(workflow_run.invocation_prompt().is_some());
             }
         }
     }

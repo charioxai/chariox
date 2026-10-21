@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom};
@@ -24,7 +26,7 @@ use crate::transport::relay_client::{
 use crate::transport::relay_peer::{
     RelayManagedContextCapability, RelayManagedContextChunk, RelayManagedContextImportReceipt,
     RelayManagedContextTransferPhase, RelayManagedContextTransferStatus, RelayPeerRequest,
-    RelayPeerResponse, MINIMUM_RELAY_PEER_RUNTIME_VERSION, RELAY_PEER_PROTOCOL_VERSION,
+    RelayPeerResponse, MINIMUM_RELAY_PEER_RUNTIME_VERSION,
 };
 
 const IMPORT_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(250);

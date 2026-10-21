@@ -37,7 +37,7 @@ impl KernelRuntimeState {
             .into_iter()
             .filter(|task| visible_ids.contains(task.agent_id.as_str()))
             .collect::<Vec<_>>();
-        return Ok(RuntimeToolResult {
+        Ok(RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({
                 "session_id": session.id(),
@@ -51,7 +51,7 @@ impl KernelRuntimeState {
                         && interaction.agent_id().map_or(agent.owner_user_id() == session.owner_user_id(), |id| visible_ids.contains(id))
                 }).map(|interaction| serde_json::json!({ "id": interaction.id(), "agent_id": interaction.agent_id(), "kind": interaction.kind() })).collect::<Vec<_>>(),
             }),
-        });
+        })
     }
 
     // MP-11: a shrinking roster cannot grant access to retained foreign traces.

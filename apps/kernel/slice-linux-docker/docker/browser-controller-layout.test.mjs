@@ -10,9 +10,10 @@ function client() {
   const proto = BrowserCdpClient.prototype;
   const self = { connection, canonical, sent, layoutByTarget: new Map(), viewportByTarget: new Map(), layoutQueue: new Map(),
     ensureTargetSession: async (_c, targetId) => `s-${targetId}`,
-    layoutMetrics: proto.layoutMetrics, layoutViewport: proto.layoutViewport };
+    layoutMetrics: proto.layoutMetrics, layoutViewport: proto.layoutViewport, queueLayout: proto.queueLayout };
   self.setLayout = proto.setLayout.bind(self);
   self.applyLayout = proto.applyLayout.bind(self);
+  self.clearViewport = proto.clearViewport.bind(self);
   return self;
 }
 
@@ -31,6 +32,17 @@ test("the person's display sets one Tab's layout size and null restores the cano
   await c.setLayout("t1", null);
   assert.deepEqual([c.sent[1].params.width, c.sent[1].params.height], [1280, 800]);
   assert.equal(c.layoutByTarget.size, 0);
+});
+
+test('MP-08/MP-10/MP-11: a native release retires the viewport cache before a desktop reattach', async () => {
+  const c=client();await c.setLayout('t1',null);
+  let release;
+  const gate=new Promise(resolve=>{release=resolve}),send=c.connection.send;
+  c.connection.send=async(method,...args)=>{if(method==='Emulation.clearDeviceMetricsOverride')await gate;return send(method,...args);};
+  const cleared=c.clearViewport('t1');await new Promise(setImmediate);
+  const restored=c.setLayout('t1',null);release();await Promise.all([cleared,restored]);
+  assert.deepEqual(c.sent.map(s=>s.method),['Emulation.setDeviceMetricsOverride','Emulation.clearDeviceMetricsOverride','Emulation.setDeviceMetricsOverride']);
+  assert.equal(c.viewportByTarget.get('t1'),JSON.stringify(c.layoutMetrics('t1',canonical)));
 });
 
 test("a restore that arrives while a layout override is in flight still ends on the canonical page", async () => {

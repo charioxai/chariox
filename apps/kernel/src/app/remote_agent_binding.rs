@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use chariox_relay::protocol::{ClientTarget, RelayKernelPresence};
@@ -13,7 +15,6 @@ use crate::transport::relay_client::{
 use crate::transport::relay_discovery;
 use crate::transport::relay_peer::{
     RelayPeerRequest, RelayPeerResponse, MINIMUM_RELAY_PEER_RUNTIME_VERSION,
-    RELAY_PEER_PROTOCOL_VERSION,
 };
 
 use super::remote_kernel_selection::{

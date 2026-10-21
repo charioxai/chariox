@@ -1,3 +1,5 @@
+#[cfg(test)]
+use super::super::api::ProviderCatalogExecutionLocation;
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::provider::{
@@ -13,7 +15,7 @@ use std::time::Duration;
 
 use super::super::api::{
     GetProviderAuthStatusRequest, GetProviderCatalogRequest, LocalDaemonResponse,
-    LogoutProviderRequest, ProviderCatalogExecutionLocation, StartProviderLoginRequest,
+    LogoutProviderRequest, StartProviderLoginRequest,
 };
 use super::blocking::block_on_relay_query;
 

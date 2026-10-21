@@ -18,7 +18,9 @@ fn mp08_mp10_mp11_relay_transport_532_140_snapshot() {
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(snapshot["local"], 532);
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 532);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 532);
+    };
     assert_eq!(snapshot["peer"], 140);
     assert_eq!(snapshot["capability"], TRANSPORT_QUERY);
     assert_eq!(snapshot["bypass_scope"], DISPLAY_EVENT_SCOPE);

@@ -1,3 +1,5 @@
+#[cfg(test)]
+pub(crate) use account_credential::provider_account_credential_uses_vault;
 use std::time::Duration;
 
 mod utility_admission;
@@ -47,10 +49,9 @@ mod workspace_write_fence;
 
 pub(crate) use account_credential::{
     launch_uses_vault_credential, provider_account_credential_id,
-    provider_account_credential_registered, provider_account_credential_uses_vault,
-    resolve_provider_account_credentials, resolve_provider_account_credentials_for_launch,
-    store_provider_account_credential, validate_provider_account_credential_input,
-    CLAUDE_OAUTH_TOKEN_ENV,
+    provider_account_credential_registered, resolve_provider_account_credentials,
+    resolve_provider_account_credentials_for_launch, store_provider_account_credential,
+    validate_provider_account_credential_input, CLAUDE_OAUTH_TOKEN_ENV,
 };
 pub(crate) use claude::claude_provider_catalog_with_environment;
 pub(crate) use claude::prepare_vaulted_claude_native_onboarding;

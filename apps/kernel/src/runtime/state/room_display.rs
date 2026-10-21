@@ -3,6 +3,13 @@ use crate::local::GetSliceDisplayEndpointRequest;
 use crate::runtime::command::{KernelCaller, KernelCallerKind};
 use crate::slice::{SliceDisplayEndpoint, SliceDisplayEndpointKind, SliceStatus};
 
+pub(super) struct RoomDisplayAdmission<'a> {
+    pub session_id: &'a str,
+    pub attachment_id: &'a str,
+    pub viewer_public_key: &'a str,
+    pub slice_ref: &'a str,
+}
+
 impl KernelRuntimeState {
     pub(crate) async fn open_room_selkies_display(
         &self,
@@ -16,10 +23,12 @@ impl KernelRuntimeState {
         let (slice, mut guard) = self
             .admit_room_display(
                 caller,
-                &session_id,
-                &attachment_id,
-                &viewer_public_key,
-                &request.slice_ref,
+                RoomDisplayAdmission {
+                    session_id: &session_id,
+                    attachment_id: &attachment_id,
+                    viewer_public_key: &viewer_public_key,
+                    slice_ref: &request.slice_ref,
+                },
                 false,
                 None,
             )
@@ -70,10 +79,7 @@ impl KernelRuntimeState {
     pub(super) async fn admit_room_display(
         &self,
         caller: &KernelCaller,
-        session_id: &str,
-        attachment_id: &str,
-        viewer_public_key: &str,
-        slice_ref: &str,
+        request: RoomDisplayAdmission<'_>,
         shared_read: bool,
         timing: Option<&room_shared_display::timing::ResumeTiming>,
     ) -> Result<
@@ -83,7 +89,13 @@ impl KernelRuntimeState {
         ),
         DaemonError,
     > {
-        crate::transport::relay_crypto::decode_public_key(&viewer_public_key)
+        let RoomDisplayAdmission {
+            session_id,
+            attachment_id,
+            viewer_public_key,
+            slice_ref,
+        } = request;
+        crate::transport::relay_crypto::decode_public_key(viewer_public_key)
             .map_err(|_| display_error("viewer public key is invalid"))?;
         match caller.caller_kind {
             KernelCallerKind::LocalClient => {}
@@ -92,7 +104,7 @@ impl KernelRuntimeState {
                     display_error("remote viewer admission requires a key-bound relay identity")
                 })?;
                 let actual =
-                    crate::runtime::terminal_pairings::public_key_thumbprint(&viewer_public_key);
+                    crate::runtime::terminal_pairings::public_key_thumbprint(viewer_public_key);
                 if expected != actual {
                     return Err(display_error(
                         "viewer key does not match the authenticated relay client",
@@ -108,7 +120,7 @@ impl KernelRuntimeState {
         if let Some(timing) = timing {
             timing.mark("keys_checked");
         }
-        self.ensure_attachment_in_session(&session_id, &attachment_id)
+        self.ensure_attachment_in_session(session_id, attachment_id)
             .await?;
         if let Some(timing) = timing {
             timing.mark("attachment_checked");
@@ -117,7 +129,7 @@ impl KernelRuntimeState {
             .user_id
             .as_deref()
             .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID);
-        if self.attachment_owner_user_id(&attachment_id).await? != caller_user_id {
+        if self.attachment_owner_user_id(attachment_id).await? != caller_user_id {
             return Err(DaemonError::SessionAccessDenied {
                 session_id: session_id.into(),
                 user_id: caller_user_id.to_string(),
@@ -127,7 +139,7 @@ impl KernelRuntimeState {
             timing.mark("owner_checked");
         }
         let binding = self
-            .room_environment_slice(&session_id)?
+            .room_environment_slice(session_id)?
             .ok_or_else(|| display_error("Room has no bound Environment slice"))?;
         let slice = self.resolve_slice(slice_ref)?;
         if binding.slice_id != slice.id {
@@ -148,7 +160,7 @@ impl KernelRuntimeState {
             .slice_store
             .queue_environment_use(
                 &slice.id,
-                Some(&session_id),
+                Some(session_id),
                 if shared_read {
                     crate::slice::SHARED_DISPLAY_READ_OPERATION
                 } else {

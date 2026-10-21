@@ -94,7 +94,7 @@ pub(crate) fn admit(
     let mut count = 0;
     for attachment in attachments.iter().filter(|attachment| is_note(attachment)) {
         count += 1;
-        parse(attachment).map_err(&refuse)?;
+        parse(attachment).map_err(refuse)?;
     }
     if count > MAX_NOTES {
         return Err(refuse(format!(

@@ -97,8 +97,12 @@ fn notes_protocol_443_response_snapshots() {
 #[test]
 fn prompt_notes_566_snapshot() {
     use sha2::{Digest, Sha256};
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 566);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 174);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 566);
+    };
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 174);
+    };
     let bytes = include_bytes!("prompt-notes-566.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),

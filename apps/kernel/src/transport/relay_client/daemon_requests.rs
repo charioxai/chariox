@@ -69,7 +69,7 @@ pub(super) async fn handle_daemon_request(
             )
             .await
         }
-        Err(outcome) => outcome,
+        Err(outcome) => *outcome,
     }
 }
 

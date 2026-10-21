@@ -184,10 +184,12 @@ pub(super) async fn admit(
             registry,
             routes,
             auth_verifier,
-            peer_addr,
+            ClientPacketPeer {
+                peer_addr,
+                expected_daemon_public_key: Some(&pin),
+            },
             outgoing_tx,
             relay_request_counter,
-            Some(&pin),
         )
         .await?
         .should_break()
