@@ -1,5 +1,7 @@
 mod relay_metadata;
-pub(crate) use relay_metadata::{relay_metadata_discovery_config, scoped_metadata_config};
+pub(crate) use relay_metadata::{
+    relay_metadata_discovery_config, relay_metadata_discovery_config_for, scoped_metadata_config,
+};
 use serde::Deserialize;
 
 use crate::config::PersistedCloudRelayProfile;
