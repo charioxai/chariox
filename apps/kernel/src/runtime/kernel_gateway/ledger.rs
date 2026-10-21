@@ -106,7 +106,7 @@ impl GatewayLedger {
             },
             Ok(CommandReservation::Conflict) => Settled::Conflict,
             Err(error) if is_receipt_capacity_error(&error) => Settled::Unavailable(
-                "the gateway ledger is full; wait for old entries to expire".into(),
+                "the gateway ledger is full; its receipts expire 15 minutes after their request, so retry in a few minutes".into(),
             ),
             Err(error) => {
                 Settled::Unavailable(format!("the gateway ledger refused the request: {error}"))
