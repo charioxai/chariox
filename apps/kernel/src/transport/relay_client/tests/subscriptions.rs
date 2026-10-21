@@ -1478,9 +1478,15 @@ async fn task_delta_encrypted_relay_subscription_preserves_prompt_completion_and
         expect_json_client_response(&mut client_socket, "sub-1", &subscription_private_key).await;
     // Protocol 403: the passkey prompts come first and are never replayed.
     let prompts = expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
+    let mut prompts_event = prompts.1.clone();
+    assert!(prompts_event
+        .as_object_mut()
+        .unwrap()
+        .remove("kernel_now_ms")
+        .is_some_and(|now| now.is_u64()));
     assert_eq!(
-        prompts.1,
-        serde_json::json!({"event": "passkey_prompts_changed", "prompts": []})
+        prompts_event,
+        serde_json::json!({"event": "passkey_prompts_changed", "prompts": [], "closed": []})
     );
     let first_event = expect_named_client_event(
         &mut client_socket,
