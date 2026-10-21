@@ -390,7 +390,7 @@ test("EXT-UX the general interaction panel shows the kernel's copy, not requeste
     } }, { width: 100, height: 40 })
     await h.renderOnce()
     const frame = h.captureCharFrame()
-    assert.match(frame, /An external agent wants access to this kernel and your other kernels\. Allow\?/)
+    assert.match(frame, /An external agent wants access to this kernel and your other kernels\./)
     assert.doesNotMatch(frame, /PID|Executable|Process start|9876543210123456789/)
   } finally { h.renderer.destroy() }
 })

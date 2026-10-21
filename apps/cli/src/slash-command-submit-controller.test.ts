@@ -46,16 +46,16 @@ test("slash command submit records attached history and clears selector-backed c
   assert.equal(harness.commandCenterClearCount(), 1)
 })
 
-test("slash command submit keeps a machine pairing link out of every history", async () => {
+test("slash command submit keeps a kernel pairing link out of every history", async () => {
   const harness = createHarness({ attached: true })
   const controller = createSlashCommandSubmitController(harness.deps)
 
-  const link = "/machine add chariox-terminal-pair-v1.secret --relay-token-env OPERATOR_TOKEN"
-  assert.equal((await controller.submit(link, { allowSlashCommandSubmission: true }))?.kind, "machine")
+  const link = "/kernel add chariox-terminal-pair-v1.secret --relay-token-env OPERATOR_TOKEN"
+  assert.equal((await controller.submit(link, { allowSlashCommandSubmission: true }))?.kind, "kernel")
   assert.equal((await controller.submit("/machine add ssh linux-lan", { allowSlashCommandSubmission: true }))?.kind, "machine")
 
   assert.deepEqual(harness.calls(), [
-    "machine:add chariox-terminal-pair-v1.secret --relay-token-env OPERATOR_TOKEN",
+    "kernel:add chariox-terminal-pair-v1.secret --relay-token-env OPERATOR_TOKEN",
     "machine:add ssh linux-lan",
   ])
   assert.deepEqual(harness.recordedHistory(), [{ sessionId: "session-1", rawPrompt: "/machine add ssh linux-lan" }])
