@@ -317,7 +317,7 @@ async fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
         .ensure_agent_task(
             session.id(),
             agent.id(),
-            active.id(),
+            &active,
             Some(workflow_provider.id()),
         )
         .unwrap();

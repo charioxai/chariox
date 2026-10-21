@@ -167,6 +167,50 @@ async fn a01_workflow_node_turn_settles_without_a_plain_completion_check() {
     assert!(settled.pending_prompt_id.is_none(), "{settled:?}");
 }
 
+// A12-S06: a workflow node turn dispatched before an upgrade has no task on the
+// new kernel; the task its settlement creates keeps the node, so the run stays
+// supervised and a continuation of that turn stays inside the invocation.
+#[tokio::test]
+async fn a12_legacy_workflow_turn_settled_without_a_task_keeps_its_node() {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("a12-legacy-node-settle"),
+        config,
+        false,
+    );
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let prompt = owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .unwrap();
+    assert_eq!(
+        prompt.workflow_run_id(),
+        Some(fixture.workflow_run_id.as_str())
+    );
+    let (task, _) = owned
+        .settle_agent_task(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            &prompt,
+            "legacy-provider-run",
+            false,
+        )
+        .unwrap()
+        .expect("legacy turn settlement");
+    assert_eq!(
+        owned
+            .durable_state_store
+            .agent_task_workflow(&task.task_id)
+            .unwrap(),
+        Some((fixture.workflow_run_id.clone(), fixture.node_run_id.clone()))
+    );
+}
+
 // A plain turn only gets a task row: ending after a tool call with no answer is
 // settled Done, never corrected, held to a wait or blocked for the owner.
 #[tokio::test]
