@@ -192,8 +192,6 @@ export type SliceProviderLoginStart = {
 export type ProviderLogoutResult = {
   provider: string
   account_profile: string
-  /** The login is shared with other machines: only this machine's copy was removed. */
-  local_only?: boolean
 }
 
 export type ProviderLogoutOutcome =

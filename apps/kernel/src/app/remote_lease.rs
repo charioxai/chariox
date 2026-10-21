@@ -1406,7 +1406,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    mod auth_admission;
     mod catalog_admission;
     mod profile_admission;
     mod project_environment_setup;

@@ -1,5 +1,5 @@
 use crate::app::RemoteLeaseRuntime;
-use crate::durable_state::worker_prompt_receipts::{rejection_reason, WorkerPromptReceiptPhase};
+use crate::durable_state::worker_prompt_receipts::WorkerPromptReceiptPhase;
 use crate::execution_lease::{ExecutionLease, LeasedAgent, RemoteWorkflowTurnContext};
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
 use crate::skill::CharioxSkillPackage;
@@ -35,23 +35,6 @@ impl KernelRuntimeState {
                 phase,
                 worker_provider_run_id.as_deref(),
             )
-        })
-        .await
-    }
-
-    async fn reject_relay_leased_prompt_admission_receipt(
-        &self,
-        leased_agent_id: &str,
-        home_prompt_id: &str,
-        error: &DaemonError,
-    ) -> Result<(), DaemonError> {
-        let leased_agent_id = leased_agent_id.to_string();
-        let home_prompt_id = home_prompt_id.to_string();
-        let reason = rejection_reason(error);
-        self.with_app_side_effect(move |app| {
-            let mut runtime = RemoteLeaseRuntime::new(app);
-            runtime.begin_leased_prompt_receipt(&leased_agent_id, &home_prompt_id)?;
-            runtime.reject_leased_prompt_receipt(&leased_agent_id, &home_prompt_id, reason)
         })
         .await
     }
@@ -633,10 +616,13 @@ impl KernelRuntimeState {
                         .as_deref()
                         .filter(|_| profile_receipt_is_new)
                     {
-                        runtime.reject_leased_prompt_receipt(
+                        runtime
+                            .begin_leased_prompt_receipt(&replay_leased_agent_id, home_prompt_id)?;
+                        runtime.update_leased_prompt_receipt(
                             &replay_leased_agent_id,
                             home_prompt_id,
-                            rejection_reason(&error),
+                            WorkerPromptReceiptPhase::Rejected,
+                            None,
                         )?;
                     }
                     return Err(error);
@@ -680,9 +666,7 @@ impl KernelRuntimeState {
         let context_for_prepare = home_prompt_id.clone();
         let prepared = match self
             .with_app_side_effect(move |app| {
-                let mut runtime = RemoteLeaseRuntime::new(app);
-                runtime.require_leased_prompt_account(&leased_agent_for_prepare)?;
-                runtime.prepare_leased_prompt_submission(
+                RemoteLeaseRuntime::new(app).prepare_leased_prompt_submission(
                     &leased_agent_for_prepare,
                     &prompt_for_prepare,
                     &hidden_system_context,
@@ -700,10 +684,11 @@ impl KernelRuntimeState {
             Err(error) => {
                 if let Some(home_prompt_id) = context_for_prepare.as_deref().filter(|_| new_receipt)
                 {
-                    self.reject_relay_leased_prompt_admission_receipt(
+                    self.update_relay_leased_prompt_admission_receipt(
                         &leased_agent_id,
                         home_prompt_id,
-                        &error,
+                        WorkerPromptReceiptPhase::Rejected,
+                        None,
                     )
                     .await?;
                 }
@@ -775,26 +760,6 @@ impl KernelRuntimeState {
                 provider_run_id.clone()
             }
             crate::app::PreparedLeasedProviderRun::LaunchRequired(request) => {
-                if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
-                    && provider_launch_credential.is_none()
-                {
-                    let error = DaemonError::LocalTransport {
-                        operation: "launch remote provider without credential",
-                        message: format!(
-                            "{REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE}: the worker must relaunch the selected Claude profile",
-                        ),
-                    };
-                    if let Some(home_prompt_id) = home_prompt_id.as_deref().filter(|_| new_receipt)
-                    {
-                        self.reject_relay_leased_prompt_admission_receipt(
-                            &leased_agent_id,
-                            home_prompt_id,
-                            &error,
-                        )
-                        .await?;
-                    }
-                    return Err(error);
-                }
                 match self
                     .launch_provider_for_remote_lease_detached(
                         request.clone(),
@@ -807,10 +772,11 @@ impl KernelRuntimeState {
                         if let Some(home_prompt_id) =
                             home_prompt_id.as_deref().filter(|_| new_receipt)
                         {
-                            self.reject_relay_leased_prompt_admission_receipt(
+                            self.update_relay_leased_prompt_admission_receipt(
                                 &leased_agent_id,
                                 home_prompt_id,
-                                &error,
+                                WorkerPromptReceiptPhase::Rejected,
+                                None,
                             )
                             .await?;
                         }

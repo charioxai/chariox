@@ -16,42 +16,6 @@ companion validation-tooling change; it drives the built TUI over hosted WSS,
 checks both populated response variants and protocol advertisements, and verifies
 persistence after restart. Source tests alone do not establish live acceptance.
 
-### Worker refusal reason (local protocol 549 / relay peer 157)
-
-`LeasedPromptReceipt.rejection_reason` (optional, omitted when absent) carries
-why a worker refused a leased prompt (for example a signed-out provider account
-on that machine). It is set only on a rejected admission receipt, is one line of
-at most 200 characters, and is also stored in the worker's durable prompt receipt
-(old stored receipts load without it). The home appends it to "worker durably
-rejected exact prompt ..." so the pane and TUI show the real reason. An older
-worker sends no field and the message is unchanged; an older home ignores it. No
-minimum supported client protocol changes.
-
-### Provider login copies (local protocol 549 / relay peer 157; branch-only 541 / 149 never released)
-
-Decision record: [PROVIDER_LOGIN_COPIES.md](PROVIDER_LOGIN_COPIES.md). Two
-optional fields, both omitted when false, so older clients and kernels keep
-working and no minimum supported protocol changes:
-
-- `LogoutProvider.end_everywhere` (default false). Without it, signing out a
-  Codex or Claude login that other machines hold (this machine received it as a
-  copy, or handed copies out) only deletes this machine's credential. The
-  provider's own `logout` is not run because it revokes the refresh token every
-  other holder uses. With it, the kernel runs the provider logout and ends the
-  session on every machine holding the login.
-- `ProviderLoggedOut.local_only` (default false). True when the kernel removed
-  only this machine's copy so clients can say so.
-
-`StartProviderLogin` has no new field: for a shared Codex login, or a shared
-Claude login using the terminal method, the kernel deletes the stored credential
-locally before the provider's own sign-in starts, so that sign-in has nothing to
-revoke. Claude `setup_token` enrollment does not touch the stored login.
-
-A run or account check that fails because the machine's copy cannot be renewed
-marks the profile `expired` on that machine only and raises the existing
-`provider_login` runtime interaction titled `Sign in again on <machine>` (the
-machine alias, else its id) on every attached client. Hosted focused drill:
-`credfix` CRED-01..CRED-04.
 
 ### Hosted terminal renewal (local protocol 472)
 

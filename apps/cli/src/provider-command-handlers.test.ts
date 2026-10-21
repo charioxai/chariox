@@ -786,33 +786,3 @@ for (const provider of ["claude", "claude-p", "claude-headless"]) {
     assert.deepEqual(errors, [])
   })
 }
-
-test("logout of a shared login says it only removed this machine's copy and --everywhere is explicit", async () => {
-  const notices: string[] = []
-  const requests: Array<{ provider: string; accountProfile: string | undefined; endEverywhere: boolean | undefined }> = []
-  const deps: ProviderCommandHandlerDeps = {
-    currentProviderId: () => "codex",
-    flashFooter: () => {},
-    appendNotice: (message) => notices.push(message),
-    listProviderAccountProfiles: async () => [{
-      owner_user_id: "owner-a", provider: "codex", profile_id: "opaque-copy-id", label: "copy",
-      origin: "chariox_created", is_default: false, auth_state: "authenticated",
-      usage: { profile_id: "opaque-copy-id", provider: "codex", availability: "unavailable", source: "test" },
-    }],
-    logoutProvider: async (provider, accountProfile, endEverywhere) => {
-      requests.push({ provider, accountProfile, endEverywhere })
-      return {
-        kind: "logged_out",
-        result: { provider, account_profile: "opaque-copy-id", ...(endEverywhere ? {} : { local_only: true }) },
-      }
-    },
-  }
-  await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider logout codex copy", value: "logout codex copy" })
-  assert.match(notices[0]!, /logged out on this machine only; other machines keep their copy/)
-  await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider logout codex copy --everywhere", value: "logout codex copy --everywhere" })
-  assert.doesNotMatch(notices[1]!, /this machine only/)
-  assert.deepEqual(requests, [
-    { provider: "codex", accountProfile: "opaque-copy-id", endEverywhere: false },
-    { provider: "codex", accountProfile: "opaque-copy-id", endEverywhere: true },
-  ])
-})
