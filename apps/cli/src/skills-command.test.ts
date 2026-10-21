@@ -1,0 +1,100 @@
+// MP-08 / MP-10 / MP-11: the terminal Skills surface drives the home catalog
+// through the same requests as the web Skills screen.
+import assert from "node:assert/strict"
+import test from "node:test"
+import { createCommandActionHandlers } from "./command-actions.js"
+import { makeAgent, makeCommandDeps, makeSession } from "./command-actions-test-support.js"
+import type { NativeSkillEntry, SkillProjection, SkillsV2Request, SkillsV2Response } from "@chariox/kernel-client/kernel-types-skills-v2"
+
+const projection = (id: string, name: string, overrides: Partial<SkillProjection> = {}): SkillProjection => ({
+  skill: {
+    id, name, scope: { kind: "chariox" }, package_id: null, description: `${name} instructions`, short_description: null,
+    default_state: "auto", state_override: null, digest: `${id}`.padEnd(64, "0"), declared_version: null, files: [], compatibility_notes: [],
+    provenance: { kind: "folder", source_machine: null, locator: `/skills/${name}`, source_revision: null, provider: null, account_profile: null, installed_at_ms: 0, updated_at_ms: 0 },
+  },
+  effective_state: "auto", project_override: null, delivery: { kind: "chariox" }, also_in_provider: null, ...overrides,
+})
+
+const native: NativeSkillEntry = {
+  selection: { source: "native", entry_id: "claude:lint", name: "lint", provider: "claude", account_profile: "default", execution_id: "run-1", inventory_revision: "inv-1" },
+  description: "Lint with house rules", digest: null, exposure: "confirmed", default_state: "auto", complete_manifest: true, supports_load_ack: true, discovery_error: null,
+}
+
+function harness() {
+  const requests: SkillsV2Request[] = []
+  const notices: string[] = []
+  const footers: string[] = []
+  const catalog: SkillsV2Response = {
+    kind: "catalog", revision: 7, packages: [], native: [native], metadata_budget_percent: 1,
+    skills: [
+      projection("skill-review", "review", { also_in_provider: "claude" }),
+      projection("skill-deploy", "deploy", { delivery: { kind: "conflict", provider: "claude", entry_id: "claude:deploy", native_digest: "f".repeat(64) } }),
+    ],
+  }
+  const session = makeSession({ project_id: "project-1", focused_agent_id: "agent-1", agents: [makeAgent({ id: "agent-1", provider: "claude" })] })
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    sessionState: () => session,
+    focusedAgentId: () => "agent-1",
+    appendNotice: (message: string) => notices.push(message),
+    flashFooter: (message: string) => footers.push(message),
+    sendSkillsRequest: async ({ SkillsV2: request }: { SkillsV2: SkillsV2Request }): Promise<SkillsV2Response> => {
+      requests.push(request)
+      switch (request.action) {
+        case "catalog": return catalog
+        case "loads": return { kind: "loads", records: [] }
+        case "preview": return { kind: "preview", expected_revision: 7, affected: [], collisions: [], review_receipt: { id: "receipt-1", expires_at_ms: 0, mutation_sha256: "x", sources: [] } }
+        case "mutate": return { kind: "published", revision: 8, changed_skill_ids: ["skill-review"], removed_skill_ids: [] }
+        default: throw new Error(`unexpected ${request.action}`)
+      }
+    },
+  }))
+  const run = (raw: string) => handlers.handleSkillCommand({ kind: "skill", raw, args: raw.replace(/^\/skills?\s*/, "").split(/\s+/).filter(Boolean) })
+  return { requests, notices, footers, run }
+}
+
+test("/skills list shows the home catalog with states, also-in and conflict rows", async () => {
+  const { requests, notices, run } = harness()
+  await run("/skills list")
+  assert.deepEqual(requests[0], { action: "catalog", project_id: "project-1", agent_id: "agent-1" })
+  const text = notices.join("\n")
+  assert.match(text, /\$review {2}Auto · Inherited · also in Claude/)
+  assert.match(text, /\$deploy {2}Auto · Inherited · conflicting bytes in Claude; Chariox wins \$deploy/)
+})
+
+test("/skills from lists the focused provider's skills read-only", async () => {
+  const { notices, run } = harness()
+  await run("/skills from")
+  assert.match(notices.join("\n"), /\$lint {2}From Claude · confirmed · Auto/)
+})
+
+test("/skills state previews a Project override and confirm publishes the reviewed batch", async () => {
+  const { requests, notices, run } = harness()
+  await run("/skills state review off --project")
+  const preview = requests.find(request => request.action === "preview")
+  assert.deepEqual(preview, { action: "preview", mutation: { scope: { kind: "project", project_id: "project-1" }, expected_revision: 7,
+    actions: [{ action: "set_state", skill_id: "skill-review", state: "off" }] } })
+  await run("/skills confirm")
+  const mutate = requests.find(request => request.action === "mutate")
+  assert.deepEqual(mutate, { action: "mutate", review_receipt_id: "receipt-1", mutation: preview!.action === "preview" ? preview!.mutation : null })
+  assert.match(notices.at(-1)!, /Published Skills revision 8/)
+})
+
+test("/skills state reset clears the Chariox override; a second confirm has nothing to publish", async () => {
+  const { requests, footers, run } = harness()
+  await run("/skills state $deploy reset")
+  const preview = requests.find(request => request.action === "preview")
+  assert.deepEqual(preview?.action === "preview" && preview.mutation.actions, [{ action: "set_state", skill_id: "skill-deploy", state: null }])
+  assert.deepEqual(preview?.action === "preview" && preview.mutation.scope, { kind: "chariox" })
+  await run("/skills cancel")
+  await run("/skills confirm")
+  assert.equal(requests.filter(request => request.action === "mutate").length, 0)
+  assert.match(footers.at(-1)!, /nothing to confirm/)
+})
+
+test("/skills import reviews installing the focused provider's skill", async () => {
+  const { requests, run } = harness()
+  await run("/skills import lint --rename house-lint")
+  const preview = requests.find(request => request.action === "preview")
+  assert.deepEqual(preview?.action === "preview" && preview.mutation.actions, [{ action: "install", source: { kind: "native", selection: native.selection },
+    collision: { action: "rename", name: "house-lint" }, package_id: null }])
+})

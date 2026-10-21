@@ -8,6 +8,7 @@ import type {
   SessionConfigState,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
+import { createSkillsCommand, type SkillsCommandDeps } from "./skills-command.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import {
   ROOT_WORKFLOW_SHORTCUTS,
@@ -49,7 +50,6 @@ import {
   handleCredentialSlashCommand,
   handleExtensionSlashCommand,
   handleScriptSlashCommand,
-  handleSkillSlashCommand,
   type CapabilityCommandHandlerDeps,
 } from "./capability-command-handlers.js"
 import {
@@ -160,6 +160,7 @@ type CommandActionDeps =
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
   sendRoomEnvironmentRequest?: RoomCommandHandlerDeps["send"]
+  sendSkillsRequest?: SkillsCommandDeps["send"]
   reconnectRoomEventStream?: RoomCommandHandlerDeps["reconnectEventStream"]
   openRoomViewer?: RoomCommandHandlerDeps["openViewer"]
   captureRoomScreenshot?: RoomCommandHandlerDeps["captureScreenshot"]
@@ -368,10 +369,22 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     await handleMcpSlashCommand(deps, command)
   }
 
+  const skillsCommand = createSkillsCommand({
+    send: deps.sendSkillsRequest ?? (async () => { throw new Error("this client has no kernel connection for Skills") }),
+    context: () => {
+      if (!deps.isAttached()) return { sessionId: null, projectId: null, agentId: null, provider: null }
+      const session = deps.sessionState()
+      const agentId: string | null = deps.focusedAgentId() ?? null
+      const agent = session.agents.find(candidate => candidate.id === agentId)
+      return { sessionId: session.id, projectId: session.project_id, agentId, provider: agent?.provider ?? null }
+    },
+    appendNotice: deps.appendNotice,
+    flashFooter: deps.flashFooter,
+  })
   const handleSkillCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "skill" }>,
   ): Promise<void> => {
-    await handleSkillSlashCommand(deps, command)
+    await skillsCommand(command.args)
   }
 
   const handleEnvCommand = async (

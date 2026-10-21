@@ -257,15 +257,6 @@ export async function handleMcpSlashCommand(
   deps.flashFooter("usage: /mcp list | /mcp show <name> | /mcp install ... | /mcp update ... | /mcp uninstall <name> | /mcp import <codex|opencode> [name] | /mcp grant <agent-ref> <name> | /mcp revoke <agent-ref> <name> | /mcp grants <agent-ref>", "error")
 }
 
-// MP-08 / MP-10 / MP-11: the Skills v2 client owns management. The old
-// registry/grant transport has been deleted and must never be a fallback.
-export async function handleSkillSlashCommand(
-  deps: CapabilityCommandHandlerDeps,
-  _command: Extract<ParsedSlashCommand, { kind: "skill" }>,
-): Promise<void> {
-  deps.flashFooter("Skills v2 runtime is unavailable in this kernel build", "error")
-}
-
 export async function handleEnvironmentSlashCommand(
   deps: CapabilityCommandHandlerDeps,
   command: Extract<ParsedSlashCommand, { kind: "env" }>,
