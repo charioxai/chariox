@@ -702,25 +702,28 @@ impl KernelRuntimeState {
         let dispatch_for_write = dispatch.clone();
         let write_task = tokio::task::spawn_blocking(move || {
             if !owned_for_write.ensure_prompt_dispatch_matches_active_prompt(&dispatch_for_write)? {
-                return Err(DaemonError::LocalTransport {
-                    operation: "dispatch prompt",
-                    message: "prompt changed before PTY dispatch".into(),
-                });
+                return Ok(PromptDispatchAcceptance::Dropped);
             }
             owned_for_write.bind_agent_event_submission(&dispatch_for_write)?;
-            writer.write_input(&provider_pty_input)
+            writer
+                .write_input(&provider_pty_input)
+                .map(|()| PromptDispatchAcceptance::Submitted)
         });
-        match tokio::time::timeout(std::time::Duration::from_secs(15), write_task).await {
-            Ok(result) => result.map_err(|error| DaemonError::LocalTransport {
-                operation: "write provider PTY input",
-                message: error.to_string(),
-            })??,
-            Err(_) => {
-                return Err(DaemonError::PtyWrite {
-                    provider_run_id,
-                    message: "timed out after 15 seconds of provider backpressure".to_string(),
-                });
-            }
+        let acceptance =
+            match tokio::time::timeout(std::time::Duration::from_secs(15), write_task).await {
+                Ok(result) => result.map_err(|error| DaemonError::LocalTransport {
+                    operation: "write provider PTY input",
+                    message: error.to_string(),
+                })??,
+                Err(_) => {
+                    return Err(DaemonError::PtyWrite {
+                        provider_run_id,
+                        message: "timed out after 15 seconds of provider backpressure".to_string(),
+                    });
+                }
+            };
+        if acceptance == PromptDispatchAcceptance::Dropped {
+            return Ok(acceptance);
         }
         owned.consume_delivered_turn_context(
             &dispatch.session_id,
@@ -2806,8 +2809,37 @@ pub(in crate::runtime::state) mod tests {
         String,
         String,
     ) {
+        runtime_with_active_prompt_and_prior_prompts(prior.as_slice()).await
+    }
+
+    async fn runtime_with_active_prompt_and_prior_prompts(
+        prior: &[&str],
+    ) -> (
+        crate::test_support::TestWorktree,
+        KernelRuntimeState,
+        String,
+        String,
+        String,
+        String,
+        String,
+    ) {
+        runtime_with_active_prompt_and_config(DaemonConfig::for_tests(), prior).await
+    }
+
+    async fn runtime_with_active_prompt_and_config(
+        config: DaemonConfig,
+        prior: &[&str],
+    ) -> (
+        crate::test_support::TestWorktree,
+        KernelRuntimeState,
+        String,
+        String,
+        String,
+        String,
+        String,
+    ) {
         let worktree = crate::test_support::TestWorktree::new("local-prompt-active");
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
         let (session, agent) = KernelSessionService::new(&mut app)
             .create_session(worktree.session_request())
             .expect("session should create");
@@ -2838,21 +2870,30 @@ pub(in crate::runtime::state) mod tests {
             "active prompt",
             PromptStatus::Queued,
         );
-        if let Some(prior) = prior {
+        let history_timestamp_ms = crate::session::unix_epoch_ms();
+        for (index, prior) in prior.iter().enumerate() {
+            let prior_id = if index == 0 {
+                "prior".into()
+            } else {
+                format!("prior-{index}")
+            };
+            let mut entry = crate::history::SessionHistoryEntry::user_prompt(
+                session.id(),
+                &prior_id,
+                agent.id(),
+                *prior,
+            );
+            // Fast fixture writes can share a clock tick. Their identity must
+            // come from the history allocator, as it does for real transcripts.
+            entry.timestamp_ms = history_timestamp_ms;
             app.operational_history_store()
-                .append(&crate::history::HistoryEvent::transcript(
-                    100,
-                    &crate::history::SessionHistoryEntry::user_prompt(
-                        session.id(),
-                        "prior",
-                        agent.id(),
-                        prior,
-                    ),
+                .append_transcript(
+                    &entry,
                     crate::history::HistoryEventTurnContext {
-                        prompt_id: Some("prior".into()),
+                        prompt_id: Some(prior_id),
                         ..Default::default()
                     },
-                ))
+                )
                 .unwrap();
         }
         let PromptSubmissionOutcome::Started { prompt } = app
@@ -3351,6 +3392,83 @@ pub(in crate::runtime::state) mod tests {
             .owned
             .prompt_dispatch_matches_active_prompt(&steering_dispatch)
             .expect("dispatch match should evaluate"));
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_pty_write_drops_the_pending_dispatch() {
+        let (_worktree, mut runtime, session_id, agent_id, attachment_id, prompt_id, run_id) =
+            runtime_with_active_prompt().await;
+        let dispatch = dispatch(
+            &session_id,
+            &agent_id,
+            &attachment_id,
+            &run_id,
+            &prompt_id,
+            "active prompt",
+            None,
+            false,
+        );
+        let writer_requested = Arc::new(tokio::sync::Notify::new());
+        runtime.observe_app_lock_wait_for_test(Arc::clone(&writer_requested));
+        let app = Arc::clone(&runtime.app);
+        let app_guard = app.lock().await;
+        let task_runtime = runtime.clone();
+        let pending = tokio::spawn(async move {
+            task_runtime
+                .enqueue_prompt_dispatch_after_liveness_with_acceptance(
+                    &dispatch,
+                    &task_runtime.owned,
+                )
+                .await
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            writer_requested.notified(),
+        )
+        .await
+        .expect("dispatch should reach its PTY writer lookup");
+        // Hold the writer lookup after admission so cancellation wins before
+        // the blocking write rechecks ownership, without relying on scheduling.
+        let cancellation = runtime
+            .owned
+            .cancel_local_prompt(&session_id, &agent_id, &attachment_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            cancellation.cancellation.prompt.status(),
+            PromptStatus::Cancelling
+        );
+        drop(app_guard);
+        let result = pending.await.unwrap();
+        assert!(
+            matches!(result, Ok(PromptDispatchAcceptance::Dropped)),
+            "cancelled dispatch should be dropped: {result:?}"
+        );
+        let writer = runtime
+            .with_app_side_effect(|app| app.provider_pty_input_writer_for_runtime(&run_id))
+            .await
+            .unwrap();
+        writer.write_input(b"cancelled-dispatch-barrier\n").unwrap();
+        // Audit input records admission intent. Wait for a later wire marker
+        // instead so the PTY proves the cancelled prompt was never written.
+        let mut output = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let chunks = runtime
+                    .with_app_side_effect(|app| app.pty_mut().drain_output(&run_id))
+                    .await
+                    .unwrap();
+                output.extend(chunks.into_iter().flat_map(|chunk| chunk.bytes));
+                if String::from_utf8_lossy(&output).contains("cancelled-dispatch-barrier") {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the live PTY should acknowledge the barrier");
+        assert!(!String::from_utf8_lossy(&output).contains("active prompt"));
+        assert!(failed_requests(&runtime, &agent_id).is_empty());
     }
 
     #[tokio::test]

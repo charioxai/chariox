@@ -293,6 +293,8 @@ fn failed_actual_health_never_acknowledges_ready_or_runs_postcommit_startup() {
             .phase
             == InstallPhase::Failed
     });
+    // Failure is persisted before the retiring owner's cleanup finishes.
+    wait(|| all_reaped(&observations));
     assert!(all_reaped(&observations));
     let observations = observations.lock().unwrap();
     assert_eq!(observations.len(), 1);

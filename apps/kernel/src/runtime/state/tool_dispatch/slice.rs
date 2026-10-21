@@ -842,6 +842,13 @@ async fn run_slice_screen_command_inner_with_output_policy(
     let tool_path = std::env::var("CHARIOX_SLICE_SCREEN_TOOL")
         .unwrap_or_else(|_| "/opt/chariox-slice/slice-screen.sh".to_string());
     let sensitive_output = preserve_stdout || stdin.is_some();
+    // Status only reports metadata and never reads a capture policy. Its fast
+    // exit can close the pipe before the parent writes, despite a valid result.
+    let stdin = if args.first().is_some_and(|arg| arg == "status") {
+        None
+    } else {
+        stdin
+    };
     tokio::task::spawn_blocking(move || {
         let _capture_guard = capture_guard;
         if let Some(cancellation) = cancellation.as_ref() {
@@ -1838,6 +1845,36 @@ mod tests {
             error.to_string(),
             "local transport `run_slice_screen_command` failed: slice screen stdout is not valid UTF-8"
         );
+    }
+
+    #[tokio::test]
+    async fn slice_screen_status_does_not_write_unused_capture_policy() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let worktree = crate::test_support::TestWorktree::new("slice-status-pipe");
+        let script = worktree.path().join("slice-screen-status.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'available=true\\nscreen=1024x600\\n'\n",
+        )
+        .expect("status helper should write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+                .expect("status helper should be executable");
+        }
+        std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", &script);
+        let result = run_slice_screen_command_with_stdin(
+            vec!["status".to_string()],
+            zeroize::Zeroizing::new("x".repeat(256 * 1024)),
+        )
+        .await;
+        std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
+        let output = result.expect("metadata-only status must succeed without reading stdin");
+        assert_eq!(output.status_code, Some(0));
+        assert!(output.stdout.contains("available=true"));
+        assert!(output.sensitive_output, "retain the caller's output policy");
     }
 
     #[tokio::test]

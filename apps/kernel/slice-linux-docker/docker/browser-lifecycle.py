@@ -84,6 +84,12 @@ def profile_processes(profile, retired_supervisor=None):
             if retired_supervisor and pid == retired_supervisor["pid"] and same_process(retired_supervisor):
                 continue
             if f"--user-data-dir={profile}".encode() in path.read_bytes().split(b"\0"):
+                # ECHILD precedes retirement. This owner's later cleanup fork
+                # inherits its browser argv until exec, but is not a browser.
+                if retired_supervisor:
+                    fields = Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()
+                    if int(fields[1]) == retired_supervisor["pid"] and same_process(retired_supervisor):
+                        continue
                 result.append(pid)
         except (FileNotFoundError, ProcessLookupError):
             continue

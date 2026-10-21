@@ -341,6 +341,7 @@ async fn remote_dispatch_callers_surface_locked_vault_before_transport() {
 #[tokio::test]
 async fn remote_dispatch_callers_admit_vaulted_launch_and_reuse_active_run_without_token() {
     crate::test_support::isolated_env_test!();
+    let _claude = crate::test_support::TestClaudeExecutable::new();
     let _env = crate::env_lock::lock();
     for caller in [Caller::Compatibility, Caller::Queued] {
         for active_run in [false, true] {

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { createECDH } from "node:crypto"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { LocalIpcClient, RelayClientIdentity } from "./ipc.js"
 import { createMutableLocalIpcClient } from "./mutable-local-ipc-client.js"
 import { createCliCommandActionComposition } from "./cli-command-action-composition.js"
@@ -9,7 +12,16 @@ import { readRoomViewerAvailability } from "./room-viewer-availability.js"
 
 for (const { viewer, initialRelay } of (["room", "slice"] as const)
   .flatMap((viewer) => [true, false].map((initialRelay) => ({ viewer, initialRelay })))) {
-  test(`${viewer} viewer resolves current identity after pivots from ${initialRelay ? "relay" : "local"}`, async () => {
+  test(`${viewer} viewer resolves current identity after pivots from ${initialRelay ? "relay" : "local"}`, async t => {
+    // Unpaired clients must not inherit the developer's persisted paired identity.
+    const home = mkdtempSync(join(tmpdir(), "chariox-viewer-identity-"))
+    const previousHome = process.env.CHARIOX_HOME
+    process.env.CHARIOX_HOME = home
+    t.after(() => {
+      if (previousHome === undefined) delete process.env.CHARIOX_HOME
+      else process.env.CHARIOX_HOME = previousHome
+      rmSync(home, { recursive: true, force: true })
+    })
     const keys = createECDH("prime256v1")
     keys.generateKeys()
     const identity = new RelayClientIdentity(keys.getPrivateKey())

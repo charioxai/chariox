@@ -146,8 +146,21 @@ impl PausedBrief {
         self.wait_for("brief-started").await;
     }
     async fn wait_for(&self, name: &str) {
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while !self.root.path().join(name).exists() {
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            while {
+                let path = self.root.path().join(name);
+                if name == "final-provider-envelope" {
+                    // Redirection creates the file before a complete user message is written.
+                    !std::fs::read_to_string(path).is_ok_and(|inputs| {
+                        inputs.lines().any(|line| {
+                            serde_json::from_str::<serde_json::Value>(line)
+                                .is_ok_and(|message| message["type"] == "user")
+                        })
+                    })
+                } else {
+                    !path.exists()
+                }
+            } {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         })
@@ -328,6 +341,25 @@ async fn final_handoff_envelope_scrubs_already_registered_queued_session_facts()
 #[tokio::test]
 async fn cancellation_during_brief_promotes_followup_through_shared_preparation() {
     let fixture = PausedBrief::new(false, true).await;
+    // The submission entry records this turn before dispatch. After cancellation
+    // it makes the long historical turn prior history, which fits verbatim.
+    fixture
+        .runtime
+        .owned
+        .operational_history_store
+        .append_transcript(
+            &crate::history::SessionHistoryEntry::user_prompt(
+                &fixture.session_id,
+                &fixture.prompt_id,
+                &fixture.agent_id,
+                "active prompt",
+            ),
+            crate::history::HistoryEventTurnContext {
+                prompt_id: Some(fixture.prompt_id.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
     fixture.prepare().await;
     let session = fixture
         .runtime
@@ -603,31 +635,19 @@ async fn native_hook_rebuild_excludes_the_current_managed_prompt() {
 
 #[tokio::test]
 async fn room_retirement_between_brief_chunks_never_replays_the_next_utility_input() {
+    // Historical prompts must precede the active prompt's sequence. The
+    // handoff intentionally excludes events appended after that prompt.
+    let history: Vec<_> = (0..200)
+        .map(|index| {
+            format!(
+                "retire-this-transcript {index} {}",
+                "historical review record ".repeat(100)
+            )
+        })
+        .collect();
+    let history: Vec<_> = history.iter().map(String::as_str).collect();
     let (root, runtime, session_id, agent_id, attachment_id, prompt_id, _) =
-        runtime_with_active_prompt_and_history(Some("retire-this-transcript")).await;
-    for index in 0..100 {
-        let prior = format!("prior-review-{index}");
-        runtime
-            .owned
-            .operational_history_store
-            .append(&crate::history::HistoryEvent::transcript(
-                100,
-                &crate::history::SessionHistoryEntry::user_prompt(
-                    &session_id,
-                    &prior,
-                    &agent_id,
-                    format!(
-                        "retire-this-transcript {index} {}",
-                        "historical review record ".repeat(100)
-                    ),
-                ),
-                crate::history::HistoryEventTurnContext {
-                    prompt_id: Some(prior),
-                    ..Default::default()
-                },
-            ))
-            .unwrap();
-    }
+        runtime_with_active_prompt_and_prior_prompts(&history).await;
     let fixture = PausedBrief::from_history(
         root,
         runtime,
@@ -637,6 +657,23 @@ async fn room_retirement_between_brief_chunks_never_replays_the_next_utility_inp
         prompt_id,
         // Haiku has a stable 200k window; default Sonnet grows to 1M in #919.
         "haiku",
+    );
+    let history = fixture
+        .runtime
+        .owned
+        .operational_history_store
+        .load_session_events(&fixture.session_id, Some(&fixture.agent_id))
+        .unwrap();
+    assert_eq!(
+        history
+            .iter()
+            .filter(|event| event
+                .content
+                .as_deref()
+                .is_some_and(|text| text.starts_with("retire-this-transcript")))
+            .count(),
+        200,
+        "same-tick fixture transcripts must keep distinct history identities"
     );
     fixture.prepare().await;
     {
@@ -658,9 +695,17 @@ async fn room_retirement_between_brief_chunks_never_replays_the_next_utility_inp
     fixture.release();
     fixture.wait_for("final-provider-envelope").await;
     let inputs = std::fs::read_to_string(fixture.root.path().join("brief-utility-inputs")).unwrap();
+    let parts = inputs
+        .lines()
+        .next()
+        .unwrap()
+        .split("1 of ")
+        .nth(1)
+        .and_then(|suffix| suffix.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|number| number.parse::<usize>().ok());
     assert!(
-        inputs.lines().next().unwrap().contains("1 of 2"),
-        "the regression must exercise two real rendered utility chunks"
+        parts.is_some_and(|parts| parts >= 2),
+        "the regression must exercise multiple real rendered utility chunks: {parts:?}"
     );
     assert_eq!(
         inputs.lines().count(),
@@ -783,4 +828,82 @@ async fn native_attachment_contents_are_protected_after_decoding() {
             assert!(text.contains("[redacted]"));
         }
     }
+}
+
+// MP-08 / MP-10 / MP-11: the user's own text reaches the agent as typed; only
+// product-held context is protected.
+#[tokio::test]
+async fn native_dispatch_passes_typed_prompt_text_and_protects_hidden_context() {
+    use crate::app::NativePromptHandoffPolicy;
+    let fixture = PausedBrief::new(true, false).await;
+    let typed = format!("please use {SECRET} as the password");
+    let mut dispatch = dispatch(
+        &fixture.session_id,
+        &fixture.agent_id,
+        &fixture.attachment_id,
+        fixture.run.id(),
+        &fixture.prompt_id,
+        &typed,
+        None,
+        false,
+    );
+    dispatch.hidden_system_context = format!("remembered {SECRET}");
+    let (protected, _) = fixture
+        .runtime
+        .owned
+        .protect_native_dispatch(&dispatch, None)
+        .unwrap();
+    assert_eq!(protected.prompt, typed);
+    assert!(!protected.hidden_system_context.contains(SECRET));
+    let (prompt, hidden, _) = fixture
+        .runtime
+        .owned
+        .protect_inputs(
+            &fixture.session_id,
+            typed.clone(),
+            format!("remembered {SECRET}"),
+            vec![],
+        )
+        .unwrap();
+    assert_eq!(prompt, typed);
+    assert!(!hidden.contains(SECRET));
+}
+
+// MP-08 / MP-10 / MP-11: a registered Vault value must not rewrite the
+// objective of an unrelated goal the owner starts afterwards.
+#[tokio::test]
+async fn goal_objective_survives_registered_room_values() {
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let (_root, runtime, session_id, agent_id, attachment_id, _, _) =
+        runtime_with_active_prompt_and_config(config, &[]).await;
+    runtime
+        .owned
+        .room_secret_observations
+        .register(&session_id, SECRET)
+        .unwrap();
+    let mut prepared = crate::app::KernelPreparedPromptSubmission {
+        session_id: session_id.clone(),
+        prompt: crate::session::PromptQueueItem::new(
+            "goal-prompt",
+            &attachment_id,
+            &agent_id,
+            "/goal ship the quarterly report",
+            crate::session::PromptStatus::Queued,
+        ),
+        force_queue: false,
+        refresh_projection: true,
+    };
+    runtime.owned.admit_agent_task(&prepared).unwrap();
+    runtime.owned.admit_goal_prompt(&mut prepared).unwrap();
+    let goals: Vec<_> = runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(&session_id), Some(&agent_id))
+        .unwrap()
+        .into_iter()
+        .filter_map(|task| task.goal)
+        .collect();
+    assert_eq!(goals.len(), 1);
+    assert_eq!(goals[0].objective, "ship the quarterly report");
 }

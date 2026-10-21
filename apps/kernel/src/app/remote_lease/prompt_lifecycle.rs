@@ -663,10 +663,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )))
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Preserve the existing prepare_leased_prompt_submission operation signature and explicit context arguments"
-    )]
     /// The worker refuses a leased prompt whose account cannot start work here
     /// definitively, before any launch or receipt fence, so the home fails the
     /// prompt with the reason instead of reconciling an uncertain delivery.
@@ -698,6 +694,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing prepare_leased_prompt_submission operation signature and explicit context arguments"
+    )]
     pub(crate) fn prepare_leased_prompt_submission(
         &mut self,
         leased_agent_id: &str,

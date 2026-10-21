@@ -902,8 +902,12 @@ export class Mirror2 {
     if (stream.tab_id !== tab.tab_id || stream.document_id !== tab.document_id) throw new Error('MP-11: stale mirror input document');
     if (stream.policy !== this.host.protection) throw new Error('MP-11: stale mirror protection policy');
     // Epochs are sequences of this document's current snapshot, never a wall clock.
-    if (stream.fallback || !Number.isSafeInteger(input.sequence) || input.sequence < stream.resetAt || input.sequence > stream.issued) throw new MirrorInputEpochRefusal();
     const action = input.action, generation = this.host.generation;
+    // Keys already in flight follow native focus on this same document. A
+    // reconstructed observation does not cancel them or let Enter overtake a
+    // refused letter's retry. Addressed input still needs its observed base.
+    const nativeFocus = action?.kind === 'key' || action?.kind === 'text' && action.node_id === undefined;
+    if (stream.fallback || !Number.isSafeInteger(input.sequence) || input.sequence < 1 || input.sequence > stream.issued || !nativeFocus && input.sequence < stream.resetAt) throw new MirrorInputEpochRefusal();
     const validId = id => typeof id === 'string' && /^n[1-9][0-9]{0,15}$/.test(id);
     if (!action || typeof action.kind !== 'string') throw new Error('MP-11: invalid mirror input');
     if (['click', 'focus', 'scroll', 'blur', 'set'].includes(action.kind) && !validId(action.node_id) || action.kind === 'selection' && (!validId(action.anchor_id) || !validId(action.focus_id))) throw new Error('MP-11: invalid mirror input');
@@ -995,25 +999,18 @@ export class Mirror2 {
       } };
     }
     if (action.kind === 'selection') { const entry = frameOf(action.anchor_id); return { perform: async () => { if (entry) await inFrame(entry, `${m}.select(${JSON.stringify({ ...action, anchor_id: localId(action.anchor_id), focus_id: localId(action.focus_id) })})`); else await call(`${m}.select(${JSON.stringify(action)})`); } }; }
-    // Live focus inside a mirrored cross-origin frame is validated in that frame.
-    const activeTarget = async editable => {
-      // MP-08/MP-10/MP-11: read the leaf and its foreign-frame binding in one
-      // task. Keep the same live ancestry/epoch proof before physical dispatch.
-      const [owner, ids] = await call(`(()=>{const owner=${m}.activeForeign();return [owner,owner?null:${m}.activeTarget(${editable})]})()`);
-      const entry = owner && stream.frames.get(owner); if (owner && !entry) throw new Error('MP-11: unavailable native text focus');
-      if (!entry) return seen(ids);
-      seen((await inFrame(entry, `${m}.activeTarget(${editable})`)).map(id => rebaseId(id, entry.slot))); seen(await call(`${m}.ancestry(${JSON.stringify(owner)})`));
-    };
+    // MP-08/MP-10/MP-11: user input follows Chromium's live focus. A canvas
+    // editor may focus a new field before its mirror packet reaches the viewer.
+    // Observation protection stays on model-bound output; input is not a leak.
     if (action.kind === 'key') {
-      let checked = false;
-      const guard = async () => { assertEpoch(); assertNotCancelled(signal); if (checked) return; await activeTarget(false); checked = true; };
+      const guard = async () => { assertEpoch(); assertNotCancelled(signal); };
       // Protocol 530 (review #1016 P2): undo/redo keep this mirror admission (observed frames, live
       // focus, epoch) as the editor's own Linux Chromium chords: Control=2, Shift=8.
       const history = HISTORY_CHORDS.get(action.key);
       return { input: history ? { kind: 'key', key: 'z', modifiers: history } : { kind: 'key', key: action.key }, guard };
     }
     if (action.kind === 'text') {
-      const guard = async () => { assertEpoch(); assertNotCancelled(signal); await activeTarget(true); };
+      const guard = async () => { assertEpoch(); assertNotCancelled(signal); };
       const entry = frameOf(action.node_id);
       return { guard, perform: async send => {
         if (action.node_id) { if (entry) await inFrame(entry, `${m}.focus(${JSON.stringify({ node_id: localId(action.node_id) })})`); else await call(`${m}.focus(${JSON.stringify({ node_id: action.node_id })})`); }

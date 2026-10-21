@@ -1306,3 +1306,21 @@ async function withController(run, clientOptions = {}) {
     }
   }
 }
+
+// MP-08/MP-10/MP-11: the Room's empty startup tab must give the viewer a usable first surface.
+test('an empty Room shows its ready surface instead of a white fullscreen page', async () => {
+  await withController(async ({ page, request }) => {
+    assert.equal(page.url(), 'about:blank');
+    const reply = await request('browser.reconcile', { viewport, browser_bar_visible: false });
+    assert.equal(reply.ok, true);
+    assert.equal(await page.locator('h1').textContent(), 'Room ready');
+    assert.equal(await page.title(), 'Room');
+  });
+});
+test('Room startup preserves content already placed in an about blank tab', async () => {
+  await withController(async ({ page, request }) => {
+    await page.setContent('<p>My draft</p>');
+    await request('browser.reconcile', { viewport, browser_bar_visible: false });
+    assert.equal(await page.locator('body').textContent(), 'My draft');
+  });
+});

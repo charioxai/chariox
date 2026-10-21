@@ -616,6 +616,7 @@ impl KernelRuntimeState {
                         .as_deref()
                         .filter(|_| profile_receipt_is_new)
                     {
+                        // A permanent profile refusal needs a durable receipt.
                         runtime
                             .begin_leased_prompt_receipt(&replay_leased_agent_id, home_prompt_id)?;
                         runtime.update_leased_prompt_receipt(
