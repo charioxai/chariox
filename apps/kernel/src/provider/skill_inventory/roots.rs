@@ -31,9 +31,7 @@ pub fn filesystem_skill_candidates(
     let mut roots = Vec::new();
     let home = env_path("HOME");
     if binding.provider == "claude" {
-        if let Some(config) =
-            env_path("CLAUDE_CONFIG_DIR").or_else(|| home.as_ref().map(|h| h.join(".claude")))
-        {
+        if let Some(config) = claude_config_dir(binding) {
             roots.push(config.join("skills"));
         }
         roots.extend(
@@ -119,12 +117,54 @@ pub fn filesystem_skill_candidates(
     if binding.provider == "claude" {
         let mut names = BTreeSet::new();
         candidates.retain(|candidate| names.insert(candidate.name.clone()));
+        let denied = claude_denied_skills(binding, worktree_root);
         for candidate in &mut candidates {
-            candidate.exposure = NativeSkillExposure::Confirmed;
+            candidate.exposure = if denied.contains(&candidate.name) {
+                NativeSkillExposure::Disabled
+            } else {
+                NativeSkillExposure::Confirmed
+            };
             candidate.discovery_error = None;
         }
     }
     Ok(candidates)
+}
+fn claude_config_dir(binding: &SkillInventoryBinding) -> Option<PathBuf> {
+    let env_path = |key: &str| binding.environment.get(key).map(PathBuf::from);
+    env_path("CLAUDE_CONFIG_DIR").or_else(|| env_path("HOME").map(|home| home.join(".claude")))
+}
+
+/// Skills the account and project Claude settings deny with a `Skill(name)` or
+/// `Skill(name *)` permission rule. Claude refuses them to its model, so the native
+/// copy is not exposed. Nothing else in those files is read or kept.
+fn claude_denied_skills(binding: &SkillInventoryBinding, worktree_root: &Path) -> BTreeSet<String> {
+    let mut files: Vec<PathBuf> = claude_config_dir(binding)
+        .map(|config| config.join("settings.json"))
+        .into_iter()
+        .collect();
+    for ancestor in binding
+        .cwd
+        .ancestors()
+        .take_while(|p| p.starts_with(worktree_root))
+    {
+        files.push(ancestor.join(".claude/settings.json"));
+        files.push(ancestor.join(".claude/settings.local.json"));
+    }
+    files
+        .iter()
+        .filter_map(|file| std::fs::read(file).ok().filter(|raw| raw.len() <= 1 << 20))
+        .filter_map(|raw| serde_json::from_slice::<serde_json::Value>(&raw).ok())
+        .flat_map(|settings| {
+            settings["permissions"]["deny"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|rule| rule.as_str())
+                .filter_map(|rule| rule.strip_prefix("Skill(")?.strip_suffix(')'))
+                .map(|name| name.strip_suffix(" *").unwrap_or(name).trim().to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 fn is_true(value: Option<&String>) -> bool {
     value.is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))

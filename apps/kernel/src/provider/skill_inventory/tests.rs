@@ -184,6 +184,49 @@ fn claude_scoped_profile_additional_and_plugins_confirm_exposure() {
         .all(|state| **state == NativeSkillExposure::Confirmed));
 }
 #[test]
+fn claude_settings_permission_deny_disables_the_native_skill() {
+    let temp = Scratch::new();
+    let mut binding = temp.binding("claude");
+    binding.environment.insert(
+        "CLAUDE_CONFIG_DIR".into(),
+        temp.0.join("selected-profile").display().to_string(),
+    );
+    temp.skill("selected-profile/skills", "account-denied");
+    temp.skill(".claude/skills", "project-denied");
+    temp.skill(".claude/skills", "local-denied");
+    temp.skill(".claude/skills", "kept");
+    fs::write(
+        temp.0.join("selected-profile/settings.json"),
+        r#"{"permissions":{"deny":["Bash(rm *)","Skill(account-denied)"]},"env":{"SECRET":"x"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.0.join(".claude/settings.json"),
+        r#"{"permissions":{"deny":["Skill(project-denied *)"]}}"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.0.join(".claude/settings.local.json"),
+        r#"{"permissions":{"deny":["Skill(local-denied)"]}}"#,
+    )
+    .unwrap();
+    let candidates = filesystem_skill_candidates(&binding, &temp.0, &[], &[], &[]).unwrap();
+    let inventory = NativeSkillInventory::from_candidates(&binding, candidates).unwrap();
+    let exposure = |name: &str| {
+        inventory
+            .entries
+            .iter()
+            .find(|entry| matches!(&entry.selection, SkillSelection::Native { name: n, .. } if n == name))
+            .unwrap()
+            .exposure
+            .clone()
+    };
+    assert_eq!(exposure("account-denied"), NativeSkillExposure::Disabled);
+    assert_eq!(exposure("project-denied"), NativeSkillExposure::Disabled);
+    assert_eq!(exposure("local-denied"), NativeSkillExposure::Disabled);
+    assert_eq!(exposure("kept"), NativeSkillExposure::Confirmed);
+}
+#[test]
 fn opencode_scoped_xdg_compatibility_and_configured_roots_are_candidates() {
     let temp = Scratch::new();
     let mut binding = temp.binding("opencode");
