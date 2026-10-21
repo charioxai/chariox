@@ -796,6 +796,63 @@ mod tests {
         )
     }
 
+    /// A session whose agent runs on this kernel, with no lease, and its running
+    /// structured Claude provider run.
+    pub(super) async fn local_claude_fixture(
+        config: crate::DaemonConfig,
+    ) -> (
+        KernelRuntimeState,
+        String,
+        String,
+        String,
+        crate::provider::RuntimeProviderRun,
+    ) {
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("local-home", "local-home"))
+            .unwrap();
+        let attachment = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "local-client",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude-code",
+            "default",
+            "sonnet",
+        )
+        .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "local-claude-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "claude:stream-json".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        let runtime = owned_runtime_state(&Arc::new(Mutex::new(app))).await;
+        (
+            runtime,
+            session.id().into(),
+            agent.id().into(),
+            attachment.id().into(),
+            run,
+        )
+    }
+
     fn mp11_submit(
         runtime: &KernelRuntimeState,
         session: &str,

@@ -58,6 +58,8 @@ pub struct ClaudeRuntimeState {
     pub(super) tool_transcript: super::tool_transcript::ClaudeToolTranscript,
     pub(super) completed_text_blocks: BTreeSet<String>,
     pub(super) exit_reported: bool,
+    /// How much of the prompt hook's event file the kernel has already read.
+    pub(super) hook_events_offset: u64,
 }
 
 impl std::fmt::Debug for ClaudeRuntimeState {

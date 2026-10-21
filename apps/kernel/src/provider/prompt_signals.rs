@@ -22,6 +22,8 @@ pub struct ProviderAssistantCompletion {
 pub struct ProviderPromptSignalBatch {
     /// Official completed instruction-tool responses; not transcript availability.
     pub skill_tool_delivery_acknowledgements: Vec<super::SkillToolDeliveryAcknowledgement>,
+    /// Claude's prompt hook reported its additionalContext delivered to the model.
+    pub hook_context_delivered: bool,
     pub chunks: Vec<ProviderPromptChunk>,
     pub completions: Vec<ProviderAssistantCompletion>,
     pub prompt_completed: bool,

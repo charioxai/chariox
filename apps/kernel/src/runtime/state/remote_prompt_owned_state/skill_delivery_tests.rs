@@ -1122,3 +1122,110 @@ async fn leased_typed_skill_load_is_recorded_only_for_a_current_effective_skill(
         "an Off skill was recorded"
     );
 }
+
+// MP-08 / MP-10: a structured Claude run records a skill as Loaded when its hook
+// reports the context delivered, once, however often the hook reports it.
+#[tokio::test]
+async fn claude_hook_delivery_receipt_records_the_local_run_load_once() {
+    use crate::skill::service::SkillCatalogService;
+    let (runtime, session_id, agent_id, attachment, run) =
+        super::tests::local_claude_fixture(crate::DaemonConfig::for_tests()).await;
+    let config = runtime.owned.config_projection.snapshot();
+    let storage = SkillCatalogStorage::new(
+        config.user_config_path.parent().unwrap(),
+        runtime.owned.durable_state_store.clone(),
+    )
+    .unwrap();
+    let service = SkillCatalogService::new(storage.clone());
+    let mutation = SkillCatalogMutation {
+        scope: SkillScope::Chariox,
+        expected_revision: 0,
+        actions: vec![SkillCatalogAction::Install {
+            source: SkillInstallSource::Content {
+                skill_md: "---\nname: review\ndescription: Review safely\n---\nReview source.\n"
+                    .into(),
+            },
+            collision: SkillCollisionAction::Reject,
+            package_id: None,
+        }],
+    };
+    let prepared = service.prepare(&mutation).unwrap();
+    let catalog = service.publish_authorized(&mutation, &prepared).unwrap();
+    let skill = catalog.catalogs[0].skills[0].clone();
+    let submission = runtime
+        .owned
+        .submit_local_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+            session_id: session_id.clone(),
+            prompt: crate::session::PromptQueueItem::new(
+                "claude-hook-turn",
+                &attachment,
+                &agent_id,
+                "$review inspect source",
+                crate::session::PromptStatus::Queued,
+            ),
+            force_queue: false,
+            refresh_projection: true,
+        })
+        .unwrap()
+        .unwrap();
+    let prompt = match submission.outcome {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        other => panic!("unexpected prompt: {other:?}"),
+    };
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let authority = SkillTurnAuthority {
+        catalog_revision: catalog.revision,
+        project_id: session.project_id().into(),
+        provider_run_id: run.id().into(),
+        context_generation: "generation".into(),
+        explicit_skill_ids: vec![skill.id.clone()],
+        body_budget_tokens: 100,
+        reserved_body_tokens: Default::default(),
+        pending_loads: vec![SkillLoadRecord {
+            skill_id: skill.id.clone(),
+            digest: skill.digest.clone(),
+            session_id: session_id.clone(),
+            agent_id: agent_id.clone(),
+            run_id: run.id().into(),
+            prompt_id: prompt.id().into(),
+            reason: SkillLoadReason::Explicit,
+            context_generation: "generation".into(),
+            delivered_at_ms: 0,
+        }],
+        prompt_delivery_skill_ids: [skill.id.clone()].into(),
+        remote_roots: Default::default(),
+    };
+    runtime
+        .owned
+        .prompt_state_owner
+        .update_skill_authority_durably(
+            &runtime.owned.session_store,
+            &runtime.owned.durable_state_store,
+            &session_id,
+            &agent_id,
+            prompt.id(),
+            |_| Ok(authority),
+        )
+        .unwrap();
+    let bridge = super::super::skills_dispatch::bridge(&runtime);
+    let silent = crate::provider::ProviderPromptSignalBatch::default();
+    bridge.acknowledge_tools(&run, &silent).unwrap();
+    assert!(
+        storage.loads(&session_id).unwrap().is_empty(),
+        "a queued stream-json write is not a delivery"
+    );
+    let delivered = crate::provider::ProviderPromptSignalBatch {
+        hook_context_delivered: true,
+        ..Default::default()
+    };
+    bridge.acknowledge_tools(&run, &delivered).unwrap();
+    bridge.acknowledge_tools(&run, &delivered).unwrap();
+    let loads = storage.loads(&session_id).unwrap();
+    assert_eq!(loads.len(), 1, "{loads:?}");
+    assert_eq!(loads[0].skill_id, skill.id);
+    assert_eq!(loads[0].run_id, "local-claude-run");
+}

@@ -43,6 +43,13 @@ impl SkillDispatchService {
         let Some(agent_id) = run.agent_instance_id() else {
             return Ok(());
         };
+        if batch.hook_context_delivered {
+            // A structured Claude run has one turn in flight: the one whose hook reported.
+            let session = self.sessions.get_session(run.session_id())?;
+            if let Some(prompt) = self.prompts.active_prompt_for_agent(&session, agent_id) {
+                self.record_hook_receipts(run, run.session_id(), agent_id, prompt.id())?;
+            }
+        }
         for ack in &batch.skill_tool_delivery_acknowledgements {
             let session = self.sessions.get_session(run.session_id())?;
             let leased = self

@@ -20,6 +20,7 @@ const CLAUDE_EVENT_DRAIN_MAX_MESSAGES: usize = 256;
 const DEFAULT_CLAUDE_TURN_STALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 mod events;
+mod hook_receipts;
 mod input;
 mod process;
 mod runtime_tool_wait;
@@ -136,6 +137,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             tool_transcript: Default::default(),
             completed_text_blocks: Default::default(),
             exit_reported: false,
+            hook_events_offset: 0,
         },
         selection: ClaudeRunSelection {
             model: Some(run.model().to_string()),
@@ -256,6 +258,12 @@ pub(crate) fn drain_claude_events(
         }
     }
     apply_claude_usage_capture(state, &mut batch);
+    match hook_receipts::take_context_delivered(state) {
+        Ok(delivered) => batch.hook_context_delivered = delivered,
+        Err(error) => batch.notices.push(format!(
+            "Claude hook delivery receipts are unreadable: {error}"
+        )),
+    }
 
     if !batch.prompt_completed && !state.exit_reported {
         match state.child.try_wait() {
@@ -607,6 +615,7 @@ fn write_claude_hidden_context(
 
 #[cfg(test)]
 mod tests {
+    mod hook_receipts;
     mod model_observation;
     #[cfg(target_os = "linux")]
     mod sandbox_lifetime;
@@ -682,6 +691,7 @@ mod tests {
                 tool_transcript: Default::default(),
                 completed_text_blocks: Default::default(),
                 exit_reported: false,
+                hook_events_offset: 0,
             },
             ProviderPromptSignalBatch::default(),
         )

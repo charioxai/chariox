@@ -377,6 +377,7 @@ pub(super) fn execute_output_poll_command(
             })
             .collect();
         return Ok(Some(ProviderPromptSignalBatch {
+            hook_context_delivered: false,
             skill_tool_delivery_acknowledgements,
             chunks: poll
                 .chunks
@@ -461,6 +462,7 @@ pub(super) fn execute_output_poll_command(
         })
         .collect();
     Ok(Some(ProviderPromptSignalBatch {
+        hook_context_delivered: false,
         skill_tool_delivery_acknowledgements,
         chunks: drain
             .chunks
