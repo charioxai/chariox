@@ -3,19 +3,6 @@ use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, AgentTaskExecution};
 
 impl KernelRuntimeOwnedState {
-    /// The original prompt's notes rendered as hidden context, so a continuation's visible text
-    /// stays short.
-    pub(super) fn original_prompt_notes_context(
-        &self,
-        task: &AgentTaskExecution,
-    ) -> Result<Option<String>, DaemonError> {
-        let public = self
-            .operational_history_store
-            .load_session_history_entries(&task.room_id, Some(&task.agent_id))?;
-        Ok(original_prompt(&task.task_id, &public)
-            .and_then(|entry| crate::prompt_notes::hidden_notes_context(&entry.attachments)))
-    }
-
     pub(super) fn goal_continuation_context(
         &self,
         task: &AgentTaskExecution,

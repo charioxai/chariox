@@ -253,6 +253,19 @@ pub(super) fn inject_context_handoff(prompt: &str, handoff: &PendingAgentContext
         .unwrap_or_else(|| prompt.to_string())
 }
 
+/// Like `inject_context_handoff`, but `protect` runs on the handoff alone: it
+/// is the product's replay of other turns, while the prompt is the user's text.
+pub(super) fn inject_protected_context_handoff(
+    prompt: &str,
+    handoff: &PendingAgentContextHandoff,
+    protect: impl FnOnce(String) -> Result<String, DaemonError>,
+) -> Result<String, DaemonError> {
+    Ok(match handoff.render(handoff.budget()) {
+        Some(context) => crate::provider::encode_account_handoff(&protect(context)?, prompt),
+        None => prompt.to_string(),
+    })
+}
+
 impl super::KernelRuntimeOwnedState {
     /// A turn substitute runs in a new provider session, and the configured
     /// profile's own session never sees the substitute's turn. Each side of
@@ -973,7 +986,14 @@ mod tests {
         assert!(first.is_some());
         assert!(consumed.is_some());
         assert!(second.is_none());
-        let injected = inject_context_handoff("next request", &first.unwrap());
+        let first = first.unwrap();
+        let protected = inject_protected_context_handoff("next request", &first, |context| {
+            Ok(context.replace("prior context", "[redacted]"))
+        })
+        .unwrap();
+        assert!(protected.contains("[redacted]") && !protected.contains("prior context"));
+        assert!(protected.contains("<user_request>\nnext request\n</user_request>"));
+        let injected = inject_context_handoff("next request", &first);
         assert!(injected.contains("prior context"));
         assert!(injected.contains("<user_request>\nnext request\n</user_request>"));
         assert_eq!(

@@ -175,6 +175,7 @@ async fn leased_account_authority_preserves_prompt_admission_and_queue() {
 #[tokio::test]
 async fn leased_account_authority_survives_launch_reload_and_worker_recovery() {
     crate::test_support::isolated_env_test!();
+    let _claude = crate::test_support::TestClaudeExecutable::new();
     let _env = crate::env_lock::lock();
     let root = crate::test_support::TestWorktree::new("leased-account-authority");
     std::env::set_var("CHARIOX_HOME", root.path().join("state"));

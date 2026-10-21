@@ -291,16 +291,7 @@ pub(crate) fn observe_provider_auth_status(
                 environment,
             )?;
             let client = CodexClient::new("provider-auth", &endpoint)?;
-            let mut status = client.auth_status(&profile.profile_id)?;
-            // Codex reports "logged out" once it cannot renew a stored login. That is a login
-            // to sign in to again, not an account that never had one.
-            if status.auth_state == "not_logged_in"
-                && registry.stored_login_is_renewable(owner_user_id, "codex", &profile.profile_id)
-                    == Some(true)
-            {
-                status.auth_state = "expired".to_string();
-                status.login_hint = Some("Sign in again on this machine.".to_string());
-            }
+            let status = client.auth_status(&profile.profile_id)?;
             update_profile_auth_observation(registry, owner_user_id, &status)?;
             Ok(status)
         }
@@ -1253,7 +1244,6 @@ pub(crate) fn logout_provider_response(
             Ok(LocalDaemonResponse::ProviderLoggedOut {
                 provider: "codex".to_string(),
                 account_profile: profile.profile_id,
-                local_only: false,
             })
         }
         Some("claude") => {
@@ -1288,7 +1278,6 @@ pub(crate) fn logout_provider_response(
             Ok(LocalDaemonResponse::ProviderLoggedOut {
                 provider: "claude".to_string(),
                 account_profile: profile.profile_id,
-                local_only: false,
             })
         }
         _ => Err(DaemonError::LocalTransport {

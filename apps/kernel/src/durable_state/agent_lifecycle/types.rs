@@ -15,8 +15,6 @@ pub enum ExecutionState {
 pub struct AgentTaskExecution {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<super::goals::AgentGoal>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub completion_check: Option<super::completion::AgentCompletionCheck>,
     pub task_id: String,
     pub room_id: String,
     #[serde(default)]
@@ -184,12 +182,6 @@ pub(crate) enum Operation {
         next_prompt: String,
         now: u64,
     },
-    EnableCompletionCheck {
-        task: String,
-    },
-    DisableCompletionCheck {
-        task: String,
-    },
     AdoptGoal {
         owner: String,
         room: String,
@@ -226,7 +218,6 @@ pub(crate) enum Operation {
         task: String,
         prompt: String,
         result: String,
-        work_answer: Option<String>,
         now: u64,
     },
     ControlGoal {
@@ -285,6 +276,13 @@ pub(crate) enum Operation {
         now: u64,
     },
     Block {
+        task: String,
+        prompt: String,
+        reason: String,
+    },
+    /// A provider turn failed or vanished: a plain task is cancelled, a task with
+    /// ledger work is blocked for the owner.
+    EndFailedTurn {
         task: String,
         prompt: String,
         reason: String,

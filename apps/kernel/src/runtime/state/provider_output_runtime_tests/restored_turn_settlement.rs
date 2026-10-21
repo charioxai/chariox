@@ -266,7 +266,6 @@ async fn sweep_queues_a_continuation_persisted_before_restart() {
             task: turn.prompt.id().into(),
             prompt: check,
             result: r#"{"status":"continue","reason":"Answer the request"}"#.into(),
-            work_answer: None,
             now: 4,
         })
         .unwrap();

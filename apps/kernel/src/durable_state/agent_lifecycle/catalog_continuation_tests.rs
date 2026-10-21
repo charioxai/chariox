@@ -14,10 +14,9 @@ fn prepare(room: &str, agent: &str, prompt: &str, run: &str) -> Operation {
 }
 
 #[test]
-fn catalog_handoff_retains_task_and_completion_budget_across_provider_reload() {
+fn catalog_handoff_retains_task_across_provider_reload() {
     let f = Fixture::new();
     f.begin("p");
-    f.apply(Operation::EnableCompletionCheck { task: "p".into() });
     let before = f.task();
     f.apply(prepare("room", "parent", "p", "run"));
     let intent = f.task();
@@ -28,7 +27,6 @@ fn catalog_handoff_retains_task_and_completion_budget_across_provider_reload() {
     };
     assert!(!correction);
     assert!(!task.correction_used);
-    assert_eq!(task.completion_check, before.completion_check);
     assert_eq!(task.task_id, before.task_id);
     assert_eq!(task.state, ExecutionState::Working);
     f.apply(Operation::BeginContinuation {
@@ -51,11 +49,8 @@ fn catalog_handoff_retains_task_and_completion_budget_across_provider_reload() {
     let Outcome::Settled { task, correction } = f.settle("task-catalog:p", true) else {
         panic!()
     };
-    assert!(
-        correction,
-        "actual completed work still gets normal completion confirmation"
-    );
-    assert_eq!(task.completion_check.unwrap().check_count, 1);
+    assert!(!correction);
+    assert_eq!(task.state, ExecutionState::Done);
 }
 
 #[test]
@@ -112,7 +107,13 @@ fn catalog_handoff_cannot_resume_blocked_cancelled_or_done_task() {
 fn catalog_continuation_retired_during_reload_cannot_create_a_fresh_task() {
     let f = Fixture::new();
     f.begin("p");
-    f.apply(Operation::EnableCompletionCheck { task: "p".into() });
+    f.apply(Operation::StartGoal {
+        task: "p".into(),
+        owner: "owner".into(),
+        objective: "Implement and verify real work".into(),
+        minutes: 10,
+        now: 1,
+    });
     f.settle("p", true);
     let check = f.task().pending_prompt_id.unwrap();
     f.begin(&check);
@@ -182,7 +183,6 @@ fn catalog_handoff_has_a_bounded_fresh_executor_window_after_long_work() {
 fn catalog_reload_chain_blocks_without_real_progress() {
     let f = Fixture::new();
     f.begin("p");
-    f.apply(Operation::EnableCompletionCheck { task: "p".into() });
     for _ in 0..NO_PROGRESS_LIMIT {
         let prompt = f.task().prompt_id;
         f.apply(prepare("room", "parent", &prompt, "run"));
@@ -202,7 +202,6 @@ fn catalog_reload_chain_blocks_without_real_progress() {
         stopped,
         "a blocked chain keeps one owner decision"
     );
-    assert_eq!(stopped.completion_check.unwrap().check_count, 0);
 }
 
 #[test]
@@ -268,7 +267,6 @@ fn catalog_begin_rechecks_owner_disposition_and_exact_scope() {
 fn handled_progress_renews_catalog_wake_budget_without_spending_completion_checks() {
     let f = Fixture::new();
     f.begin("p");
-    f.apply(Operation::EnableCompletionCheck { task: "p".into() });
     for _ in 0..NO_PROGRESS_LIMIT {
         let prompt = f.task().prompt_id;
         f.apply(prepare("room", "parent", &prompt, "run"));
@@ -287,7 +285,6 @@ fn handled_progress_renews_catalog_wake_budget_without_spending_completion_check
     assert!(task.pending_prompt_id.is_some());
     assert_eq!(task.no_progress_wakes, 1);
     assert_eq!(task.progress_sequence, 1);
-    assert_eq!(task.completion_check.unwrap().check_count, 0);
 }
 
 #[test]
@@ -308,25 +305,17 @@ fn catalog_handoff_cannot_replace_a_wait_or_another_pending_intent() {
                 now: 2,
             });
         } else {
-            f.apply(Operation::EnableCompletionCheck { task: "p".into() });
+            f.apply(Operation::StartGoal {
+                task: "p".into(),
+                owner: "owner".into(),
+                objective: "Implement and verify real work".into(),
+                minutes: 10,
+                now: 1,
+            });
             f.settle("p", true);
         }
         let before = f.task();
         f.apply(prepare("room", "parent", "p", "run"));
         assert_eq!(f.task(), before);
     }
-}
-
-#[test]
-fn a_withdrawn_completion_check_settles_the_task_on_its_answer() {
-    let f = Fixture::new();
-    f.begin("p");
-    f.apply(Operation::EnableCompletionCheck { task: "p".into() });
-    f.apply(Operation::DisableCompletionCheck { task: "p".into() });
-    let Outcome::Settled { task, correction } = f.settle("p", true) else {
-        panic!()
-    };
-    assert!(!correction);
-    assert_eq!(task.state, ExecutionState::Done);
-    assert!(task.completion_check.is_none() && task.pending_prompt_id.is_none());
 }

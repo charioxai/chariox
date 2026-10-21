@@ -17,7 +17,6 @@ fn check(f: &Fixture, result: serde_json::Value) -> AgentTaskExecution {
     let id = t.pending_prompt_id.unwrap();
     f.begin(&id);
     let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
-        work_answer: Some("public corrected work".into()),
         task: "p".into(),
         prompt: id,
         result: result.to_string(),
@@ -34,13 +33,9 @@ fn assessment(status: &str) -> serde_json::Value {
 // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: old work age cannot consume a fresh check's service bound.
 #[test]
 fn a12_fresh_completion_intent_keeps_its_bound_after_long_work() {
-    for is_goal in [false, true] {
+    {
         let f = Fixture::new();
-        if is_goal {
-            goal(&f, 1);
-        } else {
-            plain(&f);
-        }
+        goal(&f, 1);
         let started = DELIVERY_TIMEOUT_MS + 2;
         f.apply(Operation::Settle {
             room: "room".into(),
@@ -77,14 +72,7 @@ fn a12_fresh_completion_intent_keeps_its_bound_after_long_work() {
             now: check.deadline_ms,
         });
         assert_eq!(f.task().state, ExecutionState::Blocked);
-        assert_eq!(
-            if is_goal {
-                f.task().goal.unwrap().check_count
-            } else {
-                f.task().completion_check.unwrap().check_count
-            },
-            1
-        );
+        assert_eq!(f.task().goal.unwrap().check_count, 1);
     }
 }
 
@@ -182,7 +170,6 @@ fn a12_failed_eof_malformed_oversize_and_timeout_block_once() {
         let id = f.task().pending_prompt_id.unwrap();
         f.begin(&id);
         f.apply(Operation::EvaluateGoal {
-            work_answer: None,
             task: "p".into(),
             prompt: id.clone(),
             result: result.clone(),
@@ -191,7 +178,6 @@ fn a12_failed_eof_malformed_oversize_and_timeout_block_once() {
         let before = f.task();
         assert_eq!(before.state, ExecutionState::Blocked);
         f.apply(Operation::EvaluateGoal {
-            work_answer: None,
             task: "p".into(),
             prompt: id,
             result,
@@ -253,7 +239,6 @@ fn a12_owner_revision_pause_edit_and_cancel_fence_late_checks() {
     let edited = f.task();
     assert_eq!(edited.goal.as_ref().unwrap().objective_revision, 2);
     f.apply(Operation::EvaluateGoal {
-        work_answer: None,
         task: "p".into(),
         prompt: id,
         result:
@@ -338,7 +323,6 @@ fn a12_progressing_goals_have_no_turn_cap_and_evaluations_cannot_mutate_work() {
             })
             .is_err());
         let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
-            work_answer: None,
             task: "p".into(),
             prompt: check_id,
             result: assessment("continue").to_string(),
@@ -391,7 +375,6 @@ fn a12_timeout_once_and_owner_resume_fences_its_late_timer_and_result() {
         now: 60_006,
     });
     f.apply(Operation::EvaluateGoal {
-        work_answer: None,
         task: "p".into(),
         prompt: id,
         result: assessment("continue").to_string(),
@@ -638,7 +621,6 @@ fn a12_current_ledger_is_rechecked_after_a_source_changes_during_assessment() {
         now: 4,
     });
     let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
-        work_answer: None,
         task: "p".into(),
         prompt: id,
         result:
@@ -673,166 +655,6 @@ fn a12_rejected_fresh_admission_leaves_no_goal_or_supervised_work() {
     });
     f.apply(Operation::Withdraw { task: "p".into() });
     assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
-}
-
-// MP-08 / MP-09 / MP-10 / MP-11 A12: plain confirmation never grants goal mode.
-#[test]
-fn a12_plain_done_candidate_must_be_confirmed_without_a_goal_loop() {
-    let f = Fixture::new();
-    f.begin("p");
-    f.apply(Operation::EnableCompletionCheck { task: "p".into() });
-    f.settle("p", true);
-    assert_eq!(
-        f.task().state,
-        ExecutionState::Working,
-        "plain done candidate needs a native check"
-    );
-}
-
-// MP-08 / MP-09 / MP-10 / MP-11 A12: supplementary plain/delegate parity guards.
-fn plain(f: &Fixture) {
-    f.begin("p");
-    f.apply(Operation::EnableCompletionCheck { task: "p".into() });
-}
-#[test]
-fn a12_plain_check_has_one_correction_and_no_continuation_mode() {
-    let f = Fixture::new();
-    plain(&f);
-    f.settle("p", true);
-    let first = f.task();
-    f.settle("p", true);
-    assert_eq!(first, f.task());
-    let t = check(&f, assessment("continue"));
-    assert!(t.goal.is_none());
-    assert!(t.correction_used);
-    assert_eq!(t.completion_check.as_ref().unwrap().check_count, 1);
-    assert_eq!(t.pending_prompt_id.as_deref(), Some("task-correction-p"));
-    let id = t.pending_prompt_id.unwrap();
-    f.begin(&id);
-    f.settle(&id, true);
-    let t = check(&f, assessment("continue"));
-    assert_eq!(t.state, ExecutionState::Done);
-    assert!(t.pending_prompt_id.is_none());
-    assert_eq!(t.completion_check.unwrap().check_count, 2);
-}
-// MP-08 / MP-10 / MP-11: a real Haiku assessment answered `waiting` on registrations
-// whose sources had already completed (obligations settling, receipt unhandled). The
-// kernel blocked the owner; it must send the agent once to acknowledge the receipts.
-#[test]
-fn a12_waiting_on_completed_sources_continues_once_instead_of_blocking_the_owner() {
-    let f = Fixture::new();
-    plain(&f);
-    f.register();
-    f.subscribe();
-    f.settle("p", true);
-    f.apply(Operation::SourceOutcome {
-        now: 3,
-        public_answer: None,
-        room: "room".into(),
-        source: "child".into(),
-        occurrence: "result".into(),
-        success: true,
-    });
-    assert_eq!(f.task().obligations[0].status, "settling");
-    let waiting = serde_json::json!({"status":"waiting","reason":"children still running","registration_ids":["reg"],"deadline_ms":60_004});
-    let t = check(&f, waiting.clone());
-    assert_ne!(t.state, ExecutionState::Blocked, "{}", t.reason);
-    assert!(t.correction_used);
-    let id = t
-        .pending_prompt_id
-        .clone()
-        .expect("one bounded continuation");
-    f.begin(&id);
-    f.settle(&id, true);
-    // A second invalid waiting is still blocked: the bound holds.
-    assert_eq!(check(&f, waiting).state, ExecutionState::Blocked);
-}
-#[test]
-fn a12_plain_achieved_needs_evidence_and_fences_checks_from_work() {
-    let f = Fixture::new();
-    plain(&f);
-    f.settle("p", true);
-    let id = f.task().pending_prompt_id.clone().unwrap();
-    f.begin(&id);
-    assert!(f
-        .store
-        .agent_lifecycle(Operation::Progress {
-            task: "p".into(),
-            prompt: id.clone(),
-            receipt: "forbidden".into(),
-            now: 4
-        })
-        .is_err());
-    let Outcome::Settled{task:t,..}=f.apply(Operation::EvaluateGoal { work_answer: None, task:"p".into(),prompt:id.clone(),result:serde_json::json!({"status":"achieved","final_answer":"Verified original request","evidence":["public:artifact"]}).to_string(),now:4 }) else {panic!()};
-    assert_eq!(t.state, ExecutionState::Done);
-    assert!(t.goal.is_none());
-    f.settle(&id, true);
-    assert_eq!(f.task(), t);
-}
-#[test]
-fn a12_plain_wait_and_failure_are_not_done_candidates() {
-    let f = Fixture::new();
-    plain(&f);
-    f.register();
-    f.subscribe();
-    f.apply(Operation::Yield {
-        task: "p".into(),
-        prompt: "p".into(),
-        registrations: vec!["reg".into()],
-        cursor: 0,
-        deadline: 60000,
-        reason: "depends on peer".into(),
-        now: 2,
-    });
-    f.settle("p", true);
-    assert_eq!(f.task().state, ExecutionState::Waiting);
-    assert_eq!(f.task().completion_check.unwrap().check_count, 0);
-    let f = Fixture::new();
-    plain(&f);
-    f.settle("p", false);
-    let t = f.task();
-    assert!(t.correction_used);
-    assert_eq!(t.completion_check.unwrap().check_count, 0);
-}
-#[test]
-fn a12_plain_timeout_receipt_is_idempotent_and_owner_resume_fences_late_check() {
-    let f = Fixture::new();
-    plain(&f);
-    f.settle("p", true);
-    let id = f.task().pending_prompt_id.unwrap();
-    f.begin(&id);
-    f.apply(Operation::TimeoutGoal {
-        task: "p".into(),
-        prompt: id.clone(),
-        now: 60003,
-    });
-    let t = f.task();
-    assert_eq!(t.state, ExecutionState::Blocked);
-    assert!(matches!(
-        f.apply(Operation::TimeoutGoal {
-            task: "p".into(),
-            prompt: id.clone(),
-            now: 70000
-        }),
-        Outcome::Saved
-    ));
-    assert_eq!(f.task(), t);
-    f.apply(Operation::OwnerResponse {
-        task: "p".into(),
-        revision: t.revision,
-        resume: true,
-        now: 70001,
-    });
-    let resumed = f.task();
-    f.apply(Operation::EvaluateGoal {
-        work_answer: None,
-        task: "p".into(),
-        prompt: id,
-        result: serde_json::json!({"status":"achieved","final_answer":"late","evidence":["late"]})
-            .to_string(),
-        now: 70002,
-    });
-    assert_eq!(f.task(), resumed);
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11 A12: rejection must bound the stored receipt too.
@@ -1119,13 +941,13 @@ fn a12_handled_paused_goal_outcome_preserves_nonzero_guard() {
     assert_eq!(after.progress_sequence, before.progress_sequence);
     assert_eq!(after.blocked_revision, before.blocked_revision);
 }
-// MP-08 / MP-09 / MP-10 / MP-11 A12 (accam r3): a workflow node's completion
+// MP-08 / MP-09 / MP-10 / MP-11 A12 (accam r3): a workflow node's goal
 // check is a continuation of its bound task. It keeps that lineage and can
 // neither rebind it nor block the B->C edge until the 60 s bound.
 #[test]
 fn a12_workflow_bound_check_keeps_its_lineage_and_settles() {
     let f = Fixture::new();
-    plain(&f);
+    goal(&f, 1);
     let bind = |prompt: &str, node: &str| {
         f.store.agent_lifecycle(Operation::BindWorkflow {
             task: "p".into(),
@@ -1140,7 +962,7 @@ fn a12_workflow_bound_check_keeps_its_lineage_and_settles() {
     f.begin(&id);
     bind(&id, "node").expect("the check continuation keeps its workflow lineage");
     assert!(bind(&id, "other-node").is_err());
-    let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal { work_answer: None,
+    let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
         task: "p".into(),
         prompt: id,
         result: serde_json::json!({"status":"achieved","final_answer":"Built and tested","evidence":["public:artifact"]}).to_string(),
@@ -1153,257 +975,6 @@ fn a12_workflow_bound_check_keeps_its_lineage_and_settles() {
         f.store.agent_task_workflow("p").unwrap(),
         Some(("run".into(), "node".into()))
     );
-}
-
-// MP-08 / MP-10 / MP-11: coordinator 2026-10-15, assessor notes cannot
-// demand owner intervention after a plain request's one correction has resolved all work.
-#[test]
-fn r16_plain_zero_obligations_finishes_after_correction_with_assessment_notes() {
-    for result in [
-        assessment("continue"),
-        serde_json::json!({"status":"blocked","reason":"Would prefer another public trace"}),
-        serde_json::json!({"status":"waiting","reason":"Would prefer another check","registration_ids":[],"deadline_ms":60_004}),
-        // MP-08 / MP-10 / MP-11: real Codex added final_answer to a
-        // continuation. A malformed advisory check cannot strand completed
-        // ordinary work after its single correction.
-        serde_json::json!({"status":"continue","reason":"Read the files again","final_answer":"The earlier review was insufficient"}),
-        serde_json::json!({"invalid":"assessment"}),
-    ] {
-        let f = Fixture::new();
-        plain(&f);
-        f.settle("p", true);
-        let first = check(&f, assessment("continue"));
-        assert!(first.correction_used);
-        let id = first.pending_prompt_id.unwrap();
-        f.begin(&id);
-        f.settle(&id, true);
-        let t = check(&f, result.clone());
-        assert_eq!(t.state, ExecutionState::Done, "{}", t.reason);
-        assert!(t.reason.is_empty());
-        assert!(t.pending_prompt_id.is_none());
-        assert_eq!(completion::evaluation(&t).unwrap().result, Some(result));
-        assert_eq!(t.completion_check.as_ref().unwrap().check_count, 2);
-        assert_eq!(
-            t.completion_check.as_ref().unwrap().final_answer.as_deref(),
-            Some("public corrected work")
-        );
-        let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
-        assert_eq!(
-            reopened.agent_tasks(Some("room"), Some("parent")).unwrap()[0],
-            t
-        );
-        f.settle(&t.prompt_id, true);
-        assert_eq!(f.task(), t, "duplicate EOF cannot start another turn");
-    }
-}
-
-#[test]
-fn r20_plain_correction_still_rejects_an_expired_assessment_receipt() {
-    let f = Fixture::new();
-    plain(&f);
-    f.settle("p", true);
-    let first = check(&f, assessment("continue"));
-    let correction = first.pending_prompt_id.unwrap();
-    f.begin(&correction);
-    f.settle(&correction, true);
-    let current = f.task();
-    let evaluation = completion::evaluation(&current).unwrap();
-    let prompt = evaluation.prompt_id.clone();
-    let deadline = evaluation.deadline_ms;
-    f.begin(&prompt);
-    let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
-        task: "p".into(),
-        prompt,
-        result: serde_json::json!({"invalid":"assessment"}).to_string(),
-        work_answer: Some("public corrected work".into()),
-        now: deadline + 1,
-    }) else {
-        panic!()
-    };
-    assert_eq!(task.state, ExecutionState::Blocked);
-    assert!(task.completion_check.unwrap().final_answer.is_none());
-}
-
-#[test]
-fn r16_plain_correction_keeps_real_unresolved_obligations_blocking() {
-    for status in ["open", "settling", "failed"] {
-        let f = Fixture::new();
-        plain(&f);
-        f.register();
-        if status != "open" {
-            f.subscribe();
-            f.apply(Operation::SourceOutcome {
-                now: 2,
-                public_answer: None,
-                room: "room".into(),
-                source: "child".into(),
-                occurrence: "result".into(),
-                success: status == "settling",
-            });
-        }
-        assert_eq!(f.task().obligations[0].status, status);
-        f.settle("p", true);
-        let t = check(&f, assessment("continue"));
-        let id = t.pending_prompt_id.unwrap();
-        f.begin(&id);
-        f.settle(&id, true);
-        assert_eq!(
-            check(&f, assessment("continue")).state,
-            ExecutionState::Blocked
-        );
-    }
-}
-
-// MP-08 / MP-10 / MP-11: real Codex supplied a public reference alongside
-// continue. The reference is informational; it cannot turn incomplete work
-// into completion or bypass an open obligation.
-#[test]
-fn r16_continue_with_public_reference_keeps_bounded_correction() {
-    let f = Fixture::new();
-    plain(&f);
-    f.register();
-    f.settle("p", true);
-    let t = check(
-        &f,
-        serde_json::json!({
-            "status":"continue", "reason":"Return the requested findings",
-            "evidence":["history:room:prompt:p"]
-        }),
-    );
-    assert_eq!(t.state, ExecutionState::Working, "{}", t.reason);
-    assert!(t.correction_used);
-    assert_eq!(t.obligations[0].status, "open");
-    assert!(t.pending_prompt_id.unwrap().starts_with("task-correction-"));
-}
-
-#[test]
-fn r16_continue_still_rejects_unknown_authority_or_invalid_reference_type() {
-    for extra in [
-        serde_json::json!({"sudo":true}),
-        serde_json::json!({"evidence":true}),
-    ] {
-        let f = Fixture::new();
-        plain(&f);
-        f.settle("p", true);
-        let mut result = assessment("continue");
-        result
-            .as_object_mut()
-            .unwrap()
-            .extend(extra.as_object().unwrap().clone());
-        assert_eq!(check(&f, result).state, ExecutionState::Blocked);
-    }
-}
-
-// MP-08 / MP-10 / MP-11: an empty assessor capture is "no verdict", never an
-// answer that ends the task Done. It gets one more check, then a definitive Blocked.
-#[test]
-fn r3_empty_assessor_capture_is_no_verdict_then_blocked() {
-    let f = Fixture::new();
-    plain(&f);
-    f.settle("p", true);
-    let id = f.task().pending_prompt_id.unwrap();
-    f.begin(&id);
-    let Outcome::Settled { task, correction } = f.apply(Operation::EvaluateGoal {
-        task: "p".into(),
-        prompt: id,
-        result: "  ".into(),
-        work_answer: Some("public work answer".into()),
-        now: 4,
-    }) else {
-        panic!()
-    };
-    assert_eq!(task.state, ExecutionState::Working);
-    assert!(correction && task.correction_used);
-    let correction_id = task.pending_prompt_id.unwrap();
-    f.begin(&correction_id);
-    f.settle(&correction_id, true);
-    let id = f.task().pending_prompt_id.unwrap();
-    f.begin(&id);
-    let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
-        task: "p".into(),
-        prompt: id,
-        result: String::new(),
-        work_answer: Some("public work answer".into()),
-        now: 5,
-    }) else {
-        panic!()
-    };
-    assert_eq!(task.state, ExecutionState::Blocked);
-    assert!(task.reason.contains("no verdict"), "{}", task.reason);
-    assert!(task.completion_check.unwrap().final_answer.is_none());
-}
-
-// MP-08 / MP-10 / MP-11: real r22 Codex emitted a syntactically broken first
-// assessment after reporting and acknowledging the exact new child result.
-#[test]
-fn r22_malformed_plain_assessment_uses_one_bounded_correction() {
-    let malformed = r#"{"status":"continue","reason":"The tracked registration is inactive.",""}"#;
-    let f = Fixture::new();
-    plain(&f);
-    f.settle("p", true);
-    let id = f.task().pending_prompt_id.unwrap();
-    f.begin(&id);
-    let Outcome::Settled { task, correction } = f.apply(Operation::EvaluateGoal {
-        task: "p".into(),
-        prompt: id,
-        result: malformed.into(),
-        work_answer: Some(
-            "Fresh child timestamp, worker, HEAD and HTTP200; receipt handled".into(),
-        ),
-        now: 4,
-    }) else {
-        panic!()
-    };
-    assert_eq!(
-        task.state,
-        ExecutionState::Working,
-        "a malformed advisory check cannot strand a complete plain answer"
-    );
-    assert!(correction && task.correction_used);
-    let correction_id = task.pending_prompt_id.unwrap();
-    assert_eq!(correction_id, "task-correction-p");
-    f.begin(&correction_id);
-    f.settle(&correction_id, true);
-    let task = check(&f, serde_json::json!({"invalid":"second assessment"}));
-    assert_eq!(task.state, ExecutionState::Done);
-    assert!(task.pending_prompt_id.is_none());
-    assert_eq!(task.completion_check.as_ref().unwrap().check_count, 2);
-    f.settle(&task.prompt_id, true);
-    assert_eq!(
-        f.task(),
-        task,
-        "duplicate settlement cannot add a correction"
-    );
-
-    for (is_goal, expired, answer) in [
-        (true, false, true),
-        (false, true, true),
-        (false, false, false),
-    ] {
-        let f = Fixture::new();
-        if is_goal {
-            goal(&f, 1);
-        } else {
-            plain(&f);
-        }
-        f.settle("p", true);
-        let task = f.task();
-        let e = completion::evaluation(&task).unwrap();
-        let id = e.prompt_id.clone();
-        let now = if expired { e.deadline_ms + 1 } else { 4 };
-        f.begin(&id);
-        let Outcome::Settled { task, correction } = f.apply(Operation::EvaluateGoal {
-            task: "p".into(),
-            prompt: id,
-            result: malformed.into(),
-            work_answer: answer.then(|| "public answer".into()),
-            now,
-        }) else {
-            panic!()
-        };
-        assert_eq!(task.state, ExecutionState::Blocked);
-        assert!(!correction && !task.correction_used);
-    }
 }
 
 // A turn admitted before it had a provider run (queued behind another turn)
@@ -1419,44 +990,23 @@ fn completion_check_names_the_run_that_ended_the_work_turn() {
         run: None,
         now: 1,
     });
-    f.apply(Operation::EnableCompletionCheck { task: "p".into() });
+    f.apply(Operation::StartGoal {
+        task: "p".into(),
+        owner: "owner".into(),
+        objective: "Implement and verify real work".into(),
+        minutes: 1,
+        now: 1,
+    });
     f.settle("p", true);
     let task = f.task();
     let check = completion::evaluation(&task).unwrap();
     assert_eq!(check.work_provider_run_id.as_deref(), Some("run"));
 }
 
-// Real Codex answered the request ("CTV1-B") instead of assessing it. That is no
-// verdict; repeating the visible answer through a correction helps nobody.
-#[test]
-fn assessor_answering_the_request_leaves_the_public_answer_standing() {
-    let f = Fixture::new();
-    plain(&f);
-    f.settle("p", true);
-    let id = f.task().pending_prompt_id.unwrap();
-    f.begin(&id);
-    let Outcome::Settled { task, correction } = f.apply(Operation::EvaluateGoal {
-        task: "p".into(),
-        prompt: id,
-        result: "CTV1-B".into(),
-        work_answer: Some("CTV1-B".into()),
-        now: 4,
-    }) else {
-        panic!()
-    };
-    assert!(!correction);
-    assert_eq!(task.state, ExecutionState::Done, "{}", task.reason);
-    assert!(!task.correction_used);
-}
-
 // The 60 s check bound is a service bound, not an owner deadline: the time the check waits
 // for the owner's Vault unlock is given back, and a refusal is a definitive Blocked.
-fn wait_for_owner(f: &Fixture, is_goal: bool, at: u64) -> (String, goals::GoalEvaluation) {
-    if is_goal {
-        goal(f, 1);
-    } else {
-        plain(f);
-    }
+fn wait_for_owner(f: &Fixture, at: u64) -> (String, goals::GoalEvaluation) {
+    goal(f, 1);
     f.settle("p", true);
     let task = f.task();
     let check = completion::evaluation(&task).unwrap().clone();
@@ -1470,65 +1020,63 @@ fn wait_for_owner(f: &Fixture, is_goal: bool, at: u64) -> (String, goals::GoalEv
 
 #[test]
 fn owner_wait_stops_the_check_bound_and_an_unlock_gives_the_time_back() {
-    for is_goal in [false, true] {
-        let f = Fixture::new();
-        let (task, check) = wait_for_owner(&f, is_goal, 5_000);
-        let waiting = f.task();
-        assert_eq!(waiting.state, ExecutionState::Working);
-        assert_eq!(waiting.reason, "Waiting for the Vault unlock");
-        assert!(!lacks_live_executor(
-            &waiting,
-            check.deadline_ms * 10,
-            false,
-            false
-        ));
-        f.apply(Operation::TimeoutGoal {
-            task: task.clone(),
-            prompt: check.prompt_id.clone(),
-            now: check.deadline_ms + 300_000,
-        });
-        assert_eq!(
-            f.task().state,
-            ExecutionState::Working,
-            "the wait is not a timeout"
-        );
-        let paused_at = completion::evaluation(&f.task())
-            .unwrap()
-            .paused_at_ms
-            .unwrap();
-        let unlocked_at = paused_at + 420_000;
-        f.apply(Operation::EndOwnerWait {
-            task: task.clone(),
-            prompt: check.prompt_id.clone(),
-            refusal: None,
-            now: unlocked_at,
-        });
-        let resumed = f.task();
-        let after = completion::evaluation(&resumed).unwrap();
-        assert_eq!(after.paused_at_ms, None);
-        assert_eq!(after.deadline_ms, check.deadline_ms + 420_000);
-        assert_eq!(
-            after.deadline_ms,
-            after.started_at_ms + goals::CHECK_BOUND_MS
-        );
-        assert_eq!(resumed.reason, "Evaluating original goal objective");
-        f.apply(Operation::TimeoutGoal {
-            task,
-            prompt: check.prompt_id.clone(),
-            now: after.deadline_ms,
-        });
-        assert_eq!(
-            f.task().state,
-            ExecutionState::Blocked,
-            "the bound counts again after the unlock"
-        );
-    }
+    let f = Fixture::new();
+    let (task, check) = wait_for_owner(&f, 5_000);
+    let waiting = f.task();
+    assert_eq!(waiting.state, ExecutionState::Working);
+    assert_eq!(waiting.reason, "Waiting for the Vault unlock");
+    assert!(!lacks_live_executor(
+        &waiting,
+        check.deadline_ms * 10,
+        false,
+        false
+    ));
+    f.apply(Operation::TimeoutGoal {
+        task: task.clone(),
+        prompt: check.prompt_id.clone(),
+        now: check.deadline_ms + 300_000,
+    });
+    assert_eq!(
+        f.task().state,
+        ExecutionState::Working,
+        "the wait is not a timeout"
+    );
+    let paused_at = completion::evaluation(&f.task())
+        .unwrap()
+        .paused_at_ms
+        .unwrap();
+    let unlocked_at = paused_at + 420_000;
+    f.apply(Operation::EndOwnerWait {
+        task: task.clone(),
+        prompt: check.prompt_id.clone(),
+        refusal: None,
+        now: unlocked_at,
+    });
+    let resumed = f.task();
+    let after = completion::evaluation(&resumed).unwrap();
+    assert_eq!(after.paused_at_ms, None);
+    assert_eq!(after.deadline_ms, check.deadline_ms + 420_000);
+    assert_eq!(
+        after.deadline_ms,
+        after.started_at_ms + goals::CHECK_BOUND_MS
+    );
+    assert_eq!(resumed.reason, "Evaluating original goal objective");
+    f.apply(Operation::TimeoutGoal {
+        task,
+        prompt: check.prompt_id.clone(),
+        now: after.deadline_ms,
+    });
+    assert_eq!(
+        f.task().state,
+        ExecutionState::Blocked,
+        "the bound counts again after the unlock"
+    );
 }
 
 #[test]
 fn owner_refusal_blocks_with_the_reason_and_resume() {
     let f = Fixture::new();
-    let (task, check) = wait_for_owner(&f, false, 1_000);
+    let (task, check) = wait_for_owner(&f, 1_000);
     f.apply(Operation::EndOwnerWait {
         task,
         prompt: check.prompt_id,

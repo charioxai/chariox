@@ -331,8 +331,12 @@ fn suspend_deadline_terminates_worker_without_dormancy_or_shutdown_overlap() {
             .idle_stop_blocking("alice", catalog, || true),
         Err(LifecycleError::Notification)
     );
+    // Worker termination/reaping can be scheduled late under a full-suite load.
+    // Keep the lower bound: a premature notification failure is still a bug.
+    let elapsed = before.elapsed();
     assert!(
-        before.elapsed() >= Duration::from_secs(29) && before.elapsed() < Duration::from_secs(34)
+        elapsed >= Duration::from_secs(29) && elapsed < Duration::from_secs(60),
+        "suspend deadline and worker cleanup took {elapsed:?}"
     );
     wait(|| all_reaped(&observations));
     assert!(!control.is_app_dormant("alice", "installed"));

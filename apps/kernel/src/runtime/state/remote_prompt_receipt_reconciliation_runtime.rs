@@ -11,21 +11,7 @@ use super::*;
 pub(super) enum RemotePromptReceiptAction {
     AssociateActiveRun(String),
     DrainCompletedProjection(String),
-    RejectUnadmitted(Option<String>),
-}
-
-fn remote_prompt_rejection_message(
-    prompt_id: &str,
-    execution_lease_id: &str,
-    reason: Option<&str>,
-) -> String {
-    let base = format!(
-        "worker durably rejected exact prompt {prompt_id} under execution lease {execution_lease_id}"
-    );
-    match reason {
-        Some(reason) if !reason.is_empty() => format!("{base}: {reason}"),
-        _ => base,
-    }
+    RejectUnadmitted,
 }
 
 pub(super) fn remote_prompt_receipt_action(
@@ -75,9 +61,7 @@ pub(super) fn remote_prompt_receipt_action(
                 && receipt.worker_provider_run_id.is_empty()
                 && receipt.execution_lease_id.as_deref() == Some(expected_execution_lease_id) =>
         {
-            Ok(RemotePromptReceiptAction::RejectUnadmitted(
-                receipt.rejection_reason,
-            ))
+            Ok(RemotePromptReceiptAction::RejectUnadmitted)
         }
         crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerDispatching
             if receipt.target_home_prompt_id.is_none() =>
@@ -188,13 +172,12 @@ impl KernelRuntimeState {
                 "remote worker binding changed while its receipt was being queried",
             ));
         }
-        if let RemotePromptReceiptAction::RejectUnadmitted(reason) = &action {
+        if action == RemotePromptReceiptAction::RejectUnadmitted {
             return Err(DaemonError::LocalTransport {
                 operation: "remote prompt worker rejected admission",
-                message: remote_prompt_rejection_message(
-                    &dispatch.prompt_id,
-                    &binding_before.execution_lease_id,
-                    reason.as_deref(),
+                message: format!(
+                    "worker durably rejected exact prompt {} under execution lease {}",
+                    dispatch.prompt_id, binding_before.execution_lease_id
                 ),
             });
         }
@@ -202,7 +185,7 @@ impl KernelRuntimeState {
         let worker_provider_run_id = match action {
             RemotePromptReceiptAction::AssociateActiveRun(provider_run_id) => provider_run_id,
             RemotePromptReceiptAction::DrainCompletedProjection(provider_run_id) => provider_run_id,
-            RemotePromptReceiptAction::RejectUnadmitted(_) => unreachable!(),
+            RemotePromptReceiptAction::RejectUnadmitted => unreachable!(),
         };
         if let Err(error) = self
             .owned
@@ -504,23 +487,5 @@ impl KernelRuntimeState {
             operation: "settle remote prompt worker rejection",
             message: "verified worker rejection left the exact home prompt active".to_string(),
         }))
-    }
-}
-
-#[cfg(test)]
-mod rejection_message_tests {
-    use super::remote_prompt_rejection_message;
-
-    #[test]
-    fn rejection_message_names_the_workers_reason_when_it_sent_one() {
-        let plain = remote_prompt_rejection_message("p1", "l1", None);
-        assert_eq!(
-            plain,
-            "worker durably rejected exact prompt p1 under execution lease l1"
-        );
-        assert_eq!(
-            remote_prompt_rejection_message("p1", "l1", Some("the Codex account is signed out")),
-            format!("{plain}: the Codex account is signed out")
-        );
     }
 }

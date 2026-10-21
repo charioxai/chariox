@@ -192,21 +192,6 @@ impl LocalDockerSliceOptions {
     }
 }
 
-/// The broker runs the provisioner out of the kernel's sight; its progress lines reach the action
-/// log while the start runs, so `GetSliceLogs` shows them to every client.
-fn record_broker_progress(log: &mut File, line: &str) {
-    const PREFIX: &str = "[slice-linux] progress: ";
-    if line.len() <= 300
-        && line.starts_with(PREFIX)
-        && line
-            .bytes()
-            .all(|byte| byte == b' ' || byte.is_ascii_graphic())
-    {
-        // A log that cannot be written is reported when the start ends; progress is best effort.
-        let _ = writeln!(log, "{line}");
-    }
-}
-
 pub fn run_local_docker_slice_action(
     record: &SliceRecord,
     action: LocalDockerSliceAction,
@@ -230,39 +215,6 @@ pub fn run_local_docker_slice_action(
             ),
         });
     }
-    // Truncated before the admission checks below: clients poll this log for first-start
-    // progress and must not read the previous start's lines while those checks run.
-    let log_path = local_docker_slice_action_log_path(&options.root, record, action);
-    if let Some(parent) = log_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
-            operation: "slice.local_docker",
-            message: format!(
-                "failed to create slice log dir {}: {error}",
-                parent.display()
-            ),
-        })?;
-    }
-    let log_file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&log_path)
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "slice.local_docker",
-            message: format!(
-                "failed to open slice provisioner log {}: {error}",
-                log_path.display()
-            ),
-        })?;
-    let stderr_log = log_file
-        .try_clone()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "slice.local_docker",
-            message: format!(
-                "failed to open slice provisioner stderr log {}: {error}",
-                log_path.display()
-            ),
-        })?;
     let disk_quota_limits = if matches!(
         action,
         LocalDockerSliceAction::Provision
@@ -283,13 +235,22 @@ pub fn run_local_docker_slice_action(
     } else {
         None
     };
+    // The image build runs before provisioning and needs a running engine too.
+    if matches!(
+        action,
+        LocalDockerSliceAction::BuildImage
+            | LocalDockerSliceAction::Provision
+            | LocalDockerSliceAction::RestoreState
+            | LocalDockerSliceAction::Recover
+    ) {
+        ensure_host_docker_ready()?;
+    }
     let _memory_admission = if matches!(
         action,
         LocalDockerSliceAction::Provision
             | LocalDockerSliceAction::RestoreState
             | LocalDockerSliceAction::Recover
     ) {
-        ensure_host_docker_ready()?;
         snapshot_pause::recover(record, options)?;
         let memory_admission = memory_admission::admit_slice_start(record, action, options)?;
         if action == LocalDockerSliceAction::Provision {
@@ -395,6 +356,37 @@ pub fn run_local_docker_slice_action(
         }
     }
 
+    let log_path = local_docker_slice_action_log_path(&options.root, record, action);
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: format!(
+                "failed to create slice log dir {}: {error}",
+                parent.display()
+            ),
+        })?;
+    }
+    let log_file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&log_path)
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: format!(
+                "failed to open slice provisioner log {}: {error}",
+                log_path.display()
+            ),
+        })?;
+    let stderr_log = log_file
+        .try_clone()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: format!(
+                "failed to open slice provisioner stderr log {}: {error}",
+                log_path.display()
+            ),
+        })?;
     extension_build::prepare(
         &mut command,
         record,
@@ -404,56 +396,45 @@ pub fn run_local_docker_slice_action(
         &stderr_log,
     )?;
     let mut disk_quota_evidence = None;
-    let mut progress_log = log_file
-        .try_clone()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "slice.local_docker",
-            message: format!(
-                "failed to open slice provisioner progress log {}: {error}",
-                log_path.display()
-            ),
-        })?;
-    let status = if let Some(output) =
-        broker::run_provisioner(&command, action_name, &broker_inputs, &mut |line| {
-            record_broker_progress(&mut progress_log, line)
-        }) {
-        let response = output.map_err(|error| DaemonError::LocalTransport {
-            operation: "slice.local_docker",
-            message: format!(
-                "failed to use the managed slice Docker broker (log: {}): {error}",
-                log_path.display()
-            ),
-        })?;
-        disk_quota_evidence = response.disk_quota_evidence;
-        let output = response.output;
-        let mut stdout_log = log_file;
-        let mut stderr_log = stderr_log;
-        stdout_log
-            .write_all(&output.stdout)
-            .and_then(|()| stderr_log.write_all(&output.stderr))
-            .map_err(|error| DaemonError::LocalTransport {
+    let status =
+        if let Some(output) = broker::run_provisioner(&command, action_name, &broker_inputs) {
+            let response = output.map_err(|error| DaemonError::LocalTransport {
                 operation: "slice.local_docker",
                 message: format!(
-                    "failed to write broker output {}: {error}",
+                    "failed to use the managed slice Docker broker (log: {}): {error}",
                     log_path.display()
                 ),
             })?;
-        output.status
-    } else {
-        command
-            .stdout(Stdio::from(log_file))
-            .stderr(Stdio::from(stderr_log))
-            .status()
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "slice.local_docker",
-                message: format!(
-                    "failed to run {} {} (log: {}): {error}",
-                    script.display(),
-                    action.as_str(),
-                    log_path.display()
-                ),
-            })?
-    };
+            disk_quota_evidence = response.disk_quota_evidence;
+            let output = response.output;
+            let mut stdout_log = log_file;
+            let mut stderr_log = stderr_log;
+            stdout_log
+                .write_all(&output.stdout)
+                .and_then(|()| stderr_log.write_all(&output.stderr))
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "slice.local_docker",
+                    message: format!(
+                        "failed to write broker output {}: {error}",
+                        log_path.display()
+                    ),
+                })?;
+            output.status
+        } else {
+            command
+                .stdout(Stdio::from(log_file))
+                .stderr(Stdio::from(stderr_log))
+                .status()
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "slice.local_docker",
+                    message: format!(
+                        "failed to run {} {} (log: {}): {error}",
+                        script.display(),
+                        action.as_str(),
+                        log_path.display()
+                    ),
+                })?
+        };
     if status.success() {
         if let Some(limits) = disk_quota_limits.as_ref() {
             super::disk_quota_policy::require_verified_quotas(
@@ -709,7 +690,7 @@ pub fn start_local_docker_slice_provider_login(
             &provider_account.profile_id,
         );
     configure_local_docker_slice_command(&mut command, record, None, options, false)?;
-    let output = broker::run_provisioner(&command, "start-provider-login", &[], &mut |_| {})
+    let output = broker::run_provisioner(&command, "start-provider-login", &[])
         .map(|response| response.map(|response| response.output))
         .unwrap_or_else(|| command.output())
         .map_err(|error| DaemonError::LocalTransport {
@@ -930,18 +911,8 @@ pub fn collect_local_docker_slice_logs(
             ));
         }
     }
-    if broker::busy() {
-        // A start holds the broker for minutes; its progress is in the action logs above.
-        entries.extend(["runtime", "container"].map(|source| SliceLogEntry {
-            source: source.to_string(),
-            path: None,
-            text: "not read: the Docker broker is busy with another operation (a first start can take several minutes); request the logs again when it finishes".to_string(),
-            truncated: false,
-        }));
-    } else {
-        entries.push(local_docker_runtime_log_entry(record, tail_lines));
-        entries.push(local_docker_container_log_entry(record, tail_lines));
-    }
+    entries.push(local_docker_runtime_log_entry(record, tail_lines));
+    entries.push(local_docker_container_log_entry(record, tail_lines));
     Ok(entries)
 }
 

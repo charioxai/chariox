@@ -42,6 +42,8 @@ export function launchArguments(profile, headless, display = false, scale = 1) {
     "--hide-crash-restore-bubble", "--disable-background-networking",
     // MP-08/MP-11: the kernel loads its tab-groups component extension over this pipe.
     "--enable-unsafe-extension-debugging",
+    // Without a usable GPU Chromium refuses WebGL unless software GL is opted in; real GPUs still win.
+    "--enable-unsafe-swiftshader",
     `--window-size=${geometry.width},${geometry.height+(display?chromeBandHeight:0)}`, ...(headless ? ["--headless=new"] : []),
     // MP-08/MP-10: remote panels have no shared physical LCD subpixel order.
     ...(display ? ["--disable-lcd-text", `--force-device-scale-factor=${scale}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",

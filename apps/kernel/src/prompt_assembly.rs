@@ -877,6 +877,19 @@ impl PromptAssemblyService {
         attachments: Vec<PromptAttachment>,
         mode: PromptAssemblyMode,
     ) -> Result<PromptEnvelope, DaemonError> {
+        if mode == PromptAssemblyMode::AssessmentTurn {
+            let mut envelope = PromptEnvelope::new(
+                visible_user_prompt,
+                format!(
+                    "Assess only the supplied evidence, including exact kernel-private result data when supplied. Tools and external authority are unavailable.\n\n{}",
+                    additional_hidden_context.unwrap_or_default()
+                ),
+                Vec::new(),
+                PromptManifest::current(),
+            );
+            envelope.assessment_only = true;
+            return Ok(envelope);
+        }
         let mut hidden_fragments = Vec::new();
         let mut manifest = PromptManifest::current();
 

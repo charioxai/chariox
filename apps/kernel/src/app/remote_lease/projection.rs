@@ -867,19 +867,28 @@ impl<'a> RemoteLeaseRuntime<'a> {
         if leased_agent.active_home_prompt_id.is_none() {
             return requested.to_string();
         }
-        let ended = |run: &crate::provider::RuntimeProviderRun| {
-            run.state() == crate::provider::ProviderRunState::Ended
+        let Ok(requested_run) = self.app.providers.get_run(requested) else {
+            return requested.to_string();
         };
-        let current = self.app.providers.get_run_for_agent(
-            &leased_agent.backing_session_id,
-            &leased_agent.backing_agent_id,
-        );
-        match (self.app.providers.get_run(requested), current) {
-            (Ok(requested_run), Some(current)) if ended(&requested_run) && !ended(&current) => {
-                current.id().to_string()
-            }
-            _ => requested.to_string(),
+        if requested_run.state() != crate::provider::ProviderRunState::Ended {
+            return requested.to_string();
         }
+        // The active home turn stays with the agent's newest run until its completion is
+        // projected, so a replacement that already exited is still the one to answer for.
+        let current = self
+            .app
+            .providers
+            .get_run_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .or_else(|| {
+                self.app.providers.get_latest_run_for_agent(
+                    &leased_agent.backing_session_id,
+                    &leased_agent.backing_agent_id,
+                )
+            });
+        current.map_or_else(|| requested.to_string(), |run| run.id().to_string())
     }
 
     pub(crate) fn pump_leased_runtime_projections(
@@ -1918,6 +1927,15 @@ mod explicit_completion_tests {
             .unwrap()
             .active_home_prompt_id = Some("home-prompt-a".to_string());
         assert_eq!(drained_run_id(&mut app), "provider-run-successor");
+
+        let mut successor = new_run("provider-run-successor");
+        successor.mark_ended();
+        app.providers_mut().insert_run_for_test(successor);
+        assert_eq!(
+            drained_run_id(&mut app),
+            "provider-run-successor",
+            "a successor that exited before the drain still answers for the home turn"
+        );
     }
 
     #[test]

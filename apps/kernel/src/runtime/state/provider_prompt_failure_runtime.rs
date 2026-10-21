@@ -236,7 +236,7 @@ impl KernelRuntimeState {
                     .ok_or_else(|| {
                         crate::durable_state::agent_lifecycle::error("failed turn has no task")
                     })?;
-                crate::durable_state::agent_lifecycle::block_failed_turn(&owned.durable_state_store,&task,format!("Provider run failed: {safe_message}. Owner must reconcile and resume or cancel"))?;
+                crate::durable_state::agent_lifecycle::end_failed_turn(&owned.durable_state_store,&task,format!("Provider run failed: {safe_message}. Owner must reconcile and resume or cancel"))?;
                 Ok(owned
                     .durable_state_store
                     .agent_tasks(Some(session_id), Some(&agent_id))?

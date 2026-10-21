@@ -106,11 +106,7 @@ pub(super) fn start(
             ))
         };
     }
-    if t.state != ExecutionState::Working
-        || t.task_id != t.prompt_id
-        || !t.obligations.is_empty()
-        || t.completion_check.is_some()
-    {
+    if t.state != ExecutionState::Working || t.task_id != t.prompt_id || !t.obligations.is_empty() {
         return Err(error("goal admission must precede work"));
     }
     t.goal = Some(AgentGoal {
@@ -184,10 +180,7 @@ pub(super) fn work_end(t: &mut AgentTaskExecution, has_answer: bool, now: u64) -
         return false;
     }
     let revision = completion::objective_revision(t);
-    let count = t.goal.as_ref().map_or_else(
-        || t.completion_check.as_ref().unwrap().check_count,
-        |g| g.check_count,
-    ) + 1;
+    let count = t.goal.as_ref().map_or(0, |g| g.check_count) + 1;
     let prompt = format!(
         "{COMPLETION_CHECK_PROMPT_PREFIX}{}-{}-{}",
         t.task_id, revision, count
@@ -207,10 +200,6 @@ pub(super) fn work_end(t: &mut AgentTaskExecution, has_answer: bool, now: u64) -
     if let Some(g) = &mut t.goal {
         g.check_count = count;
         g.evaluation = Some(check);
-    } else {
-        let c = t.completion_check.as_mut().unwrap();
-        c.check_count = count;
-        c.evaluation = Some(check);
     }
     t.pending_prompt_id = Some(prompt);
     t.state = ExecutionState::Working;
@@ -243,7 +232,6 @@ pub(super) fn evaluate(
     task: String,
     prompt: String,
     mut result: String,
-    work_answer: Option<String>,
     now: u64,
 ) -> Result<Outcome, DaemonError> {
     let mut t = load(tx, &task)?;
@@ -281,61 +269,7 @@ pub(super) fn evaluate(
         None
     };
     let mut again = false;
-    // MP-08 / MP-10 / MP-11: a plain request gets one correction. Once
-    // that work has a public answer and zero unresolved obligations, further
-    // assessor notes are information, not an owner action or a goal loop.
-    // An empty capture is "no verdict": it is neither information nor an answer.
-    let has_reply = !result.is_empty();
-    let plain_correction_finished = t.goal.is_none()
-        && t.correction_used
-        && valid
-        && has_reply
-        && !t
-            .obligations
-            .iter()
-            .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
-    // A reply that is no JSON object at all (the assessor answered the request
-    // instead of assessing it) carries no verdict; the public answer stands.
-    let answered_instead = t.goal.is_none()
-        && valid
-        && has_reply
-        && !result.contains('{')
-        && work_answer.as_deref().is_some_and(|a| !a.trim().is_empty())
-        && !t
-            .obligations
-            .iter()
-            .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
-    if plain_correction_finished || answered_instead {
-        if let Some(answer) = work_answer.filter(|s| !s.trim().is_empty()) {
-            let evidence = format!(
-                "history:{}:prompt:{}",
-                t.room_id,
-                completion::evaluation(&t).unwrap().work_prompt_id
-            );
-            t.state = ExecutionState::Done;
-            t.wait = None;
-            t.pending_prompt_id = None;
-            t.reason.clear();
-            let check = t.completion_check.as_mut().unwrap();
-            check.final_answer =
-                Some(crate::secret_redaction::redact_secrets(&answer).into_owned());
-            check.evidence = vec![evidence];
-        } else {
-            blocked(&mut t, "The corrected public answer is unavailable; reconcile the work history before resuming");
-        }
-    } else {
-        match assessment {
-        None if valid && t.goal.is_none() && !t.correction_used
-            && work_answer.as_deref().is_some_and(|answer| !answer.trim().is_empty())
-            && !t.obligations.iter().any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
-            && serde_json::from_str::<serde_json::Value>(result).is_err() => {
-                again = continue_work(&mut t, if has_reply {
-                    "The completion check returned malformed JSON. Review the existing public answer and handled receipts, then report the result once. Do not rerun completed work merely to repair this check"
-                } else {
-                    "The completion check returned no verdict. Review the existing public answer and handled receipts, then report the result once. Do not rerun completed work merely to repair this check"
-                });
-        }
-        None if valid && !has_reply => blocked(&mut t, "The completion check returned no verdict twice; explicitly resume to run it again"),
+    match assessment {
         None => blocked(&mut t, "Goal evaluation timed out, was malformed or stale; inspect the receipt and explicitly resume"),
         Some(Assessment::Blocked { reason }) if !reason.trim().is_empty() => blocked(&mut t, &reason),
         Some(Assessment::Achieved { final_answer, evidence }) if !final_answer.trim().is_empty() && !evidence.is_empty() && evidence.iter().all(|e| !e.trim().is_empty()) => {
@@ -351,7 +285,6 @@ pub(super) fn evaluate(
                 t.wait = None;
                 t.reason.clear();
                 if let Some(g) = &mut t.goal { g.final_answer = Some(final_answer); g.evidence = evidence; g.next_check_in_ms = None; }
-                else { let c = t.completion_check.as_mut().unwrap(); c.final_answer = Some(final_answer); c.evidence = evidence; }
             }
         }
         Some(Assessment::Continue { reason, .. }) if !reason.trim().is_empty() => {
@@ -392,7 +325,6 @@ pub(super) fn evaluate(
         }
         _ => blocked(&mut t, "Goal evaluation omitted its required answer/evidence or owner action; explicitly resume"),
     }
-    }
     let receipt = if result.len() > RESULT_LIMIT {
         serde_json::json!({"invalid":true,"reason":"completion_check result exceeds 8192 bytes"})
     } else {
@@ -414,17 +346,6 @@ pub(super) fn evaluate(
 }
 
 fn continue_work(t: &mut AgentTaskExecution, reason: &str) -> bool {
-    if t.goal.is_none() {
-        if t.correction_used {
-            blocked(t, "Plain request remains incomplete after one correction; owner must resume or cancel");
-            return false;
-        }
-        t.correction_used = true;
-        t.wait = None;
-        t.reason = reason.into();
-        t.pending_prompt_id = Some(format!("{CORRECTION_PROMPT_PREFIX}{}", t.task_id));
-        return true;
-    }
     if t.no_progress_wakes >= NO_PROGRESS_LIMIT {
         blocked(t, "Goal repeated continuation without handled progress; owner must inspect and explicitly resume");
         return false;

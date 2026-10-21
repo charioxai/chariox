@@ -72,6 +72,14 @@ test('MP-08/MP-10 relaunch after an unclean stop shows no crash-restore bubble',
  }
 });
 
+// Chromium 137+ gives WebGL no software fallback on a host without a usable GPU
+// unless SwiftShader is opted in; without it getContext("webgl") returns null.
+test('kernel browser renders WebGL in software on hosts without a GPU',async()=>{
+ const {launchArguments}=await import('./kernel-browser-process.mjs');
+ for(const [headless,display] of [[false,false],[false,true],[true,false]])
+  assert(launchArguments('/private',headless,display).includes('--enable-unsafe-swiftshader'));
+});
+
 // MP-08/MP-10: LCD stripes are tied to a physical panel, whereas these
 // captured pixels are shown on arbitrary remote panels at either DPR.
 test('MP-08/MP-10 remote display requests grayscale text antialiasing while ordinary browser launch stays native',async()=>{

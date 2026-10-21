@@ -17,7 +17,6 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
     );
     let task = AgentTaskExecution {
         goal: None,
-        completion_check: None,
         task_id: "task".into(),
         room_id: "room".into(),
         owner_user_id: "owner".into(),
@@ -155,26 +154,6 @@ fn goal_projection_shape_is_bound_to_assigned_protocol493() {
     assert_eq!(
         serde_json::to_value(crate::session::PromptOrigin::CompletionCheck).unwrap(),
         serde_json::json!("completion_check")
-    );
-}
-
-// MP-08 / MP-09 / MP-10 / MP-11 A12: plain checks join the same assigned union.
-#[test]
-fn plain_completion_projection_shape_is_bound_to_assigned_protocol493() {
-    assert_eq!(
-        LOCAL_DAEMON_PROTOCOL_VERSION,
-        crate::test_support::expected_local_protocol_version(),
-        "amint must fold plain confirmation into the assigned union"
-    );
-    let expected = serde_json::json!({"check_count":1,"evaluation":{"deadline_ms":60004,"ledger_revision":3,"objective_revision":1,"origin":"completion_check","prompt_id":"check","result":{"evidence":["public:artifact"],"final_answer":"Verified request","status":"achieved"},"started_at_ms":4,"work_prompt_id":"p","work_provider_run_id":"run"},"evidence":["public:artifact"],"final_answer":"Verified request","original_prompt_id":"p","schema_version":1});
-    let check: crate::durable_state::agent_lifecycle::completion::AgentCompletionCheck =
-        serde_json::from_value(expected.clone()).unwrap();
-    let value = serde_json::to_value(check).unwrap();
-    assert_eq!(value, expected);
-    use sha2::{Digest, Sha256};
-    assert_eq!(
-        format!("{:x}", Sha256::digest(value.to_string().as_bytes())),
-        "341576d124cc87f6ab41d2ee32ebc7d1588133e35ea60b56d21753ab10cdc99c"
     );
 }
 

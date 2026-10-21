@@ -12,6 +12,8 @@ use tokio::time::{timeout, Duration};
 
 #[tokio::test]
 async fn kernel_access_revocation_during_meta_credential_wait_keeps_run_and_task_unchanged() {
+    crate::test_support::isolated_env_test!();
+    let _claude = crate::test_support::TestClaudeExecutable::new();
     const PASSKEY: &str = "Meta Authority Test Passkey";
     let root = crate::test_support::TestWorktree::new("access-meta-vault");
     let worktree = crate::test_support::TestWorktree::new("access-meta-authority");

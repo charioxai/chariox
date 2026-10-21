@@ -15,7 +15,7 @@ fn provider_account_portability_websocket_drill() {
         fn dir(path: PathBuf) -> Self {
             Self(path, true)
         }
-        fn file(path: PathBuf) -> Self {
+        fn optional_dir(path: PathBuf) -> Self {
             Self(path, false)
         }
     }
@@ -24,13 +24,15 @@ fn provider_account_portability_websocket_drill() {
             if self.1 {
                 std::fs::remove_dir_all(&self.0).unwrap();
             } else {
-                let _ = std::fs::remove_file(&self.0);
+                let _ = std::fs::remove_dir_all(&self.0);
             }
         }
     }
     let _cleanup = Cleanup::dir(root.clone());
-    let socket = Path::new("/tmp").join(format!("chx-kp-{:x}.sock", rand::random::<u64>()));
-    let _socket_cleanup = Cleanup::file(socket.clone());
+    // The kernel creates and owns the socket's directory, so the socket cannot sit in /tmp itself.
+    let socket_dir = Path::new("/tmp").join(format!("chx-kp-{:x}", rand::random::<u64>()));
+    let socket = socket_dir.join("kernel.sock");
+    let _socket_cleanup = Cleanup::optional_dir(socket_dir);
     std::env::set_var("CHARIOX_HOME", &root);
     tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 * 1024 * 1024).build().unwrap().block_on(async {
         let tcp = StdTcpListener::bind("127.0.0.1:0").unwrap();

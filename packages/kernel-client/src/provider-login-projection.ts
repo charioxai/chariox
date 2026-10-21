@@ -35,8 +35,6 @@ export function providerLoginName(provider: string): string {
 
 /** The provider-native response choice; only the setup-token flow treats it
  * as a pasted OAuth code. Ordinary terminal logins may ask other questions. */
-/** The kernel titles a dead-copy recovery `Sign in again on <machine>`. */
-const RECOVERY_TITLE_PREFIX = "Sign in again on "
 export const PROVIDER_LOGIN_CODE_CHOICE_ID = "provider-response"
 
 export type ProviderLoginView = {
@@ -53,7 +51,6 @@ export function providerLoginView(
   projection: RuntimeProviderLogin,
   customChoiceId: string | null | undefined,
   accountLabel = projection.login.account_profile,
-  interactionTitle?: string | null,
 ): ProviderLoginView {
   const name = providerLoginName(projection.login.provider)
   const url = safeProviderLoginUrl(projection.login.verification_url ?? projection.login.auth_url ?? "")
@@ -61,8 +58,7 @@ export function providerLoginView(
     && customChoiceId === PROVIDER_LOGIN_CODE_CHOICE_ID
   const userCode = projection.login.user_code
   return {
-    // A recovery names the machine being signed in on (kernel-owned wording); other flows name the account.
-    title: interactionTitle?.startsWith(RECOVERY_TITLE_PREFIX) ? interactionTitle : `Sign in to ${name} · ${accountLabel}`,
+    title: `Sign in to ${name} · ${accountLabel}`,
     url,
     steps: [
       userCode ? `Enter the code ${userCode} and authorize Chariox.` : "Authorize Chariox in your browser.",

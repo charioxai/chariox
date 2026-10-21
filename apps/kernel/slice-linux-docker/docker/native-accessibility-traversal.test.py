@@ -206,35 +206,20 @@ class TraversalTest(unittest.TestCase):
         self.desktop = Node('Desktop', 'desktop', applications)
         return self.driver.snapshot([{'pid': 200, 'started': '1'}, {'pid': 201, 'started': '2'}])
 
-    def test_mp11_unresolved_child_blocks_clipboard_paste_and_live_press_fence(self):
-        # Exercise the producer, not a fabricated traversed=False receipt.
+    def test_unresolved_child_does_not_block_an_agent_paste_action(self):
         from unittest.mock import Mock
-        spec = importlib.util.spec_from_file_location('native_clipboard', pathlib.Path(__file__).with_name('native-clipboard.py'))
-        clipboard = importlib.util.module_from_spec(spec); spec.loader.exec_module(clipboard)
-        pressed = Mock()
+        pressed = Mock(return_value=True)
         action = types.SimpleNamespace(nActions=1, getName=lambda i: 'paste', doAction=pressed)
         paste = Node('Paste', 'push button'); paste.queryAction = lambda: action
         app = Node('Editor', 'application', [paste])
         self.desktop = Node('Desktop', 'desktop', [app])
-        owner = types.SimpleNamespace(id=99, get_full_property=lambda *args: None)
-        self.connection.get_selection_owner = lambda atom: owner
-        self.connection.has_extension = lambda name: True
-        self.connection.res_query_version = lambda: types.SimpleNamespace(server_major=1, server_minor=2)
-        self.connection.res_query_client_ids = lambda ids: types.SimpleNamespace(ids=[types.SimpleNamespace(spec=types.SimpleNamespace(mask=2), value=[200])])
         processes = [{'pid': 200, 'started': '1'}]
-        with patch.object(clipboard, 'selection_fingerprint', return_value='public-selection'):
-            fence = clipboard.input_admission(processes, self.driver)
-            fence()  # A completely resolved public owner is admitted.
-            app.children.append(None); app.childCount += 1
-            tree = self.driver.snapshot(processes)
-            for admit in (lambda: clipboard.input_admission(processes, self.driver), fence):
-                with self.assertRaises(self.driver.NativeInputDenied):
-                    admit(); pressed()  # Pointer/key event must not be dispatched.
-        with self.assertRaises(self.driver.NativeInputDenied):
-            self.driver.act({'processes': processes, 'pid': 200, 'started': '1', 'path': [0],
-                             'action': 'paste', 'agent_input': True,
-                             'expected_tree_digest': self.driver.tree_digest(tree)})
-        pressed.assert_not_called()
+        app.children.append(None); app.childCount += 1
+        tree = self.driver.snapshot(processes)
+        self.assertEqual(self.driver.act({'processes': processes, 'pid': 200, 'started': '1', 'path': [0],
+                                          'action': 'paste', 'agent_input': True,
+                                          'expected_tree_digest': self.driver.tree_digest(tree)}), {'applied': True})
+        pressed.assert_called_once()
         self.assertFalse(tree['complete'])
         self.assertFalse(tree['traversed'])
 
@@ -271,8 +256,10 @@ class TraversalTest(unittest.TestCase):
         snapshot = lambda protection: self.driver.snapshot([{'pid': 200, 'started': '1'}], [{'pid': 200, 'started': '1'}], protection)
         self.assertEqual(snapshot({'pages': [page]})['masks'], [[106, 126, 28, 28]])
         self.assertEqual(snapshot({'pages': [page]})['browser_withheld'], 0)
-        # Unmeasured, moved/resized windows and disagreeing native sizes have no fill placement.
-        for protection in [None, {'pages': [{**page, 'window': [101, 80, 300, 200]}]}, {'pages': [{**page, 'native': [300, 100]}]}, {'pages': [{**page, 'native': None}]}]:
+        # A larger emulated viewport still covers the measured native Tab.
+        self.assertEqual(snapshot({'pages': [{**page, 'native': [300, 100]}]})['masks'], [[106, 186, 28, 28]])
+        # Unmeasured, moved/resized windows and disagreeing native widths have no fill placement.
+        for protection in [None, {'pages': [{**page, 'window': [101, 80, 300, 200]}]}, {'pages': [{**page, 'native': [250, 160]}]}, {'pages': [{**page, 'native': None}]}]:
             self.assertEqual(snapshot(protection)['masks'], [])
             self.assertEqual(snapshot(protection)['browser_withheld'], 0 if protection is None else 1)
         # Browser accessibility content remains withheld from the structured tree.

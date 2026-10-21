@@ -3,7 +3,7 @@ import { createHash, generateKeyPairSync, verify } from "node:crypto"
 import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { spawn, spawnSync } from "node:child_process"
 import { test } from "node:test"
 import { runManagedKernelReleaseBuild } from "./build-managed-kernel-release.mjs"
@@ -212,6 +212,7 @@ if [ "$1" = buildx ] && [ "$2" = build ]; then
       trap 'printf cancelled > "$bin_dir/build-cancelled"; [ -z "$build_pid" ] || kill "$build_pid" 2>/dev/null || true' TERM
       sleep 20 &
       build_pid=$!
+      : > "$bin_dir/build-ready"
       wait "$build_pid"
       ;;
     build-timeout-escaped-holder)
@@ -347,6 +348,7 @@ test("Buildx 0.30.1 history ls parses lowercase newline-delimited full reference
 function waitForChild(child, timeoutMs = 10_000) {
   return new Promise((resolvePromise, reject) => {
     const timer = setTimeout(() => {
+      assert.ok(Number.isSafeInteger(child.pid) && child.pid > 1)
       child.kill("SIGKILL")
       reject(new Error("release fixture process did not exit"))
     }, timeoutMs)
@@ -747,23 +749,53 @@ test("managed release build preserves its durable barrier when history is absent
   }
 })
 
-test("managed release interruption waits for exact terminal history and does not publish", async (context) => {
+for (const duringSpawn of [false, true]) test(`managed release interruption ${duringSpawn ? "during spawn" : "after start"} waits for exact terminal history and does not publish`, async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-build-interruption-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const fixture = await makeFixture(root)
   await fixture.configure({ scenario: "interrupt-terminal" })
 
+  if (duringSpawn) {
+    const hook = join(root, "interrupt-spawn.mjs")
+    await writeFile(hook, `
+import childProcess from 'node:child_process';
+import {syncBuiltinESMExports} from 'node:module';
+import {existsSync} from 'node:fs';
+const spawn = childProcess.spawn;
+childProcess.spawn = (command, args, options) => {
+  const child = spawn(command, args, options);
+  if (args[0] === 'buildx' && args[1] === 'build') {
+    const deadline = Date.now() + 5000;
+    while (!existsSync(${JSON.stringify(join(fixture.bin, "build-ready"))})) {
+      if (Date.now() > deadline) throw Error('build did not start');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
+    const pid = process.pid;
+    if (!Number.isSafeInteger(pid) || pid <= 1) throw Error('invalid own pid');
+    process.kill(pid, 'SIGINT');
+  }
+  return child;
+};
+syncBuiltinESMExports();
+`)
+    const environment = fixture.environment.bind(fixture)
+    fixture.environment = () => ({ ...environment(), NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import ${pathToFileURL(hook).href}` })
+    context.after(() => rm(hook, { force: true }))
+  }
   const run = fixture.start(["--build-timeout-seconds", "30"])
-  await waitForFile(join(fixture.bin, "build-started"))
   const exited = waitForChild(run.child)
-  run.child.kill("SIGINT")
+  if (!duringSpawn) {
+    await waitForFile(join(fixture.bin, "build-ready"))
+    assert.ok(Number.isSafeInteger(run.child.pid) && run.child.pid > 1)
+    run.child.kill("SIGINT")
+  }
   const result = await exited
   assert.equal(result.status, 1, run.stderr)
   assert.match(run.stderr, /interrupted by SIGINT/)
   assert.equal(await readFile(join(fixture.bin, "build-cancelled"), "utf8"), "cancelled")
   assert.equal(await readFile(builderBarrierPath(fixture.home)).then(() => true, () => false), false)
   assert.equal(await readFile(fixture.output).then(() => true, () => false), false)
-  assert.deepEqual(await readdir(root), ["bin", "builder-key.pem", "docker-home", "docker-trace", "source-repository", "tmp"])
+  assert.deepEqual((await readdir(root)).filter(name => name !== "interrupt-spawn.mjs"), ["bin", "builder-key.pem", "docker-home", "docker-trace", "source-repository", "tmp"])
 })
 
 test("managed release restart keeps the builder leased until the exact prior source and builder history settles", async (context) => {
@@ -823,7 +855,7 @@ test("managed release build closes inherited pipes after a detached descendant s
   context.after(async () => {
     try {
       const pid = Number(await readFile(join(fixture.bin, "escaped-child-pid"), "utf8"))
-      if (Number.isSafeInteger(pid) && pid > 0) process.kill(pid, "SIGKILL")
+      if (Number.isSafeInteger(pid) && pid > 1) process.kill(pid, "SIGKILL")
     } catch {}
     await rm(root, { recursive: true, force: true })
   })

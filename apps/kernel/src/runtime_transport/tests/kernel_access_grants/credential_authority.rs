@@ -143,6 +143,8 @@ async fn kernel_access_external_holder_cannot_answer_vault_unlock() {
 
 #[tokio::test]
 async fn kernel_access_revocation_stops_waiting_and_deferred_provider_launches() {
+    crate::test_support::isolated_env_test!();
+    let _claude = crate::test_support::TestClaudeExecutable::new();
     let mut kernel = Kernel::start().await;
     let mut holder = Client::start(&kernel.root);
     let grant_id = grant(&mut kernel, &mut holder).await;

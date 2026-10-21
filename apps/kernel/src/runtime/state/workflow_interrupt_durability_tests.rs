@@ -164,8 +164,50 @@ async fn a01_workflow_node_turn_settles_without_a_plain_completion_check() {
         .find(|t| t.task_id == task.task_id)
         .unwrap();
     assert_eq!(settled.state, ExecutionState::Done, "{settled:?}");
-    assert!(settled.completion_check.is_none(), "{settled:?}");
     assert!(settled.pending_prompt_id.is_none(), "{settled:?}");
+}
+
+// A plain turn only gets a task row: ending after a tool call with no answer is
+// settled Done, never corrected, held to a wait or blocked for the owner.
+#[tokio::test]
+async fn plain_turn_ending_without_an_answer_settles_done_without_a_correction() {
+    use crate::durable_state::agent_lifecycle::ExecutionState;
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("plain-turn-settle"),
+        config,
+        false,
+    );
+    let owned = &fixture.runtime.owned;
+    let prompt = crate::session::PromptQueueItem::new(
+        "plain-turn",
+        "client",
+        &fixture.target_agent_id,
+        "Read the attached notes after the refresh",
+        crate::session::PromptStatus::Running,
+    );
+    owned
+        .admit_agent_task(&crate::app::KernelPreparedPromptSubmission {
+            session_id: fixture.session_id.clone(),
+            prompt: prompt.clone(),
+            force_queue: false,
+            refresh_projection: false,
+        })
+        .unwrap();
+    let (task, correction) = owned
+        .settle_agent_task(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            &prompt,
+            "plain-provider-run",
+            false,
+        )
+        .unwrap()
+        .expect("plain turn settlement");
+    assert!(!correction, "{task:?}");
+    assert_eq!(task.state, ExecutionState::Done, "{task:?}");
+    assert!(task.pending_prompt_id.is_none() && !task.correction_used);
 }
 
 async fn workflow_wait_cancellation(cancel_creator: bool) {

@@ -796,12 +796,7 @@ login challenges and masked native responses through that interaction; they
 own no auth or resume policy. After successful login the kernel reloads the
 official harness and retries the
 same admitted Chariox turn. Credentials stay on that machine; independent
-kernels have no credential synchronization or shared refresh authority. A dead
-copy marks only that machine's profile expired and asks "Sign in again on
-<machine>". Before any sign-in or sign-out of a login that other machines hold,
-the kernel deletes only its local credential, so the provider's revoking
-login/logout never runs against a shared chain unless the user ends the session
-everywhere (`PROVIDER_LOGIN_COPIES.md`).
+kernels have no credential synchronization or shared refresh authority.
 
 Some agents can be launched through a provider-native TUI client interface, for example `chariox codex [session-ref]`, `chariox opencode [session-ref]`, or `chariox claude [session-ref]`.
 

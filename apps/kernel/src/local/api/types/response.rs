@@ -342,13 +342,7 @@ pub enum LocalDaemonResponse {
     ProviderLoginInputSent { login_id: String, byte_count: usize, },
     ProviderLoginCancelled { login: ProviderLoginStatus, },
     ProviderLogoutStarted { logout: ProviderLoginStart, },
-    ProviderLoggedOut {
-        provider: String,
-        account_profile: String,
-        /// The login is shared with other machines, so only this machine's copy was removed.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        local_only: bool,
-    },
+    ProviderLoggedOut { provider: String, account_profile: String, },
     ProviderAccountProfilesListed { profiles: Vec<crate::account_profile::ProviderAccountProfile>, },
     ProviderAccountProfile { profile: crate::account_profile::ProviderAccountProfile, },
     ProviderAccountProfileRemoved { profile: crate::account_profile::ProviderAccountProfile, },
@@ -538,8 +532,6 @@ pub enum LocalDaemonResponse {
     },
     EventConnectionResourcesPage { page: EventGeneratorResourcePage, },
     EventConnectionTested { result: chariox_event_protocol::AegsConnectionTestEventResponse, },
-    EventConnectionEvents { page: chariox_event_protocol::AegsReceivedEventPage, },
-    EventConnectionEventReplayed { result: chariox_event_protocol::AegsReceivedEventReplayResponse, },
     EventConnectionDependencies { connection_id: String, dependencies: Vec<EventConnectionDependency>, },
     EventConnectionRemoved { connection: EventConnection, },
     EventDeliveryStatus { status: EventDeliveryStatus, },

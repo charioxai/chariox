@@ -186,9 +186,9 @@ import {
   restoreSliceBackup,
   saveSliceState,
   startSliceProviderLogin,
+  startSlice,
   stopSlice,
 } from "./slice-api.js"
-import { startSliceShowingProgress } from "./slice-start-progress.js"
 import {
   attachWorkspaceLink,
   createWorkspaceLink,
@@ -602,7 +602,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     storeProviderSetupToken: (profile, value, replace) => storeProviderSetupToken(client, profile, value, replace, {
       ...(isAttached() ? { sessionId: sessionState().id, agentId: focusedAgentId() } : {}),
     }),
-    logoutProvider: (provider, accountProfile, endEverywhere) => logoutProvider(client, provider, accountProfile, endEverywhere),
+    logoutProvider: (provider, accountProfile) => logoutProvider(client, provider, accountProfile),
     listProviderAccountProfiles: (provider) => listProviderAccountProfiles(client, provider),
     createProviderAccountProfile: (provider, label) => createProviderAccountProfile(client, provider, label),
     linkProviderAccountProfile: (provider, label, path) => linkProviderAccountProfile(client, provider, label, path),
@@ -683,7 +683,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     },
     getSlice: async (sliceRef) => getSlice(client, sliceRef),
     startSlice: async (sliceRef) => {
-      const slice = await startSliceShowingProgress(client, sliceRef, (message) => flashFooter(message, "info"))
+      const slice = await startSlice(client, sliceRef)
       setSlicesState(await listSlices(client))
       return slice
     },

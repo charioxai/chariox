@@ -15,8 +15,6 @@ import json
 import os
 import pyatspi
 from collections import deque
-from pathlib import Path
-from types import SimpleNamespace
 # MP-08 / MP-10 / MP-11: private protection coverage is independent of
 # the 64-node / 3 KiB public projection. Exhaustion still masks captures.
 MAX_NODES=8192
@@ -441,12 +439,5 @@ def act(request):
     if node.getRole()==pyatspi.ROLE_PASSWORD_TEXT or node.getRoleName()!=expected['role'] or node.name!=expected['name']:raise ValueError('stale control')
     interface=node.queryAction()
     index=next((i for i in range(min(interface.nActions,16)) if interface.getName(i)==request['action']),None)
-    if request.get('agent_input'):
-        # MP-11: doAction can invoke Paste without naming that effect.
-        import importlib.util
-        spec=importlib.util.spec_from_file_location('native_clipboard',Path(__file__).with_name('native-clipboard.py'))
-        clipboard=importlib.util.module_from_spec(spec);spec.loader.exec_module(clipboard)
-        protection=SimpleNamespace(snapshot=snapshot,alive=alive,NativeInputDenied=NativeInputDenied)
-        clipboard.input_admission(request['processes'],protection,request.get('browser_processes'))()
     if index is None or not interface.doAction(index):raise ValueError('action refused')
     return {'applied':True}

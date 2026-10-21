@@ -724,6 +724,9 @@ else if (args[0] !== "rm") process.exit(1)
       if (prebuilt) { mkdirSync(join(moduleDir, "prebuilt")); writeFileSync(join(moduleDir, "prebuilt/.managed-release"), "synthetic") }
       const result = spawnSync("bash", ["-c", `set -eu
 log() { :; }
+emit_progress() { :; }
+cargo_build_jobs() { echo 1; }
+load_released_image() { return 1; }
 docker_target_arch() { echo amd64; }
 docker_build() { touch "$BUILT_MARKER"; }
 ${build}

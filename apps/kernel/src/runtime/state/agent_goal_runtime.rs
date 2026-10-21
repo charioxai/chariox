@@ -126,11 +126,9 @@ impl KernelRuntimeOwnedState {
                     .get_session(&prepared.session_id)?
                     .owner_user_id()
                     .into(),
-                objective: String::from_utf8(
-                    self.room_secret_observations
-                        .protect_unframed_bytes(&prepared.session_id, goal.objective.as_bytes()),
-                )
-                .map_err(|_| ledger::error("protected objective encoding"))?,
+                // The owner typed the objective; Room protection covers values
+                // the product holds, never the owner's own text.
+                objective: goal.objective.clone(),
                 minutes: goal.minutes,
                 now: crate::session::unix_epoch_ms(),
             })?;
@@ -359,20 +357,7 @@ impl KernelRuntimeState {
         {
             return Err(ledger::error("only the room owner controls a goal"));
         }
-        let value = raw_value
-            .map(|v| {
-                if action == "edit" {
-                    String::from_utf8(
-                        self.owned
-                            .room_secret_observations
-                            .protect_unframed_bytes(session.id(), v.as_bytes()),
-                    )
-                    .map_err(|_| ledger::error("protected objective encoding"))
-                } else {
-                    Ok(v.to_owned())
-                }
-            })
-            .transpose()?;
+        let value = raw_value.map(str::to_owned);
         let task = self
             .owned
             .durable_state_store

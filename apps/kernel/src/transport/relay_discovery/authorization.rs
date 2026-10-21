@@ -31,14 +31,25 @@ pub(crate) async fn cloud_metadata_token(config: &DaemonConfig) -> Result<String
             operation: "relay_metadata_query",
             message: "Cloud relay profile is not configured".to_string(),
         })?;
-    // Use the same scoped grant for projected inventory and fresh lookups.
-    // Issuance failure must not fall back to the machine runtime grant.
+    cloud_metadata_token_for_targets(config, visible_targets(profile).await?).await
+}
+
+pub(crate) async fn cloud_metadata_token_for_targets(
+    config: &DaemonConfig,
+    targets: Option<std::collections::BTreeSet<String>>,
+) -> Result<String, DaemonError> {
+    let profile = config
+        .cloud_relay
+        .as_ref()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "relay_metadata_query",
+            message: "Cloud relay profile is not configured".into(),
+        })?;
+    // Issuance failure must never fall back to the kernel's runtime grant.
     Ok(issue_cloud_relay_inventory_discovery_token(
         profile,
         &config.daemon_id,
-        visible_targets(profile)
-            .await?
-            .map(|ids| ids.into_iter().collect()),
+        targets.map(|ids| ids.into_iter().collect()),
     )
     .await?
     .token)

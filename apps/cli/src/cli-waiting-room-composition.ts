@@ -40,8 +40,8 @@ import type { SessionListEntry } from "./sessions.js"
 import {
   createSlice,
   deleteSlice,
+  startSlice,
 } from "./slice-api.js"
-import { startSliceShowingProgress } from "./slice-start-progress.js"
 import { applyTheme } from "./theme.js"
 import {
   createWaitingRoomActivationController,
@@ -772,7 +772,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       }).length
     },
     createSlice: (options) => createSlice(deps.client, cliWaitingRoomSliceApiOptions(options)),
-    startSlice: (sliceRef) => startSliceShowingProgress(deps.client, sliceRef, (message) => deps.flashFooter(message, "info")),
+    startSlice: (sliceRef) => startSlice(deps.client, sliceRef),
     deleteSlice: (sliceRef) => deleteSlice(deps.client, sliceRef),
     updateSlices: (slice) => {
       deps.setSlicesState((current: any[] = []) => [
