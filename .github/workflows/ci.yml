@@ -166,6 +166,17 @@ jobs:
       - name: Verify source revision
         run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
+      - name: Add swap for the kernel test build
+        # MP-08/MP-10: rustc peaks near 18 GiB resident while compiling the
+        # chariox-kernel test crate, more than the hosted runner's RAM; the
+        # unswapped runner killed the build with SIGTERM (exit 143).
+        run: |
+          sudo fallocate -l 24G /mnt/chariox-swap
+          sudo chmod 600 /mnt/chariox-swap
+          sudo mkswap /mnt/chariox-swap
+          sudo swapon /mnt/chariox-swap
+          free -h
+
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
