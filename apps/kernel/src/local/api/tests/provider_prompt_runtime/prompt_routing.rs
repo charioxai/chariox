@@ -179,6 +179,13 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
         .expect("default provider launch should succeed")
     });
 
+    // Keep work in flight: the echo PTY otherwise legitimately settles after
+    // its short quiet interval while another test occupies the executor.
+    let _in_flight_tool = harness.with_app(|app| {
+        app.runtime_tool_call_activity
+            .hold_for_test(_default_run.id())
+    });
+
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             account_profile: None,
@@ -1112,12 +1119,17 @@ fn direct_prompt_cancel_uses_explicit_target_agent_when_multiple_agents_are_acti
         other => panic!("unexpected local response: {other:?}"),
     }
 
-    let session_state = harness.with_app(|app| {
-        app.sessions()
-            .get_session(session.id())
-            .expect("session should still exist")
-            .clone()
-    });
+    let session_state = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("session state should load after cancellation")
+    {
+        LocalDaemonResponse::SessionState { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
     assert_eq!(
         session_state
             .active_prompt_for_agent(default_agent.id())

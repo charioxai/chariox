@@ -12,7 +12,7 @@ pub(crate) struct RuntimeToolCallActivity {
     counts: Arc<Mutex<BTreeMap<String, usize>>>,
 }
 
-pub(super) struct RuntimeToolCallGuard {
+pub(crate) struct RuntimeToolCallGuard {
     activity: RuntimeToolCallActivity,
     provider_run_ids: Vec<String>,
     output_deadlines: ProviderOutputDeadlineStore,
@@ -34,6 +34,14 @@ impl RuntimeToolCallActivity {
             provider_run_ids,
             output_deadlines,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_for_test(&self, provider_run_id: &str) -> RuntimeToolCallGuard {
+        self.begin(
+            [provider_run_id.to_string()],
+            ProviderOutputDeadlineStore::default(),
+        )
     }
 
     pub(crate) fn active_count(&self, provider_run_id: &str) -> usize {
