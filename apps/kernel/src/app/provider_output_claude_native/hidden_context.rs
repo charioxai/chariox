@@ -10,11 +10,15 @@ pub(super) struct ManagedPromptInputs {
     pub(super) prompt: String,
     pub(super) hidden_system_context: String,
     pub(super) attachments: Vec<PromptAttachment>,
+    /// The validated skill delivery rides beside the scheduled inputs: the hook
+    /// rebuilds the rest, but only the dispatch resolved and recorded the skills.
+    pub(super) skill_context: String,
 }
 
 pub(super) fn stage_managed_inputs(
     context_file: &str,
     prompt: &ClaudeNativePromptInjection<'_>,
+    skill_context: &str,
 ) -> Result<(), DaemonError> {
     let inputs = ManagedPromptInputs {
         prompt_id: prompt.id.into(),
@@ -22,6 +26,7 @@ pub(super) fn stage_managed_inputs(
         prompt: prompt.prompt.into(),
         hidden_system_context: prompt.hidden_system_context.into(),
         attachments: prompt.attachments.to_vec(),
+        skill_context: skill_context.into(),
     };
     fs::write(
         format!("{context_file}.managed-inputs"),

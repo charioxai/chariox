@@ -607,6 +607,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                                     context_handoff: &|_| String::new(),
                                 },
                             )?;
+                            let base = crate::provider::fit_claude_native_hidden_context(
+                                provider_run_id,
+                                join_claude_context([base, inputs.skill_context]),
+                            )?;
                             policy.prepare_context(
                                 session_id,
                                 &agent_id,
@@ -2006,6 +2010,11 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             envelope,
         )?;
         let visible = envelope.visible_user_prompt;
+        let skill_context = envelope
+            .skill_delivery
+            .as_ref()
+            .map(|delivery| delivery.hidden_context.clone())
+            .unwrap_or_default();
         let hidden_context = crate::provider::fit_claude_native_hidden_context(
             provider_run_id,
             envelope.hidden_system_context,
@@ -2017,7 +2026,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         {
             // Preserve full scheduled inputs before rendering, and before any PTY submission.
             // The hook re-protects these inputs under the current Room barrier.
-            hidden_context::stage_managed_inputs(context_file, prompt)?;
+            hidden_context::stage_managed_inputs(context_file, prompt, &skill_context)?;
         }
         fs::write(context_file, hidden_context).map_err(|error| DaemonError::ProviderProtocol {
             provider_run_id: provider_run_id.to_string(),

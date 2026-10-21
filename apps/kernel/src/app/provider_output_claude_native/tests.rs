@@ -3916,3 +3916,179 @@ fn claude_native_skill_retry_recognizes_the_prepared_invocation_in_the_composer(
         "{captured:?}"
     );
 }
+
+// MP-08 / MP-10 / MP-11: with delivery receipts the hook rebuilds its context from
+// the staged managed inputs; the selected skill body must survive that rebuild.
+#[test]
+fn claude_native_receipt_hook_context_keeps_the_selected_skill_body() {
+    struct DeliverSkill;
+    impl crate::provider::skill_delivery::SkillPromptBridge for DeliverSkill {
+        fn acknowledge_prompt(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<(), DaemonError> {
+            Ok(())
+        }
+        fn acknowledge_tools(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &ProviderPromptSignalBatch,
+        ) -> Result<(), DaemonError> {
+            Ok(())
+        }
+        fn prepare(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &crate::prompt_assembly::PromptEnvelope,
+        ) -> Result<Option<crate::provider::skill_delivery::ProviderSkillDelivery>, DaemonError>
+        {
+            Ok(Some(crate::provider::skill_delivery::ProviderSkillDelivery {
+                visible_prompt: "[Chariox skill review] inspect source".into(),
+                hidden_context: "SKILL-BODY-MARKER-77".into(),
+                codex_input: Vec::new(),
+                requires_native_load_ack: Vec::new(),
+            }))
+        }
+    }
+    struct PassthroughPolicy;
+    impl NativePromptHandoffPolicy for PassthroughPolicy {
+        fn prepare_context(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: bool,
+            base: String,
+        ) -> Result<String, DaemonError> {
+            Ok(base)
+        }
+        fn protect_inputs(
+            &self,
+            _: &str,
+            prompt: String,
+            hidden: String,
+            attachments: Vec<PromptAttachment>,
+        ) -> Result<(String, String, Vec<PromptAttachment>), DaemonError> {
+            Ok((prompt, hidden, attachments))
+        }
+        fn rejected(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+            Ok(None)
+        }
+        fn accepted(&self, _: &str, _: &str, _: &str) -> Result<(), DaemonError> {
+            Ok(())
+        }
+    }
+    let worktree = crate::test_support::TestWorktree::new("claude-receipt-skill-body");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    app.providers
+        .set_skill_prompt_bridge(std::sync::Arc::new(DeliverSkill));
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "skill-body-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-receipt-skill-body-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    fs::write(&context_file, "").unwrap();
+    fs::write(&events_file, "").unwrap();
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "skill-body-claude-run",
+        &context_file,
+        &events_file,
+        "cat >/dev/null".to_string(),
+    );
+    run.mark_running();
+    let mut ready_run = serde_json::to_value(&run).unwrap();
+    ready_run["started_at_ms"] = serde_json::json!(unix_epoch_ms().saturating_sub(5_000));
+    ready_run["pty_env"]["CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS"] = serde_json::json!("1");
+    run = serde_json::from_value(ready_run).unwrap();
+    app.pty.spawn_for_run(&run).unwrap();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .unwrap();
+    let prompt = match app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "$review inspect source",
+            Vec::new(),
+        )
+        .unwrap()
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        other => panic!("unexpected prompt: {other:?}"),
+    };
+    let context_path = context_file.display().to_string();
+    let policy = PassthroughPolicy;
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .with_prompt_handoff(&policy)
+        .inject_prompt(
+            session.id(),
+            run.id(),
+            agent.id(),
+            &context_path,
+            &run,
+            &ClaudeNativePromptInjection {
+                id: prompt.id(),
+                origin_prompt_id: prompt.id(),
+                prompt: "$review inspect source",
+                hidden_system_context: "",
+                attachments: &[],
+                context_handoff: &|_| String::new(),
+            },
+        )
+        .unwrap();
+    write_claude_native_marker(&context_path, &format!("injected:{}", prompt.id()));
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "[Chariox skill review] inspect source",
+            "hook_context_request_id": "skill-body-request",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .with_prompt_handoff(&policy)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    let delivered =
+        fs::read_to_string(root.join("hook-context-responses/skill-body-request.txt")).unwrap();
+    app.pty.remove_process(run.id()).unwrap();
+    let _ = fs::remove_dir_all(root);
+    assert!(
+        delivered.contains("SKILL-BODY-MARKER-77"),
+        "the hook response dropped the selected skill body: {delivered:?}"
+    );
+}
