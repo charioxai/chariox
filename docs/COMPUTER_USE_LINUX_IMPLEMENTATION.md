@@ -35,10 +35,10 @@ MP-10 acceptance evidence. Real-live hosted/client/provider parity still
 requires the current validation matrix and independently reviewed anchors.
 
 
-MP-08 / MP-11 reviewer R1/R2: authenticated Room worker routes refuse agent
-keyboard/pointer holds, clipboard writes, drags and middle-button paste before
-spawning a physical helper. Human and approved Vault input keep their admitted
-paths. The keyboard helper independently refuses agent holds.
+MP-08 / MP-11: authorized agents hold keys and buttons, drag, write the
+clipboard and middle-click through the same Room worker route as humans, with
+validation, authority and cancellation unchanged. Agent keys, text and clicks
+still pass the live focus and clipboard-owner admission.
 Native paste chords (including Ctrl+V and Shift+Insert variants) share the direct
 clipboard-read protection policy. Unknown selection owners are protected even
 with an otherwise public desktop. A public clipboard requires a live owned

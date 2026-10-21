@@ -152,6 +152,15 @@ class AgentInputClipboardTests(unittest.TestCase):
         owner=SimpleNamespace(id=55,get_full_property=lambda *args:None)
         self.assertIsNone(self.run_input({'kind':'click','x':5,'y':5},owner_pid=123,owners=[0,owner]))
         self.assertIsNone(self.run_input({'kind':'key','key':'p'},owner_pid=123,owners=[0,owner]))
+class AgentHoldTests(unittest.TestCase):
+    def test_agent_pointer_and_key_holds_reach_the_hold_helper(self):
+        accessibility=SimpleNamespace(input_guard=lambda _:lambda:None)
+        clipboard_guard=SimpleNamespace(input_admission=lambda *_:lambda:None,key_destinations=lambda *_:None)
+        with patch.object(module.keyboard,'hold_input') as hold,patch.object(module,'load',side_effect=lambda name:accessibility if name=='native-accessibility' else clipboard_guard):
+            module.main({'op':'input','agent_input':True,'processes':[],'input':{'kind':'pointer_hold','button':2,'x':5,'y':6,'duration_ms':100}})
+            module.main({'op':'input','agent_input':True,'processes':[],'input':{'kind':'hold','key':'a','duration_ms':100}})
+        self.assertEqual([call.args[:2] for call in hold.call_args_list],[('button','middle'),('key','a')])
+
 class WarmChannelTests(unittest.TestCase):
     def test_mp10_mp11_human_committed_text_is_unpaced_but_agent_text_stays_fenced(self):
         connection=object()

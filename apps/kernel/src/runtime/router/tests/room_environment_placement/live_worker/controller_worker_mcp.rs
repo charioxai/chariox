@@ -2297,8 +2297,7 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
     assert_eq!(action.arguments, None);
 
     // UX-first: the approved native secret above stays registered for this
-    // Room, but ordinary agent input still forwards; only unfenced mutations
-    // are refused below.
+    // Room, and agent input still forwards.
     let input_cases = [
         (
             "slice_mouse",
@@ -2336,8 +2335,8 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         );
     }
 
-    // MP-11 R1: agent mutations with no protection fence are refused on the
-    // real home/worker route; ordinary input after the Vault fill is forwarded.
+    // Authorized agents drag, hold, write the clipboard and middle-click like
+    // any other input; only Vault values stay out of model-bound output.
     for (tool, arguments) in [
         (
             "slice_mouse",
@@ -2359,21 +2358,6 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
             "slice_mouse",
             json!({"action":"click","x":120,"y":160,"button":"middle"}),
         ),
-    ] {
-        let error = fixture
-            .worker
-            .runtime_state
-            .dispatch_authenticated_runtime_tool_call(&input_token, tool, arguments)
-            .await
-            .expect_err("protected agent mutation must be refused");
-        assert!(
-            error
-                .to_string()
-                .contains("user_domain_sensitive_requires_focus"),
-            "{error}"
-        );
-    }
-    for (tool, arguments) in [
         (
             "slice_mouse",
             json!({"action":"click","x":220,"y":260,"button":"right"}),
@@ -2480,10 +2464,10 @@ async fn check_worker_computer_tools(fixture: &mut LiveWorker) {
         )),
         "provider Computer tools must use the shared physical input adapter: {log}",
     );
-    for refused in ["drag", "hold", "clipboard-write"] {
+    for forwarded in ["pointer-drag", "computer-clipboard-write-stdin"] {
         assert!(
-            !log.contains(refused),
-            "refused {refused} reached the helper: {log}"
+            log.contains(forwarded),
+            "authorized {forwarded} must reach the helper: {log}"
         );
     }
 

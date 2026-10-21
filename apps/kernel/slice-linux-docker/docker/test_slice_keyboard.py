@@ -297,12 +297,19 @@ class PhysicalChordTests(unittest.TestCase):
                 with self.assertRaises(ValueError):m.main(args,io.BytesIO(text))
             inject.assert_not_called()
 
-    def test_mp11_r1_agent_room_holds_emit_no_native_events(self):
+    def test_agent_room_holds_reach_the_hold_helper(self):
         m,c=self.native()
-        for args,data in [(['hold-key','100'],b's'),(['hold-button','left','100','10','10'],b'')]:
+        for args,data,call in [(['hold-key','100'],b's',('key','s',100)),(['hold-button','middle','100','10','10'],b'',('button','middle',100,10,10))]:
             with patch.dict(m.os.environ,{'CHARIOX_COMPUTER_AGENT_INPUT':'1'}), patch.object(m,'hold_input') as hold:
-                with self.assertRaises(ValueError):m.main(args,io.BytesIO(data))
-                hold.assert_not_called()
+                m.main(args,io.BytesIO(data))
+                hold.assert_called_once_with(*call)
+
+    def test_agent_room_middle_click_is_admitted_like_other_clicks(self):
+        m,c=self.native()
+        c.screen.return_value.width_in_pixels=c.screen.return_value.height_in_pixels=100
+        with patch.dict(m.os.environ,{'CHARIOX_COMPUTER_AGENT_INPUT':'1'}), patch.object(m,'room_clipboard_guard',return_value=lambda:None), patch.object(m,'focused_target',side_effect=m.SecretTargetChanged()), patch.object(m.xtest,'fake_input') as inject, patch.object(m.time,'sleep'), patch.object(m.signal,'signal'):
+            m.main(['pointer-click','middle','1','10','10'],io.BytesIO(b''))
+        self.assertEqual(sum(call.args[1:]==(4,2) for call in inject.call_args_list),1)
 
     def test_mp11_r2_agent_room_paste_checks_clipboard_before_native_events(self):
         m,c=self.native()

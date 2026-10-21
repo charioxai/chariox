@@ -112,13 +112,21 @@ test('MP-08 provider shortcut casing resolves to physical base keys', () => {
   assert.equal(nativeInput({kind:'hold',key:'CTRL+A',duration_ms:5},binding).key,'ctrl+a');
 });
 
-test('MP-11 finding 1 agents cannot lend native clipboard, repeats or middle-button paste', async () => {
+test('agents drag, hold, write the clipboard and middle-click like any other input', async () => {
+  const sent=[];
+  const adapter=new NativeComputer({placement:'host',binding:()=>binding,execute:async request=>{sent.push(request);return {};}});
+  adapter.writeClipboard=async()=>({applied:true});
+  const inputs=[{kind:'hold',key:'a',duration_ms:500},{kind:'drag',x:10,y:10,to_x:20,to_y:20},
+    {kind:'click',button:2,x:10,y:10},{kind:'pointer_hold',button:2,x:10,y:10,duration_ms:1}];
+  for(const input of inputs)await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input},{});
+  assert.deepEqual(sent.map(request=>request.input.kind),['hold','drag','click','pointer_hold']);
+  assert.deepEqual(await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'clipboard_write',text:'ordinary'}},{}),{applied:true});
+});
+
+test('MP-11 agents still cannot hold raw physical keycodes', async () => {
   let calls=0;
   const adapter=new NativeComputer({placement:'host',binding:()=>binding,execute:async()=>{calls++;return {};}});
-  for(const input of [{kind:'clipboard_write',text:'ordinary'}, {kind:'hold',key:'a',duration_ms:500},
-    {kind:'drag',x:10,y:10,to_x:20,to_y:20}, {kind:'click',button:2,x:10,y:10}, {kind:'pointer_hold',button:2,x:10,y:10,duration_ms:1}]) {
-    await assert.rejects(adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input},{}));
-  }
+  await assert.rejects(adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'keycode',keycode:38,state:'down'}},{}));
   assert.equal(calls,0);
 });
 
@@ -159,13 +167,6 @@ test('MP-11 an agent click carries the CDP-placed active page for the X11 hit te
  scoped.browser=()=>({nativeViewport:async()=>{throw Error('extension gone');}});
  await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'click',x:10,y:10}},{});
  assert.equal(sent[2].browser_page,null,'an unplaceable page is browser UI to the helper');
-});
-
-test('MP-11 R1 agent pointer holds require the same human admission as keyboard holds',async()=>{
-  let calls=0;
-  const adapter=new NativeComputer({placement:'host',binding:()=>binding,execute:async()=>{calls++;return {};}});
-  await assert.rejects(adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'pointer_hold',button:1,x:10,y:10,duration_ms:100}},{}));
-  assert.equal(calls,0);
 });
 
 test('MP-11 #904 review 1/3 agent clicks and keys reach the helper clipboard-owner gate, not the read policy',async()=>{
