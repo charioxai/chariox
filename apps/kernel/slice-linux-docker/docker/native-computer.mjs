@@ -122,9 +122,6 @@ export class NativeComputer {
       const observer=command.observed_by??'adapter';
       if(this.heldOwner && this.heldOwner!==observer)throw new Error('MP-11: native key owner conflict');
       if(command._agent_input && input.kind==='keycode')throw new Error('MP-11: persistent physical keys require human input; agents use focused single chords');
-      // MP-11: native repeats and clipboard/middle-button paste cannot fence
-      // every text-producing event. Agents use focused text or a single chord.
-      if(command._agent_input && (['hold','pointer_hold','drag','clipboard_write'].includes(input.kind) || input.button===2))throw new UserDomainRefusal('sensitive_requires_focus');
       // MP-11: the helper gates every agent key/text/click on the clipboard owner.
       let admission={};
       if(command._agent_input) {

@@ -54,8 +54,8 @@ def input_action(action, processes=None, connection=None, browser_page=None):
     kind = action['kind']
     guard=None
     key_guard=load('native-input-destination').key_destinations if processes is not None else None
-    if processes is not None and (kind in ('hold','pointer_hold','drag','clipboard_write','keycode') or action.get('button')==2):
-        raise ValueError('native paste/repeat requires human or Vault input')
+    if processes is not None and kind=='keycode':
+        raise ValueError('persistent physical keys require human input')
     if processes is not None and kind in ('text','key','click'):
         # MP-11: any agent key, text or click may reach a Paste control
         # (chord, menu mnemonic, focused button). Gate on clipboard owner.

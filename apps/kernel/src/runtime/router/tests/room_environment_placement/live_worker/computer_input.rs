@@ -557,15 +557,15 @@ printf human >> '{}'
     std::fs::remove_dir_all(&worker_state.root).unwrap();
 }
 
-// MP-08 / MP-11 R1: the authenticated Room worker refuses unfenced agent
-// mutations before invoking even a helper that would blindly emit an event.
+// MP-08: the authenticated Room worker forwards authorized agent drag, hold,
+// clipboard and middle-click input to the physical helper like human input.
 #[test]
-fn mp11_room_worker_unfenced_agent_actions_never_reach_physical_helper() {
+fn mp08_room_worker_forwards_authorized_agent_drag_hold_and_clipboard() {
     crate::test_support::isolated_env_test!();
-    run_test(room_worker_unfenced_agent_actions);
+    run_test(room_worker_agent_drag_hold_and_clipboard);
 }
 
-async fn room_worker_unfenced_agent_actions() {
+async fn room_worker_agent_drag_hold_and_clipboard() {
     let _guard = crate::env_lock::lock();
     let mut state = TestState::new();
     let home = DaemonConfig::for_tests();
@@ -638,29 +638,16 @@ async fn room_worker_unfenced_agent_actions() {
                     action_id:format!("unfenced-{index}-{actor}"), actor_id:actor.into(), runtime_generation:1, viewport_revision:1,
                     desktop_pixel_width:1280,desktop_pixel_height:800,action:action.clone(),
                 }).await;
-            if actor.starts_with("agent:") {
-                assert!(
-                    matches!(
-                        result,
-                        Err(DaemonError::UserDomainRefused {
-                            reason: crate::error::UserDomainRefusalReason::SensitiveRequiresFocus
-                        })
-                    ),
-                    "agent mutation must require human or approved Vault input: {result:?}"
-                );
-                assert_eq!(
-                    std::fs::read(&effects).unwrap_or_default(),
-                    prior,
-                    "refused input reached the physical helper"
-                );
-            } else {
-                result.expect("human mutation retains its admitted path");
-            }
+            result.unwrap_or_else(|error| panic!("{actor} {action:?}: {error:?}"));
+            assert!(
+                std::fs::read(&effects).unwrap_or_default().len() > prior.len(),
+                "{actor} input never reached the physical helper"
+            );
         }
     }
     assert_eq!(
         std::fs::read_to_string(&effects).unwrap(),
-        "event".repeat(5)
+        "event".repeat(10)
     );
     std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
     std::fs::remove_dir_all(&state.root).unwrap();

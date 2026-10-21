@@ -37,26 +37,21 @@ fn grant_desktop_to_human(room: &TestRoom, actor: EnvironmentActor) {
         .request_room_environment_takeover_as_actor(&room.session_id, actor, InputTarget::Desktop)
         .unwrap();
 }
-// MP-11 #904 review R1: agent holds are unfenced physical input and are
-// refused before any helper is spawned; humans keep the hold path below.
+// An authorized agent may hold a key: the helper runs and the Action completes.
 #[tokio::test]
-async fn mp08_mp10_mp11_agent_computer_hold_is_refused_before_helper_dispatch() {
+async fn mp08_mp10_agent_computer_hold_reaches_the_helper_and_completes() {
     crate::test_support::isolated_env_test!();
-    let tools = TestTools::new("hold-agent-refused");
+    let tools = TestTools::new("hold-agent-completes");
     let marker = tools.screen_tool.with_extension("pressed");
     std::fs::write(&tools.screen_tool, format!(
-            "#!/bin/sh\nset -eu\ncase \"$1\" in\ncomputer-key-hold-stdin) cat >/dev/null; : > '{}'; sleep 30;;\nesac\n",
+            "#!/bin/sh\nset -eu\ncase \"$1\" in\ncomputer-key-hold-stdin) cat >/dev/null; : > '{}';;\nesac\n",
             marker.display(),
         )).unwrap();
     let _screen_tool = install_screen_tool(&tools.screen_tool);
-    let mut room = TestRoom::new("hold-agent-refused");
+    let mut room = TestRoom::new("hold-agent-completes");
     room.enable_browser_controller(&tools).await;
-    let before = room
-        .runtime
-        .room_environment_snapshot(&room.session_id)
-        .unwrap();
-    let result = tokio::time::timeout(
-        Duration::from_secs(3),
+    tokio::time::timeout(
+        Duration::from_secs(8),
         room.runtime.execute_computer_input_as_agent(
             &room.session_id,
             &room.agent_id,
@@ -64,35 +59,73 @@ async fn mp08_mp10_mp11_agent_computer_hold_is_refused_before_helper_dispatch() 
                 input: crate::transport::room_browser_controller::RoomComputerKeyboardInput::new(
                     "shift+F8".into(),
                 ),
-                duration_ms: 10000,
+                duration_ms: 1000,
             },
         ),
     )
     .await
-    .expect("a refused agent hold settles at once");
+    .expect("an agent hold settles")
+    .expect("an authorized agent hold succeeds");
     assert!(
-        matches!(
-            result,
-            Err(DaemonError::UserDomainRefused {
-                reason: crate::error::UserDomainRefusalReason::SensitiveRequiresFocus
-            })
-        ),
-        "{result:?}"
-    );
-    assert!(
-        !marker.exists(),
-        "no physical helper may run for an agent hold"
+        marker.exists(),
+        "the physical helper must run the agent hold"
     );
     let after = room
         .runtime
         .room_environment_snapshot(&room.session_id)
         .unwrap();
-    assert_eq!(after.environment_id, before.environment_id);
-    assert_eq!(after.tabs[0].tab_id, before.tabs[0].tab_id);
-    assert!(after
-        .actions
-        .iter()
-        .all(|action| action.state != EnvironmentActionState::Running));
+    assert_eq!(
+        after.actions.last().unwrap().state,
+        EnvironmentActionState::Completed
+    );
+    room.stop_browser_controller().await;
+}
+
+// A human takeover still stops a running agent hold and releases the keys.
+#[tokio::test]
+async fn mp08_mp10_human_takeover_cancels_a_running_agent_hold() {
+    crate::test_support::isolated_env_test!();
+    let tools = TestTools::new("hold-agent-cancelled");
+    let started = tools.screen_tool.with_extension("started");
+    let reset = tools.screen_tool.with_extension("released");
+    std::fs::write(&tools.screen_tool, format!(
+            "#!/bin/sh\nset -eu\ncase \"$1\" in\ncomputer-key-hold-stdin) cat >/dev/null; : > '{}'; sleep 30;;\ncomputer-input-reset) : > '{}';;\nesac\n",
+            started.display(), reset.display(),
+        )).unwrap();
+    let _screen_tool = install_screen_tool(&tools.screen_tool);
+    let mut room = TestRoom::new("hold-agent-cancelled");
+    room.enable_browser_controller(&tools).await;
+    let runtime = room.runtime.clone();
+    let (session_id, agent_id) = (room.session_id.clone(), room.agent_id.clone());
+    let hold = tokio::spawn(async move {
+        runtime
+            .execute_computer_input_as_agent(
+                &session_id,
+                &agent_id,
+                RoomComputerInputAction::KeyboardHold {
+                    input:
+                        crate::transport::room_browser_controller::RoomComputerKeyboardInput::new(
+                            "shift+F8".into(),
+                        ),
+                    duration_ms: 10000,
+                },
+            )
+            .await
+    });
+    for _ in 0..100 {
+        if started.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(started.exists(), "the agent hold must start");
+    grant_desktop_to_human(&room, human_actor());
+    let result = tokio::time::timeout(Duration::from_secs(8), hold)
+        .await
+        .expect("a cancelled agent hold settles at once")
+        .unwrap();
+    assert!(result.is_err(), "{result:?}");
+    assert!(reset.exists(), "cancellation must release the held key");
     room.stop_browser_controller().await;
 }
 
