@@ -29,11 +29,85 @@ impl OpenCodeClient {
         opencode_skill_candidates(&skills, &agents, agent).map(Some)
     }
 }
+impl OpenCodeClient {
+    /// OpenCode lists the skills its instance loaded when it started. When the skill
+    /// files changed since and no session is busy, dispose the instance through its
+    /// documented `instance.dispose` so the next request loads them again; sessions
+    /// stay on disk, so the conversation continues. Returns whether it reloaded.
+    pub fn reload_stale_skills(
+        &self,
+        cwd: &std::path::Path,
+        listed: &[NativeSkillCandidate],
+        on_disk: &[NativeSkillCandidate],
+    ) -> Result<bool, DaemonError> {
+        if !opencode_listing_is_stale(listed, on_disk) {
+            return Ok(false);
+        }
+        let schema: Value = self.send_json_request("GET", "/doc", None)?;
+        if !schema_advertises_method(&schema, "/instance/dispose", "post", "instance.dispose")
+            || !schema_advertises(&schema, "/session/status", "session.status")
+        {
+            return Ok(false);
+        }
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("directory", &cwd.to_string_lossy())
+            .finish();
+        let status: Value =
+            self.send_json_request("GET", &format!("/session/status?{query}"), None)?;
+        let busy = status.as_object().is_none_or(|sessions| {
+            sessions
+                .values()
+                .any(|session| session.get("type").and_then(Value::as_str) != Some("idle"))
+        });
+        if busy {
+            return Ok(false);
+        }
+        let _: Value =
+            self.send_json_request("POST", &format!("/instance/dispose?{query}"), None)?;
+        Ok(true)
+    }
+}
+
+/// A skill-only root holds a skill OpenCode does not list, or a listed skill file is
+/// gone or holds another body than the one OpenCode retained.
+fn opencode_listing_is_stale(
+    listed: &[NativeSkillCandidate],
+    on_disk: &[NativeSkillCandidate],
+) -> bool {
+    use sha2::{Digest, Sha256};
+    let names: std::collections::BTreeSet<&str> =
+        listed.iter().map(|skill| skill.name.as_str()).collect();
+    on_disk
+        .iter()
+        .any(|skill| !names.contains(skill.name.as_str()))
+        || listed
+            .iter()
+            .filter(|skill| skill.skill_file.is_absolute())
+            .any(|skill| {
+                let Ok(text) = std::fs::read_to_string(&skill.skill_file) else {
+                    return true;
+                };
+                let body = text
+                    .strip_prefix("---\n")
+                    .and_then(|rest| rest.split_once("\n---\n"))
+                    .map_or(text.as_str(), |(_, body)| body);
+                skill
+                    .observed_body_digest
+                    .as_deref()
+                    .is_some_and(|retained| {
+                        retained != format!("{:x}", Sha256::digest(body.trim().as_bytes()))
+                    })
+            })
+}
+
 fn schema_advertises(schema: &Value, path: &str, operation: &str) -> bool {
+    schema_advertises_method(schema, path, "get", operation)
+}
+fn schema_advertises_method(schema: &Value, path: &str, method: &str, operation: &str) -> bool {
     schema
         .get("paths")
         .and_then(|v| v.get(path))
-        .and_then(|v| v.get("get"))
+        .and_then(|v| v.get(method))
         .and_then(|v| v.get("operationId"))
         .and_then(Value::as_str)
         == Some(operation)
@@ -168,6 +242,49 @@ mod tests {
         assert_eq!(entries[1].exposure, NativeSkillExposure::Confirmed);
         assert_eq!(entries[2].exposure, NativeSkillExposure::Confirmed);
         assert!(opencode_skill_candidates(&skills, &agents, "absent").is_err());
+    }
+    #[test]
+    fn a_listing_is_stale_when_skill_files_were_added_changed_or_removed() {
+        use sha2::{Digest, Sha256};
+        let root = std::env::temp_dir().join(format!("opencode-stale-{}", std::process::id()));
+        let file = |name: &str| root.join(name).join("SKILL.md");
+        let write = |name: &str, body: &str| {
+            std::fs::create_dir_all(file(name).parent().unwrap()).unwrap();
+            std::fs::write(
+                file(name),
+                format!("---\nname: {name}\ndescription: d\n---\n{body}"),
+            )
+            .unwrap();
+        };
+        let candidate = |name: &str, retained: Option<&str>| NativeSkillCandidate {
+            name: name.into(),
+            description: "d".into(),
+            skill_file: file(name),
+            exposure: NativeSkillExposure::Confirmed,
+            supports_load_ack: true,
+            observed_body_digest: retained
+                .map(|body| format!("{:x}", Sha256::digest(body.trim().as_bytes()))),
+            discovery_error: None,
+        };
+        write("one", "One.\n");
+        let listed = vec![candidate("one", Some("One.\n"))];
+        assert!(!opencode_listing_is_stale(
+            &listed,
+            &[candidate("one", None)]
+        ));
+        write("two", "Two.\n");
+        assert!(opencode_listing_is_stale(
+            &listed,
+            &[candidate("one", None), candidate("two", None)]
+        ));
+        write("one", "Changed.\n");
+        assert!(opencode_listing_is_stale(
+            &listed,
+            &[candidate("one", None)]
+        ));
+        std::fs::remove_dir_all(root.join("one")).unwrap();
+        assert!(opencode_listing_is_stale(&listed, &[]));
+        let _ = std::fs::remove_dir_all(&root);
     }
     #[test]
     fn permission_globs_do_not_interpret_regex() {

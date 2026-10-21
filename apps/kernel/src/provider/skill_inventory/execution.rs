@@ -97,7 +97,13 @@ pub fn inventory_for_run(
                     AgentExecutionMode::Plan => "plan",
                 };
                 match client.native_skill_candidates(cwd, agent)? {
-                    Some(candidates) => Ok(candidates),
+                    // A failed skill-root scan leaves the official listing as it is.
+                    Some(listed) => match filesystem() {
+                        Ok(on_disk) if client.reload_stale_skills(cwd, &listed, &on_disk)? => client
+                            .native_skill_candidates(cwd, agent)?
+                            .ok_or_else(|| failure("OpenCode stopped advertising its skill inventory after a reload")),
+                        _ => Ok(listed),
+                    },
                     None => filesystem(),
                 }
             }
