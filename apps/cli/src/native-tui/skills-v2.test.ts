@@ -1,3 +1,4 @@
+import nodePath from "node:path"
 // MP-08 / MP-10 / MP-11: source-aware native proxy regression checks.
 import assert from "node:assert/strict"
 import test from "node:test"
@@ -45,7 +46,8 @@ test("projection exposes a Chariox-only name and replaces a conflict without a d
   const upstream = { data: [{ cwd: "/actual", skills: [{ name: "review", description: "different bytes", path: "/native/review/SKILL.md" }], errors: [] }] }
   const projected = projectCodexSkillList(upstream, catalog()) as typeof upstream
   assert.equal(projected.data[0]!.skills.length, 1)
-  assert.equal(projected.data[0]!.skills[0]!.path, "chariox-skill://skill-review/SKILL.md")
+  assert.equal(projected.data[0]!.skills[0]!.path, "/.chariox-skill-handle/skill-review/SKILL.md")
+  assert.ok(nodePath.isAbsolute(projected.data[0]!.skills[0]!.path), "Codex decodes every listed path as absolute")
   assert.equal(upstream.data[0]!.skills[0]!.path, "/native/review/SKILL.md", "never mutate actual harness inventory")
   const absent = projectCodexSkillList({ data: [{ cwd: "/actual", skills: [], errors: [] }] }, catalog()) as typeof upstream
   assert.equal(absent.data[0]!.skills[0]!.name, "review")

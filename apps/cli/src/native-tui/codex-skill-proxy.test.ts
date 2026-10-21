@@ -57,7 +57,7 @@ for (const failureMode of ["none", "foundation", "relay-filtered", "transport"])
   const completion = await request(native, 2, "skills/list", { cwds: ["/actual"], forceReload: true })
   assert.equal(completion.error, undefined)
   assert.deepEqual(completion.result.data[0].skills.map((s: any) => s.name), foundation ? ["provider-only"] : ["provider-only", "chariox-1"])
-  if (!foundation) assert.equal(completion.result.data[0].skills[1].path, "chariox-skill://home-skill/SKILL.md")
+  if (!foundation) assert.equal(completion.result.data[0].skills[1].path, "/.chariox-skill-handle/home-skill/SKILL.md")
   const beforeKernelQuery = catalogRequests
   const inventory = await request(kernel, 2, "skills/list", { cwds: ["/actual"], forceReload: true })
   assert.deepEqual(inventory.result.data[0].skills.map((s: any) => s.name), ["provider-only"])

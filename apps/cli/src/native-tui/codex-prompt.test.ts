@@ -25,7 +25,7 @@ test("explicit native chips retain the kernel catalog's valid mixed-case and lon
 test("only upstream-path skill items are reported as native completion choices", () => {
   const params = { input: [
     { type: "skill", name: "review", path: "/home/u/.codex/skills/review/SKILL.md" },
-    { type: "skill", name: "plan", path: "chariox-skill://skill-plan/SKILL.md" },
+    { type: "skill", name: "plan", path: "/.chariox-skill-handle/skill-plan/SKILL.md" },
     { type: "skill", name: "bare" },
   ] }
   assert.deepEqual([...extractCodexNativeSkillNames(params)], ["review"])

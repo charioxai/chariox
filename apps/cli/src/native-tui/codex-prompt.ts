@@ -1,6 +1,7 @@
 import path from "node:path"
 
 import type { PromptAttachmentPart } from "../cli-types.js"
+import { CHARIOX_SKILL_HANDLE_PREFIX } from "./skills-v2.js"
 
 export function extractCodexPrompt(params: Record<string, unknown> | undefined): string {
   const input = Array.isArray(params?.input) ? params.input : []
@@ -91,7 +92,7 @@ export function extractCodexNativeSkillNames(params: Record<string, unknown> | u
   const names = new Set<string>()
   for (const part of Array.isArray(params?.input) ? params.input : []) {
     if (part?.type === "skill" && typeof part.name === "string" && typeof part.path === "string"
-      && !part.path.startsWith("chariox-skill://")) names.add(part.name)
+      && !part.path.startsWith(CHARIOX_SKILL_HANDLE_PREFIX)) names.add(part.name)
   }
   return names
 }

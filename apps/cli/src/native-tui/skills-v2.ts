@@ -39,6 +39,9 @@ const nativeEntries = (catalog: Catalog, name: string) => catalog.native.filter(
 // Only native completion receives the projection. Kernel inventory always sees
 // the upstream harness result, before any Chariox rows. Synthetic paths are UI
 // handles and must never enter provider execution or filesystem operations.
+// Codex decodes every listed path as an absolute path, so the handle is one.
+export const CHARIOX_SKILL_HANDLE_PREFIX = "/.chariox-skill-handle/"
+
 export function projectCodexSkillList(result: Record<string, unknown>, catalog: Catalog): Record<string, unknown> {
   if (!Array.isArray(result.data)) throw new Error("Codex skills/list response has no cwd inventory")
   return { ...result, data: result.data.map((item: Record<string, unknown>) => {
@@ -50,7 +53,7 @@ export function projectCodexSkillList(result: Record<string, unknown>, catalog: 
       const projected = {
         name, description: row.skill.description,
         shortDescription: row.skill.short_description,
-        path: `chariox-skill://${encodeURIComponent(row.skill.id)}/SKILL.md`,
+        path: `${CHARIOX_SKILL_HANDLE_PREFIX}${encodeURIComponent(row.skill.id)}/SKILL.md`,
         scope: "user", enabled: true,
         interface: { displayName: name, shortDescription: row.skill.short_description ?? row.skill.description },
       }
