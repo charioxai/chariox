@@ -673,13 +673,13 @@ async fn execute_local(
             }
             // MP-11 R1: refuse unfenced agent mutations before a physical
             // helper is spawned; human and approved Vault actors retain their paths.
-            if actor_id.starts_with("agent:") {
-                if crate::runtime::computer_input_action::agent_native_input_is_unfenced(&action) {
-                    return Err(crate::error::HostFailure::Refused(
-                        crate::error::UserDomainRefusalReason::SensitiveRequiresFocus,
-                    )
-                    .into_daemon("room_computer"));
-                }
+            if actor_id.starts_with("agent:")
+                && crate::runtime::computer_input_action::agent_native_input_is_unfenced(&action)
+            {
+                return Err(crate::error::HostFailure::Refused(
+                    crate::error::UserDomainRefusalReason::SensitiveRequiresFocus,
+                )
+                .into_daemon("room_computer"));
             }
             let execution = computer_input_executions
                 .begin(session_id, &action_id)
