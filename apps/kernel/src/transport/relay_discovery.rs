@@ -23,6 +23,7 @@ use crate::error::DaemonError;
 mod credentials;
 pub(crate) use credentials::{metadata_discovery_config, with_metadata_token};
 pub(crate) mod authorization;
+mod inventory_batches;
 
 static RELAY_METADATA_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 const RELAY_METADATA_ATTEMPTS: usize = 3;
@@ -552,6 +553,9 @@ async fn query_relay_once_body(
     #[cfg(test)] mut trace: Option<&mut TemporaryPeerTestTrace>,
 ) -> Result<RelayEnvelope, DaemonError> {
     let discovery_config = metadata_discovery_config(config).await?;
+    if discovery_config.cloud_relay.is_some() {
+        return inventory_batches::query(&discovery_config, query).await;
+    }
     let config = &discovery_config;
     let relay_url = config
         .relay_url

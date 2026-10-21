@@ -52,7 +52,8 @@ fn dev_stub_terminal_echo_script() -> String {
 }
 
 fn dev_stub_native_tui_idle_script() -> String {
-    "stty -echo 2>/dev/null || true; (sleep 3600; kill $$ 2>/dev/null) & while :; do IFS= read -r _line || sleep 1; done"
+    // Match native CLIs that keep their session alive after a prompt's Ctrl-C.
+    "trap ':' INT; stty -echo 2>/dev/null || true; while :; do IFS= read -r _line || sleep 1; done"
         .to_string()
 }
 

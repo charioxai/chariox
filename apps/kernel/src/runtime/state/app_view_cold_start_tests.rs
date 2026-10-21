@@ -16,7 +16,22 @@ const POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub(super) struct Cleanup(std::path::PathBuf);
 impl Drop for Cleanup {
     fn drop(&mut self) {
+        // Staged App releases are sealed read-only; an unprivileged user can
+        // delete them only after their directories are writable again.
+        make_dirs_writable(&self.0);
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn make_dirs_writable(dir: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).is_err() {
+        return;
+    }
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            make_dirs_writable(&entry.path());
+        }
     }
 }
 

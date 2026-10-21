@@ -186,7 +186,6 @@ async fn public_remote_completion_preserves_worker_termination_async() {
                     assert_eq!(home_prompt_id, active_prompt.id());
                     let response = RelayPeerResponse::LeasedPromptReceiptQueried {
                         receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
-                            rejection_reason: None,
                             home_prompt_id,
                             worker_provider_run_id: "worker-provider-run".to_string(),
                             phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::Active,

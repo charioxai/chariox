@@ -101,9 +101,14 @@ impl KernelRuntimeState {
                     &dispatch.agent_id,
                     &dispatch.prompt_id,
                 )?;
-                owned.room_secret_observations.scrub(
-                    &dispatch.session_id,
-                    super::context_handoff::inject_context_handoff(&dispatch.prompt, &handoff),
+                super::context_handoff::inject_protected_context_handoff(
+                    &dispatch.prompt,
+                    &handoff,
+                    |context| {
+                        owned
+                            .room_secret_observations
+                            .scrub(&dispatch.session_id, context)
+                    },
                 )?
             }
             None => dispatch.prompt.clone(),
@@ -117,14 +122,10 @@ impl KernelRuntimeState {
             join_hidden_context(hidden_system_context, &granted_skill_context);
         // Preparation can outlive a Room policy change. Protect every retained
         // input, including failed-request and skill context, at final admission.
-        let (prompt_with_handoff, hidden_system_context, attachments) =
+        let (hidden_system_context, attachments) =
             owned.room_secret_observations.scrub_prompt_inputs(
                 &dispatch.session_id,
-                (
-                    prompt_with_handoff,
-                    hidden_system_context,
-                    dispatch.attachments.clone(),
-                ),
+                (hidden_system_context, dispatch.attachments.clone()),
             )?;
         let (source_client_id, _source_user_id) =
             owned.active_prompt_source_attribution(&dispatch.session_id, &dispatch.agent_id)?;

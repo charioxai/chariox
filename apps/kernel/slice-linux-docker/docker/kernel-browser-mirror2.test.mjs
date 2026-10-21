@@ -512,6 +512,16 @@ test('MP-10 M2: completed stylesheet bodies do not wait for Page resource-conten
  assert.equal(await mirror.crossOriginSheet(world,'https://public.example/style.css'),body.toString());assert.deepEqual(calls,[]);
 });
 
+// mirrorfix F2 (Amazon search mirrored unstyled): every Amazon sheet href ends in `#<revision>`, which CDP never reports.
+test('a cross-origin stylesheet whose href has a fragment is read by its request URL',async()=>{
+ const body=Buffer.from('body{color:green}'),asked=[];
+ const world={connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
+ const mirror=new Mirror2({host:{browser:{responseBodies:{async read(_world,address){asked.push(address);return address==='https://public.example/s.css?AUIClients/X'?body:null}}}}});
+ mirror.evaluate=async(_world,expression)=>{assert(expression.includes(body.toString()));return body.toString()};
+ assert.equal(await mirror.crossOriginSheet(world,'https://public.example/s.css?AUIClients/X#1353983-T1'),body.toString());
+ assert.deepEqual(asked,['https://public.example/s.css?AUIClients/X']);
+});
+
 test('MP-10 M2: first-packet font bytes use the completed response before the Page content gate',async()=>{
  const body=Buffer.alloc(48);body.write('wOF2');const calls=[];
  const world={connection:{async send(method){calls.push(method);throw Error('unrelated document resources are still loading')}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
@@ -913,4 +923,24 @@ test('MP-10: a waiting image is retried after a font filled the packet budget at
   mirror.register(stream, { resources: [{ key: 'r2', url: 'https://x/a.woff2', kind: 'font' }] });
   assert.deepEqual((await mirror.materialize(world, stream, null)).map(r => r.key), ['r2'], 'the font fills the whole budget; the image is skipped');
   assert.deepEqual((await mirror.materialize(world, stream, null)).map(r => r.key), ['r1'], 'the next credit at the same count still attempts the image');
+});
+
+test('MP-08/MP-10/MP-11: a reset preserves native-focus typing without relaxing addressed or document admission', async () => {
+  const policy = {}, connection = { isOpen: () => true }, tab = { tab_id: 't', target_id: 'T', document_id: 'D' };
+  const world = { connection, contextId: 7, sessionId: 's', frame: { loaderId: 'D' }, ref: 'm' };
+  const stream = { id: 's', world, tab_id: 't', document_id: 'D', policy, issued: 3, resetAt: 3, attrSequence: new Map(), frameSlots: new Map() };
+  const mirror = new Mirror2({ host: { generation: 1, protection: policy, browser: { connection } }, require: () => stream });
+  const resolve = (sequence, action) => mirror.resolveInput(stream, tab, { subscription_id: 's', sequence, action }, 'owner');
+  const key = await resolve(2, { kind: 'key', key: 'a' });
+  assert.deepEqual(key.input, { kind: 'key', key: 'a' });
+  await key.guard();
+  assert.equal(typeof (await resolve(2, { kind: 'text', text: 'chosen' })).perform, 'function');
+  for (const sequence of [0, 4, NaN]) await assert.rejects(resolve(sequence, { kind: 'key', key: 'a' }), /stale mirror input epoch/);
+  for (const action of [{ kind: 'click', node_id: 'n1', x: 1, y: 1 }, { kind: 'text', node_id: 'n1', text: 'chosen' }, { kind: 'selection', anchor_id: 'n1', focus_id: 'n1', anchor_offset: 0, focus_offset: 0 }]) {
+    await assert.rejects(resolve(2, action), /stale mirror input epoch/);
+  }
+  stream.fallback = true;
+  await assert.rejects(resolve(2, { kind: 'key', key: 'a' }), /stale mirror input epoch/);
+  stream.fallback = false; tab.document_id = 'next';
+  await assert.rejects(resolve(2, { kind: 'key', key: 'a' }), /stale mirror input document/);
 });

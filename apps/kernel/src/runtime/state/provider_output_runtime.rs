@@ -265,13 +265,12 @@ impl KernelRuntimeState {
         // launch/dispatch/output stack frames.
         if !Box::pin(self.reconcile_provider_run_exit_for_output(session_id, provider_run_id))
             .await?
+            && records.is_empty()
         {
-            if records.is_empty() {
-                let _ = self
-                    .settle_owned_pty_prompt_if_quiet(session_id, provider_run_id)
-                    .await?;
-                owned.ensure_quiet_provider_recheck_scheduled(provider_run_id);
-            }
+            let _ = self
+                .settle_owned_pty_prompt_if_quiet(session_id, provider_run_id)
+                .await?;
+            owned.ensure_quiet_provider_recheck_scheduled(provider_run_id);
         }
         Ok(records)
     }

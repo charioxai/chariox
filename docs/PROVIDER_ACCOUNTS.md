@@ -2,8 +2,6 @@
 
 Chariox supports multiple named account profiles for Codex, Claude, and OpenCode. The kernel owns profile metadata, selection, status/usage projection, and orchestration. Provider CLIs remain the credential-format and token-refresh authority.
 
-How login copies behave across machines (re-login without revoking, dead-copy detection, policy position, rejected alternatives) is decided in [PROVIDER_LOGIN_COPIES.md](PROVIDER_LOGIN_COPIES.md).
-
 ## User workflow
 
 Open **Provider Accounts** in either waiting room to list, create, link, rename, set a default, refresh, log in, log out, remove, or explicitly delete a managed profile. The launch form selects Provider, Account, Model, and Variant. New agents inherit the selected account unless another profile is chosen.

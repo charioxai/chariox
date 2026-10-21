@@ -131,15 +131,6 @@ struct BrokerResponse {
     disk_quota_evidence: Option<super::super::disk_quota_policy::SliceDiskQuotaEvidence>,
 }
 
-/// What the broker writes while a provisioner runs: progress lines first, then the one response.
-#[cfg(unix)]
-#[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum BrokerFrame {
-    Progress { progress: String },
-    Response(BrokerResponse),
-}
-
 pub(super) struct BrokerExecution {
     pub(super) output: Output,
     pub(super) disk_quota_evidence: Option<super::super::disk_quota_policy::SliceDiskQuotaEvidence>,
@@ -386,21 +377,6 @@ pub(super) fn configured() -> bool {
     broker_is_configured()
 }
 
-/// True while a broker operation holds the connection; a first start keeps it for minutes, and
-/// callers that only read diagnostics must not queue behind it.
-pub(super) fn busy() -> bool {
-    #[cfg(unix)]
-    {
-        BROKER.get().is_some_and(|state| {
-            matches!(state.try_lock(), Err(std::sync::TryLockError::WouldBlock))
-        })
-    }
-    #[cfg(not(unix))]
-    {
-        false
-    }
-}
-
 pub(super) fn provider_auth_protected(container: &str) -> io::Result<bool> {
     if !broker_is_configured() {
         return Ok(false);
@@ -463,10 +439,7 @@ fn broker_is_configured() -> bool {
 }
 
 #[cfg(unix)]
-fn execute_with_disk_evidence(
-    request: &BrokerRequest<'_>,
-    progress: &mut dyn FnMut(&str),
-) -> io::Result<BrokerExecution> {
+fn execute_with_disk_evidence(request: &BrokerRequest<'_>) -> io::Result<BrokerExecution> {
     let request = Zeroizing::new(
         serde_json::to_vec(request)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
@@ -494,7 +467,38 @@ fn execute_with_disk_evidence(
         let connection = state.as_mut().ok_or_else(broker_unavailable)?;
         let previous_read_timeout = connection.writer.read_timeout()?;
         connection.writer.set_read_timeout(None)?;
-        let result = exchange(connection, &request, progress);
+        let result = (|| {
+            connection
+                .writer
+                .write_all(&(request.len() as u32).to_be_bytes())?;
+            connection.writer.write_all(&request)?;
+            connection.writer.flush()?;
+            let mut header = [0_u8; 4];
+            connection.reader.read_exact(&mut header)?;
+            let response_len = u32::from_be_bytes(header) as usize;
+            if response_len == 0 || response_len > MAX_BROKER_RESPONSE_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "managed slice Docker broker response is invalid",
+                ));
+            }
+            let mut response = vec![0_u8; response_len];
+            connection.reader.read_exact(&mut response)?;
+            let response: BrokerResponse = serde_json::from_slice(&response)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            let decode = |value: &str| {
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, value)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+            };
+            Ok(BrokerExecution {
+                output: Output {
+                    status: ExitStatus::from_raw(response.status.clamp(0, 255) << 8),
+                    stdout: decode(&response.stdout_base64)?,
+                    stderr: decode(&response.stderr_base64)?,
+                },
+                disk_quota_evidence: response.disk_quota_evidence,
+            })
+        })();
         // MP-08/MP-10/MP-11: all operations wait under broker lease ownership.
         // Preserve the caller write deadline and restore read state on every result.
         connection.writer.set_read_timeout(previous_read_timeout)?;
@@ -506,57 +510,9 @@ fn execute_with_disk_evidence(
     result
 }
 
-/// Sends one request and reads frames until the response, handing each progress line to `progress`.
-#[cfg(unix)]
-fn exchange(
-    connection: &mut BrokerConnection,
-    request: &[u8],
-    progress: &mut dyn FnMut(&str),
-) -> io::Result<BrokerExecution> {
-    connection
-        .writer
-        .write_all(&(request.len() as u32).to_be_bytes())?;
-    connection.writer.write_all(request)?;
-    connection.writer.flush()?;
-    loop {
-        let mut header = [0_u8; 4];
-        connection.reader.read_exact(&mut header)?;
-        let response_len = u32::from_be_bytes(header) as usize;
-        if response_len == 0 || response_len > MAX_BROKER_RESPONSE_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "managed slice Docker broker response is invalid",
-            ));
-        }
-        let mut frame = vec![0_u8; response_len];
-        connection.reader.read_exact(&mut frame)?;
-        let response = match serde_json::from_slice(&frame)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
-        {
-            BrokerFrame::Progress { progress: line } => {
-                progress(&line);
-                continue;
-            }
-            BrokerFrame::Response(response) => response,
-        };
-        let decode = |value: &str| {
-            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, value)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-        };
-        return Ok(BrokerExecution {
-            output: Output {
-                status: ExitStatus::from_raw(response.status.clamp(0, 255) << 8),
-                stdout: decode(&response.stdout_base64)?,
-                stderr: decode(&response.stderr_base64)?,
-            },
-            disk_quota_evidence: response.disk_quota_evidence,
-        });
-    }
-}
-
 #[cfg(unix)]
 fn execute(request: &BrokerRequest<'_>) -> io::Result<Output> {
-    execute_with_disk_evidence(request, &mut |_| {}).map(|response| response.output)
+    execute_with_disk_evidence(request).map(|response| response.output)
 }
 
 #[cfg(unix)]
@@ -586,7 +542,6 @@ pub(super) fn run_provisioner(
     command: &Command,
     action: &str,
     inputs: &[ProvisionerInput],
-    progress: &mut dyn FnMut(&str),
 ) -> Option<io::Result<BrokerExecution>> {
     if !broker_is_configured() {
         return None;
@@ -605,14 +560,11 @@ pub(super) fn run_provisioner(
                 ),
             })
             .collect::<Vec<_>>();
-        Some(execute_with_disk_evidence(
-            &BrokerRequest::Provisioner {
-                action,
-                environment: &environment,
-                files: &files,
-            },
-            progress,
-        ))
+        Some(execute_with_disk_evidence(&BrokerRequest::Provisioner {
+            action,
+            environment: &environment,
+            files: &files,
+        }))
     }
     #[cfg(not(unix))]
     unreachable!()
@@ -904,139 +856,6 @@ mod tests {
             reader: BufReader::new(writer.try_clone().expect("socket should clone")),
             writer,
         }
-    }
-
-    fn write_frame(stream: &mut UnixStream, payload: &str) {
-        stream
-            .write_all(&(payload.len() as u32).to_be_bytes())
-            .and_then(|()| stream.write_all(payload.as_bytes()))
-            .expect("fake broker frame should send");
-    }
-
-    #[test]
-    fn a_pending_provisioner_reports_progress_before_its_response() {
-        let (writer, mut broker) = UnixStream::pair().expect("socket pair should open");
-        let mut connection = BrokerConnection {
-            reader: BufReader::new(writer.try_clone().expect("socket should clone")),
-            writer,
-        };
-        let (release, hold) = std::sync::mpsc::channel::<()>();
-        let (seen, observed) = std::sync::mpsc::channel::<String>();
-        let fake = std::thread::spawn(move || {
-            let mut header = [0_u8; 4];
-            broker.read_exact(&mut header).expect("request header");
-            let mut request = vec![0_u8; u32::from_be_bytes(header) as usize];
-            broker.read_exact(&mut request).expect("request body");
-            write_frame(
-                &mut broker,
-                r#"{"progress":"[slice-linux] progress: Loading the slice image 5 MB of 10 MB (50%)"}"#,
-            );
-            hold.recv().expect("the test releases the response");
-            write_frame(
-                &mut broker,
-                r#"{"status":0,"stdoutBase64":"","stderrBase64":""}"#,
-            );
-        });
-        let reader = std::thread::spawn(move || {
-            exchange(&mut connection, b"{}", &mut |line| {
-                seen.send(line.to_string()).expect("progress is observed");
-            })
-        });
-        let first = observed
-            .recv_timeout(Duration::from_secs(5))
-            .expect("progress must arrive while the provisioner is still pending");
-        assert!(first.contains("Loading the slice image 5 MB of 10 MB (50%)"));
-        assert!(!reader.is_finished(), "the response is still held back");
-        release.send(()).expect("fake broker is waiting");
-        let execution = reader.join().expect("reader").expect("exchange succeeds");
-        assert!(execution.output.status.success());
-        fake.join().expect("fake broker");
-    }
-
-    #[test]
-    fn slice_logs_return_progress_while_the_broker_holds_a_pending_provision() {
-        use super::super::tests::{test_options, test_record};
-        // A configured broker is what routes the log diagnostics through the busy connection.
-        std::env::set_var(BROKER_REQUIRED_ENV, "1");
-        let (writer, mut broker) = UnixStream::pair().expect("socket pair should open");
-        *BROKER
-            .get_or_init(|| Mutex::new(None))
-            .lock()
-            .expect("broker state") = Some(BrokerConnection {
-            reader: BufReader::new(writer.try_clone().expect("socket should clone")),
-            writer,
-        });
-        let record = test_record();
-        let mut options = test_options();
-        options.root =
-            std::env::temp_dir().join(format!("chariox-slice-pending-logs-{}", std::process::id()));
-        let log_path = super::super::local_docker_slice_action_log_path(
-            &options.root,
-            &record,
-            super::super::LocalDockerSliceAction::Provision,
-        );
-        std::fs::create_dir_all(log_path.parent().expect("log parent")).expect("log dir");
-        std::fs::write(
-            &log_path,
-            "[slice-linux] progress: Loading the slice image 5 MB of 10 MB (50%)\n",
-        )
-        .expect("progress line");
-        let (release, hold) = std::sync::mpsc::channel::<()>();
-        let fake = std::thread::spawn(move || {
-            let mut header = [0_u8; 4];
-            broker.read_exact(&mut header).expect("request header");
-            let mut request = vec![0_u8; u32::from_be_bytes(header) as usize];
-            broker.read_exact(&mut request).expect("request body");
-            hold.recv().expect("the test releases the response");
-            write_frame(
-                &mut broker,
-                r#"{"status":0,"stdoutBase64":"","stderrBase64":""}"#,
-            );
-        });
-        let provision = std::thread::spawn(|| {
-            execute_with_disk_evidence(&BrokerRequest::Docker { args: &[] }, &mut |_| {})
-        });
-        while !busy() {
-            assert!(!provision.is_finished(), "the provision must stay pending");
-            std::thread::yield_now();
-        }
-        let (collected, entries) = std::sync::mpsc::channel();
-        let (collect_record, collect_options) = (record.clone(), options.clone());
-        std::thread::spawn(move || {
-            let _ = collected.send(super::super::collect_local_docker_slice_logs(
-                &collect_record,
-                &collect_options,
-                None,
-            ));
-        });
-        let result = entries.recv_timeout(Duration::from_secs(5));
-        release.send(()).expect("fake broker is waiting");
-        provision
-            .join()
-            .expect("provision")
-            .expect("exchange succeeds");
-        fake.join().expect("fake broker");
-        *BROKER
-            .get()
-            .expect("broker state")
-            .lock()
-            .expect("broker state") = None;
-        std::env::remove_var(BROKER_REQUIRED_ENV);
-        let _ = std::fs::remove_dir_all(&options.root);
-        let entries = result
-            .expect("slice logs must not wait for the busy broker")
-            .expect("logs should collect");
-        let provision_log = entries
-            .iter()
-            .find(|entry| entry.source == "provision")
-            .expect("provision log is present");
-        assert!(provision_log
-            .text
-            .contains("Loading the slice image 5 MB of 10 MB (50%)"));
-        assert!(entries
-            .iter()
-            .filter(|entry| entry.source == "runtime" || entry.source == "container")
-            .all(|entry| entry.text.contains("Docker broker is busy")));
     }
 
     #[test]

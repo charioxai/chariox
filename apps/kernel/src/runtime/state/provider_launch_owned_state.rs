@@ -566,6 +566,7 @@ mod tests {
     #[tokio::test]
     async fn mp08_mp11_claude_first_use_uses_launch_bound_replica() {
         crate::test_support::isolated_env_test!();
+        let _claude = crate::test_support::TestClaudeExecutable::new();
         let root = crate::test_support::TestWorktree::new("claude-first-use-replica");
         std::env::set_var("CHARIOX_HOME", root.path().join("home"));
         let mut config = crate::config::DaemonConfig::for_tests();
@@ -677,6 +678,7 @@ mod tests {
     #[tokio::test]
     async fn home_default_launch_keeps_authority_when_replica_has_same_profile_id() {
         crate::test_support::isolated_env_test!();
+        let _claude = crate::test_support::TestClaudeExecutable::new();
         let root = crate::test_support::TestWorktree::new("home-default-account-authority");
         std::env::set_var("CHARIOX_HOME", root.path().join("home"));
         let workspace = root.path().join("workspace");

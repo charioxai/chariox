@@ -960,8 +960,7 @@ export class KernelBrowserHost {
         // including the lifetime of hidden-target focus emulation. Only an
         // admitted human viewer with a live display lease owns the fast path.
         const viewerActive=()=>viewerPageInputActive(this,command,scope);
-        // Protocol 530: a page drag is the person's, on a page they are watching.
-        if(command.input?.kind==='drag'&&!viewerActive())throw new UserDomainRefusal('not_granted');
+        // MP-08/MP-10/MP-11: the input grant and document fence admit drags too; a DOM mirror needs no video lease.
         // Review #1016 P1: native whole-page input only while this Tab is Chrome's live active Tab.
         // MP-08/MP-10/MP-11: a preview handover flush must follow actual CDP input ACKs, not an asynchronous XTest receipt.
         const handoverOrdered=[...this.mirror.streams.values()].some(s=>s.tab_id===tab.tab_id&&s.scope===scope&&s.navigationPreview);
