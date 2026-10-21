@@ -61,7 +61,7 @@ pub(crate) fn ensure_claude_native_hidden_context_fits(
         provider_run_id: provider_run_id.to_string(),
         operation: "claude_hidden_context_size",
         message: format!(
-            "hidden context is {} bytes and requires {} UTF-8-safe chunks; Claude native delivery supports {} chunks of at most {} bytes ({} bytes theoretical maximum)",
+            "hidden context is {} bytes and requires {} UTF-8-safe chunks; Claude native delivery supports {} chunks of at most {} bytes ({} bytes theoretical maximum). Select fewer or shorter skills or attachments, then send the message again",
             hidden_context.len(),
             chunk_count,
             CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS,
