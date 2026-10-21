@@ -1721,7 +1721,7 @@ function provisionerQuotaRequest(environment) {
   }
 }
 
-async function execute(request, report) {
+async function execute(request) {
   validateRequest(request)
   // Release F's disk-quota allocator, its coordination root and start-admission
   // proofs exist only on managed hosts. The Phase 1 local DEV broker has none of
@@ -1905,7 +1905,7 @@ async function execute(request, report) {
         }
       return spawnBounded(command, args, {
         env, maxBuffer: MAX_OUTPUT_BYTES,
-        ...(request.kind === "docker" ? dockerControlPolicy(request.args) : { onProgress: report }),
+        ...(request.kind === "docker" ? dockerControlPolicy(request.args) : {}),
       })
     }
     const containerName = request.kind === "docker" ? request.args[1] : undefined
@@ -2163,7 +2163,7 @@ if (process.argv[2] === "--validate-request") {
           let response
           try {
             if (brokerLifetime.signal.aborted) throw new Error("slice broker lease closed")
-            response = await execute(parsed, line => socket.write(serializeResponse({ progress: line })))
+            response = await execute(parsed)
           } catch (error) {
             response = errorResponse(error)
           }

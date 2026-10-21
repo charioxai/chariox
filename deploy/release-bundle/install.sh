@@ -14,15 +14,14 @@
 # 2. Runs deploy/local-linux/install-root.sh for --user with the App runtime key
 #    and inventory digest from the signed manifest.
 # 3. Installs the slice build context the kernel provisions slices from into
-#    /usr/lib/chariox/slice-build-context, the signed prebuilt slice image into
-#    /usr/lib/chariox/slice-image, and chariox (the CLI/TUI) and
+#    /usr/lib/chariox/slice-build-context, and chariox (the CLI/TUI) and
 #    chariox-app-package into /usr/local/bin.
 # 4. Prints the ordinary user's step, deploy/local-linux/install-user.sh, which
 #    installs and starts the kernel as that user's systemd --user unit.
 #
 # Requires bash, python3, openssl, diffutils and coreutils. To remove Chariox, see
 # deploy/local-linux/install-user.sh uninstall and install-root.sh uninstall, then
-# remove /usr/lib/chariox/slice-build-context, /usr/lib/chariox/slice-image and the two /usr/local/bin commands.
+# remove /usr/lib/chariox/slice-build-context and the two /usr/local/bin commands.
 set -euo pipefail
 umask 022
 
@@ -84,13 +83,8 @@ for directory, subdirectories, names in os.walk(root):
         entry = listed.pop(relative, None)
         if entry is None:
             fail(f"{relative} is not in the signed manifest")
-        # In chunks: the slice image is over a gigabyte.
-        digest, size = hashlib.sha256(), 0
-        with open(os.path.join(root, relative), "rb") as listed_file:
-            while chunk := listed_file.read(1 << 20):
-                digest.update(chunk)
-                size += len(chunk)
-        if size != entry["size"] or digest.hexdigest() != entry["sha256"]:
+        data = open(os.path.join(root, relative), "rb").read()
+        if len(data) != entry["size"] or hashlib.sha256(data).hexdigest() != entry["sha256"]:
             fail(f"{relative} does not match the signed manifest")
 if listed:
     fail("the bundle is missing " + ", ".join(sorted(listed)))
@@ -127,31 +121,23 @@ for user in "${users[@]}"; do args+=(--user "$user"); done
 "$stage/deploy/local-linux/install-root.sh" "${args[@]}" --bin "$stage/libexec" --runtime "$stage/runtime" \
   --runtime-key "$runtime_key" --runtime-digest "$runtime_digest" "${dry_run[@]}"
 
-# install_tree SOURCE DESTINATION: replaces DESTINATION with the staged, already verified SOURCE, in one rename.
-install_tree() {
-  local source=$1 destination=$2
-  if [[ ${#dry_run[@]} -gt 0 ]]; then
-    say "would install $destination"
-  elif [[ -d "$destination" && ! -L "$destination" ]] && diff -rq -- "$source" "$destination" > /dev/null 2>&1; then
-    say "unchanged $destination"
-  else
-    say "install $destination"
-    install -d -m 0755 -o 0 -g 0 /usr/lib/chariox
-    rm -rf -- "$destination.chariox-new" "$destination.chariox-old"
-    mv -- "$source" "$destination.chariox-new" # the staged copy is disposable; the slice image is too large to copy again
-    if [[ -e "$destination" || -L "$destination" ]]; then mv -- "$destination" "$destination.chariox-old"; fi
-    mv -- "$destination.chariox-new" "$destination"
-    rm -rf -- "$destination.chariox-old"
-  fi
-}
-
 # A release kernel looks for its slice provisioner in the context beside its bin/, then
 # in this system-wide one (apps/kernel/src/slice/local_docker.rs). install-user.sh
-# copies the kernel to ~/.local/bin, so the installed kernel uses this copy. The
-# provisioner finds the signed slice image in ../slice-image and loads it on a first
-# slice start instead of compiling the runtime.
-install_tree "$stage/share/chariox/slice-build-context" /usr/lib/chariox/slice-build-context
-install_tree "$stage/share/chariox/slice-image" /usr/lib/chariox/slice-image
+# copies the kernel to ~/.local/bin, so the installed kernel uses this copy.
+context=/usr/lib/chariox/slice-build-context
+if [[ ${#dry_run[@]} -gt 0 ]]; then
+  say "would install $context"
+elif [[ -d "$context" && ! -L "$context" ]] && diff -rq -- "$stage/share/chariox/slice-build-context" "$context" > /dev/null 2>&1; then
+  say "unchanged $context"
+else
+  say "install $context"
+  install -d -m 0755 -o 0 -g 0 /usr/lib/chariox
+  rm -rf -- "$context.chariox-new" "$context.chariox-old"
+  cp -R -- "$stage/share/chariox/slice-build-context" "$context.chariox-new"
+  if [[ -e "$context" || -L "$context" ]]; then mv -- "$context" "$context.chariox-old"; fi
+  mv -- "$context.chariox-new" "$context"
+  rm -rf -- "$context.chariox-old"
+fi
 
 for name in chariox chariox-app-package; do
   if [[ ${#dry_run[@]} -gt 0 ]]; then

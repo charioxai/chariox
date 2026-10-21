@@ -28,22 +28,9 @@ export function dockerControlPolicy(args) {
   }
 }
 
-// First-start progress (provision-linux-docker-slice.sh emit_progress) crosses the broker frame while the
-// provisioner still runs, one printable-ASCII line at a time; nothing else of its output does.
-const PROGRESS_LINE = /^\[slice-linux\] progress: [\x20-\x7e]{1,200}$/
-export function progressLines(report) {
-  let pending = ""
-  return chunk => {
-    pending += chunk.toString("latin1")
-    const lines = pending.split("\n")
-    pending = lines.pop().slice(-512)
-    for (const line of lines) if (PROGRESS_LINE.test(line)) report(line)
-  }
-}
-
 // MP-08/MP-10/MP-11: the same process-group owner as ordinary provisioning.
 // A live or silent build has no total deadline. Lease loss settles its producer.
-export async function runBrokerCommand(command, args, { env, maxBuffer, signal, logRoot, timeout, statusOnly = false, onProgress }) {
+export async function runBrokerCommand(command, args, { env, maxBuffer, signal, logRoot, timeout, statusOnly = false }) {
   if (signal?.aborted) throw new Error("slice broker operation cancelled")
   if (!Number.isSafeInteger(maxBuffer) || maxBuffer < 1 || maxBuffer > 4 * 1024 * 1024) throw new Error("invalid broker summary limit")
   if (timeout !== undefined && (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 2147483647)) throw new Error("invalid broker control timeout")
@@ -62,7 +49,6 @@ export async function runBrokerCommand(command, args, { env, maxBuffer, signal, 
     env, stdio: ["ignore", statusOnly ? "ignore" : "pipe", statusOnly ? "ignore" : "pipe"],
   })
   const output = [Buffer.alloc(0), Buffer.alloc(0)], truncated = [false, false]
-  const progress = onProgress && progressLines(onProgress)
   let error
   const stop = () => child.kill("SIGTERM")
   signal?.addEventListener("abort", stop, { once: true })
@@ -81,7 +67,6 @@ export async function runBrokerCommand(command, args, { env, maxBuffer, signal, 
               truncated[index] ||= output[index].length + chunk.length > maxBuffer
               const tail = Buffer.concat([output[index], chunk])
               output[index] = Buffer.from(tail.subarray(Math.max(0, tail.length - maxBuffer)))
-              if (index === 1) progress?.(chunk)
             } catch (failure) { error = failure; stop() }
           }
         })

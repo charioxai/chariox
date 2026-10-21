@@ -186,9 +186,9 @@ import {
   restoreSliceBackup,
   saveSliceState,
   startSliceProviderLogin,
+  startSlice,
   stopSlice,
 } from "./slice-api.js"
-import { startSliceShowingProgress } from "./slice-start-progress.js"
 import {
   attachWorkspaceLink,
   createWorkspaceLink,
@@ -683,7 +683,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     },
     getSlice: async (sliceRef) => getSlice(client, sliceRef),
     startSlice: async (sliceRef) => {
-      const slice = await startSliceShowingProgress(client, sliceRef, (message) => flashFooter(message, "info"))
+      const slice = await startSlice(client, sliceRef)
       setSlicesState(await listSlices(client))
       return slice
     },

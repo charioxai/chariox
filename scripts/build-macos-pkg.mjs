@@ -12,10 +12,6 @@
 //             apps/kernel/src/slice/local_docker.rs), so it installs in
 //             /usr/local/share/chariox/slice-build-context. A kernel without that
 //             lookup is refused.
-//   share/chariox/slice-image/
-//             the signed linux/arm64 slice image archive and its descriptor, installed
-//             beside the context in /usr/local/share/chariox/slice-image. A first slice
-//             start verifies and loads it into Docker instead of compiling the runtime.
 // Other top-level entries are not packaged. The runtime's trusted key and
 // inventory digest come from the release authority (the runtime signing
 // receipt), never from the bundle. They are pinned in the postinstall, the
@@ -52,11 +48,8 @@ const DEPLOY = join(dirname(TEMPLATES), '../deploy');
 export const ADMISSION_LABEL = 'dev.chariox.docker-admission-locks';
 export const ADMISSION_CONTRACT = 'chariox.docker-admission-locks.read-only.v1';
 const SLICE_CONTEXT = 'share/chariox/slice-build-context';
-const SLICE_IMAGE = 'share/chariox/slice-image';
-const SLICE_IMAGE_FILES = ['chariox-slice-linux.tar.gz', 'slice-image.json'];
 // Beside usr/local/bin, where a release kernel looks for it.
 export const CONTEXT_DIR = `usr/local/${SLICE_CONTEXT}`;
-export const IMAGE_DIR = `usr/local/${SLICE_IMAGE}`;
 const SLICE_PROVISIONER = 'apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh';
 // The context paths the manifest may hold (uninstall.sh checks the same): no
 // spaces, quotes or line breaks, and no . or .. component.
@@ -204,19 +197,15 @@ async function contextFiles(bundle, kernel) {
   const provisioner = await lstat(join(bundle, SLICE_CONTEXT, SLICE_PROVISIONER)).catch(() => null);
   if (!provisioner?.isFile() || !(provisioner.mode & 0o100))
     throw new Error(`the bundle has no executable ${SLICE_CONTEXT}/${SLICE_PROVISIONER}: a release kernel runs local Docker slices from that slice build context`);
-  if ((await readdir(join(bundle, 'share'))).join('/') !== 'chariox' || (await readdir(join(bundle, 'share/chariox'))).sort().join('/') !== 'slice-build-context/slice-image')
-    throw new Error('share/ must hold only chariox/slice-build-context and chariox/slice-image');
-  const image = await bundleFiles(bundle, SLICE_IMAGE, { maxDepth: 0 });
-  if (image.files.map(file => file.path).sort().join() !== [...SLICE_IMAGE_FILES].sort().join())
-    throw new Error(`${SLICE_IMAGE}/ must hold only ${SLICE_IMAGE_FILES.join(' and ')}`);
-  for (const file of image.files) file.mode = 0o644;
+  if ((await readdir(join(bundle, 'share'))).join('/') !== 'chariox' || (await readdir(join(bundle, 'share/chariox'))).join('/') !== 'slice-build-context')
+    throw new Error('share/ must hold only chariox/slice-build-context');
   const context = await bundleFiles(bundle, SLICE_CONTEXT);
   for (const file of context.files) {
     if (!CONTEXT_PATH.test(file.path)) throw new Error(`${SLICE_CONTEXT}/ has a path the package cannot list: ${JSON.stringify(file.path)}`);
     file.mode = file.mode & 0o111 ? 0o755 : 0o644;
     file.sha256 = await hashFile(file.source);
   }
-  return { context, image };
+  return context;
 }
 
 export async function readBundle(input, runtimeDigest) {
@@ -254,8 +243,8 @@ export async function readBundle(input, runtimeDigest) {
       throw new Error(`runtime/${file.path} is ${file.archs.join('+')}, but bin/chariox-kernel is ${archs[0]}`);
   if (!(await readFile(installer.path)).includes(INSTALLER_MARKER))
     throw new Error(`libexec/${RUNTIME_INSTALLER} cannot enroll on macOS; build it from a tree with the macOS installer`);
-  const { context, image } = await contextFiles(bundle, binaries.find(binary => binary.name === 'chariox-kernel').path);
-  return { bundle, binaries, installer, runtime, context, image, archs, ignored: top.filter(name => !['bin', 'libexec', 'runtime', 'share'].includes(name)) };
+  const context = await contextFiles(bundle, binaries.find(binary => binary.name === 'chariox-kernel').path);
+  return { bundle, binaries, installer, runtime, context, archs, ignored: top.filter(name => !['bin', 'libexec', 'runtime', 'share'].includes(name)) };
 }
 
 // Templates name host paths below @@ROOT@@, which is empty in the package.
@@ -315,7 +304,6 @@ export async function packagePlan(options) {
     content(`Library/LaunchAgents/${AGENT_LABEL}.plist`, 0o644, await readFile(join(TEMPLATES, `${AGENT_LABEL}.plist`), 'utf8')),
     // Two trees, summarized in the plan and receipt: the context's manifest and the pinned inventory record their bytes.
     ...release.context.files.map(file => ({ path: `${CONTEXT_DIR}/${file.path}`, mode: file.mode, source: file.source })),
-    ...release.image.files.map(file => ({ path: `${IMAGE_DIR}/${file.path}`, mode: file.mode, source: file.source })),
     ...release.runtime.files.map(file => ({ path: `${staged}/${file.path}`, mode: file.mode, source: file.source })),
   ];
   const postinstall = await renderTemplate('postinstall', { ROOT: '', VERSION: options.version,
@@ -365,7 +353,6 @@ export function formatPlan(plan) {
   for (const entry of plan.payload) if (entry.sha256) lines.push(`# payload ${octal(entry.mode)} /${entry.path}`);
   lines.push(`# payload 0755 /${CONTEXT_DIR}/: the slice build context, ${release.context.files.length} files, `
     + `${release.context.bytes} bytes, listed in /${PACKAGE_DIR}/slice-build-context.sha256`);
-  lines.push(`# payload 0644 /${IMAGE_DIR}/: the slice image, ${release.image.files.length} files, ${release.image.bytes} bytes`);
   lines.push(`# payload 0700 /${PACKAGE_DIR}/staging/runtime-${plan.runtimeDigest}/: ${release.runtime.files.length} files, `
     + `${release.runtime.bytes} bytes, removed by the postinstall`);
   let phase = '';
@@ -514,7 +501,6 @@ export async function buildMacosPkg(options, { run = runCommand, platform = proc
       runtime: { inventorySha256: plan.runtimeDigest, publicKeyHex: plan.runtimeKey,
         files: plan.release.runtime.files.length, bytes: plan.release.runtime.bytes },
       sliceBuildContext: { path: `/${CONTEXT_DIR}`, files: plan.release.context.files.length, bytes: plan.release.context.bytes },
-      sliceImage: { path: `/${IMAGE_DIR}`, files: plan.release.image.files.length, bytes: plan.release.image.bytes },
       payload: plan.payload.filter(entry => entry.sha256).map(entry => ({ path: `/${entry.path}`, mode: octal(entry.mode), sha256: entry.sha256 })),
       appleDoubleEntries: appleDouble, notPackaged: plan.release.ignored,
       signing: plan.unsigned ? 'unsigned test package: Gatekeeper refuses it'

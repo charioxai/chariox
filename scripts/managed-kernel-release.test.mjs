@@ -91,8 +91,7 @@ test("managed prebuilt slice runtime materializes its runtime output directory",
     join(repositoryRoot, "apps/kernel/slice-linux-docker/docker/Dockerfile"),
     "utf8",
   )
-  // The RUN may carry cache mounts before its command; only the shell command is exercised.
-  const start = dockerfile.indexOf("mkdir -p /opt/chariox-runtime-bin")
+  const start = dockerfile.indexOf("RUN mkdir -p /opt/chariox-runtime-bin")
   const end = dockerfile.indexOf("\n\nFROM ", start)
   assert.notEqual(start, -1, "prebuilt runtime branch is missing")
   assert.notEqual(end, -1, "prebuilt runtime branch has no stage boundary")
@@ -108,7 +107,7 @@ test("managed prebuilt slice runtime materializes its runtime output directory",
       await chmod(path, 0o755)
     }
     const command = dockerfile
-      .slice(start, end)
+      .slice(start + "RUN ".length, end)
       .replaceAll("\\\n", " ")
       .replaceAll("/opt/chariox-prebuilt", prebuilt)
       .replaceAll("/opt/chariox-runtime-bin", runtimeBin)
