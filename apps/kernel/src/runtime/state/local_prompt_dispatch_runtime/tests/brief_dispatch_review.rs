@@ -147,7 +147,20 @@ impl PausedBrief {
     }
     async fn wait_for(&self, name: &str) {
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            while !self.root.path().join(name).exists() {
+            while {
+                let path = self.root.path().join(name);
+                if name == "final-provider-envelope" {
+                    // Redirection creates the file before a complete user message is written.
+                    !std::fs::read_to_string(path).is_ok_and(|inputs| {
+                        inputs.lines().any(|line| {
+                            serde_json::from_str::<serde_json::Value>(line)
+                                .is_ok_and(|message| message["type"] == "user")
+                        })
+                    })
+                } else {
+                    !path.exists()
+                }
+            } {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         })
