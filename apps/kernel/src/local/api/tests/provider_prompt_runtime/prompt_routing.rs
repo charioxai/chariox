@@ -201,7 +201,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
         _ => panic!("unexpected local response"),
     };
 
-    let _focused_run = harness.with_app_mut(|app| {
+    let focused_run = harness.with_app_mut(|app| {
         app.launch_provider(
             LaunchProviderRequest::new(session.id(), "dev-stub", "claude-code", "default", "opus")
                 .with_agent_id(spawned.id()),
@@ -286,24 +286,34 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
 
     harness.with_app_mut(|app| {
         pump_active_prompt_outputs(app);
+        // Legacy focus updates can leave this hint on the viewed agent.
+        // Published state must resolve the working run from the prompt owner.
+        app.sessions_mut()
+            .set_active_provider_run(session.id(), Some(focused_run.id().to_string()))
+            .expect("the legacy focus hint should be reproducible");
     });
-    harness.with_app(|app| {
-        let session_state = app
-            .sessions()
-            .get_session(session.id())
-            .expect("session should still exist");
-        assert_eq!(session_state.focused_agent_id(), Some(spawned.id()));
-        assert_eq!(
-            session_state.active_provider_run_id(),
-            Some(_default_run.id())
-        );
-        assert!(
-            session_state
-                .active_prompt_for_agent(default_agent.id())
-                .is_some(),
-            "background prompt should remain owned by the original agent while unfocused"
-        );
-    });
+    let session_state = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("published session state should load after pumping")
+    {
+        LocalDaemonResponse::SessionState { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(session_state.focused_agent_id(), Some(spawned.id()));
+    assert_eq!(
+        session_state.active_provider_run_id(),
+        Some(_default_run.id())
+    );
+    assert!(
+        session_state
+            .active_prompt_for_agent(default_agent.id())
+            .is_some(),
+        "background prompt should remain owned by the original agent while unfocused"
+    );
 }
 
 #[test]
