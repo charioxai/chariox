@@ -132,6 +132,7 @@ impl KernelGateway {
         request: &LocalDaemonRequest,
         deadline: Duration,
     ) -> Result<Value, GatewayError> {
+        self.ensure_access_live(origin, target)?;
         let kernel = self.resolve(target).await?;
         self.register_for(&origin.grant_id, target).await?;
         let gateway_ready = is_gateway_ready(&kernel);
@@ -154,6 +155,7 @@ impl KernelGateway {
         }
         let plaintext = serde_json::to_vec(&envelope).expect("envelope serializes");
         let link = self.link_for(target, &kernel).await?;
+        self.ensure_access_live(origin, target)?;
         let request_id = format!(
             "gw-{}-{}",
             crate::session::unix_epoch_ms(),
@@ -174,6 +176,21 @@ impl KernelGateway {
                 Err(map_failure(target, failure))
             }
         }
+    }
+
+    /// Resolving the kernel, registering and opening the link wait on the network; access that
+    /// ended meanwhile must not start a request on the target. Checked before and after.
+    fn ensure_access_live(&self, origin: &Origin, target: &str) -> Result<(), GatewayError> {
+        if self
+            .runtime_state
+            .access_grant_summary(&origin.grant_id)
+            .is_none()
+        {
+            return Err(GatewayError::AccessEnded {
+                name: target.into(),
+            });
+        }
+        Ok(())
     }
 
     async fn link_for(
@@ -375,6 +392,66 @@ fn map_failure(target: &str, failure: LinkFailure) -> GatewayError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A request whose grant ended is not sent: it never gets as far as resolving the kernel.
+    #[tokio::test]
+    async fn a_request_under_an_ended_grant_is_not_forwarded() {
+        let app = crate::test_support::bootstrap_authenticated_app(
+            crate::config::DaemonConfig::for_tests(),
+        )
+        .unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::new(Mutex::new(app)),
+            32,
+        );
+        let origin = Origin {
+            grant_id: "ended-grant".into(),
+            harness: "claude".into(),
+        };
+        let request = LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest);
+        let error = router
+            .kernel_gateway()
+            .forward("b3", &origin, "cmd-1", &request, Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "kernel_access_ended");
+        assert!(error.message().contains("nothing was sent"));
+    }
+
+    // Revoking a gateway ends its event streams too, not only its requests.
+    #[tokio::test]
+    async fn a_revoked_gateway_key_gets_no_event_stream() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let app = crate::test_support::bootstrap_authenticated_app(config.clone()).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::new(Mutex::new(app)),
+            32,
+        );
+        let key = "gateway-relay-public-key";
+        let gateway = router.kernel_gateway();
+        assert!(gateway
+            .admit_origin(
+                key,
+                Some(origins::Named {
+                    kernel: "kernel-a",
+                    name: None
+                })
+            )
+            .unwrap());
+        router
+            .admit_relay_stream(key)
+            .expect("a live gateway streams");
+        let client_id = format!(
+            "{}{}",
+            origins::CLIENT_PREFIX,
+            crate::runtime::terminal_pairings::public_key_thumbprint(key)
+        );
+        let path = origins::path_in(&config.private_runtime_state_root());
+        origins::revoke(&path, &client_id).unwrap().unwrap();
+        router
+            .admit_relay_stream(key)
+            .expect_err("a revoked gateway gets no stream");
+    }
 
     // EA2-09(c): with the relay stalled, a kernel without an open link is
     // unreachable within the connect bound; an open link that stalls times out.

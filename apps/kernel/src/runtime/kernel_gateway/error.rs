@@ -22,6 +22,10 @@ pub(crate) enum GatewayError {
     },
     /// The owner revoked this kernel's gateway in the Cloud clients list.
     GatewayRevoked,
+    /// The grant the request acts under ended while the connection was being set up.
+    AccessEnded {
+        name: String,
+    },
     Incompatible {
         name: String,
         detail: String,
@@ -58,6 +62,7 @@ impl GatewayError {
             Self::Offline { .. } => "kernel_offline",
             Self::Unreachable { .. } => "kernel_unreachable",
             Self::Unpaired { .. } | Self::GatewayRevoked => "kernel_unpaired",
+            Self::AccessEnded { .. } => "kernel_access_ended",
             Self::Incompatible { .. } => "kernel_incompatible",
             Self::RequestTimeout { .. } => "kernel_request_timeout",
             Self::ConnectionLost { .. } | Self::SubscriptionEnded { .. } => {
@@ -85,6 +90,9 @@ impl GatewayError {
             ),
             Self::Unpaired { name } => format!(
                 "Kernel \"{name}\" does not accept this kernel. Pair it again from a Chariox terminal."
+            ),
+            Self::AccessEnded { name } => format!(
+                "Your access ended before the request to kernel \"{name}\" was sent, so nothing was sent. Ask the user to approve a new access request."
             ),
             Self::GatewayRevoked => "This kernel's agent gateway was revoked in the Cloud clients list and the agent access grants ended. Ask the user to approve a new agent access request.".to_string(),
             Self::Incompatible { name, detail } => format!(
@@ -141,6 +149,7 @@ pub(crate) fn is_public_code(code: &str) -> bool {
             | "kernel_incompatible"
             | "kernel_request_timeout"
             | "kernel_connection_lost"
+            | "kernel_access_ended"
             | "kernel_outcome_unknown"
             | "kernel_not_available"
             | "kernel_join_refused"
