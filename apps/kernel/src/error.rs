@@ -38,6 +38,9 @@ pub enum DaemonError {
     /// says what to do next and `code` is the typed outcome the caller sees.
     #[error("{message}")]
     MachineRequest { code: String, message: String },
+    /// The owner revoked a gateway's key on this kernel; it gets no request and no stream.
+    #[error("this kernel's owner revoked that gateway (unpaired or revoked)")]
+    GatewayKeyRevoked,
     #[error("local transport `{operation}` failed: {message}")]
     LocalTransport {
         operation: &'static str,

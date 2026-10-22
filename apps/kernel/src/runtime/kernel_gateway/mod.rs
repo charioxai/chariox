@@ -173,7 +173,13 @@ impl KernelGateway {
                 {
                     self.links.lock().await.remove(&kernel.kernel_id);
                 }
-                Err(map_failure(target, failure))
+                let error = map_failure(target, failure);
+                if matches!(error, GatewayError::ConnectionLost { .. }) {
+                    if let Some(revoked) = self.revoked_after_loss(target).await {
+                        return Err(revoked);
+                    }
+                }
+                Err(error)
             }
         }
     }
@@ -205,6 +211,18 @@ impl KernelGateway {
         let link = self.open_link(target, kernel).await?;
         links.insert(kernel.kernel_id.clone(), Arc::clone(&link));
         Ok(link)
+    }
+
+    /// A revoked gateway finds out because the relay cuts its link. A lost link is therefore
+    /// answered by asking for a new one: when the owner revoked the gateway, that says so
+    /// definitively instead of leaving a "retry" that can only fail. Otherwise the new link
+    /// is ready for the retry.
+    pub(crate) async fn revoked_after_loss(&self, target: &str) -> Option<GatewayError> {
+        let kernel = self.resolve(target).await.ok()?;
+        match self.link_for(target, &kernel).await {
+            Err(revoked @ GatewayError::GatewayRevoked) => Some(revoked),
+            _ => None,
+        }
     }
 
     /// The hosted gateway is listed in the Cloud clients list for as long as an access

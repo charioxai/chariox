@@ -405,6 +405,9 @@ pub(super) enum GatewayRoute {
 }
 
 const SUBSCRIPTION_SILENCE: std::time::Duration = std::time::Duration::from_secs(30);
+/// While a watch is open the origin asks the target this often whether it still accepts the
+/// gateway: a revoked gateway's stream ends at once with `kernel_unpaired` instead of going quiet.
+const REVOCATION_PROBE: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// Serves an admitted subscription on another kernel: the target's events are
 /// relayed to this connection until the agent unsubscribes or the kernel stops
@@ -431,6 +434,10 @@ pub(super) async fn serve_gateway_subscription(
         close_tx.clone(),
         Arc::clone(close_requested),
     );
+    let origin = crate::runtime::kernel_gateway::Origin {
+        grant_id: request.grant_id.clone(),
+        harness: "watch".into(),
+    };
     let task = tokio::spawn(async move {
         let send = |frame| {
             try_send_outgoing_frame(
@@ -469,9 +476,45 @@ pub(super) async fn serve_gateway_subscription(
         let mut last_event_id = None;
         // The kernel sends a heartbeat every 5 s; silence for six of them means it is gone
         // (the relay does not say so when a target dies with a subscription open).
-        while let Ok(Some((event_id, body))) =
-            tokio::time::timeout(SUBSCRIPTION_SILENCE, events.recv()).await
-        {
+        let mut quiet_since = tokio::time::Instant::now();
+        let mut probe = tokio::time::interval_at(
+            tokio::time::Instant::now() + REVOCATION_PROBE,
+            REVOCATION_PROBE,
+        );
+        loop {
+            let (event_id, body) = tokio::select! {
+                next = events.recv() => match next {
+                    Some(event) => event,
+                    None => break,
+                },
+                _ = tokio::time::sleep_until(quiet_since + SUBSCRIPTION_SILENCE) => break,
+                _ = probe.tick() => {
+                    let still_accepted = gateway
+                        .forward(
+                            &kernel,
+                            &origin,
+                            &format!("gw-watch-probe-{}", crate::session::unix_epoch_ms()),
+                            &crate::local::LocalDaemonRequest::HeartbeatAttachments(
+                                crate::local::HeartbeatAttachmentsRequest { attachments: Vec::new() },
+                            ),
+                            REVOCATION_PROBE,
+                        )
+                        .await;
+                    if let Err(failure) = still_accepted {
+                        if failure.code() == "kernel_unpaired" {
+                            send(KernelOutgoingFrame::Response {
+                                kernel: Some(kernel),
+                                request_id,
+                                response: Box::new(None),
+                                error: Some(failure.transport_error()),
+                            });
+                            return;
+                        }
+                    }
+                    continue;
+                }
+            };
+            quiet_since = tokio::time::Instant::now();
             let Ok(event) = serde_json::from_slice::<KernelEvent>(&body) else {
                 continue;
             };
@@ -489,10 +532,20 @@ pub(super) async fn serve_gateway_subscription(
                 return;
             }
         }
-        let ended = crate::runtime::kernel_gateway::GatewayError::SubscriptionEnded {
-            name: kernel.clone(),
-            last_event_id,
-        };
+        // A cut link is also how a revoked gateway finds out: say so instead of "resubscribe".
+        let revoked = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            gateway.revoked_after_loss(&kernel),
+        )
+        .await
+        .ok()
+        .flatten();
+        let ended = revoked.unwrap_or_else(|| {
+            crate::runtime::kernel_gateway::GatewayError::SubscriptionEnded {
+                name: kernel.clone(),
+                last_event_id,
+            }
+        });
         send(KernelOutgoingFrame::Response {
             kernel: Some(kernel),
             request_id,

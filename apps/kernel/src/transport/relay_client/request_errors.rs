@@ -21,6 +21,9 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         DaemonError::SessionNotFound { .. } => {
             relay_error("session_not_found", &error.to_string(), false)
         }
+        DaemonError::GatewayKeyRevoked => {
+            relay_error("authorization_denied", &error.to_string(), false)
+        }
         DaemonError::SessionAliasConflict { .. } => {
             relay_error("session_alias_conflict", &error.to_string(), false)
         }

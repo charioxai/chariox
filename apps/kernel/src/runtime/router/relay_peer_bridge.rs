@@ -189,10 +189,7 @@ impl CommandRouter {
     ) -> Result<Option<crate::config::PersistedClientPairing>, DaemonError> {
         let grant = self.admit_self_host_terminal(public_key)?;
         if !self.kernel_gateway.admit_origin(public_key, None)? {
-            return Err(DaemonError::LocalTransport {
-                operation: "authorize gateway stream",
-                message: "this kernel's owner revoked that gateway (unpaired or revoked)".into(),
-            });
+            return Err(DaemonError::GatewayKeyRevoked);
         }
         Ok(grant)
     }
