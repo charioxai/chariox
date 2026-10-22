@@ -10,7 +10,7 @@ use super::*;
 use crate::durable_state::agent_lifecycle::{
     AgentTaskExecution, AgentWake, Operation, Outcome, WakeEnd,
 };
-use std::sync::RwLock;
+use std::sync::{RwLock, Weak};
 
 /// Result of a stop request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,12 +51,21 @@ pub(crate) trait WakeDriver: Send + Sync {
 
 #[derive(Default)]
 pub(crate) struct WakeDrivers {
-    drivers: RwLock<BTreeMap<&'static str, Arc<dyn WakeDriver>>>,
+    drivers: RwLock<BTreeMap<&'static str, Weak<dyn WakeDriver>>>,
+    /// Drivers that hold no runtime keep themselves alive here; one that does is owned by the
+    /// runtime state (see `register_weak`).
+    owned: RwLock<Vec<Arc<dyn WakeDriver>>>,
 }
 
 impl WakeDrivers {
     pub(super) fn register(&self, driver: Arc<dyn WakeDriver>) {
-        let kind = driver.kind();
+        self.register_weak(Arc::downgrade(&driver));
+        self.owned.write().expect("wake drivers lock").push(driver);
+    }
+    /// For a driver that holds the runtime: the runtime state keeps it alive, so the registry
+    /// inside that state must not (a strong handle here would be a reference cycle).
+    pub(super) fn register_weak(&self, driver: Weak<dyn WakeDriver>) {
+        let kind = driver.upgrade().expect("registered driver is alive").kind();
         let previous = self
             .drivers
             .write()
@@ -69,7 +78,7 @@ impl WakeDrivers {
             .read()
             .expect("wake drivers lock")
             .get(kind)
-            .cloned()
+            .and_then(Weak::upgrade)
             .ok_or_else(|| {
                 crate::durable_state::agent_lifecycle::error(format!(
                     "no wake driver is registered for `{kind}`"

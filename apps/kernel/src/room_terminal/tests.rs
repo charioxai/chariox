@@ -65,7 +65,8 @@ fn service(root: &Path) -> RoomTerminalService {
 
 fn service_with_events(root: &Path, events: Arc<FakeEvents>) -> RoomTerminalService {
     let service = RoomTerminalService::new(root.join("terminals"));
-    service.bind_events(events);
+    let weak = Arc::downgrade(&events);
+    service.bind_events(weak);
     service
 }
 

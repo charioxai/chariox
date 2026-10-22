@@ -1081,3 +1081,32 @@ async fn terminal_wake_refuses_a_terminal_that_is_not_running_here() {
         .iter()
         .all(|w| w.kind != "terminal" || w.state != "running"));
 }
+
+/// The terminal wake driver holds the runtime and the runtime owns the Room terminal service
+/// and the wake registry the driver is registered in. Dropping the runtime must free all of
+/// it, or a kernel rebuilt in the same process can never take over the durable state lock.
+#[tokio::test]
+async fn dropping_the_runtime_frees_the_terminal_wake_driver() {
+    let _worktree = crate::test_support::TestWorktree::new("terminal-driver-drop");
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap(),
+    ));
+    let runtime = owned_runtime_state(&app).await;
+    let driver = Arc::downgrade(
+        runtime
+            .terminal_wake_driver
+            .as_ref()
+            .expect("the runtime registers the terminal wake driver"),
+    );
+    let kernel = Arc::downgrade(&app);
+    drop(runtime);
+    drop(app);
+    assert!(
+        driver.upgrade().is_none(),
+        "the driver outlived its runtime"
+    );
+    assert!(
+        kernel.upgrade().is_none(),
+        "the kernel outlived its runtime"
+    );
+}

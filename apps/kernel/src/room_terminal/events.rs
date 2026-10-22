@@ -3,7 +3,7 @@
 //! receives its event through `CompletionEvents`; nothing else in this
 //! module knows about wakes.
 
-use std::sync::{Arc, RwLock};
+use std::sync::{RwLock, Weak};
 use std::time::Duration;
 
 use super::plain_text::PlainText;
@@ -23,15 +23,20 @@ pub trait CompletionEvents: Send + Sync {
 /// again on the same app (tests do) takes over the binding: the newest
 /// runtime owns terminal wakes.
 #[derive(Default)]
-pub(super) struct BoundEvents(RwLock<Option<Arc<dyn CompletionEvents>>>);
+pub(super) struct BoundEvents(RwLock<Option<Weak<dyn CompletionEvents>>>);
 
 impl BoundEvents {
-    pub(super) fn bind(&self, events: Arc<dyn CompletionEvents>) {
+    pub(super) fn bind(&self, events: Weak<dyn CompletionEvents>) {
         *self.0.write().unwrap_or_else(|e| e.into_inner()) = Some(events);
     }
 
     pub(super) fn deliver(&self, event: RoomTerminalEvent) {
-        let bound = self.0.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let bound = self
+            .0
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(Weak::upgrade);
         match bound {
             Some(events) => events.deliver(event),
             None => crate::logging::error_with_fields(

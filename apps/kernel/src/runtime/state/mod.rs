@@ -183,6 +183,10 @@ pub(crate) struct KernelRuntimeState {
     provider_history_appends: provider_history_runtime::ProviderHistoryAppends,
     leased_agent_operations: leased_agent_operations::LeasedAgentOperations,
     detached_workflow_provider_launches: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    /// The only strong handle on the terminal wake driver. The driver holds a runtime copy made
+    /// before this field was set, and the Room terminal service and wake registry hold it weakly,
+    /// so dropping the runtime frees the kernel instead of leaving a cycle.
+    terminal_wake_driver: Option<Arc<terminal_wake::TerminalWakeDriver>>,
     owned: KernelRuntimeOwnedState,
 }
 
@@ -903,7 +907,7 @@ impl KernelRuntimeState {
                 std::thread::sleep(Duration::from_millis(2));
             }
         };
-        let runtime = Self {
+        let mut runtime = Self {
             external_command_authority: None,
             room_provider_origin: None,
             room_request_origin: None,
@@ -919,6 +923,7 @@ impl KernelRuntimeState {
             provider_history_appends: Default::default(),
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+            terminal_wake_driver: None,
             owned: KernelRuntimeOwnedState {
                 app_control,
                 critical_approval_passkeys:

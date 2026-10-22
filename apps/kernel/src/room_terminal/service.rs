@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -131,8 +131,9 @@ impl RoomTerminalService {
         }
     }
 
-    /// Where fired watches go. Bound once, by the event core.
-    pub fn bind_events(&self, events: Arc<dyn CompletionEvents>) {
+    /// Where fired watches go. Bound by the event core, which owns them: the service holds the
+    /// sink weakly so the sink may hold the runtime that owns this service.
+    pub fn bind_events(&self, events: Weak<dyn CompletionEvents>) {
         self.inner.events.bind(events);
     }
 

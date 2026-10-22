@@ -300,15 +300,23 @@ fn tail_of(text: &str, limit: usize) -> &str {
 impl KernelRuntimeState {
     /// Makes terminals a wake source: the driver arms watches and its sink
     /// receives the terminal's events.
-    pub(super) fn register_terminal_wake_driver(&self) {
+    pub(super) fn register_terminal_wake_driver(&mut self) {
         let driver = Arc::new(TerminalWakeDriver {
             state: self.clone(),
             workers: Arc::default(),
             terminals: self.owned.room_terminals.clone(),
             sink: self.wake_sink(KIND),
         });
-        self.owned.room_terminals.bind_events(driver.clone());
-        self.register_wake_driver(driver);
+        let events: Arc<dyn CompletionEvents> = driver.clone();
+        self.owned
+            .room_terminals
+            .bind_events(Arc::downgrade(&events));
+        let wake_driver: Arc<dyn WakeDriver> = driver.clone();
+        self.owned
+            .agent_wakes
+            .drivers
+            .register_weak(Arc::downgrade(&wake_driver));
+        self.terminal_wake_driver = Some(driver);
     }
 
     /// Arms a terminal wake for the running turn of `task`.
