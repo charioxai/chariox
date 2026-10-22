@@ -1,7 +1,7 @@
 //! MP-08 / MP-10 / MP-11: home-owned source reviews; approval never refetches bytes.
 //! Runtime callers retain ordinary owner + ask/yolo authorization around publication.
 use super::{
-    catalog::{failure, validate_id, SkillCatalogSet},
+    catalog::{failure, safe_locator, validate_id, SkillCatalogSet},
     package::{materialize_skill_package_for_id, package_skill_directory},
     service::SkillCatalogService,
     v2::*,
@@ -54,6 +54,13 @@ fn publication_mutation(
     let mut publication = mutation.clone();
     for action in &mut publication.actions {
         match action {
+            // A repository's identity is what makes its package source-backed at
+            // publication; the locator is stripped of credentials and query like
+            // every stored locator, and nothing is fetched again.
+            SkillCatalogAction::Install {
+                source: SkillInstallSource::Repository { url, .. },
+                ..
+            } => *url = safe_locator(url)?,
             SkillCatalogAction::Install { source, .. }
             | SkillCatalogAction::Update { source, .. } => {
                 *source = SkillInstallSource::Content {

@@ -126,14 +126,19 @@ fn repository_install_is_one_source_backed_package_at_the_attested_revision() {
     let service = SkillCatalogService::new(f.storage.clone());
     let revision = repo.head();
     let mutation = install_all(&repo, &revision, &["skills/alpha", "skills/beta"]);
-    let prepared = service.prepare(&mutation).unwrap();
-    assert!(prepared
-        .values()
-        .all(
-            |(r, _)| r.provenance.source_revision.as_deref() == Some(revision.as_str())
-                && r.provenance.kind == "repository"
-        ));
-    let set = service.publish_authorized(&mutation, &prepared).unwrap();
+    // The path a confirmed review takes: preview stages the bytes, publish reads them back.
+    let SkillsV2Response::Preview { review_receipt, .. } =
+        service.preview_review("owner", &mutation).unwrap()
+    else {
+        panic!("expected a review");
+    };
+    assert!(review_receipt
+        .sources
+        .iter()
+        .all(|source| source.source_revision.as_deref() == Some(revision.as_str())));
+    let set = service
+        .publish_reviewed("owner", &mutation, &review_receipt.id)
+        .unwrap();
     let catalog = set.catalog(&SkillScope::Chariox).unwrap();
     assert_eq!(catalog.packages.len(), 1);
     let package = &catalog.packages[0];
@@ -144,6 +149,11 @@ fn repository_install_is_one_source_backed_package_at_the_attested_revision() {
     assert_eq!(by_path, ["skills/alpha", "skills/beta"]);
     for skill in &catalog.skills {
         assert_eq!(skill.package_id.as_deref(), Some("package-repo"));
+        assert_eq!(skill.provenance.kind, "repository");
+        assert_eq!(
+            skill.provenance.source_revision.as_deref(),
+            Some(revision.as_str())
+        );
         assert!(package.upstream_members.values().any(|id| id == &skill.id));
     }
     let beta = catalog.skills.iter().find(|s| s.name == "beta").unwrap();
