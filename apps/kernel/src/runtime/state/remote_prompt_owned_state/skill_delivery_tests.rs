@@ -1527,6 +1527,48 @@ async fn leased_native_launch_clears_the_view_when_no_skill_is_effective() {
     assert_eq!(set.names, None);
 }
 
+// MP-08 / MP-10 / MP-11: a failed publication refresh is repaired by the next
+// home turn, even when disabling the last skill left nothing to transfer.
+#[tokio::test]
+async fn leased_home_turn_clears_the_view_when_no_skill_is_effective() {
+    let (runtime, service, skill, context, session_id, agent_id) = manual_review_fixture().await;
+    let off = SkillCatalogMutation {
+        scope: SkillScope::Chariox,
+        expected_revision: service.storage.snapshot().unwrap().revision,
+        actions: vec![SkillCatalogAction::SetState {
+            skill_id: skill.id,
+            state: Some(SkillState::Off),
+        }],
+    };
+    let prepared = service.prepare(&off).unwrap();
+    let catalog = service.publish_authorized(&off, &prepared).unwrap();
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let prompt = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &agent_id)
+        .unwrap();
+    let turn = super::super::skills_dispatch::prepare_remote_turn(
+        &runtime,
+        &session_id,
+        &agent_id,
+        prompt.id(),
+        &context.leased_agent_id,
+        &[],
+        &super::super::skills_dispatch::ReportedWorkerRun::Unknown,
+    )
+    .unwrap()
+    .expect("the next turn must repair a missed empty clearing view");
+    assert_eq!(turn.set.manifest.catalog_revision, catalog.revision);
+    assert!(turn.set.manifest.skills.is_empty());
+    assert!(turn.set.packages.is_empty());
+    assert_eq!(turn.set.names, None);
+}
+
 // MP-08 / MP-10: the home never trusts the worker's name or digest for a typed load.
 #[tokio::test]
 async fn leased_typed_skill_load_is_recorded_only_for_a_current_effective_skill() {

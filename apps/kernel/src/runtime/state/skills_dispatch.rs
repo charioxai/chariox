@@ -532,9 +532,6 @@ impl SkillDispatchService {
                 |_| Ok(authority.clone()),
             )?;
         }
-        if set.manifest.skills.is_empty() && context.native_selections.is_empty() {
-            return Ok(None);
-        }
         Ok(Some(RemoteSkillTurn {
             set,
             auto_rows,
