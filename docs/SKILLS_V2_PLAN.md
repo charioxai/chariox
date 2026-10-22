@@ -137,6 +137,16 @@ into/out of them without copying skill bytes, changing IDs or losing provenance,
 state overrides or session load history. Moving into a package replaces prior
 membership atomically. Keep empty custom packages until explicitly removed.
 
+A **repository install** is owner-initiated from Skills (Web "Import a public
+repository", TUI `/skills repo <url>`): the kernel fetches the public git repository
+with `git`, lists every SKILL.md directory at its current commit, and the reviewed
+batch installs the checked members pinned to exactly that commit into one new package.
+The kernel records the commit as the members' and the package's `source_revision`
+and maps each upstream directory to the member's skill ID; no client label can
+attest a revision. Private or auth-required repositories are refused, and an agent
+cannot start a repository install. Updating a repository package from a newer commit
+is not part of this flow yet.
+
 Install/update/remove/state actions work on a single skill or a whole package.
 Show the affected members and collisions before authorization, and commit the
 reviewed batch atomically with expected catalog revisions. A collision or failed
