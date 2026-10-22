@@ -331,9 +331,18 @@ A home kernel without Cloud signs its paired terminals' relay tokens itself:
    Redeeming the link returns a
    key-bound attach token; the terminal renews it with `IssueRelayClientToken` before it expires
    (default 15 minutes, at most 1 hour).
-4. `RevokePairedClient` refuses the terminal's requests and renewals at once; its relay admission ends when
-   its current token expires.
-5. Rotation: `/relay issuer stage-rotation`, restart the relay with both printed keys, then
+4. Each terminal pairing link has its own grant, even when a CLI reuses its persisted key. Key-bound
+   requests select the token's authenticated subject and require that grant's matching sender key;
+   renewal cannot borrow another link's subject. Legacy operator transport still admits by paired key.
+5. `RevokePairedClient` revokes one link's grant: its requests, renewals and subscriptions stop, while
+   another unrevoked link for the same key keeps working. To revoke the device, list its paired clients
+   and revoke every grant with that public-key thumbprint (and any outstanding unredeemed links).
+   Previously issued relay tokens remain transport-valid until expiry; the kernel refuses their
+   revoked authority immediately. A fresh owner-issued link can pair the device again.
+6. Acceptance RP-12 (MP-08 / MP-11): redeem two terminal pairing links with one persisted CLI identity; both connections
+   must renew through relay request admission and remain usable beyond their initial token expiry.
+   Revoking either link must leave its sibling working; revoking all grants must refuse the device.
+7. Rotation: `/relay issuer stage-rotation`, restart the relay with both printed keys, then
    `/relay issuer activate-rotation`; remove the old key from the relay after one hour.
 
 The Cloud issuer path is unchanged: hosted relays keep the HMAC verifier and revocation sync.
