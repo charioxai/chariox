@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::os::fd::FromRawFd;
 use std::time::{Duration, Instant};
 use wasmtime::component::{Component, InstancePre, Linker, ResourceTable};
-use wasmtime::{Config, Engine, Store, StoreLimitsBuilder, Trap};
+use wasmtime::{Config, Engine, Store, Trap};
 
 const TICK: Duration = Duration::from_millis(10);
 
@@ -99,7 +99,7 @@ fn store(engine: &Engine, ipc: &Ipc, limits: &Limits) -> Store<Host> {
         ipc: ipc.clone(),
         wasi: wasi.build(),
         table: ResourceTable::new(),
-        limits: StoreLimitsBuilder::new().memory_size(limits.memory).instances(4).trap_on_grow_failure(true).build(),
+        limits: host::MemoryCap { bytes: limits.memory, refused: false },
         tools: Vec::new(),
         events: Vec::new(),
         lifecycle: Vec::new(),
@@ -176,6 +176,7 @@ async fn run() {
             "tools.invoke" => {
                 let budget = Duration::from_millis(deadline_ms.saturating_sub(wall_ms())).min(limits.call);
                 live.store.set_epoch_deadline(ticks(budget));
+                live.store.data_mut().limits.refused = false;
                 let name = params["name"].as_str().unwrap_or_default().to_string();
                 let input = params["input"].to_string();
                 let called = live.app.chariox_app_handlers().call_call_tool(&mut live.store, &name, &input, &invocation(deadline_ms, context.as_ref())).await;
@@ -185,7 +186,7 @@ async fn run() {
                     Err(trap) => {
                         let code = match trap.downcast_ref::<Trap>() {
                             Some(Trap::Interrupt) => "APP_CALL_TIMEOUT",
-                            _ if format!("{trap:?}").contains("forcing trap when growing memory") => "APP_MEMORY_LIMIT",
+                            _ if live.store.data().limits.refused => "APP_MEMORY_LIMIT",
                             _ => "APP_TRAPPED",
                         };
                         let stopped = Instant::now();

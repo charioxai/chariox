@@ -1,7 +1,7 @@
 # Spike only: not part of the product workspace or build.
 [workspace]
 resolver = "2"
-members = ["worker", "harness"]
+members = ["worker", "harness", "async-probe/host"]
 
 [workspace.dependencies]
 chariox-app-runtime = { path = "../../packages/app-runtime" }

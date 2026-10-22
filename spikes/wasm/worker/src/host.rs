@@ -4,7 +4,6 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use chariox_app_runtime::wire::RemoteError;
 use serde_json::{json, Value};
 use wasmtime::component::ResourceTable;
-use wasmtime::StoreLimits;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
 wasmtime::component::bindgen!({
@@ -21,10 +20,33 @@ pub struct Host {
     pub ipc: Ipc,
     pub wasi: WasiCtx,
     pub table: ResourceTable,
-    pub limits: StoreLimits,
+    pub limits: MemoryCap,
     pub tools: Vec<String>,
     pub events: Vec<String>,
     pub lifecycle: Vec<String>,
+}
+
+/// A refused grow returns -1 to the guest instead of trapping, so a garbage
+/// collected guest (StarlingMonkey) can collect and retry. The refusal is
+/// remembered so a trap that follows is reported as the memory limit.
+pub struct MemoryCap {
+    pub bytes: usize,
+    pub refused: bool,
+}
+
+impl wasmtime::ResourceLimiter for MemoryCap {
+    fn memory_growing(&mut self, _current: usize, desired: usize, _maximum: Option<usize>) -> wasmtime::Result<bool> {
+        if desired > self.bytes {
+            self.refused = true;
+            return Ok(false);
+        }
+        Ok(true)
+    }
+    fn table_growing(&mut self, _current: usize, desired: usize, _maximum: Option<usize>) -> wasmtime::Result<bool> {
+        Ok(desired <= 1 << 20)
+    }
+    fn instances(&self) -> usize { 4 }
+    fn memories(&self) -> usize { 4 }
 }
 
 impl WasiView for Host {

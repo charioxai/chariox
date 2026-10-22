@@ -124,6 +124,12 @@ fn scratch() -> (String, String) {
     (data, tmp)
 }
 
+/// The same per-App memory budget for both runtimes: wasm linear memory cap
+/// or V8 old space.
+fn memory_mb() -> String {
+    std::env::var("SPIKE_MEMORY_MB").unwrap_or("128".into())
+}
+
 pub fn spawn(variant: &Variant) -> Spawned {
     let root = env("SPIKE_ROOT");
     let package = format!("{root}/artifacts/{}", variant.name);
@@ -139,7 +145,7 @@ pub fn spawn(variant: &Variant) -> Spawned {
     ];
     let (program, mut arguments, binds) = if variant.wasm {
         environment.push(("CHARIOX_WASM_ENTRY".into(), std::env::var("SPIKE_WASM_ENTRY").unwrap_or("app.cwasm".into())));
-        environment.push(("CHARIOX_WASM_MEMORY_MB".into(), "64".into()));
+        environment.push(("CHARIOX_WASM_MEMORY_MB".into(), memory_mb()));
         environment.push(("CHARIOX_WASM_CALL_MS".into(), "1000".into()));
         let worker = env("SPIKE_WORKER");
         let dir = std::path::Path::new(&worker).parent().unwrap().to_string_lossy().to_string();
@@ -151,7 +157,7 @@ pub fn spawn(variant: &Variant) -> Spawned {
         let bootstrap = format!("{runtime}/bootstrap.cjs");
         let script = format!("require('node:module').createRequire({b:?})({b:?}).start({launch});", b = bootstrap);
         let node = env("SPIKE_NODE");
-        let mut arguments: Vec<String> = vec!["--no-warnings".into(), "--max-old-space-size=64".into(), "--permission".into(), "--allow-worker".into(), "--no-addons".into()];
+        let mut arguments: Vec<String> = vec!["--no-warnings".into(), format!("--max-old-space-size={}", memory_mb()), "--permission".into(), "--allow-worker".into(), "--no-addons".into()];
         for path in [&runtime, &package, &data, &tmp] { arguments.push(format!("--allow-fs-read={path}")); }
         for path in [&data, &tmp] { arguments.push(format!("--allow-fs-write={path}")); }
         arguments.extend(std::env::var("SPIKE_NODE_FLAGS").unwrap_or_default().split_whitespace().map(String::from));

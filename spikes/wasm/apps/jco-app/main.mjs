@@ -16,10 +16,10 @@ const appError = error => ({ payload: { code: String(error?.code ?? 'HANDLER_FAI
 function imports(chariox, names) {
   const call = async (operation) => { try { return await operation(); } catch (error) { throw appError(error); } };
   return {
-    ...new WASIShim().getImportObject({ asVersion: '0.2.12' }),
-    'chariox:app/types@0.1.0': {},
-    'chariox:app/registry@0.1.0': { tool: name => names.push(name), event() {}, lifecycle() {} },
-    'chariox:app/state@0.1.0': {
+    ...new WASIShim().getImportObject(),
+    'chariox:app/types': {},
+    'chariox:app/registry': { tool: name => names.push(name), event() {}, lifecycle() {} },
+    'chariox:app/state': {
       get: key => call(async () => {
         const record = await chariox.state.get(key);
         return record ? { value: JSON.stringify(record.value), version: BigInt(record.version) } : undefined;
@@ -33,7 +33,7 @@ function imports(chariox, names) {
         return { revision: BigInt(revision) };
       }),
     },
-    'chariox:app/http@0.1.0': {
+    'chariox:app/http': {
       send: req => call(async () => {
         const request = { url: req.url, method: req.method, headers: req.headers };
         if (req.body !== undefined) request.body = req.body;
@@ -41,7 +41,7 @@ function imports(chariox, names) {
         return { status: response.status, headers: response.headers, url: response.url, body: Buffer.from(response.bodyBase64, 'base64') };
       }),
     },
-    'chariox:app/log@0.1.0': { write: async (level, message, fields) => { await chariox.log.write(level, message, JSON.parse(fields)).catch(() => {}); } },
+    'chariox:app/log': { write: async (level, message, fields) => { await chariox.log.write(level, message, JSON.parse(fields)).catch(() => {}); } },
   };
 }
 

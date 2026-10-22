@@ -78,7 +78,7 @@ impl SpikeBroker {
         let split = raw.windows(4).position(|w| w == b"\r\n\r\n").ok_or_else(|| failure("APP_HTTP_FAILED", "head"))?;
         let head = String::from_utf8_lossy(&raw[..split]).to_string();
         let status = head.split(' ').nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-        let id = format!("stream-{}", self.streams.lock().unwrap().len() + 1);
+        let id = format!("00000000-0000-4000-8000-{:012x}", self.streams.lock().unwrap().len() + 1);
         self.streams.lock().unwrap().insert(id.clone(), (status, raw[split + 4..].to_vec(), url.into()));
         Ok(json!({ "streamId": id }))
     }

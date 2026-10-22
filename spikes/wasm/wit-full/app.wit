@@ -1,0 +1,168 @@
+// Proposed Chariox App world 1.0, derived 1:1 from @chariox/app-sdk 0.8
+// (packages/app-sdk/src/index.d.ts). Each import is one existing wire method;
+// the comment names it. Not built by the spike (the spike uses wit/app.wit).
+package chariox:app@1.0.0;
+
+interface types {
+  /// JSON text checked by the host with the wire rules (depth 64, safe
+  /// integers, no duplicate keys) before any byte is sent.
+  type json = string;
+  record app-error { code: string, message: string, retryable: option<bool> }
+  enum actor-kind { human, agent, background }
+  record actor { kind: actor-kind, id: string }
+  record invocation-context {
+    deadline-ms: u64,
+    installation-id: option<string>, room-id: option<string>,
+    operation-id: option<string>, agent-id: option<string>,
+    task-id: option<string>, turn-id: option<string>,
+    actor: option<actor>,
+  }
+  record artifact { name: string, media-type: string, reference: string, size-bytes: option<u64>, digest: option<string> }
+  record invocation { prompt: string, artifacts: list<artifact> }
+  record occurrence {
+    automation-id: string, occurrence-id: string, event-version: u32,
+    occurred-at-ms: u64, payload: json, invocation: invocation,
+    schedule-revision: option<string>,
+  }
+  record receipt { receipt-id: string, state: string }
+  record wake { id: string, due-at-ms: u64, revision: option<string> }
+}
+
+/// Registration names; sealed by `worker.ready {tools, events, lifecycle}`.
+interface registry {
+  tool: func(name: string);
+  event: func(name: string);
+  lifecycle: func(event: string);
+}
+
+interface state {
+  use types.{json, app-error, occurrence, receipt, wake};
+  record state-record { value: json, version: u64 }
+  record check { key: string, version: option<u64> }
+  variant write { put(tuple<string, json>), delete(string) }
+  variant wake-change { set(wake), cancel(string) }
+  record transaction {
+    schema-version: u32, checks: list<check>, writes: list<write>,
+    occurrences: list<occurrence>, wakes: list<wake-change>,
+  }
+  record committed { revision: u64, receipts: list<receipt> }
+  get: func(key: string) -> result<option<state-record>, app-error>;        // state.get
+  transact: func(tx: transaction) -> result<committed, app-error>;          // state.transaction
+}
+
+interface schedule {
+  use types.{app-error, wake};
+  set: func(wake: wake) -> result<list<wake>, app-error>;                   // schedule.set
+  cancel: func(id: string) -> result<list<wake>, app-error>;                // schedule.cancel
+  %list: func() -> result<list<wake>, app-error>;                            // schedule.list
+}
+
+interface events {
+  use types.{app-error, occurrence, receipt};
+  record automation { automation-id: string, event: string, event-version: u32, state: string, last-receipt: option<receipt> }
+  emit: func(occurrence: occurrence) -> result<receipt, app-error>;         // events.emit
+  status: func(receipt-id: string) -> result<receipt, app-error>;           // events.status
+  retry: func(receipt-id: string) -> result<receipt, app-error>;            // events.retry
+  automations: func() -> result<list<automation>, app-error>;               // events.automations
+  /// Pure function (no wire call): evt1.<ms>.<sha256>.
+  occurrence-id: func(source-key: string, occurred-at-ms: u64) -> result<string, app-error>;
+}
+
+interface connections {
+  use types.{json, app-error};
+  record connection { generator-id: string, connection-id: string, actions: list<string> }
+  record action-request { connection-id: string, action: string, input: option<json>, context: option<json>, idempotency-key: option<string> }
+  record action-result { accepted: bool, %result: json, idempotency-key: string }
+  %list: func() -> result<list<connection>, app-error>;                      // connections.list
+  action: func(request: action-request) -> result<action-result, app-error>; // connections.action
+}
+
+/// Durable/brokered file operations. Plain reads and writes of the App's own
+/// data/tmp directories go through wasi:filesystem preopens instead.
+interface files {
+  use types.{app-error};
+  enum consistency { quiescent, crash-consistent }
+  record snapshot-info { snapshot-id: string, consistency: consistency, files: u64, bytes: u64 }
+  atomic-replace: func(path: string, contents: list<u8>) -> result<u64, app-error>;            // files.atomic_replace
+  snapshot: func(name: string, consistency: consistency) -> result<snapshot-info, app-error>;  // files.snapshot
+  %import: func(grant-id: string, destination: string) -> result<tuple<u64, string>, app-error>; // files.import
+  %export: func(path: string) -> result<string, app-error>;                                     // files.export
+}
+
+interface http {
+  use types.{app-error};
+  record request {
+    url: string, method: string, headers: list<tuple<string, string>>,
+    body: option<list<u8>>, connection-id: option<string>, operation-id: option<string>,
+  }
+  record response { status: u16, headers: list<tuple<string, string>>, url: string, body: list<u8> }
+  /// Buffered: http.open/write/headers/read/cancel, 512 KiB response cap.
+  /// Streaming uses wasi:http/outgoing-handler, virtualized onto the same
+  /// broker stream (open = handle, write = body stream, read = response body).
+  send: func(req: request) -> result<response, app-error>;
+}
+
+interface log {
+  use types.{json};
+  enum level { debug, info, warn, error }
+  write: func(level: level, message: string, fields: json);                 // log.write
+}
+
+interface host {
+  use types.{app-error};
+  record offer { offer-id: string, state: string }
+  record pick { multiple: bool, accept: list<string> }
+  notify: func(title: string, body: option<string>) -> result<string, app-error>;   // host.notify
+  open-link: func(url: string) -> result<offer, app-error>;                         // host.open_link
+  write-clipboard: func(text: string) -> result<offer, app-error>;                  // host.clipboard_write
+  pick-file: func(request: pick) -> result<list<string>, app-error>;               // host.pick_file (+ _status)
+}
+
+interface validation {
+  use types.{json, app-error};
+  enum op-state { pending, approved, denied, expired, cancelled, reconciliation }
+  record operation { operation-id: string, state: op-state }
+  record approval-request { action: string, parameters: json, operation-id: option<string>, connection-id: option<string> }
+  request: func(request: approval-request) -> result<operation, app-error>;        // validation.request
+  status: func(operation-id: string) -> result<operation, app-error>;       // validation.status
+}
+
+/// Supervisor-to-worker calls, one export each.
+interface handlers {
+  use types.{json, app-error, invocation-context, wake};
+  register: func() -> result<_, app-error>;                                                      // then worker.ready
+  call-tool: func(name: string, input: json, context: invocation-context) -> result<json, app-error>;   // tools.invoke
+  deliver-event: func(name: string, occurrence-id: string, payload: json, context: invocation-context) -> result<json, app-error>; // events.deliver
+  lifecycle: func(event: string, data: option<json>) -> result<option<json>, app-error>;         // lifecycle.dispatch
+  deliver-wake: func(wake: wake, overdue: bool) -> result<_, app-error>;                                 // schedule.wake
+}
+
+/// Data migrations get only state (the kernel admits only state.get,
+/// state.transaction and migration.step before readiness).
+interface migration {
+  use types.{app-error};
+  migrate: func(%from: u32, to: u32) -> result<_, app-error>;                // then migration.step {to}
+}
+
+world app {
+  import wasi:clocks/wall-clock@0.2.12;
+  import wasi:clocks/monotonic-clock@0.2.12;
+  import wasi:random/random@0.2.12;
+  import wasi:filesystem/preopens@0.2.12;
+  import registry;
+  import state;
+  import schedule;
+  import events;
+  import connections;
+  import files;
+  import http;
+  import log;
+  import host;
+  import validation;
+  export handlers;
+}
+
+world app-migrations {
+  import state;
+  export migration;
+}

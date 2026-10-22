@@ -102,7 +102,7 @@ async fn measure(variant: &Variant, origin: &str) -> Value {
     };
     report["rssAfterWork"] = worker.spawned.memory();
 
-    // Memory: byte buffers past the 64 MiB App limit, then small objects.
+    // Memory: byte buffers past the 128 MiB App limit, then small objects.
     for kind in ["bytes", "objects"] {
         let worker = start(variant, origin).await;
         let at = Instant::now();

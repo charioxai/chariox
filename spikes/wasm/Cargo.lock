@@ -1825,6 +1825,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "spike-async-host"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "wasmtime",
+]
+
+[[package]]
 name = "spki"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
