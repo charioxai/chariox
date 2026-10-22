@@ -22,13 +22,20 @@ chrome.windows.onBoundsChanged?.addListener?.(invalidateNativeState(${JSON.strin
 const targetTabs = async () => new Map((await chrome.debugger.getTargets()).filter(t => t.tabId !== undefined).map(t => [t.id, t.tabId]));
 // An extension API call every 20 s keeps this worker alive for the kernel.
 setInterval(() => chrome.runtime.getPlatformInfo(), 20000);
-// One browser window (coordinator 12:22Z): a Tab in a second tabbed window (New window,
-// Move tab to new window, a Tab dragged off the strip) becomes the active Tab of the oldest one;
-// its emptied window closes. Chrome refuses Tab edits while the person still drags: retry.
+// MP-08/MP-10: page popups and second windows stay inside the shared browser.
+// The kernel identifies its internal keepalive before popup folding is enabled.
+let keepaliveTab = null;
 const fold = async (id, tries = 100) => {
+  if (id === keepaliveTab) return;
   const tab = await chrome.tabs.get(id);
-  const [main, ...others] = (await chrome.windows.getAll({ windowTypes: ["normal"] })).sort((a, b) => a.id - b.id);
-  if (!others.some(window => window.id === tab.windowId)) return;
+  const windows = await chrome.windows.getAll({ windowTypes: ["normal", "popup"] });
+  const main = windows.filter(window => window.type === "normal").sort((a, b) => a.id - b.id)[0];
+  const current = windows.find(window => window.id === tab.windowId);
+  if (!current || (current.type === "popup" && keepaliveTab === null)) return;
+  // The opener may have closed its last Tab before its popup arrived. Promote
+  // that existing page instead of leaving a popup without a tabbed window.
+  if (!main) { await chrome.windows.create({ tabId: id, type: "normal", focused: true }); return; }
+  if (tab.windowId === main.id) return;
   try { await chrome.tabs.move(id, { windowId: main.id, index: -1 }); }
   catch (error) {
     if (!tries || !/dragging/.test(error?.message)) throw error;
@@ -51,7 +58,8 @@ const activeViewport = async () => {
   return null;
 };
 globalThis.charioxTabs = {
-  revision: 2,
+  revision: 3,
+  async keepalive(target) { keepaliveTab = (await targetTabs()).get(target) ?? null; },
   async viewport(target) {
     if (target === undefined) return activeViewport();
     const id = (await targetTabs()).get(target);
@@ -123,8 +131,11 @@ export class ChromeTabGroups {
       for(let attempt=0;attempt<2;attempt++){
         const {sessionId}=await this.connection.send("Target.attachToTarget",{targetId:worker.targetId,flatten:true});
         await this.nativeState.attach(sessionId);
-        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 2",returnByValue:true},sessionId);
-        if(result?.value===true){this.session=sessionId;return sessionId;}
+        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 3",returnByValue:true},sessionId);
+        if(result?.value===true){
+          if(this.keepaliveTarget)await this.connection.send("Runtime.evaluate",{expression:`charioxTabs.keepalive(${JSON.stringify(this.keepaliveTarget)})`,awaitPromise:true},sessionId);
+          this.session=sessionId;return sessionId;
+        }
         this.nativeState.detach();this.signature="[]";
         if(attempt)throw Error("MP-11: kernel tab-groups extension unavailable");
         await this.connection.send("Runtime.evaluate",{expression:"chrome.runtime.reload()"},sessionId).catch(()=>{});
@@ -145,6 +156,7 @@ export class ChromeTabGroups {
   }
   /** CDP target id of the active Tab in the tabbed window, or null. */
   active(){return this.evaluate("charioxTabs.active()",'active');}
+  keepalive(target){this.keepaliveTarget=target;return this.evaluate(`charioxTabs.keepalive(${JSON.stringify(target)})`);}
   /** A target-specific read is geometry only, never active-Tab authority. */
   viewport(target){return this.evaluate(`charioxTabs.viewport(${JSON.stringify(target)})`,target===undefined?'viewport':undefined);}
   nativeStateSupported(){return this.nativeState.supported;}
