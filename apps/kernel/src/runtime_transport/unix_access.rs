@@ -629,6 +629,12 @@ pub(super) fn serve_gateway(
         let outcome = match route {
             GatewayRoute::Forward { kernel, request } => {
                 let gateway = router.kernel_gateway();
+                if matches!(
+                    *request,
+                    crate::local::LocalDaemonRequest::RequestKernelSudo(_)
+                ) {
+                    gateway.watch_sudo_grant(&kernel, &origin);
+                }
                 let forwarded = gateway.forward(
                     &kernel,
                     &origin,

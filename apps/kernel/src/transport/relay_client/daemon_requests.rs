@@ -876,6 +876,19 @@ async fn dispatch_on_behalf_of(
             false,
         ));
     }
+    // The origin telling this kernel its grant ended is idempotent and only removes
+    // authority, so it needs neither a command id nor a ledger entry.
+    if ends_remote_sudo(on_behalf_of, &request) {
+        let command = KernelCommand::from_local_request_with_caller(
+            command_id.unwrap_or_else(|| format!("gw-end-{}", crate::session::unix_epoch_ms())),
+            KernelCommandSource::RelayClient,
+            caller,
+            None,
+            None,
+            &request,
+        );
+        return remote_sudo_outcome(router, &command, on_behalf_of, &request).await;
+    }
     if !is_repeatable(&request) {
         router.runtime_state().audit_gateway_request(
             on_behalf_of,
@@ -914,16 +927,20 @@ async fn dispatch_on_behalf_of(
         .kernel_gateway()
         .ledger()
         .run(&key, fingerprint, async {
-            match dispatch_relay_client_request(
-                router,
-                command_sequence,
-                caller,
-                request,
-                Some(command_id.clone()),
-                command_result_cache,
-            )
-            .await
-            {
+            let outcome = if matches!(request, LocalDaemonRequest::RequestKernelSudo(_)) {
+                remote_sudo_outcome(router, &command, on_behalf_of, &request).await
+            } else {
+                dispatch_relay_client_request(
+                    router,
+                    command_sequence,
+                    caller,
+                    request,
+                    Some(command_id.clone()),
+                    command_result_cache,
+                )
+                .await
+            };
+            match outcome {
                 RelayDispatchOutcome::Response(value) => Ok(value),
                 RelayDispatchOutcome::RelayError(error) => Err(Failure {
                     code: error.code,
@@ -952,6 +969,38 @@ async fn dispatch_on_behalf_of(
         )),
         Settled::Unavailable(reason) => {
             RelayDispatchOutcome::RelayError(relay_error("ledger_unavailable", &reason, true))
+        }
+    }
+}
+
+/// The origin's grant id as the grant to revoke: the one revoke a forwarded request may make.
+fn ends_remote_sudo(on_behalf_of: &crate::local::OnBehalfOf, request: &LocalDaemonRequest) -> bool {
+    matches!(request, LocalDaemonRequest::RevokeKernelAccessGrant(revoke)
+        if revoke.grant_id.as_deref() == Some(on_behalf_of.grant_id.as_str()))
+}
+
+async fn remote_sudo_outcome(
+    router: &CommandRouter,
+    command: &KernelCommand,
+    on_behalf_of: &crate::local::OnBehalfOf,
+    request: &LocalDaemonRequest,
+) -> RelayDispatchOutcome {
+    match router
+        .dispatch_remote_sudo(command, on_behalf_of, request)
+        .await
+    {
+        Ok(response) => {
+            let mut response = serde_json::to_value(response).unwrap_or(Value::Null);
+            crate::local::redact_client_response_value(&mut response);
+            RelayDispatchOutcome::Response(response)
+        }
+        Err(error) => {
+            let error = map_kernel_error(&error);
+            RelayDispatchOutcome::RelayError(relay_error(
+                &error.code,
+                &error.message,
+                error.retryable,
+            ))
         }
     }
 }

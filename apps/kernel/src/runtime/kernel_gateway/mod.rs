@@ -18,6 +18,7 @@ pub(crate) mod origins;
 mod paired;
 mod self_hosted;
 mod subscription;
+mod sudo_watch;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -63,6 +64,7 @@ pub(crate) struct KernelGateway {
     links: Mutex<HashMap<String, Arc<Link>>>,
     ledger: OnceLock<ledger::GatewayLedger>,
     keeper: keeper::Keeper,
+    sudo_watch: sudo_watch::SudoWatch,
     hosted: hosted::HostedClient,
     paired: Arc<paired::PairedKernels>,
     /// When each paired kernel last answered, for the self-hosted list.
@@ -93,6 +95,7 @@ impl KernelGateway {
             links: Mutex::new(HashMap::new()),
             ledger: OnceLock::new(),
             keeper: keeper::Keeper::default(),
+            sudo_watch: sudo_watch::SudoWatch::default(),
             hosted: hosted::HostedClient::new(),
             paired,
             last_answer: std::sync::Mutex::new(HashMap::new()),
@@ -135,9 +138,39 @@ impl KernelGateway {
         request: &LocalDaemonRequest,
         deadline: Duration,
     ) -> Result<Value, GatewayError> {
-        self.ensure_access_live(origin, target)?;
+        self.send(target, origin, command_id, request, deadline, true)
+            .await
+    }
+
+    /// Tells `target` that the grant `origin` acted under has ended. The one request
+    /// that is sent after its grant is gone, so it checks nothing about the grant.
+    pub(crate) async fn forward_grant_ended(
+        &self,
+        target: &str,
+        origin: &Origin,
+        command_id: &str,
+        request: &LocalDaemonRequest,
+    ) -> Result<Value, GatewayError> {
+        self.send(target, origin, command_id, request, REQUEST_DEADLINE, false)
+            .await
+    }
+
+    async fn send(
+        &self,
+        target: &str,
+        origin: &Origin,
+        command_id: &str,
+        request: &LocalDaemonRequest,
+        deadline: Duration,
+        grant_live: bool,
+    ) -> Result<Value, GatewayError> {
+        if grant_live {
+            self.ensure_access_live(origin, target)?;
+        }
         let kernel = self.resolve(target).await?;
-        self.register_for(&origin.grant_id, target).await?;
+        if grant_live {
+            self.register_for(&origin.grant_id, target).await?;
+        }
         let gateway_ready = is_gateway_ready(&kernel);
         if let Some(detail) = directory::incompatibility(&kernel, request) {
             return Err(GatewayError::Incompatible {
@@ -158,7 +191,9 @@ impl KernelGateway {
         }
         let plaintext = serde_json::to_vec(&envelope).expect("envelope serializes");
         let link = self.link_for(target, &kernel).await?;
-        self.ensure_access_live(origin, target)?;
+        if grant_live {
+            self.ensure_access_live(origin, target)?;
+        }
         let request_id = format!(
             "gw-{}-{}",
             crate::session::unix_epoch_ms(),

@@ -212,6 +212,9 @@ pub(crate) fn is_repeatable(request: &crate::local::LocalDaemonRequest) -> bool 
     .any(|prefix| variant.starts_with(prefix))
 }
 
+/// The target's default for waiting on an access answer (`kernel_access.request_timeout_minutes`).
+const SUDO_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
 /// How long the origin waits for the kernel's answer: a terminal wait or long read
 /// is answered when it ends, so its own wait comes first.
 pub(crate) fn deadline_for(request: &crate::local::LocalDaemonRequest) -> std::time::Duration {
@@ -225,7 +228,12 @@ pub(crate) fn deadline_for(request: &crate::local::LocalDaemonRequest) -> std::t
         _ => 0,
     };
     // The terminal service caps a wait at four minutes.
-    super::REQUEST_DEADLINE + std::time::Duration::from_millis(wait_ms.min(240_000))
+    let wait = std::time::Duration::from_millis(wait_ms.min(240_000));
+    match request {
+        // The answer comes when the person has answered the popup there.
+        LocalDaemonRequest::RequestKernelSudo(_) => super::REQUEST_DEADLINE + SUDO_ANSWER_WAIT,
+        _ => super::REQUEST_DEADLINE + wait,
+    }
 }
 
 /// A request that holds the connection for a wait (a terminal wait or long read) rather than
@@ -568,5 +576,18 @@ mod tests {
                 name: "b3".into(),
             });
         assert!(!is_repeatable(&forget));
+    }
+
+    // EA2-11: the answer to a forwarded sudo request is the person's, so the origin waits
+    // for the popup rather than the usual 30 s, and holds the connection like a long wait.
+    #[test]
+    fn a_forwarded_sudo_request_waits_for_the_popup_answer() {
+        let sudo = LocalDaemonRequest::RequestKernelSudo(crate::local::RequestKernelSudoRequest {
+            agent_id: "a".into(),
+            prompt: "p".into(),
+        });
+        assert!(deadline_for(&sudo) >= Duration::from_secs(10 * 60));
+        assert!(is_long_wait(&sudo));
+        assert!(!is_repeatable(&sudo));
     }
 }

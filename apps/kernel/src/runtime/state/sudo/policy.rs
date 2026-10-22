@@ -344,10 +344,11 @@ pub(super) fn requester_grant_live(
     access: &crate::runtime::kernel_access::AccessState,
 ) -> bool {
     turn.requester.as_ref().is_none_or(|requester| {
-        access.grants.get(&requester.grant_id).is_some_and(|grant| {
-            grant.summary.owner_user_id == turn.owner_user_id
-                && grant.ended_reason(std::time::Instant::now()).is_none()
-        })
+        access.remote_requesters.contains_key(&requester.grant_id)
+            || access.grants.get(&requester.grant_id).is_some_and(|grant| {
+                grant.summary.owner_user_id == turn.owner_user_id
+                    && grant.ended_reason(std::time::Instant::now()).is_none()
+            })
     })
 }
 

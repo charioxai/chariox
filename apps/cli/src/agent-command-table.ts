@@ -79,6 +79,10 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
     note: "runs on that machine; ShellCommandCompleted.result has exit_code, stdout, stderr",
   },
   { body: endSessionRequest("SESSION_ID"), note: "SessionEnded" },
+  {
+    body: { RequestKernelSudo: { agent_id: "AGENT_ID", prompt: "TASK" } },
+    note: "elevates that agent's task on the kernel; waits while the user answers its popup there, so pass --timeout 660; KernelSudoRequested",
+  },
 ]
 
 const REFUSED = ["kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "command_id_required", "duplicate_command_conflict"]
@@ -169,7 +173,7 @@ export function guideText(): string {
     "Requests for chariox request (replace the UPPERCASE values; ids come from earlier answers):",
     ...REQUEST_EXAMPLES.map(({ body, note }) => `  ${JSON.stringify(body)}  | ${note}`),
     "A request the kernel cannot parse comes back with a message naming the expected variants and fields: read it and fix the request.",
-    "Give every request that changes state (CreateSession, SpawnAgent, SubmitPrompt, RunShellCommand, EndSession) its own --command-id ID; reuse one only to retry.",
+    "Give every request that changes state (CreateSession, SpawnAgent, SubmitPrompt, RunShellCommand, EndSession, RequestKernelSudo) its own --command-id ID; reuse one only to retry.",
     "An AttachToSession you make on another kernel is kept alive for you while your access lasts; send DetachFromSession when you are done with it.",
     "",
     "Output is one JSON document on stdout. Errors are JSON on stderr: {\"error\":{\"code\",\"message\",\"kernel\"}}.",

@@ -1,3 +1,4 @@
+use super::external::remote_requester_projection;
 use super::*;
 
 // MP-08/MP-10/MP-11: includes the policy relaunch delay and provider startup.
@@ -146,10 +147,11 @@ impl KernelRuntimeState {
             if entry.requester.as_ref().is_some_and(|requester| {
                 access.values().any(|turn| {
                     turn.prompt_id.is_none()
-                        && turn
-                            .requester
-                            .as_ref()
-                            .is_some_and(|pending| pending.holder_pid == requester.holder_pid)
+                        && turn.requester.as_ref().is_some_and(|pending| {
+                            pending.holder_pid == requester.holder_pid
+                                && (requester.holder_pid != 0
+                                    || pending.grant_id == requester.grant_id)
+                        })
                 })
             }) {
                 return Err(error("this requester already has a pending sudo request"));
@@ -202,23 +204,41 @@ impl KernelRuntimeState {
         ) * 60;
         // MP-08 / MP-11: establish display facts in the same kernel operation,
         // before registration publishes the first popup. Never parse display copy.
-        let requester = entry.requester.as_ref().and_then(|grant| {
-            self.owned
-                .kernel_access
-                .lock()
-                .expect("access state poisoned")
-                .grants
-                .get(&grant.grant_id)
-                .map(|grant| crate::runtime::kernel_access::requester::project(&grant.holder))
-        });
+        let (requester, origin_name) = entry
+            .requester
+            .as_ref()
+            .map(|grant| {
+                let access = self
+                    .owned
+                    .kernel_access
+                    .lock()
+                    .expect("access state poisoned");
+                match access.remote_requesters.get(&grant.grant_id) {
+                    Some(remote) => (
+                        Some(remote_requester_projection(remote)),
+                        Some(remote.origin_name.clone()),
+                    ),
+                    None => (
+                        access.grants.get(&grant.grant_id).map(|grant| {
+                            crate::runtime::kernel_access::requester::project(&grant.holder)
+                        }),
+                        None,
+                    ),
+                }
+            })
+            .unwrap_or_default();
         let requester_name = if entry.requester.is_none() {
-            "You"
+            "You".to_string()
         } else {
-            match requester.as_ref().and_then(|r| r.provider_harness) {
+            let harness = match requester.as_ref().and_then(|r| r.provider_harness) {
                 Some(KernelAccessProviderHarness::Claude) => "Claude Code",
                 Some(KernelAccessProviderHarness::Codex) => "Codex",
                 Some(KernelAccessProviderHarness::Opencode) => "OpenCode",
                 None => "An external agent",
+            };
+            match origin_name {
+                Some(origin) => format!("{harness} via {origin}"),
+                None => harness.to_string(),
             }
         };
         let agent = self.owned.agent_store.get_agent(&entry.agent_id)?;
@@ -239,7 +259,7 @@ impl KernelRuntimeState {
             task_summary.push('…');
         }
         let presentation = SudoRequestPresentation {
-            requester_name: requester_name.into(),
+            requester_name: requester_name.clone(),
             agent_name: agent.alias().unwrap_or(agent.agent_ref()).into(),
             session_name: session.alias().unwrap_or("Unnamed session").into(),
             task_summary,

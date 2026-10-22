@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use super::CommandRouter;
 use crate::error::DaemonError;
-use crate::local::{KernelConnectionClass, LocalDaemonRequest, LocalDaemonResponse};
+use crate::local::{KernelConnectionClass, LocalDaemonRequest, LocalDaemonResponse, OnBehalfOf};
 use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::runtime::command_latency::{log_command_completed, log_command_received, CommandTrace};
 use crate::runtime::kernel_access::error;
@@ -110,6 +110,37 @@ impl CommandRouter {
             .await
             .map_err(|failure| error(format!("{}: {}", failure.code(), failure.message())))?;
         Ok(LocalDaemonResponse::GatewayKernelsListed { kernels })
+    }
+
+    /// A sudo request another kernel's gateway forwarded for its agent, or that gateway
+    /// reporting its grant ended. Only a request that names its origin gets here; the
+    /// popup is this kernel's own, answered by this kernel's person with this kernel's passkey.
+    pub(crate) async fn dispatch_remote_sudo(
+        &self,
+        command: &KernelCommand,
+        on_behalf_of: &OnBehalfOf,
+        request: &LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let trace = CommandTrace::from_command(command);
+        log_command_received(&trace);
+        let result = match crate::runtime::kernel_runtime_role_policy::ensure_public_request_allowed(
+            &self.config_projection.snapshot(),
+            request,
+        ) {
+            Err(refused) => Err(refused),
+            Ok(()) => match request {
+                LocalDaemonRequest::RequestKernelSudo(sudo) => {
+                    self.runtime_state
+                        .request_remote_kernel_sudo(on_behalf_of, sudo.clone())
+                        .await
+                }
+                _ => Ok(LocalDaemonResponse::KernelAccessRevoked {
+                    revoked: self.runtime_state.end_remote_kernel_sudo(on_behalf_of),
+                }),
+            },
+        };
+        log_command_completed(&trace, &result);
+        result
     }
 
     /// The gateway's own requests: attachment heartbeats, kernel files and pairing.

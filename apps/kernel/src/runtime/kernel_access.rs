@@ -66,6 +66,16 @@ pub(crate) struct AccessState {
     /// Holders whose grant lapsed or was revoked, so a later request from them
     /// reads "access ended" rather than "never covered". Bounded, no secrets.
     pub(crate) ended: Vec<ProcessIdentity>,
+    /// Requesters on other kernels that raised a sudo request here, by the grant id
+    /// their sudo entries carry. They live until their origin kernel says its grant ended.
+    pub(crate) remote_requesters: BTreeMap<String, RemoteRequester>,
+}
+
+/// Who asked from another kernel: shown in the popup, and the liveness of its sudo entries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RemoteRequester {
+    pub(crate) origin_name: String,
+    pub(crate) harness: String,
 }
 
 const ENDED_HOLDERS: usize = 32;

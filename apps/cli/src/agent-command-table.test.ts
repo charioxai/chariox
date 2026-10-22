@@ -77,7 +77,7 @@ function requestFields(struct: string): { name: string; required: boolean }[] | 
 test("every request example is one kernel request variant with the kernel's field names", () => {
   assert.deepEqual(REQUEST_EXAMPLES.map(entry => Object.keys(entry.body)[0]), [
     "ListSessions", "ListProjects", "SearchWorkspaceDirectories", "CreateSession", "AttachToSession", "GetSessionState",
-    "SpawnAgent", "SubmitPrompt", "CancelActivePrompt", "RunShellCommand", "EndSession",
+    "SpawnAgent", "SubmitPrompt", "CancelActivePrompt", "RunShellCommand", "EndSession", "RequestKernelSudo",
   ])
   const guide = guideText()
   for (const { body } of REQUEST_EXAMPLES) {
