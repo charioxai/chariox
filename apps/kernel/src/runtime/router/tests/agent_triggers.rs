@@ -624,3 +624,94 @@ async fn legacy_cancel_refuses_a_disabled_trigger_without_deleting_it() {
     assert_eq!(snapshot.agent_triggers().len(), 1);
     assert!(!snapshot.agent_triggers()[0].enabled());
 }
+
+#[tokio::test]
+async fn a_refused_steer_leaves_the_firing_queued_and_says_why() {
+    use crate::session::AgentTriggerOutcome;
+    let worktree = crate::test_support::TestWorktree::new("trigger-steer-refused");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should create");
+    launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "schedule-model",
+    );
+    let prompt_owner = app.prompt_state_owner();
+    let session_store = app.session_state_store();
+    // The person is running a turn in the provider's own terminal; Chariox
+    // cannot steer into a turn it did not start.
+    let native_turn = crate::session::PromptQueueItem::external_observed_running(
+        "codex",
+        "thread-1",
+        "turn-1",
+        agent.id(),
+        "typed in the native terminal",
+    );
+    let crate::session::PromptSubmissionOutcome::Started { .. } = prompt_owner
+        .submit_prepared_prompt(&session, native_turn, false)
+        .expect("the native turn should become active")
+    else {
+        panic!("the native turn should start on an idle agent");
+    };
+    let (active, queued) = prompt_owner.state_parts(&session, agent.id());
+    session_store
+        .mirror_agent_prompt_state(session.id(), agent.id(), active, queued)
+        .expect("prompt state should project");
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = router
+        .runtime_state
+        .create_agent_trigger(
+            every_minute(
+                &session,
+                &agent,
+                crate::session::AgentTriggerBusyPolicy::Steer,
+            ),
+            agent.owner_user_id(),
+        )
+        .await
+        .expect("trigger should create")
+    else {
+        panic!("unexpected trigger response");
+    };
+
+    boxed_schedule_future(|| {
+        router
+            .runtime_state
+            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+    })
+    .await;
+
+    let (_, queued) = prompt_owner.state_parts(&session, agent.id());
+    assert_eq!(
+        queued
+            .iter()
+            .map(|prompt| prompt.agent_trigger_id())
+            .collect::<Vec<_>>(),
+        vec![Some(trigger.id())],
+        "the firing is kept, not dropped"
+    );
+    let snapshot = router
+        .runtime_state
+        .session_snapshot(session.id())
+        .await
+        .expect("snapshot should read");
+    let fired = &snapshot.agent_triggers()[0];
+    assert_eq!(fired.last_outcome(), Some(AgentTriggerOutcome::Queued));
+    assert!(fired
+        .last_error()
+        .is_some_and(|error| error.starts_with("steer refused, the firing stays queued")));
+    let notices = router
+        .app
+        .lock()
+        .await
+        .terminal_stream_store()
+        .notice_records();
+    assert!(notices.iter().any(|notice| notice
+        .message
+        .contains("steer refused, the firing stays queued")));
+}
