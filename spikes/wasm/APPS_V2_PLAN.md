@@ -2,18 +2,6 @@
 
 For Miguel · 2026-10-22 · design only; Apps implementation stays **PAUSED**.
 
-Based on `wasmspike/r3` at `5c4d888b9347a93575a8412244b29650c9222799`.
-All 14 decisions in [the accepted shape, §8](APPS_V2_SHAPE.md#8-revised-migration-plan-and-your-decisions)
-are inputs, not questions reopened here. The [async design](DESIGN.md) and
-[measured spike](DECISION.md) supply the runtime direction, not product acceptance.
-The [old implementation plan](../../docs/CHARIOX_APPS_IMPLEMENTATION_PLAN.html)
-supplies the distribution requirements reconciled below.
-
-MP scope: **MP-11** for sandbox, signing, App capability admission and
-model-visible Vault protection; **MP-08 / MP-10** when proving the same App
-behavior on ordinary and managed kernels. This document closes no MP item.
-It does not replace Browser/Computer, Path-1 or Docker persistence acceptance.
-
 ## 1. Summary
 
 **Stage 1 — Apps v2 core: shape and functionality.** Build the portable WASM
@@ -40,6 +28,18 @@ is **pending texspike** and is not hidden inside that estimate. Stage 1 ships
 and is testable independently before Stage 2 begins shipping.
 
 ### 1.1 What exists, and what must change
+
+Based on `wasmspike/r3` at `5c4d888b9347a93575a8412244b29650c9222799`.
+All 14 decisions in [the accepted shape, §8](APPS_V2_SHAPE.md#8-revised-migration-plan-and-your-decisions)
+are inputs, not questions reopened here. The [async design](DESIGN.md) and
+[measured spike](DECISION.md) supply the runtime direction, not product acceptance.
+The [old implementation plan](../../docs/CHARIOX_APPS_IMPLEMENTATION_PLAN.html)
+supplies the distribution requirements reconciled below.
+
+MP scope: **MP-11** for sandbox, signing, App capability admission and
+model-visible Vault protection; **MP-08 / MP-10** when proving the same App
+behavior on ordinary and managed kernels. This document closes no MP item.
+It does not replace Browser/Computer, Path-1 or Docker persistence acceptance.
 
 These are observations of the exact base above. Paths and line numbers refer
 to that commit, not to a newer main or another lane's worktree.
@@ -93,6 +93,9 @@ bounded state snapshot, change events and a stop-on-first-error batch. `read`
 and `write` do not prompt. `approval` uses the existing kernel interaction;
 an existing grant or `/sudo` means zero additional prompts. Action declarations
 do not create capabilities or bypass the backend's protected effect routes.
+Runtime registrations must match the signed action names, schemas and effects;
+an undeclared or mismatched action is rejected before invocation. Bind every
+action/catalog entry to the active generation so an old Tab cannot keep authority.
 
 When no person has the view open, the kernel opens one unprojected Chromium
 Tab per installation per Room. Opening the App as a person projects that
@@ -135,6 +138,8 @@ Local registration still needs a real publisher identity, enrolled once using
 the existing trust flow. The no-prompt dev identity is not silently promoted
 into a distributable publisher. Dev data is separate; explicit seed/reset
 copies are local development conveniences, not credential or App-set transfer.
+Seed only permitted App data; do not clone kernel connection grants, runtime
+handles, approval tokens or credentials into a dev installation.
 `chariox app pack` is the shared release build command; local `.cxapp` testing
 uses the same compiler pins and verifier as register and later publication.
 
@@ -176,8 +181,11 @@ Use built Web and real local/remote TUI clients, the exact kernel and hosted
 `wss` relay, and official real provider agents for agent scenarios. An internal
 RPC or synthetic worker test supplements the drill; it does not replace it.
 
-Run each applicable row on macOS arm64 and x86_64 and Linux x86_64 and arm64,
-with real platform evidence. Missing hardware is an explicit coordinator ask.
+Required platform cells inherit the old plan's supported targets
+(`docs/CHARIOX_APPS_IMPLEMENTATION_PLAN.html:1327`): macOS on Apple silicon and
+Ubuntu 26.04 LTS x86_64, with real platform evidence. Extra architectures need
+their own platform gate; a portable component does not certify a worker port.
+Missing required hardware is an explicit coordinator ask.
 Repeat installation/runtime cases on ordinary and managed placement where
 released; keep the same behavior and retain MP-08/MP-10 evidence separately.
 
@@ -198,6 +206,8 @@ released; keep the same behavior and retain MP-08/MP-10 evidence separately.
 | S1-13 | Run the public-site/display and continuity campaign below, then an 8-hour active shared-App session and a 24-hour idle/reopen session. | No stuck or blank post-commit view, lost work or duplicate worker/Tab after reconnect. Bounded memory/disk and no leaked run resources. Provider turns are short; do not loop Codex prompts throughout a soak. |
 | S1-14 | Run B1's frozen four-arm tasks with recorded models, sample counts and checkers. | Full comparison table and uncertainty; the accepted public-claim gate is met, or B1 remains FAIL with the failed comparison named. |
 | S1-15 | After C, repeat S1-01 and cancellation/state checks using the C++ coroutine SDK. | Same world/artifact and containment; exported errors never unwind into the host. Ships immediately after Stage 1 core without delaying launch C. |
+
+S1-01–14 gate the core launch; S1-15 gates the immediate C++ follow-on.
 
 For UI rows, record 1920×1080 and 1440×900 at DPR 1 plus DPR 2, fresh starts,
 normal clicks/keys/scrolls, cookies/popups, tab creation/closure, navigation and
