@@ -284,7 +284,17 @@ pub(crate) fn write(request: &WriteKernelFileRequest) -> Result<LocalDaemonRespo
         ));
     }
     let mut file = if request.offset == 0 {
-        std::fs::File::create(&partial).map_err(|e| io_failure(&partial, &e))?
+        // Private from the first byte: the unfinished upload may become a credentials file.
+        // A new file stays private; replacing one takes the replaced file's permissions below.
+        std::os::unix::fs::OpenOptionsExt::mode(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true),
+            0o600,
+        )
+        .open(&partial)
+        .map_err(|e| io_failure(&partial, &e))?
     } else {
         let have = std::fs::metadata(&partial).map_or(0, |m| m.len());
         if have != request.offset {
@@ -475,6 +485,14 @@ mod tests {
             std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
             0o600
         );
+        // Nobody else can read the bytes of an unfinished upload, and a new file stays private.
+        let fresh = dir.join("fresh");
+        write(&chunk(&fresh, 0, b"ab", 4, None)).unwrap();
+        let mode =
+            |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&partial_of(&fresh)), 0o600);
+        write(&chunk(&fresh, 2, b"cd", 4, None)).unwrap();
+        assert_eq!(mode(&fresh), 0o600);
         // Something appears at the path while the upload is unfinished: no chunk replaces it.
         let racing = dir.join("racing");
         write(&chunk(&racing, 0, b"ab", 4, None)).unwrap();
