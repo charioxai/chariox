@@ -318,6 +318,24 @@ As of 2026-04-20:
 - Slice 7 is implemented for the verifier contract: the relay can verify `chariox-scoped-v1` HMAC-signed tokens against configured issuer metadata supplied by the embedding server/control plane. The open-source relay still defaults to shared-token bootstrap unless constructed with a scoped verifier.
 - Slice 8 is implemented for the relay identity surface: `live-relay-identity-security-drill.mjs` starts a real scoped-token relay and verifies paired/unpaired client and machine admission, action constraints, and cross-realm metadata/routing isolation. Full remote-provider CLI/machine drills still depend on physical remote machines.
 
+### Self-Hosted Kernel Issuer (protocol 572)
+
+A home kernel without Cloud signs its paired terminals' relay tokens itself:
+
+1. `/relay issuer enable` (`ConfigureRelayIssuer`) creates the kernel's Ed25519 issuer key in its private
+   runtime state and prints the relay setting `CHARIOX_RELAY_KERNEL_ISSUER_KEYS=chariox-kernel:<daemon>=<public key>`.
+2. The relay starts with that setting and `CHARIOX_RELAY_TOKEN`. The operator token stays the kernel's own
+   registration credential; the relay pins only the issuer's public key, so it cannot mint client tokens.
+3. A terminal pairing link carries a pairing-only client token for this kernel. Redeeming the link returns a
+   key-bound attach token; the terminal renews it with `IssueRelayClientToken` before it expires
+   (default 15 minutes, at most 1 hour).
+4. `RevokePairedClient` refuses the terminal's requests and renewals at once; its relay admission ends when
+   its current token expires.
+5. Rotation: `/relay issuer stage-rotation`, restart the relay with both printed keys, then
+   `/relay issuer activate-rotation`; remove the old key from the relay after one hour.
+
+The Cloud issuer path is unchanged: hosted relays keep the HMAC verifier and revocation sync.
+
 ### Closed Scope And Follow-Ups
 
 M5.5 is closed for the open-source relay/kernel identity foundation:
