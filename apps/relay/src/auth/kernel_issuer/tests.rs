@@ -184,13 +184,32 @@ fn staged_rotation_accepts_both_pinned_keys_for_one_issuer() {
 
 #[test]
 fn issuer_key_lines_fail_loudly_when_malformed() {
+    let key = encode_kernel_issuer_public_key(&issuer_key(1).verifying_key());
     for line in [
-        "",
-        "no-separator",
-        "=AAAA",
-        "issuer=not-a-key",
-        "issuer=AAAA",
+        "".to_string(),
+        "no-separator".into(),
+        "=AAAA".into(),
+        "chariox-kernel:home=not-a-key".into(),
+        "chariox-kernel:home=AAAA".into(),
+        format!("free-form-issuer={key}"),
+        format!("chariox-kernel:={key}"),
     ] {
-        assert!(KernelIssuerKeys::parse(line).is_err(), "{line}");
+        assert!(KernelIssuerKeys::parse(&line).is_err(), "{line}");
     }
+}
+
+#[test]
+fn an_issuer_cannot_grant_access_to_another_pinned_kernel() {
+    let (home, other) = (issuer_key(1), issuer_key(2));
+    let verifier = verifier(&keys_line(&[
+        ("chariox-kernel:home", &home),
+        ("chariox-kernel:other", &other),
+    ]));
+    let mut foreign_target = claims(attach());
+    foreign_target.issuer = "chariox-kernel:other".into();
+    let token = encode_kernel_issued_client_token(&foreign_target, &other).unwrap();
+    assert_eq!(
+        verifier.verify(request(&token, RelayAction::ClientConnect, Some("home"))),
+        Err(RelayAuthError::TargetNotAllowed)
+    );
 }
