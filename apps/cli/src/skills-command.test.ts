@@ -20,7 +20,7 @@ const native: NativeSkillEntry = {
   description: "Lint with house rules", digest: null, exposure: "confirmed", default_state: "auto", complete_manifest: true, supports_load_ack: true, discovery_error: null,
 }
 
-function harness(packages: Extract<SkillsV2Response, { kind: "catalog" }>["packages"] = []) {
+function harness(packages: Extract<SkillsV2Response, { kind: "catalog" }>["packages"] = [], failure?: Error) {
   const requests: SkillsV2Request[] = []
   const notices: string[] = []
   const footers: string[] = []
@@ -39,6 +39,7 @@ function harness(packages: Extract<SkillsV2Response, { kind: "catalog" }>["packa
     flashFooter: (message: string) => footers.push(message),
     sendSkillsRequest: async ({ SkillsV2: request }: { SkillsV2: SkillsV2Request }): Promise<SkillsV2Response> => {
       requests.push(request)
+      if (failure) throw failure
       switch (request.action) {
         case "catalog": return catalog
         case "loads": return { kind: "loads", records: [] }
@@ -65,6 +66,14 @@ test("/skills list names a source-backed package's revision", async () => {
   const { notices, run } = harness([{ id: "pkg-1", name: "pocock", scope: { kind: "chariox" }, custom: false, source_locator: "https://github.com/mattpocock/skills", source_revision: "d1caf1e", upstream_members: {} }])
   await run("/skills list")
   assert.match(notices.join("\n"), /package pocock \(https:\/\/github.com\/mattpocock\/skills @ d1caf1e\) · 0 skill\(s\)/)
+})
+
+test("a refused /skills command keeps the reason in the transcript without the transport wrappers", async () => {
+  const refusal = "kernel transport `handle kernel response` failed: local transport `skills.v2.catalog` failed: skill name `review` is occupied; choose Rename or Replace"
+  const { notices, footers, run } = harness([], new Error(refusal))
+  await run("/skills list")
+  assert.deepEqual(notices, ["Skills: skill name `review` is occupied; choose Rename or Replace"])
+  assert.deepEqual(footers, ["Skills: skill name `review` is occupied; choose Rename or Replace"])
 })
 
 test("/skills from lists the focused provider's skills read-only", async () => {

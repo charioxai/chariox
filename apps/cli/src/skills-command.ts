@@ -371,8 +371,11 @@ export function createSkillsCommand(deps: SkillsCommandDeps): (args: readonly st
     try {
       await run(args)
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      deps.flashFooter(error instanceof SkillsCommandError ? message : `Skills: ${message}`, "error")
+      const raw = error instanceof Error ? error.message : String(error)
+      // The footer cuts long text; the transcript keeps the whole reason, without the transport wrappers.
+      const message = error instanceof SkillsCommandError ? raw : `Skills: ${raw.replace(/^(?:(?:kernel|local) transport `[^`]*` failed: )+/, "")}`
+      deps.appendNotice(message)
+      deps.flashFooter(message, "error")
     }
   }
 }
