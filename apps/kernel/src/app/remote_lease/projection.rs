@@ -338,7 +338,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     && binding.provider_run_id == provider_run_id
                     && home_prompt_id.as_deref() == Some(binding.home_prompt_id.as_str())
             })
-            .map(|binding| binding.backing_prompt_id.as_str());
+            .map(|binding| binding.backing_prompt_id.clone());
         // Ordinary leased turns also have different home and worker prompt IDs.
         let receipt_backing_prompt_id = home_prompt_id.as_deref().and_then(|home| {
             self.app
@@ -351,7 +351,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         });
         let termination_prompt_id = receipt_backing_prompt_id
             .as_deref()
-            .or(workflow_backing_prompt_id)
+            .or(workflow_backing_prompt_id.as_deref())
             .or(home_prompt_id.as_deref());
         let provider_termination = self
             .app
@@ -795,6 +795,34 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
         if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
             agent.projected_output_history_keys = Vec::new();
+        }
+        // The worker knows the admitted home/backing pair; the home must never
+        // infer assessment identity from where a delayed chunk lands in history.
+        if let Some(home) = home_prompt_id.as_deref() {
+            let worker_key = receipt_backing_prompt_id
+                .as_deref()
+                .or(workflow_backing_prompt_id.as_deref())
+                .map(|id| format!("completion-assessment:{id}"));
+            let home_key = format!("completion-assessment:home:{home}");
+            output_chunks.retain_mut(|chunk| {
+                if !chunk
+                    .merge_key
+                    .as_deref()
+                    .is_some_and(|key| key.starts_with("completion-assessment:"))
+                {
+                    return true;
+                }
+                if chunk.merge_key != worker_key {
+                    return false;
+                }
+                chunk.merge_key = Some(home_key.clone());
+                true
+            });
+            for completion in &mut completions {
+                if Some(completion.message_id.as_str()) == worker_key.as_deref() {
+                    completion.message_id.clone_from(&home_key);
+                }
+            }
         }
         if output_chunks.is_empty()
             && notices.is_empty()

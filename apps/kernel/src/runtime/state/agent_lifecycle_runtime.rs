@@ -363,17 +363,11 @@ impl KernelRuntimeOwnedState {
                     && run.starts_with("leased:")
                     && !self.room_secret_observations.protects_bytes(room)
                 {
-                    result = super::agent_task_projection::task_public_outputs(
+                    result = super::agent_task_projection::leased_assessment_reply(
                         &entries,
                         prompt.id(),
-                        Some(answer_run),
-                    )
-                    .concat();
-                }
-                // A retried check can still carry the interrupted check's late reply ahead of
-                // its own; the newest reply is the retry's.
-                if ledger::completion::evaluation(&task).is_some_and(|check| check.retried) {
-                    result = super::agent_task_projection::newest_json_reply(&result);
+                        answer_run,
+                    );
                 }
                 // What the owner already saw of the work turn; the receipt must not repeat it.
                 let work_output = ledger::completion::evaluation(&task)

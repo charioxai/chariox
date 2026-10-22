@@ -1646,6 +1646,142 @@ mod tests {
         );
     }
 
+    // MP-08 / MP-10 / MP-11: a prompt boundary is not an assessment identity.
+    #[tokio::test]
+    async fn leased_check_reads_only_its_own_reply_after_late_output() {
+        assert_leased_check_reply_is_correlated(true).await;
+    }
+
+    #[tokio::test]
+    async fn leased_check_without_its_reply_never_accepts_an_earlier_verdict() {
+        assert_leased_check_reply_is_correlated(false).await;
+    }
+
+    async fn assert_leased_check_reply_is_correlated(has_reply: bool) {
+        use crate::durable_state::agent_lifecycle::{completion, ExecutionState, Operation};
+        use crate::transport::relay_peer::{
+            RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk,
+        };
+        let (runtime, session, agent, attachment, binding) =
+            mp11_fixture(crate::DaemonConfig::for_tests()).await;
+        let mut config = runtime.owned.config_projection.snapshot();
+        config.room_agent_tools = true;
+        runtime.owned.config_projection.update(config);
+        let original = mp11_submit(&runtime, &session, &agent, &attachment, "work");
+        let run = crate::provider::projected_leased_provider_run_id(
+            &binding.leased_agent_id,
+            "worker-run-1",
+        );
+        let store = &runtime.owned.durable_state_store;
+        let now = crate::session::unix_epoch_ms();
+        for op in [
+            Operation::Begin {
+                owner: "owner".into(),
+                room: session.clone(),
+                agent: agent.clone(),
+                prompt: original.id().into(),
+                run: Some(run.clone()),
+                now,
+            },
+            Operation::StartGoal {
+                task: original.id().into(),
+                owner: "owner".into(),
+                objective: "Review the repository".into(),
+                minutes: 1,
+                now,
+            },
+            Operation::Settle {
+                room: session.clone(),
+                agent: agent.clone(),
+                prompt: original.id().into(),
+                run,
+                has_answer: true,
+                cancelled: false,
+                now,
+            },
+        ] {
+            store.agent_lifecycle(op).unwrap();
+        }
+        let task = store
+            .agent_tasks(Some(&session), Some(&agent))
+            .unwrap()
+            .remove(0);
+        let check = completion::evaluation(&task).unwrap().prompt_id.clone();
+        runtime
+            .with_app_side_effect({
+                let session = session.clone();
+                let agent = agent.clone();
+                move |app| app.prompt_owner_complete_active_prompt_only(&session, &agent)
+            })
+            .await
+            .unwrap();
+        let prepared = KernelPreparedPromptSubmission {
+            session_id: session.clone(),
+            prompt: PromptQueueItem::new(
+                &check,
+                &attachment,
+                &agent,
+                "Check completion",
+                PromptStatus::Queued,
+            )
+            .with_prompt_origin(crate::session::PromptOrigin::CompletionCheck),
+            force_queue: false,
+            refresh_projection: true,
+        };
+        runtime
+            .owned
+            .submit_remote_prepared_prompt(&prepared)
+            .unwrap()
+            .unwrap();
+        let chunk = |key: &str, body: &str| RelayProjectedOutputChunk {
+            kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+            merge_key: Some(key.into()),
+            bytes: body.as_bytes().to_vec(),
+        };
+        let answer = r#"{"status":"achieved","final_answer":"Verified repository result","evidence":["history:work"]}"#;
+        let mut chunks = vec![chunk("completion-assessment:home:earlier-check", answer)];
+        if has_reply {
+            chunks.insert(0, chunk("ordinary-work-item", "Late ordinary work output"));
+            chunks.push(chunk(
+                &format!("completion-assessment:home:{check}"),
+                answer,
+            ));
+        }
+        runtime
+            .project_relay_remote_runtime_projection(
+                crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
+                RelayPeerEvent::LeasedRuntimeProjection {
+                    home_session_id: session.clone(),
+                    home_agent_id: agent.clone(),
+                    provider_run_id: "worker-run-1".into(),
+                    provider_run: None,
+                    prompts: Vec::new(),
+                    output_chunks: chunks,
+                    notices: Vec::new(),
+                    completions: vec![RelayProjectedCompletion {
+                        message_id: "check-completed".into(),
+                        completed_at_ms: now,
+                        home_prompt_id: Some(check),
+                        provider_termination: None,
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+        let task = store
+            .agent_tasks(Some(&session), Some(&agent))
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            task.state,
+            if has_reply {
+                ExecutionState::Done
+            } else {
+                ExecutionState::Blocked
+            }
+        );
+    }
+
     // MP-08 / MP-10 / MP-11 A12-S02: the worker restarted inside the check and is back on a new lease.
     #[tokio::test]
     async fn completion_check_interrupted_by_a_worker_restart_is_asked_once_more() {
