@@ -180,6 +180,8 @@ export function guideText(): string {
     "Exit codes:",
     ...exits,
     "",
+    "Sudo outcomes: kernel_sudo_refused means the person refused; kernel_sudo_expired means the approval deadline passed.",
+    "Neither starts elevation or retries automatically. Submit a new request only when needed and approve it in a Chariox client.",
     "Retry rule: on kernel_request_timeout or kernel_connection_lost retry ONCE with the same --command-id.",
     "On kernel_outcome_unknown read the state first; never retry blindly.",
     "Human-only, never attempted by you: passkey approvals, grants, sudo approvals, secrets and credentials, relay and pairing configuration.",
