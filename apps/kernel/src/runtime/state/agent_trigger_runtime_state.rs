@@ -486,3 +486,124 @@ impl KernelRuntimeOwnedState {
         Ok(session)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt;
+
+    async fn schedule(
+        runtime: &KernelRuntimeState,
+        session_id: &str,
+        agent_id: &str,
+        repeat: AgentTriggerRepeat,
+    ) -> AgentTrigger {
+        let owner = runtime.owned.agent_store.get_agent(agent_id).unwrap();
+        let response = runtime.create_agent_trigger(crate::local::CreateAgentTriggerRequest {
+            session_id: session_id.into(),
+            agent_id: agent_id.into(),
+            source: crate::local::AgentTriggerSourceRequest::Schedule { interval_seconds: 60, repeat },
+            busy_policy: AgentTriggerBusyPolicy::Steer,
+            prompt: Some("Keep this firing".into()),
+        }, owner.owner_user_id()).await.unwrap();
+        let crate::local::LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = response else {
+            panic!("expected trigger");
+        };
+        trigger
+    }
+
+    async fn wait_for_queued_firing(runtime: &KernelRuntimeState, session_id: &str, agent_id: &str) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let session = runtime.owned.session_store.get_session(session_id).unwrap();
+                let (_, queued) = runtime.owned.prompt_state_owner.state_parts(&session, agent_id);
+                if !queued.is_empty() { break; }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }).await.expect("firing must stay queued while the provider lane is held");
+    }
+
+    #[tokio::test]
+    async fn trigger_steer_keeps_once_and_recurring_firings_until_local_delivery_succeeds() {
+        for repeat in [AgentTriggerRepeat::Once, AgentTriggerRepeat::Every] {
+            let (_worktree, runtime, session_id, agent_id, _, _, run_id) = runtime_with_active_prompt().await;
+            let trigger = schedule(&runtime, &session_id, &agent_id, repeat).await;
+            let held = runtime.provider_runtime_lanes.acquire(&run_id).await;
+            let firing_runtime = runtime.clone();
+            let due = trigger.next_run_at_ms();
+            let firing = tokio::spawn(async move { firing_runtime.dispatch_due_agent_triggers(due).await });
+            wait_for_queued_firing(&runtime, &session_id, &agent_id).await;
+            assert!(!firing.is_finished(), "must not report success before local acceptance");
+            let session = runtime.owned.session_store.get_session(&session_id).unwrap();
+            runtime.owned.prompt_state_owner.complete_active_prompt_only(&session, &agent_id).unwrap();
+            drop(held);
+            tokio::time::timeout(std::time::Duration::from_secs(5), firing).await.unwrap().unwrap();
+            let snapshot = runtime.owned.session_snapshot(&session_id).unwrap();
+            let (_, queued) = runtime.owned.prompt_state_owner.state_parts(&snapshot, &agent_id);
+            assert_eq!(queued.len(), 1, "a rejected steer must never lose the firing");
+            assert_eq!(queued[0].agent_trigger_id(), Some(trigger.id()));
+            assert_eq!(snapshot.queued_prompts_for_agent(&agent_id).map_or(0, |prompts| prompts.len()), 1, "firing must be durable");
+            if repeat == AgentTriggerRepeat::Every {
+                let trigger = &snapshot.agent_triggers()[0];
+                assert_eq!(trigger.last_outcome(), Some(AgentTriggerOutcome::Queued));
+                assert!(trigger.last_error().unwrap().contains("steer refused"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn trigger_disabled_while_an_earlier_claim_is_blocked_is_not_admitted() {
+        for reenable in [false, true] {
+            let (_worktree, runtime, session_id, agent_id, _, _, run_id) = runtime_with_active_prompt().await;
+            let first = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Every).await;
+            let second = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
+            let held = runtime.provider_runtime_lanes.acquire(&run_id).await;
+            let firing_runtime = runtime.clone();
+            let due = first.next_run_at_ms().max(second.next_run_at_ms());
+            let firing = tokio::spawn(async move { firing_runtime.dispatch_due_agent_triggers(due).await });
+            wait_for_queued_firing(&runtime, &session_id, &agent_id).await;
+            let owner = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+            for enabled in [Some(false), reenable.then_some(true)].into_iter().flatten() {
+                runtime.update_agent_trigger(crate::local::UpdateAgentTriggerRequest {
+                    session_id: session_id.clone(), trigger_id: second.id().into(),
+                    busy_policy: None, prompt: None, enabled: Some(enabled),
+                }, owner.owner_user_id()).await.unwrap();
+            }
+            drop(held);
+            tokio::time::timeout(std::time::Duration::from_secs(5), firing).await.unwrap().unwrap();
+            let snapshot = runtime.owned.session_snapshot(&session_id).unwrap();
+            let second = snapshot.agent_triggers().iter().find(|t| t.id() == second.id())
+                .expect("an invalidated one-shot claim must not delete its trigger");
+            assert_eq!(second.enabled(), reenable);
+            assert_eq!(second.fired(), 0);
+            assert_eq!(second.coalesced(), 0);
+            let (_, queued) = runtime.owned.prompt_state_owner.state_parts(&snapshot, &agent_id);
+            assert!(queued.iter().all(|p| p.agent_trigger_id() != Some(second.id())));
+        }
+    }
+    #[tokio::test]
+    async fn trigger_stale_claim_cannot_queue_after_disable_or_disable_then_enable() {
+        for reenable in [false, true] {
+            let (_worktree, runtime, session_id, agent_id, _, _, _) = runtime_with_active_prompt().await;
+            let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
+            let owner = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+            runtime.update_agent_trigger(crate::local::UpdateAgentTriggerRequest {
+                session_id: session_id.clone(), trigger_id: trigger.id().into(),
+                busy_policy: Some(AgentTriggerBusyPolicy::Queue), prompt: None, enabled: None,
+            }, owner.owner_user_id()).await.unwrap();
+            let claims = runtime.owned.session_store.write().claim_due_agent_triggers(trigger.next_run_at_ms());
+            assert_eq!(claims.len(), 1);
+            for enabled in [Some(false), reenable.then_some(true)].into_iter().flatten() {
+                runtime.update_agent_trigger(crate::local::UpdateAgentTriggerRequest {
+                    session_id: session_id.clone(), trigger_id: trigger.id().into(),
+                    busy_policy: None, prompt: None, enabled: Some(enabled),
+                }, owner.owner_user_id()).await.unwrap();
+            }
+            runtime.fire_agent_trigger(&claims[0]).await.unwrap();
+            let session = runtime.owned.session_store.get_session(&session_id).unwrap();
+            let (_, queued) = runtime.owned.prompt_state_owner.state_parts(&session, &agent_id);
+            assert!(queued.is_empty(), "a disabled or invalidated claim cannot admit a prompt");
+        }
+    }
+
+}
