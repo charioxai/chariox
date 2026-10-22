@@ -224,6 +224,12 @@ impl Pool {
         let input = params["input"].to_string();
         let called = live.app.chariox_app_handlers().call_call_tool(&mut live.store, name, &input, &invocation(deadline_ms, context)).await;
         match called {
+            // A GC guest may turn a refused grow into its own exception; the
+            // host still reports the limit and does not reuse that instance.
+            Ok(Err(_)) if live.store.data().limits.refused => {
+                metric(json!({ "trap": "APP_MEMORY_LIMIT", "guestHandled": true }));
+                Err(error("APP_MEMORY_LIMIT", "App code was stopped; the App was restarted"))
+            }
             Ok(result) => {
                 self.idle.lock().unwrap().push(live);
                 match result {

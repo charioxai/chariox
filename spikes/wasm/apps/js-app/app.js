@@ -41,8 +41,10 @@ export const handlers = {
   async callTool(name, input) {
     try {
       return await call(name, JSON.parse(input));
-    } catch (error) {
-      if (typeof error?.code === 'string' && typeof error?.message === 'string') throw { code: error.code, message: error.message, retryable: undefined };
+    } catch (thrown) {
+      // A failed import arrives as an error whose payload is the app-error.
+      const error = thrown?.payload ?? thrown;
+      if (typeof error?.code === 'string' && typeof error?.message === 'string') throw { code: error.code, message: error.message, retryable: error.retryable };
       throw { code: 'HANDLER_FAILED', message: String(error?.message ?? error).slice(0, 4096), retryable: undefined };
     }
   },

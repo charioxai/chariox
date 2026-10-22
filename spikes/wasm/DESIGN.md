@@ -105,7 +105,9 @@ exact wire shapes in `packages/app-sdk/WIRE.md`.
 | `schedule.wake {id, dueAtMs, revision, overdue}` | `handlers.deliver-wake(wake, overdue)` |
 | `cancel {id}` | sync world: cannot interrupt a running call; the per-call epoch deadline bounds it (§6). Async world: drop the guest task. |
 
-Errors: a guest `app-error` becomes the wire error object unchanged; a guest
+Errors: a guest `app-error` becomes the wire error object unchanged (the JS
+SDK layer must map any other exception to `HANDLER_FAILED`: componentize-js
+traps the instance on an unmapped rejection, measured); a guest
 trap becomes `APP_CALL_TIMEOUT`, `APP_MEMORY_LIMIT` or `APP_TRAPPED` and the
 worker replaces the instance (the bootstrap's exit codes 131–136 stay for
 worker-level failures: bad config 130, load/register 131, IPC 133).
@@ -117,7 +119,7 @@ The component never sees the host. The worker links only:
 | Interface | Implementation |
 | --- | --- |
 | `chariox:app/*` | worker → FD3 wire → kernel brokers (above) |
-| `wasi:http/outgoing-handler` (world 1.1) | worker → the **same HTTP broker stream** (`http.open/write/headers/read/cancel`). wasmtime-wasi-http lets the embedder replace `send_request`, so standard clients (Rust `waki`/`reqwest` on wasi, Go `net/http` on wasip2, StarlingMonkey's global `fetch`) go through the kernel's destination policy, approvals and connections without SDK code. Same role as SDK 0.7's fixed global `fetch`. |
+| `wasi:http/outgoing-handler` | worker → the **same HTTP broker stream** (`http.open/write/headers/read/cancel`). The worker replaces wasmtime-wasi-http's `send_request` hook (`BrokerHooks` in `worker/src/host.rs`), so standard clients go through the kernel's destination policy, approvals and connections without SDK code. **Spike-proven for JS:** a plain `fetch()` in the componentize-js App returned the origin's 200 through the broker under bubblewrap with no network namespace access, and a destination the broker refuses surfaced as a normal fetch `NetworkError`. Same role as SDK 0.7's fixed global `fetch`. Rust (`waki`), Go (`net/http` on wasip2) use the same interface (not tested). |
 | `wasi:filesystem` | two preopens only: the App's private `data` and `tmp` roots (already quota-limited private mounts). `sync`/`sync-data` are denied like the bootstrap's fsync deny; durable writes use `files.atomic-replace`. |
 | `wasi:clocks`, `wasi:random` | direct (no authority). |
 | `wasi:cli/stdout/stderr` | the supervisor's bounded log pipes. `environment` empty, `stdin` empty, `exit` ends the instance. |
@@ -171,7 +173,7 @@ syscalls Node does not already use.
 
 ## 8. How the spike is built (what it does and does not prove)
 
-- `worker/` — `chariox-wasm-worker`: wasmtime 50, `wasmtime-wasi` p2, FD4
+- `worker/` — `chariox-wasm-worker`: wasmtime 50, `wasmtime-wasi` p2, `wasi:http` onto the broker, FD4
   handshake, FD3 wire via `chariox-app-runtime::wire::Channel`, epoch + memory
   limits, trap → fresh instance. Subcommands `precompile` and `check` are the
   install steps.

@@ -150,8 +150,11 @@ a CPU-heavy JS App should be written in Rust or wait for a JIT-capable JS
 engine.
 
 **Ecosystem.** JS Apps lose Node built-ins (`node:fs`, `Buffer`, `net`…).
-The SDK covers files (WASI filesystem), HTTP (`fetch` → broker) and state,
-but npm packages that import Node built-ins fail at build time.
+The SDK covers files (WASI filesystem), HTTP and state, but npm packages that
+import Node built-ins fail at build time. HTTP is the good news: a plain
+`fetch()` inside the JS component went through the kernel HTTP broker (the
+worker routes `wasi:http` there), with no SDK call and no network access in
+the sandbox.
 
 **Maturity of wasmtime's async.** It ran our probe correctly, but its own
 docs still call component-model async "very incomplete". Another reason to
