@@ -22,6 +22,9 @@ pub(crate) trait InventorySource: Send + Sync {
     /// The kernels the latest refresh listed as live; never this kernel itself.
     fn kernels(&self) -> Vec<RelayKernelPresence>;
     fn is_fresh(&self) -> bool;
+    /// Listed within the last `max_age_ms`. A question asked by a person or an agent
+    /// (`chariox kernels`) wants a list this young, not one that is merely good enough to route by.
+    fn refreshed_within(&self, max_age_ms: u64) -> bool;
     /// Listed recently enough to answer a request from while a fresh list is fetched
     /// behind it; a source that never listed is not usable.
     fn is_usable(&self) -> bool;
@@ -55,6 +58,11 @@ impl InventorySource for RelayInventory {
             .max(1_000);
         self.projection
             .is_fresh(crate::session::unix_epoch_ms(), stale_after_ms)
+    }
+
+    fn refreshed_within(&self, max_age_ms: u64) -> bool {
+        self.projection
+            .is_fresh(crate::session::unix_epoch_ms(), max_age_ms)
     }
 
     fn is_usable(&self) -> bool {

@@ -14,6 +14,8 @@ use crate::local::{GatewayKernel, GatewayKernelStatus};
 /// The capability a kernel advertises when it enforces `on_behalf_of`.
 const GATEWAY_CAPABILITY: &str = "kernel_gateway_v1";
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
+/// How old the list may be when `chariox kernels` shows it.
+const LISTING_MAX_AGE_MS: u64 = 1_000;
 
 struct Seen {
     kernel: RelayKernelPresence,
@@ -38,7 +40,11 @@ impl Directory {
     }
 
     pub(super) async fn kernels(&self) -> Result<Vec<GatewayKernel>, GatewayError> {
-        self.refresh().await?;
+        // The list is shown as the truth, so it is renewed unless it was taken a moment ago.
+        if !self.source.refreshed_within(LISTING_MAX_AGE_MS) {
+            self.refresh_now().await?;
+        }
+        self.merge();
         let via = self.source.via();
         let seen = self.seen.lock().expect("directory poisoned");
         let known: Vec<&RelayKernelPresence> = seen.values().map(|seen| &seen.kernel).collect();
@@ -105,15 +111,17 @@ impl Directory {
 
     async fn refresh(&self) -> Result<(), GatewayError> {
         if !self.source.is_fresh() {
-            tokio::time::timeout(REFRESH_TIMEOUT, self.source.refresh())
-                .await
-                .map_err(|_| {
-                    unreachable_inventory("the kernel list did not refresh in time".into())
-                })?
-                .map_err(|error| unreachable_inventory(error.to_string()))?;
+            self.refresh_now().await?;
         }
         self.merge();
         Ok(())
+    }
+
+    async fn refresh_now(&self) -> Result<(), GatewayError> {
+        tokio::time::timeout(REFRESH_TIMEOUT, self.source.refresh())
+            .await
+            .map_err(|_| unreachable_inventory("the kernel list did not refresh in time".into()))?
+            .map_err(|error| unreachable_inventory(error.to_string()))
     }
 
     /// Takes the source's latest list as what is live now.
@@ -192,6 +200,9 @@ mod tests {
         fn is_fresh(&self) -> bool {
             true
         }
+        fn refreshed_within(&self, _max_age_ms: u64) -> bool {
+            true
+        }
         fn is_usable(&self) -> bool {
             true
         }
@@ -250,6 +261,9 @@ mod tests {
         fn is_fresh(&self) -> bool {
             false
         }
+        fn refreshed_within(&self, _max_age_ms: u64) -> bool {
+            false
+        }
         fn is_usable(&self) -> bool {
             true
         }
@@ -264,6 +278,46 @@ mod tests {
                 Ok(())
             })
         }
+    }
+
+    /// A list that is good enough to route by (fresh) but taken seconds ago.
+    struct Aging {
+        refreshes: std::sync::atomic::AtomicU32,
+    }
+
+    impl InventorySource for Aging {
+        fn via(&self) -> GatewayKernelVia {
+            GatewayKernelVia::Hosted
+        }
+        fn kernels(&self) -> Vec<RelayKernelPresence> {
+            Vec::new()
+        }
+        fn is_fresh(&self) -> bool {
+            true
+        }
+        fn refreshed_within(&self, _max_age_ms: u64) -> bool {
+            false
+        }
+        fn is_usable(&self) -> bool {
+            true
+        }
+        fn refresh(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::error::DaemonError>> + Send + '_>>
+        {
+            self.refreshes.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn the_kernel_listing_renews_a_list_that_is_only_good_enough_to_route_by() {
+        let source = Arc::new(Aging {
+            refreshes: std::sync::atomic::AtomicU32::new(0),
+        });
+        let directory = Directory::new(source.clone());
+        directory.kernels().await.unwrap();
+        assert_eq!(source.refreshes.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
