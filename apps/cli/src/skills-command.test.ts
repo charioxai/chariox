@@ -68,7 +68,7 @@ test("/skills list shows the home catalog with states, also-in and conflict rows
 test("/skills list names a source-backed package's revision", async () => {
   const { notices, run } = harness([{ id: "pkg-1", name: "pocock", scope: { kind: "chariox" }, custom: false, source_locator: "https://github.com/mattpocock/skills", source_revision: "d1caf1e", upstream_members: {} }])
   await run("/skills list")
-  assert.match(notices.join("\n"), /package pocock \(https:\/\/github.com\/mattpocock\/skills @ d1caf1e\) · 0 skill\(s\)/)
+  assert.match(notices.join("\n"), /package pocock \(https:\/\/github.com\/mattpocock\/skills @ d1caf1e\) · 0 skill\(s\) \[pkg-1\]/)
 })
 
 test("a refused /skills command keeps the reason in the transcript without the transport wrappers", async () => {
