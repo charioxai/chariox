@@ -204,7 +204,6 @@ impl AgentTrigger {
 
     pub(crate) fn mark_failed(&mut self, now_ms: u64, error: String) {
         self.dispatch_in_flight = false;
-        self.last_fired_at_ms = Some(now_ms);
         self.last_error = Some(error);
         self.schedule_next_run(now_ms, 1);
     }

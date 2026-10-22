@@ -10,6 +10,7 @@ enum AgentTriggerFiring {
         steer_refusal: Option<String>,
     },
     Coalesced,
+    AgentGone,
 }
 
 impl KernelRuntimeState {
@@ -100,20 +101,26 @@ impl KernelRuntimeState {
         request: crate::local::CancelAgentPromptScheduleRequest,
         caller_user_id: &str,
     ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
-        let (trigger, session) = self.delete_agent_trigger_by_id(
+        let schedule = self
+            .owned
+            .session_store
+            .get_session(&request.session_id)?
+            .agent_triggers()
+            .iter()
+            .find(|trigger| trigger.id() == request.schedule_id)
+            .and_then(AgentTrigger::legacy_schedule)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "agent prompt schedule cancel",
+                message: format!(
+                    "no /wait schedule `{}` in session `{}`; a disabled trigger is deleted with DeleteAgentTrigger",
+                    request.schedule_id, request.session_id
+                ),
+            })?;
+        let (_, session) = self.delete_agent_trigger_by_id(
             &request.session_id,
             &request.schedule_id,
             caller_user_id,
         )?;
-        let schedule = trigger
-            .legacy_schedule()
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "agent prompt schedule cancel",
-                message: format!(
-                    "`{}` is a disabled trigger, not a /wait schedule; delete it with DeleteAgentTrigger",
-                    request.schedule_id
-                ),
-            })?;
         Ok(crate::local::LocalDaemonResponse::AgentPromptScheduleCancelled { schedule, session })
     }
 
@@ -205,9 +212,15 @@ impl KernelRuntimeState {
                 ),
             });
         };
-        self.owned
-            .ensure_agent_prompt_access(trigger.agent_id(), caller_user_id, operation)?;
-        Ok(())
+        match self
+            .owned
+            .ensure_agent_prompt_access(trigger.agent_id(), caller_user_id, operation)
+        {
+            // A /wait schedule stored before triggers were deleted with their
+            // agent can outlive it; any session member may remove it.
+            Err(DaemonError::AgentNotFound { .. }) => Ok(()),
+            result => result.map(|_| ()),
+        }
     }
 
     pub(crate) async fn dispatch_due_agent_triggers(&self, now_ms: u64) {
@@ -238,6 +251,20 @@ impl KernelRuntimeState {
                         &dispatch.trigger_id,
                         now_ms,
                     ),
+                Ok(AgentTriggerFiring::AgentGone) => {
+                    self.record_agent_trigger_notice(
+                        &dispatch,
+                        format!(
+                            "Trigger `{}` was removed: its agent `{}` no longer exists",
+                            dispatch.trigger_id, dispatch.agent_id
+                        ),
+                    );
+                    self.owned
+                        .session_store
+                        .write()
+                        .delete_agent_trigger(&dispatch.session_id, &dispatch.trigger_id)
+                        .map(Some)
+                }
                 Err(error) => {
                     self.record_agent_trigger_notice(
                         &dispatch,
@@ -276,6 +303,10 @@ impl KernelRuntimeState {
         &self,
         dispatch: &AgentTriggerDispatch,
     ) -> Result<AgentTriggerFiring, DaemonError> {
+        match self.owned.agent_store.get_agent(&dispatch.agent_id) {
+            Err(DaemonError::AgentNotFound { .. }) => return Ok(AgentTriggerFiring::AgentGone),
+            result => result.map(|_| ())?,
+        }
         let session = self.owned.session_store.get_session(&dispatch.session_id)?;
         if !session
             .agent_triggers()

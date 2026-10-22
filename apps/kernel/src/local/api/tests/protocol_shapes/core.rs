@@ -373,7 +373,10 @@ fn local_daemon_protocol_agent_trigger_shape_is_versioned() {
         ])
     );
     let hash = Sha256::digest(serde_json::to_string(&requests).unwrap().as_bytes());
-    assert_eq!(format!("{hash:x}"), "d7be76173ad86e109c06608125a2c8f2cf3cb86570b989f7c760e174d2d59eb7");
+    assert_eq!(
+        format!("{hash:x}"),
+        "d7be76173ad86e109c06608125a2c8f2cf3cb86570b989f7c760e174d2d59eb7"
+    );
 
     let mut session = crate::session::RuntimeSession::new(
         "session-1",

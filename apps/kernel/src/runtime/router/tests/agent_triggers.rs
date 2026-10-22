@@ -523,3 +523,104 @@ fn sessions_written_before_triggers_migrate_wait_schedules_and_keep_the_legacy_v
     let reread: crate::session::RuntimeSession = serde_json::from_value(written).unwrap();
     assert_eq!(reread.agent_triggers(), migrated.agent_triggers());
 }
+
+#[tokio::test]
+async fn a_migrated_wait_schedule_whose_agent_is_gone_is_removed_with_a_notice() {
+    let worktree = crate::test_support::TestWorktree::new("trigger-orphan");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should create");
+    let session_store = app.session_state_store();
+    // Before 576 a /wait-every outlived its destroyed agent.
+    let mut stored =
+        serde_json::to_value(session_store.get_session(session.id()).unwrap()).unwrap();
+    stored["agent_prompt_schedules"] = serde_json::json!([{
+        "id": "wait-orphan", "agent_id": "agent-destroyed-before-576", "kind": "recurring",
+        "interval_seconds": 60, "prompt": "Check.", "created_at_ms": 1_000, "next_run_at_ms": 61_000,
+    }]);
+    session_store.restore_session(serde_json::from_value(stored).unwrap());
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+
+    boxed_schedule_future(|| router.runtime_state.dispatch_due_agent_triggers(61_000)).await;
+
+    let snapshot = router
+        .runtime_state
+        .session_snapshot(session.id())
+        .await
+        .expect("snapshot should read");
+    assert!(snapshot.agent_triggers().is_empty());
+    let notices = router
+        .app
+        .lock()
+        .await
+        .terminal_stream_store()
+        .notice_records();
+    assert!(
+        notices.iter().any(|notice| notice
+            .message
+            .contains("Trigger `wait-orphan` was removed: its agent")),
+        "the removal is reported, not silent"
+    );
+}
+
+#[tokio::test]
+async fn legacy_cancel_refuses_a_disabled_trigger_without_deleting_it() {
+    let worktree = crate::test_support::TestWorktree::new("trigger-legacy-cancel");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should create");
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = router
+        .runtime_state
+        .create_agent_trigger(
+            every_minute(
+                &session,
+                &agent,
+                crate::session::AgentTriggerBusyPolicy::Queue,
+            ),
+            agent.owner_user_id(),
+        )
+        .await
+        .expect("trigger should create")
+    else {
+        panic!("unexpected trigger response");
+    };
+    router
+        .runtime_state
+        .update_agent_trigger(
+            crate::local::UpdateAgentTriggerRequest {
+                session_id: session.id().to_string(),
+                trigger_id: trigger.id().to_string(),
+                busy_policy: None,
+                prompt: None,
+                enabled: Some(false),
+            },
+            agent.owner_user_id(),
+        )
+        .await
+        .expect("trigger should disable");
+
+    let refused = router
+        .runtime_state
+        .cancel_agent_prompt_schedule(
+            crate::local::CancelAgentPromptScheduleRequest {
+                session_id: session.id().to_string(),
+                schedule_id: trigger.id().to_string(),
+            },
+            agent.owner_user_id(),
+        )
+        .await;
+    assert!(
+        refused.is_err(),
+        "a disabled trigger is not a /wait schedule"
+    );
+    let snapshot = router
+        .runtime_state
+        .session_snapshot(session.id())
+        .await
+        .expect("snapshot should read");
+    assert_eq!(snapshot.agent_triggers().len(), 1);
+    assert!(!snapshot.agent_triggers()[0].enabled());
+}
