@@ -14,24 +14,75 @@ An original editor using CodeMirror 6 and PDF.js is feasible. Both UI
 libraries pass the rule. This spike builds Tectonic directly for
 `wasm32-wasip2` and uses the existing async worker, App WIT and broker under
 bubblewrap. It does not implement an App, change the kernel, or resume Apps
-implementation. No MP acceptance item is closed by compiler measurements.
+implementation. No preview 1 adapter was needed. No MP acceptance item is closed by compiler
+measurements.
 
 ## Measurements
 
-Final measurements and all three samples are linked in `results.json`.
-The reproduction instructions are in `README.md`. Raw logs, compiled PDFs,
-page renders, licences, commands and identities stay outside git at
-`/root/.codex/evidence/texspike/`.
+All samples and conditions are in [results.json](results.json); exact commands
+are in [README.md](README.md). Raw logs, PDFs, page renders, licences and
+identities stay outside git at `/root/.codex/evidence/texspike/`.
+
+The component is **4.23 MB**, its AOT cache **12.19 MB**; precompiling it took
+**0.37 s** (one precompile measurement). AOT-ready means tools registered, before loading TeX data.
+
+Three-run medians on shared b3, seconds (cold includes actual downloads):
+
+| Engine / document | Cold compile | Warm | One-line edit |
+|---|---:|---:|---:|
+| Component / article | 83.70 | 0.67 | 0.66 |
+| Component / 10-page paper | 86.32 | 1.18 | 0.78 |
+| Component / beamer | 85.33 | 1.34 | 2.27 |
+| Native Tectonic / article | 72.72 | 0.26 | 0.26 |
+| Native Tectonic / 10-page paper | 106.85 | 0.62 | 0.62 |
+| Native Tectonic / beamer | 120.66 | 0.67 | 1.17 |
+| Native Typst / equivalent 10-page paper | 0.31 | 0.31 | 0.31 |
+
+Component article AOT-ready: **7.9–9.4 ms**. Its three first compiles fetched
+**16,780,219 bytes each** (440 files including 16 font binaries); warm/edit fetched zero.
+Warm article samples were **0.53, 2.54, 0.67 s**: do not infer a P95 or quiet-host
+latency guarantee from three samples. The process tree's measured cgroup
+peak was **397–399 MiB**, with a real **512 MiB memory.max and zero swap**;
+there were no OOM events. The guest linear-memory cap was also 512 MiB.
+
+All **27 component compile cells** passed across nine successful series.
+There were **ten cold attempts**: one beamer download received HTTP 200
+instead of 206 for `umsb.fd`, was rejected, and failed before compiling.
+The failed row/log is retained in `failedComponentAttempts`; one deliberate
+fresh-cache retry passed. Thus this is not a claim of 100% download
+reliability. A real App needs bounded download recovery and useful progress.
+
+Native Tectonic peak RSS was up to **238 MiB**; native Typst about **40 MiB**.
+The component worker's peak RSS was up to **327 MiB**, and all successful
+process-tree peaks stayed below **400 MiB**. The 512 MiB worker test does
+not include a future editor view/browser or the parent HTTP proxy. The
+matrix explicitly used a 30-second CPU-slice setting; an additional warm
+paper control also passed at the normal 1-second setting. Every final PDF was
+rendered page by page; no blank pages were found. All three paper outputs
+retain the bibliography, and pages 1–9 match the native render pixel for
+pixel (the edit changes page 10).
+
+The native comparator launches a fresh CLI process each time; the component
+keeps its App instance. Native cold caches discover each document's own
+files; the component uses the same frozen union subset for every document.
+Cold numbers therefore include different download inventories, not just
+engine speed. Typst was measured as a **native CLI**, not a new component.
+`pdflatex` is not installed on b3; no number was substituted.
 
 The corpus is an article; a **10-page paper** with amsmath, an actual PNG,
-an actual TikZ diagram, hyperref and BibTeX; and a seven-page beamer deck.
+an actual TikZ diagram, hyperref and BibTeX; and a seven-page beamer deck (the appended edit adds an eighth page in
+both engines).
 The Typst comparison uses the same text, math, PNG and bibliography, with a
 native vector diagram in place of TikZ. It is not a LaTeX compatibility test.
 
 Numbers are research results on shared b3, not quiet-host performance
 acceptance. The unmodified worker cannot open `data`; the red run records
 that failure. The spike worker adds only the harness-owned `data` and `tmp`
-preopens. Guest TCP, UDP and DNS remain denied and bubblewrap has no network.
+preopens. A second red run reached format creation, then aborted: the fork
+reads `latex.fmt` from the bundle but generates it in the cache. Matching
+tecgonic's copy-to-bundle step fixed that seam. Both failures and passing
+reruns are retained. Guest TCP, UDP and DNS remain denied and bubblewrap
+has no network.
 
 ## Licences checked today
 
@@ -103,11 +154,12 @@ measured component**, though the engine has the API. They are T4 work.
 
 The broken-document example is `main.tex:3: Undefined control sequence`,
 parsed into `{file: "main.tex", line: 3, message: "Undefined control sequence"}`.
-Three parser regressions pass, including an included-file path and an unknown
-file. This example uses the native engine log. The WASI fork's fatal
-`longjmp` path currently produces `APP_TRAPPED`; the harness discards its
-stdout. Capturing that log and returning useful errors from the component
-is still T1 work, not something this research claims to have finished.
+Four parser regressions pass, including an included-file path, an unknown
+file and the actual component stderr prefix. Both native and component
+broken-document logs produce that structured error. The WASI fork's fatal
+`longjmp` path still returns `APP_TRAPPED` to the caller and recycles the
+instance; the parent-side parser recovers the file/line diagnostic from
+stderr. Wiring it into the App's `get_errors` result is still T1 work.
 
 These are declared UI actions through A2, using `view.state` and
 `view.changed`; they are not a second, disconnected MCP document store.
@@ -125,6 +177,12 @@ programs are not. A view-side Emscripten engine also needs a live view;
 headless agent use would depend on A3 and would move compilation authority
 out of the backend component.
 
+The measured wrapper also leaves the engine build date at its epoch default;
+beamer shows **January 1, 1970**. A real App must supply an explicit build
+date through the engine contract. This spike uses flat filenames and a
+fixed package subset; arbitrary nested projects and package discovery
+remain integration work.
+
 ## Alternatives if we keep the rule
 
 - **Typst component:** the clearest first-party engine candidate. It is a
@@ -136,7 +194,10 @@ out of the backend component.
 - **Wrapped binary (§7):** let a user install a separately licensed native
   Tectonic or TeX Live engine, and drive it as a terminal/native App. This
   can support existing LaTeX projects, with per-OS packaging and the wrapped
-  kind's limits. It is not the portable permissive reference App.
+  kind's limits. It is not the portable permissive reference App. An existing
+  Overleaf CE server can also be opened as the existing-web-app kind from
+  §7; its Node/services/database/TeX stack stays outside the WASM App and
+  keeps its own AGPL obligations.
 
 ## Bounded PRs, after Apps resumes
 

@@ -4,7 +4,7 @@
 The worker linear-memory cap is 512 MiB. Optional cgroup cap covers the
 harness, bubblewrap and worker together, not just the guest's linear memory.
 """
-import argparse,datetime,json,os,pathlib,subprocess,time
+import argparse,datetime,json,os,pathlib,subprocess,time,sys
 
 def main():
  p=argparse.ArgumentParser();p.add_argument('--state',required=True);p.add_argument('--root',required=True);p.add_argument('--evidence',required=True);p.add_argument('--cgroup-mib',type=int);a=p.parse_args()
@@ -40,6 +40,8 @@ def main():
    if group:
     row['cgroupMiB']=a.cgroup_mib;row['cgroupPeakBytes']=int((group/'memory.peak').read_text());row['cgroupEvents']=(group/'memory.events').read_text();group.rmdir()
    data=(ev/(label+'.json')).read_text();row['report']=json.loads(data) if data else None
+   row['success']=bool(r.returncode==0 and row['report'] and len(row['report']['cells'])==3 and all('Ok' in c['outcome'] for c in row['report']['cells']))
    rows.append(row);(ev/'component-results.json').write_text(json.dumps(rows,indent=2)+'\n')
    print(label,r.returncode,round(row['wallMs']),flush=True)
+ if len(rows)!=9 or not all(r['exit']==0 and r['report'] and len(r['report']['cells'])==3 and all('Ok' in c['outcome'] for c in r['report']['cells']) for r in rows):sys.exit(1)
 if __name__=='__main__':main()

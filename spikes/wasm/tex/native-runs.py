@@ -16,7 +16,7 @@ def main():
     work=state/f'bench-{engine}-{doc}-{n}';shutil.copytree(state/'documents'/doc,work,dirs_exist_ok=True)
     for f in work.iterdir():
      if f.suffix not in ['.tex','.typ','.png','.bib']:f.unlink()
-    cache=state/f'cache-{engine}-{doc}-{n}';env={**os.environ,'CHARIOX_HOME':str(state),'XDG_CACHE_HOME':str(cache),'TMPDIR':str(state/'tmp')}
+    cache=state/f'cache-{engine}-{doc}-{n}';env={**os.environ,'CHARIOX_HOME':str(state),'XDG_CACHE_HOME':str(cache),'XDG_CONFIG_HOME':str(state/'config'),'TMPDIR':str(state/'tmp')}
     source=work/('main.tex' if engine=='tectonic' else 'main.typ')
     command=[a.tectonic,'--keep-logs','--keep-intermediates',str(source)] if engine=='tectonic' else [a.typst,'compile',str(source),str(work/'main.pdf')]
     for phase in ['cold','warm','edit']:

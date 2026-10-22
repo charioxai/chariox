@@ -5,7 +5,8 @@ import json,re,sys
 def parse(text):
  errors=[];pending=None
  for line in text.splitlines():
-  match=re.match(r'^(?:error: |warning: )?(.+\.(?:tex|sty|cls|bib)):(\d+):\s*(.*)',line)
+  line=re.sub(r'^\[[^\]]+\]\s*','',line)
+  match=re.match(r'^(?:(?:tectonic )?(?:error|warning): )?(.+\.(?:tex|sty|cls|bib)):(\d+):\s*(.*)',line)
   if match:
    errors.append({'file':match[1],'line':int(match[2]),'message':match[3]});pending=None
   elif line.startswith('! '):pending=line[2:].strip()

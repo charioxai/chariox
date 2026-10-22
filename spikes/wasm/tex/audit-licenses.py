@@ -7,7 +7,7 @@ SOURCES = [
  ('tectonic', 'mgilbir/tectonic', ['LICENSE', 'crates/engine_xdvipdfmx/xdvipdfmx/dvipdfmx.c', 'crates/engine_xdvipdfmx/build.rs', 'crates/engine_xetex/xetex/teckit-Engine.cpp', 'crates/engine_xetex/build.rs']),
  ('tecgonic', 'mgilbir/tecgonic', ['LICENSE', 'Makefile', 'Dockerfile']),
  ('swiftlatex', 'SwiftLaTeX/SwiftLaTeX', ['LICENSE', 'README.md']),
- ('busytex', 'manuels/texlive.js', ['LICENSE', 'README.md']),
+ ('texlive-js', 'manuels/texlive.js', ['LICENSE', 'README.md']),
  ('busytex-upstream', 'busytex/busytex', ['LICENSE', 'README.md']),
  ('busytex-texlyre', 'TeXlyre/texlyre-busytex-build', ['LICENSE', 'README.md']),
  ('codemirror', 'codemirror/dev', ['LICENSE']),

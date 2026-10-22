@@ -13,7 +13,9 @@ numbers do not count as MP-10 UI or quiet-host timing acceptance.
 Use `/var/tmp/texspike` for disposable sources/toolchains and
 `/root/.chariox/dev/texspike` for state, with its `tmp` on disk. Set
 `CHARIOX_HOME` before any product tool (none is needed for this spike).
-Do not remove another lane's files or the shared cargo targets.
+Do not remove another lane's files or the shared cargo targets. `component-runs.py` resumes existing rows; a failed
+row remains a failure. It must be archived explicitly before a deliberate
+rerun, so resuming cannot silently erase a bad attempt.
 
 1. Download wasi-sdk 33.0 (`wasi-sdk-33.0-x86_64-linux.tar.gz`), wasm-tools
    1.262.0, native Tectonic 0.17.0 (musl) and Typst 0.15.1 (musl) from their
@@ -81,7 +83,13 @@ Do not remove another lane's files or the shared cargo targets.
     comparators. Every Tectonic cold cell has its own empty XDG cache; this
     includes actual default-package downloads, unlike a warm-host format
     benchmark. Every child uses `/usr/bin/time -v` and a 300-second timeout.
-12. Run `test-errors.py`; pipe actual compiler stderr into `parse-errors.py`.
+12. Inspect nested compiler outcomes as well as launcher exit codes. One
+    beamer cold attempt received HTTP 200 instead of 206 for `umsb.fd`; it
+    was preserved as `component-beamer-3-range-failure.*`, with its complete
+    row in `component-failed-attempts.json`. The proxy connection was
+    restarted and a fresh cold cell was run once; this is a reported retry,
+    not a discarded success sample.
+13. Run `test-errors.py`; pipe actual compiler stderr into `parse-errors.py`.
     Inspect PDFs and render representative pages outside git. Remove only
     this run's processes by recorded, validated exact PID, cgroups and
     scratch after preserving evidence.

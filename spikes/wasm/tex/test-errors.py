@@ -6,6 +6,9 @@ class Errors(unittest.TestCase):
  def test_tectonic_and_repeated_tex_tail(self):
   text='error: main.tex:3: Undefined control sequence\n! Undefined control sequence.\nl.3 \\bad\n'
   self.assertEqual(mod.parse(text),[{'file':'main.tex','line':3,'message':'Undefined control sequence'}])
+ def test_real_component_stderr(self):
+  text='[wasm-rust-async] tectonic error: main.tex:3: Undefined control sequence\n[wasm-rust-async] fatal: longjmp called (TeX engine abort)'
+  self.assertEqual(mod.parse(text),[{'file':'main.tex','line':3,'message':'Undefined control sequence'}])
  def test_included_file(self):
   self.assertEqual(mod.parse('error: sections/results.tex:27: Missing $ inserted')[0]['file'],'sections/results.tex')
  def test_no_guessed_filename(self):
