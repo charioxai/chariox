@@ -182,7 +182,7 @@ export function createSkillsCommand(deps: SkillsCommandDeps): (args: readonly st
     }
     for (const record of packages) {
       const members = rows.filter(row => row.skill.package_id === record.id)
-      lines.push(`  package ${record.name} (${record.custom ? "custom" : record.source_locator || "no source"}) · ${members.length} skill(s)`)
+      lines.push(`  package ${record.name} (${record.custom ? "custom" : record.source_locator ? `${record.source_locator}${record.source_revision ? ` @ ${record.source_revision}` : ""}` : "no source"}) · ${members.length} skill(s)`)
       members.forEach(render)
     }
     rows.filter(row => !row.skill.package_id || !packages.some(record => record.id === row.skill.package_id)).forEach(render)

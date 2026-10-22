@@ -20,12 +20,12 @@ const native: NativeSkillEntry = {
   description: "Lint with house rules", digest: null, exposure: "confirmed", default_state: "auto", complete_manifest: true, supports_load_ack: true, discovery_error: null,
 }
 
-function harness() {
+function harness(packages: Extract<SkillsV2Response, { kind: "catalog" }>["packages"] = []) {
   const requests: SkillsV2Request[] = []
   const notices: string[] = []
   const footers: string[] = []
   const catalog: SkillsV2Response = {
-    kind: "catalog", revision: 7, packages: [], native: [native], metadata_budget_percent: 1,
+    kind: "catalog", revision: 7, packages, native: [native], metadata_budget_percent: 1,
     skills: [
       projection("skill-review", "review", { also_in_provider: "claude" }),
       projection("skill-deploy", "deploy", { delivery: { kind: "conflict", provider: "claude", entry_id: "claude:deploy", native_digest: "f".repeat(64) } }),
@@ -59,6 +59,12 @@ test("/skills list shows the home catalog with states, also-in and conflict rows
   const text = notices.join("\n")
   assert.match(text, /\$review {2}Auto · Inherited · also in Claude/)
   assert.match(text, /\$deploy {2}Auto · Inherited · conflicting bytes in Claude; Chariox wins \$deploy/)
+})
+
+test("/skills list names a source-backed package's revision", async () => {
+  const { notices, run } = harness([{ id: "pkg-1", name: "pocock", scope: { kind: "chariox" }, custom: false, source_locator: "https://github.com/mattpocock/skills", source_revision: "d1caf1e", upstream_members: {} }])
+  await run("/skills list")
+  assert.match(notices.join("\n"), /package pocock \(https:\/\/github.com\/mattpocock\/skills @ d1caf1e\) · 0 skill\(s\)/)
 })
 
 test("/skills from lists the focused provider's skills read-only", async () => {
