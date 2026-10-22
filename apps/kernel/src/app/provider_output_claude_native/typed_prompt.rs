@@ -8,7 +8,14 @@ struct NativeCommandRetry {
     prompt_id: String,
     command: String,
     context: String,
-    ready_at_ms: Option<u64>,
+    stage: NativeCommandRetryStage,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+enum NativeCommandRetryStage {
+    AwaitingRedirect,
+    ClearComposer { ready_at_ms: u64 },
+    SubmitCommand { ready_at_ms: u64 },
 }
 
 fn retry_path(context_file: &str) -> String {
@@ -53,7 +60,7 @@ impl ProviderOutputClaudeNativeBridge<'_> {
                 prompt_id: prompt.id().into(),
                 command: command.into(),
                 context: context.into(),
-                ready_at_ms: None,
+                stage: NativeCommandRetryStage::AwaitingRedirect,
             },
         )?;
         permission::write_claude_hook_context_rejection(
@@ -81,7 +88,7 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         if event.get("hook_context_request_id").and_then(Value::as_str)
             != Some(retry.request_id.as_str())
             || active.as_ref().map(|prompt| prompt.id()) != Some(retry.prompt_id.as_str())
-            || retry.ready_at_ms.is_some()
+            || !matches!(retry.stage, NativeCommandRetryStage::AwaitingRedirect)
         {
             return Ok(());
         }
@@ -97,7 +104,9 @@ impl ProviderOutputClaudeNativeBridge<'_> {
             }
         }
         // Let the rejected hook return to Claude's composer before writing its replacement.
-        retry.ready_at_ms = Some(unix_epoch_ms() + CLAUDE_SUBMIT_DELAY_MS);
+        retry.stage = NativeCommandRetryStage::ClearComposer {
+            ready_at_ms: unix_epoch_ms() + CLAUDE_SUBMIT_DELAY_MS,
+        };
         write_retry(context_file, &retry)?;
         self.app
             .providers
@@ -137,7 +146,7 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         run: &RuntimeProviderRun,
         context_file: &str,
     ) -> Result<(), DaemonError> {
-        let Some(retry) = read_retry(context_file)? else {
+        let Some(mut retry) = read_retry(context_file)? else {
             return Ok(());
         };
         let active = self
@@ -151,8 +160,10 @@ impl ProviderOutputClaudeNativeBridge<'_> {
                 .map_err(|error| retry_error(error.to_string()))?;
             return Ok(());
         };
-        let Some(ready_at_ms) = retry.ready_at_ms else {
-            return Ok(());
+        let ready_at_ms = match retry.stage {
+            NativeCommandRetryStage::AwaitingRedirect => return Ok(()),
+            NativeCommandRetryStage::ClearComposer { ready_at_ms }
+            | NativeCommandRetryStage::SubmitCommand { ready_at_ms } => ready_at_ms,
         };
         let now = unix_epoch_ms();
         if now < ready_at_ms {
@@ -160,6 +171,22 @@ impl ProviderOutputClaudeNativeBridge<'_> {
                 .providers
                 .output_ready_signal()
                 .record_after(run.id(), ready_at_ms - now);
+            return Ok(());
+        }
+        if matches!(retry.stage, NativeCommandRetryStage::ClearComposer { .. }) {
+            // Ctrl-U clears only the current visual line in Claude's multiline
+            // composer. Ctrl-C clears the idle draft; give that input its own
+            // render cycle before writing the replacement command.
+            self.app
+                .write_provider_pty_input_for_runtime(run.id(), b"\x03")?;
+            retry.stage = NativeCommandRetryStage::SubmitCommand {
+                ready_at_ms: now + CLAUDE_SUBMIT_DELAY_MS,
+            };
+            write_retry(context_file, &retry)?;
+            self.app
+                .providers
+                .output_ready_signal()
+                .record_after(run.id(), CLAUDE_SUBMIT_DELAY_MS);
             return Ok(());
         }
         hidden_context::stage_managed_inputs(
@@ -182,9 +209,6 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         } else {
             retry.command
         };
-        // Claude restores a blocked prompt in its composer before this replacement.
-        self.app
-            .write_provider_pty_input_for_runtime(run.id(), b"\x15")?;
         self.app
             .write_provider_pty_input_for_runtime(run.id(), input.as_bytes())?;
         write_claude_headless_submit_retry(context_file, prompt.id(), 0, now, &input);

@@ -146,16 +146,31 @@ async fn typed_native_only_claude_skill_runs_the_prepared_command_before_loaded(
         composer
             .send(serde_json::json!({"hook_event_name":"Other"}))
             .await;
+        let input_path = composer.files.path().join("pty-input");
+        for _ in 0..50 {
+            if !fs::read(&input_path).unwrap_or_default().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            fs::read(&input_path).unwrap_or_default(),
+            b"\x03",
+            "the idle multiline draft must clear in a separate input cycle"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        composer
+            .send(serde_json::json!({"hook_event_name":"Other"}))
+            .await;
         let retry: serde_json::Value = serde_json::from_slice(
             &fs::read(composer.files.path().join("headless-submit-retry.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(retry["visible_prompt"], "/review inspect source");
-        let input_path = composer.files.path().join("pty-input");
         for _ in 0..50 {
             if fs::read(&input_path)
                 .unwrap_or_default()
-                .starts_with(b"\x15/review inspect source")
+                .starts_with(b"\x03/review inspect source")
             {
                 break;
             }
@@ -164,7 +179,7 @@ async fn typed_native_only_claude_skill_runs_the_prepared_command_before_loaded(
         assert!(
             fs::read(&input_path)
                 .unwrap_or_default()
-                .starts_with(b"\x15/review inspect source"),
+                .starts_with(b"\x03/review inspect source"),
             "the native replacement must clear Claude's restored dollar draft"
         );
         assert_eq!(
