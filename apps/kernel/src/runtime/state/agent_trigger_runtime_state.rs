@@ -566,7 +566,7 @@ mod tests {
     #[tokio::test]
     async fn trigger_steer_keeps_once_and_recurring_firings_until_local_delivery_succeeds() {
         for repeat in [AgentTriggerRepeat::Once, AgentTriggerRepeat::Every] {
-            let (_worktree, runtime, session_id, agent_id, _, _, run_id) =
+            let (_worktree, runtime, session_id, agent_id, attachment_id, _, run_id) =
                 runtime_with_active_prompt().await;
             let trigger = schedule(&runtime, &session_id, &agent_id, repeat).await;
             let held = runtime.provider_runtime_lanes.acquire(&run_id).await;
@@ -584,6 +584,17 @@ mod tests {
                 .session_store
                 .get_session(&session_id)
                 .unwrap();
+            let (_, pending) = runtime
+                .owned
+                .prompt_state_owner
+                .state_parts(&session, &agent_id);
+            assert!(
+                runtime
+                    .owned
+                    .steer_queued_prompt(&session_id, &agent_id, &attachment_id, pending[0].id())
+                    .is_err(),
+                "a second steer cannot consume an in-flight trigger firing"
+            );
             runtime
                 .owned
                 .prompt_state_owner
