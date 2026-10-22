@@ -58,6 +58,8 @@ engine fails the policy even where individual rows pass.
 | zlib 1.3.1 | [zlib licence](https://github.com/madler/zlib/blob/v1.3.1/LICENSE) | Yes |
 | wasi-libc | [Apache-2.0/LLVM exception, MIT and other retained notices](https://github.com/WebAssembly/wasi-libc/blob/main/LICENSE) | Yes for the build's included permissive code; preserve the notice bundle |
 | libc++ / libc++abi / compiler runtime | [Apache-2.0 WITH LLVM exception](https://github.com/llvm/llvm-project/blob/main/libcxx/LICENSE.TXT) and retained third-party notices | Yes, keep the runtime notices |
+| Fontconfig / macOS framework bindings | The pinned fork cfg-gates native Fontconfig/CoreText out on wasm32; its WASI font lookup is Rust code | No native Fontconfig/CoreText library linked in this build |
+| Rust engine glue and compression | MIT/Apache-2.0 families; flate2 uses its Rust backend on wasm32. Exact lock and metadata inventory recorded | Yes for the reviewed permissive crates; metadata cannot override the inherited GPL/CPL source notices above |
 | tecgonic wrapper and WASI fork additions | [MIT](https://github.com/mgilbir/tecgonic/blob/main/LICENSE) | Wrapper yes; its bundled engine still has the restrictions above. No Go runtime is included in this App component |
 | SwiftLaTeX official repository | [AGPL-3.0](https://github.com/SwiftLaTeX/SwiftLaTeX/blob/master/LICENSE), confirmed by its own README | **No** for the combined project; a mirror's badge was not the basis |
 | BusyTeX upstream build scripts | [MIT, explicitly excluding released binaries](https://github.com/busytex/busytex#license) | Scripts yes; binary **not cleared**, linked TeX Live licences still apply |
@@ -67,7 +69,7 @@ engine fails the policy even where individual rows pass.
 | PDF.js | [Apache-2.0](https://github.com/mozilla/pdf.js/blob/master/LICENSE) | Yes, retain licence/NOTICE and bundled dependency notices |
 | Typst | [Apache-2.0](https://github.com/typst/typst/blob/main/LICENSE) | Yes, subject to its dependency/font inventory |
 | TeX Live macros/packages | Mixed; e.g. [LaTeX LPPL-1.3c](https://github.com/latex3/latex2e/blob/develop/base/lppl.txt) | Data fetched to compile documents does not automatically relicense an independently written App. Keep each file's terms, source/rename requirements if modified, and avoid assuming the whole bundle is LPPL |
-| Fonts | Mixed: OFL, GUST Font License for Latin Modern, Knuth font terms, etc. | Assess the actual font files. OFL generally permits embedding with its conditions; fonts are not all OFL. Keep reserved-name/redistribution notices |
+| Fonts | Mixed: [OFL-1.1](https://openfontlicense.org/open-font-license-official-text/), [GUST Font License](https://www.gust.org.pl/projects/e-foundry/licenses/GUST-FONT-LICENSE.txt) for Latin Modern, [Knuth terms](https://ctan.org/license/knuth?lang=en) for original Computer Modern, etc. | Assess the actual font files. OFL generally permits embedding with its conditions; fonts are not all OFL. Keep reserved-name/redistribution notices |
 
 A fetched package is still licensed code/data. Calling it "data" does not
 remove redistribution obligations. Distributing a full TeX Live bundle
@@ -94,6 +96,19 @@ Fonts and packages use the broker and a private, versioned cache.
 | `get_errors` | `{file, line, message}` and warnings; never invent a filename when the log does not establish one |
 | `jump_to` | Source ↔ PDF mapping. Requires exported SyncTeX and a tested position reader, rather than a promise based only on a compiler flag |
 
+Native Tectonic emitted a real `main.synctex.gz` (490 bytes for the article).
+The fork driver used by this component leaves SyncTeX disabled and does not
+export a mapping file. Source/PDF jumps are therefore **not available in the
+measured component**, though the engine has the API. They are T4 work.
+
+The broken-document example is `main.tex:3: Undefined control sequence`,
+parsed into `{file: "main.tex", line: 3, message: "Undefined control sequence"}`.
+Three parser regressions pass, including an included-file path and an unknown
+file. This example uses the native engine log. The WASI fork's fatal
+`longjmp` path currently produces `APP_TRAPPED`; the harness discards its
+stdout. Capturing that log and returning useful errors from the component
+is still T1 work, not something this research claims to have finished.
+
 These are declared UI actions through A2, using `view.state` and
 `view.changed`; they are not a second, disconnected MCP document store.
 The user and agent edit the same revision. Revision checks matter when both
@@ -103,8 +118,9 @@ Computer Use; it has **not** been benchmarked against a well-written Overleaf
 MCP integration, and no token or reliability advantage is claimed yet.
 
 **Gaps against Overleaf:** no real-time multiplayer editing, track changes,
-rich-text mode, template gallery or hosted collaboration service. Tectonic
-is not all of TeX Live: BibTeX is in-process, biber and arbitrary shell
+rich-text mode, template gallery or hosted collaboration service. The measured v33 bundle resolves to `tlextras-2022.0r0.tar`; this is not a
+current CTAN installation or proof of compatibility with arbitrary new
+packages. Tectonic is not all of TeX Live: BibTeX is in-process, biber and arbitrary shell
 programs are not. A view-side Emscripten engine also needs a live view;
 headless agent use would depend on A3 and would move compilation authority
 out of the backend component.

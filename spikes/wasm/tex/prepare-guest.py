@@ -18,3 +18,5 @@ for name,spec in up['dependencies'].items():
   lines.append(name+' = { '+', '.join(k+' = '+json.dumps(v) for k,v in spec.items())+' }')
 lines += ['[profile.release]','opt-level = "s"','lto = true','strip = true','codegen-units = 1']
 (out/'Cargo.toml').write_text('\n'.join(lines)+'\n')
+
+(out/'Cargo.lock').write_bytes((here/'guest.Cargo.lock').read_bytes())
