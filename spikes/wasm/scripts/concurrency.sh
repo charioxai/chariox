@@ -15,3 +15,7 @@ for run in 1 2 3; do
     timeout 120 "$harness" "$variant" bwrap 16 concurrency 2>> "$out.err" | sed "s/^{/{\"pool\":null,\"run\":$run,/" >> "$out"
   done
 done
+# Standard fetch() in the JS component, through the broker only (3 runs).
+for run in 1 2 3; do
+  timeout 120 "$harness" wasm-js bwrap fetchstd 2>> "$out.err" | sed "s/^{/{\"run\":$run,/" >> "${out%.jsonl}-fetchstd.jsonl"
+done

@@ -172,8 +172,26 @@ async fn concurrency(variant: &Variant, origin: &str, calls: usize) -> Value {
     json!({ "variant": variant.name, "sandbox": variant.sandbox, "calls": calls, "ok": ok, "totalMs": total, "errors": errors.into_iter().take(3).collect::<Vec<_>>(), "workerAliveAfter": alive, "memory": memory })
 }
 
+/// Standard fetch() inside the component, through the broker only.
+async fn fetch_standard(variant: &Variant, origin: &str) -> Value {
+    let worker = start(variant, origin).await;
+    let allowed = worker.call("fetchstd", json!({ "url": format!("{}hello", broker::ALLOWED) }), LONG).await;
+    let denied = worker.call("fetchstd", json!({ "url": "https://example.com/" }), LONG).await;
+    let opened: Vec<Value> = worker.broker.logs.lock().unwrap().clone();
+    worker.peer.close();
+    worker.spawned.stop();
+    json!({ "variant": variant.name, "sandbox": variant.sandbox, "allowed": allowed.map_or_else(|e| e, |v| v), "denied": denied.map_or_else(|e| e, |v| v), "brokerOpens": opened.len() })
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(3).map(String::as_str) == Some("fetchstd") {
+        let variant = Variant::from_args(&args[1], args.get(2).map(String::as_str) == Some("bwrap"));
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let origin = broker::origin();
+        println!("{}", runtime.block_on(fetch_standard(&variant, &origin)));
+        return;
+    }
     if args.get(4).map(String::as_str) == Some("concurrency") {
         let variant = Variant::from_args(&args[1], args.get(2).map(String::as_str) == Some("bwrap"));
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();

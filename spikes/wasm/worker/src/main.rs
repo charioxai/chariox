@@ -29,6 +29,8 @@ const ALLOWED: &[&str] = &[
     "chariox:app/", "wasi:io/", "wasi:clocks/", "wasi:random/", "wasi:filesystem/",
     "wasi:cli/stdin", "wasi:cli/stdout", "wasi:cli/stderr", "wasi:cli/environment",
     "wasi:cli/exit", "wasi:cli/terminal-",
+    // Virtualized onto the kernel HTTP broker (BrokerHooks).
+    "wasi:http/types", "wasi:http/outgoing-handler",
 ];
 
 fn check(engine: &Engine, component: &Component) -> Result<(), String> {
@@ -104,6 +106,8 @@ fn store(engine: &Engine, ipc: &Ipc, limits: &Limits) -> Store<Host> {
         wasi: wasi.build(),
         table: ResourceTable::new(),
         limits: host::MemoryCap { bytes: limits.memory, refused: false },
+        http: wasmtime_wasi_http::WasiHttpCtx::new(),
+        hooks: host::BrokerHooks { ipc: ipc.clone() },
         tools: Vec::new(),
         events: Vec::new(),
         lifecycle: Vec::new(),
@@ -158,6 +162,7 @@ async fn run() {
     let load_ms = load.elapsed().as_secs_f64() * 1e3;
     let mut linker = Linker::<Host>::new(&engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker).unwrap();
+    wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker).unwrap();
     App::add_to_linker::<Host, wasmtime::component::HasSelf<Host>>(&mut linker, |host| host).unwrap();
     let pre = linker.instantiate_pre(&component).unwrap_or_else(|_| std::process::exit(131));
 

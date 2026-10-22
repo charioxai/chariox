@@ -5,12 +5,13 @@ spike=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$spike/../.." && pwd)
 out=$SPIKE_ROOT/artifacts
 worker=$CARGO_TARGET_DIR/release/chariox-wasm-worker
-rm -rf "$out" && mkdir -p "$out"/{wasm-rust,wasm-js,node-js/runtime,node-jco/runtime,runtime}
+rm -rf "$out" && mkdir -p "$out"/{wasm-rust,wasm-js,wasm-jsaot,node-js/runtime,node-jco/runtime,runtime}
 
 (cd "$spike/apps/rust-app" && cargo build --release --target wasm32-wasip2 -q)
 cp "$CARGO_TARGET_DIR/wasm32-wasip2/release/spike_rust_app.wasm" "$out/wasm-rust/app.wasm"
-(cd "$SPIKE_ROOT/js" && cp "$spike/scripts/build-js-app.mjs" . && SPIKE_ROOT="$spike/" node build-js-app.mjs "$out/wasm-js/app.wasm")
-for app in rust js; do
+(cd "$SPIKE_ROOT/js" && cp "$spike/scripts/build-js-app.mjs" . && SPIKE_ROOT="$spike/" node build-js-app.mjs "$out/wasm-js/app.wasm" \
+  && SPIKE_ROOT="$spike/" node build-js-app.mjs "$out/wasm-jsaot/app.wasm" --aot)
+for app in rust js jsaot; do
   "$worker" check "$out/wasm-$app/app.wasm"
   "$worker" precompile "$out/wasm-$app/app.wasm" "$out/wasm-$app/app.cwasm"
 done

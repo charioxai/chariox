@@ -94,7 +94,10 @@ impl SpikeBroker {
             "state.get" => Ok(self.state.lock().unwrap().records.get(params["key"].as_str().unwrap_or_default())
                 .map_or(Value::Null, |(value, version)| json!({ "value": value, "version": version }))),
             "state.transaction" => self.transaction(params),
-            "http.open" => self.open(params),
+            "http.open" => {
+                self.logs.lock().unwrap().push(json!({ "httpOpen": params["url"] }));
+                self.open(params)
+            }
             "http.headers" => {
                 let streams = self.streams.lock().unwrap();
                 let (status, _, url) = streams.get(&stream()).ok_or_else(|| failure("NOT_FOUND", "stream"))?;
