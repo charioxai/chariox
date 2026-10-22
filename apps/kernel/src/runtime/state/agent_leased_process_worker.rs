@@ -175,10 +175,9 @@ impl KernelRuntimeState {
         if run.state() != crate::provider::ProviderRunState::Running
             || run.agent_instance_id() != Some(agent.as_str())
             || run.session_id() != room
-            || ((run.execution_mode() != crate::provider::AgentExecutionMode::Build
-                || run.permission_level() != crate::provider::AgentPermissionLevel::Yolo
-                || run.write_access_mode()
-                    != crate::provider::ProviderWriteAccessMode::Unrestricted)
+            || run.execution_mode() != crate::provider::AgentExecutionMode::Build
+            || run.write_access_mode() != crate::provider::ProviderWriteAccessMode::Unrestricted
+            || (run.permission_level() != crate::provider::AgentPermissionLevel::Yolo
                 && !self.sudo_task_authorizes_run(&run).await)
         {
             return Err(ledger::error("leased process requires an unrestricted build run with unattended command permission"));

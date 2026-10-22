@@ -150,11 +150,11 @@ impl KernelRuntimeState {
                         "watched processes require an active unrestricted build agent",
                     ));
                 };
-                if (run.execution_mode() != crate::provider::AgentExecutionMode::Build
-                    || run.permission_level() != crate::provider::AgentPermissionLevel::Yolo
+                if run.execution_mode() != crate::provider::AgentExecutionMode::Build
                     || run.write_access_mode()
-                        != crate::provider::ProviderWriteAccessMode::Unrestricted)
-                    && !self.sudo_task_authorizes_run(run).await
+                        != crate::provider::ProviderWriteAccessMode::Unrestricted
+                    || (run.permission_level() != crate::provider::AgentPermissionLevel::Yolo
+                        && !self.sudo_task_authorizes_run(run).await)
                 {
                     return Err(ledger::error("watched processes require an unrestricted build agent with unattended command permission"));
                 }

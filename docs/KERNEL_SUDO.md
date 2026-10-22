@@ -50,12 +50,20 @@ Owner focus remains a human terminal decision: `FocusAgent` and
 `CycleAgentFocus` cannot grant resource authority to a provider, even under sudo.
 Watched commands, provider command/file/tool permission gates and workspace
 live-sync mutations reuse this task consent, including Required-mode runs.
-The provider sandbox and live-sync filesystem fences still apply. A worker
+The provider sandbox and live-sync filesystem fences still apply. Watched
+commands still require Build mode and Unrestricted write access; sudo replaces
+only the additional unattended-command consent. A worker
 checks its exact leased prompt against the home window on every watched-command
 admission and again before launch; its cached fence alone grants nothing.
 Provider permissions allow only that operation once, never a provider-wide
-session grant. Startup workspace trust can reuse an already approved launch
-for that exact workspace without treating the pending task as live tool authority.
+session grant. Before starting native or headless Claude, the kernel records
+folder trust for the exact canonical launch workspace in the selected provider
+profile. The owner already selected that workspace for this launch. No other
+folder or tool permission is added. Screen-based trust handling remains a
+fallback for an already approved exact-workspace launch; it does not make a
+pending task live for tools. Forwarded approvals retain their worker-local
+origin for lifetime checks and translate only the consent lookup to the current
+home-projected run, with the lease placement and home prompt still checked.
 Global extension registration reuses consent only for source inside this
 workspace; outside source roots still ask, and App sandboxing stays in force.
 Other session/workspace targets and unclassified host operations require a fresh owner

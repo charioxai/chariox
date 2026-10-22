@@ -57,6 +57,64 @@ impl KernelRuntimeState {
         self.sudo_task_authorizes_run(&run).await
     }
 
+    /// The relay origin stays worker-local for interaction lifetime checks.
+    /// Translate only the consent lookup, using the current home binding.
+    pub(crate) fn sudo_forwarded_native_permission_resolution(
+        &self,
+        session_id: &str,
+        interaction: &RuntimeInteraction,
+        context: &crate::transport::relay_peer::RemoteNativeInteractionContext,
+    ) -> Option<ProviderNativeInteractionResolution> {
+        if context.home_session_id != session_id
+            || interaction.agent_id() != Some(context.home_agent_id.as_str())
+            || interaction.native_origin()?.provider_run_id() != context.worker_provider_run_id
+        {
+            return None;
+        }
+        let agent = self
+            .owned
+            .agent_store
+            .get_agent(&context.home_agent_id)
+            .ok()?;
+        let binding = agent.remote_execution()?;
+        if agent.session_id() != session_id
+            || binding.leased_agent_id != context.leased_agent_id
+            || binding.active_worker_provider_run_id.as_deref()
+                != Some(context.worker_provider_run_id.as_str())
+        {
+            return None;
+        }
+        let run = crate::provider::projected_leased_provider_run_id(
+            &context.leased_agent_id,
+            &context.worker_provider_run_id,
+        );
+        let origin = match interaction.native_origin()? {
+            NativeInteractionOrigin::Prompt { prompt_id, .. }
+                if context.home_prompt_id.as_deref() == Some(prompt_id.as_str()) =>
+            {
+                NativeInteractionOrigin::Prompt {
+                    provider_run_id: run,
+                    prompt_id: prompt_id.clone(),
+                }
+            }
+            NativeInteractionOrigin::ProviderStartup { .. } => {
+                if let Some(prompt) = context.home_prompt_id.as_deref() {
+                    if self.sudo_for_run(&run).ok()?.prompt_id.as_deref() != Some(prompt) {
+                        return None;
+                    }
+                }
+                NativeInteractionOrigin::ProviderStartup {
+                    provider_run_id: run,
+                }
+            }
+            _ => return None,
+        };
+        self.sudo_native_permission_resolution(
+            session_id,
+            &interaction.clone().with_native_origin(Some(origin)),
+        )
+    }
+
     /// Only provider permission-only gates can consume this authorization.
     /// Questions, secret input, identity choice and arbitrary critical decisions
     /// still use their ordinary interactions. Never persist a provider-wide grant.
