@@ -311,6 +311,35 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
 }
 
 #[test]
+fn compile_names_the_next_step_for_a_workflow_written_with_a_pre_skills_v2_skill_grant() {
+    let Some(node) = find_node() else {
+        eprintln!("skipping workflow-code JS compiler test because node is not available");
+        return;
+    };
+
+    let source = r#"
+workflow.define({ alias: "old_skill_flow" })
+const worker = workflow.node({
+  handle: "worker",
+  agent: workflow.newAgent({ alias: "worker", provider: "dev-stub", model: "default" }),
+  canCompleteWorkflowRun: true,
+  extensions: [{ kind: "skill", name: "old-alpha" }]
+})
+workflow.endpoint(worker, { handle: "entry", alias: "entry" })
+"#;
+
+    let error =
+        compile_workflow_code_javascript(node, source, &WorkflowCodeLimitsConfig::default())
+            .expect_err("a skill grant is no longer a workflow extension")
+            .to_string();
+
+    assert!(
+        error.contains("remove the skill from the workflow script and republish it"),
+        "{error}"
+    );
+}
+
+#[test]
 fn workflow_code_language_serializes_canonical_typescript_name() {
     assert_eq!(
         serde_json::to_value(WorkflowCodeLanguage::TypeScript).expect("language should serialize"),
