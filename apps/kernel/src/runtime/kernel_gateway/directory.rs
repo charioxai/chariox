@@ -174,6 +174,11 @@ pub(super) fn incompatibility(
         LocalDaemonRequest::RespondToInteraction(_) if !is_gateway_ready(kernel) => Some(format!(
             "it predates the {GATEWAY_CAPABILITY} contract that classifies approvals itself"
         )),
+        // A kernel without the gateway contract keeps no durable receipt, so a retry after a
+        // crash could run the request twice: only requests that may simply run again go there.
+        _ if !is_gateway_ready(kernel) && !super::ledger::is_repeatable(request) => Some(format!(
+            "it predates the {GATEWAY_CAPABILITY} contract whose durable receipts make a retry safe"
+        )),
         LocalDaemonRequest::RoomTerminal(_) if !advertises(kernel, ROOM_TERMINAL_CAPABILITY) => {
             Some("it predates Room terminals".into())
         }
@@ -362,6 +367,27 @@ mod tests {
         assert_eq!(incompatibility(&current, &terminal), None);
         let list = LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest);
         assert_eq!(incompatibility(&older, &list), None);
+    }
+
+    // A kernel without durable receipts is never sent a state-changing request: a retry after
+    // its crash could run it twice.
+    #[test]
+    fn a_kernel_without_durable_receipts_only_gets_requests_that_may_run_again() {
+        use crate::local::LocalDaemonRequest;
+        let legacy = kernel("k-legacy", None, "old", false);
+        let create = LocalDaemonRequest::CreateSession(crate::session::CreateSessionRequest::new(
+            "workspace",
+            "worktree",
+        ));
+        assert!(incompatibility(&legacy, &create)
+            .unwrap()
+            .contains("durable receipts"));
+        let list = LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest);
+        assert_eq!(incompatibility(&legacy, &list), None);
+        assert_eq!(
+            incompatibility(&kernel("k-new", None, "new", true), &create),
+            None
+        );
     }
 
     #[tokio::test]
