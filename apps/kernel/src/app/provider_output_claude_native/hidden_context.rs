@@ -126,7 +126,6 @@ impl ProviderOutputClaudeNativeBridge<'_> {
             .leased_agent_id_for_backing(session_id, agent_id)
         {
             return self.leased_typed_skill_context(
-                session_id,
                 &leased_agent_id,
                 provider_run,
                 prompt,
@@ -172,7 +171,6 @@ impl ProviderOutputClaudeNativeBridge<'_> {
     /// once the hook confirms delivery.
     fn leased_typed_skill_context(
         &mut self,
-        session_id: &str,
         leased_agent_id: &str,
         provider_run: &RuntimeProviderRun,
         prompt: &crate::session::PromptQueueItem,
