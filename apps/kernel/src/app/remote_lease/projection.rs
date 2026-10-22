@@ -329,7 +329,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             })
             .map(|record| record.message)
             .collect::<Vec<_>>();
-        let termination_prompt_id = self
+        let workflow_backing_prompt_id = self
             .app
             .leased_workflow_turns
             .values()
@@ -338,7 +338,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     && binding.provider_run_id == provider_run_id
                     && home_prompt_id.as_deref() == Some(binding.home_prompt_id.as_str())
             })
-            .map(|binding| binding.backing_prompt_id.as_str())
+            .map(|binding| binding.backing_prompt_id.as_str());
+        // Ordinary leased turns also have different home and worker prompt IDs.
+        let receipt_backing_prompt_id = home_prompt_id.as_deref().and_then(|home| {
+            self.app
+                .worker_prompt_receipts
+                .get(&leased_agent.id, home)
+                .filter(|record| {
+                    record.receipt.worker_provider_run_id.as_deref() == Some(provider_run_id)
+                })
+                .and_then(|record| record.backing_prompt_id.clone())
+        });
+        let termination_prompt_id = receipt_backing_prompt_id
+            .as_deref()
+            .or(workflow_backing_prompt_id)
             .or(home_prompt_id.as_deref());
         let provider_termination = self
             .app
