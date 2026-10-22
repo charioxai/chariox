@@ -180,10 +180,15 @@ fn the_system_lookup_resolves_localhost_per_family() {
 
 #[test]
 fn the_system_lookup_keeps_the_scope_of_a_link_local_address() {
-    let scope = unsafe { libc::if_nametoindex(c"lo".as_ptr()) };
+    #[cfg(target_os = "macos")]
+    let interface = c"lo0";
+    #[cfg(not(target_os = "macos"))]
+    let interface = c"lo";
+    // SAFETY: the platform interface name is a static NUL-terminated string.
+    let scope = unsafe { libc::if_nametoindex(interface.as_ptr()) };
     assert_ne!(scope, 0);
 
-    let addresses = system_lookup("fe80::1%lo", 443, Family::V6).unwrap();
+    let addresses = system_lookup(&format!("fe80::1%{scope}"), 443, Family::V6).unwrap();
 
     let [SocketAddr::V6(address)] = addresses.as_slice() else {
         panic!("expected one IPv6 address, got {addresses:?}");
