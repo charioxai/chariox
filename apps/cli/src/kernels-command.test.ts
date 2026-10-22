@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import { CommandFailure, exitCodeFor } from "./agent-command-table.js"
-import { failureOf, lostConnectionFailure, parseRequestBody, sendRequest, watchKernel } from "./kernels-command.js"
+import { failureOf, lostConnectionFailure, parseRequestBody, runKernelsCommand, sendRequest, watchKernel } from "./kernels-command.js"
 import type { WebSocket } from "ws"
 import { replyWith, startFakeKernel, type FakeKernelFrame } from "./fake-unix-kernel.test-support.js"
 
@@ -204,4 +204,23 @@ test("a watch whose local kernel connection drops names the last event to resume
       return true
     })
   } finally { await kernel.close() }
+})
+
+test("terminal send --wait-ms keeps its request open for the whole wait, whatever the default deadline", async () => {
+  const summary = { terminal_id: "t1", session_id: "s1", title: "ops", output_offset: 5 }
+  const roomAnswer = (result: unknown) => ({ response: { RoomTerminal: { result } } })
+  const kernel = await startFakeKernel((socket, frame) => {
+    const operation = (frame.request as any).RoomTerminal?.operation?.operation
+    if ("RelayStatus" in frame.request) replyWith(socket, frame, relayStatus(["kernel_gateway_v1"]))
+    else if (operation === "snapshot") replyWith(socket, frame, roomAnswer({ result: "snapshot", snapshot: { terminal: summary, output_offset: 5, screen_text: "" } }))
+    else if (operation === "input") replyWith(socket, frame, roomAnswer({ result: "input", input: { accepted: true, driver: {} } }))
+    else setTimeout(() => replyWith(socket, frame, roomAnswer({ result: "output", output: { terminal: summary, data_base64: Buffer.from("done\r\n").toString("base64"), next_offset: 11, gap: false } })), 1500)
+  })
+  const printed: string[] = []
+  const log = console.log
+  console.log = (line: string) => { printed.push(line) }
+  try {
+    await runKernelsCommand(["terminal", "send", "ls", "--kernel", "b3", "--session", "s1", "--terminal", "t1", "--wait-ms", "3000", "--timeout", "1", "--socket", kernel.path])
+  } finally { console.log = log; await kernel.close() }
+  assert.equal(JSON.parse(printed.at(-1)!).text, "done\r\n")
 })

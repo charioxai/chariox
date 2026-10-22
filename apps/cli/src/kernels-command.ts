@@ -184,9 +184,11 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
         terminal: flags.get("--terminal"), since: flags.get("--since"), waitMs: flags.get("--wait-ms"), for: flags.get("--for"),
         timeout: flags.get("--timeout"), hostAgent: flags.get("--host-agent"), noEnter: flags.has("--no-enter"),
       }
-      // A wait or long read is answered when it ends: the request may take that long, plus the usual margin.
-      const timeoutSeconds = terminalVerb === "wait" || terminalVerb === "read"
-        ? Math.ceil(waitMsOf(terminalVerb, terminalFlags) / 1000) + DEFAULT_TIMEOUT_SECONDS
+      // A wait, a long read or a send that waits for its output is answered when the wait ends:
+      // the request may take that long, plus the usual margin.
+      const waitSeconds = Math.ceil(waitMsOf(terminalVerb, terminalFlags) / 1000)
+      const timeoutSeconds = terminalVerb === "wait" || terminalVerb === "read" || waitSeconds > 0
+        ? waitSeconds + DEFAULT_TIMEOUT_SECONDS
         : parseTimeout(flags.get("--timeout"))
       const result = await withKernel({ socket, timeoutSeconds: Math.min(timeoutSeconds, 240 + DEFAULT_TIMEOUT_SECONDS), kernel: kernel ?? undefined }, send =>
         runTerminalVerb(terminalVerb as TerminalVerb, terminalVerb === "open" ? program : positionals, terminalFlags, send))

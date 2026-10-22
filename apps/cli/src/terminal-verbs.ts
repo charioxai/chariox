@@ -49,8 +49,16 @@ function watchOf(spec: string): { kind: string; text?: string } {
   return { kind: "output_contains", text }
 }
 
-function plainText(base64: string): string {
-  return Buffer.from(base64, "base64").toString("utf8").replace(ESCAPES, "")
+// A page can end inside an escape sequence; the cut tail is left for the next read, which then starts at its ESC.
+const CUT_ESCAPE = /\u001b(?:\[[0-?]*[ -/]*|\][^\u0007\u001b]*\u001b?)?$/
+
+function plainPage(output: { data_base64: string; next_offset: number }): { text: string; next_offset: number } {
+  const raw = Buffer.from(output.data_base64, "base64").toString("utf8")
+  const cut = CUT_ESCAPE.exec(raw)
+  return {
+    text: (cut ? raw.slice(0, cut.index) : raw).replace(ESCAPES, ""),
+    next_offset: output.next_offset - (cut ? Buffer.byteLength(cut[0]) : 0),
+  }
 }
 
 export async function runTerminalVerb(verb: TerminalVerb, positionals: readonly string[], flags: TerminalFlags, send: SendRequest): Promise<unknown> {
@@ -93,12 +101,12 @@ export async function runTerminalVerb(verb: TerminalVerb, positionals: readonly 
     const { input } = expectRoomTerminalResult(await typing, "input")
     if (!input.accepted) throw new CommandFailure("terminal_input_refused", input.refusal ?? "the terminal did not accept the input")
     const { output } = expectRoomTerminalResult(await reading, "output")
-    return { accepted: true, after_offset: offset, driver: input.driver, text: plainText(output.data_base64), next_offset: output.next_offset, gap: output.gap, terminal: output.terminal }
+    return { accepted: true, after_offset: offset, driver: input.driver, ...plainPage(output), gap: output.gap, terminal: output.terminal }
   }
   const since = wholeNumber(flags.since, "--since", 0)
   if (verb === "read") {
     const { output } = expectRoomTerminalResult(await send(readRoomTerminalOutputRequest(target, terminalId, since, waitMsOf(verb, flags))), "output")
-    return { text: plainText(output.data_base64), next_offset: output.next_offset, gap: output.gap, terminal: output.terminal }
+    return { ...plainPage(output), gap: output.gap, terminal: output.terminal }
   }
   const watches = [watchOf(required(flags.for, "--for"))]
   const deadline = Date.now() + waitMsOf(verb, flags)

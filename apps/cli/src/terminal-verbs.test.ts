@@ -122,3 +122,15 @@ test("a terminal on a worker or slice agent is driven with --host-agent on every
   await runTerminalVerb("close", [], flags({ hostAgent: "worker-agent" }), send)
   assert.deepEqual(sent.map(request => request.RoomTerminal.host_agent), ["worker-agent", "worker-agent", "worker-agent"])
 })
+
+test("an escape sequence cut by the end of a page is held back for the next read, not printed as fragments", async () => {
+  const page = (text: string, next: number) => ({ RoomTerminal: { result: { result: "output", output: { terminal: summary(), data_base64: Buffer.from(text).toString("base64"), next_offset: next, gap: false } } } })
+  const first = await runTerminalVerb("read", [], flags({ since: "0" }), recorder([page("ok \u001b[3", 100)]).send) as any
+  assert.equal(first.text, "ok ")
+  assert.equal(first.next_offset, 97, "the next read starts at the ESC, so the sequence arrives whole")
+  const second = await runTerminalVerb("read", [], flags({ since: "97" }), recorder([page("\u001b[32mgreen\u001b[0m", 110)]).send) as any
+  assert.equal(second.text, "green")
+  assert.equal(second.next_offset, 110)
+  const title = await runTerminalVerb("read", [], flags({ since: "0" }), recorder([page("a\u001b]0;ops", 20)]).send) as any
+  assert.deepEqual([title.text, title.next_offset], ["a", 13])
+})
