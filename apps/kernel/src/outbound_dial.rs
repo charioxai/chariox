@@ -123,10 +123,44 @@ struct InterleavedResolver<R>(R);
 
 impl<R> ureq::Resolver for InterleavedResolver<R>
 where
-    R: Fn(&str) -> io::Result<Vec<SocketAddr>> + Send + Sync,
+    R: ureq::Resolver,
 {
     fn resolve(&self, netloc: &str) -> io::Result<Vec<SocketAddr>> {
-        (self.0)(netloc).map(|addresses| order_addresses(netloc, addresses))
+        self.0
+            .resolve(netloc)
+            .map(|addresses| order_addresses(netloc, addresses))
+    }
+
+    fn has_pending(&self, netloc: &str, known: &[SocketAddr]) -> bool {
+        self.0.has_pending(netloc, known)
+    }
+
+    fn resolve_next(
+        &self,
+        netloc: &str,
+        tried: &[SocketAddr],
+        deadline: Instant,
+    ) -> io::Result<Vec<SocketAddr>> {
+        self.0
+            .resolve_next(netloc, tried, deadline)
+            .map(|addresses| order_addresses(netloc, addresses))
+    }
+}
+
+impl ureq::Resolver for dns::Resolver {
+    fn resolve(&self, netloc: &str) -> io::Result<Vec<SocketAddr>> {
+        self.resolve(netloc)
+    }
+    fn has_pending(&self, netloc: &str, known: &[SocketAddr]) -> bool {
+        self.has_pending(netloc, known)
+    }
+    fn resolve_next(
+        &self,
+        netloc: &str,
+        tried: &[SocketAddr],
+        deadline: Instant,
+    ) -> io::Result<Vec<SocketAddr>> {
+        self.resolve_next(netloc, tried, deadline)
     }
 }
 
@@ -142,7 +176,7 @@ pub(crate) fn resolve_addresses(netloc: &str) -> io::Result<Vec<SocketAddr>> {
 
 /// The agent builder for every kernel HTTP call to a remote host.
 pub(crate) fn agent_builder() -> ureq::AgentBuilder {
-    agent_builder_with_resolver(system_addresses)
+    agent_builder_with_resolver(dns::system().clone())
 }
 
 /// A default-configured agent for calls that set no other options.
@@ -152,7 +186,7 @@ pub(crate) fn agent() -> ureq::Agent {
 
 fn agent_builder_with_resolver<R>(resolve: R) -> ureq::AgentBuilder
 where
-    R: Fn(&str) -> io::Result<Vec<SocketAddr>> + Send + Sync + 'static,
+    R: ureq::Resolver + 'static,
 {
     ureq::AgentBuilder::new()
         .resolver(InterleavedResolver(resolve))
@@ -163,21 +197,50 @@ where
 /// Opens a TCP socket to `host:port`, racing the resolved addresses with
 /// alternating families. Slower attempts keep running while the next starts.
 pub(crate) async fn connect_tcp(host: &str, port: u16) -> io::Result<TcpStream> {
+    connect_tcp_with_resolver(host, port, dns::system().clone()).await
+}
+
+async fn connect_tcp_with_resolver(
+    host: &str,
+    port: u16,
+    resolver: dns::Resolver,
+) -> io::Result<TcpStream> {
     let netloc = format!("{host}:{port}");
     let lookup = netloc.clone();
-    let addresses = tokio::task::spawn_blocking(move || system_addresses(&lookup))
+    let initial_resolver = resolver.clone();
+    let deadline = Instant::now() + SOCKET_CONNECT_TIMEOUT;
+    let connect = async {
+        let mut addresses = tokio::task::spawn_blocking(move || initial_resolver.resolve(&lookup))
+            .await
+            .map_err(io::Error::other)??;
+        let mut tried = Vec::new();
+        loop {
+            tried.extend(addresses.iter().copied());
+            let error = match race(order_addresses(&netloc, addresses)).await {
+                Ok(stream) => {
+                    if let Ok(address) = stream.peer_addr() {
+                        remember_connected_address(netloc, address);
+                    }
+                    return Ok(stream);
+                }
+                Err(error) => error,
+            };
+            let lookup = netloc.clone();
+            let pending_resolver = resolver.clone();
+            let attempted = tried.clone();
+            addresses = tokio::task::spawn_blocking(move || {
+                pending_resolver.resolve_next(&lookup, &attempted, deadline)
+            })
+            .await
+            .map_err(io::Error::other)??;
+            if addresses.is_empty() {
+                return Err(error);
+            }
+        }
+    };
+    tokio::time::timeout_at(deadline.into(), connect)
         .await
-        .map_err(io::Error::other)??;
-    let stream = tokio::time::timeout(
-        SOCKET_CONNECT_TIMEOUT,
-        race(order_addresses(&netloc, addresses)),
-    )
-    .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "connect timed out"))??;
-    if let Ok(address) = stream.peer_addr() {
-        remember_connected_address(netloc, address);
-    }
-    Ok(stream)
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "connect timed out"))?
 }
 
 async fn race(addresses: Vec<SocketAddr>) -> io::Result<TcpStream> {
@@ -187,7 +250,13 @@ async fn race(addresses: Vec<SocketAddr>) -> io::Result<TcpStream> {
     loop {
         match pending.next() {
             Some(address) => {
-                attempts.spawn(TcpStream::connect(address));
+                attempts.spawn(async move {
+                    tokio::time::timeout(ADDRESS_ATTEMPT_TIMEOUT, TcpStream::connect(address))
+                        .await
+                        .map_err(|_| {
+                            io::Error::new(io::ErrorKind::TimedOut, "address connect timed out")
+                        })?
+                });
             }
             None if attempts.is_empty() => {
                 return Err(last_error.unwrap_or_else(|| {
@@ -212,6 +281,13 @@ async fn race(addresses: Vec<SocketAddr>) -> io::Result<TcpStream> {
 pub(crate) async fn connect_websocket(
     request: impl IntoClientRequest,
 ) -> Result<(WebSocket, Response), Error> {
+    connect_websocket_with_resolver(request, dns::system().clone()).await
+}
+
+async fn connect_websocket_with_resolver(
+    request: impl IntoClientRequest,
+    resolver: dns::Resolver,
+) -> Result<(WebSocket, Response), Error> {
     let request = request.into_client_request()?;
     let uri = request.uri();
     let host = uri.host().ok_or(Error::Url(UrlError::NoHostName))?;
@@ -227,7 +303,9 @@ pub(crate) async fn connect_websocket(
         .trim_start_matches('[')
         .trim_end_matches(']')
         .to_string();
-    let socket = connect_tcp(&host, port).await.map_err(Error::Io)?;
+    let socket = connect_tcp_with_resolver(&host, port, resolver)
+        .await
+        .map_err(Error::Io)?;
     socket.set_nodelay(true)?;
     client_async_tls_with_config(request, socket, None, None).await
 }
