@@ -206,37 +206,71 @@ async fn connect_tcp_with_resolver(
     let initial_resolver = resolver.clone();
     let deadline = Instant::now() + SOCKET_CONNECT_TIMEOUT;
     let connect = async {
-        let mut addresses = tokio::task::spawn_blocking(move || initial_resolver.resolve(&lookup))
+        let addresses = tokio::task::spawn_blocking(move || initial_resolver.resolve(&lookup))
             .await
             .map_err(io::Error::other)??;
-        let mut tried = Vec::new();
+        let mut known = addresses.clone();
+        let mut races = JoinSet::new();
+        let mut lookups = JoinSet::new();
+        races.spawn(race(order_addresses(&netloc, addresses)));
+        if resolver.has_pending(&netloc, &known) {
+            start_pending_lookup(
+                &mut lookups,
+                resolver.clone(),
+                netloc.clone(),
+                known.clone(),
+                deadline,
+            );
+        }
+        let mut last_error = None;
         loop {
-            tried.extend(addresses.iter().copied());
-            let error = match race(order_addresses(&netloc, addresses)).await {
-                Ok(stream) => {
-                    if let Ok(address) = stream.peer_addr() {
-                        remember_connected_address(netloc, address);
+            if races.is_empty() && lookups.is_empty() {
+                return Err(last_error.unwrap_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, "no address to connect to")
+                }));
+            }
+            tokio::select! {
+                Some(joined) = races.join_next(), if !races.is_empty() => match joined {
+                    Ok(Ok(stream)) => {
+                        if let Ok(address) = stream.peer_addr() { remember_connected_address(netloc, address); }
+                        return Ok(stream);
                     }
-                    return Ok(stream);
+                    Ok(Err(error)) => last_error = Some(error),
+                    Err(error) => last_error = Some(io::Error::other(error)),
+                },
+                Some(joined) = lookups.join_next(), if !lookups.is_empty() => {
+                    let addresses = joined.map_err(io::Error::other)??;
+                    if !addresses.is_empty() {
+                        known.extend(addresses.iter().copied());
+                        races.spawn(race(order_addresses(&netloc, addresses)));
+                    }
+                    if Instant::now() < deadline && resolver.has_pending(&netloc, &known) {
+                        start_pending_lookup(&mut lookups, resolver.clone(), netloc.clone(), known.clone(), deadline);
+                    }
                 }
-                Err(error) => error,
-            };
-            let lookup = netloc.clone();
-            let pending_resolver = resolver.clone();
-            let attempted = tried.clone();
-            addresses = tokio::task::spawn_blocking(move || {
-                pending_resolver.resolve_next(&lookup, &attempted, deadline)
-            })
-            .await
-            .map_err(io::Error::other)??;
-            if addresses.is_empty() {
-                return Err(error);
             }
         }
     };
     tokio::time::timeout_at(deadline.into(), connect)
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "connect timed out"))?
+}
+
+// Delay the blocking wait until a fast first connection has had a chance to finish.
+// Pending TCP attempts keep their original deadline while late answers race them.
+fn start_pending_lookup(
+    lookups: &mut JoinSet<io::Result<Vec<SocketAddr>>>,
+    resolver: dns::Resolver,
+    netloc: String,
+    known: Vec<SocketAddr>,
+    deadline: Instant,
+) {
+    lookups.spawn(async move {
+        sleep(RACE_STAGGER).await;
+        tokio::task::spawn_blocking(move || resolver.resolve_next(&netloc, &known, deadline))
+            .await
+            .map_err(io::Error::other)?
+    });
 }
 
 async fn race(addresses: Vec<SocketAddr>) -> io::Result<TcpStream> {
@@ -246,13 +280,7 @@ async fn race(addresses: Vec<SocketAddr>) -> io::Result<TcpStream> {
     loop {
         match pending.next() {
             Some(address) => {
-                attempts.spawn(async move {
-                    tokio::time::timeout(ADDRESS_ATTEMPT_TIMEOUT, TcpStream::connect(address))
-                        .await
-                        .map_err(|_| {
-                            io::Error::new(io::ErrorKind::TimedOut, "address connect timed out")
-                        })?
-                });
+                attempts.spawn(TcpStream::connect(address));
             }
             None if attempts.is_empty() => {
                 return Err(last_error.unwrap_or_else(|| {
