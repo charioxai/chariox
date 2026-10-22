@@ -158,6 +158,25 @@ test("Ctrl-] restores the outer terminal while an input request is unanswered an
   assert.equal(kernel.typed.length, 0)
 })
 
+test("a snapshot still in flight when Ctrl-] detaches draws nothing on the restored outer terminal", async () => {
+  const kernel = new FakeTerminalKernel()
+  const io = new FakeTerminalIo()
+  const done = attach(kernel, io)
+  await until(() => io.text.includes("PROMPT$ "), "the redrawn screen")
+  kernel.holdSnapshots = true
+  kernel.retainedFrom = 1_000_000
+  kernel.screen = "LATE$ "
+  kernel.emit("later")
+  await until(() => kernel.requests.filter(request => request.operation === "snapshot").length === 2, "the resync snapshot is in flight")
+  io.type(Buffer.from([TERMINAL_DETACH_BYTE]))
+  assert.deepEqual(await done, { reason: "detached" })
+  const written = io.written.length
+  kernel.releaseSnapshots()
+  await new Promise(resolve => setTimeout(resolve, 50))
+  assert.equal(io.written.length, written, "nothing is written after the detach")
+  assert.ok(!io.text.includes("LATE$ "))
+})
+
 test("output the kernel no longer retains triggers a fresh redraw instead of a hole", async () => {
   const kernel = new FakeTerminalKernel()
   const io = new FakeTerminalIo()

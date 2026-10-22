@@ -260,7 +260,8 @@ impl KernelRuntimeState {
 
     /// The one place that decides whether an agent's terminal input needs a
     /// person's approval: the agent's own permission level for its shell
-    /// commands. Yolo asks nothing. Required asks through the Room's
+    /// commands. A live /sudo turn of the run, local or on the home of a leased
+    /// agent, or Yolo asks nothing. Required asks through the Room's
     /// RuntimeInteraction, which every client in the Room shows. `Some` is the
     /// refusal to return.
     async fn ask_before_typing(
@@ -270,13 +271,8 @@ impl KernelRuntimeState {
         agent_id: &str,
         typed: &str,
     ) -> Result<Option<RuntimeToolResult>, DaemonError> {
-        if provider_run.runtime_mcp_auth_token().is_some_and(|auth| {
-            self.sudo_for_auth_token(auth).is_ok_and(|turn| {
-                turn.session_id == session_id
-                    && turn.agent_id == agent_id
-                    && turn.provider_run_id.as_deref() == Some(provider_run.id())
-            })
-        }) {
+        // A leased worker run proves its home sudo turn to the home.
+        if self.sudo_task_authorizes_run(provider_run).await {
             return Ok(None);
         }
         let level = self
