@@ -41,6 +41,31 @@ impl Drop for LeasedProcessPoll {
     }
 }
 
+/// How the agent's current lease relates to the lease a wake was launched under.
+/// The same signed worker identity on a new lease is the same worker that came back.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum LeaseRelation {
+    Current,
+    ReplacedSameWorker,
+    OtherWorker,
+}
+
+impl LeaseRelation {
+    fn of(remote: &crate::agent::RemoteAgentBinding, binding: &LeasedProcessBinding) -> Self {
+        if remote.worker_kernel_id != binding.worker_kernel_id
+            || remote.worker_machine_id != binding.worker_machine_id
+        {
+            Self::OtherWorker
+        } else if remote.execution_lease_id == binding.execution_lease_id
+            && remote.leased_agent_id == binding.leased_agent_id
+        {
+            Self::Current
+        } else {
+            Self::ReplacedSameWorker
+        }
+    }
+}
+
 impl KernelRuntimeState {
     async fn leased_process_request(
         &self,
@@ -52,16 +77,24 @@ impl KernelRuntimeState {
         let remote = agent
             .remote_execution()
             .ok_or_else(|| ledger::error("watched process execution lease was lost"))?;
-        if agent.session_id() != wake.room_id
-            || remote.worker_kernel_id != binding.worker_kernel_id
-            || remote.worker_machine_id != binding.worker_machine_id
-            || remote.execution_lease_id != binding.execution_lease_id
-            || remote.leased_agent_id != binding.leased_agent_id
-        {
+        let relation = LeaseRelation::of(&remote, binding);
+        if agent.session_id() != wake.room_id || relation == LeaseRelation::OtherWorker {
             return Err(ledger::error(
                 "watched process execution lease was replaced",
             ));
         }
+        // A returned worker may answer for its old binding, never launch or cancel under it.
+        let action = match (relation, action) {
+            (LeaseRelation::ReplacedSameWorker, Action::Cancel { wake_id, binding }) => {
+                Action::Query { wake_id, binding }
+            }
+            (LeaseRelation::ReplacedSameWorker, Action::Start { .. }) => {
+                return Err(ledger::error(
+                    "watched process execution lease was replaced",
+                ));
+            }
+            (_, action) => action,
+        };
         let mut config = self.config_snapshot().await;
         if let (Some(url), Some(token)) = (remote.relay_url.clone(), remote.relay_token.clone()) {
             config.apply_remote_relay_override(url, token);
@@ -298,9 +331,7 @@ impl KernelRuntimeState {
                 Err(error) => {
                     let agent = self.owned.agent_store.get_agent(&wake.agent_id)?;
                     let current = agent.remote_execution().is_some_and(|r| {
-                        r.execution_lease_id == binding.execution_lease_id
-                            && r.leased_agent_id == binding.leased_agent_id
-                            && r.worker_kernel_id == binding.worker_kernel_id
+                        LeaseRelation::of(&r, &binding) != LeaseRelation::OtherWorker
                     });
                     if !current || last_fresh.elapsed() >= Duration::from_secs(120) {
                         self.lost_leased_process(
@@ -354,6 +385,46 @@ impl KernelRuntimeState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_returned_worker_is_the_same_worker_only_under_its_signed_identity() {
+        let binding = LeasedProcessBinding {
+            worker_kernel_id: "worker".into(),
+            worker_machine_id: "machine".into(),
+            execution_lease_id: "lease-1".into(),
+            leased_agent_id: "leased-1".into(),
+            home_prompt_id: "prompt".into(),
+            worker_provider_run_id: "run".into(),
+        };
+        let mut remote = crate::agent::RemoteAgentBinding {
+            worker_kernel_id: "worker".into(),
+            worker_machine_id: "machine".into(),
+            execution_lease_id: "lease-1".into(),
+            leased_agent_id: "leased-1".into(),
+            active_worker_provider_run_id: None,
+            relay_url: None,
+            relay_token: None,
+            relay_peer_protocol_version: None,
+        };
+        assert_eq!(LeaseRelation::of(&remote, &binding), LeaseRelation::Current);
+        remote.execution_lease_id = "lease-2".into();
+        remote.leased_agent_id = "leased-2".into();
+        assert_eq!(
+            LeaseRelation::of(&remote, &binding),
+            LeaseRelation::ReplacedSameWorker
+        );
+        remote.worker_kernel_id = "another-worker".into();
+        assert_eq!(
+            LeaseRelation::of(&remote, &binding),
+            LeaseRelation::OtherWorker
+        );
+        remote.worker_kernel_id = "worker".into();
+        remote.worker_machine_id = "another-machine".into();
+        assert_eq!(
+            LeaseRelation::of(&remote, &binding),
+            LeaseRelation::OtherWorker
+        );
+    }
 
     #[tokio::test]
     async fn leased_process_admission_excludes_poll_until_commit_and_releases_on_abort() {

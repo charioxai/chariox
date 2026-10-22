@@ -1683,3 +1683,73 @@ async fn leased_process_runs_on_worker_and_only_home_owns_task() {
     assert!(worker_receipts[0].process_start_ticks.is_some());
     assert_eq!(worker_receipts[0].wake.id, settled.id);
 }
+
+#[test]
+fn mp10_a10_leased_process_settles_from_the_workers_receipt_after_it_lost_the_lease() {
+    run_test(leased_process_settles_from_the_workers_receipt_after_it_lost_the_lease);
+}
+
+// A12-S02 R: when the worker no longer holds the lease the launch was made under
+// (an ordinary worker restart), the home still gets the worker's stored outcome
+// instead of waiting out the error bound or declaring the process lost.
+async fn leased_process_settles_from_the_workers_receipt_after_it_lost_the_lease() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start().await;
+    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
+    let room = fixture.rooms[0].clone();
+    let attachment = owner_attachment(&fixture, &room).await;
+    let agent =
+        spawn_on_agent_worker_with_model(&mut fixture, &room, "controlled-cancel-idle").await;
+    run_turn(
+        &fixture,
+        &room,
+        &attachment,
+        &agent,
+        "A12-S02 R leased process",
+    )
+    .await;
+    let store = store(&fixture).await;
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .pop()
+        .unwrap();
+    let run = worker.run_for(&fixture, &agent, &task.prompt_id).await;
+    let token = run.runtime_mcp_auth_token().unwrap().to_string();
+    let remote = binding(&fixture, &agent).await;
+    let result = worker
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "chariox.events.process",
+            json!({"task_id":task.task_id,"origin_prompt_id":task.prompt_id,"argv":["/bin/sleep","4"],"label":"A12-S02 R lost lease"}),
+        )
+        .await
+        .expect("leased process is admitted");
+    let id = result.payload["wake_id"].as_str().unwrap().to_string();
+    {
+        let mut app = worker.router.app.lock().await;
+        let mut leases = crate::app::RemoteLeaseRuntime::new(&mut app);
+        leases
+            .destroy_leased_agent(&remote.leased_agent_id)
+            .unwrap();
+        leases
+            .destroy_execution_lease(&remote.execution_lease_id)
+            .unwrap();
+    }
+    let settled = eventually(
+        "the home settles the wake from the worker's receipt",
+        || {
+            store
+                .agent_wakes(Some(&room), Some(&agent))
+                .unwrap()
+                .into_iter()
+                .find(|w| w.id == id && matches!(w.state.as_str(), "exited" | "lost"))
+        },
+    )
+    .await;
+    worker.stop().await;
+    fixture.stop().await;
+    assert_eq!(settled.state, "exited");
+    assert_eq!(settled.exit_code, Some(0));
+}

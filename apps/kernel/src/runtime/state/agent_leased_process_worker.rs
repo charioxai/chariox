@@ -100,10 +100,25 @@ impl KernelRuntimeState {
                 }
             }
             let (b, w) = (binding.clone(), stored.wake.clone());
-            self.with_app_side_effect(move |app| {
-                crate::app::RemoteLeaseRuntime::new(app).leased_process_target(&b, &w, false)
-            })
-            .await?;
+            let target = self
+                .with_app_side_effect(move |app| {
+                    crate::app::RemoteLeaseRuntime::new(app).leased_process_target(&b, &w, false)
+                })
+                .await;
+            match target {
+                Ok(_) => {}
+                // After a worker restart the home asks for the receipt of the launch it
+                // made under the lease the worker no longer holds. The caller was admitted
+                // for that leased agent and the receipt matches its exact binding, so the
+                // stored outcome answers a Query; it never lets Start or Cancel act.
+                Err(
+                    DaemonError::LeasedAgentNotFound { .. }
+                    | DaemonError::ExecutionLeaseNotFound { .. },
+                ) if matches!(action, LeasedWatchedProcessAction::Query { .. }) => {
+                    return Ok(Some(stored));
+                }
+                Err(error) => return Err(error),
+            }
             if matches!(action, LeasedWatchedProcessAction::Cancel { .. })
                 && matches!(stored.wake.state.as_str(), "starting" | "running")
             {
