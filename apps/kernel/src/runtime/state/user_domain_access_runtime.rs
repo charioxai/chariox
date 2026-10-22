@@ -45,9 +45,9 @@ impl KernelRuntimeState {
                     .iter()
                     .any(|prompt| prompt.target_agent_id() == id)
                 || session
-                    .agent_prompt_schedules()
+                    .agent_triggers()
                     .iter()
-                    .any(|schedule| schedule.agent_id() == id)
+                    .any(|trigger| trigger.enabled() && trigger.agent_id() == id)
                 || session
                     .active_interactions()
                     .iter()

@@ -139,6 +139,15 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::CancelAgentPromptSchedule(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::CreateAgentTrigger(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::UpdateAgentTrigger(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::DeleteAgentTrigger(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::CompletePrompt(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),

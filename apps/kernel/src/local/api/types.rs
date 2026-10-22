@@ -11,7 +11,7 @@ use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRec
 use chariox_relay::protocol::RelayKernelPresence;
 
 mod agent_lifecycle;
-mod agent_prompt_schedule;
+mod agent_triggers;
 mod agent_utility;
 mod apps;
 mod browser_import;
@@ -54,7 +54,7 @@ mod workflow_notification;
 mod workspace;
 
 pub use agent_lifecycle::*;
-pub use agent_prompt_schedule::*;
+pub use agent_triggers::*;
 pub use agent_utility::*;
 pub use apps::*;
 pub use browser_import::*;
@@ -338,4 +338,5 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: allocated 556 adds `KernelBrowser` `state_wait`: a parked state read
 /// replacing the viewer's 250 ms poll.
 /// MP-08/MP-10/MP-11: allocated 567 adds the mirror v2 `fonts` op's `absent` (stack families the native machine lacks).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 567;
+/// Provisional 576 adds agent triggers; `/wait-in` and `/wait-every` become schedule triggers.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 576;

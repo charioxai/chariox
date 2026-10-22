@@ -4,7 +4,7 @@
     "MP-10",
     "MP-11"
   ],
-  "local_protocol": 567,
+  "local_protocol": 576,
   "peer_protocol": 175,
   "allocation": "coordinator-allocated 567/175: additive fonts-op field absent",
   "subscribe": {
