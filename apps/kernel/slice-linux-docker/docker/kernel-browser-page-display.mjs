@@ -10,6 +10,7 @@ import {createRegionDisplay} from './kernel-browser-region-display.mjs';
 import {VisiblePageCapture,visiblePageGeometry} from './kernel-browser-visible-page.mjs';
 import {nativeRefusalReason} from './kernel-browser-native.mjs';
 import {observeLayout} from './kernel-browser-layout-observer.mjs';
+import {beginNavigationPreview} from './kernel-browser-mirror2-preview.mjs';
 const refuse=()=>{throw new UserDomainRefusal('stale_reference','region_retired');};
 // MP-08/MP-10/MP-11: one shared human-viewer predicate, also used before
 // selecting cached document metadata. It grants no input by itself.
@@ -37,6 +38,7 @@ export function pngFallbackCommand(error,command){
 }
 const LAYOUT_WAIT_MS=400,layouts=new WeakMap(),proofs=new WeakMap();
 export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisiblePageCapture}={}){
+ let complete;
  return reserveDisplay(host,async()=>{
   assertNotCancelled(signal);
   if(command.generation!==host.generation||command.target||
@@ -45,6 +47,7 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   // MP-08/MP-10/MP-11: the mirror and its native preview use the same
   // event-bound document owner. Stored state may lag a committed navigation.
   const tab=await (host.mirrorTarget??host.displayTarget).call(host,command),policy=host.protection,generation=host.generation,document=tab.document_id;
+  complete=beginNavigationPreview(host,{tab_id:tab.tab_id,document_id:document,generation,scope});
   const window=host.chromeWindows.current().tabbed;
   const frameProof=host.browser.currentPageFrame?.(tab.target_id);
   const {connection,sessionId}=frameProof??await host.browser.resolvePageTarget(tab.target_id);
@@ -109,7 +112,7 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
     return host.chromeWindows.inWindowOverNow({left:geometry.window_region.left,top:geometry.window_region.top,width:geometry.width,height:geometry.height});
    }},window,tab,policy,generation,Capture});}catch(error){closeObserver();throw error;}
 
- });
+ }).then(result=>{complete?.(true);return result;},error=>{complete?.(false);throw error;});
 }
 // MP-08/MP-10/MP-11: a private source hint can reuse only this exact live
 // crop. It grants no input authority; ordinary admission and the final guard run.
