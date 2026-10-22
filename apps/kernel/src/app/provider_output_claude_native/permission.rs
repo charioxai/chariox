@@ -329,6 +329,29 @@ pub(super) fn write_claude_hook_context_response(
     request_id: &str,
     context: &str,
 ) -> Result<(), crate::error::DaemonError> {
+    write_claude_hook_response(context_file, request_id, "txt", context)
+}
+
+pub(super) fn write_claude_hook_context_rejection(
+    context_file: &str,
+    request_id: &str,
+    message: &str,
+    retry_native: bool,
+) -> Result<(), crate::error::DaemonError> {
+    write_claude_hook_response(
+        context_file,
+        request_id,
+        "error",
+        &serde_json::json!({"message": message, "retry_native": retry_native}).to_string(),
+    )
+}
+
+fn write_claude_hook_response(
+    context_file: &str,
+    request_id: &str,
+    extension: &str,
+    contents: &str,
+) -> Result<(), crate::error::DaemonError> {
     let error = |message: String| crate::error::DaemonError::LocalTransport {
         operation: "claude_hook_context_response",
         message,
@@ -340,8 +363,8 @@ pub(super) fn write_claude_hook_context_response(
     let dir = root.join("hook-context-responses");
     fs::create_dir_all(&dir).map_err(|e| error(e.to_string()))?;
     let pending = dir.join(format!("{request_id}.tmp"));
-    let response = dir.join(format!("{request_id}.txt"));
-    let result = fs::write(&pending, context).and_then(|()| fs::rename(&pending, &response));
+    let response = dir.join(format!("{request_id}.{extension}"));
+    let result = fs::write(&pending, contents).and_then(|()| fs::rename(&pending, &response));
     if result.is_err() {
         let _ = fs::remove_file(&pending);
     }

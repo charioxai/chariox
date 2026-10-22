@@ -27,6 +27,7 @@ mod startup_exit;
 #[cfg(test)]
 pub(crate) mod tests;
 mod transcript;
+mod typed_prompt;
 
 pub(crate) use context_delivery::clear_claude_context_delivery_for_settled_prompt;
 pub(crate) use permission::format_claude_permission_message;
@@ -448,6 +449,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 .and_then(|run| run.terminal_diagnostic().map(str::to_string));
             return Ok(outcome);
         }
+        self.resume_typed_native_command(session_id, &agent_id, provider_run, context_file)?;
         self.inject_pending_prompt(
             session_id,
             provider_run_id,
@@ -501,14 +503,32 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 .get("hook_event_name")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            if event_name == "CharioxContextFailed" {
-                if let Some(prompt_id) = self.failed_context_delivery(
+            if event_name == "CharioxNativeSkillRedirected" {
+                self.accept_typed_native_redirect(
                     session_id,
                     &agent_id,
-                    provider_run_id,
+                    provider_run,
                     context_file,
                     &event,
-                )? {
+                )?;
+                continue;
+            }
+            if event_name == "CharioxContextFailed" {
+                let failed = self
+                    .failed_context_delivery(
+                        session_id,
+                        &agent_id,
+                        provider_run_id,
+                        context_file,
+                        &event,
+                    )?
+                    .or(self.failed_typed_native_command(
+                        session_id,
+                        &agent_id,
+                        context_file,
+                        &event,
+                    )?);
+                if let Some(prompt_id) = failed {
                     if let Some(policy) = self.prompt_handoff {
                         if let Some(prompt) =
                             policy.rejected(session_id, &agent_id, provider_run_id, &prompt_id)?
@@ -746,13 +766,44 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         crate::session::PromptSubmissionOutcome::Started { prompt: started },
                         Some(context),
                     ) => {
-                        let typed = self.typed_skill_context(
+                        let typed = match self.typed_skill_context(
                             session_id,
                             &agent_id,
                             provider_run,
                             started,
                             context,
-                        )?;
+                        ) {
+                            Ok(typed) => typed,
+                            Err(error) => {
+                                self.skills_not_delivered(session_id, provider_run, &error);
+                                if let Some(request_id) = hook_request_id {
+                                    context_delivery::stage(
+                                        context_file,
+                                        request_id,
+                                        provider_run_id,
+                                        started.id(),
+                                        started.id(),
+                                        false,
+                                        Vec::new(),
+                                    )?;
+                                    permission::write_claude_hook_context_rejection(context_file, request_id,
+                                        &format!("Skills were not delivered: {error}. Refresh Skills and retry."), false)?;
+                                }
+                                continue;
+                            }
+                        };
+                        if let (Some(command), Some(request_id)) =
+                            (typed.native_command.as_deref(), hook_request_id)
+                        {
+                            self.stage_typed_native_command(
+                                context_file,
+                                request_id,
+                                started,
+                                command,
+                                &typed.context,
+                            )?;
+                            continue;
+                        }
                         (Some(typed.context), typed.loads)
                     }
                     (_, context) => (context, Vec::new()),

@@ -137,8 +137,16 @@ async function freshContext() {
   const responseDir = process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES
   if (!hookContextRequestId || !responseDir) throw new Error("missing context response route")
   const responseFile = join(responseDir, `${hookContextRequestId}.txt`)
+  const failureFile = join(responseDir, `${hookContextRequestId}.error`)
   const deadline = hookContextDeadlineMs
   while (Date.now() < deadline) {
+    if (existsSync(failureFile)) {
+      const failure = JSON.parse(readFileSync(failureFile, "utf8"))
+      unlinkSync(failureFile)
+      const error = new Error(failure.message)
+      error.retryNative = failure.retry_native === true
+      throw error
+    }
     if (existsSync(responseFile)) {
       const context = readFileSync(responseFile, "utf8")
       unlinkSync(responseFile)
@@ -176,7 +184,14 @@ async function currentContextChunk() {
             if (!response.endsWith("\n")) return
             try {
               const packet = JSON.parse(response)
-              if (!packet.accepted || typeof packet.context !== "string") throw new Error("context was not accepted")
+              if (!packet.accepted) {
+                const error = new Error(packet.message || "context was not accepted")
+                error.contextRejected = true
+                error.retryNative = packet.retryNative === true
+                socket.end("delivered\n", () => reject(error))
+                return
+              }
+              if (typeof packet.context !== "string") throw new Error("invalid context response")
               contextChunkDeliverySocket = socket
               socket.removeAllListeners("data")
               resolve(packet.context)
@@ -184,7 +199,10 @@ async function currentContextChunk() {
           })
           socket.on("end", () => reject(new Error("context chunk closed before delivery")))
         })
-      } catch { await sleep(25) }
+      } catch (error) {
+        if (error.contextRejected) throw error
+        await sleep(25)
+      }
     }
     throw new Error("current context chunk unavailable")
   }
@@ -234,14 +252,16 @@ async function currentContextChunk() {
           else socket.end()
         } else if (acknowledgement.length > 16) socket.destroy()
       })
-      socket.write(JSON.stringify({ accepted: context !== undefined && !contextError, context: chunk }) + "\n")
+      socket.write(JSON.stringify({ accepted: context !== undefined && !contextError, context: chunk,
+        message: contextError?.message, retryNative: contextError?.retryNative === true }) + "\n")
     })
   })
   try {
     await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve) })
     try { context = await freshContext() } catch (error) { contextError = error }
     while (delivered < 7 && Date.now() < deadline) await sleep(10)
-    if (contextError || context === undefined || delivered !== 7) throw new Error("current context was not delivered to every hook")
+    if (contextError) throw contextError
+    if (context === undefined || delivered !== 7) throw new Error("current context was not delivered to every hook")
     for (const index of [...held.keys()].sort((left, right) => left - right)) {
       const peer = held.get(index)
       peer.socket.end()
@@ -277,9 +297,19 @@ if (eventName === "UserPromptSubmit") {
       }) + "\n")
     }
     process.exit(0)
-  } catch {
+  } catch (error) {
+    if (contextOnlyHook && error.contextRejected && error.retryNative) process.exit(0)
+    if (error.retryNative && contextFailureEvent) {
+      await new Promise((resolve, reject) => process.stdout.write(JSON.stringify({
+        decision: "block", reason: "Running the selected native skill.",
+        hookSpecificOutput: { hookEventName: "UserPromptSubmit", suppressOriginalPrompt: true },
+      }), error => error ? reject(error) : resolve()))
+      contextFailureEvent.hook_event_name = "CharioxNativeSkillRedirected"
+      reportContextFailure()
+      process.exit(0)
+    }
     reportContextFailure()
-    process.stderr.write("Chariox could not prepare current prompt context. Retry after the kernel is ready.\n")
+    process.stderr.write((error.message || "Chariox could not prepare current prompt context. Retry after the kernel is ready.") + "\n")
     process.exit(2)
   }
 } else if (eventName === "PreToolUse" || eventName === "PermissionRequest") {

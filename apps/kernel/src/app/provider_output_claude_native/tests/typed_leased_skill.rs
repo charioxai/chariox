@@ -116,6 +116,15 @@ impl Worker {
 
     /// Types `prompt` into the worker's Claude composer and returns the hook context.
     fn type_prompt(&mut self, run_id: &str, prompt: &str) -> (String, String) {
+        let (response, prompt_id) = self.type_prompt_response(run_id, prompt);
+        (response.expect("hook context must be delivered"), prompt_id)
+    }
+
+    fn type_prompt_response(
+        &mut self,
+        run_id: &str,
+        prompt: &str,
+    ) -> (Result<String, String>, String) {
         self.app
             .providers
             .set_skill_prompt_bridge(std::sync::Arc::new(DeliverSkill));
@@ -160,11 +169,18 @@ impl Worker {
         }));
         let delivered =
             fs::read_to_string(files.join(format!("hook-context-responses/{request_id}.txt")))
-                .unwrap();
-        send(serde_json::json!({
-            "hook_event_name": "CharioxContextDelivered",
-            "hook_context_request_id": request_id,
-        }));
+                .map_err(|_| {
+                    fs::read_to_string(
+                        files.join(format!("hook-context-responses/{request_id}.error")),
+                    )
+                    .expect("hook must respond with a clear failure")
+                });
+        if delivered.is_ok() {
+            send(serde_json::json!({
+                "hook_event_name": "CharioxContextDelivered",
+                "hook_context_request_id": request_id,
+            }));
+        }
         let prompt_id = self
             .app
             .prompt_owner_active_prompt_for_agent(&self.backing_session_id, &self.backing_agent_id)
@@ -226,5 +242,17 @@ fn leased_worker_dollar_text_the_home_view_does_not_name_is_not_an_invocation() 
         !delivered.contains(BODY_MARKER),
         "dollar text became an invocation: {delivered:?}"
     );
+    assert!(worker.receipts_for(&prompt_id).is_empty());
+}
+
+// MP-08 / MP-10 / MP-11: a verified lease view cannot authorize a missing body.
+#[test]
+fn leased_worker_typed_skill_with_a_damaged_cache_fails_the_hook() {
+    let mut worker = Worker::with_review_skill(SkillState::Manual);
+    fs::write(worker.root.join("SKILL.md"), "damaged cached package").unwrap();
+    let (response, prompt_id) =
+        worker.type_prompt_response("typed-damaged-run", "$review inspect source");
+    let error = response.expect_err("the provider must not execute without the requested body");
+    assert!(error.contains("Skills were not delivered"), "{error}");
     assert!(worker.receipts_for(&prompt_id).is_empty());
 }

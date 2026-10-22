@@ -113,7 +113,7 @@ impl ProviderOutputClaudeNativeBridge<'_> {
 
     /// A `$name` typed in Claude's own composer reaches the kernel only as the
     /// hook prompt. It resolves like any user prompt and its instructions ride the
-    /// hook context; a refusal is a visible notice, never a silently empty context.
+    /// hook context. Native commands instead replace the blocked original prompt.
     pub(super) fn typed_skill_context(
         &mut self,
         session_id: &str,
@@ -139,29 +139,32 @@ impl ProviderOutputClaudeNativeBridge<'_> {
             Vec::new(),
             crate::prompt_assembly::PromptManifest::default(),
         );
-        let delivery = match self.app.providers.prepare_skill_prompt(
-            session_id,
-            agent_id,
-            prompt.id(),
-            prompt.id(),
-            provider_run,
-            envelope,
-        ) {
-            Ok(envelope) => envelope.skill_delivery,
-            Err(error) => {
-                self.skills_not_delivered(session_id, provider_run, &error);
-                return Ok(TypedSkillContext::plain(context));
-            }
-        };
-        let Some(delivery) = delivery.filter(|delivery| !delivery.hidden_context.is_empty()) else {
+        let delivery = self
+            .app
+            .providers
+            .prepare_skill_prompt(
+                session_id,
+                agent_id,
+                prompt.id(),
+                prompt.id(),
+                provider_run,
+                envelope,
+            )?
+            .skill_delivery;
+        let Some(delivery) = delivery else {
             return Ok(TypedSkillContext::plain(context));
         };
-        Ok(TypedSkillContext::plain(
-            crate::provider::fit_claude_native_hidden_context(
+        let native_command = (!delivery.requires_native_load_ack.is_empty()
+            && delivery.visible_prompt.starts_with('/'))
+        .then_some(delivery.visible_prompt);
+        Ok(TypedSkillContext {
+            context: crate::provider::fit_claude_native_hidden_context(
                 provider_run.id(),
                 join_claude_context([context, delivery.hidden_context]),
             )?,
-        ))
+            loads: Vec::new(),
+            native_command,
+        })
     }
 
     /// The worker owns no catalog: the home's name view for this lease selects the
@@ -175,15 +178,8 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         prompt: &crate::session::PromptQueueItem,
         context: String,
     ) -> Result<TypedSkillContext, DaemonError> {
-        let skills = match crate::app::RemoteLeaseRuntime::new(self.app)
-            .typed_leased_skills(leased_agent_id, prompt.prompt())
-        {
-            Ok(skills) => skills,
-            Err(error) => {
-                self.skills_not_delivered(session_id, provider_run, &error);
-                return Ok(TypedSkillContext::plain(context));
-            }
-        };
+        let skills = crate::app::RemoteLeaseRuntime::new(self.app)
+            .typed_leased_skills(leased_agent_id, prompt.prompt())?;
         if skills.is_empty() {
             return Ok(TypedSkillContext::plain(context));
         }
@@ -211,10 +207,11 @@ impl ProviderOutputClaudeNativeBridge<'_> {
                     digest: skill.digest,
                 })
                 .collect(),
+            native_command: None,
         })
     }
 
-    fn skills_not_delivered(
+    pub(super) fn skills_not_delivered(
         &mut self,
         session_id: &str,
         provider_run: &RuntimeProviderRun,
@@ -273,6 +270,7 @@ impl ProviderOutputClaudeNativeBridge<'_> {
 pub(super) struct TypedSkillContext {
     pub(super) context: String,
     pub(super) loads: Vec<TypedSkillLoad>,
+    pub(super) native_command: Option<String>,
 }
 
 impl TypedSkillContext {
@@ -280,6 +278,7 @@ impl TypedSkillContext {
         Self {
             context,
             loads: Vec::new(),
+            native_command: None,
         }
     }
 }

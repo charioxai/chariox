@@ -866,6 +866,69 @@ mod tests {
     }
 
     #[test]
+    fn user_prompt_hook_reports_a_selected_skill_failure_without_a_delivery_receipt() {
+        let request =
+            LaunchProviderRequest::new("skill-failure", "claude", "claude", "default", "haiku");
+        let native = prepare_claude_native_tui_files(&request).unwrap();
+        let mut child = Command::new("node")
+            .arg(
+                native
+                    .events_file
+                    .parent()
+                    .unwrap()
+                    .join("hook-handler.mjs"),
+            )
+            .env("NODE_OPTIONS", "--max-old-space-size=1024")
+            .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
+            .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
+            .env(
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES",
+                &native.context_response_dir,
+            )
+            .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(br#"{"hook_event_name":"UserPromptSubmit","session_id":"native","prompt":"$review inspect source"}"#).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let request_id = loop {
+            let event = fs::read_to_string(&native.events_file)
+                .ok()
+                .and_then(|events| {
+                    events
+                        .lines()
+                        .find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                });
+            if let Some(id) = event.and_then(|event| {
+                event["hook_context_request_id"]
+                    .as_str()
+                    .map(str::to_string)
+            }) {
+                break id;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "hook never requested context"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        fs::write(native.context_response_dir.join(format!("{request_id}.error")),
+            r#"{"message":"Skills were not delivered: review package is missing; refresh Skills and retry.","retry_native":false}"#).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(
+            output.stdout.is_empty(),
+            "failed instructions must never become successful hook context"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("review package is missing"));
+        let events = fs::read_to_string(&native.events_file).unwrap();
+        assert!(events.contains("CharioxContextFailed"));
+        assert!(!events.contains("CharioxContextDelivered"));
+    }
+
+    #[test]
     fn user_prompt_hooks_deliver_only_the_current_response_to_every_chunk() {
         let request = LaunchProviderRequest::new(
             "session-fresh-context",

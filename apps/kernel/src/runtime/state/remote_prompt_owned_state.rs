@@ -684,7 +684,7 @@ mod tests {
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::session::{CreateSessionRequest, PromptQueueItem, PromptStatus};
 
-    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
+    pub(super) async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
         let (
             config_projection,
             session_store,
@@ -2133,3 +2133,7 @@ mod tests {
 #[cfg(test)]
 #[path = "remote_prompt_owned_state/skill_delivery_tests.rs"]
 mod skill_delivery_tests;
+
+#[cfg(test)]
+#[path = "remote_prompt_owned_state/typed_claude_tests.rs"]
+mod typed_claude_tests;

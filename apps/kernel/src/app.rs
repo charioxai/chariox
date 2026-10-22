@@ -83,6 +83,8 @@ pub(crate) use prompt_lifecycle::{
 pub(crate) use provider_output_claude_native::clear_claude_context_delivery_for_settled_prompt;
 #[cfg(test)]
 pub(crate) use provider_output_claude_native::tests::{startup_readiness_run, StartupTrustBridge};
+#[cfg(test)]
+pub(crate) use provider_output_claude_native::ProviderOutputClaudeNativeBridge;
 pub(crate) use provider_output_claude_native::{
     claude_native_pending_prompt_cancel_input, claude_native_recent_terminal_failure,
     format_claude_permission_message, ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,

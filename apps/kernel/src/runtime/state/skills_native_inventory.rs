@@ -21,6 +21,10 @@ fn failure(message: &str) -> DaemonError {
     }
 }
 impl SkillInventories {
+    #[cfg(test)]
+    pub(super) fn set_test_version(&self, run_id: &str, version: &str) {
+        self.execution(run_id).lock().unwrap().version = Some(version.into());
+    }
     fn execution(&self, run_id: &str) -> Arc<StdMutex<ExecutionInventory>> {
         let mut entries = self
             .executions
