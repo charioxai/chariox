@@ -146,6 +146,9 @@ export function submitPromptRequest(
   }
 }
 
+export const agentTriggersMinimumProtocolVersion = 576
+export const agentTriggersCapability = "agent_triggers_v1"
+
 export function createAgentScheduleTriggerRequest(options: {
   sessionId: string
   agentId: string

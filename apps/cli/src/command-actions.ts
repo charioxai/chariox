@@ -8,6 +8,7 @@ import type {
   SessionConfigState,
 } from "./cli-types.js"
 import {
+  agentTriggersMinimumProtocolVersion,
   createAgentScheduleTriggerRequest,
   deleteAgentTriggerRequest,
   updateAgentTriggerRequest,
@@ -145,7 +146,8 @@ type CommandActionDeps =
   currentProviderId: () => string
   submitGoalPrompt?: (text: string, targetAgentId: string) => Promise<void>
   focusedAgentId: () => string | null
-  /** Sends CreateAgentTrigger, UpdateAgentTrigger or DeleteAgentTrigger. */
+  supportsAgentTriggers?: () => Promise<boolean>
+  /** Sends a trigger change or a legacy CreateAgentPromptSchedule. */
   sendAgentTriggerRequest?: (request: Record<string, unknown>) => Promise<{ session: RuntimeSession }>
   runWorkflowRegistryEntry?: (
     name: string,
@@ -502,6 +504,13 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       return
     }
     const sessionId = deps.sessionState().id
+    const supportsTriggers = await deps.supportsAgentTriggers?.() ?? false
+    const legacyWait = !supportsTriggers && action.type === "create"
+      && /^\/wait-(in|every)(?:\s|$)/.test(command.raw)
+    if (!supportsTriggers && !legacyWait) {
+      deps.flashFooter(`kernel too old for agent triggers (requires protocol ${agentTriggersMinimumProtocolVersion}); upgrade the kernel`, "error")
+      return
+    }
     if (action.type === "list") {
       const triggers = agentTriggersForAgent(deps.sessionState(), agentId)
       deps.appendNotice(triggers.length === 0
@@ -518,7 +527,15 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter("agent triggers are unavailable in this kernel", "error")
       return
     }
-    const request = action.type === "create"
+    const request = legacyWait && action.type === "create"
+      ? { CreateAgentPromptSchedule: {
+        session_id: sessionId,
+        agent_id: agentId,
+        kind: action.repeat === "every" ? "recurring" : "once",
+        interval_seconds: Math.max(1, Math.round(action.minutes * 60)),
+        ...(action.prompt.trim() ? { prompt: action.prompt.trim() } : {}),
+      } }
+      : action.type === "create"
       ? createAgentScheduleTriggerRequest({
         sessionId,
         agentId,

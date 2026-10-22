@@ -34,6 +34,7 @@ test("/trigger creates, changes, removes and lists the focused agent's triggers"
   const triggerSession = makeSession({ agent_triggers: [trigger] })
   const handlers = createCommandActionHandlers(makeCommandDeps({
     sessionState: () => triggerSession,
+    supportsAgentTriggers: async () => true,
     sendAgentTriggerRequest: async (request: Record<string, unknown>) => {
       calls.push(JSON.stringify(request))
       return { session: triggerSession }
@@ -67,6 +68,35 @@ test("/trigger creates, changes, removes and lists the focused agent's triggers"
     "info:trigger trigger-1 removed",
   ])
   assert.match(calls[10] ?? "", /^notice:Triggers\ntrigger-1  every 3s · steer · next .* · 2 fired$/)
+})
+
+test("protocol-567 kernels retain /wait aliases and reject trigger-only commands", async () => {
+  const calls: Record<string, unknown>[] = []
+  const errors: string[] = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    supportsAgentTriggers: async () => false,
+    sendAgentTriggerRequest: async (request: Record<string, unknown>) => {
+      calls.push(request)
+      return { session: makeSession() }
+    },
+    flashFooter: (message: string, tone: string) => { if (tone === "error") errors.push(message) },
+  }))
+  for (const raw of ["/wait-in 1 Ping", "/wait-every 0.5 Check"]) {
+    const command = parseSlashCommand(raw)
+    assert.equal(command?.kind, "trigger")
+    await handlers.handleTriggerCommand(command as Extract<typeof command, { kind: "trigger" }>)
+  }
+  assert.deepEqual(calls, [
+    { CreateAgentPromptSchedule: { session_id: "session-1", agent_id: "agent-1", kind: "once", interval_seconds: 60, prompt: "Ping" } },
+    { CreateAgentPromptSchedule: { session_id: "session-1", agent_id: "agent-1", kind: "recurring", interval_seconds: 30, prompt: "Check" } },
+  ])
+  for (const raw of ["/trigger", "/trigger every 1 Ping", "/trigger in 1 --steer Ping", "/trigger off t1", "/trigger remove t1"]) {
+    const command = parseSlashCommand(raw)
+    await handlers.handleTriggerCommand(command as Extract<typeof command, { kind: "trigger" }>)
+  }
+  assert.equal(calls.length, 2, "unsupported requests must never reach an old kernel")
+  assert.equal(errors.length, 5)
+  assert.ok(errors.every((message) => /kernel.*576.*upgrade/i.test(message)))
 })
 
 test("formatAgentListSummary renders aliases and pluralization", () => {

@@ -1,3 +1,4 @@
+import { agentTriggersCapability } from "@chariox/kernel-client/ipc-requests"
 import { withAgentTaskUpdate } from "@chariox/kernel-client/agent-task-state"
 import type { AgentTaskExecution } from "@chariox/kernel-client/kernel-types"
 import { getManagedContextTransferStatus } from "./managed-environment-api.js"
@@ -826,9 +827,13 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       resumeMetaagentTask(client, sessionId, metaagentId),
     abortMetaagentTask: (sessionId, metaagentId, reason) =>
       abortMetaagentTask(client, sessionId, metaagentId, reason),
+    supportsAgentTriggers: async () => {
+      const response = await client.send<{ RelayStatus: { status: { capabilities?: string[] } } }>({ RelayStatus: null })
+      return response.RelayStatus.status.capabilities?.includes(agentTriggersCapability) ?? false
+    },
     sendAgentTriggerRequest: async (request) => {
       const response = await client.send<Record<string, unknown>>(request)
-      const payload = ["AgentTriggerCreated", "AgentTriggerUpdated", "AgentTriggerDeleted"]
+      const payload = ["AgentTriggerCreated", "AgentTriggerUpdated", "AgentTriggerDeleted", "AgentPromptScheduleCreated"]
         .map((key) => response[key] as { session?: RuntimeSession } | undefined)
         .find(Boolean)
       if (!payload?.session) {
