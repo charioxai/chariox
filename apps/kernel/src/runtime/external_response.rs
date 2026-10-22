@@ -52,6 +52,14 @@ fn protect_error(error: DaemonError) -> DaemonError {
     {
         return error;
     }
+    // A session alias the agent chose, and the session that holds it: the kernel's own
+    // sentence about names the agent sent, so the agent can pick another alias.
+    if matches!(
+        &error,
+        DaemonError::SessionAliasConflict { .. } | DaemonError::InvalidSessionAlias { .. }
+    ) {
+        return error;
+    }
     let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
     DaemonError::ExternalRequestFailed {
         code: mapped.code,

@@ -393,6 +393,26 @@ fn external_response_preserves_notification_metadata_and_sudo_extension() {
     }
 }
 
+// A grant holder that picks a taken session alias learns which session holds it.
+#[test]
+fn external_response_tells_a_grant_holder_which_session_holds_an_alias() {
+    let caller = command(KernelConnectionClass::ExternalAgent);
+    let told = finish_response(
+        &caller,
+        Err(DaemonError::SessionAliasConflict {
+            workspace_id: "w1".into(),
+            alias: "main".into(),
+            session_id: "s-7".into(),
+        }),
+    )
+    .unwrap_err();
+    assert!(told.to_string().contains("`s-7`"), "{told}");
+    assert_eq!(
+        crate::transport::kernel_protocol::map_kernel_error(&told).code,
+        "session_alias_conflict"
+    );
+}
+
 #[test]
 fn external_response_tells_a_grant_holder_what_is_wrong_with_its_terminal() {
     let caller = command(KernelConnectionClass::ExternalAgent);
