@@ -132,6 +132,7 @@ impl KernelRuntimeState {
                         .to_string(),
                     until: super::terminal::watches(until),
                     after_offset: args["after_offset"].as_u64(),
+                    armed_at_offset: None,
                     host_agent,
                 };
                 let wake = new_wake(task, super::super::terminal_wake::KIND, label(args)?, now);

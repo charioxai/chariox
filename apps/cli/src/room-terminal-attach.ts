@@ -15,6 +15,7 @@ export const TERMINAL_DETACH_BYTE = 0x1d
 const TERMINAL_DETACH_KITTY = "\x1b[93;5u"
 const OUTPUT_POLL_MS = 4000
 const RETRY_DELAYS_MS = [200, 500, 1000, 2000]
+const INTERRUPTED = Symbol("interrupted")
 
 export type TerminalSend = (request: unknown) => Promise<unknown>
 
@@ -106,9 +107,13 @@ export async function attachRoomTerminal(options: {
   const size = () => ({ cols: output.columns || 80, rows: output.rows || 24 })
   const state: { end: TerminalAttachEnd | null } = { end: null }
   let wake: () => void = () => {}
+  let interrupt: () => void = () => {}
+  // Resolves when the attach ends, so a request that never answers cannot hold it.
+  const interrupted = new Promise<typeof INTERRUPTED>(resolve => { interrupt = () => resolve(INTERRUPTED) })
   const finish = (result: TerminalAttachEnd) => {
     state.end ??= result
     wake()
+    interrupt()
   }
   const draw = (bytes: Uint8Array) => {
     const { out, left } = hosted.push(bytes)
@@ -132,7 +137,8 @@ export async function attachRoomTerminal(options: {
   async function untilDelivered<T>(call: () => Promise<T>): Promise<T | undefined> {
     for (let attempt = 0; !state.end; attempt++) {
       try {
-        const result = await call()
+        const result = await Promise.race([call(), interrupted])
+        if (result === INTERRUPTED) return undefined
         if (attempt > 0) title("chariox terminal")
         return result
       } catch (error) {
@@ -151,26 +157,31 @@ export async function attachRoomTerminal(options: {
   }
 
   // Input keeps its order; a chunk lost with the connection is dropped, never replayed
-  // into a program that may already have received it.
+  // into a program that may already have received it. After the attach is over, chunks that
+  // have not been sent yet are dropped and a late reply writes nothing to the outer terminal.
   let sending: Promise<unknown> = Promise.resolve()
+  let over = false
   const sendKeys = (bytes: Buffer) => {
     sending = sending.then(async () => {
+      if (over) return
       try {
         const reply = expectRoomTerminalResult(await send(roomTerminalInputRequest(hostedTarget, terminalId, bytes)), "input")
-        if (!reply.input.accepted) title(`chariox terminal — ${reply.input.refusal ?? "input refused"}`)
+        if (!reply.input.accepted && !over) title(`chariox terminal — ${reply.input.refusal ?? "input refused"}`)
       } catch (error) {
         if (error instanceof RoomTerminalRefusedError) finish({ reason: "ended", description: error.message })
-        else title("chariox terminal — input lost while reconnecting")
+        else if (!over) title("chariox terminal — input lost while reconnecting")
       }
     })
   }
 
+  // Ctrl-] works from the first moment; other keys wait until the screen is in sync.
+  let synced = false
   const onData = (chunk: Buffer) => {
     if (state.end) return
     const text = chunk.toString("latin1")
     const detachAt = Math.max(chunk.indexOf(TERMINAL_DETACH_BYTE), text.indexOf(TERMINAL_DETACH_KITTY))
-    if (detachAt < 0) return sendKeys(chunk)
-    if (detachAt > 0) sendKeys(chunk.subarray(0, detachAt))
+    if (detachAt < 0) return synced ? sendKeys(chunk) : undefined
+    if (detachAt > 0 && synced) sendKeys(chunk.subarray(0, detachAt))
     finish({ reason: "detached" })
   }
   const onResize = () => {
@@ -183,12 +194,13 @@ export async function attachRoomTerminal(options: {
     if (raw) input.setRawMode?.(true)
     input.resume()
     options.signal?.addEventListener("abort", onAbort)
+    input.on("data", onData)
     output.write("\x1b[?1049h")
     if (options.signal?.aborted) return { reason: "detached" }
     await untilDelivered(() => send(resizeRoomTerminalRequest(hostedTarget, terminalId, size())))
     let offset = await untilDelivered(resync)
     if (offset === undefined) return state.end ?? { reason: "detached" }
-    input.on("data", onData)
+    synced = true
     output.on("resize", onResize)
     while (!state.end) {
       const reply = await untilDelivered(async () => expectRoomTerminalResult(
@@ -214,7 +226,8 @@ export async function attachRoomTerminal(options: {
     input.off("data", onData)
     output.off("resize", onResize)
     options.signal?.removeEventListener("abort", onAbort)
-    await sending
+    // Not awaiting `sending`: an unanswered input request must not keep the user in the attach.
+    over = true
     output.write(MODE_RESET)
     output.write("\x1b[?1049l")
     if (titled) output.write("\x1b]2;\x07")
