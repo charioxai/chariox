@@ -952,6 +952,63 @@ impl KernelRuntimeState {
         }
     }
 
+    pub(super) async fn steer_agent_trigger_prompt(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        let owned = &self.owned;
+        if owned
+            .agent_store
+            .get_agent(target_agent_id)?
+            .remote_execution()
+            .is_some()
+        {
+            return self
+                .steer_queued_prompt_with_external_authority(
+                    session_id,
+                    target_agent_id,
+                    attachment_id,
+                    prompt_id,
+                    None,
+                )
+                .await
+                .map(|_| ());
+        }
+        let prepared = owned.prepare_local_queued_prompt_steer(
+            session_id,
+            target_agent_id,
+            attachment_id,
+            prompt_id,
+        )?;
+        let result = async {
+            let _permit = self
+                .provider_runtime_lanes
+                .acquire(&prepared.dispatch.provider_run_id)
+                .await;
+            if !self
+                .enqueue_prompt_dispatch_with_acceptance(&prepared.dispatch)
+                .await?
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "steer queued prompt",
+                    message: "provider did not accept the queued prompt steer".into(),
+                });
+            }
+            owned.finish_local_queued_prompt_steer(&prepared)
+        }
+        .await;
+        drop(prepared);
+        if result.is_err() {
+            // Completion may have found the reserved head and left the run
+            // idle. Resume the retained queue after releasing its reservation.
+            self.spawn_idle_local_prompt_queue_promotion(session_id, target_agent_id)?;
+        }
+        result.map(|_| ())
+    }
+
     pub(crate) async fn steer_queued_prompt_with_external_authority(
         &self,
         session_id: &str,
@@ -970,37 +1027,15 @@ impl KernelRuntimeState {
             .remote_execution()
             .is_none()
         {
-            let prepared = owned.prepare_local_queued_prompt_steer(
-                session_id,
-                target_agent_id,
-                attachment_id,
-                prompt_id,
-            )?;
-            let result = async {
-                let _permit = self
-                    .provider_runtime_lanes
-                    .acquire(&prepared.dispatch.provider_run_id)
-                    .await;
-                self.authorize_prompt_command(authority)?;
-                if !self
-                    .enqueue_prompt_dispatch_with_acceptance(&prepared.dispatch)
-                    .await?
-                {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "steer queued prompt",
-                        message: "provider did not accept the queued prompt steer".into(),
-                    });
-                }
-                owned.finish_local_queued_prompt_steer(&prepared)
+            if let Some(steer) =
+                owned.steer_queued_prompt(session_id, target_agent_id, attachment_id, prompt_id)?
+            {
+                return Ok(steer);
             }
-            .await;
-            drop(prepared);
-            if result.is_err() {
-                // Completion may have found the reserved head and left the run
-                // idle. Resume the retained queue after releasing its reservation.
-                self.spawn_idle_local_prompt_queue_promotion(session_id, target_agent_id)?;
-            }
-            return result;
+            return Err(DaemonError::LocalTransport {
+                operation: "steer queued prompt",
+                message: "local queued prompt steer did not produce a dispatch".to_string(),
+            });
         }
         let prepared = owned
             .prepare_remote_queued_prompt_steer(
