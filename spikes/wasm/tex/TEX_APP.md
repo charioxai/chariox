@@ -2,13 +2,20 @@
 
 MP-08 / MP-10 / MP-11 · research only · 2026-10-22
 
+**Planning update, 2026-10-22, 19:40–19:55 UTC:** Miguel fixed the example
+Apps as Excalidraw then Univer and said “let's leave any latex related app
+for later”. Typst is not planned now; the wrapped-binary kind is dropped.
+The [two-stage plan](../APPS_V2_PLAN.md) and [shape §7](../APPS_V2_SHAPE.md#7-wrapped-existing-binaries--reversed-on-2026-10-22)
+supersede this spike's earlier recommendations. Measurements and licence
+findings below remain research evidence, not a request to resume Apps.
+
 **Verdict: works with caveats technically; does not qualify as a first-party
 LaTeX App under the accepted licence rule.** Overleaf CE is AGPL. Tectonic's
 MIT label does **not** cover all the engine code: its linked PDF converter
 contains GPL-2.0-or-later source, and its TECkit code offers CPL/LGPL. That
-changes the original recommendation. Keep the permissive rule. Prefer a
-Typst example or a wrapped, separately licensed LaTeX engine until there is
-an acceptable engine licence route.
+changes the original recommendation. Keep the accepted licence rule, including
+MPL as a dependency. Defer a first-party LaTeX App until an acceptable engine
+licence route exists; it is not a prerequisite for either Apps v2 stage.
 
 An original editor using CodeMirror 6 and PDF.js is feasible. Both UI
 libraries pass the rule. This spike builds Tectonic directly for
@@ -183,23 +190,21 @@ date through the engine contract. This spike uses flat filenames and a
 fixed package subset; arbitrary nested projects and package discovery
 remain integration work.
 
-## Alternatives if we keep the rule
+## Research alternatives — not scheduled
 
-- **Typst component:** the clearest first-party engine candidate. It is a
+- **Typst component:** technically a first-party engine candidate; **not
+  planned now** after Miguel's answer. It is a
   different language, not a way to compile a user's existing `.tex` project.
 - **BusyTeX / SwiftLaTeX in a view Web Worker:** technically plausible
   Emscripten routes, like DuckDB in §7b. No full build was attempted for
   those alternatives. Their engine licences still need clearance; moving
   GPL/AGPL code into the view does not satisfy the first-party rule.
-- **Wrapped binary (§7):** let a user install a separately licensed native
-  Tectonic or TeX Live engine, and drive it as a terminal/native App. This
-  can support existing LaTeX projects, with per-OS packaging and the wrapped
-  kind's limits. It is not the portable permissive reference App. An existing
-  Overleaf CE server can also be opened as the existing-web-app kind from
-  §7; its Node/services/database/TeX stack stays outside the WASM App and
-  keeps its own AGPL obligations.
+- **Wrapped binary: dropped by Miguel, 10-22.** Not a planned App kind or
+  a route around the licence blocker. Existing programs can be driven through
+  Computer Use or other tools. An existing Overleaf CE server may still be
+  opened as a web page; its services and AGPL obligations stay external.
 
-## Bounded PRs, after Apps resumes
+## Possible later LaTeX PRs — not in either stage
 
 | # | PR | Size | Depends on |
 |---|---|---|---|
@@ -214,12 +219,13 @@ Estimate: roughly **3–5 weeks after the prerequisites**, for a single-user
 example, excluding collaboration and any engine relicensing/replacement.
 This is a planning estimate, not work authorised while Apps is paused.
 
-## Open questions
+## Later LaTeX questions
 
-1. Keep Typst as the first-party typesetting example and offer LaTeX only
-   through wrapping? **Recommended**, given the verified licence conflict.
-2. If true first-party LaTeX is essential, which acceptable engine licence
+Miguel has answered the scope question: LaTeX later, no Typst example now,
+no wrapped-binary App kind. Do not reopen those decisions.
+
+1. Before any later LaTeX implementation, which acceptable engine licence
    route is available? Rewriting the UI alone is insufficient.
-3. Can long compiler jobs use explicit progress/cancel checkpoints or a
+2. Can long compiler jobs use explicit progress/cancel checkpoints or a
    dedicated compiler instance without undermining the App's other actions?
    A synchronous C compiler must not silently inherit relaxed worker limits.

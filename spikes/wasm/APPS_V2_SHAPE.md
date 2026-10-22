@@ -8,6 +8,11 @@ spike (`spikes/wasm/DECISION.md`).
 
 How to read it: each section describes one part of the App, then ends with
 **Consequences** and **Open points for you**. §8 collects every decision.
+The [two-stage plan](APPS_V2_PLAN.md) records Miguel's later answers from
+10-22, 19:40–19:55 UTC. They supersede historical questions here: wrapped
+binaries are dropped, Excalidraw then Univer are fixed, MPL is allowed as a
+dependency, and LaTeX comes later. Typst is not planned now.
+MP-08 / MP-10 / MP-11: design only; no parity or security acceptance closes.
 
 Binding decisions already taken (10-22) and used as given here: WASM
 components on wasmtime in a Rust worker, async from the start, QuickJS for
@@ -134,6 +139,8 @@ is wrong; §3 decides which we want.
   (P2.01–P2.05, `CHARIOX_APPS_IMPLEMENTATION_PLAN.html:1618-1641`). Two
   distribution routes are planned: the Library (no source upload) and a
   publisher-hosted signed feed (`:1068-1072`). Nothing of it exists in code.
+  **Later 10-22 update:** automatic review is deferred for discussion before
+  Stage 2; the [unified plan](APPS_V2_PLAN.md) works without it.
 
 ### 1.6 How agents use an App today
 
@@ -588,42 +595,16 @@ top. Launch set: Rust, JS/TS, C. C++ follows in weeks, Python as a preview.
 
 ---
 
-## 7. Wrapped existing binaries
+## 7. Wrapped existing binaries — reversed on 2026-10-22
 
-Your ask: existing programs hooked as Chariox Apps even with no MCP,
-driven by agents through the UI in Chariox, reachable from a remote client.
+**Dropped by Miguel**, superseding the earlier proposal and §8 decision 12:
 
-| Kind of program | How it runs | How clients see it | How agents act | Feasibility |
-|---|---|---|---|---|
-| GUI program (Linux) | a separate App kind `kind: "native"`, per-OS binary, OS sandbox (same bwrap/cgroup launcher as the worker), on a **virtual display** (Xvfb/Wayland headless) | streamed with the Browser display transport that replaces Selkies video (multidomain) | accessibility tree (AT-SPI) where the toolkit exposes one; Computer Use (screenshot + click) otherwise | good: we already run Chromium this way; the display transport is being built for the browser anyway |
-| GUI program (macOS) | native binary in the OS sandbox; no virtual display on macOS, so **per-window capture** of a real window (ScreenCaptureKit) | same transport | macOS AX API (rich on native apps) or Computer Use | possible, more work; headless use (nobody logged in) does not exist on macOS |
-| GUI program (Windows) | not today | — | — | later |
-| CLI program | a Chariox terminal pane with the binary in the OS sandbox | the existing pane/terminal transport | the agent's terminal tools, as with any CLI | good: mostly packaging and sandbox profile |
-| Existing web app | a Tab of the kernel browser pointing at it | the Browser mirror (DOM mirroring, region video) | browser driving, as today | good: already the product |
+> the compiled binaries from existing programs, they don't bring anything we can't do with computer use or other tools we're building.
 
-Limits that stay true for wrapped programs: no portability (one binary per
-OS), no per-call limits (the sandbox limits the process, not a call), no
-typed actions unless the program exposes them through accessibility, and
-trust is only the OS sandbox plus the publisher signature on the wrapper.
-Agents interact through accessibility or pixels, which is slower and
-less reliable than §4's declared actions; the benchmark arm (C) measures
-exactly that gap.
-
-Relation to native Chariox Apps: the wrapped kind is the on-ramp
-("my program in Chariox today"); the WASM kind is the destination
-("portable, limited, agent-native"). The manifest, signing, install,
-generations, approvals and the view Tab are shared; only `runtime` differs.
-
-**Consequences.** A real but separate L-size track: sandbox profiles per OS
-for arbitrary binaries, a virtual display per App on Linux, window capture
-on macOS, and an accessibility bridge for agents. None of it blocks §2–§4.
-
-**Open points for you.**
-1. Scope for v2: Linux GUI + CLI wrapping first, macOS window capture
-   second, Windows not planned? *Recommend: yes, and only after §4 lands.*
-2. Should wrapped GUI Apps be able to **declare actions** too, through
-   accessibility scripts (e.g. "click the Save menu")? *Recommend: later;
-   see how far AX gets us first.*
+There is no wrapped-binary App kind, W1/W2 work, per-OS wrapper package or
+window-capture track in Apps v2. Existing programs remain accessible through
+Computer Use and the other tools being built. Existing web applications can
+still be opened in the kernel browser; that is already a product path.
 
 ---
 
@@ -638,7 +619,7 @@ or licence page; releases from GitHub.
 |---|---|---|---|---|---|---|
 | Excalidraw | MIT | — | yes (React component) | none needed | v0.18.1 (04-2026), very active | **Good** |
 | Univer (sheets/docs/slides) | Apache-2.0 core; Pro is commercial | xlsx/docx import-export, charts, pivot, print, collaboration are **Pro-only** | yes (canvas) | none needed; add our own xlsx I/O | v1.2.0 (10-22-2026), very active | **Good** |
-| Typst | Apache-2.0 (typst and typst.ts) | — | partly (renderer exists, editor to assemble) | **yes**: Rust → `wasm32-wasip2`, fonts/packages via HTTP + file brokers | v0.15.1 (07-2026) | **Good** (best real backend component) |
+| Typst | Apache-2.0 (typst and typst.ts) | — | partly (renderer exists, editor to assemble) | **yes**: Rust → `wasm32-wasip2`, fonts/packages via HTTP + file brokers | v0.15.1 (07-2026) | **Research only; not planned now** |
 | LaTeX / Tectonic + CodeMirror + PDF.js | MIT frontend/wrapper; **GPL-2.0+ PDF engine and CPL/LGPL TECkit** in Tectonic | Top-level MIT is not engine clearance | yes | direct `wasm32-wasip2` component builds on the async world; measured compiler spike | research, 10-22 | **Not first-party under the rule below**; [measurements and design](tex/TEX_APP.md) |
 | PDF.js | Apache-2.0 | — | yes | none needed | v6.4 (10-2026) | Good |
 | pdf-lib | MIT | upstream dormant since 2021; use the maintained `cantoo-scribe` fork (MIT, 09-2026) | library | pure JS → QuickJS backend | fork active | Good as a library |
@@ -651,12 +632,12 @@ or licence page; releases from GitHub.
 | DuckDB (duckdb-wasm) | MIT | — | n/a | Emscripten only (exceptions, pthreads): runs in the **view's** Web Worker, not as a component (~30 MB) | v1.33 (12-2025) | In-view only |
 | Squoosh codecs | Apache-2.0 (codecs own BSD/MIT) | project dormant since 08-2024 | yes | Emscripten C++/Rust codecs; Rust ones trivial to rebuild for wasip2 | dormant | Possible (reuse codecs) |
 | MuPDF / mupdf.js | **AGPL-3.0** or commercial | **AGPL** covers the WASM binary; network-use copyleft | library | Emscripten; C core could rebuild with wasi-sdk | mupdf.js 0.3 (08-2024) | Avoid; PDF.js + pdf-lib cover it |
-| pandoc | **GPL-2.0+** (pandoc-wasm wrapper MIT) | **GPL**: bundling pandoc.wasm makes the App GPL | CLI | yes, GHC wasm backend builds a WASI p1 module (no Lua filters) | 3.12 (10-2026) | Wrapped binary / sidecar only |
-| LibreOffice WASM (ZetaJS) | MPL-2.0 (+LGPL parts); zetajs MIT | weak copyleft | **no**: Qt-for-WASM canvas | **no**: Emscripten + pthreads + SharedArrayBuffer (needs COOP/COEP), ~32 MB wasm + data, beta | zetajs 1.2 (06-2025) | No → **wrapped binary (§7)** |
-| Collabora Online | MPL-2.0 | weak copyleft | yes (JS client) | **no**: native C++ server + LibreOfficeKit processes | active | No → wrapped |
-| OnlyOffice Docs | **AGPL-3.0** | **AGPL** | yes (canvas) | **no**: Node services + x2t C++ converter + RabbitMQ/PostgreSQL | v10 (10-2026) | No → wrapped, and AGPL |
+| pandoc | **GPL-2.0+** (pandoc-wasm wrapper MIT) | **GPL**: bundling pandoc.wasm makes the App GPL | CLI | yes, GHC wasm backend builds a WASI p1 module (no Lua filters) | 3.12 (10-2026) | Not a first-party candidate under this rule; wrapped kind dropped |
+| LibreOffice WASM (ZetaJS) | MPL-2.0 (+LGPL parts); zetajs MIT | weak copyleft | **no**: Qt-for-WASM canvas | **no**: Emscripten + pthreads + SharedArrayBuffer (needs COOP/COEP), ~32 MB wasm + data, beta | zetajs 1.2 (06-2025) | No component fit; wrapped kind dropped (§7) |
+| Collabora Online | MPL-2.0 | weak copyleft | yes (JS client) | **no**: native C++ server + LibreOfficeKit processes | active | No component fit; wrapped kind dropped |
+| OnlyOffice Docs | **AGPL-3.0** | **AGPL** | yes (canvas) | **no**: Node services + x2t C++ converter + RabbitMQ/PostgreSQL | v10 (10-2026) | No component fit; AGPL and wrapped kind dropped |
 
-### 7b.1 Reference App candidates
+### 7b.1 Fixed reference Apps
 
 **Excalidraw (diagrams).** Views: the Excalidraw React component as the
 single UI entry, state kept by the App. Backend component (QuickJS or
@@ -684,22 +665,21 @@ machine; Univer's Facade API is a JavaScript API inside the page, so any
 MCP for it would be a second server-side surface, which is the thing §5
 argues against.
 
-Typst is a candidate for the "real backend" showcase (a Rust compiler as a
-component with brokered fonts and packages). Miguel wants one or two example
-Apps, with an Overleaf-like LaTeX App if feasible. The [LaTeX spike](tex/TEX_APP.md)
-finds that Tectonic can build as a component, but its linked GPL code fails
-the first-party licence rule. Excalidraw and Univer remain candidates.
+**Decided by Miguel, 10-22, 19:40–19:55 UTC:** Excalidraw first, Univer
+second. These are the two substantial example Apps, not candidates awaiting
+selection. Typst is not planned now. LaTeX comes later: the
+[completed spike](tex/TEX_APP.md) built a real compiler component but found
+linked GPL and CPL/LGPL code that fails the first-party licence rule.
 
-**Consequences.** Pick one or two reference Apps; Excalidraw and Univer can
-also serve as the benchmark Apps (§5.3). Licence rule for first-party Apps: permissive only
-(MIT/BSD/Apache/MPL as a dependency); no GPL/AGPL code in a Chariox App we
-ship; copyleft programs go through the wrapped kind if at all.
+**Licence rule, decided.** First-party Apps use permissive code
+(MIT/BSD/Apache and equivalent terms), with **MPL allowed as a dependency**.
+MPL is weak copyleft; keep its file-level source and notice obligations.
+No GPL/AGPL code in a Chariox App we ship. The wrapped kind was dropped and
+is not an alternative licence route. Preserve the full pinned inventory.
 
-**Open points for you.**
-1. Excalidraw first, Univer second (recommend)?
-2. The licence rule above for first-party Apps (recommend: yes).
-3. Univer's Pro-only features: build our own xlsx I/O (recommend) or
-   accept csv-only at first?
+Univer's Pro-only features remain excluded; choose a permitted XLSX library
+with round-trip evidence before claiming that support. CSV/formulas and the
+core workflow do not depend on buying or redistributing Pro features.
 
 ---
 
@@ -728,13 +708,15 @@ runtime (R) and the agent-side UI work (A) do not depend on each other.
 | P1 | Port first-party Apps to wasm, delete the Node engine, real-path drills | M + S | R4, L1 |
 | X1 | Excalidraw App; X2 Univer sheets App (also the benchmark Apps) | M each | A2, L1 |
 | B1 | Benchmark (§5.3) and the public claim | S | X1 |
-| W1 | Wrapped-binary kind: Linux GUI on a virtual display + CLI panes; W2 macOS window capture | L, L | later |
 
 Critical path to "Apps v2 usable": R1 → R3 → R4 → P1 (≈ 6 weeks) in
 parallel with A1 → A2 → A3 (≈ 4 weeks) and D1 (1 week). C and the
-reference Apps follow inside the same window.
+reference Apps follow inside the same window. This is the original runtime
+sketch; the [complete plan](APPS_V2_PLAN.md#5-dependencies-prs-and-staffing)
+includes integration, examples, benchmarking and live acceptance: Stage 1
+7–9 weeks, Stage 2 4–6 without automatic review or 6–8 with it.
 
-### Your decisions (each with my recommendation)
+### Your decisions (accepted, with later 10-22 updates)
 
 | # | Decision | Recommendation | Miguel 10-22 |
 |---|---|---|---|
@@ -749,8 +731,8 @@ reference Apps follow inside the same window.
 | 9 | Benchmark target: SaaS + MCP (headline) and Computer Use | both | Accepted as recommended. |
 | 10 | C at launch with the state-machine SDK; C++ right after | yes | C at launch with the state-machine SDK; C++ right after. |
 | 11 | Python as a preview after launch; Go wait | yes | Accepted as recommended. |
-| 12 | Wrapped binaries: Linux GUI + CLI first, macOS second, after A-track lands | yes | Accepted as recommended. |
-| 13 | Reference Apps: Excalidraw first, Univer sheets second; permissive-licence rule for first-party Apps | yes | One or two example Apps. Keep the permissive rule. Overleaf-like LaTeX wanted if feasible; spike in `tex/TEX_APP.md`. Excalidraw and Univer remain candidates. |
+| 12 | Wrapped binaries | Reversed, 10-22 | **Dropped.** Miguel: “the compiled binaries from existing programs, they don't bring anything we can't do with computer use or other tools we're building.” W1/W2 removed; §7 records the reversal. |
+| 13 | Reference Apps and licences | Excalidraw first, Univer second | **Fixed, 10-22:** “univer and scalidraw for certain”; “let's leave any latex related app for later”. MPL allowed as a dependency. Typst not planned. [LaTeX result](tex/TEX_APP.md) retained with its licence blocker. |
 | 14 | Resume order: R-track and A-track in parallel, D1 first week | yes | Accepted as recommended. |
 
 What is **not** asked of you: the detailed WIT, the SDK function names,

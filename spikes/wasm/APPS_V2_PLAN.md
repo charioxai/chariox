@@ -14,25 +14,47 @@ publishing service is needed. Estimate: **7–9 weeks with four lanes**, includi
 integration and real live validation; C++ follows immediately after C.
 
 **Stage 2 — Install and distribute.** Add the App Library, Developer Center,
-automatic review of every release, opening downloaded packages, and one
-updater for Library and publisher feeds. At its end, an external developer
-can publish without staff help or source upload, and you can discover,
-install and update that App through the UI. Channels, revoked releases,
-offline operation and recovery use Stage 1's installer and generations.
-Estimate: **6–8 more weeks with four lanes**.
+opening downloaded packages, and one updater for Library and publisher feeds.
+At its end, an external developer can publish without staff help, and you can
+discover, install and update the App through the UI. Trust rests on publisher
+identity, verified App-ID ownership, reports, withdrawal and revocation.
+Automatic review is **not in the agreed stage**; discuss it before Stage 2.
+Estimate: **4–6 more weeks with four lanes without review**, or **6–8 weeks
+with the review service** if Miguel chooses it.
 
-**Total: 13–17 calendar weeks after an explicit resume**, an engineering
-estimate, not a delivery promise. This includes both stages' acceptance;
-it excludes the separate platform/product tracks listed in §3.3. A LaTeX App
-is **pending texspike** and is not hidden inside that estimate. Stage 1 ships
-and is testable independently before Stage 2 begins shipping.
+**Total: 11–15 calendar weeks without automatic review; 13–17 with it**, after
+an explicit resume. These are engineering estimates including real live
+acceptance, not delivery promises. The separate tracks in §3.2 are excluded.
+Excalidraw first and Univer second are fixed. LaTeX comes later; its compiler
+spike found a licence blocker ([TEX_APP.md](tex/TEX_APP.md)). Typst is not
+planned. Windows gates neither stage and has no track in this plan.
+Stage 1 ships and is testable independently before Stage 2 begins shipping.
+
+### Decisions log
+
+Miguel answered on **2026-10-22, 19:40–19:55 UTC**. These decisions supersede
+older recommendations below and in the shape; they are not reopened in §7.
+
+| Date | Decision | Miguel's words |
+|---|---|---|
+| 10-22 | Automatic review deferred until the Stage 2 discussion | “Automatic review put it in quaranteen. I'm not sure if we'll have this. We'll discuss before starting stage 2.” |
+| 10-22 | Moved P2 items keep their separate tracks | “yes” |
+| 10-22 | Windows is outside both stages; no Windows track here | “kernel is not yet available in windows, so no” |
+| 10-22 | Source-free JS remains undecided | “needs further discussion. Put it to be discussed before starting phase 2” |
+| 10-22 | Drop agent outputs to Apps and second-agent continuation; discuss App-created agents/workflows | “I don't think any of these are necessary, apart from 3 where the user might give an app access to create agents in the kernel, but it's unclear the shape of this for me.” |
+| 10-22 | Use user-configured notification triggers meanwhile | “Typically the user will set up an agent with notifications coming from the app, which will trigger the agent/workflow.” |
+| 10-22 | Review speed and offline policy remain proposals | “we'll discuss the shape of this before phase 2 too” |
+| 10-22 | Reverse-domain App IDs with verified ownership accepted | “Ok then” |
+| 10-22 | Excalidraw, then Univer; LaTeX later | “Univer sounds like a perfect fit ... univer and scalidraw for certain”; “let's leave any latex related app for later” |
+| 10-22 | MPL allowed as a dependency | “Ok to the more permissive dependency” |
+| 10-22 | Drop wrapped binaries, including W1/W2 | “the compiled binaries from existing programs, they don't bring anything we can't do with computer use or other tools we're building.” |
 
 ### 1.1 What exists, and what must change
 
 Based on `wasmspike/r3` at `5c4d888b9347a93575a8412244b29650c9222799`.
-All 14 decisions in [the accepted shape, §8](APPS_V2_SHAPE.md#8-revised-migration-plan-and-your-decisions)
-are inputs, not questions reopened here. The [async design](DESIGN.md) and
-[measured spike](DECISION.md) supply the runtime direction, not product acceptance.
+The decisions in [the accepted shape, §8](APPS_V2_SHAPE.md#8-revised-migration-plan-and-your-decisions)
+are inputs, with decision 12 reversed and decision 13 fixed by Miguel above.
+The [async design](DESIGN.md) and [measured spike](DECISION.md) supply the runtime direction, not product acceptance.
 The [old implementation plan](../../docs/CHARIOX_APPS_IMPLEMENTATION_PLAN.html)
 supplies the distribution requirements reconciled below.
 
@@ -58,8 +80,9 @@ to that commit, not to a newer main or another lane's worktree.
 | Shared installer entry | `apps/cli/src/app-install-file.ts:54` uses the same transfer for updates; `:236` chooses `BeginAppUpdate` with the expected generation or `BeginAppInstall` for first installation. Reuse this kernel lifecycle for every acquisition route. |
 | Approval seam | `apps/kernel/src/runtime/app_install_control/pump.rs:272` constructs install/update prompts. The consented-deployment route documented at `apps/kernel/src/runtime/app_install_control/requests.rs:224` is narrower than the accepted general no-repeat rule. Implement and test that rule; do not assume the dev README proves it already works. |
 
-The Library, Developer Center, review service and TUF delivery are requirements
-of old P2.01–P2.05, not capabilities established by this local code inspection.
+The Library, Developer Center and TUF delivery are requirements of old
+P2.01–P2.05, not capabilities established by this local code inspection. The
+old P2.03 review service is deferred to §7, not a Stage 2 prerequisite.
 
 ## 2. Stage 1 — Apps v2 core: shape and functionality
 
@@ -153,9 +176,9 @@ or Node used by build tools. Existing Node packages need a rebuild; provide a
 clear compatibility error and a data-preserving replacement drill.
 
 Ship Excalidraw first and Univer sheets second (§6), with a small Todo contract
-example for SDK onboarding and benchmark control. The Overleaf-like LaTeX
-candidate remains **pending texspike**. Do not call Typst “LaTeX compatibility”
-or add a native compiler sidecar to make the WASM example appear complete.
+example for SDK onboarding and benchmark control. LaTeX is a later App, outside
+both stages; [the completed spike](tex/TEX_APP.md) records its licence blocker.
+Typst is not planned, and there is no wrapped-binary App kind.
 
 B1 implements the accepted four-arm comparison: declared App actions,
 equivalent web app plus handwritten MCP, Computer Use, and App browser-driving
@@ -237,41 +260,35 @@ covers the changed security anchors; tests alone do not close it.
 
 ### 3.1 The deliverable and the two routes
 
-The Library offers browse/search/categories, detail pages, publisher identity,
-capabilities, action/effect descriptions, compatibility, releases, review state,
-install/update/uninstall, reporting and availability/revocation state. A user
-does not visit the Developer Center to install an App.
+The Library offers browse/search/categories, detail pages, verified publisher
+and App-ID ownership, capabilities, action/effect descriptions, compatibility,
+releases, install/update/uninstall, reporting and availability/revocation state.
+A user does not visit the Developer Center to install an App.
 
 The Library stores deliberately published packages and publishing metadata.
 It never receives runtime conversations or becomes Room/session authority;
 the runtime relay remains encrypted transport and the kernel owns activation,
 capabilities and running App state.
 
-The Developer Center lets a new publisher enroll, reserve an App ID, manage
-team roles/keys, upload a signed release, see preflight/review findings, repair
-and resubmit, select channels, stage/pause/withdraw releases, and manage support
-and telemetry metadata. Connection/event ingress registration is self-service
+The Developer Center lets a new publisher enroll, prove its namespace, manage
+team roles/keys, upload a signed release, see deterministic package/preflight
+errors, select channels, stage/pause/withdraw releases, and manage support and
+telemetry metadata. Connection/event ingress registration is self-service
 with tenant separation, schema negotiation, replay bounds and deletion.
 
-Every Library release is reviewed: initial, backend, UI-only and dependency
-changes. Reuse deterministic verification from Stage 1 plus artifact/dependency
-analysis and isolated dynamic probes, with LLM-assisted security review.
-Imports describe available interfaces, not every behavior or a proof that no
-vulnerability exists. WASI HTTP imports still need the manifest's exact
-network/capability enforcement. QuickJS can evaluate code inside its sandbox;
-an import allowlist does not prove “only reviewed code executes.”
+**Stage 2 does not require automatic review or a review attestation to publish
+or install.** Publisher signatures and the shared installer still check exact
+bytes, supported imports, schemas, capabilities and compatibility. These are
+package/admission checks, not a claim that an App was security-reviewed.
+Verified ownership identifies a publisher; it does not certify harmless code.
 
-No source upload, source-based tiers or routine human queue. Block security
-vulnerabilities and critical failures such as data loss or unusable startup;
-cosmetic/product/noncritical suggestions remain advisory. A trusted review
-coordinator validates required structured checks and signs the reviewed subject;
-an App's instructions or model prose cannot issue a passing attestation.
-Pending, timeout and scanner/model outage stay visible with retry paths.
-
-Library delivery requires that release's valid review attestation. Publisher
-feeds and side-installed packages remain explicitly reviewed or unreviewed;
-they never acquire a Library badge just by using the installer. Local policy
-may warn on or prohibit unreviewed acquisition without creating a second runtime.
+Trust rests on that identity and ownership, clear capabilities, user reports,
+publisher withdrawal and operator revocation with recovery. Both Library and
+side-install UI show the publisher and what was verified. There is no review
+badge or implied verdict. Reports have visible receipt/status and operator
+handling; withdrawal stops new acquisition, while revocation blocks newly
+learned revoked authority. §7 keeps the possible review service and its UI
+separate from this agreed delivery path.
 
 Both routes use one trusted updater and the Stage 1 install/update coordinator.
 The Library can download/stage a closed App without starting it or an agent.
@@ -281,34 +298,37 @@ working offline release, respect manual/automatic policy and compatibility
 holds, preserve drafts, and activate only at a safe point.
 
 TUF protects release metadata freshness, rollback/freeze, channel binding and
-key/threshold transitions; the publisher signature protects executable content;
-review attestations express Library verdicts. None substitutes for the others.
+key/threshold transitions; the publisher signature protects executable content.
+Neither substitutes for the other. The reserved attestation slot adds no
+review requirement; a future review verdict would be a separate trust claim.
 Revocation must show an actionable incident/recovery state, preserve user data
 and prevent new execution of known-revoked authority once learned. An offline
 kernel cannot know a newly issued revocation; show last-known freshness and
-apply the chosen offline policy (§7), rather than promising immediate global
-revocation or silently deleting data.
+apply the offline policy agreed before Stage 2 (§7). Do not promise immediate
+global revocation or silently delete data.
 
 ### 3.2 Every old P2 workstream: disposition
 
-“Moved” means a named follow-on with its own acceptance, not completed or
-deleted. Proposed placement changes requiring Miguel's decision are in §7.
+“Moved” means a separate track with its own acceptance. Miguel accepted these
+placements; they gate neither Apps v2 stage. Windows is excluded outright
+from this plan because the kernel is not available there. Deferred review
+work is collected in §7 and has no dependency edge into agreed Stage 2.
 
 | Old row | Disposition | What carries forward and why |
 |---|---|---|
-| P2.01 Library | **Kept as is — Stage 2** | All discovery, detail, review/trust, compatibility, lifecycle, report and availability requirements; show WIT/engine compatibility instead of Node target variants. |
-| P2.02 Developer Center | **Kept as is — Stage 2** | Publisher/App-ID ownership, teams/keys, uploads, findings, release operations and developer connection/event ingress remain necessary. |
-| P2.03 Automatic security review | **Simplified by WASM — Stage 2** | Reuse install-time import/export, schema, signature and capability checks. Keep isolated artifact review/probes, every-release verdicts, security/critical-only blocking, no source prerequisite and measured feedback. WASM removes neither UI review nor malicious/incomplete dependency risks. |
-| P2.04 Side install/autoinstaller | **Kept as is — Stage 2** | Stage 1 already installs a local file through commands. Stage 2 adds desktop association and supported released-client open/share flows, trust/review presentation and policy; no second installer. |
+| P2.01 Library | **Kept — Stage 2** | Discovery, detail, publisher/ownership trust, compatibility, lifecycle, reports and availability. No automatic-review badge or gate; WIT/engine compatibility replaces Node target variants. |
+| P2.02 Developer Center | **Kept — Stage 2** | Publisher/namespace ownership, teams/keys, uploads, deterministic preflight errors, release operations and developer connection/event ingress. Review findings/resubmission UI is deferred with P2.03. |
+| P2.03 Automatic security review | **To discuss before Stage 2 — §7** | No review-service dependency in agreed Stage 2. If selected later, reuse Stage 1 import/schema/signature/capability checks and add isolated artifact/dependency review, trusted attestations and verdict operations. |
+| P2.04 Side install/autoinstaller | **Kept — Stage 2** | Stage 1 installs a local file through commands. Stage 2 adds desktop association and released-client open/share flows with publisher/capability presentation; no review prerequisite or second installer. |
 | P2.05 Updates/channels/revocation/TUF | **Kept as is — Stage 2** | Both discovery routes, rollout, rotation, offline catch-up and incident handling. Generation activation and unchanged-capability consent belong to Stage 1 and are reused. Defer view-only hot replacement until continuity is proven. |
-| P2.06 Native viewers | **Moved out of Apps v2 — native client track** | Projects the same Chromium Tab; it is a client/platform project, not distribution. Preserve the full desktop/mobile input, accessibility, trusted-panel and recovery matrix. See Q1. |
-| P2.07 App-set inheritance | **Moved out of Apps v2 — kernel provisioning/transfer track** | Independent kernel creation, remapped identities and explicit data/grant copies are not publication. Keep machine credentials and durable receipts out of clones. See Q1. |
-| P2.08 Remaining notification Apps | **Moved out of Apps v2 — notification migration track** | Existing shipped App integrations are ported in Stage 1; converting remaining service-only sources is separate. Retain generic event/wake infrastructure and parity-before-deletion. See Q1. |
-| P2.09 Windows sandbox | **Simplified by WASM; moved to Windows platform track** | One portable component replaces per-target App backends. Windows still needs a native worker, broker/IPC/storage port, restricted identity, Job/ACL/mitigation evidence and real containment tests. It is not “solved by WASM.” See Q2. |
-| P2.10 Cross-App work | **Moved out of Apps v2 — agents/workflows track** | Preserve ordinary existing bindings and workflows. New recipient-consent/provenance/recovery features span Apps and kernel conversations, not installation. No cross-App transaction promise. See Q1. |
-| P2.11 Compiled proprietary backends | **Largely absorbed by Stage 1; simplified by WASM** | Rust/C compiled components and local AOT replace selecting a V8 bytecode format and publishing per-target variants. Stage 2 retains the proprietary-package audit, private debug material, dependency/migration checks and inspection limits. QuickJS source exclusion is unproven; AOT is not obfuscation. See Q3. |
-| P2.12 App outputs/continuation/assets | **To revisit; outside both stages** | Keep the original explicit deferral. Ordinary App actions/state are enough for this plan; information sets stay dropped. Do not invent output/agent-asset authority to fill a planning box. See Q4. |
-| P2.13 Step-up authentication | **Moved out of Apps v2 — shared authentication track** | Origin-bound authenticators, local/remote/TUI origins, enrollment and recovery are shared security infrastructure. Preserve existing kernel approval semantics, including existing grants and `/sudo`; this is not a new prompt per App action. See Q1. |
+| P2.06 Native viewers | **Moved out — native client track, decided** | Same Chromium Tab and full input/accessibility/trusted-panel/recovery matrix; client work is independent of distribution. |
+| P2.07 App-set inheritance | **Moved out — kernel provisioning/transfer track, decided** | Independent kernel creation, remapped identities and explicit data/grant copies. No credentials or durable receipts in clones. |
+| P2.08 Remaining notification Apps | **Moved out — notification migration track, decided** | Stage 1 ports shipped integrations; remaining service-only sources retain generic event/wake infrastructure and parity-before-deletion. |
+| P2.09 Windows sandbox | **Excluded from this plan, decided** | The kernel is not available on Windows. It gates neither stage; no Windows implementation track or estimate is included. |
+| P2.10 Cross-App work | **Moved out — agents/workflows track, decided** | Keep existing bindings/workflows. New recipient-consent/provenance/recovery work is separate; agent outputs to Apps and second-agent continuation are dropped. |
+| P2.11 Compiled proprietary backends | **Largely absorbed by Stage 1; simplified by WASM** | Rust/C components plus local AOT replace V8 bytecode/per-target backend builds. Keep private debug material and explicit artifact inspection limits. Source-free JS and the review-service artifact audit are in §7; AOT is not obfuscation. |
+| P2.12 App outputs/continuation/assets | **Dropped in part; creation deferred — §7** | Drop agent outputs to Apps and second-agent continuation. Only App permission to create agents/workflows remains for discussion. User-configured App-event/notification triggers are the existing alternative (§3.5). |
+| P2.13 Step-up authentication | **Moved out — shared authentication track, decided** | Real origins, enrollment and recovery are shared security work. Preserve kernel approval semantics, existing grants and `/sudo`; no new prompt per App action. |
 
 ### 3.3 Every old V2 validation: disposition and destination
 
@@ -323,19 +343,19 @@ clients ship, not claimed by a desktop drill.
 |---|---|---|
 | V2-DIST-01 | **Kept — Stage 2** | Identity, roles/removal/recovery, App-ID confusables/ownership, exact bytes, rotation/transfer; add local-to-Library identity and dev-key rejection. |
 | V2-DIST-02 | **Kept — Stage 2** | Search/paging, compatibility, withdrawn/unavailable versions, resumable/concurrent acquisition, tampering and desktop open. Mobile open follows the released native-client gate. |
-| V2-DIST-03 | **Simplified — Stage 2** | Reuse Stage 1 checks; retain disposable review isolation, reviewer/harness/network attacks and trusted attestation signing. |
+| V2-DIST-03 | **Deferred — §7, automatic review** | Disposable reviewer isolation, reviewer/harness/network attacks and trusted attestation signing apply only if the service is selected; Stage 1 package checks remain mandatory. |
 | V2-DIST-04 | **Kept — Stage 2** | TUF replay/rollback/freeze/expiry/mix-and-match, threshold/rotation and explicit offline/authorized-recovery cases. |
 | V2-DIST-05 | **Kept — Stage 2** | Stage/pause/withdraw/revoke/appeal/replace, offline catch-up, schemas and permission expansion; no silent revival of revoked authority. |
 | V2-DIST-06 | **Kept — Stage 2** | New external publisher and connection/event ingress without staff edits; tenant, schema, replay and deletion checks. No provider SDK introduced. |
-| V2-DIST-07 | **Kept — Stage 2** | Every release type receives a digest-bound verdict; vulnerable/critical cases block, cosmetic cases do not; injection/outage never manufacture approval. |
-| V2-DIST-08 | **Simplified — Stage 2** | Numeric cold/warm publish budgets, declared load, integration change/outage, compiled artifact without source, honest inspection limits. No literal instant-verdict claim. |
+| V2-DIST-07 | **Deferred — §7, automatic review** | Every-release digest-bound verdicts, critical/security versus cosmetic handling, injection and reviewer-outage cases have no gate in agreed Stage 2. |
+| V2-DIST-08 | **Deferred — §7, review speed/source-free JS** | Cold/warm review budgets, load/outage and source-inspection promises require the pre-Stage-2 discussion; no instant-verdict claim. |
 | V2-DIST-09 | **Kept — Stage 2** | Library/direct parity, human/agent/event/wake use, closed Library delivery versus no closed direct polling, interruption, replay/substitution, offline/multiple kernels and grants. |
 | V2-DIST-10 | **Absorbed foundation — Stage 1; rerun Stage 2** | Joint generation, drafts/workflow/agent continuity, incompatible UI/backend rejection and stale-bridge fencing. Conservative fenced replacement is sufficient; no unproven view-only optimization. |
-| V2-DIST-11 | **Simplified/split — Stages 1 and 2** | Stage 1 proves supported WASM SDK behavior/containment; Stage 2 audits proprietary artifacts for source, maps, caches, symbols/secrets, including dependencies/migrations. Replace Node fixtures with supported SDK conformance; do not promise QuickJS confidentiality without evidence. |
+| V2-DIST-11 | **Simplified/split — Stage 1; discussion before Stage 2** | Stage 1 proves supported SDK behavior/containment. Rust/C artifact checks retain dependencies/migrations/maps/caches/debug boundaries. Source-free JS and service-led proprietary-artifact audits move to §7 (I9/S2-05); no unverified JS promise. |
 | V2-DIST-12 | **Simplified foundation — Stage 1; rerun Stage 2** | Wrong WIT/engine/cache target, malformed artifacts, patched runtime offline restart, interrupted updates and migration recovery. Recompile trusted portable components locally, never retain a vulnerable engine for its old cache. |
-| V2-PLAT-01 | **Simplified/moved — Windows track** | Same portable component; native Windows worker and full hostile/quotas/filesystem/ACL suite on signed Windows release builds. No per-target App compilation. |
-| V2-VIEW-01 | **Moved — native client track** | Same managed Tab/auth/viewport across all named native platforms; reconnect/crash cannot execute a duplicate UI. |
-| V2-VIEW-02 | **Moved — native client track** | VoiceOver/TalkBack/Narrator/Linux accessibility, IME/touch/insets/keyboard/selection/clipboard/downloads/links/pickers. |
+| V2-PLAT-01 | **Excluded — no Windows track in this plan** | Neither stage is gated by Windows. The old requirement is recorded here for traceability, not scheduled or claimed as validated. |
+| V2-VIEW-01 | **Moved — native client track** | Same managed Tab/auth/viewport across supported native platforms on the separate track; Windows excluded here; reconnect/crash cannot execute a duplicate UI. |
+| V2-VIEW-02 | **Moved — native client track** | VoiceOver/TalkBack/Linux accessibility, IME/touch/insets/keyboard/selection/clipboard/downloads/links/pickers. |
 | V2-AUTH-01 | **Moved — shared authentication track** | Real relying-party origin/account/challenge/user verification/recovery from Web and both TUIs; a mock is not authentication evidence. |
 | V2-VIEW-03 | **Moved — native + authentication tracks** | Same kernel receipts and denial/recovery/cross-client races; no synthetic human approval. |
 | V2-COPY-01 | **Moved — kernel provisioning/transfer track** | Clean/package/config/data variants, explicit grants, remapped automations, unavailable connections and busy snapshots; never clone credentials/receipts/validation tokens. |
@@ -344,34 +364,46 @@ clients ship, not claimed by a desktop drill.
 | V2-OPS-01 | **Kept — Stage 2, with Stage 1 runtime baseline** | Privacy/consent/support/retention/inventory/incident drills and engine patching. Distribution operations add to the core runtime evidence, not replace it. |
 | V2-CROSS-01 | **Moved — agents/workflows track** | Recipient grants/revocation/extra fields, unapproved routes and source/destination operation provenance. |
 | V2-CROSS-02 | **Moved — agents/workflows track** | Half-complete tasks, timeout after effects, focus/agent changes and restart; preserve ambiguity instead of duplicating mutations. |
-| V2-CROSS-03 | **Moved — agents/workflows track** | Focus and second-agent continuity across Apps/clients; kernel history and App-local visibility. |
+| V2-CROSS-03 | **Narrowed/moved — agents/workflows track** | Retain focus/history and App-local visibility across Apps/clients. Second-agent continuation is dropped by Miguel; it is not a retained gate. |
 | V2-VIEW-04 | **Moved — native client track** | Trusted private-panel composition/privacy/accessibility and capture/export separation from App code. |
-| V2-REG-01 | **Kept — both stage gates** | Upgrade the shipped version and rerun inherited App/permission/data/event/persistence/Web/TUI guarantees on macOS/Linux. Extend to Windows/native when released. |
+| V2-REG-01 | **Kept — both stage gates** | Upgrade the shipped version and rerun inherited App/permission/data/event/persistence/Web/TUI guarantees on macOS/Linux. Native client validation stays on its separate track; no Windows gate here. |
 
 ### 3.4 Stage 2 acceptance matrix
 
 All rows are **NOT RUN**. Use the same exact-build, real-client/provider,
 hosted-network, platform, recording and cleanup rules as Stage 1. Distribution
 must use the real deployed Library/Developer Center service and real publisher
-accounts, not a local fake store or reviewer. Adversarial fixtures remain
+accounts, not a local fake store. Adversarial fixtures remain
 useful red-capable checks in addition to successful real-user journeys.
 
 | ID / old validations | Concrete user journey | Pass condition |
 |---|---|---|
-| S2-01 / DIST-01,06 | An external developer creates a publisher/team, claims an App ID, uploads a signed App and registers its event ingress, entirely through the Developer Center. Try a colliding ID and unauthorized teammate. | No staff DB changes, no publisher substitution; ownership and tenant boundaries survive rotation, removal, recovery and replay/deletion attempts. Existing local installation recognizes the same publisher/App ID. |
-| S2-02 / DIST-02 | On fresh macOS and Linux clients, browse/search, inspect capabilities/actions/compatibility, install a reviewed reference App, run it with an agent, then uninstall. Interrupt/resume acquisition and try an unavailable release. | One active installation with accurate trust/review state, precise failures and normal data-retention choices; no terminal setup or Developer Center visit. |
-| S2-03 / DIST-02,09 | Open a downloaded `.cxapp` through the desktop file association; install the same App directly on another kernel and select a publisher feed. | Correct publisher/digest/grants and reviewed/unreviewed label. Local unreviewed policy is enforced. Both routes use the same activation journal and recovery. |
-| S2-04 / DIST-03,07 | Publish initial, backend, UI-only and dependency changes; include a security failure, critical startup/data failure, a cosmetic change and reviewer-injection attempts. | Every Library digest has its own structured verdict; only the trusted service can sign. Critical/security cases block; advisory cases publish. Timeout/scanner/model failure shows pending/retry, never success. |
-| S2-05 / DIST-08,11 | Upload a proprietary compiled App with no backend source, inspect package/installed artifacts, and publish warm/cold revisions at frozen load. | Verified source-exclusion scope includes dependencies/migrations/maps/caches. Signed portable artifact binding and honest inspection limits; measured p50/p95 meet Q5's ratified budgets. |
+| S2-01 / DIST-01,06 | An external developer creates a publisher/team, proves a DNS/website namespace or GitHub account, claims an App ID, uploads a signed App and registers event ingress through the Developer Center. Try a colliding/unowned ID and unauthorized teammate; compare a locally installed unchecked ID. | No staff DB changes, no publisher substitution; ownership and tenant boundaries survive rotation, removal, recovery and replay/deletion attempts. Existing local installation recognizes the same publisher/App ID. |
+| S2-02 / DIST-02 | On fresh macOS and Linux clients, browse/search, inspect capabilities/actions/compatibility, install a publisher-signed reference App, run it with an agent, then uninstall. Interrupt/resume acquisition and try an unavailable release. | One active installation with accurate publisher/ownership and capability state, precise failures and normal data-retention choices; no terminal setup or Developer Center visit. |
+| S2-03 / DIST-02,09 | Open a downloaded `.cxapp` through the desktop file association; install the same App directly on another kernel and select a publisher feed. | Correct publisher/digest/grants and explicit ownership/capability state; no review verdict is implied by Library or direct acquisition. Both routes use the same activation journal and recovery. |
 | S2-06 / DIST-04,09 | Deliver stable/preview releases through Library and direct feed; attack metadata with replay, freeze, expiry, mixed targets and unauthorized key/channel changes. | TUF and publisher verification reject substitution; approved rotation works. Changing transport origin does not change publisher or permissions. |
 | S2-07 / DIST-09,10 | Keep a diagram draft, a running App workflow and agent operation; stage a joint update via each route, add permissions, decline, then accept at a safe point. Also update a closed Library App. | No forced draft loss, mixed UI/backend or duplicate effect; unchanged permissions prompt zero times. Closed Library staging starts neither App nor agent; closed direct App never polls. |
-| S2-08 / DIST-05,12 | Pause rollout, withdraw/revoke a release or key, replace it, reconnect an offline kernel, and apply a wasmtime security patch while offline. | Explicit incident/freshness state, preserved data/new writes, valid replacement and cache rebuild; no silent resurrection of revoked authority or indefinite vulnerable runtime fallback. |
+| S2-08 / DIST-05,12 | File a user report, inspect its handling, pause rollout, withdraw/revoke a release or key, replace it, reconnect an offline kernel, and apply a wasmtime security patch while offline. | Report receipt/status and operator action; explicit incident/freshness state, preserved data/new writes, valid replacement and cache rebuild; no silent resurrection of revoked authority or indefinite vulnerable runtime fallback. |
 | S2-09 / DIST-09,10; REG-01 | Start with a Stage 1 registered local App; later install/update it via the Library and direct feed on independent kernels. Interrupt/restart at download, stage and commit boundaries. | Same App identity, data, generations and grants; no reinstall into a second “Library App,” duplicate automation, or cross-kernel mutation. |
 | S2-10 / OPS-01; REG-01 | Exercise incident/support/retention and runtime-patch procedures; run real local/remote TUI plus Web use through an 8-hour hosted update/reconnect session. | Redacted operational evidence, usable clients, bounded resources and complete cleanup; Stage 1 guarantees remain intact. |
 
 “DIST-xx” above abbreviates the unchanged `V2-DIST-xx` identifiers, likewise
-OPS/REG. Native/mobile/Windows/copy/cross-App follow-ons are not counted as
-passing this stage by omission; their proposed exclusion requires Q1/Q2.
+OPS/REG. S2-04/05 are reserved for the review discussion in §7; they are not
+Stage 2 gates. Native/mobile/copy/cross-App retain their separate tracks as
+accepted by Miguel. Windows is outside this plan.
+
+### 3.5 Notifications can trigger work the user configured
+
+An App emits an event/notification; the kernel routes it to a trigger the user
+has configured for an agent or workflow. The App does not choose a new agent
+or invent a workflow. The existing design makes adding a trigger to a Freeform
+agent create a visible one-node workflow with origin metadata. That preserves
+one trigger authority, normal queue admission, grants and durable receipts.
+See the [agent-trigger design in the old plan](../../docs/CHARIOX_APPS_IMPLEMENTATION_PLAN.html#workflows)
+(the “Add a trigger from Freeform” section) and the
+[event trigger contract](../../docs/EVENT_TRIGGER_PROTOCOL.md#boundaries).
+Giving an App permission to create agents/workflows is a separate product
+question in §7; no such permission is introduced by either agreed stage.
 
 ## 4. Decisions Stage 1 must fix now
 
@@ -393,25 +425,29 @@ a historic protocol number. The coordinator allocates protocol changes.
 Reserve bounded, typed `signatures/publisher.sig` and
 `signatures/reviews/<reviewer-key-id>.json` entries now. Unknown signature
 formats are rejected with a compatibility error, not interpreted as trust.
-Missing review files are valid for Stage 1/direct acquisition; publisher
-verification is always required. A self-authored review file grants nothing.
+Missing review files are valid for **both stages and every delivery route**;
+publisher verification is always required. A self-authored review file grants
+nothing. Reserving the slot costs nothing now: no service, UI, review queue
+or release gate is built for it. It avoids a later package-format change.
 
 Define three different digests explicitly: (1) signed content digest over the
 canonical manifest/inventory and all inventoried payload digests; (2) digest
 of the canonical publisher-only archive, including its signature; (3) digest
-of the exact delivered archive. A review attests (1), (2), component digests,
-policy/reviewer versions, vulnerability freshness, scope, time and verdict.
+of the exact delivered archive. If review is later selected, its attestation
+can bind (1), (2), component digests, policy/reviewer versions, vulnerability
+freshness, scope, time and verdict.
 The verifier reconstructs the canonical publisher-only archive after removing
 only recognized review entries to check (2). TUF binds (3). The release store
 continues verifying the exact stored archive; review enrichment never mutates
-an already stored archive in place.
+an already stored archive in place. These are reserved format semantics,
+not implementation of the deferred service.
 
 This avoids a circular “attestation signs the archive containing itself” hash
 and prevents an unchanged backend's review from blessing a changed UI. Review
 entries are excluded from the publisher inventory by an explicit v2 grammar,
-not today's hard-coded three-entry assumptions. Removing an attestation never
-leaves a Library route reviewed; direct policy may still accept the valid
-publisher-signed content as unreviewed.
+not today's hard-coded three-entry assumptions. Without the future service,
+Library and direct routes both accept valid publisher-signed content under
+the same trust/capability rules and neither claims a review verdict.
 
 **Alternative:** leave v1 strict and invent a Library wrapper later. Rejected:
 it would give acquisition routes different executable identity and verifier
@@ -427,15 +463,20 @@ The local dev principal is kernel-scoped and trusted only for the dev lane of
 that App; it is a distinct principal kind, never a real publisher credential.
 An App cannot claim another publisher by copying its manifest name.
 
-Locally chosen IDs do not reserve the global Library namespace. Library
-onboarding requires authenticated publisher ownership and proof of the release
-signing key. If the ID is available, registration preserves the App ID and
-publisher binding. If already claimed by a different publisher, reject with a
+**Decided:** use reverse-domain App IDs with verified namespace ownership.
+Prove a domain through DNS or a website challenge. Developers without a domain
+can use a GitHub-account namespace, verified against the account. Local IDs are
+never checked for namespace ownership and never reserve a Library name; local
+signatures/capabilities are still verified. The identity claim, not a matching
+display name, binds the publisher to the namespace. Library onboarding also
+requires proof of the release signing key. If the ID is available, registration
+preserves the App ID and publisher binding. If already claimed by a different publisher, reject with a
 clear conflict; never overwrite the local installation or silently assign its
 data to that publisher. Resolve through an ownership dispute or an explicit
 new-ID/export/import migration. Transfers/rotations need authenticated old-to-new
 trust transitions, never trust-on-name. DEV cannot bypass an existing registered
-App's signer or local binding checks. Q6 covers namespace allocation policy.
+App's signer or local binding checks. Confusable/collision handling and
+explicit authenticated transfer remain part of I1, not new product questions.
 
 **Alternative:** let Library registration mint a different identity for every
 local App. Rejected: it breaks installed data, tools, actions and updates at
@@ -579,29 +620,26 @@ These are a resume plan, not permission to resume implementation or trigger CI.
 | X2 | Univer sheets reference App and CSV/formula/export drills | M | A2, L1, R4/R6; can start alongside X1 |
 | B1 | Frozen four-arm benchmark harness and full budgeted run/report | S harness + M execution/analysis | A3, X1, X2, Todo; not X1 alone |
 | G1 | Exact-head Stage 1 matrix, platform evidence, security-anchor review and cleanup | M–L | Core rows above; L3 follows immediately |
-| W1 | Linux GUI/CLI wrapped-binary kind | L, separate follow-on | A-track, native-binary containment/design |
-| W2 | macOS window capture/accessibility for wrapped programs | L, separate follow-on | W1 contracts, macOS permissions/design |
 
-W1/W2 keep accepted decision 12: Linux GUI/CLI first, macOS second, after the
-A-track. They are scheduled after core acceptance and outside the 13–17-week
-estimate. Their per-OS binaries and display/AX authority need their own package
-profile and review policy; they cannot use a WASM review badge or delay the
-portable package contract. Python preview/Go also remain separate follow-ons.
+Miguel dropped W1/W2 and the wrapped-binary kind on 10-22; they have no work,
+dependency or estimate here. Python preview/Go remain separate follow-ons.
 
-### 5.2 Stage 2 PR list
+### 5.2 Stage 2 PR list — without automatic review
 
 | ID | Scope | Size | Dependencies / old rows |
 |---|---|---|---|
-| I1 | Registry identity, App-ID claims/collisions, publisher/team roles and key transitions | L | R0/G1; P2.02 |
-| I2 | Resumable immutable upload/store, release metadata, SBOM/attestation subjects and version/channel bindings | M | I1, package v2; P2.01/02 |
-| I3 | Isolated automatic reviewer, deterministic check reuse, artifact/dependency probes, trusted attestation signer and failure/retry states | L | I2, R1/R4/R5; P2.03 |
-| I4 | Developer Center UI: onboarding, ingress, upload/preflight/findings/resubmit, versions/rollout/support | L | I1/I2; review integration I3; P2.02/03 |
-| I5 | TUF metadata/trust, Library/direct acquisition and one kernel updater policy | L | I1/I2, G1 generations; Library delivery I3; P2.05 |
-| I6 | App Library browse/search/detail/compatibility/install/update/uninstall/report UX | L | I2/I3/I5; P2.01 |
-| I7 | Desktop `.cxapp` association/open flow, unreviewed policy and installer UX | M | G1, v2 trust UI; Library badge I3; P2.04 |
-| I8 | Rollout, withdrawal/revocation, authenticated rotation, offline incident/recovery and operational tooling | L | I3/I5; P2.05 and V2-OPS-01 |
-| I9 | Proprietary source-exclusion audit, cold/warm publish-load budgets and reviewer-outage campaign | M | I3/I4, Q3/Q5; P2.03/11 |
-| G2 | Both routes' exact-head live matrix, shipped-version upgrade/regression, independent review and cleanup | M–L | I1–I9; Stage 1 rerun |
+| I1 | Registry identity, DNS/website/GitHub namespace proofs, publisher/team roles and key transitions | L | R0/G1; P2.02 |
+| I2 | Resumable immutable upload/store, signed release metadata, dependency inventory and version/channel bindings | M | I1, package v2; P2.01/02 |
+| I4 | Developer Center: onboarding, ingress, upload/preflight errors, versions/rollout/support | L | I1/I2; P2.02; review UI deferred to §7 |
+| I5 | TUF metadata/trust, Library/direct acquisition and one kernel updater policy | L | I1/I2, G1 generations; P2.05; no I3 dependency |
+| I6 | Library browse/search/detail, publisher/ownership/capability trust, compatibility/install/update/uninstall/reports | L | I2/I5; P2.01; review state/badges deferred to §7 |
+| I7 | Desktop `.cxapp` association/open flow and publisher/capability installer UX | M | G1, v2 trust UI; P2.04 |
+| I8 | Reports and operator handling, rollout, withdrawal/revocation, key rotation, offline recovery and operations | L | I5, I4/I6 report/release surfaces; P2.05 and V2-OPS-01; no I3 dependency |
+| G2 | Both routes' exact-head live matrix, shipped-version upgrade/regression, independent security-anchor review and cleanup | M–L | I1/I2/I4–I8; Stage 1 rerun; offline policy settled before implementation |
+
+I3/I9 are intentionally absent from this stage; §7 retains them if review is
+chosen. An independent implementation/security review is still required for
+Chariox's own changes; it is different from an automatic App-release service.
 
 ### 5.3 Graph and critical path
 
@@ -630,19 +668,16 @@ flowchart TD
   R2 --> G1
   G1 --> I1[Publisher and registry]
   I1 --> I2[Release upload and store]
-  I2 --> I3[Automatic review]
   I2 --> I5[TUF and shared updater]
   I2 --> I4[Developer Center]
-  I3 --> I6[Library UX]
+  I2 --> I6[Library UX and publisher trust]
   I5 --> I6
   I5 --> I8[Revocation and recovery]
-  I3 --> I9[Review latency and artifact audit]
   G1 --> I7[Desktop open]
   I4 --> G2[Stage 2 live acceptance]
   I6 --> G2
   I7 --> G2
   I8 --> G2
-  I9 --> G2
 ```
 
 With four lanes after R0/R1: one owns worker/install, one SDKs and ports,
@@ -654,97 +689,115 @@ Actions/headless, D1/D2, both reference Apps and B1 can become equally critical;
 their complete integration makes Stage 1 **7–9 weeks**, rather than treating
 the shape's approximate six-week runtime path as the entire delivery.
 
-Stage 2 uses four lanes: publisher/store/Developer Center; review; updater/TUF/
-incidents; Library/desktop UX and live validation. I1→I2→I3→I6→G2 and
-I2→I5→I8→G2 are the likely **6–8-week** critical paths. UI shells and test
-design can proceed against the frozen contracts, but do not count mocked
-flows as completion. B1 provider sampling and review-service load tests need
-separate spend approval before execution, not an invented free soak.
+Stage 2 without review uses up to four lanes: publisher/store/Developer
+Center; updater/TUF; Library/desktop UX; reports/incidents and live validation.
+I1→I2→I4/I6→G2 and I2→I5→I8→G2 are the likely **4–6-week** critical paths.
+There is no hidden reviewer dependency. If automatic review is selected,
+I2→I3→I6/G2 and I9 add about **two calendar weeks**, for **6–8 weeks**.
+UI shells and drill design can start against frozen contracts; mocked flows
+do not count as completion. Before Stage 2, settle §7 and re-estimate any
+changed scope. B1 provider sampling needs its budget reserved before execution.
 
-Rough effort is 90–125 lane-days for Stage 1 and 80–110 for Stage 2;
-four lanes give 20 lane-days/week before integration and blocked-platform
-time. These estimates include the rows above and explain the calendar range;
-they are not additive per-PR promises. Two lanes would likely mean roughly
-20–26 calendar weeks total, with further uncertainty from platform access.
-After every milestone, reconcile real results and re-estimate the next stage.
+Rough effort is **90–125 lane-days for Stage 1**, **60–80 for Stage 2 without
+review**, or **80–110 with review**. Four lanes supply 20 lane-days/week before
+integration, platform access and acceptance slack. These estimates explain
+calendar ranges, not additive per-PR promises. The total is **11–15 weeks
+without review**, or **13–17 with review**, with Stage 1 unchanged. After each
+milestone, reconcile actual results and re-estimate.
 
 ## 6. Licence rule and example Apps
 
-**Permissive only for first-party Apps we ship:** MIT, BSD, Apache-2.0 or
-public-domain equivalents, including bundled dependencies, fonts, assets,
-codecs and compiler packages. Preserve notices and required licence texts;
-pin exact revisions and inspect the full dependency inventory before shipping.
-WASM does not change a dependency's licence. The accepted shape's parenthetical
-listing of MPL must not be read as calling it permissive: MPL is weak copyleft
-and is outside this round's explicit permissive-only rule. No GPL/AGPL bundle,
-or native sidecar hidden behind a permissive wrapper, qualifies.
+**Decided:** first-party Apps use permissive code (MIT, BSD, Apache-2.0 or
+public-domain equivalents); **MPL is allowed as a dependency**, as Miguel
+accepted in the shape. MPL is weak copyleft, not a permissive licence; comply
+with its file-level source/notice obligations when used. Preserve notices and
+required licence texts for dependencies, fonts, assets, codecs and compilers.
+Pin exact revisions and inspect the full inventory before shipping. No GPL/AGPL
+bundle qualifies; compiling or downloading it as WASM does not change its terms.
 
-- **Excalidraw is the first reference App.** The accepted candidate is its MIT
-  web component, with scene persistence/files and declared diagram actions.
-  Inspect the selected assets/dependencies when pinning the implementation.
-- **Univer sheets is second.** Use the Apache-2.0 core identified by the shape,
-  excluding proprietary Pro features. Keep launch scope to workbook state,
-  ranges/formulas, CSV and verified permissive export support. XLSX import/export
-  needs its own chosen dependency and round-trip tests; a core licence is not
-  permission to redistribute Pro import/export or collaboration.
-- **Overleaf-like LaTeX App: pending texspike.** The spike must report the
-  actual compiler/packages/fonts' licence inventory, whether a real backend
-  builds as a supported component, resource limits, document compatibility,
-  error recovery and preview/export usability. No feasibility or licence PASS
-  is inferred here. If it qualifies, choose whether it replaces an example or
-  follows them (Q7), with an explicit estimate.
-- **Todo is a small SDK/benchmark example**, not a third major product App.
-  Typst remains a separate possible compiler showcase; it does not establish
-  LaTeX compatibility. Wrapped third-party programs are a later track, not a
-  way to evade the licence rule for first-party packages.
+- **Excalidraw is the first reference App.** Use its MIT web component, scene
+  persistence/files and declared diagram actions. Inspect selected assets and
+  dependencies when pinning the implementation.
+- **Univer sheets is the second reference App.** Use the Apache-2.0 core,
+  excluding proprietary Pro features. Launch scope is workbook state,
+  ranges/formulas, CSV and verified export support. XLSX needs a separately
+  chosen permitted dependency and round-trip tests; a core licence does not
+  grant rights to Pro import/export or collaboration.
+- **LaTeX comes later**, outside both stages and their estimates. The
+  [completed compiler spike](tex/TEX_APP.md) built Tectonic as a component and
+  measured real documents, but found linked GPL-2.0+ PDF-engine code and
+  CPL/LGPL TECkit code. The top-level MIT label does not clear that engine;
+  allowing an MPL dependency does not cure the blocker. The report also lists
+  integration gaps; it is not a finished App or real-user acceptance.
+- **Typst is not planned now.** Its spike comparison remains research, not
+  an extra example or a replacement for LaTeX. Todo is a small SDK/benchmark
+  control, not a third major product App. The wrapped-binary App kind is dropped.
 
-Licence labels above carry forward the accepted shape's candidate inventory;
-this design round did not refresh upstream releases or audit a final dependency
-lockfile. Shipping acceptance requires the exact pinned inventory, not a claim
-that an entire upstream ecosystem was audited today.
+The candidate inventory comes from the accepted shape and LaTeX spike. This
+round does not claim a fresh upstream audit or clearance of a final lockfile;
+shipping requires the actual pinned inventory.
 
-## 7. Open questions for Miguel
+## 7. To discuss before stage 2
 
-None asks whether to adopt the accepted 14 shape decisions. Recommendations
-below can guide planning while the affected scope stays explicit.
+These four topics remain open. They do not reopen Stage 1 or the accepted
+placements, IDs, examples and licence rule. Resolve the affected policy before
+Stage 2 implementation; automatic review is optional, not presumed approved.
 
-1. **Which old Phase 2 features travel separately?** Recommend native viewers,
-   App-set inheritance, remaining notification migration, cross-App work and
-   authenticator step-up stay on their named platform/kernel/workflow/security
-   tracks (§3.2). They retain their old validation IDs and existing guarantees;
-   they do not gate the two portable-core/distribution stages. Confirm this
-   boundary so a “Stage 2 complete” claim cannot hide dropped requirements.
-2. **Does Windows gate either stage?** Recommend no: macOS/Linux core and
-   distribution first; Windows worker containment and native clients follow
-   with their own real-platform gate. One portable App artifact is fixed now,
-   while Windows sandbox/storage/IPC engineering is separately estimated.
-3. **What proprietary-backend promise must JS have at launch?** Recommend
-   promise source-free distribution only for toolchains whose final artifacts
-   pass the audit, initially compiled Rust/C; require a QuickJS artifact audit
-   before extending that promise to JS. No source upload is ever required for
-   Library review. No promise of protection from reverse engineering. If
-   source-free JS is mandatory, make that an explicit pre-release gate and
-   re-estimate; compiling an interpreter to WASM is not enough evidence.
-4. **When revisit App outputs/continuation/assets (P2.12)?** Recommend after
-   Stage 1 hands-on tests, in a separate product decision. Keep information
-   sets removed and use ordinary actions/state/workflows meanwhile.
-5. **What does “near-immediate” review mean, and what is offline policy?**
-   Recommend ratifying provisional verdict budgets of warm p95 ≤60 s and cold
-   p95 ≤180 s at ten simultaneous typical reference-App uploads (each ≤10 MiB),
-   recording p50/p95 plus upload/queue/check/model times separately. Larger
-   supported packages need an explicit size/load curve and published budget
-   before validation. An outage shows pending/retry, never a false pass.
-   Recommend expired metadata blocks new acquisition/activation while a
-   previously verified, not-known-revoked installed release remains usable
-   offline with freshness shown; known revocation blocks execution and keeps
-   data recoverable. These are proposed product budgets/policy, not measured
-   results or relaxed TUF validation.
-6. **How are global App IDs allocated?** Recommend reverse-domain-style IDs
-   with verified namespace ownership/reservations, confusable checks and an
-   explicit dispute/transfer process. A local ID remains usable locally but
-   does not reserve a global name. Never silently rename an installed App or
-   give its data to a different publisher when the Library arrives.
-7. **Which substantial example follows Excalidraw?** Keep accepted Univer as
-   second unless **pending texspike** yields a permissive, feasible LaTeX App
-   you prefer to substitute. Recommend avoiding a third launch-sized example;
-   show texspike's measured compatibility/resource result before deciding.
+1. **Automatic review of every release (P2.03).** Miguel: “Automatic review put
+   it in quaranteen. I'm not sure if we'll have this. We'll discuss before
+   starting stage 2.” The agreed Stage 2 works without it (§3/§5). Its trust
+   model is publisher identity, verified ownership, reports, withdrawal and
+   revocation. If selected, add the work below: isolated artifact/dependency
+   probes plus reused package checks, no routine human queue, a trusted
+   attestation signer and visible failure/retry states. A model's prose or an
+   App's instructions cannot issue a passing attestation. This is **2 more
+   calendar weeks**, making Stage 2 **6–8 instead of 4–6 weeks**, subject to
+   the final scope. The §4.1 signature slot is reserved either way and costs
+   nothing now; there is no later package-format migration to add review.
+2. **Source-free JS distribution.** Miguel: “needs further discussion. Put it
+   to be discussed before starting phase 2”. Compiling QuickJS into WASM or
+   caching AOT does not establish source exclusion. Recommend promising it
+   only for toolchains whose final artifacts pass the audit, initially
+   compiled Rust/C; do not extend that promise to JS without evidence. Decide
+   whether JS needs a launch guarantee and re-estimate if so. No claim of
+   protection against reverse engineering, and no source upload is required
+   by the agreed publisher-signed release flow.
+3. **Review speed and offline policy.** Miguel: “we'll discuss the shape of
+   this before phase 2 too”. If review is chosen, proposed verdict budgets
+   remain warm p95 ≤60 s and cold p95 ≤180 s at ten concurrent typical uploads
+   of ≤10 MiB; record upload/queue/check/model times separately and publish a
+   size/load curve for larger packages. These are proposals, not commitments
+   or measurements. **Offline-metadata proposal:** expired metadata blocks
+   new acquisition/activation, while a previously verified, not-known-revoked
+   installed release remains usable offline with freshness shown. Known
+   revocation blocks execution and keeps data recoverable. This policy needs
+   agreement even without review; it never relaxes TUF metadata validation.
+4. **Apps creating agents/workflows.** Miguel sees a possible permission for
+   this, but the shape is unclear. Discuss the user grant, requested creation
+   and lifecycle before adding authority. **Agent outputs to Apps and
+   second-agent continuation are dropped**, not postponed. The existing
+   alternative is App events/notifications → a user-configured agent/workflow
+   trigger (§3.5), with normal kernel admission and receipts.
+
+### Deferred review work — only if selected
+
+This is the holding list, not an additional Stage 2 gate. IDs are retained so
+nothing from the old plan is silently counted as done.
+
+| Work | Scope if review is selected | Estimate / dependencies |
+|---|---|---|
+| P2.03 / I3 | Isolated automatic reviewer, reused package checks, artifact/dependency probes, trusted attestation signer, outage/retry states | L; I2 and R1/R4/R5 |
+| I9 | Service-led proprietary/source-exclusion audit, cold/warm publish-load budgets and reviewer-outage campaign | M; I3/I4; discussion topics 2/3 |
+| Review part of I4 | Developer Center findings, review status, repair/resubmit and verdict operations | Included in review increment; I3 |
+| Review part of I6 | Library review state/badges and verdict-based delivery policy, if agreed | Included in review increment; I3/I5 |
+| V2-DIST-03 | Reviewer isolation, harness/network attacks and trusted attestation signing | Retain old hostile cases; reuse Stage 1 deterministic checks |
+| V2-DIST-07 | Every initial/backend/UI/dependency release gets a digest-bound verdict; security/critical versus advisory handling; injection/outage cannot forge approval | I3 plus reviewed release/Library integration |
+| V2-DIST-08 | Review speed/load/outage, no-source artifact inspection and honest limits | I9; agreed budgets and source-free scope |
+
+| Deferred scenario | Concrete journey | Conditional pass criteria |
+|---|---|---|
+| S2-04 / DIST-03,07 | Publish initial, backend, UI-only and dependency changes, security/critical/cosmetic cases and reviewer-injection attempts. | Every Library digest has a structured verdict from the trusted service; security/critical cases block, advisory cases do not. Timeout/scanner/model failure shows pending/retry, never success. |
+| S2-05 / DIST-08,11 | Publish a proprietary compiled App without backend source; inspect package/installed artifacts and measure warm/cold revisions at agreed load. | Dependency/migration/maps/caches audit and explicit source-exclusion scope; portable artifact binding and inspection limits; p50/p95 meet the agreed budgets. No source-free JS PASS without evidence. |
+
+Both deferred scenarios are **NOT RUN**. They become acceptance gates only if
+the service/scope is selected; the base Stage 2 matrix has eight rows.
