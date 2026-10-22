@@ -593,12 +593,20 @@ pub(super) fn stream_caller(
     public_key: &str,
 ) -> Result<crate::runtime::command::KernelCaller, DaemonError> {
     use crate::runtime::command::KernelCaller;
-    Ok(match router.admit_self_host_terminal(public_key)? {
-        Some(grant) => {
-            KernelCaller::from_paired_terminal(grant, router.self_host_terminal_owner_user_id())
-        }
-        None => KernelCaller::for_relay_request(identity),
-    })
+    Ok(
+        match router.admit_self_host_terminal(
+            public_key,
+            identity
+                .as_ref()
+                .filter(|identity| identity.public_key_thumbprint.is_some())
+                .map(|identity| identity.subject.as_str()),
+        )? {
+            Some(grant) => {
+                KernelCaller::from_paired_terminal(grant, router.self_host_terminal_owner_user_id())
+            }
+            None => KernelCaller::for_relay_request(identity),
+        },
+    )
 }
 
 #[cfg(test)]

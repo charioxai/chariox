@@ -152,6 +152,7 @@ async fn run(
         outgoing_tx,
         relay_id,
         public_key,
+        client_id: reader.caller.client_id.clone(),
     };
     let mut reached = first.next_offset;
     if let Err(error) = stream
@@ -200,6 +201,7 @@ struct Stream {
     outgoing_tx: RelayOutgoingSender,
     relay_id: String,
     public_key: String,
+    client_id: Option<String>,
 }
 
 impl Stream {
@@ -218,7 +220,8 @@ impl Stream {
         let mut sent_at = Instant::now();
         let mut page = first;
         loop {
-            self.router.admit_relay_stream(&self.public_key)?;
+            self.router
+                .admit_relay_stream(&self.public_key, self.client_id.as_deref())?;
             *reached = page.next_offset;
             if listed_at.is_none_or(|at| at.elapsed() >= LIST_INTERVAL) {
                 listed_at = Some(Instant::now());
