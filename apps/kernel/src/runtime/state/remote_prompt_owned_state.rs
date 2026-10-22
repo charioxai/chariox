@@ -1496,6 +1496,172 @@ mod tests {
         std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
     }
 
+    /// A goal on the leased fixture agent whose completion check started two minutes ago
+    /// under the agent's current lease.
+    async fn expired_leased_check() -> (
+        KernelRuntimeState,
+        crate::durable_state::agent_lifecycle::AgentTaskExecution,
+        String,
+        RemoteAgentBinding,
+    ) {
+        use crate::durable_state::agent_lifecycle::{completion, Operation};
+        let (runtime, session, agent, _attachment, binding) =
+            mp11_fixture(crate::DaemonConfig::for_tests()).await;
+        let store = &runtime.owned.durable_state_store;
+        let started = crate::session::unix_epoch_ms() - 120_000;
+        for operation in [
+            Operation::Begin {
+                owner: "owner".into(),
+                room: session.clone(),
+                agent: agent.clone(),
+                prompt: "p".into(),
+                run: Some("run".into()),
+                now: started,
+            },
+            Operation::StartGoal {
+                task: "p".into(),
+                owner: "owner".into(),
+                objective: "Answer the request".into(),
+                minutes: 1,
+                now: started,
+            },
+            Operation::Settle {
+                room: session.clone(),
+                agent: agent.clone(),
+                prompt: "p".into(),
+                run: "run".into(),
+                has_answer: true,
+                cancelled: false,
+                now: started,
+            },
+        ] {
+            store.agent_lifecycle(operation).unwrap();
+        }
+        let task = store.agent_tasks(None, None).unwrap().remove(0);
+        let prompt = completion::evaluation(&task).unwrap().prompt_id.clone();
+        store
+            .agent_lifecycle(Operation::BindGoalCheckLease {
+                task: "p".into(),
+                prompt: prompt.clone(),
+                lease: runtime.check_lease(&agent).unwrap(),
+            })
+            .unwrap();
+        (runtime, task, prompt, binding)
+    }
+
+    // MP-08 / MP-10 / MP-11 A12: a leased provider run that died mid-turn leaves its partial output
+    // unanswered, so the goal ends Blocked for the owner instead of Done.
+    #[tokio::test]
+    async fn leased_turn_whose_provider_run_failed_blocks_its_goal_instead_of_finishing() {
+        use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+        let (runtime, session, agent, attachment, binding) =
+            mp11_fixture(crate::DaemonConfig::for_tests()).await;
+        let mut config = runtime.owned.config_projection.snapshot();
+        config.room_agent_tools = true;
+        runtime.owned.config_projection.update(config);
+        let store = &runtime.owned.durable_state_store;
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: "owner".into(),
+                room: session.clone(),
+                agent: agent.clone(),
+                prompt: "p".into(),
+                run: Some("run".into()),
+                now: 1,
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::StartGoal {
+                task: "p".into(),
+                owner: "owner".into(),
+                objective: "Review the repository".into(),
+                minutes: 1,
+                now: 1,
+            })
+            .unwrap();
+        let completed = crate::session::PromptQueueItem::new(
+            "p",
+            &attachment,
+            &agent,
+            "Review the repository",
+            crate::session::PromptStatus::Completed,
+        );
+        runtime
+            .settle_leased_agent_task(
+                &session,
+                &agent,
+                &completed,
+                &binding.leased_agent_id,
+                "worker-run-1",
+                Some("provider process was killed"),
+            )
+            .await;
+        let task = store.agent_tasks(None, None).unwrap().remove(0);
+        assert_eq!(task.state, ExecutionState::Blocked);
+        assert!(task
+            .reason
+            .contains("Provider run failed: provider process was killed"));
+    }
+
+    // MP-08 / MP-10 / MP-11 A12-S02: the worker restarted inside the check and is back on a new lease.
+    #[tokio::test]
+    async fn completion_check_interrupted_by_a_worker_restart_is_asked_once_more() {
+        use crate::durable_state::agent_lifecycle::{completion, ExecutionState};
+        let (runtime, task, prompt, mut binding) = expired_leased_check().await;
+        binding.execution_lease_id = "mp11-lease-after-restart".into();
+        runtime
+            .owned
+            .agent_store
+            .bind_remote_execution(&task.agent_id, binding)
+            .unwrap();
+        let now = crate::session::unix_epoch_ms();
+        let expiry = runtime
+            .expire_goal_check(&task, &prompt, now)
+            .await
+            .unwrap();
+        assert!(matches!(
+            expiry,
+            super::super::agent_goal_runtime::CheckExpiry::Retried
+        ));
+        let after = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(None, None)
+            .unwrap()
+            .remove(0);
+        let check = completion::evaluation(&after).unwrap();
+        assert_eq!(after.state, ExecutionState::Working);
+        assert!(check.retried && check.deadline_ms > now);
+        assert_ne!(check.prompt_id, prompt);
+        assert_eq!(
+            after.pending_prompt_id.as_deref(),
+            Some(check.prompt_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_check_on_a_worker_that_never_restarted_still_blocks_at_its_bound() {
+        use crate::durable_state::agent_lifecycle::ExecutionState;
+        let (runtime, task, prompt, _binding) = expired_leased_check().await;
+        let now = crate::session::unix_epoch_ms();
+        let expiry = runtime
+            .expire_goal_check(&task, &prompt, now)
+            .await
+            .unwrap();
+        assert!(matches!(
+            expiry,
+            super::super::agent_goal_runtime::CheckExpiry::Blocked(_)
+        ));
+        let after = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(None, None)
+            .unwrap()
+            .remove(0);
+        assert_eq!(after.state, ExecutionState::Blocked);
+        assert!(after.reason.contains("exceeded 60 seconds"));
+    }
+
     #[tokio::test]
     async fn declined_vault_unlock_blocks_the_waiting_completion_check_with_its_reason() {
         use crate::durable_state::agent_lifecycle::ExecutionState;

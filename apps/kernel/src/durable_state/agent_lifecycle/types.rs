@@ -192,6 +192,17 @@ pub(crate) enum Operation {
         prompt: String,
         now: u64,
     },
+    BindGoalCheckLease {
+        task: String,
+        prompt: String,
+        lease: super::goals::CheckLease,
+    },
+    RetryGoalCheck {
+        task: String,
+        prompt: String,
+        lease: super::goals::CheckLease,
+        now: u64,
+    },
     BeginOwnerWait {
         task: String,
         prompt: String,

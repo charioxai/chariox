@@ -1206,3 +1206,116 @@ fn a12_kept_wait_still_ends_at_the_progress_guard() {
         ExecutionState::Blocked
     );
 }
+
+fn lease(id: &str) -> goals::CheckLease {
+    goals::CheckLease {
+        worker_kernel_id: "worker".into(),
+        worker_machine_id: "machine".into(),
+        execution_lease_id: id.into(),
+        leased_agent_id: "leased".into(),
+    }
+}
+
+fn bound_check(f: &Fixture, lease_id: &str) -> goals::GoalEvaluation {
+    goal(f, 10);
+    f.settle("p", true);
+    let prompt = completion::evaluation(&f.task()).unwrap().prompt_id.clone();
+    f.begin(&prompt);
+    f.apply(Operation::BindGoalCheckLease {
+        task: "p".into(),
+        prompt,
+        lease: lease(lease_id),
+    });
+    completion::evaluation(&f.task()).unwrap().clone()
+}
+
+fn retry(
+    f: &Fixture,
+    check: &goals::GoalEvaluation,
+    lease: goals::CheckLease,
+    now: u64,
+) -> Outcome {
+    f.apply(Operation::RetryGoalCheck {
+        task: "p".into(),
+        prompt: f
+            .task()
+            .pending_prompt_id
+            .unwrap_or(check.prompt_id.clone()),
+        lease,
+        now,
+    })
+}
+
+// MP-08 / MP-10 / MP-11 A12-S02: a leased worker that restarts inside a running check gets the check once more.
+#[test]
+fn a12_check_interrupted_by_a_worker_restart_is_asked_once_more() {
+    let f = Fixture::new();
+    let check = bound_check(&f, "lease-1");
+    let Outcome::Task(task) = retry(&f, &check, lease("lease-2"), check.deadline_ms) else {
+        panic!("a restarted worker must get its check back");
+    };
+    let again = completion::evaluation(&task).unwrap();
+    assert_eq!(task.state, ExecutionState::Working);
+    assert_eq!(again.prompt_id, format!("{}-retry", check.prompt_id));
+    assert_eq!(
+        task.pending_prompt_id.as_deref(),
+        Some(again.prompt_id.as_str())
+    );
+    assert_eq!(again.deadline_ms, check.deadline_ms + goals::CHECK_BOUND_MS);
+    assert!(again.retried && again.result.is_none());
+    assert!(goals::is_completion_check_prompt_id(&again.prompt_id));
+    // The retry is the last: a second restart (or any expiry) blocks the task.
+    f.begin(&again.prompt_id);
+    assert!(matches!(
+        retry(&f, again, lease("lease-3"), again.deadline_ms),
+        Outcome::Saved
+    ));
+    f.apply(Operation::TimeoutGoal {
+        task: "p".into(),
+        prompt: again.prompt_id.clone(),
+        now: again.deadline_ms,
+    });
+    assert_eq!(f.task().state, ExecutionState::Blocked);
+}
+
+#[test]
+fn a12_check_is_not_retried_unless_the_same_worker_came_back_after_the_bound() {
+    let other_worker = goals::CheckLease {
+        worker_kernel_id: "other".into(),
+        ..lease("lease-2")
+    };
+    for (current, early, why) in [
+        (
+            lease("lease-1"),
+            false,
+            "same lease: the worker never restarted",
+        ),
+        (
+            other_worker,
+            false,
+            "another worker never answers for this check",
+        ),
+        (lease("lease-2"), true, "the service bound has not run out"),
+    ] {
+        let f = Fixture::new();
+        let check = bound_check(&f, "lease-1");
+        let now = check.deadline_ms - u64::from(early);
+        assert!(
+            matches!(retry(&f, &check, current, now), Outcome::Saved),
+            "{why}"
+        );
+        assert_eq!(completion::evaluation(&f.task()).unwrap(), &check);
+    }
+    let f = Fixture::new();
+    goal(&f, 10);
+    f.settle("p", true);
+    let unleased = completion::evaluation(&f.task()).unwrap().clone();
+    f.begin(&unleased.prompt_id);
+    assert!(
+        matches!(
+            retry(&f, &unleased, lease("lease-2"), unleased.deadline_ms),
+            Outcome::Saved
+        ),
+        "a check that never ran on a leased worker keeps the plain bound"
+    );
+}

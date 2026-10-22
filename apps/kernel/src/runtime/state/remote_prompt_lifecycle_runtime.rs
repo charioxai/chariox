@@ -491,7 +491,9 @@ impl KernelRuntimeState {
     }
 
     /// A10: a leased turn's completion settles its home task through the same
-    /// settlement as a local turn, so delegators and reply waiters wake.
+    /// settlement as a local turn, so delegators and reply waiters wake. A
+    /// `failure` (the worker's provider run ended abnormally) never promotes
+    /// the partial output to Done: the task ends like a failed local turn.
     pub(super) async fn settle_leased_agent_task(
         &self,
         session_id: &str,
@@ -499,20 +501,27 @@ impl KernelRuntimeState {
         completed: &crate::session::PromptQueueItem,
         leased_agent_id: &str,
         worker_provider_run_id: &str,
+        failure: Option<&str>,
     ) {
         let run = crate::provider::projected_leased_provider_run_id(
             leased_agent_id,
             worker_provider_run_id,
         );
         let cancelled = completed.status() == crate::session::PromptStatus::Cancelled;
-        let settled = match self.owned.settle_agent_task_answered_by(
-            session_id,
-            agent_id,
-            completed,
-            &run,
-            worker_provider_run_id,
-            cancelled,
-        ) {
+        let settlement = match failure {
+            Some(reason) => self
+                .owned
+                .end_failed_agent_task(session_id, agent_id, completed, &run, reason),
+            None => self.owned.settle_agent_task_answered_by(
+                session_id,
+                agent_id,
+                completed,
+                &run,
+                worker_provider_run_id,
+                cancelled,
+            ),
+        };
+        let settled = match settlement {
             Ok(settlement) => {
                 Box::pin(self.finish_agent_task_settlement(settlement, completed)).await
             }
@@ -753,6 +762,10 @@ impl KernelRuntimeState {
             &completion.completed,
             &remote_execution.leased_agent_id,
             &remote_provider_run_id,
+            provider_termination
+                .as_ref()
+                .map(|termination| termination.reason.as_str())
+                .or(provider_diagnostic.as_deref()),
         )
         .await;
         if completion.completed.workflow_run_id().is_some() {

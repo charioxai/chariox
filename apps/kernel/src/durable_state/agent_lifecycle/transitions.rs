@@ -37,6 +37,17 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         Operation::TimeoutGoal { task, prompt, now } => {
             super::goals::timeout(tx, task, prompt, now)
         }
+        Operation::BindGoalCheckLease {
+            task,
+            prompt,
+            lease,
+        } => super::goals::bind_check_lease(tx, task, prompt, lease),
+        Operation::RetryGoalCheck {
+            task,
+            prompt,
+            lease,
+            now,
+        } => super::goals::retry_check(tx, task, prompt, lease, now),
         Operation::BeginOwnerWait { task, prompt, now } => {
             super::goals::begin_owner_wait(tx, task, prompt, now)
         }

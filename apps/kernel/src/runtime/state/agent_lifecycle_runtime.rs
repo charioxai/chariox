@@ -1,4 +1,5 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: provider/interaction wiring for the ledger.
+use super::agent_goal_runtime::CheckExpiry;
 use super::*;
 use crate::durable_state::agent_lifecycle::{
     self as ledger, AgentTaskExecution, ExecutionState, Operation, Outcome,
@@ -255,6 +256,36 @@ impl KernelRuntimeOwnedState {
                     "MP-08/MP-10/MP-11 A02: stopped turn kept for the ledger sweep");
                 None
             })
+    }
+    /// A turn that ended in a provider failure leaves its task for the owner,
+    /// whatever partial output it produced.
+    pub(super) fn end_failed_agent_task(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &crate::session::PromptQueueItem,
+        run: &str,
+        reason: &str,
+    ) -> Result<Option<(AgentTaskExecution, bool)>, DaemonError> {
+        if !self.config_projection.snapshot().room_agent_tools {
+            return Ok(None);
+        }
+        self.ensure_agent_task(room, agent, prompt, Some(run))?;
+        let Some(task) = self
+            .durable_state_store
+            .agent_tasks(Some(room), Some(agent))?
+            .into_iter()
+            .find(|t| t.prompt_id == prompt.id())
+        else {
+            return Ok(None);
+        };
+        let reason = crate::secret_redaction::redact_secrets(reason);
+        Ok(ledger::end_failed_turn(
+            &self.durable_state_store,
+            &task,
+            format!("Provider run failed: {reason}. Owner must reconcile and resume or cancel"),
+        )?
+        .map(|ended| (ended, false)))
     }
     pub(super) fn settle_agent_task_answered_by(
         &self,
@@ -757,6 +788,15 @@ impl KernelRuntimeState {
         };
         let is_check = ledger::completion::evaluation(task)
             .is_some_and(|e| e.prompt_id == id && e.result.is_none());
+        if let Some(lease) = is_check.then(|| self.check_lease(&task.agent_id)).flatten() {
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::BindGoalCheckLease {
+                    task: task.task_id.clone(),
+                    prompt: id.clone(),
+                    lease,
+                })?;
+        }
         // The shared task hint supplies private assessment instructions and objective.
         let text = if is_check {
             "Check whether the original task is complete.".to_string()
@@ -829,17 +869,10 @@ impl KernelRuntimeState {
                     && e.prompt_id == task.pending_prompt_id.as_deref().unwrap_or(&task.prompt_id)
                     && now >= e.deadline_ms
             }) {
-                if let Outcome::Task(stopped) =
-                    self.owned
-                        .durable_state_store
-                        .agent_lifecycle(Operation::TimeoutGoal {
-                            task: task.task_id.clone(),
-                            prompt: check.prompt_id.clone(),
-                            now,
-                        })?
+                if let CheckExpiry::Blocked(stopped) =
+                    self.expire_goal_check(&task, &check.prompt_id, now).await?
                 {
-                    let _ = self.stop_goal_turn(&stopped).await;
-                    blocked.push(stopped);
+                    blocked.push(*stopped);
                 }
                 continue;
             }

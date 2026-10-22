@@ -157,6 +157,8 @@ async fn a12_resume_queues_behind_independent_work_but_fences_unsettled_goal_tur
             started_at_ms: 2,
             deadline_ms: 60002,
             paused_at_ms: None,
+            lease: None,
+            retried: false,
             result: None,
         },
     );

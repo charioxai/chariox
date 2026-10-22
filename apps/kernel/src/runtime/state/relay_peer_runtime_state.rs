@@ -1493,6 +1493,9 @@ impl KernelRuntimeState {
                     &completion.completed,
                     leased_agent_id,
                     &worker_provider_run_id,
+                    outcome
+                        .provider_failed
+                        .then_some("the provider run ended unexpectedly"),
                 )
                 .await;
             }

@@ -51,7 +51,31 @@ pub struct GoalEvaluation {
     /// does not count against the service bound.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused_at_ms: Option<u64>,
+    /// The worker lease the check was dispatched under, when its agent is leased.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease: Option<CheckLease>,
+    /// A worker restart that interrupted the check earns one more run.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retried: bool,
     pub result: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckLease {
+    pub worker_kernel_id: String,
+    pub worker_machine_id: String,
+    pub execution_lease_id: String,
+    pub leased_agent_id: String,
+}
+
+impl CheckLease {
+    /// The same signed worker identity on a new lease is the worker that came back.
+    fn replaced_by(&self, now: &Self) -> bool {
+        self.worker_kernel_id == now.worker_kernel_id
+            && self.worker_machine_id == now.worker_machine_id
+            && (self.execution_lease_id != now.execution_lease_id
+                || self.leased_agent_id != now.leased_agent_id)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,6 +219,8 @@ pub(super) fn work_end(t: &mut AgentTaskExecution, has_answer: bool, now: u64) -
         started_at_ms: now,
         deadline_ms: now.saturating_add(CHECK_BOUND_MS),
         paused_at_ms: None,
+        lease: None,
+        retried: false,
         result: None,
     };
     if let Some(g) = &mut t.goal {
@@ -406,6 +432,22 @@ fn continue_work(t: &mut AgentTaskExecution, reason: &str) -> bool {
     true
 }
 
+/// The check of `prompt` while it is still pending and its service bound has run out.
+fn expired_check<'a>(
+    t: &'a AgentTaskExecution,
+    prompt: &str,
+    now: u64,
+) -> Option<&'a GoalEvaluation> {
+    completion::evaluation(t).filter(|check| {
+        t.state == ExecutionState::Working
+            && check.prompt_id == prompt
+            && t.pending_prompt_id.as_deref().unwrap_or(&t.prompt_id) == prompt
+            && check.result.is_none()
+            && check.paused_at_ms.is_none()
+            && now >= check.deadline_ms
+    })
+}
+
 pub(super) fn timeout(
     tx: &Transaction<'_>,
     task: String,
@@ -413,16 +455,7 @@ pub(super) fn timeout(
     now: u64,
 ) -> Result<Outcome, DaemonError> {
     let t = load(tx, &task)?;
-    let Some(check) = completion::evaluation(&t) else {
-        return Ok(Outcome::Saved);
-    };
-    if t.state != ExecutionState::Working
-        || check.prompt_id != prompt
-        || t.pending_prompt_id.as_deref().unwrap_or(&t.prompt_id) != prompt
-        || check.result.is_some()
-        || check.paused_at_ms.is_some()
-        || now < check.deadline_ms
-    {
+    if expired_check(&t, &prompt, now).is_none() {
         return Ok(Outcome::Saved);
     }
     block_check(
@@ -433,6 +466,56 @@ pub(super) fn timeout(
         "Goal completion check exceeded 60 seconds; inspect the exact delivery receipt and explicitly resume",
         "completion_check service bound exceeded",
     )
+}
+
+pub(super) fn bind_check_lease(
+    tx: &Transaction<'_>,
+    task: String,
+    prompt: String,
+    lease: CheckLease,
+) -> Result<Outcome, DaemonError> {
+    let mut t = load(tx, &task)?;
+    if !check_is_pending(&t, &prompt) {
+        return Ok(Outcome::Saved);
+    }
+    completion::evaluation_mut(&mut t).unwrap().lease = Some(lease);
+    save(tx, &t)?;
+    Ok(Outcome::Task(t))
+}
+
+/// A leased worker that restarted inside a running check comes back on a new
+/// lease without the check's turn. Once, the expired check is asked again under
+/// a fresh bound; any other expiry (or a second one) stays `timeout`.
+pub(super) fn retry_check(
+    tx: &Transaction<'_>,
+    task: String,
+    prompt: String,
+    lease: CheckLease,
+    now: u64,
+) -> Result<Outcome, DaemonError> {
+    let mut t = load(tx, &task)?;
+    let interrupted = expired_check(&t, &prompt, now).is_some_and(|check| {
+        !check.retried
+            && check
+                .lease
+                .as_ref()
+                .is_some_and(|bound| bound.replaced_by(&lease))
+    });
+    if !interrupted {
+        return Ok(Outcome::Saved);
+    }
+    let retry_prompt = format!("{prompt}-retry");
+    clock(&mut t, now);
+    let check = completion::evaluation_mut(&mut t).unwrap();
+    check.prompt_id = retry_prompt.clone();
+    check.started_at_ms = now;
+    check.deadline_ms = now.saturating_add(CHECK_BOUND_MS);
+    check.lease = Some(lease);
+    check.retried = true;
+    t.pending_prompt_id = Some(retry_prompt);
+    t.revision += 1;
+    save(tx, &t)?;
+    Ok(Outcome::Task(t))
 }
 
 /// The check is waiting on the owner's Vault unlock: its service bound stops
