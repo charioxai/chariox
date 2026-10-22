@@ -2287,6 +2287,176 @@ pub(in crate::runtime::state) mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    // After a kernel restart a Claude agent has no provider run. The owner's first prompt
+    // then launches one with the Vaulted token: the kernel must ask for the Vault unlock
+    // and start the run, not refuse the prompt with `credential_vault_locked`.
+    #[tokio::test]
+    async fn first_prompt_after_restart_asks_for_the_vault_unlock_and_starts() {
+        crate::test_support::isolated_env_test!();
+        let _env = crate::env_lock::lock();
+        #[cfg(unix)]
+        let _claude = crate::test_support::TestClaudeExecutable::new();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-first-prompt-vault-unlock-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("test root should exist");
+        std::env::set_var("CHARIOX_HOME", &root);
+        std::env::set_var("CHARIOX_CLAUDE_BIN", std::env::current_exe().unwrap());
+        let vault_path = root.join("credentials.vault");
+        let mut config =
+            DaemonConfig::for_tests().with_session_history_root(root.join("session-history"));
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = vault_path.display().to_string();
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config.history.operational.path =
+            Some(root.join("operational.db").display().to_string());
+        config.user_config.artifacts.operational.root =
+            Some(root.join("artifacts").display().to_string());
+        config.user_config.artifacts.operational.index_path =
+            Some(root.join("artifacts.db").display().to_string());
+
+        let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
+        let (session, _default_agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                root.to_string_lossy(),
+                root.to_string_lossy(),
+            ))
+            .expect("session should create");
+        let profile = app
+            .provider_account_profile_registry()
+            .create_managed(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "claude",
+                "First prompt Claude",
+            )
+            .expect("managed Claude profile should create");
+        let agent = KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "claude")
+                    .with_model("claude-sonnet")
+                    .with_account_profile(profile.profile_id.clone()),
+            )
+            .expect("Claude agent should create");
+        let attachment = KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "first-prompt-client",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("test client should attach");
+        crate::secret::unlock_chariox_encrypted_vault(
+            &vault_path,
+            "correct horse battery staple",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .expect("vault should initialize");
+        crate::provider::store_provider_account_credential(
+            &config,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+            "setup-token-secret",
+            false,
+        )
+        .expect("provider credential should store");
+        crate::secret::lock_chariox_encrypted_vault(&vault_path).expect("vault should lock");
+        crate::secret::clear_vault_secret_process_cache().expect("secret cache should clear");
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let prompt = crate::session::PromptQueueItem::new(
+            runtime.owned.session_store.reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "hello after the restart",
+            crate::session::PromptStatus::Queued,
+        );
+        let submit = tokio::spawn({
+            let runtime = runtime.clone();
+            let session_id = session.id().to_string();
+            async move {
+                runtime
+                    .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                        session_id,
+                        prompt,
+                        force_queue: false,
+                        refresh_projection: true,
+                    })
+                    .await
+            }
+        });
+
+        let wait_for_choice = |choice: &'static str| {
+            let runtime = runtime.clone();
+            let (session, agent) = (session.id().to_string(), agent.id().to_string());
+            async move {
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        if let Some(interaction) = runtime
+                            .owned
+                            .session_store
+                            .get_session(&session)
+                            .expect("session should remain available")
+                            .active_interaction_for_agent(&agent)
+                            .filter(|interaction| {
+                                choice == "passphrase"
+                                    || interaction.choices().iter().any(|c| c.id() == choice)
+                            })
+                        {
+                            break interaction.id().to_string();
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("the locked Vault must raise the unlock popup for the first prompt")
+            }
+        };
+        let passphrase = wait_for_choice("passphrase").await;
+        runtime
+            .resolve_terminal_runtime_interaction(
+                session.id(),
+                &passphrase,
+                "passphrase",
+                Some("correct horse battery staple"),
+                Some(crate::session::DEFAULT_LOCAL_USER_ID),
+            )
+            .await
+            .expect("vault passphrase interaction should resolve");
+        let duration = wait_for_choice("unlock_operation").await;
+        runtime
+            .resolve_terminal_runtime_interaction(
+                session.id(),
+                &duration,
+                "unlock_operation",
+                None,
+                Some(crate::session::DEFAULT_LOCAL_USER_ID),
+            )
+            .await
+            .expect("vault unlock interaction should resolve");
+        let submission = tokio::time::timeout(std::time::Duration::from_secs(10), submit)
+            .await
+            .expect("the prompt must finish after the unlock")
+            .unwrap()
+            .expect("the first prompt must start once the Vault is unlocked");
+        assert!(submission.dispatch.is_some());
+        assert!(runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(session.id(), agent.id())
+            .is_some());
+
+        let _ = crate::secret::lock_chariox_encrypted_vault(&vault_path);
+        let _ = crate::secret::clear_vault_secret_process_cache();
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
+        std::env::remove_var("CHARIOX_HOME");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[tokio::test]
     async fn workflow_prompt_stays_bound_to_the_replacement_provider_run() {
         let worktree = crate::test_support::TestWorktree::new("local-prompt-provider-binding");
