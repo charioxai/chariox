@@ -584,7 +584,7 @@ async fn external_active_prompt_rejects_queued_prompt_steering() {
         &queued_prompt_id,
     );
 
-    let error = match runtime.owned.prepare_local_queued_prompt_steer(
+    let error = match runtime.owned.steer_queued_prompt(
         session.id(),
         agent.id(),
         attachment.id(),

@@ -34,6 +34,11 @@ impl AgentPromptDispatchContext {
             .spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
     }
 
+    fn spawn_queued_prompt_steer_dispatch(&self, dispatch: KernelPromptDispatch) {
+        self.state
+            .spawn_queued_prompt_steer_dispatch(dispatch, self.provider_runtime_lanes.clone());
+    }
+
     fn spawn_remote_prompt_dispatch(&self, dispatch: KernelRemotePromptDispatch) {
         self.state.spawn_remote_prompt_dispatch(dispatch);
     }
@@ -299,6 +304,11 @@ impl AgentPromptCommandService {
 
     pub(crate) fn spawn_prompt_dispatch(&self, dispatch: KernelPromptDispatch) {
         self.dispatch_context().spawn_prompt_dispatch(dispatch);
+    }
+
+    pub(crate) fn spawn_queued_prompt_steer_dispatch(&self, dispatch: KernelPromptDispatch) {
+        self.dispatch_context()
+            .spawn_queued_prompt_steer_dispatch(dispatch);
     }
 
     pub(crate) fn spawn_remote_prompt_dispatch(&self, dispatch: KernelRemotePromptDispatch) {

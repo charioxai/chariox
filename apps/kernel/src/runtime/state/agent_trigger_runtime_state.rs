@@ -409,12 +409,11 @@ impl KernelRuntimeState {
         // so local and leased agents share one path and its receipts. A
         // refused steer leaves the firing queued and says why.
         match self
-            .steer_queued_prompt_with_external_authority(
+            .steer_agent_trigger_prompt(
                 &dispatch.session_id,
                 &dispatch.agent_id,
                 &source_attachment_id,
                 &queued_prompt_id,
-                None,
             )
             .await
         {
