@@ -68,10 +68,12 @@ lock out the main JS toolchain.
 So world 1.x uses sync-typed functions. The host still implements every import
 as an async Rust function: wasmtime suspends the guest on a fiber while the
 broker call is in flight, so a waiting App costs no thread and other Apps are
-unaffected. What sync costs: one instance runs one call at a time. The spike
-serializes calls per instance; instances are cheap (§8: 10–15 µs warm
-instantiate), so the worker can later run concurrent calls on a small pool
-when an App declares it stateless. World 2.0 (`async func`, WASI 0.3 streams
+unaffected. What sync costs: one instance runs one call at a time (measured: 16
+waiting calls take 830 ms instead of 60 ms). Instances are cheap (10–12 µs
+warm instantiate), so the worker runs concurrent calls on a per-App instance
+pool (spike: `CHARIOX_WASM_POOL`; 16 calls in 54–60 ms, like Node). Pooled
+instances do not share memory, so an App keeps shared data in `state`, not in
+globals; the manifest should declare the pool size (default 1). World 2.0 (`async func`, WASI 0.3 streams
 for HTTP bodies and file transfer) follows when componentize-js ships async.
 
 ## 3. SDK call → IPC message
@@ -139,7 +141,7 @@ The component never sees the host. The worker links only:
   keyed by (release digest, worker build id, engine config). Loading a `.cwasm`
   is `unsafe` (it is native code), so only kernel-produced files from the
   immutable release store are ever loaded; a worker update re-precompiles.
-  Measured (§8): Rust App 27 ms, JS App 1.2–1.5 s, once per install/update.
+  Measured (§8): Rust App 20–27 ms, JS App 1.0–1.5 s, once per install/update.
 
 ## 6. Resource limits
 
