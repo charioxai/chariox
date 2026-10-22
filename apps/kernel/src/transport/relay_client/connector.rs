@@ -3,6 +3,7 @@
 use std::future::Future;
 
 use super::*;
+use crate::runtime::cloud_relay_control::cloud_relay_token_is_expired;
 
 mod managed_slice_activation;
 mod writer;
@@ -92,6 +93,8 @@ const RELAY_RECEIPT_STALL_LIMIT: Duration = Duration::from_secs(30);
 const RELAY_RECONNECT_BASE_DELAY_MS: u64 = 500;
 const RELAY_RECONNECT_MAX_DELAY_MS: u64 = 1_000;
 const RELAY_RECONNECT_JITTER_SPREAD_MS: u64 = 500;
+const CLOUD_TOKEN_REFRESH_RETRY_BASE_DELAY_MS: u64 = 1_000;
+const CLOUD_TOKEN_REFRESH_RETRY_MAX_DELAY_MS: u64 = 15_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MissingRelayConfigDisposition {
@@ -194,6 +197,17 @@ fn relay_reconnect_delay(daemon_id: &str, attempt: u32) -> Duration {
     let bounded_backoff_ms = backoff_ms.min(RELAY_RECONNECT_MAX_DELAY_MS);
     Duration::from_millis(
         bounded_backoff_ms + stable_jitter_ms(daemon_id, RELAY_RECONNECT_JITTER_SPREAD_MS),
+    )
+}
+
+/// Pause before the next token refresh after one failed; each refresh already
+/// spends its own timeout, so this grows past the socket reconnect delay.
+fn cloud_token_refresh_retry_delay(daemon_id: &str, failures: u32) -> Duration {
+    let backoff_ms = CLOUD_TOKEN_REFRESH_RETRY_BASE_DELAY_MS
+        .saturating_mul(1_u64 << failures.min(4))
+        .min(CLOUD_TOKEN_REFRESH_RETRY_MAX_DELAY_MS);
+    Duration::from_millis(
+        backoff_ms + stable_jitter_ms(daemon_id, RELAY_RECONNECT_JITTER_SPREAD_MS),
     )
 }
 
@@ -530,6 +544,7 @@ async fn run_daemon_relay_connector_inner(
     );
     let mut missing_relay_config_reported = false;
     let mut reconnect_attempt = 0_u32;
+    let mut token_refresh_failures = 0_u32;
 
     loop {
         if *shutdown.borrow() {
@@ -584,6 +599,35 @@ async fn run_daemon_relay_connector_inner(
                     }
                 }
             }
+            let config = router.relay_config_snapshot();
+            if cloud_relay_token_is_expired(&config, crate::session::unix_epoch_ms()) {
+                let daemon_id = router.relay_daemon_id();
+                let delay = cloud_token_refresh_retry_delay(&daemon_id, token_refresh_failures);
+                let relay_url = config
+                    .cloud_relay
+                    .as_ref()
+                    .map(|profile| profile.relay_url.clone())
+                    .unwrap_or_default();
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "cloud relay token is expired and could not be renewed; retrying the renewal",
+                    serde_json::json!({
+                        "relay_url": relay_url,
+                        "retry_ms": delay.as_millis(),
+                        "failures": token_refresh_failures,
+                    }),
+                );
+                if token_refresh_failures == 0 {
+                    disconnect_relay(&router, &state, "cloud relay token expired", true).await;
+                }
+                record_relay_reconnect(&router, &relay_url, "cloud relay token expired", delay);
+                token_refresh_failures = token_refresh_failures.saturating_add(1);
+                if wait_for_reconnect_delay(shutdown, delay).await {
+                    return;
+                }
+                continue;
+            }
+            token_refresh_failures = 0;
             match router
                 .activate_managed_slice_recovery_connection(crate::session::unix_epoch_ms())
                 .await

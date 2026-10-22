@@ -24,6 +24,11 @@ pub(crate) fn normalize_cloud_api_url(api_url: &str) -> Result<String, DaemonErr
 pub(crate) const CLOUD_RELAY_TOKEN_REQUEST_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(4);
 
+/// A presence heartbeat opens a fresh TCP+TLS connection and may try an
+/// unreachable address family first, so it needs more than a warm request.
+pub(crate) const CLOUD_PRESENCE_REQUEST_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(5);
+
 pub(crate) async fn post_cloud_json<T>(
     api_url: String,
     path: &'static str,

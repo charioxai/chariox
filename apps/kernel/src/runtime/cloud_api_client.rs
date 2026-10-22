@@ -19,7 +19,7 @@ pub(crate) use http::{
     get_cloud_kernel_directory, is_stale_cloud_link_error, normalize_cloud_api_url,
     post_cloud_acknowledged, post_cloud_json, post_cloud_json_authenticated,
     post_cloud_json_dynamic, post_cloud_json_with_timeout, post_cloud_to_file,
-    CLOUD_RELAY_TOKEN_REQUEST_TIMEOUT,
+    CLOUD_PRESENCE_REQUEST_TIMEOUT, CLOUD_RELAY_TOKEN_REQUEST_TIMEOUT,
 };
 mod pairing;
 pub(crate) use pairing::request_account_pairing_token;
