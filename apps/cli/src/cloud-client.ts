@@ -224,7 +224,7 @@ export async function issueCloudPairingBootstrapToken(relayUrl: string, kernelId
   const client = new CloudClient(undefined, () => identity)
   try {
     const profile = await client.profile()
-    if (!profile) throw new Error("Cloud terminal pairing requires a signed-in terminal; run chariox cloud login first, or supply a separate CLIENT token with --relay-token-env NAME")
+    if (!profile) throw new CloudClientAuthError("login_required")
     if (profile.relayUrl !== relayUrl) throw new CloudClientAuthError("profile_conflict")
     if (new URL(profile.apiUrl).protocol === "https:" && new URL(relayUrl).protocol !== "wss:") throw new CloudClientAuthError("insecure_relay_endpoint")
     return (await client.issue(kernelId)).token

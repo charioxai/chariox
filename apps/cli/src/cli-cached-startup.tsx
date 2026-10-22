@@ -13,6 +13,7 @@ import {recordPaneFirstFrame} from "./pane-first-frame-timing.js"
 import {paintCachedTranscriptFrame} from "./client-view-frame.js"
 import {createTranscriptSyntaxStyle,theme} from "./theme.js"
 import {TUI_MOUSE_ENABLED} from "./terminal-mouse-policy.js"
+import {cliStartupFailureText} from "./cli-startup-failure.js"
 
 export function createCliCachedStartup(){
  const [cached,setCached]=createSignal<CliCachedView|null>(null)
@@ -66,7 +67,7 @@ export function CliCachedStartup(props:{pending:Promise<CliRuntimeBootstrapResul
   result.bootstrap.isTranscriptViewCovered=()=>!painted()
   result.bootstrap.onTranscriptFrame=()=>{if(!disposed){setPainted(true);props.view.finish()}}
   setReady(result)
- }).catch(()=>{if(!disposed){props.view.finish();setFailure('Unable to attach to this session.')}})
+ }).catch(error=>{if(!disposed){props.view.finish();setFailure(cliStartupFailureText(error))}})
  return <box width="100%" height="100%" flexDirection="column">
   <Show when={ready()}>{runtime=><CharioxCliApp bootstrap={runtime().bootstrap}/>}</Show>
   <Show when={!painted()}><box position="absolute" zIndex={100} top={0} left={0} width="100%" height="100%" backgroundColor={theme.background}>
