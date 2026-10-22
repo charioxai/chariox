@@ -334,7 +334,7 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
             .to_string();
 
     assert!(
-        error.contains("remove the skill from the workflow script and republish it"),
+        error.contains("delete the old entry and republish the script without the skill"),
         "{error}"
     );
 }

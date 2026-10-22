@@ -149,7 +149,7 @@ pub fn compile_workflow_code_source_with_parameters_and_schema_import_root(
                 let error = error.to_string();
                 // Skills v2 removed the skill grant; a script written before that still names one.
                 let next_step = if error.contains("unknown variant `skill`") {
-                    ": remove the skill from the workflow script and republish it"
+                    ": delete the old entry and republish the script without the skill"
                 } else {
                     ""
                 };
