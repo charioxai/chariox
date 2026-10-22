@@ -120,7 +120,7 @@ impl Spawned {
 fn scratch() -> (String, String) {
     static RUN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let base = format!("{}/run/{}-{}", env("SPIKE_ROOT"), std::process::id(), RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
-    let (data, tmp) = (format!("{base}/data"), format!("{base}/tmp"));
+    let (data, tmp) = (std::env::var("SPIKE_REUSE_DATA").unwrap_or_else(|_| format!("{base}/data")), format!("{base}/tmp"));
     std::fs::create_dir_all(&data).unwrap();
     std::fs::create_dir_all(&tmp).unwrap();
     (data, tmp)

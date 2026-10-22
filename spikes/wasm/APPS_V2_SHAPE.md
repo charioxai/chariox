@@ -639,6 +639,7 @@ or licence page; releases from GitHub.
 | Excalidraw | MIT | — | yes (React component) | none needed | v0.18.1 (04-2026), very active | **Good** |
 | Univer (sheets/docs/slides) | Apache-2.0 core; Pro is commercial | xlsx/docx import-export, charts, pivot, print, collaboration are **Pro-only** | yes (canvas) | none needed; add our own xlsx I/O | v1.2.0 (10-22-2026), very active | **Good** |
 | Typst | Apache-2.0 (typst and typst.ts) | — | partly (renderer exists, editor to assemble) | **yes**: Rust → `wasm32-wasip2`, fonts/packages via HTTP + file brokers | v0.15.1 (07-2026) | **Good** (best real backend component) |
+| LaTeX / Tectonic + CodeMirror + PDF.js | MIT frontend/wrapper; **GPL-2.0+ PDF engine and CPL/LGPL TECkit** in Tectonic | Top-level MIT is not engine clearance | yes | direct `wasm32-wasip2` component builds on the async world; measured compiler spike | research, 10-22 | **Not first-party under the rule below**; [measurements and design](tex/TEX_APP.md) |
 | PDF.js | Apache-2.0 | — | yes | none needed | v6.4 (10-2026) | Good |
 | pdf-lib | MIT | upstream dormant since 2021; use the maintained `cantoo-scribe` fork (MIT, 09-2026) | library | pure JS → QuickJS backend | fork active | Good as a library |
 | SQLite (sqlite-wasm) | public domain / Apache wrapper | — | n/a | C builds with wasi-sdk (rusqlite bundled works on wasip2) | 3.54 (10-2026) | Good as the storage of any App |
@@ -655,7 +656,7 @@ or licence page; releases from GitHub.
 | Collabora Online | MPL-2.0 | weak copyleft | yes (JS client) | **no**: native C++ server + LibreOfficeKit processes | active | No → wrapped |
 | OnlyOffice Docs | **AGPL-3.0** | **AGPL** | yes (canvas) | **no**: Node services + x2t C++ converter + RabbitMQ/PostgreSQL | v10 (10-2026) | No → wrapped, and AGPL |
 
-### 7b.1 The two to build: Excalidraw first, Univer sheets second
+### 7b.1 Reference App candidates
 
 **Excalidraw (diagrams).** Views: the Excalidraw React component as the
 single UI entry, state kept by the App. Backend component (QuickJS or
@@ -683,12 +684,14 @@ machine; Univer's Facade API is a JavaScript API inside the page, so any
 MCP for it would be a second server-side surface, which is the thing §5
 argues against.
 
-Typst is the best "real backend" showcase (a Rust compiler as a component
-with brokered fonts and packages) and the third candidate once the first
-two exist.
+Typst is a candidate for the "real backend" showcase (a Rust compiler as a
+component with brokered fonts and packages). Miguel wants one or two example
+Apps, with an Overleaf-like LaTeX App if feasible. The [LaTeX spike](tex/TEX_APP.md)
+finds that Tectonic can build as a component, but its linked GPL code fails
+the first-party licence rule. Excalidraw and Univer remain candidates.
 
-**Consequences.** Two M-size reference Apps that also serve as the
-benchmark Apps (§5.3). Licence rule for first-party Apps: permissive only
+**Consequences.** Pick one or two reference Apps; Excalidraw and Univer can
+also serve as the benchmark Apps (§5.3). Licence rule for first-party Apps: permissive only
 (MIT/BSD/Apache/MPL as a dependency); no GPL/AGPL code in a Chariox App we
 ship; copyleft programs go through the wrapped kind if at all.
 

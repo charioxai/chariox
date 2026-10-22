@@ -59,6 +59,7 @@ impl Guest for App {
         if !std::path::Path::new("data/cache/latex.fmt").exists() {
             driver::generate_format("data/bundle").map_err(fail)?;
         }
+        std::fs::copy("data/cache/latex.fmt", "data/bundle/latex.fmt").map_err(fail)?;
         let name = checked_name(v["main"].as_str().ok_or_else(|| fail("main required"))?)?;
         driver::compile(&format!("/data/input/{name}"), "data/output", "data/bundle").map_err(fail)?;
         let base = name.trim_end_matches(".tex");
