@@ -25,6 +25,7 @@ for run in 1 2 3; do
   for variant in wasm-rust-async wasm-qjs wasm-py node-js; do
     cell "$variant" bwrap shared 16
     cell "$variant" bwrap shared 64
+    cell "$variant" bwrap shared 64 50
     cell "$variant" bwrap hol
   done
   cell node-js bwrap stream 50 0

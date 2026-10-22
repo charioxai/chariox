@@ -20,7 +20,12 @@ use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
 // `register` is a sync export; the store has async host functions, so it is
 // called with call_async.
-wasmtime::component::bindgen!({ world: "app", path: "../wit", exports: { "chariox:app/handlers.register": async } });
+wasmtime::component::bindgen!({
+    world: "app",
+    path: "../wit",
+    exports: { "chariox:app/handlers.register": async },
+    with: { "wasi": wasmtime_wasi::p3::bindings },
+});
 
 use chariox::app::types::{AppError, Event};
 use chariox::app::{events, http, log, registry, state};

@@ -4,8 +4,10 @@ import json
 
 from componentize_py_types import Err
 from wit_world import exports
-from wit_world.imports import events, http, log, registry, state
-from wit_world.imports.types import AppError
+from wit_world.imports import events, http, log, monotonic_clock, registry, state
+# `chariox_app_types`: componentize-py renames our `types` because WASI
+# clocks has one too.
+from wit_world.imports.chariox_app_types import AppError
 
 TOOLS = ["echo", "counter", "fetch", "transform", "compute", "spin", "hog", "shared", "stream", "subscribe", "wait"]
 
@@ -39,7 +41,7 @@ async def fetch(url):
     return {"status": response.head.status, "bytes": len(body), "head": body[:16].decode()}
 
 
-async def shared(url):
+async def shared(url, wait_ms=0):
     SHARED["counter"] += 1
     n = SHARED["counter"]
     if SHARED["connection"] is None:
@@ -47,8 +49,12 @@ async def shared(url):
     connection = SHARED["connection"]
     connection["requests"] += 1
     sequence = connection["requests"]
-    response = await http.send(request(url, connection["id"]))
-    SHARED["cache"][n] = len(response.body)
+    if wait_ms > 0:
+        await monotonic_clock.wait_for(wait_ms * 1_000_000)
+        size = 0
+    else:
+        size = len((await http.send(request(url, connection["id"]))).body)
+    SHARED["cache"][n] = size
     return {"n": n, "sequence": sequence, "connection": connection["id"], "cached": len(SHARED["cache"])}
 
 
@@ -135,7 +141,7 @@ async def call(name, value):
     if name == "hog":
         return hog(value.get("mb", 64), value.get("kind", "bytes"))
     if name == "shared":
-        return await shared(value.get("url", ""))
+        return await shared(value.get("url", ""), value.get("waitMs", 0))
     if name == "stream":
         return await stream(value.get("url", ""), value.get("work", 0))
     if name == "subscribe":

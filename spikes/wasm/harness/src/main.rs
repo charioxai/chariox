@@ -201,7 +201,7 @@ fn main() {
         let n = |index: usize, default: u64| args.get(index).and_then(|v| v.parse().ok()).unwrap_or(default);
         let report = runtime.block_on(async {
             match mode.as_str() {
-                "shared" => cells::shared(&variant, &origin, n(4, 16) as usize).await,
+                "shared" => cells::shared(&variant, &origin, n(4, 16) as usize, n(5, 0)).await,
                 "stream" => cells::stream(&variant, &origin, n(4, 50), n(5, 0)).await,
                 "subscribe" => cells::subscribe(&variant, &origin, n(4, 1000), n(5, 0)).await,
                 "cancel" => cells::cancel(&variant, &origin).await,

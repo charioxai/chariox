@@ -13,13 +13,15 @@ Rust, JS (QuickJS) and Python. It does so with the same limits r1 had,
 and no worse than Node anywhere except raw JS CPU speed.
 
 - **Many agents, one instance, shared state: works.** 16 callers sharing a
-  counter, a cache and one "connection" object finished in 52 ms on every
-  wasm App (Node: 61 ms), with no lost updates. Memory: 13–39 MiB against
-  Node's 66 MiB.
+  counter, a cache and one "connection" object finished in 53–54 ms on every
+  wasm App (Node: 57 ms), with no lost updates. Memory: 15–41 MiB against
+  Node's 66 MiB. With a timer wait instead of a broker call, **64** callers
+  all succeed on one wasm instance in 52–54 ms. Node refuses 48 of them.
 - **The real ceiling is the kernel, not the runtime.** Today's kernel peer
   allows **16** broker calls in flight per App, and Node's worker has its
-  own cap of 16. At 64 callers, 48 get `BUSY` with *every* runtime. For
-  "many agents" the kernel must queue instead of refusing (PR 2 below).
+  own cap of 16 calls. At 64 callers waiting on the broker, 48 get `BUSY`
+  with *every* runtime. For "many agents" the kernel must queue instead of
+  refusing (PR 2 below).
 - **Streaming and subscriptions work, with backpressure.** A 50 MiB body
   streams at 260–280 MiB/s with **+1 to +4 MiB** of memory. Node's SDK fetch: 48 MiB/s,
   +37 MiB. A slow reader holds at most 4 chunks. Events arrive in order at
@@ -34,46 +36,48 @@ and no worse than Node anywhere except raw JS CPU speed.
   one guest task from the host (issue #11833), so the contract carries an
   explicit `cancel` future. Rust drops the work and its broker streams in
   12 ms. In QuickJS the call returns at once, but the import it was waiting
-  on keeps running until it ends (6 s here). componentize-py traps if a
+  on keeps running until it ends (5.3 s here). componentize-py traps if a
   cancel read is abandoned, so Python Apps run to completion.
 - **QuickJS vs StarlingMonkey.** QuickJS is 8x smaller (1.5 vs 11.8 MB), uses
-  half the memory (16 vs 33 MiB), compiles 7x faster at install (0.12 vs
-  0.8 s), and is equally fast on JS-heavy code. It is **2.3x slower on
-  JSON** (102 vs 44 ms; Node 17 ms). Both run 4 of 5 popular npm packages.
+  half the memory (17 vs 33 MiB), compiles ~5x faster at install (0.1–0.2
+  vs 0.7–0.8 s), and is equally fast on JS-heavy code (261 vs 271 ms). It is
+  **2.4x slower on JSON** (107 vs 44 ms; Node 17 ms). Both run 4 of 5
+  popular npm packages.
 - **QuickJS toolchain risk is real but contained.** The npm release cannot
   build our world: async *imports* were fixed upstream on 10-21 and are not
   released yet. The tool has essentially one maintainer. We pin a git
   commit, build it ourselves (5 min), and it is only a build tool: the
   components it emits are standard, so the worker does not depend on it.
 - **Python works** (componentize-py 0.25.1, built in 1.5 s, far under 45 min):
-  19 MB App, 36 MiB RSS, 4 ms cold start without bubblewrap.
+  19 MB App, 37 MiB RSS, 4 ms cold start without bubblewrap. WASI 0.3
+  imports (`monotonic-clock.wait-for`) work in Rust, QuickJS and Python.
 
 ## Numbers (Linux, bubblewrap sandbox, median [min–max] of 3 runs)
 
 Hardware: AMD Ryzen 9 9950X (32 threads), 125 GiB, kernel 7.0.0, shared b3
-(load 5.7–10 during the sweep). All six variants ran interleaved in the same
+(load 4.3–12.7 during the sweep). All six variants ran interleaved in the same
 sweep, with the same calls. Memory cap per App: 128 MiB (wasm memory cap,
 V8 heap for Node). CPU slice budget: 1 s (the same 1 s as r1's per-call
 budget).
 
 | metric | Rust (async) | JS QuickJS (async) | Python (async) | Rust (r1 sync) | JS StarlingMonkey (r1 sync) | Node 24.20 (today) |
 |---|---|---|---|---|---|---|
-| cold start to ready, ms | 5.9 [5.4–6.1] | 5.6 [5.6–7.1] | 8.1 [8.1–9.3] | 6.0 [5.4–9.1] | 6.9 [6.3–8.5] | 29.2 [29.1–35.3] |
-| cold start without bubblewrap, ms | 1.4 [1.4–1.6] | 1.9 [1.8–2.5] | 4.1 [3.7–4.4] | – | – | 26.0 [25.1–31.6] |
-| cold start, no install-time AOT, ms | 23.9 | 110.5 | 683.4 | – | (r1: 889) | – |
-| warm instantiate, ms | 0.010 | 0.047 | 0.381 | 0.008 | 0.012 | – |
-| RSS after ready, MiB | 12.7 | 15.7 | 35.9 | 12.3 | 33.0 | 55.6 |
-| private (anon) RSS after ready, MiB | 1.1 | 1.4 | 3.7 | 1.0 | 2.2 | 13.4 |
-| RSS after 1,000 calls + CPU tools, MiB | 23.5 | 30.9 | 46.0 | 22.9 | 69.7 | 114.7 |
-| tool call p50 / p95 / p99, ms | 0.030 / 0.047 / 0.068 | 0.041 / 0.066 / 0.118 | 0.048 / 0.067 / 0.103 | 0.022 / 0.027 / 0.046 | 0.046 / 0.076 / 0.124 | 0.034 / 0.066 / 0.126 |
-| JSON transform (10k records x5), ms | 37.6 [37.0–39.1] | 101.5 [101.0–109.4] | 107.5 [104.9–114.5] | 38.1 | 43.9 [41.9–47.4] | 17.2 [17.0–20.7] |
-| JS-heavy compute (1M Map/string ops), ms | 65.6 | 249.8 [246.5–250.8] | 577.5 | 66.3 | 266.4 [265.7–287.9] | 32.7 |
-| runaway loop: stopped after, ms | 1005 | 1008 | 1005 | 1003 | 1004 | killed at 1501 |
-| runaway loop: next call answered after, ms | 0.1 | 0.3 | 1.3 | 0.3 | 0.9 | 58.8 (restart) |
-| 256 MiB byte buffers (cap 128) | `APP_MEMORY_LIMIT`, peak 138 MiB | `APP_MEMORY_LIMIT`, 142 | `APP_MEMORY_LIMIT`, 153 | `APP_MEMORY_LIMIT`, 138 | `APP_MEMORY_LIMIT`, 153 | **not stopped**, 310 MiB |
+| cold start to ready, ms | 5.5 [4.9–5.6] | 6.1 [5.5–7.4] | 8.2 [7.7–8.5] | 5.9 [5.5–7.3] | 7.2 [6.9–7.7] | 31.1 [30.4–33.8] |
+| cold start without bubblewrap, ms | 1.6 [1.5–2.2] | 1.9 [1.9–2.5] | 4.2 [4.0–4.3] | – | – | 28.1 [25.2–30.9] |
+| cold start, no install-time AOT, ms | 25.9 | 118.6 | 703.1 | – | (r1: 889) | – |
+| warm instantiate, ms | 0.010 | 0.049 | 0.403 | 0.008 | 0.012 | – |
+| RSS after ready, MiB | 14.1 | 17.1 | 37.1 | 12.3 | 33.3 | 55.6 |
+| private (anon) RSS after ready, MiB | 1.2 | 1.5 | 3.8 | 1.0 | 2.2 | 13.4 |
+| RSS after 1,000 calls + CPU tools, MiB | 24.9 | 32.5 | 47.4 | 22.8 | 70.0 | 114.4 |
+| tool call p50 / p95 / p99, ms | 0.028 / 0.042 / 0.056 | 0.041 / 0.059 / 0.100 | 0.046 / 0.064 / 0.100 | 0.023 / 0.025 / 0.037 | 0.046 / 0.097 / 0.137 | 0.037 / 0.080 / 0.143 |
+| JSON transform (10k records x5), ms | 37.3 [36.0–37.9] | 106.5 [106.3–109.2] | 108.0 [107.9–110.5] | 37.1 | 43.6 [41.0–45.9] | 17.2 [16.9–17.9] |
+| JS-heavy compute (1M Map/string ops), ms | 65.1 | 260.7 [248.9–262.1] | 570.3 | 67.2 | 270.7 [260.5–274.3] | 32.8 |
+| runaway loop: stopped after, ms | 1008 | 1012 | 1003 | 997 | 1006 | killed at 1501 |
+| runaway loop: next call answered after, ms | 0.1 | 0.3 | 1.3 | 0.3 | 0.9 | 47.5 (restart) |
+| 256 MiB byte buffers (cap 128) | `APP_MEMORY_LIMIT`, peak 140 MiB | `APP_MEMORY_LIMIT`, 144 | `APP_MEMORY_LIMIT`, 154 | `APP_MEMORY_LIMIT`, 138 | `APP_MEMORY_LIMIT`, 153 | **not stopped**, 310 MiB |
 | 256 MiB small objects (cap 128) | `APP_MEMORY_LIMIT` | `APP_MEMORY_LIMIT` | `APP_MEMORY_LIMIT` | `APP_MEMORY_LIMIT` | `APP_TRAPPED` (engine heap ceiling) | **process aborted** |
-| .wasm / install-time .cwasm | 186 KiB / 578 KiB | 1.5 MB / 4.6 MB | 19 MB / 36 MB | 121 KiB / 366 KiB | 11.8 MB / 36 MB | 3 KiB + Node |
-| install-time precompile | 23 ms | 122 ms | 684 ms | 17 ms | 820 ms | – |
+| .wasm / install-time .cwasm | 190 KiB / 595 KiB | 1.5 MB / 4.6 MB | 19 MB / 36 MB | 121 KiB / 366 KiB | 11.8 MB / 36 MB | 3 KiB + Node |
+| install-time precompile | 24 ms | 0.1–0.2 s | 0.7 s | 17 ms | 0.7–0.8 s | – |
 
 Tool-call round trips stay in the tens of microseconds everywhere.
 
@@ -84,20 +88,27 @@ Each call bumps a shared counter, uses one shared "connection" object, waits
 
 | | Rust | QuickJS | Python | Node (today) |
 |---|---|---|---|---|
-| 16 callers: all done in, ms | 52.5 [51.5–52.8] | 52.9 [51.8–52.9] | 52.4 [52.1–52.6] | 61.2 [56.5–61.3] |
+| 16 callers, broker wait: all done in, ms | 53.0 [52.8–53.1] | 53.1 [51.7–53.2] | 53.7 [53.0–54.2] | 57.0 [56.5–57.1] |
 | 16 callers: no lost updates, one connection | yes, yes | yes, yes | yes, yes | yes, yes |
-| 16 callers: RSS, MiB | 13.4 | 16.4 | 39.4 | 65.8 |
-| 64 callers: calls ok | 16 / 64 (`BUSY`) | 16 / 64 (`BUSY`) | 16 / 64 (`BUSY`) | 16 / 64 (`APP_BUSY`) |
+| 16 callers: RSS, MiB | 14.8 | 17.8 | 40.8 | 65.6 |
+| 64 callers, broker wait: calls ok | 16 / 64 (`BUSY`) | 16 / 64 (`BUSY`) | 16 / 64 (`BUSY`) | 16 / 64 (`APP_BUSY`) |
+| 64 callers, timer wait (no broker): calls ok, done in | **64 / 64**, 52.4 ms | **64 / 64**, 53.2 ms | **64 / 64**, 54.1 ms | 16 / 64 (`APP_BUSY`) |
+| 64 callers, timer wait: no lost updates | yes | yes | yes | – |
+
+The timer row uses WASI 0.3 `monotonic-clock.wait-for` (Node: `setTimeout`):
+the wasm worker itself serves 64 concurrent callers on one instance; the
+16-call limit comes from the kernel's broker cap and, for Node, from its own
+handler cap.
 
 ### Streaming and subscriptions
 
 | | Rust | QuickJS | Python | Node (SDK fetch) |
 |---|---|---|---|---|
-| 50 MiB body, MiB/s | 261 [252–295] | 270 [269–273] | 280 [265–286] | 48 [48–49] |
-| worker RSS during it, MiB | 12.6 → 13.3 | 15.6 → 16.6 | 35.9 → 39.8 | 55.5 → 93.0 |
+| 50 MiB body, MiB/s | 265 [263–274] | 270 [265–281] | 279 [272–284] | 48 [48–50] |
+| worker RSS during it, MiB | 14.1 → 14.8 | 17.0 → 18.2 | 37.2 → 40.7 | 55.6 → 91.9 |
 | slow reader: chunks read ahead (cap 4) | 4 | 4 | 4 | – |
-| slow reader result | done in 845 ms | stopped by the 1 s CPU slice | stopped by the 1 s CPU slice | – |
-| 1,000 events: per second, in order | 42.9k, yes | 43.7k, yes | 41.5k, yes | – |
+| slow reader result | done in 838 ms | stopped by the 1 s CPU slice | stopped by the 1 s CPU slice | – |
+| 1,000 events: per second, in order | 42.1k, yes | 40.2k, yes | 40.6k, yes | – |
 | slow reader: kernel's delivery ack p50 | 0.16 ms | 12 ms | 35 ms | – |
 
 The slow JS/Python readers show a real rule question. A guest whose
@@ -110,12 +121,12 @@ DESIGN.md §4 proposes a 5 s default.
 | bad call | Rust | QuickJS | Python |
 |---|---|---|---|
 | runaway loop | bad call `APP_CALL_TIMEOUT` at 1.0 s; 8 others `APP_INSTANCE_RESTARTED` (retryable); shared state lost | same | same |
-| 256 MiB buffers | bad call `APP_MEMORY_LIMIT` in 26 ms; 8 others `APP_INSTANCE_RESTARTED`; state lost (Rust aborts = trap) | bad call `APP_MEMORY_LIMIT` in 22 ms; **8 others ok; state kept**; RSS stays 143 MiB | same as QuickJS; RSS stays 154 MiB |
-| cancel 2 of 10 calls | 8 others ok; both calls and their broker streams released in 12 ms | 8 others ok; worker answers at once; the waiting import keeps its broker stream until it ends (6.0 s) | 8 others ok; cancel not delivered (runs to completion) |
-| CPU-heavy call (3M ops) | echo waits 191 ms behind it | 742 ms | 1001 ms (the call is stopped at the 1 s slice) |
+| 256 MiB buffers | bad call `APP_MEMORY_LIMIT` in 24 ms; 8 others `APP_INSTANCE_RESTARTED`; state lost (Rust aborts = trap) | bad call `APP_MEMORY_LIMIT` in 24 ms; **8 others ok; state kept**; RSS stays 144 MiB | same as QuickJS (20 ms); RSS stays 155 MiB |
+| cancel 2 of 10 calls | 8 others ok; both calls and their broker streams released in 12 ms | 8 others ok; worker answers at once; the waiting import keeps its broker stream until it ends (5.3 s) | 8 others ok; cancel not delivered (runs to completion) |
+| CPU-heavy call (3M ops) | echo waits 188 ms behind it | 721 ms | 1001 ms (the call is stopped at the 1 s slice) |
 
 The CPU-heavy row is the price of cooperative concurrency, and Node has it
-too (its echo waited 95 ms behind the same call): one instance runs one
+too (its echo waited 96 ms behind the same call): one instance runs one
 piece of code at a time.
 
 **Proposed rule** (details in DESIGN.md §4):
@@ -135,10 +146,10 @@ piece of code at a time.
 | | QuickJS (componentize-qjs) | StarlingMonkey (componentize-js 0.23) | Node 24.20 |
 |---|---|---|---|
 | async world | **yes** | no (panics) | – |
-| JSON transform / JS-heavy compute, ms | 101.5 / 249.8 | 43.9 / 266.4 | 17.2 / 32.7 |
-| RSS after ready / after work, MiB | 15.7 / 30.9 | 33.0 / 69.7 | 55.6 / 114.7 |
+| JSON transform / JS-heavy compute, ms | 106.5 / 260.7 | 43.6 / 270.7 | 17.2 / 32.8 |
+| RSS after ready / after work, MiB | 17.1 / 32.5 | 33.3 / 70.0 | 55.6 / 114.4 |
 | component / precompiled size | 1.5 MB / 4.6 MB | 11.8 MB / 36 MB | – |
-| install precompile / cold start without AOT | 122 ms / 110 ms | 820 ms / 889 ms | – |
+| install precompile / cold start without AOT | 0.1–0.2 s / 119 ms | 0.7–0.8 s / 889 ms (r1) | – |
 | out of memory (small objects) | handled in the call, instance lives | engine heap ceiling, instance trapped | process aborts |
 | npm: zod, date-fns, lodash-es, nanoid, marked | 4/5 (nanoid: no `crypto.getRandomValues`) | 4/5 (marked: no `\p{…}` in regexes) | 5/5 |
 | Web APIs | none (`TextDecoder`, `crypto`, `fetch` absent; SDK polyfills) | `fetch`, `TextDecoder`, `crypto` built in | all |
@@ -168,7 +179,7 @@ plain Rolldown. `jco componentize --bundle` with the QuickJS backend emits
 - **Reevaluate trigger:** a ComponentizeJS/StarlingMonkey release that builds
   `spikes/wasm/wit/app.wit` (async imports and exports) unchanged. Then run
   `scripts/sweep-async.sh` with it as a fourth wasm variant. Switch if it
-  keeps StarlingMonkey's ~2.3x JSON advantage and the size and memory cost
+  keeps StarlingMonkey's ~2.4x JSON advantage and the size and memory cost
   stays acceptable (today 8x bigger, 2x the RSS).
 
 ## Other toolchain risks

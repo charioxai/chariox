@@ -1,6 +1,6 @@
 //! Spike Rust App on the async world: the r1 tools plus shared in-memory
 //! state, a streamed HTTP body, an event subscription and a cancellable wait.
-wit_bindgen::generate!({ world: "app", path: "../../wit" });
+wit_bindgen::generate!({ world: "app", path: "../../wit", generate_all });
 
 use chariox::app::{events, http, log, registry, state};
 use chariox::app::types::{AppError, InvocationContext};
@@ -63,7 +63,7 @@ async fn call(name: String, input: Value) -> Result<Value, AppError> {
         "compute" => compute(input["n"].as_u64().unwrap_or(1_000_000)),
         "spin" => spin(),
         "hog" => hog(input["mb"].as_u64().unwrap_or(64), input["kind"].as_str().unwrap_or("bytes")),
-        "shared" => shared(input["url"].as_str().unwrap_or_default()).await?,
+        "shared" => shared(input["url"].as_str().unwrap_or_default(), input["waitMs"].as_u64().unwrap_or(0)).await?,
         "stream" => stream(input["url"].as_str().unwrap_or_default(), input["work"].as_u64().unwrap_or(0)).await?,
         "subscribe" => subscribe(input["name"].as_str().unwrap_or("tick"), input["count"].as_u64().unwrap_or(1), input["work"].as_u64().unwrap_or(0)).await?,
         "wait" => fetch(input["url"].as_str().unwrap_or_default()).await?,
@@ -104,8 +104,9 @@ async fn fetch(url: &str) -> Result<Value, AppError> {
 }
 
 /// Counter and cache updates happen between awaits, so they are atomic for
-/// the single-threaded instance; the broker call in between interleaves.
-async fn shared(url: &str) -> Result<Value, AppError> {
+/// the single-threaded instance; the broker call (or, with `wait_ms`, a WASI
+/// 0.3 timer) in between interleaves.
+async fn shared(url: &str, wait_ms: u64) -> Result<Value, AppError> {
     let (n, connection, sequence) = SHARED.with(|shared| {
         let mut shared = shared.borrow_mut();
         shared.counter += 1;
@@ -114,10 +115,15 @@ async fn shared(url: &str) -> Result<Value, AppError> {
         connection.requests += 1;
         (n, connection.id.clone(), connection.requests)
     });
-    let response = http::send(request(url, Some(connection.clone()))).await?;
+    let bytes = if wait_ms > 0 {
+        wasi::clocks::monotonic_clock::wait_for(wait_ms * 1_000_000).await;
+        0
+    } else {
+        http::send(request(url, Some(connection.clone()))).await?.body.len()
+    };
     let cached = SHARED.with(|shared| {
         let mut shared = shared.borrow_mut();
-        shared.cache.insert(n, response.body.len());
+        shared.cache.insert(n, bytes);
         shared.cache.len()
     });
     Ok(json!({ "n": n, "sequence": sequence, "connection": connection, "cached": cached }))

@@ -106,6 +106,9 @@ interface handlers {
 }
 
 world app {
+  /// WASI 0.3: `wait-for` is an async import (used for the timer-only
+  /// many-callers cell, which needs no broker call).
+  import wasi:clocks/monotonic-clock@0.3.0;
   import registry;
   import state;
   import http;

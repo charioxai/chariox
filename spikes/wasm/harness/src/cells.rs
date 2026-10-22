@@ -26,17 +26,20 @@ async fn stats(worker: &Worker) -> Value {
 
 /// N callers at once on ONE instance, all touching the same in-memory
 /// counter, cache and "connection"; each waits on the HTTP broker.
-pub async fn shared(variant: &Variant, origin: &str, calls: usize) -> Value {
+/// `wait_ms` > 0: each call waits on a timer instead of the broker, so the
+/// kernel's broker-call cap does not apply.
+pub async fn shared(variant: &Variant, origin: &str, calls: usize, wait_ms: u64) -> Value {
     let worker = Arc::new(start(variant, origin).await);
+    let input = json!({ "url": format!("{ALLOWED}hello"), "waitMs": wait_ms });
     // Warm the instance and the connection object first.
-    let _ = worker.call("shared", json!({ "url": format!("{ALLOWED}hello") }), LONG).await;
+    let _ = worker.call("shared", input.clone(), LONG).await;
     let at = Instant::now();
     let mut tasks = Vec::new();
     for _ in 0..calls {
-        let worker = worker.clone();
+        let (worker, input) = (worker.clone(), input.clone());
         tasks.push(tokio::spawn(async move {
             let at = Instant::now();
-            let result = worker.call("shared", json!({ "url": format!("{ALLOWED}hello") }), LONG).await;
+            let result = worker.call("shared", input, LONG).await;
             (ms(at), result)
         }));
     }
@@ -57,9 +60,9 @@ pub async fn shared(variant: &Variant, origin: &str, calls: usize) -> Value {
     let total = ms(at);
     // The warm-up call was n = 1; the burst must hold n = 2..=calls+1 exactly once.
     let expected: BTreeSet<u64> = (2..=calls as u64 + 1).collect();
-    let after = worker.call("shared", json!({ "url": format!("{ALLOWED}hello") }), LONG).await.unwrap_or(Value::Null);
+    let after = worker.call("shared", input, LONG).await.unwrap_or(Value::Null);
     let report = json!({
-        "variant": variant.name, "sandbox": variant.sandbox, "mode": "shared", "calls": calls,
+        "variant": variant.name, "sandbox": variant.sandbox, "mode": "shared", "calls": calls, "waitMs": wait_ms,
         "ok": calls - errors.len(), "totalMs": total, "latency": summary(&mut latency),
         "noLostUpdates": numbers == expected && after["n"] == json!(calls as u64 + 2),
         "sequencesDistinct": sequences.len() == calls, "oneConnection": connections.len() == 1,

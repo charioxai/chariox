@@ -110,9 +110,10 @@ for v in VARIANTS[:5]:
     print(f"| {NAMES[v]} | {sizes[0]} | {sizes[1]} |")
 
 ASYNC = ["wasm-rust-async", "wasm-qjs", "wasm-py"]
-for calls in (16, 64):
-    found = cells(lambda c, r, calls=calls: r.get("mode") == "shared" and r["calls"] == calls)
-    table(f"Many agents, one instance: {calls} concurrent callers, shared counter/cache/connection, 50 ms broker wait", ASYNC + ["node-js"], [
+for calls, wait in ((16, 0), (64, 0), (64, 50)):
+    found = cells(lambda c, r, calls=calls, wait=wait: r.get("mode") == "shared" and r["calls"] == calls and r.get("waitMs", 0) == wait)
+    what = "50 ms broker wait" if wait == 0 else "50 ms timer wait (WASI 0.3 wait-for; Node setTimeout), no broker call"
+    table(f"Many agents, one instance: {calls} concurrent callers, shared counter/cache/connection, {what}", ASYNC + ["node-js"], [
         ("calls ok", lambda r: r["ok"], 0),
         ("all done in, ms", lambda r: r["totalMs"], 1),
         ("per-call latency p50, ms", lambda r: r["latency"]["p50"], 1),

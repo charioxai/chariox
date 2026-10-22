@@ -236,7 +236,18 @@ async fn run() {
     let load_ms = load.elapsed().as_secs_f64() * 1e3;
     let mut linker = Linker::<Host>::new(&engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker).unwrap();
-    App::add_to_linker::<Host, wasmtime::component::HasSelf<Host>>(&mut linker, |host| host).unwrap();
+    wasmtime_wasi::p3::add_to_linker(&mut linker).unwrap();
+    // The Chariox interfaces; WASI (0.2 and 0.3) comes from wasmtime-wasi.
+    {
+        use host::chariox::app::{events, http, log, registry, state, types};
+        use wasmtime::component::HasSelf;
+        types::add_to_linker::<Host, HasSelf<Host>>(&mut linker, |host| host).unwrap();
+        registry::add_to_linker::<Host, HasSelf<Host>>(&mut linker, |host| host).unwrap();
+        state::add_to_linker::<Host, HasSelf<Host>>(&mut linker, |host| host).unwrap();
+        http::add_to_linker::<Host, HasSelf<Host>>(&mut linker, |host| host).unwrap();
+        events::add_to_linker::<Host, HasSelf<Host>>(&mut linker, |host| host).unwrap();
+        log::add_to_linker::<Host, HasSelf<Host>>(&mut linker, |host| host).unwrap();
+    }
     let pre = linker.instantiate_pre(&component).unwrap_or_else(|e| { eprintln!("link: {e:?}"); std::process::exit(131) });
 
     let shared = Shared { ipc: ipc.clone(), calls: Calls::default(), subscriptions: Subscriptions::default(), stats: Arc::default(), limits, running: Running::default() };

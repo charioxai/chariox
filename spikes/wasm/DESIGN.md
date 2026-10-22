@@ -74,7 +74,8 @@ growing memory (measured, DECISION.md).
 | WIT package | `chariox:app@MAJOR.MINOR.0`; the manifest names the exact world. There is no sync 1.x: 1.0 is async. |
 | Minor | Adds interfaces/functions only, gated with `@since(version = 1.N.0)`. A worker that knows 1.N links every 1.x world. Replaces today's `sdkVersion` feature detection. |
 | Major | Any changed signature or removed function. The worker links two majors side by side for one deprecation window; install refuses unknown majors. Maps to `appContractVersion`. |
-| WASI | The world imports WASI **0.3.0** (`wasi:http/client`, clocks, random, filesystem, cli). Toolchains still emit 0.2 imports for their own runtime (Rust std on `wasm32-wasip2`, QuickJS, CPython: measured); the worker links 0.2 as a compatibility layer until they move to 0.3 (`wasm32-wasip3`). |
+| WASI | The world imports WASI **0.3.0** (`wasi:http/client`, clocks, random, filesystem, cli). Measured: the spike world imports `wasi:clocks/monotonic-clock@0.3.0` and all three toolchains build and run its async `wait-for`. Toolchains still emit 0.2 imports for their own runtime (Rust std on `wasm32-wasip2`, QuickJS, CPython); the worker links 0.2 as a compatibility layer until they move to 0.3 (`wasm32-wasip3`). |
+| Interface names | Unique across the world *including* WASI: componentize-py renamed our `types` module to `chariox_app_types` as soon as a WASI `types` joined the world (measured), which would break Python Apps on a minor version. 1.0 names it `app-types`. |
 | Wire | v1 plus two additions (§3): `events.deliver` for a subscribed name, and the worker acting on `cancel {id}`. Each follows the protocol-change rule (bump, snapshot, drill). |
 
 ## 3. SDK call → IPC message
@@ -111,11 +112,11 @@ concurrency is cooperative, exactly like Node's event loop.
 | Rule | Mechanism | Measured |
 | --- | --- | --- |
 | **Wait time** is bounded per call by the kernel deadline. | Tokio timer per call; at the deadline the worker resolves `cancel` and, after 250 ms grace, answers `APP_CALL_TIMEOUT` itself. A guest that ignores `cancel` leaves a parked task (wasmtime cannot drop one task) that is gone when the instance is next recycled. | DECISION.md, cancellation |
-| **CPU time** is bounded per *slice*: the time the guest holds the CPU without returning to the event loop. | `call_hook` marks slice start/end; epoch ticks every 10 ms; the epoch callback yields to the host each tick (timers and IPC keep running) and traps when one slice exceeds the slice budget (spike: 1 s). | runaway loop stopped at 1.0 s, next call 0.2–1.4 ms |
+| **CPU time** is bounded per *slice*: the time the guest holds the CPU without returning to the event loop. | `call_hook` marks slice start/end; epoch ticks every 10 ms; the epoch callback yields to the host each tick (timers and IPC keep running) and traps when one slice exceeds the slice budget (spike: 1 s). | runaway loop stopped at 1.0 s, next call 0.1–1.3 ms |
 | A **trap** ends the instance and every call on it. | wasmtime cannot remove one task from a store. The worker answers each in-flight call, builds a fresh instance and serves the queue. | 8 healthy calls answered with the culprit, same process |
-| The **culprit** is named. | wasmtime's `TaskGroupHook` (feature `task-group-hook`) reports which call's task entered the CPU; the call holding it at the trap gets `APP_CALL_TIMEOUT` / `APP_MEMORY_LIMIT` / `APP_TRAPPED`; the others get `APP_INSTANCE_RESTARTED` with `retryable: true`. | attribution 100 % in the sweep |
+| The **culprit** is named. | wasmtime's `TaskGroupHook` (feature `task-group-hook`) reports which call's task entered the CPU; the call holding it at the trap gets `APP_CALL_TIMEOUT` / `APP_MEMORY_LIMIT` / `APP_TRAPPED`; the others get `APP_INSTANCE_RESTARTED` with `retryable: true`. | culprit named in 69/69 traps |
 | **Memory** is capped per App (one instance = one linear memory). | `ResourceLimiter`; a refused grow returns -1. GC guests (QuickJS, CPython) turn it into an exception inside the offending call: only that call fails (`APP_MEMORY_LIMIT`), the instance and its shared state live on. Rust aborts, which traps (rule above). | QuickJS/Python: 8/8 others ok, counter kept |
-| **Backpressure** everywhere. | Response bodies: at most 4 × 64 KiB chunks read ahead of the guest. Subscriptions: 16 events buffered, kernel ack after enqueue. | 50 MiB stream: +1 MiB RSS |
+| **Backpressure** everywhere. | Response bodies: at most 4 × 64 KiB chunks read ahead of the guest. Subscriptions: 16 events buffered, kernel ack after enqueue. | 50 MiB stream: +1 to +4 MiB RSS |
 | **Resources follow the call.** | A dropped body stream or a cancelled import drops the worker's broker-stream guard, which sends `http.cancel`. | Rust: all released 12 ms after cancel |
 
 **Proposed rule for the other calls when one call fails** (for the product
@@ -140,9 +141,12 @@ worker):
 handlers per worker (`PeerLimits::validate`: `1..=16`) and answers `BUSY`
 beyond that; today's Node worker has its own 16-handler cap
 (`APP_BUSY app_handler_capacity_full`). So 64 agents waiting at once on
-one App get 48 `BUSY` answers with either runtime (measured). "Many agents on
-one App" needs a kernel change: queue broker calls (bounded, per App) instead
-of refusing, and raise the cap. That is migration PR 3.
+one App get 48 `BUSY` answers with either runtime (measured). The wasm worker
+itself is not the limit: 64 callers waiting on a WASI 0.3 timer instead of the
+broker all succeed on one instance in ~53 ms (Node: 48 refused by its own
+handler cap). "Many agents on one App" needs a kernel change: queue broker
+calls (bounded, per App) instead of refusing, and raise the cap (migration PR
+2). The product worker also needs its own explicit cap (the spike has none).
 
 ## 5. WASI, virtualized onto kernel brokers
 
@@ -165,7 +169,7 @@ of refusing, and raise the cap. That is migration PR 3.
 - **AOT precompile + cache** with the worker's exact engine config into the
   release store, keyed by (release digest, worker build, engine config); only
   kernel-produced `.cwasm` from the immutable store is ever loaded. Measured
-  precompile: Rust 23 ms, QuickJS 122 ms, Python 0.7 s, StarlingMonkey 0.8 s.
+  precompile: Rust 24 ms, QuickJS 0.1–0.2 s, Python 0.7 s, StarlingMonkey 0.7–0.8 s.
 
 ## 7. Guest toolchains (pinned for the spike)
 
@@ -196,6 +200,8 @@ measured).
 
 ## 9. How the spike is built (what it does and does not prove)
 
+- `wit/app.wit` imports `wasi:clocks/monotonic-clock@0.3.0`; the worker links
+  wasmtime-wasi's p3 implementation next to p2.
 - `worker-async/` — `chariox-wasm-worker-async`: wasmtime 50 with features
   `call-hook` and `task-group-hook`; one instance per App on
   `run_concurrent`; Accessor-based imports; host `StreamProducer`s for

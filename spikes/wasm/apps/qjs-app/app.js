@@ -5,6 +5,7 @@ import state from 'chariox:app/state@0.2.0';
 import http from 'chariox:app/http@0.2.0';
 import events from 'chariox:app/events@0.2.0';
 import log from 'chariox:app/log@0.2.0';
+import monotonic from 'wasi:clocks/monotonic-clock@0.3.0';
 import { TOOLS, transform, compute, spin, hog } from './tools.js';
 
 const ALL = [...TOOLS, 'shared', 'stream', 'subscribe', 'wait'];
@@ -36,13 +37,14 @@ async function fetchUrl(url) {
 // "connection". Updates between awaits are atomic in the single-threaded VM.
 const shared = { counter: 0, cache: new Map(), connection: null };
 
-async function sharedCall(url) {
+async function sharedCall(url, waitMs = 0) {
   const n = ++shared.counter;
   shared.connection ??= { id: `conn-${n}`, requests: 0 };
   const connection = shared.connection;
   const sequence = ++connection.requests;
-  const { body } = await http.send(request(url, connection.id));
-  shared.cache.set(n, body.length);
+  // WASI 0.3 timer (duration is a u64: BigInt) or a broker call.
+  const bytes = waitMs > 0 ? (await monotonic.waitFor(BigInt(waitMs) * 1000000n), 0) : (await http.send(request(url, connection.id))).body.length;
+  shared.cache.set(n, bytes);
   return { n, sequence, connection: connection.id, cached: shared.cache.size };
 }
 
@@ -79,7 +81,7 @@ async function call(name, value) {
     case 'compute': return compute(value.n);
     case 'spin': return spin();
     case 'hog': return hog(value.mb, value.kind);
-    case 'shared': return sharedCall(value.url);
+    case 'shared': return sharedCall(value.url, value.waitMs);
     case 'stream': return stream(value.url, value.work);
     case 'subscribe': return subscribe(value.name ?? 'tick', value.count ?? 1, value.work);
     default: throw { code: 'TOOL_NOT_FOUND', message: 'unknown tool', retryable: null };

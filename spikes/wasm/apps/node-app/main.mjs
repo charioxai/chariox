@@ -24,13 +24,15 @@ export default function register(chariox) {
     spin: () => spin(),
     hog: ({ mb, kind }) => hog(mb, kind),
     // Shared by every concurrent caller, as in the async wasm Apps.
-    async shared({ url }) {
+    async shared({ url, waitMs = 0 }) {
       const n = ++shared.counter;
       shared.connection ??= { id: `conn-${n}`, requests: 0 };
       const connection = shared.connection;
       const sequence = ++connection.requests;
-      const response = await chariox.http.request({ url, method: 'GET', headers: [['accept', 'text/plain']] });
-      shared.cache.set(n, Buffer.from(response.bodyBase64, 'base64').length);
+      let bytes = 0;
+      if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs));
+      else bytes = Buffer.from((await chariox.http.request({ url, method: 'GET', headers: [['accept', 'text/plain']] })).bodyBase64, 'base64').length;
+      shared.cache.set(n, bytes);
       return { n, sequence, connection: connection.id, cached: shared.cache.size };
     },
     // Streamed body through the SDK's Fetch adapter (same broker stream ops).
