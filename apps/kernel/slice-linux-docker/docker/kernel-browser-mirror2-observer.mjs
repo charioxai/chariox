@@ -94,6 +94,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     drop: id => { instances.get(id)?.dispose(); instances.delete(id); return true; },
     // CDP CSS events (kernel-browser-mirror2-css.mjs): a changed sheet's owner node, 'adopted' or 'imports'.
     sheetChanged: owner => { for (const instance of instances.values()) instance.sheetChanged(owner); return true; },
+    // CDP CSS.fontsUpdated: where each loaded face came from (a URL, or none for script-built bytes).
+    fontSources: faces => { for (const instance of instances.values()) instance.fontSources(faces); return true; },
   });
   return true;
   // SHA-256 hex of a string's UTF-8 bytes (synchronous: the drain is; crypto.subtle needs a secure context).
@@ -438,8 +440,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // drain, and their rule text when CDP reports a constructed sheet changed (replaceSync, rule edits).
     // A disabled sheet keeps its ordered slot as an empty sheet; a sheet's media list is its @media condition.
     const sheetIds = new WeakMap(), adoptedTexts = new WeakMap(); let sheetSerial = 0;
-    const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { const base = root.baseURI ?? document.baseURI, text = sheetText(sheet, base), media = sheet.media.mediaText; adoptedTexts.set(sheet, text); sheets.push(sheet.disabled ? '' : sanitizeMirrorCss(media ? `@media ${media}{${text}}` : text, base, cssResource)); } catch { sheets.push(''); } } return sheets; };
-    const adoptedSignature = root => (root.adoptedStyleSheets ?? []).map(sheet => { let id = sheetIds.get(sheet); if (!id) sheetIds.set(sheet, id = ++sheetSerial); return `${id}:${sheetSignature(sheet)}`; }).join(',');
+    const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { const base = root.baseURI ?? document.baseURI, text = sheetText(sheet, base), media = sheet.media.mediaText; adoptedTexts.set(sheet, text); sheets.push(sheet.disabled ? '' : sanitizeMirrorCss(media ? `@media ${media}{${text}}` : text, base, cssResource)); } catch { sheets.push(''); } } const synthetic = root.nodeType === 9 ? scriptFontSheet(root) : ''; if (synthetic) sheets.push(sanitizeMirrorCss(synthetic, root.baseURI ?? document.baseURI, cssResource)); return sheets; };
+    const adoptedSignature = root => (root.adoptedStyleSheets ?? []).map(sheet => { let id = sheetIds.get(sheet); if (!id) sheetIds.set(sheet, id = ++sheetSerial); return `${id}:${sheetSignature(sheet)}`; }).join(',') + (root.nodeType === 9 ? `|${scriptFontSignature(root)}` : '');
     const adoptedEdited = () => {
       const edited = new Map(), out = new Set();
       for (const [id, root] of roots) for (const sheet of root.adoptedStyleSheets ?? []) {
@@ -619,22 +621,62 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       for (const font of document.fonts) { const key = fontDescriptor(font); if (key.length > 4096) continue; groups.set(key, (groups.get(key) ?? true) && font.status === 'error'); }
       return [...groups].filter(([, failed]) => failed).map(([key]) => sha256(key)).sort().slice(0, 128);
     };
+    // Faces a script added with `document.fonts.add(new FontFace(...))` have no stylesheet rule to mirror. Chrome reports where each
+    // loaded face came from (CDP CSS.fontsUpdated, relayed by the kernel): a URL becomes a synthetic @font-face in a trailing
+    // adopted sheet, like a stylesheet face; a face built from bytes cannot reach the viewer, so it is not a requirement and its
+    // family is shadowed, which makes the stack fall through where the viewer has nothing to draw.
+    const scriptFaces = new Map(); let scriptFontRevision = 0;
+    const cssDefinesFamily = family => {
+      const wanted = family.replace(/^(['"])(.*)\1$/, '$2').trim().toLowerCase();
+      const texts = [...styleNodes.values()].map(entry => entry.text ?? '');
+      for (const root of roots.values()) for (const sheet of root.adoptedStyleSheets ?? []) texts.push(adoptedTexts.get(sheet) ?? '');
+      return texts.some(text => [...text.matchAll(/@font-face\s*\{([^}]*)\}/gi)].some(block => [...block[1].matchAll(/font-family\s*:\s*([^;]+)/gi)].some(match => match[1].replace(/^(['"])(.*)\1$/, '$2').trim().toLowerCase() === wanted)));
+    };
+    // A report can precede the face's own document (or its stylesheets): unmatched ones wait and are tried again at each font sweep.
+    const offered = new Map();
+    const adoptOffered = () => {
+      let adoptedAny = false;
+      for (const [key, face] of offered) {
+        let present = false;
+        for (const root of roots.values()) if (root.nodeType === 9 && [...root.fonts].some(font => font.status === 'loaded' && fontDescriptor(font) === key)) present = true;
+        if (!present || cssDefinesFamily(face.fontFamily)) continue;
+        offered.delete(key); adoptedAny = true;
+        scriptFaces.set(key, face.src ? { family: face.fontFamily, style: face.fontStyle, weight: face.fontWeight, stretch: face.fontStretch, range: face.unicodeRange, src: face.src } : null);
+      }
+      if (adoptedAny) { scriptFontRevision++; adoptedDirty = true; stacksDirty = true; armStacks(); wake(); }
+    };
+    const fontSources = faces => {
+      for (const face of Array.isArray(faces) ? faces.slice(0, 64) : []) {
+        const strings = ['fontFamily', 'fontStyle', 'fontWeight', 'fontStretch', 'unicodeRange'].every(name => typeof face?.[name] === 'string' && face[name].length <= 256);
+        if (!strings || typeof face.src !== 'string' || face.src.length > 4 * 1024 * 1024 || scriptFaces.size + offered.size >= 128) continue;
+        const key = fontDescriptor({ family: face.fontFamily, style: face.fontStyle, weight: face.fontWeight, stretch: face.fontStretch, unicodeRange: face.unicodeRange });
+        if (scriptFaces.has(key) || offered.has(key) || !/^[^\x00-\x1f]{1,128}$/.test(face.fontFamily) || ![face.fontStyle, face.fontWeight, face.fontStretch, face.unicodeRange].every(value => /^[\w\s.%+,-]*$/.test(value))) continue;
+        offered.set(key, face);
+      }
+      adoptOffered();
+    };
+    const scriptFacesOf = root => [...scriptFaces].filter(([key]) => [...root.fonts].some(font => font.status === 'loaded' && fontDescriptor(font) === key));
+    const scriptFontSheet = root => scriptFacesOf(root).filter(([, face]) => face).map(([, face]) => `@font-face{font-family:${JSON.stringify(face.family)};font-style:${face.style};font-weight:${face.weight};font-stretch:${face.stretch};unicode-range:${face.range};src:url(${JSON.stringify(face.src)})}`).join('');
+    const scriptFontSignature = root => scriptFacesOf(root).map(([key, face]) => `${key}${face ? '+' : '-'}`).join(',');
+    const scriptFontShadow = root => scriptFacesOf(root).filter(([, face]) => !face).map(([key]) => JSON.parse(key)[0]);
+    const requirementsOf = root => fontRequirements(root, fontDescriptor, sha256, font => scriptFaces.get(fontDescriptor(font)) === null);
     let reportedFonts = '[]';
     const reportedRequirements = new Map(), absentKeys = new Map(), absentOf = new Map(), installedFamilies = new Map();
     const fontOps = (ops, force = false) => {
+      if (offered.size) adoptOffered();
       const due = stacksDue();
       if (due || force) { stacksDirty = false; stacksScannedAt = performance.now(); }
       for (const [id, root] of roots) {
         if (root.nodeType !== 9) continue;
-        const required = fontRequirements(root, fontDescriptor, sha256), signature = JSON.stringify(required);
+        const required = requirementsOf(root), signature = JSON.stringify(required);
         // The stacks in use only settle with the document: sweep again when the requirements or completeness change.
         const key = `${signature}|${complete()}`; let changed = false;
-        if (force || due || absentKeys.get(id) !== key) { absentKeys.set(id, key); const absent = absentFonts(root, installedFamilies); changed = JSON.stringify(absent) !== JSON.stringify(absentOf.get(id) ?? []); absentOf.set(id, absent); }
+        if (force || due || absentKeys.get(id) !== key) { absentKeys.set(id, key); const absent = absentFonts(root, installedFamilies, scriptFontShadow(root)); changed = JSON.stringify(absent) !== JSON.stringify(absentOf.get(id) ?? []); absentOf.set(id, absent); }
         if (force || changed || reportedRequirements.get(id) !== signature) { reportedRequirements.set(id, signature); const absent = absentOf.get(id); ops.push(absent.length ? { op: 'fonts', id, required, absent } : { op: 'fonts', id, required }); }
       }
       return ops;
     };
-    const fontsChanged = () => [...roots].some(([id, root]) => root.nodeType === 9 && reportedRequirements.get(id) !== JSON.stringify(fontRequirements(root, fontDescriptor, sha256)));
+    const fontsChanged = () => [...roots].some(([id, root]) => root.nodeType === 9 && reportedRequirements.get(id) !== JSON.stringify(requirementsOf(root)));
     let reported = '', reportedComplete = false;
     // Completion certifies the serialized DOM, not that every advertising/image request fired load.
     const complete = () => continuation === null && document.readyState !== 'loading';
@@ -1244,6 +1286,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, reveal, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, fontSources, dispose, snapshot, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, reveal, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
   }
 }

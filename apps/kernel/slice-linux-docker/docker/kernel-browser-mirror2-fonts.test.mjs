@@ -18,3 +18,7 @@ test('MP-11 an incomplete oversized native font requirement set never becomes a 
  assert.equal(required(document(Array.from({length:4097},()=>face('same')))),null);
  assert.equal(required(document([face('x'.repeat(4097))])),null);
 });
+test('MP-08/MP-10/MP-11 a face the viewer can never have is not a requirement',()=>{
+ const bytes=face('bytes');
+ assert.deepEqual(nativeFontRequirements(document([face('used'),bytes]),font=>font.descriptor,hash,font=>font===bytes),[hash('used')]);
+});

@@ -1,11 +1,12 @@
 // MP-08/MP-10/MP-11: positive native font availability, scoped to a document.
 // A failed, unused fallback is not a required font. Unknown/oversized state
-// remains pending rather than certifying an incomplete requirement list.
-export function nativeFontRequirements(document, descriptor, hash) {
+// remains pending rather than certifying an incomplete requirement list. `skip` names loaded faces the viewer can never
+// have (a script-built face whose bytes are not a URL), so they do not hold the handover.
+export function nativeFontRequirements(document, descriptor, hash, skip = () => false) {
   if (document.fonts.status !== 'loaded' || document.fonts.size > 4096) return null;
   const required = new Set();
   for (const font of document.fonts) {
-    if (font.status !== 'loaded') continue;
+    if (font.status !== 'loaded' || skip(font)) continue;
     const value = descriptor(font);
     if (value.length > 4096) return null;
     required.add(hash(value));
@@ -16,8 +17,9 @@ export function nativeFontRequirements(document, descriptor, hash) {
 
 // MP-08/MP-10/MP-11: families a document's font stacks name that the native machine does not have. The viewer shadows
 // them, so its stack falls through exactly where the native one did instead of landing on a family only it installed.
-// `installed` memoizes the per-machine answer. Self-contained: it is injected into the isolated world as source.
-export function nativeAbsentFonts(root, installed) {
+// `installed` memoizes the per-machine answer; `shadow` names families only a script-built face supplied natively, which the
+// viewer cannot load, so its stack falls through them as well. Self-contained: it is injected into the isolated world as source.
+export function nativeAbsentFonts(root, installed, shadow = []) {
   const view = root.defaultView;
   if (!view || root.fonts.size > 4096) return [];
   const generic = new Set(['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui', 'ui-serif', 'ui-sans-serif', 'ui-monospace', 'ui-rounded', 'math', 'emoji', 'fangsong', '-webkit-body', 'inherit', 'initial', 'unset']);
@@ -38,7 +40,7 @@ export function nativeAbsentFonts(root, installed) {
     }
     return installed.get(name);
   };
-  const absent = new Set();
+  const absent = new Set(shadow);
   for (const stack of stacks) {
     for (const [, quoted, bare] of stack.matchAll(/"((?:[^"\\]|\\.)*)"|([^,\s][^,]*)/g)) {
       const name = (quoted ?? bare).trim().toLowerCase();

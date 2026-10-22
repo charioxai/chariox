@@ -205,3 +205,51 @@ for (const adopted of [false, true]) test(`MP-10 absent families follow styleshe
     assert.deepEqual(absent, ['chariox css-only absent']);
   } finally { await browser.close(); }
 });
+
+// r83 (MIRROR-FONT-ABSENT-REFRESH): a face only a script added (`document.fonts.add(new FontFace(...))`) has no stylesheet rule.
+// Chrome reports its source over CDP: a URL is mirrored as a synthetic @font-face, bytes the viewer cannot have are neither
+// required (they would hold the handover) nor left to a viewer family of the same name.
+test('MP-08/MP-10/MP-11 script-added font faces are mirrored like stylesheet faces', async () => {
+  const bytes = await readFile(process.env.MIRROR_LAB_FONT ?? '/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf');
+  const server = createServer((_request, res) => { res.setHeader('Access-Control-Allow-Origin', '*'); res.setHeader('Content-Type', 'font/ttf'); res.end(bytes); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const { MirrorCssEvents } = await import('./kernel-browser-mirror2-css.mjs');
+  const browser = await launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<body style="font-family:ScriptUrl,ScriptBytes,serif">script faces</body>');
+    const session = await page.context().newCDPSession(page);
+    const listeners = new Set();
+    for (const name of ['CSS.styleSheetAdded', 'CSS.styleSheetRemoved', 'CSS.styleSheetChanged', 'CSS.fontsUpdated']) session.on(name, params => { for (const listener of listeners) listener({ sessionId: 's1', method: name, params }); });
+    let contextId;
+    session.on('Runtime.executionContextCreated', ({ context }) => { if (context.auxData?.isDefault) contextId = context.id; });
+    await session.send('Runtime.enable');
+    const connection = { subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); }, send: (method, params) => session.send(method, params) };
+    await install(page);
+    const first = await page.evaluate(() => window.observer.snapshot());
+    const css = new MirrorCssEvents();
+    await css.watch({ connection, sessionId: 's1', contextId }, 'frame', 'stream');
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    await page.evaluate(async origin => {
+      const fromUrl = new FontFace('ScriptUrl', `url(${origin}/a.ttf)`, { weight: '700' }); document.fonts.add(fromUrl); await fromUrl.load();
+      const buffer = await (await fetch(`${origin}/b.ttf`)).arrayBuffer();
+      const fromBytes = new FontFace('ScriptBytes', buffer); document.fonts.add(fromBytes); await fromBytes.load();
+    }, origin);
+    const digest = descriptor => createHash('sha256').update(JSON.stringify(descriptor)).digest('hex');
+    const urlFace = digest(['scripturl', 'normal', '700', '100%', 'U+0-10FFFF']), bytesFace = digest(['scriptbytes', 'normal', '400', '100%', 'U+0-10FFFF']);
+    const ops = [], resources = [];
+    for (let n = 0; n < 12 && !(ops.some(op => op.op === 'adopted') && ops.some(op => op.op === 'fonts' && op.absent)); n++) {
+      const packet = await page.evaluate(() => window.observer.waitDrain(700)); ops.push(...packet.ops); resources.push(...(packet.resources ?? []));
+    }
+    const sheets = ops.filter(op => op.op === 'adopted').flatMap(op => op.sheets).join('\n');
+    assert.match(sheets, /@font-face\{font-family:"ScriptUrl";[^}]*font-weight:700;[^}]*src:url\("mr:r\d+"\)\}/, 'the URL face is mirrored as a font-face rule');
+    assert(resources.some(resource => resource.kind === 'font' && resource.url === `${origin}/a.ttf`), 'its URL is requested as a font resource');
+    assert(!/ScriptBytes/.test(sheets), 'bytes the viewer cannot have are not described');
+    const fonts = ops.filter(op => op.op === 'fonts').at(-1);
+    assert(fonts.required.includes(urlFace), 'the URL face is a requirement the viewer can meet');
+    assert(!fonts.required.includes(bytesFace), 'the bytes face would hold the handover forever');
+    assert(fonts.absent.includes('scriptbytes'), 'its family is shadowed so the stack falls through');
+    assert(!fonts.absent.includes('scripturl'));
+    assert(first.root);
+  } finally { await browser.close(); server.close(); }
+});

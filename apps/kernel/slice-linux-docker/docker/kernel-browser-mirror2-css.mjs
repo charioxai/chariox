@@ -15,12 +15,13 @@ export class MirrorCssEvents {
     let entry = this.sessions.get(world.sessionId);
     if (entry?.connection !== world.connection) {
       entry?.stop();
-      entry = { connection: world.connection, sessionId: world.sessionId, worlds: new Map(), headers: new Map(), changed: new Set(), streams: new Set(), timer: null };
+      entry = { connection: world.connection, sessionId: world.sessionId, worlds: new Map(), headers: new Map(), changed: new Set(), fonts: new Map(), fontsSent: new Map(), streams: new Set(), timer: null };
       const off = world.connection.subscribe(message => this.event(entry, message));
       entry.stop = () => { entry.stopped = true; off(); clearTimeout(entry.timer); if (this.sessions.get(entry.sessionId) === entry) this.sessions.delete(entry.sessionId); };
       this.sessions.set(world.sessionId, entry);
     }
     entry.worlds.set(frameId, world.contextId); entry.streams.add(streamId);
+    if (entry.fonts.size) entry.timer ??= setTimeout(() => { entry.timer = null; void this.flush(entry); }, 0);
     entry.ready ??= (async () => {
       try {
         await world.connection.send('DOM.enable', {}, world.sessionId);
@@ -53,6 +54,15 @@ export class MirrorCssEvents {
       entry.headers.set(header.styleSheetId, { frameId: header.frameId, owner: header.ownerNode, constructed: header.isConstructed === true });
       if (entry.headers.size > 20000) entry.headers.delete(entry.headers.keys().next().value);
     } else if (method === 'CSS.styleSheetRemoved') entry.headers.delete(params?.styleSheetId);
+    else if (method === 'CSS.fontsUpdated') {
+      // Where a loaded face came from: the observer mirrors the ones no stylesheet rule describes (script-built faces).
+      const font = params?.font; if (typeof font?.fontFamily !== 'string' || typeof font.src !== 'string') return;
+      const key = JSON.stringify([font.fontFamily, font.fontStyle, font.fontWeight, font.fontStretch, font.unicodeRange, font.src]);
+      if (entry.fonts.has(key)) return;
+      if (entry.fonts.size >= 256) entry.fonts.delete(entry.fonts.keys().next().value);
+      entry.fonts.set(key, { fontFamily: font.fontFamily, fontStyle: font.fontStyle, fontWeight: font.fontWeight, fontStretch: font.fontStretch, unicodeRange: font.unicodeRange, src: font.src });
+      entry.timer ??= setTimeout(() => { entry.timer = null; void this.flush(entry); }, 0);
+    }
     else if (method === 'CSS.styleSheetChanged' && entry.headers.has(params?.styleSheetId)) {
       entry.changed.add(params.styleSheetId);
       entry.timer ??= setTimeout(() => { entry.timer = null; void this.flush(entry); }, 0);
@@ -80,6 +90,13 @@ export class MirrorCssEvents {
         await send('Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: MARK, returnByValue: true });
         await send('Runtime.releaseObject', { objectId: object.objectId }).catch(() => {});
       } catch {} // a departed node or world: its next snapshot reads the sheet anyway
+    }
+    for (const contextId of new Set(entry.worlds.values())) {
+      const sent = entry.fontsSent.get(contextId) ?? new Set(); entry.fontsSent.set(contextId, sent);
+      const faces = [...entry.fonts].filter(([key]) => !sent.has(key)).slice(0, 64);
+      if (!faces.length) continue;
+      try { await send('Runtime.evaluate', { expression: `globalThis.__charioxMirror2?.fontSources(${JSON.stringify(faces.map(([, face]) => face))})`, contextId, returnByValue: true }); for (const [key] of faces) sent.add(key); } catch {}
+      if (entry.fontsSent.size > 64) entry.fontsSent.delete(entry.fontsSent.keys().next().value);
     }
   }
 }
