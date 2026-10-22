@@ -3770,7 +3770,7 @@ fn claude_native_injection_uses_shared_skill_admission_before_pty_write() {
         }
         fn acknowledge_typed_leased(
             &self,
-            _: &RuntimeProviderRun,
+            run: &RuntimeProviderRun,
             _: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
             _: &str,
             _: &[crate::provider::skill_delivery::TypedSkillLoad],
@@ -3943,6 +3943,7 @@ mod skill_hook_fakes {
     /// A typed worker load handed to the bridge.
     #[derive(Clone, Debug, PartialEq)]
     pub(super) struct TypedReceipt {
+        pub(super) provider_run_id: String,
         pub(super) prompt_id: String,
         pub(super) skill_id: String,
         pub(super) digest: String,
@@ -3980,7 +3981,7 @@ mod skill_hook_fakes {
         }
         fn acknowledge_typed_leased(
             &self,
-            _: &RuntimeProviderRun,
+            run: &RuntimeProviderRun,
             context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
             prompt_id: &str,
             skills: &[crate::provider::skill_delivery::TypedSkillLoad],
@@ -3989,6 +3990,7 @@ mod skill_hook_fakes {
                 .lock()
                 .unwrap()
                 .extend(skills.iter().map(|skill| TypedReceipt {
+                    provider_run_id: run.id().to_string(),
                     prompt_id: prompt_id.to_string(),
                     skill_id: skill.skill_id.clone(),
                     digest: skill.digest.clone(),

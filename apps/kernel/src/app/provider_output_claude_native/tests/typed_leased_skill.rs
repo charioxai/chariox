@@ -192,12 +192,12 @@ impl Worker {
         (delivered, prompt_id)
     }
 
-    fn receipts_for(&self, prompt_id: &str) -> Vec<TypedReceipt> {
+    fn receipts_for(&self, run_id: &str, prompt_id: &str) -> Vec<TypedReceipt> {
         TYPED_RECEIPTS
             .lock()
             .unwrap()
             .iter()
-            .filter(|receipt| receipt.prompt_id == prompt_id)
+            .filter(|receipt| receipt.provider_run_id == run_id && receipt.prompt_id == prompt_id)
             .cloned()
             .collect()
     }
@@ -220,8 +220,9 @@ fn leased_worker_typed_skill_reaches_the_hook_context_and_reports_its_load_home(
         "the delivery lost the verified worker root: {delivered:?}"
     );
     assert_eq!(
-        worker.receipts_for(&prompt_id),
+        worker.receipts_for("typed-leased-run", &prompt_id),
         vec![TypedReceipt {
+            provider_run_id: "typed-leased-run".into(),
             prompt_id: prompt_id.clone(),
             skill_id: worker.skill_id.clone(),
             digest: worker.digest.clone(),
@@ -242,7 +243,9 @@ fn leased_worker_dollar_text_the_home_view_does_not_name_is_not_an_invocation() 
         !delivered.contains(BODY_MARKER),
         "dollar text became an invocation: {delivered:?}"
     );
-    assert!(worker.receipts_for(&prompt_id).is_empty());
+    assert!(worker
+        .receipts_for("typed-damaged-run", &prompt_id)
+        .is_empty());
 }
 
 // MP-08 / MP-10 / MP-11: a verified lease view cannot authorize a missing body.
@@ -254,5 +257,7 @@ fn leased_worker_typed_skill_with_a_damaged_cache_fails_the_hook() {
         worker.type_prompt_response("typed-damaged-run", "$review inspect source");
     let error = response.expect_err("the provider must not execute without the requested body");
     assert!(error.contains("Skills were not delivered"), "{error}");
-    assert!(worker.receipts_for(&prompt_id).is_empty());
+    assert!(worker
+        .receipts_for("typed-damaged-run", &prompt_id)
+        .is_empty());
 }
