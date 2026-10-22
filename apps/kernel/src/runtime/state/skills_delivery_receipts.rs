@@ -90,9 +90,6 @@ impl SkillDispatchService {
         prompt_id: &str,
         admitted: impl Fn(&SkillTurnAuthority, &SkillLoadRecord) -> bool,
     ) -> Result<(), DaemonError> {
-        if !super::super::skills_catalog_runtime::catalog_available(&self.durable) {
-            return Ok(());
-        }
         if run.session_id() != session_id || run.agent_instance_id() != Some(agent_id) {
             return Ok(());
         }
@@ -101,6 +98,8 @@ impl SkillDispatchService {
             .prompts
             .active_prompt_for_agent(&session, agent_id)
             .is_some_and(|prompt| prompt.leased_skill_context().is_some());
+        // A leased receipt belongs to the home catalog, which a second named worker
+        // does not own: route it before asking this kernel for a catalog.
         if self.runs.is_leased_provider_run(run.id()) || leased {
             return self.forward_leased_delivery(
                 run,
@@ -109,6 +108,9 @@ impl SkillDispatchService {
                 prompt_id,
                 leased_receipts::LeasedSkillAcknowledgement::Prompt,
             );
+        }
+        if !super::super::skills_catalog_runtime::catalog_available(&self.durable) {
+            return Ok(());
         }
         self.record_pending_loads(
             run.id(),
@@ -217,7 +219,7 @@ impl SkillDispatchService {
                 crate::provider::completed_native_skill_tool(chunk.kind.clone(), &chunk.bytes)
             })
             .collect();
-        if names.is_empty() || self.runs.is_leased_provider_run(run.id()) {
+        if names.is_empty() {
             return Ok(());
         }
         let session = self.sessions.get_session(run.session_id())?;
@@ -225,7 +227,8 @@ impl SkillDispatchService {
             return Ok(());
         };
         if prompt.leased_skill_context().is_some() {
-            // The worker holds no authority: the home settles the load the name maps to.
+            // The worker's own run reports the call; it holds no authority, so the home
+            // settles the load the name maps to.
             return names.into_iter().try_for_each(|name| {
                 self.forward_leased_delivery(
                     run,

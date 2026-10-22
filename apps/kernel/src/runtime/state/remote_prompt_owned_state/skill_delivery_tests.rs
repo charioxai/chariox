@@ -488,6 +488,125 @@ async fn leased_opencode_native_only_selection_settles_on_the_native_tool_receip
     assert_eq!(loads[0].skill_id, skill_id);
 }
 
+/// What a leased worker holds for its turn: the prompt carries the home's lease context.
+/// Returns the runtime, ids and the worker run (marked leased) for receipt tests.
+async fn worker_leased_turn(
+    config: crate::DaemonConfig,
+    provider: &str,
+) -> (
+    KernelRuntimeState,
+    String,
+    String,
+    String,
+    crate::provider::RuntimeProviderRun,
+) {
+    let (runtime, session_id, agent_id, attachment, binding) =
+        super::tests::mp11_fixture(config).await;
+    let daemon_id = runtime.owned.config_projection.snapshot().daemon_id.clone();
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let context = RemoteWorkspaceLiveSyncContext {
+        home_kernel_id: daemon_id,
+        home_session_id: session_id.clone(),
+        home_agent_id: agent_id.clone(),
+        home_prompt_id: Some("home-prompt".into()),
+        leased_agent_id: binding.leased_agent_id,
+        worker_kernel_id: binding.worker_kernel_id,
+        worker_machine_id: binding.worker_machine_id,
+        worker_provider_run_id: "worker-run-1".into(),
+        worker_worktree_path: session.worktree_id().into(),
+        worker_workspace_identity: crate::io::WorkspaceIdentity::local("fixture"),
+    };
+    let submission = runtime
+        .owned
+        .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+            session_id: session_id.clone(),
+            prompt: crate::session::PromptQueueItem::new(
+                "worker-turn",
+                &attachment,
+                &agent_id,
+                "inspect source",
+                crate::session::PromptStatus::Queued,
+            )
+            .with_leased_skills(Default::default(), Some(context)),
+            force_queue: false,
+            refresh_projection: true,
+        })
+        .unwrap()
+        .unwrap();
+    runtime
+        .owned
+        .settle_remote_dispatch_if_current(
+            &submission.remote_dispatch.unwrap(),
+            Some("worker-run-1"),
+        )
+        .unwrap();
+    let prompt_id = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &agent_id)
+        .unwrap()
+        .id()
+        .to_string();
+    let request = crate::provider::LaunchProviderRequest::new(
+        &session_id,
+        provider,
+        provider,
+        "default",
+        "model",
+    )
+    .with_agent_id(&agent_id);
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "worker-run-1",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "leased-worker".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-worker".into()),
+        },
+    );
+    run.mark_running();
+    runtime
+        .owned
+        .provider_run_projection
+        .mark_leased_provider_run(run.id());
+    (runtime, session_id, agent_id, prompt_id, run)
+}
+
+// The drill's first failing seam: on the worker, OpenCode's completed `skill` call must
+// reach the home through the lease even though the worker's run is a leased run.
+#[tokio::test]
+async fn worker_forwards_opencode_native_tool_receipt_for_its_leased_run() {
+    use crate::provider::skill_delivery::SkillPromptBridge;
+    let (runtime, _session_id, _agent_id, _prompt_id, run) =
+        worker_leased_turn(crate::DaemonConfig::for_tests(), "opencode").await;
+    let batch = crate::provider::ProviderPromptSignalBatch {
+        chunks: vec![crate::provider::ProviderPromptChunk {
+            kind: crate::terminal::TerminalOutputKind::ProviderTool,
+            merge_key: None,
+            bytes: br#"{"tool":"skill","status":"completed","output":"loaded","input":{"name":"review"}}"#.to_vec(),
+        }],
+        ..Default::default()
+    };
+    let bridge = super::super::skills_dispatch::bridge(&runtime);
+    // No home peer exists in this fixture: reaching for it is the observable proof
+    // the receipt was forwarded instead of silently dropped.
+    let error = bridge
+        .acknowledge_tools(&run, &batch)
+        .unwrap_err()
+        .to_string();
+    assert!(!error.is_empty());
+}
+
 // A Chariox skill deduped against an equal OpenCode package is loaded by OpenCode's
 // own tool; its completed call settles the pending ProvidedBy load on the home.
 #[tokio::test]
@@ -890,6 +1009,34 @@ async fn second_named_kernel_leased_turn_skips_inventory(text: &str, user_skill_
     drop(owner);
     let _ = std::fs::remove_dir_all(&root);
     assert!(!needs.unwrap());
+}
+
+// A second named worker sharing the home directory owns no catalog, yet it delivers the
+// authenticated home's instructions: its delivery receipt still has to reach the home.
+#[tokio::test]
+async fn second_named_worker_forwards_prompt_delivery_receipts_to_the_home() {
+    use crate::provider::skill_delivery::SkillPromptBridge;
+    let root = std::env::temp_dir().join(format!("skillsk-worker-{:032x}", rand::random::<u128>()));
+    std::fs::create_dir(&root).unwrap();
+    let config = |name: &str| {
+        let mut config = crate::DaemonConfig::for_tests();
+        config.user_config_path = root.join("home/config.toml");
+        config.user_config.state.path =
+            Some(root.join(name).join("state.db").display().to_string());
+        config
+    };
+    let owner =
+        crate::durable_state::DurableKernelStateStore::open_kernel_owned(&config("owner")).unwrap();
+    let (runtime, session_id, agent_id, prompt_id, run) =
+        worker_leased_turn(config("other"), "codex").await;
+    assert!(!runtime.owned.durable_state_store.owns_skill_catalog());
+    let bridge = super::super::skills_dispatch::bridge(&runtime);
+    // No home peer exists in this fixture: reaching for it is the observable proof the
+    // receipt was routed to the home instead of dropped for lack of a local catalog.
+    let result = bridge.acknowledge_prompt(&run, &session_id, &agent_id, &prompt_id);
+    drop(owner);
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(result.is_err(), "the receipt never left the worker");
 }
 
 // MP-08 / MP-10 / MP-11: the same kernel's ordinary local structured turn carries no skill
