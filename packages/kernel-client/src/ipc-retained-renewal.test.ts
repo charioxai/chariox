@@ -256,3 +256,44 @@ test("retained renewal reauthenticates an event lane whose initial handshake is 
     await new Promise<void>(resolve => server.close(() => resolve()))
   }
 })
+
+test("MP-11 renewal accepts the relay's chunks-v2 framed acknowledgement and settles once", async () => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
+  await new Promise<void>(resolve => server.once("listening", resolve))
+  const address = server.address(); assert.ok(address && typeof address === "object")
+  const identity = new RelayClientIdentity(createRelayKeypair().privateKey)
+  const daemon = new RelayClientIdentity(createRelayKeypair().privateKey)
+  const reauthenticated: string[] = []
+  server.on("connection", socket => {
+    let transfer = 0
+    // The real relay frames every reply, including acknowledgements, as one or more chunks.
+    const send = (value: unknown) => {
+      const payload = JSON.stringify(value)
+      socket.send(JSON.stringify({ kind: "transport_chunk", transfer_id: ++transfer, offset: 0, total_bytes: Buffer.byteLength(payload), payload }))
+    }
+    let connected = false
+    socket.on("message", raw => {
+      const frame = JSON.parse(String(raw))
+      if (frame.kind === "client_connect") {
+        if (connected) reauthenticated.push(frame.auth_token)
+        connected = true
+        send({ kind: "client_connected", target: frame.target, daemon_public_key: daemon.publicKeyBase64 })
+      }
+      if (frame.kind === "client_request") send({ kind: "client_response", request_id: frame.request_id, encrypted_response: daemon.encrypt(frame.encrypted_request.sender_public_key, JSON.stringify({ accepted: true })), error: null })
+    })
+  })
+  const client = new LocalIpcClient(`ws://127.0.0.1:${address.port}`, { relayAuthToken: "synthetic-grant", targetDaemonId: "remote", relayIdentity: identity })
+  let issued = 0
+  try {
+    await client.send({ GetDaemonHealth: null })
+    client.startRelayAuthRenewal(Date.now() + 120, async () => { issued++; return { token: "synthetic-renewed", expiresAtMs: Date.now() + 300_000 } })
+    // An unrecognised acknowledgement times out after 10 s and asks the issuer again.
+    await new Promise(resolve => setTimeout(resolve, 11_000))
+    assert.equal(issued, 1)
+    assert.ok(reauthenticated.length >= 1 && reauthenticated.every(token => token === "synthetic-renewed"))
+    await client.send({ GetDaemonHealth: null })
+  } finally {
+    await client.close(); for (const socket of server.clients) socket.terminate()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})
