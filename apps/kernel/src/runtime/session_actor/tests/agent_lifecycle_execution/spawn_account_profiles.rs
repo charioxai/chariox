@@ -10,10 +10,18 @@ async fn local_spawn_agents_inherit_session_account_profile_in_response_and_snap
         let mut app = app.lock().await;
         let profiles = app.provider_account_profile_registry();
         let selected = profiles
-            .create_managed("local-user", "codex", "session-account")
+            .create_managed(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "codex",
+                "session-account",
+            )
             .unwrap();
         let other = profiles
-            .create_managed("local-user", "codex", "other-account")
+            .create_managed(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "codex",
+                "other-account",
+            )
             .unwrap();
         let (session, _) = crate::app::KernelSessionService::new(&mut app)
             .create_session(
