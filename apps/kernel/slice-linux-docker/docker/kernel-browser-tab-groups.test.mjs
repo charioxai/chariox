@@ -7,13 +7,13 @@ import os from "node:os";
 import path from "node:path";
 import { ChromeTabGroups, TAB_GROUPS_EXTENSION_ID, writeTabGroupsExtension } from "./kernel-browser-tab-groups.mjs";
 
-test("MP-11 the extension id derives from its public key and asks only for tabs, groups and target ids", async () => {
+test("MP-11 the extension id derives from its public key and asks only for tabs, groups, target ids and the favicon cache", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-tab-groups-"));
   try {
     const manifest = JSON.parse(await readFile(path.join(await writeTabGroupsExtension(root), "manifest.json"), "utf8"));
     const id = createHash("sha256").update(Buffer.from(manifest.key, "base64")).digest("hex").slice(0, 32).replace(/[0-9a-f]/g, c => String.fromCharCode(97 + parseInt(c, 16)));
     assert.equal(id, TAB_GROUPS_EXTENSION_ID);
-    assert.deepEqual(manifest.permissions, ["tabs", "tabGroups", "debugger"]);
+    assert.deepEqual(manifest.permissions, ["tabs", "tabGroups", "debugger", "favicon"]);
     assert.equal(manifest.host_permissions, undefined); assert.equal(manifest.content_scripts, undefined);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -32,7 +32,7 @@ test("MP-08 one native group per agent label; unchanged groups are not re-sent",
   await groups.load("/k/tab-groups-extension");
   assert.equal(await groups.sync([{ label: "Mara", target_ids: ["t2", "t1"] }]), true);
   assert.equal(await groups.sync([{ label: "Mara", target_ids: ["t1", "t2"] }]), false, "same groups, no evaluate");
-  const evaluated = sent.filter(call => call.method === "Runtime.evaluate"&&call.params.expression!=='chrome.runtime.reload()'&&call.params.expression!=='charioxTabs.revision === 3').map(call => call.params.expression);
+  const evaluated = sent.filter(call => call.method === "Runtime.evaluate"&&call.params.expression!=='chrome.runtime.reload()'&&call.params.expression!=='charioxTabs.revision === 4').map(call => call.params.expression);
   assert.equal(evaluated.length, 1);
   assert.match(evaluated[0], /^charioxTabs\.sync\(\[\{"target_ids":\["t1","t2"\],"title":"Mara","color":"[a-z]+"\}\]\)$/);
   await assert.rejects(new ChromeTabGroups({ send: async () => ({ id: "other" }) }).load("/k"), /unexpected kernel tab-groups extension id/);
@@ -46,7 +46,7 @@ test("MP-08/MP-11 a removed tab-groups extension is loaded again; until then it 
     if (method === "Target.getTargets") return { targetInfos: installed ? [{ type: "service_worker", targetId: "sw-"+worker, url: `chrome-extension://${TAB_GROUPS_EXTENSION_ID}/sw.js` }] : [] };
     if (method === "Target.attachToTarget") return { sessionId: "s" };
     if (method === "Extensions.uninstall") { uninstalls++; if (!installed) throw new Error("not installed"); installed = false; return {}; }
-    if (method === "Runtime.evaluate") {if(params.expression==='charioxTabs.revision === 3')return{result:{value:true}};if(params.expression==='chrome.runtime.reload()')worker++; if (!installed) throw new Error("No session with given id"); return { result: { value: "target-b" } }; }
+    if (method === "Runtime.evaluate") {if(params.expression==='charioxTabs.revision === 4')return{result:{value:true}};if(params.expression==='chrome.runtime.reload()')worker++; if (!installed) throw new Error("No session with given id"); return { result: { value: "target-b" } }; }
     return {};
   } };
   const groups = new ChromeTabGroups(connection);
@@ -159,7 +159,7 @@ test('loading the component replaces a cached older worker',async()=>{
   if(method==='Extensions.loadUnpacked'){if(!installed)current='new-target';installed=true;return{id:TAB_GROUPS_EXTENSION_ID}}
   if(method==='Target.getTargets')return{targetInfos:[{type:'service_worker',targetId:'worker-'+worker,url:`chrome-extension://${TAB_GROUPS_EXTENSION_ID}/sw.js`}]};
   if(method==='Target.attachToTarget')return{sessionId:'session'};
-  if(method==='Runtime.evaluate'){if(params.expression==='charioxTabs.revision === 3')return{result:{value:current==='new-target'}};if(params.expression==='chrome.runtime.reload()'){current='new-target';worker++}return{result:{value:current}};}return{};
+  if(method==='Runtime.evaluate'){if(params.expression==='charioxTabs.revision === 4')return{result:{value:current==='new-target'}};if(params.expression==='chrome.runtime.reload()'){current='new-target';worker++}return{result:{value:current}};}return{};
  }};
  const groups=new ChromeTabGroups(connection);await groups.load('/owned/component');assert.equal(await groups.active(),'new-target');
 });
@@ -175,4 +175,23 @@ test('a current component worker is attached without reload',async()=>{
  }});
  await groups.load('/owned/component');await groups.active();
  assert(!sent.some(call=>call.method==='Target.detachFromTarget'||call.params?.expression==='chrome.runtime.reload()'));
+});
+
+test('MP-08/MP-10/MP-11 protocol577 favicons are bounded Chromium-cache PNGs',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'chariox-header-icons-'));
+ try{
+  const directory=await writeTabGroupsExtension(root),source=await readFile(path.join(directory,'sw.js'),'utf8');
+  assert(JSON.parse(await readFile(path.join(directory,'manifest.json'),'utf8')).permissions.includes('favicon'));
+  const state={},tab={id:1,url:'https://example.com/',favIconUrl:'https://example.com/icon.svg'};
+  const chrome={runtime:{getPlatformInfo(){},getURL:p=>'chrome-extension://'+TAB_GROUPS_EXTENSION_ID+p},debugger:{getTargets:async()=>[{id:'target',tabId:1}]},windows:{},tabs:{get:async()=>tab,onCreated:{addListener(){}},onAttached:{addListener(){}}}};
+  const {encodePng}=await import('./kernel-browser-pixels.mjs');let bytes=Buffer.from(encodePng(16,16,Buffer.alloc(16*16*4,255)),'base64'),type='image/png',calls=0;
+  const fetchIcon=async url=>{calls++;assert.equal(url.protocol,'chrome-extension:');assert.equal(url.pathname,'/_favicon/');assert.equal(url.searchParams.get('size'),'32');return new Response(bytes,{headers:{'content-type':type}})};
+  new Function('chrome','setInterval','setTimeout','globalThis','fetch',source)(chrome,()=>{},queueMicrotask,state,fetchIcon);
+  const icon=await state.charioxTabs.favicon('target');assert.equal(icon,bytes.toString('base64'));assert.equal(await state.charioxTabs.favicon('target'),icon);assert.equal(calls,1);
+  for(const variant of ['oversized','svg','dimensions']){
+   tab.favIconUrl+='?'+variant;
+   if(variant==='oversized')bytes=Buffer.alloc(20000);else if(variant==='svg'){type='image/svg+xml';bytes=Buffer.from('<svg/>')}else{type='image/png';bytes=Buffer.from(encodePng(64,64,Buffer.alloc(64*64*4,255)),'base64')}
+   assert.equal(await state.charioxTabs.favicon('target'),null,variant);
+  }
+ }finally{await rm(root,{recursive:true,force:true})}
 });

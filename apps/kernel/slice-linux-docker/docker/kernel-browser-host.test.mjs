@@ -1541,8 +1541,8 @@ test('MP-11 agents cannot reach extension management; the person can', () => usi
 
 // MP-08/MP-10/MP-11 (protocol 530/138): the public Browser state keys are the hashed
 // Rust fixture's; a new key needs a protocol bump and a new fixture.
-test('MP-08 public Browser state keys match the protocol 530 fixture', () => using(async ({ host }) => {
-  const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-chrome-ui-530.json', import.meta.url), 'utf8'));
+test('MP-08 public Browser state keys match the protocol 577 fixture', () => using(async ({ host }) => {
+  const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-header-577.json', import.meta.url), 'utf8'));
   const display = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
   process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '1';
   try {
@@ -2577,4 +2577,15 @@ test('native selection stays unknown while the saved App selection is pending', 
   host.activeTarget=host.tabs.get(docs.tab_id).target_id;
   assert.equal(host.chromeWindow().active_tab_id,docs.tab_id,'later native changes remain visible');
  } finally {host.chromeWindows={retire(){}};if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous}
+}));
+
+test('MP-08/MP-10 protocol577 portable header follows Chromium without a native band', () => using(async ({host,connection}) => {
+ const first=await host.request({op:'open',url:'https://example.com/first'}),second=await host.request({op:'open',url:'https://example.com/second'});
+ const png=encodePng(16,16,Buffer.alloc(16*16*4,255));
+ const send=connection.send;connection.send=async(method,params,session)=>method==='Page.getNavigationHistory'?{currentIndex:1,entries:[{id:1},{id:2}]}:send(method,params,session);
+ host.tabGroups={active:async()=>host.tabs.get(second.tab_id).target_id,favicon:async()=>png};
+ await host.request({op:'state'});await new Promise(r=>setTimeout(r,300));await host.request({op:'state'});await new Promise(r=>setTimeout(r,10));const state=await host.request({op:'state'});
+ assert.equal(state.chrome_window,null);assert.equal(state.active_tab_id,second.tab_id);
+ const tab=state.tabs.find(t=>t.tab_id===second.tab_id);assert.equal(tab.can_go_back,true);assert.equal(tab.can_go_forward,false);assert.equal(tab.favicon_png_base64,png);
+ assert(state.tabs.some(t=>t.tab_id===first.tab_id));
 }));

@@ -73,8 +73,9 @@ export function userDomainWindowBadge(access: UserDomainWindowAccess): string | 
 }
 export type KernelBrowserTabActor = { actor_id: string; kind: "agent" | "human"; display_label: string }
 export type KernelBrowserAgentActivity = { sequence: number; tab_id: string; actor: KernelBrowserTabActor }
-export type KernelBrowserTab = { tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null }
+export type KernelBrowserTab = { can_go_back?: boolean | null; can_go_forward?: boolean | null; favicon_png_base64?: string | null; tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null }
 export type KernelBrowserResult = {
+  active_tab_id?: string | null;
   generation?: number; state?: "ready" | "stopped"; tabs?: KernelBrowserTab[]; agent_activity?: KernelBrowserAgentActivity | null;
   tab_id?: string; subscription_id?: string; frame?: KernelBrowserFrame | null;
   snapshot?: unknown; unsubscribed?: boolean;

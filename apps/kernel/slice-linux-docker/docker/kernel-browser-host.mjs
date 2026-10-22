@@ -1,3 +1,4 @@
+import { BrowserHeaderState } from "./kernel-browser-header.mjs";
 import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
@@ -125,6 +126,7 @@ export class KernelBrowserHost {
     this.observedDocuments = new Map();
     this.displayDocuments = new DisplayDocuments((stage, started, ended) => this.timing?.(stage, started, ended));
     this.stateSignal = new StateSignal();
+    this.header = new BrowserHeaderState(() => this.stateSignal.notify());
     this.mirror = new MirrorService(this);
     this.protection = { values: [], targets: [], unknown: false };
     // MP-08/MP-11: desktop consumers place CDP protection regions on X11 pixels.
@@ -225,7 +227,7 @@ export class KernelBrowserHost {
     this.browser = null;
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
     this.streams.clear();
-    this.tabs.clear();
+    this.tabs.clear(); this.header.clear();
     this.popupEvidence.clear();
     this.observed = ++this.observations;
     this.observedDocuments.clear();
@@ -475,10 +477,12 @@ export class KernelBrowserHost {
   // MP-08/MP-10/MP-11: reconciles can overlap (a state poll beside input). They
   // apply in start order: an older observation reports the newer current tabs.
   tabState() {
+    const active = this.pendingActive ? null : [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget)?.tab_id ?? null;
+    this.header.update([...this.tabs.values()], active, this.browser, this.tabGroups);
     // MP-08: private creation evidence for the kernel, stripped before client projection.
     const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
     return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
-      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), viewport:this.viewport(), chrome_window: this.chromeWindow(),
+      active_tab_id: active, tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => ({ ...tab, ...this.header.read(tab) })), viewport:this.viewport(), chrome_window: this.chromeWindow(),
       // MP-11: whether Chromium's managed policies apply, or only the kernel's CDP lockdown layer.
       browser_lockdown: this.chromium?.policy ?? null }, this.protection.values);
   }
@@ -572,6 +576,10 @@ export class KernelBrowserHost {
     }
     this.activeTarget = restored?.target_id ?? nativeActive;
     if (this.activeTarget !== previous) await this.retireNativeForeground(this.activeTarget);
+    const activeId = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget)?.tab_id ?? null;
+    this.header.update([...this.tabs.values()], activeId, this.browser, this.tabGroups);
+    const history = this.header.history(activeId);
+    if (history) await withinMs(history, 10);
     const result = this.tabState();
     for (const [id, stream] of this.streams) if (!this.tabs.has(stream.tabId)) await this.removeStream(id);
     if (!this.restoring) await this.save();

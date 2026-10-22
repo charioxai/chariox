@@ -1,0 +1,61 @@
+{
+  "local_protocol": 577,
+  "peer_protocol": 185,
+  "state_keys": [
+    "active_tab_id",
+    "browser_lockdown",
+    "chrome_window",
+    "generation",
+    "state",
+    "tabs",
+    "viewport"
+  ],
+  "chrome_window_keys": [
+    "active_tab_id",
+    "auxiliary",
+    "window_generation"
+  ],
+  "auxiliary_keys": [
+    "auxiliary_id",
+    "height",
+    "width",
+    "x",
+    "y"
+  ],
+  "browser_lockdown": [
+    "managed",
+    "unavailable"
+  ],
+  "header_tab_keys": [
+    "can_go_back",
+    "can_go_forward",
+    "favicon_png_base64"
+  ],
+  "response": {
+    "KernelBrowser": {
+      "result": {
+        "state": "ready",
+        "generation": 7,
+        "active_tab_id": "t",
+        "tabs": [
+          {
+            "tab_id": "t",
+            "document_id": "d",
+            "url": "https://example.com",
+            "title": "Example",
+            "can_go_back": true,
+            "can_go_forward": false,
+            "favicon_png_base64": null
+          }
+        ],
+        "viewport": {
+          "width": 1280,
+          "height": 800,
+          "device_scale_factor": 2
+        },
+        "chrome_window": null,
+        "browser_lockdown": "unavailable"
+      }
+    }
+  }
+}
