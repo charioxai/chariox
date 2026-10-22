@@ -326,7 +326,9 @@ A home kernel without Cloud signs its paired terminals' relay tokens itself:
    runtime state and prints the relay setting `CHARIOX_RELAY_KERNEL_ISSUER_KEYS=chariox-kernel:<daemon>=<public key>`.
 2. The relay starts with that setting and `CHARIOX_RELAY_TOKEN`. The operator token stays the kernel's own
    registration credential; the relay pins only the issuer's public key, so it cannot mint client tokens.
-3. A terminal pairing link carries a pairing-only client token for this kernel. Redeeming the link returns a
+3. A terminal pairing link carries a pairing-only client token for this kernel. Its advertised and pending
+   expiry matches the token's enforced expiry (at most one hour, rounded down to whole seconds).
+   Redeeming the link returns a
    key-bound attach token; the terminal renews it with `IssueRelayClientToken` before it expires
    (default 15 minutes, at most 1 hour).
 4. `RevokePairedClient` refuses the terminal's requests and renewals at once; its relay admission ends when

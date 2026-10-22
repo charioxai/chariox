@@ -360,10 +360,10 @@ fn pairing_link_token_reaches_only_this_kernel_and_is_not_key_bound() {
         .unwrap()
         .unwrap();
     let identity = relay(&issuer.relay_issuer_keys, None)
-        .verify(connect(&token, &config.daemon_id))
+        .verify(connect(&token.relay_token, &config.daemon_id))
         .unwrap();
     assert_eq!(identity.client_id.as_deref(), Some("cli-link"));
     assert_eq!(identity.public_key_thumbprint, None);
     assert!(identity.expires_at_ms <= expires);
-    assert_ne!(token, "operator-test-token");
+    assert_ne!(token.relay_token, "operator-test-token");
 }
