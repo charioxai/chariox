@@ -38,6 +38,7 @@ impl KernelRuntimeState {
         self.authorize_forwarded_context_for_prompt_states(
             context,
             &[crate::session::PromptStatus::Running],
+            false,
         )
     }
 
@@ -54,6 +55,7 @@ impl KernelRuntimeState {
                 crate::session::PromptStatus::Running,
                 crate::session::PromptStatus::Dispatching,
             ],
+            context.home_prompt_id.is_none(),
         )
     }
 
@@ -74,6 +76,7 @@ impl KernelRuntimeState {
         &self,
         context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
         admitted_prompt_states: &[crate::session::PromptStatus],
+        native_composer_receipt: bool,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         self.authorize_current_forwarded_binding()?;
         let agent = self.owned.agent_store.get_agent(&context.home_agent_id)?;
@@ -98,13 +101,32 @@ impl KernelRuntimeState {
                     prompt.id() == expected && admitted_prompt_states.contains(&prompt.status())
                 })
         });
+        // A native composer starts its next task before the home observes that
+        // turn. Completion clears the active-turn binding, not the live process.
+        let run_matches = remote.active_worker_provider_run_id.as_deref()
+            == Some(context.worker_provider_run_id.as_str())
+            || (native_composer_receipt
+                && remote.active_worker_provider_run_id.is_none()
+                && self
+                    .owned
+                    .provider_run_projection
+                    .get_for_agent(&context.home_session_id, agent.id())
+                    .is_some_and(|run| {
+                        run.id()
+                            == crate::provider::projected_leased_provider_run_id(
+                                &context.leased_agent_id,
+                                &context.worker_provider_run_id,
+                            )
+                            && run.client_interface()
+                                == crate::provider::ProviderClientInterface::NativeTui
+                            && run.state() == crate::provider::ProviderRunState::Running
+                    }));
         if agent.session_id() != context.home_session_id
             || self.owned.config_projection.snapshot().daemon_id != context.home_kernel_id
             || remote.worker_kernel_id != context.worker_kernel_id
             || remote.worker_machine_id != context.worker_machine_id
             || remote.leased_agent_id != context.leased_agent_id
-            || remote.active_worker_provider_run_id.as_deref()
-                != Some(context.worker_provider_run_id.as_str())
+            || !run_matches
             || !prompt_matches
         {
             return Err(DaemonError::LocalTransport {
@@ -175,6 +197,16 @@ impl KernelRuntimeState {
         self.with_app_side_effect(|_| {
             // Both admission and its retained binding witness share the mutation lock.
             self.authorize_forwarded_peer_request_locked(request)?;
+            if matches!(request, RelayPeerRequest::ForwardCapabilityRuntimeTool { context, tool_name, .. }
+                if tool_name == super::skills_dispatch::LEASED_SKILL_DELIVERY_ACK && context.home_prompt_id.is_none()) {
+                // Typed receipts have no home prompt to pin. The receipt handler
+                // rechecks the authenticated lease/run under this same mutation
+                // lane immediately before recording; projection of the new native
+                // turn between admission and recording must not revoke delivery.
+                let mut state = self.clone();
+                state.forwarded_peer_binding = None;
+                return Ok(state);
+            }
             let resource = match request {
                 RelayPeerRequest::ForwardWorkspaceLiveSyncRuntimeTool { context, .. }
                 | RelayPeerRequest::FinalizeWorkspaceLiveSyncRuntimeTool { context, .. }

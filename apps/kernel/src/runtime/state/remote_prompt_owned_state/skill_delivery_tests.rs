@@ -1753,3 +1753,109 @@ async fn catalog_changes_refresh_the_view_of_every_lease() {
         assert_eq!(runtime.refresh_leased_native_skill_views().await, 1);
     }
 }
+
+// MP-08 / MP-10 / MP-11: task completion clears the active-turn run binding,
+// although a native composer keeps the same process for its next typed task.
+#[tokio::test]
+async fn leased_typed_skill_receipt_uses_the_live_native_run_between_home_projections() {
+    use crate::provider::{
+        LaunchProviderRequest, ProviderClientInterface, ProviderLaunchResult, RuntimeProviderRun,
+    };
+    let (runtime, service, skill, context, session_id, agent_id) = manual_review_fixture().await;
+    let request = LaunchProviderRequest::new(&session_id, "claude", "claude", "default", "haiku")
+        .with_agent_id(&agent_id)
+        .with_client_interface(ProviderClientInterface::NativeTui);
+    let mut run = RuntimeProviderRun::new(
+        crate::provider::projected_leased_provider_run_id(
+            &context.leased_agent_id,
+            &context.worker_provider_run_id,
+        ),
+        &request,
+        ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "native-claude-composer".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: vec![],
+            pty_env: Default::default(),
+            pty_env_remove: vec![],
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    runtime
+        .owned
+        .provider_run_projection
+        .update_remote_snapshot(run);
+    runtime
+        .owned
+        .agent_store
+        .set_remote_execution_active_worker_provider_run_id(&agent_id, None)
+        .unwrap();
+    let typed = serde_json::json!({"delivery":"typed","prompt_id":"next-worker-native-prompt","skill_id":skill.id,"digest":skill.digest});
+    let peer = runtime.with_relay_peer_authority(
+        crate::runtime::relay_peer_authority::test_peer_authority(&context.worker_kernel_id),
+    );
+    assert!(
+        peer.authorize_forwarded_workspace_context(&context)
+            .is_err(),
+        "an idle receipt cannot grant ordinary tool access"
+    );
+    let request = RelayPeerRequest::ForwardCapabilityRuntimeTool {
+        context: context.clone(),
+        tool_name: "_chariox_skill_delivery_ack".into(),
+        arguments: typed.clone(),
+    };
+    let admitted = peer
+        .prepare_forwarded_peer_request(&request)
+        .await
+        .expect("a current native run still owns typed delivery receipts while the home is idle");
+    // The next worker projection can arrive between receipt admission and persistence.
+    runtime
+        .owned
+        .agent_store
+        .set_remote_execution_active_worker_provider_run_id(
+            &agent_id,
+            Some(context.worker_provider_run_id.clone()),
+        )
+        .unwrap();
+    let (result, _) = admitted
+        .dispatch_forwarded_capability_runtime_tool_call(
+            context.clone(),
+            "_chariox_skill_delivery_ack".into(),
+            typed.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(result.ok);
+    assert_eq!(service.storage.loads(&session_id).unwrap().len(), 1);
+    runtime
+        .owned
+        .agent_store
+        .set_remote_execution_active_worker_provider_run_id(&agent_id, None)
+        .unwrap();
+    let mut stale = context.clone();
+    stale.worker_provider_run_id = "replaced-native-run".into();
+    assert!(acknowledge(&runtime, &stale, typed.clone()).await.is_err());
+    let mut foreign = context.clone();
+    foreign.leased_agent_id = "replaced-lease".into();
+    assert!(acknowledge(&runtime, &foreign, typed.clone())
+        .await
+        .is_err());
+    let mut ended = runtime
+        .owned
+        .provider_run_projection
+        .get_for_agent(&session_id, &agent_id)
+        .unwrap();
+    ended.mark_ended();
+    runtime
+        .owned
+        .provider_run_projection
+        .update_remote_snapshot(ended);
+    assert!(
+        acknowledge(&runtime, &context, typed).await.is_err(),
+        "an ended native run cannot acknowledge new loads"
+    );
+    assert_eq!(service.storage.loads(&session_id).unwrap().len(), 1);
+}
