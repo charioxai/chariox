@@ -418,18 +418,10 @@ impl KernelRuntimeState {
             )
             .await
         {
-            Ok(steer) => {
-                if let Some(steer_dispatch) = steer.dispatch {
-                    self.spawn_queued_prompt_steer_dispatch(
-                        steer_dispatch,
-                        self.provider_runtime_lanes.clone(),
-                    );
-                }
-                Ok(AgentTriggerFiring::Fired {
-                    outcome: AgentTriggerOutcome::Steered,
-                    steer_refusal: None,
-                })
-            }
+            Ok(_) => Ok(AgentTriggerFiring::Fired {
+                outcome: AgentTriggerOutcome::Steered,
+                steer_refusal: None,
+            }),
             Err(error) => {
                 let refusal = format!("steer refused, the firing stays queued: {error}");
                 self.record_agent_trigger_notice(

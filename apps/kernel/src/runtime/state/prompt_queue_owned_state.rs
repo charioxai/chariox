@@ -1223,11 +1223,7 @@ impl KernelRuntimeOwnedState {
             ),
         );
         let session = self.session_snapshot(session_id)?;
-        Ok(crate::app::KernelQueuedPromptSteer {
-            dispatch: None,
-            prompt,
-            session,
-        })
+        Ok(crate::app::KernelQueuedPromptSteer { prompt, session })
     }
 
     pub(super) fn prepare_local_queued_prompt_steer(
@@ -1398,11 +1394,7 @@ impl KernelRuntimeOwnedState {
             ),
         );
         let session = self.session_snapshot(session_id)?;
-        Ok(crate::app::KernelQueuedPromptSteer {
-            dispatch: None,
-            prompt,
-            session,
-        })
+        Ok(crate::app::KernelQueuedPromptSteer { prompt, session })
     }
 
     pub(super) fn reconcile_remote_queued_prompt_steer_receipt(
