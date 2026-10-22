@@ -182,6 +182,9 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         } else {
             retry.command
         };
+        // Claude restores a blocked prompt in its composer before this replacement.
+        self.app
+            .write_provider_pty_input_for_runtime(run.id(), b"\x15")?;
         self.app
             .write_provider_pty_input_for_runtime(run.id(), input.as_bytes())?;
         write_claude_headless_submit_retry(context_file, prompt.id(), 0, now, &input);
