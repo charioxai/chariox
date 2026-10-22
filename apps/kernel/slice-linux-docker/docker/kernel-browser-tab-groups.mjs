@@ -11,7 +11,7 @@ import { setTimeout as delay } from "node:timers/promises";
 // The id is derived from this public key (no private key exists for it).
 const key = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwYnjYNb6F8Ak7OPn0a85KRhnnRvl5QsdWIl3tFtHPubMMulPEXLM8cmUT8vgE3lmHYkwpPAowsy9nSQJIvGg72eSsOQDqcieYRlY6mrrHOQq8SGfdYN5R/a5iEzOivE4q9GaM/dIQ11NYMs2X45oL172k2rvsZ0QqbC/oEMhWAwFrHidbB3yx/O7txxTz6Ds0/o97sSGHGvdsM1dtLN0nvOJkYbX6PFEADq3wP/eQzfiPsda6rH4whZejgrFDyuOXMv7dfjHFLWseuVG7XCPMB0vBBULhhLrDoTezQAteqBOmsAuRTAhws60ucpF8J1b3vvu/HcZBCwygdTmV/5o3QIDAQAB";
 export const TAB_GROUPS_EXTENSION_ID = "ecideajikgeiboaphimcgeahicjgcfea";
-const manifest = { manifest_version: 3, name: "Chariox tab groups", version: "1", key, permissions: ["tabs", "tabGroups", "debugger"], background: { service_worker: "sw.js" } };
+const manifest = { manifest_version: 3, name: "Chariox tab groups", version: "1", key, permissions: ["tabs", "tabGroups", "debugger", "favicon"], background: { service_worker: "sw.js" } };
 const worker = `// MP-08/MP-11: driven by the kernel over CDP.
 const invalidateNativeState = payload => () => globalThis[${JSON.stringify(nativeWindowChangedBinding)}]?.(payload);
 // The payload only names the event kind (diagnostics); every kind but bounds retires the guards.
@@ -57,8 +57,32 @@ const activeViewport = async () => {
   for (const [target, id] of ids) if (id === tab?.id) return {target_id: target, width: tab.width, height: tab.height};
   return null;
 };
+const icons = new Map();
+const favicon = async target => {
+  const id = (await targetTabs()).get(target);
+  if (id === undefined) return null;
+  const tab = await chrome.tabs.get(id);
+  if (!tab.favIconUrl || !/^https?:/.test(tab.url ?? '')) return null;
+  const key = JSON.stringify([tab.url, tab.favIconUrl]);
+  if (icons.get(id)?.key === key) return icons.get(id).value;
+  // Chrome supplies a raster from its own cache; no client fetch of a site URL.
+  const url = new URL(chrome.runtime.getURL('/_favicon/'));
+  url.searchParams.set('pageUrl', tab.url); url.searchParams.set('size', '32');
+  const response = await fetch(url, {signal: AbortSignal.timeout(2000)});
+  if (!response.ok || !response.headers.get('content-type')?.startsWith('image/png')) return null;
+  const reader = response.body.getReader(), chunks = []; let size = 0;
+  for (;;) { const part = await reader.read(); if (part.done) break; size += part.value.length; if (size > 16384) { await reader.cancel(); return null; } chunks.push(part.value); }
+  const bytes = new Uint8Array(size); let at = 0; for (const chunk of chunks) { bytes.set(chunk, at); at += chunk.length; }
+  if (size < 33 || ![137,80,78,71,13,10,26,10].every((v,i) => bytes[i] === v)) return null;
+  const view = new DataView(bytes.buffer), width = view.getUint32(16), height = view.getUint32(20);
+  if (!width || !height || width > 32 || height > 32) return null;
+  const value = btoa(String.fromCharCode(...bytes));
+  icons.set(id, {key, value}); while (icons.size > 32) icons.delete(icons.keys().next().value);
+  return value;
+};
 globalThis.charioxTabs = {
-  revision: 3,
+  revision: 4,
+  favicon,
   async keepalive(target) { keepaliveTab = (await targetTabs()).get(target) ?? null; },
   async viewport(target) {
     if (target === undefined) return activeViewport();
@@ -131,7 +155,7 @@ export class ChromeTabGroups {
       for(let attempt=0;attempt<2;attempt++){
         const {sessionId}=await this.connection.send("Target.attachToTarget",{targetId:worker.targetId,flatten:true});
         await this.nativeState.attach(sessionId);
-        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 3",returnByValue:true},sessionId);
+        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 4",returnByValue:true},sessionId);
         if(result?.value===true){
           if(this.keepaliveTarget)await this.connection.send("Runtime.evaluate",{expression:`charioxTabs.keepalive(${JSON.stringify(this.keepaliveTarget)})`,awaitPromise:true},sessionId);
           this.session=sessionId;return sessionId;
@@ -156,6 +180,7 @@ export class ChromeTabGroups {
   }
   /** CDP target id of the active Tab in the tabbed window, or null. */
   active(){return this.evaluate("charioxTabs.active()",'active');}
+  favicon(target){return this.evaluate(`charioxTabs.favicon(${JSON.stringify(target)})`);}
   keepalive(target){this.keepaliveTarget=target;return this.evaluate(`charioxTabs.keepalive(${JSON.stringify(target)})`);}
   /** A target-specific read is geometry only, never active-Tab authority. */
   viewport(target){return this.evaluate(`charioxTabs.viewport(${JSON.stringify(target)})`,target===undefined?'viewport':undefined);}
