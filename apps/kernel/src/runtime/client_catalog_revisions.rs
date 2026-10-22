@@ -92,7 +92,7 @@ async fn load(
     // that ends discovery makes it ask again.
     let (catalog_revision, catalog) = match (catalog, known) {
         (CatalogRead::Loaded(catalog), _) => {
-            let catalog = connected_providers_only(catalog);
+            let catalog = usable_providers_only(catalog);
             (revision(&catalog)?, Some(catalog))
         }
         (CatalogRead::Revalidating, Some(known)) => (known.provider_catalog.clone(), None),
@@ -114,16 +114,32 @@ async fn load(
     })
 }
 
-/// Clients pick models only from connected providers. OpenCode lists every
-/// models.dev provider, which made the snapshot megabytes (235 providers and
-/// 9,173 models: 3.2 MB per waiting room open over the relay).
-fn connected_providers_only(mut catalog: OpenCodeProviderCatalog) -> OpenCodeProviderCatalog {
-    catalog
-        .all
-        .retain(|provider| catalog.connected.contains(&provider.id));
+/// Backends' own providers: a client can still offer them through a slice's
+/// account although this host has not connected them.
+const BACKEND_PROVIDERS: [&str; 6] = [
+    "claude",
+    "claude-headless",
+    "claude-p",
+    "codex",
+    "opencode",
+    "opencode-go",
+];
+
+/// Clients offer only providers that are connected, reachable on a remote
+/// machine, or a backend's own. OpenCode lists every other models.dev provider
+/// too, which made the snapshot megabytes (235 providers and 9,173 models:
+/// 3.2 MB per waiting room open over the relay).
+fn usable_providers_only(mut catalog: OpenCodeProviderCatalog) -> OpenCodeProviderCatalog {
+    let usable = |provider: &crate::provider::OpenCodeProviderInfo| {
+        catalog.connected.contains(&provider.id)
+            || !provider.remote_machine_aliases.is_empty()
+            || BACKEND_PROVIDERS.contains(&provider.id.as_str())
+    };
+    let kept: Vec<_> = catalog.all.into_iter().filter(usable).collect();
     catalog
         .default
-        .retain(|provider, _| catalog.connected.contains(provider));
+        .retain(|provider, _| kept.iter().any(|kept| &kept.id == provider));
+    catalog.all = kept;
     catalog
 }
 

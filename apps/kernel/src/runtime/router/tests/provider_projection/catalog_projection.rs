@@ -235,32 +235,44 @@ fn mp08_mp10_conditional_catalog_snapshot_retains_unchanged_sections() {
 }
 
 // OpenCode lists every models.dev provider (235 providers, 9,173 models on a
-// real kernel: 3.2 MB per waiting room open); clients only use connected ones.
+// real kernel: 3.2 MB per waiting room open). Clients offer only connected
+// providers, ones reachable on a remote machine, and backends' own providers
+// (a slice account can enable those).
 #[test]
-fn client_catalog_snapshot_carries_only_connected_providers() {
-    run_provider_projection_large_stack_test("connected-catalog-snapshot", || async {
+fn client_catalog_snapshot_leaves_out_unusable_providers() {
+    run_provider_projection_large_stack_test("usable-catalog-snapshot", || async {
         let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
         let scope = GetProviderCatalogRequest::default();
         let key = crate::runtime::provider_catalog_control::provider_catalog_cache_key(
             crate::session::DEFAULT_LOCAL_USER_ID,
             &scope,
         );
-        let provider = |id: &str| -> crate::provider::OpenCodeProviderInfo {
-            serde_json::from_value(serde_json::json!({"id": id, "name": id, "models": {"m": {"id": "m", "name": "m"}}})).unwrap()
+        let provider = |id: &str, remote: &[&str]| -> crate::provider::OpenCodeProviderInfo {
+            serde_json::from_value(serde_json::json!({"id": id, "name": id, "remote_machine_aliases": remote, "models": {"m": {"id": "m", "name": "m"}}})).unwrap()
         };
         app.provider_catalog_projection_store().update_scoped(
             &key,
             OpenCodeProviderCatalog {
-                all: vec![provider("codex"), provider("groq"), provider("opencode")],
-                default: [("codex", "m"), ("groq", "m"), ("opencode", "m")]
-                    .map(|(provider, model)| (provider.to_string(), model.to_string()))
-                    .into(),
-                connected: vec!["codex".to_string(), "opencode".to_string()],
+                all: vec![
+                    provider("codex", &[]),
+                    provider("groq", &[]),
+                    provider("mistral", &["studio"]),
+                    provider("openrouter", &[]),
+                ],
+                default: [
+                    ("codex", "m"),
+                    ("groq", "m"),
+                    ("mistral", "m"),
+                    ("openrouter", "m"),
+                ]
+                .map(|(provider, model)| (provider.to_string(), model.to_string()))
+                .into(),
+                connected: vec!["openrouter".to_string()],
             },
         );
         let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
         let request = snapshot_request(None);
-        let command = KernelCommand::from_local_request("catalog-connected", None, None, &request);
+        let command = KernelCommand::from_local_request("catalog-usable", None, None, &request);
 
         let response = router.dispatch(command, request).await.unwrap();
 
@@ -272,10 +284,10 @@ fn client_catalog_snapshot_carries_only_connected_providers() {
             .iter()
             .map(|provider| provider["id"].as_str().unwrap())
             .collect();
-        assert_eq!(ids, ["codex", "opencode"]);
+        assert_eq!(ids, ["codex", "mistral", "openrouter"]);
         assert_eq!(
             catalog["default"],
-            serde_json::json!({"codex": "m", "opencode": "m"})
+            serde_json::json!({"codex": "m", "mistral": "m", "openrouter": "m"})
         );
     });
 }
