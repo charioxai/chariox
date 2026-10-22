@@ -4879,10 +4879,12 @@ authority for its own sessions, agents, terminals and files.
   sha256 }`. Paths are absolute or `~/`. An upload lives in `<path>.chariox-partial` and the file appears at `path`
   only when `total_size` is reached and `sha256`, if sent, matches (otherwise `file_hash_mismatch` and nothing is
   kept); a chunk at the wrong offset is `file_offset_mismatch` and the message names the offset to continue at.
+  The first chunk replaces whatever is at the staging name; later chunks continue only a private regular file of the
+  kernel's user, never a link or another user's file (`file_staging_untrusted`: remove it and upload again).
   A file is at most 2 GiB (`file_too_large`). Reads and write chunks name their offset, so a retry is safe and they
   skip the at-most-once ledger. Typed errors: `file_path_invalid`, `file_not_found`, `file_permission_denied`,
   `file_not_a_file`, `file_too_large`, `file_chunk_too_large`, `file_offset_mismatch`, `file_hash_mismatch`,
-  `file_exists`, `file_io_failed`; each message already says what to do next.
+  `file_staging_untrusted`, `file_exists`, `file_io_failed`; each message already says what to do next.
 - Self-hosted kernels (no Cloud profile): the kernels are the kernels this kernel paired with. Human-only requests,
   refused for grant holders and forwarded requests: `JoinKernelLink { link, relay_token? }` -> `GatewayKernelJoined
   { kernel }` (the gateway key asks the kernel that made a terminal pairing link, over the operator relay, to admit

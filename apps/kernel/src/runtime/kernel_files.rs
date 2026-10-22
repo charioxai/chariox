@@ -239,6 +239,73 @@ pub(crate) fn read(request: &ReadKernelFileRequest) -> Result<LocalDaemonRespons
     })
 }
 
+/// Opens the upload's staging file without trusting what is already at the predictable name:
+/// a first chunk replaces whatever is there, a later chunk continues only the private regular
+/// file this user made (another user of a shared directory may have planted a link or a file).
+fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::File, DaemonError> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    let untrusted = || {
+        fail(
+            "file_staging_untrusted",
+            format!(
+                "{} is not the private file this upload made; remove it, then upload again from offset 0.",
+                partial.display()
+            ),
+        )
+    };
+    if offset == 0 {
+        match std::fs::remove_file(partial) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(io_failure(partial, &e)),
+        }
+        // Private from the first byte: the unfinished upload may become a credentials file.
+        // A new file stays private; replacing one takes the replaced file's permissions on finish.
+        return std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(partial)
+            .map_err(|e| io_failure(partial, &e));
+    }
+    let file = match std::fs::OpenOptions::new()
+        .append(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(partial)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(offset_mismatch(path, 0));
+        }
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => return Err(untrusted()),
+        Err(e) => return Err(io_failure(partial, &e)),
+    };
+    let metadata = file.metadata().map_err(|e| io_failure(partial, &e))?;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let own_uid = unsafe { libc::geteuid() };
+    if !metadata.is_file()
+        || metadata.uid() != own_uid
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err(untrusted());
+    }
+    if metadata.len() != offset {
+        return Err(offset_mismatch(path, metadata.len()));
+    }
+    Ok(file)
+}
+
+fn offset_mismatch(path: &Path, have: u64) -> DaemonError {
+    fail(
+        "file_offset_mismatch",
+        format!(
+            "{} has {have} bytes of this upload; continue at offset {have}.",
+            path.display()
+        ),
+    )
+}
+
 pub(crate) fn write(request: &WriteKernelFileRequest) -> Result<LocalDaemonResponse, DaemonError> {
     if request.total_size > KERNEL_FILE_MAX_BYTES {
         return Err(too_large(request.total_size));
@@ -283,34 +350,7 @@ pub(crate) fn write(request: &WriteKernelFileRequest) -> Result<LocalDaemonRespo
             ),
         ));
     }
-    let mut file = if request.offset == 0 {
-        // Private from the first byte: the unfinished upload may become a credentials file.
-        // A new file stays private; replacing one takes the replaced file's permissions below.
-        std::os::unix::fs::OpenOptionsExt::mode(
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true),
-            0o600,
-        )
-        .open(&partial)
-        .map_err(|e| io_failure(&partial, &e))?
-    } else {
-        let have = std::fs::metadata(&partial).map_or(0, |m| m.len());
-        if have != request.offset {
-            return Err(fail(
-                "file_offset_mismatch",
-                format!(
-                    "{} has {have} bytes of this upload; continue at offset {have}.",
-                    path.display()
-                ),
-            ));
-        }
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&partial)
-            .map_err(|e| io_failure(&partial, &e))?
-    };
+    let mut file = open_staging(&partial, &path, request.offset)?;
     file.write_all(&data)
         .map_err(|e| io_failure(&partial, &e))?;
     file.flush().map_err(|e| io_failure(&partial, &e))?;
@@ -562,6 +602,41 @@ mod tests {
             length: 1,
         };
         assert_eq!(code(read(&directory).unwrap_err()), "file_not_a_file");
+    }
+
+    // EA2-07 review: the staging name is predictable, so another user of a shared
+    // directory can plant something at it before the upload starts.
+    #[test]
+    fn a_planted_staging_symlink_is_replaced_and_its_target_left_alone() {
+        let dir = scratch();
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, b"private").unwrap();
+        let target = dir.join("upload.bin");
+        std::os::unix::fs::symlink(&victim, partial_of(&target)).unwrap();
+        let bytes = b"fresh";
+        let sha = format!("{:x}", Sha256::digest(bytes));
+        write(&chunk(&target, 0, bytes, bytes.len() as u64, Some(&sha))).unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"private");
+        assert_eq!(std::fs::read(&target).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_continued_upload_refuses_a_staging_file_that_is_not_the_private_one_it_made() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch();
+        let target = dir.join("upload.bin");
+        write(&chunk(&target, 0, b"abc", 6, None)).unwrap();
+        let partial = partial_of(&target);
+        std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let error = write(&chunk(&target, 3, b"def", 6, None)).unwrap_err();
+        assert_eq!(code(error), "file_staging_untrusted");
+        std::fs::remove_file(&partial).unwrap();
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, b"abc").unwrap();
+        std::os::unix::fs::symlink(&victim, &partial).unwrap();
+        let error = write(&chunk(&target, 3, b"def", 6, None)).unwrap_err();
+        assert_eq!(code(error), "file_staging_untrusted");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"abc");
     }
 
     #[test]
