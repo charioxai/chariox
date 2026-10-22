@@ -196,10 +196,6 @@ where
 
 /// Opens a TCP socket to `host:port`, racing the resolved addresses with
 /// alternating families. Slower attempts keep running while the next starts.
-pub(crate) async fn connect_tcp(host: &str, port: u16) -> io::Result<TcpStream> {
-    connect_tcp_with_resolver(host, port, dns::system().clone()).await
-}
-
 async fn connect_tcp_with_resolver(
     host: &str,
     port: u16,
@@ -277,13 +273,17 @@ async fn race(addresses: Vec<SocketAddr>) -> io::Result<TcpStream> {
     }
 }
 
-/// Connects a websocket (TLS for `wss`) over [`connect_tcp`] with Nagle off.
+/// Connects a websocket (TLS for `wss`) over the raced TCP socket with Nagle off.
 pub(crate) async fn connect_websocket(
     request: impl IntoClientRequest,
 ) -> Result<(WebSocket, Response), Error> {
     connect_websocket_with_resolver(request, dns::system().clone()).await
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "tungstenite fixes the handshake error type"
+)]
 async fn connect_websocket_with_resolver(
     request: impl IntoClientRequest,
     resolver: dns::Resolver,
