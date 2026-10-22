@@ -145,13 +145,13 @@ test('MP-08/MP-10 notch wheel input routes to the owned display after the docume
 // MP-08/MP-10: only exact mouse-wheel steps use native notches.
 test('MP-08/MP-10 viewer mouse-wheel steps map to native notches',async()=>{
  const {notches}=await import('./kernel-browser-input.mjs');
- assert.deepEqual([120,-240,100,-100,200,53,-80,0].map(notches),[1,-2,1,-1,2,null,null,0]);
+ assert.deepEqual([120,-240,100,-100,200,53,-80,0].map(notches),[1,-2,null,null,null,null,null,0]);
  assert.deepEqual([1,-12,37,49].map(notches),[null,null,null,null]);
 });
 
 test('MP-08/MP-10: precise wheel motion preserves its distance and direction',async()=>{
  const {browser,sent}=fixture(),wheels=[];let dispatched=0;
- const deltas=[1,16,37,49,53,80,-1,-16,-37,-49,-53,-80];
+ const deltas=[1,16,37,49,53,80,100,200,-1,-16,-37,-49,-53,-80,-100,-200];
  for(const delta_y of deltas)await inputHostTab(browser,tab,{kind:'scroll',x:10,y:20,delta_x:0,delta_y},{nativeWheel:(...args)=>{wheels.push(args);return true;},onDispatch:()=>{dispatched++;}});
  assert.deepEqual(wheels,[],'a trackpad pixel must not become a whole native wheel notch');
  assert.deepEqual(sent.filter(call=>call.method==='Input.dispatchMouseEvent').map(call=>call.params.deltaY),deltas);
