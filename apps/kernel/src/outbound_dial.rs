@@ -9,7 +9,7 @@
 use std::{
     collections::HashMap,
     io,
-    net::{SocketAddr, ToSocketAddrs},
+    net::SocketAddr,
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -20,6 +20,8 @@ use tokio_tungstenite::{
     tungstenite::{client::IntoClientRequest, error::UrlError, handshake::client::Response, Error},
     MaybeTlsStream, WebSocketStream,
 };
+
+mod dns;
 
 /// Budget for the connect phase of one blocking HTTP call. With several
 /// addresses ureq gives the first one half of it.
@@ -129,7 +131,13 @@ where
 }
 
 fn system_addresses(netloc: &str) -> io::Result<Vec<SocketAddr>> {
-    netloc.to_socket_addrs().map(Iterator::collect)
+    dns::system().resolve(netloc)
+}
+
+/// Resolves `host:port` with both families looked up independently, for
+/// callers that validate the addresses themselves.
+pub(crate) fn resolve_addresses(netloc: &str) -> io::Result<Vec<SocketAddr>> {
+    system_addresses(netloc)
 }
 
 /// The agent builder for every kernel HTTP call to a remote host.
@@ -156,7 +164,10 @@ where
 /// alternating families. Slower attempts keep running while the next starts.
 pub(crate) async fn connect_tcp(host: &str, port: u16) -> io::Result<TcpStream> {
     let netloc = format!("{host}:{port}");
-    let addresses = tokio::net::lookup_host(&netloc).await?.collect();
+    let lookup = netloc.clone();
+    let addresses = tokio::task::spawn_blocking(move || system_addresses(&lookup))
+        .await
+        .map_err(io::Error::other)??;
     let stream = tokio::time::timeout(
         SOCKET_CONNECT_TIMEOUT,
         race(order_addresses(&netloc, addresses)),

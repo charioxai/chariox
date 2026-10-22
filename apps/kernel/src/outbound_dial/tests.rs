@@ -195,3 +195,33 @@ async fn websocket_connects_over_the_raced_socket() {
     assert!(stream.nodelay().unwrap());
     drop(server.await.unwrap());
 }
+
+// A nameserver that never answers AAAA (the dead-IPv6-resolver shape on a home
+// network): the A answer must start the connection at once.
+#[test]
+fn http_call_does_not_wait_for_an_unanswered_aaaa_lookup() {
+    let working = answering_server();
+    let resolver = dns::Resolver::new(move |_, _, family| match family {
+        dns::Family::V4 => Ok(vec![working]),
+        dns::Family::V6 => {
+            std::thread::sleep(Duration::from_secs(5));
+            Ok(Vec::new())
+        }
+    });
+    let agent = agent_builder_with_resolver(move |netloc| resolver.resolve(netloc))
+        .timeout(Duration::from_secs(20))
+        .build();
+    let started = Instant::now();
+    let body = agent
+        .get("http://slow-aaaa.invalid/relay/token")
+        .call()
+        .unwrap()
+        .into_string()
+        .unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(body, "ok");
+    assert!(
+        elapsed < Duration::from_millis(300),
+        "answered after {elapsed:?}"
+    );
+}

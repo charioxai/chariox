@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Read};
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -1390,7 +1390,7 @@ fn is_registry_issued_management_target(
 }
 
 fn resolve_public_aegs_addresses(netloc: &str) -> io::Result<Vec<SocketAddr>> {
-    let addresses = netloc.to_socket_addrs()?.collect::<Vec<_>>();
+    let addresses = crate::outbound_dial::resolve_addresses(netloc)?;
     validate_public_aegs_addresses(netloc, addresses).map(crate::outbound_dial::interleave_families)
 }
 
