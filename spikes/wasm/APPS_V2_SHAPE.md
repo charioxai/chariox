@@ -440,3 +440,307 @@ depend on WASM at all; the two can land in parallel.
    yes, so the Library can show it and the kernel can diff it on update)?
 
 ---
+
+## 5. Why Chariox Apps beat "web app + MCP"
+
+The comparison that matters: the same product built as a web app with a
+hand-written MCP server (what every SaaS is doing now) versus a Chariox
+App with UI-declared actions.
+
+### 5.1 Agent efficiency: checkable claims
+
+| Claim | Web app + MCP | Chariox App | How to check |
+|---|---|---|---|
+| One surface, not two | the MCP server is a second implementation of the product's actions; it drifts from the UI and covers a subset | actions *are* the UI's functions; coverage is visible in dev mode (§4.6) | count actions vs UI controls in the benchmark Apps |
+| The user sees what the agent does | MCP calls change data behind the UI; the user refreshes to find out | the action runs in the view the user is looking at | recording in the benchmark |
+| Tokens per step | MCP: a tool call (~100–300 tokens) but the model must separately learn state through more calls; Computer Use: one screenshot ≈ 1.5k tokens per step | one typed call plus one ~200-token snapshot; batching cuts steps | token counts per task |
+| Latency per step | network RTT to the SaaS and its MCP (50–300 ms) plus auth | local view call: the kernel's tool path is tens of µs, the view handler a few ms | timings per step |
+| Failure modes | schema drift between UI and MCP; stale OAuth; rate limits | typed params checked by the kernel; same state as the UI | failure rate per task |
+| Approval | per-server allow-lists in each agent client | one kernel-owned interaction, effect classes from the developer | n/a (design) |
+| Local-first | data lives at the vendor | data lives in the kernel, every OS, offline | n/a |
+
+### 5.2 Developer efficiency: checkable claims
+
+| Claim | Web app + MCP | Chariox App |
+|---|---|---|
+| Code to write for agent access | an MCP server: transport, auth, tool schemas, hosting, versioning | one wrapper per action in the view (§4.1), or a `data-` attribute |
+| Infrastructure | a server, a database, auth, TLS, uptime | none: the kernel runs the backend and stores state |
+| Portability | per-OS packaging if there is a desktop part | one `.cxapp` for every OS and CPU |
+| Backend language | whatever the server runs | Rust, JS/TS, C (and C++, Python later) with one typed contract |
+| Dev loop | deploy to test agents against it | `/app dev`: ~1.5–4 s per save, agents in the Room test it live |
+| Distribution and trust | app store + MCP registry, separate | signed package, Library, kernel-verified imports |
+
+### 5.3 Benchmark design (to run before any public claim)
+
+- **Apps:** Todo (small) and a Sheet (Univer, §7b). Both exist as a Chariox
+  App with declared actions, and as a plain web app plus a small MCP server
+  (same backend code, the MCP handwritten by the same developer, time
+  recorded).
+- **Arms:** (A) Chariox App actions, (B) web app + MCP server, (C) web app
+  through Computer Use (screenshots), (D) Chariox App through browser
+  driving only (no declared actions), as the control for the UI itself.
+- **Tasks (10, scripted, each with a checker):** add 5 todos with due
+  dates; complete all overdue; rename a list; import a CSV into a sheet;
+  fill a column with a formula; sort and export; recover from a validation
+  error; and so on.
+- **Agents:** Codex `gpt-6-luna` low and Claude `claude-haiku-5-5`, 30 runs
+  per task per arm.
+- **Measures:** tokens in and out, wall-clock per task, steps (tool calls
+  or screenshots), failure rate (checker fails), and developer minutes to
+  build each arm.
+- **Pass:** (A) uses fewer tokens and steps than (B) and (C) on every task,
+  fails less, and took fewer developer minutes than (B).
+
+**Consequences.** The claims above are not proven today; the benchmark is
+an S-size PR once §4 exists, and should gate the "Apps beat MCP" message.
+
+**Open points for you.** Is the comparison you want to win (B) (SaaS + MCP),
+(C) (Computer Use), or both? *Recommend: both, with (B) as the headline.*
+
+---
+
+## 6. Languages
+
+| Language | Toolchain | Async world | Measured | Launch? |
+|---|---|---|---|---|
+| Rust | wit-bindgen 0.63, `wasm32-wasip2` | yes, full cancel | r2: all cells | **yes** |
+| JS/TS | componentize-qjs (pinned git), Rolldown bundle | yes; cancel does not stop the pending import | r2: all cells | **yes** |
+| **C** | wasi-sdk 33 (clang 22), wit-bindgen 0.63 `c` | **yes, full cancel** | **this round: all cells** | **yes, with a thin SDK (see below)** |
+| C++ | same, through the C SDK; C++20 coroutines map onto the callback ABI | yes (same ABI) | not run | after C |
+| Python | componentize-py 0.25.1 | yes; cannot cancel (traps on an abandoned future read) | r2 | preview |
+| Go | TinyGo `wasip2` + wit-bindgen-go | no async yet | not run | state only |
+
+### 6.1 C: the measured answer to "from the get go?"
+
+**Yes, C works today on the async world, with no SDK and no C-specific
+worker change.** `spikes/wasm/apps/c-app/app.c` (≈330 lines) implements
+the same ten tools as the Rust App against `wit/app.wit`, compiled with
+`wit-bindgen c` (callback ABI) and `wasm32-wasip2-clang -mexec-model=reactor`,
+and ran every r2 cell on the unchanged async worker under bubblewrap:
+
+| Cell (C, bubblewrap unless noted) | Result | Rust / QuickJS for comparison |
+|---|---|---|
+| build per save | **0.22 s** (bindgen + clang) | Rust: seconds; QuickJS 0.26 s |
+| component / precompiled | 302 KB / 222 KB in 16 ms | 190 KiB / 595 KiB; 1.5 MB / 4.6 MB |
+| cold start to ready | 7.2–8.2 ms (1.7–2.9 ms without bubblewrap) | 5.5 / 6.1 ms |
+| RSS after ready / after work | 13 / 15 MiB | 14 / 25; 17 / 33 |
+| tool call p50 / p95 | 0.03 / 0.04 ms | 0.03 / 0.04; 0.04 / 0.06 |
+| async imports (`state.get`, `transact`, `http.send`) | work, results land in the task's struct | same |
+| 16 callers, one broker wait | 16/16 ok, no lost update, one connection, 52.9 ms | 53.0 / 53.1 |
+| 64 callers, WASI 0.3 timer | **64/64 ok**, 52.4 ms | 64/64 |
+| 64 callers, broker wait | 16 ok, 48 `BUSY` (kernel cap, as every runtime) | same |
+| 50 MiB streamed body | 231 MiB/s, 4 chunks read-ahead, +1 MiB RSS | 265 / 270 |
+| cancel 2 of 10 calls | **import and stream released in 12.5 ms**, 8 others ok, next call 0.1 ms | Rust 12 ms; QuickJS 5.3 s |
+| runaway loop | stopped at 1.0 s, culprit named, 8 others `APP_INSTANCE_RESTARTED` | same |
+| 256 MiB with cap 128 | `malloc` returns NULL: the App reports `APP_MEMORY_LIMIT` itself, **8 others ok, state kept** | Rust traps (state lost); QuickJS same as C |
+| head-of-line | a 1M-op C loop holds echo 0.2 ms (the C loop is far cheaper than Rust's HashMap workload; not comparable) | 188 ms |
+
+What the test shows about the toolchain:
+
+- `wit-bindgen c` generates the full async ABI: subtasks, waitable sets,
+  stream and future reads, `context.set/get` for per-task state. Nothing
+  was missing for our world.
+- A C App is a **hand-written state machine**: every `await` is a return
+  to the host plus a callback. That is how `app.c` is written; it is fine
+  for a spike and tedious for a developer. The thin C SDK must hide it:
+  a `chariox_task` struct, `CHARIOX_AWAIT(call, next_step)` macros (as in
+  the spike), helpers that build requests and answers, and a small JSON
+  library (there is none in wasi-libc; cJSON is MIT). C++ gets it for free
+  with coroutines (`co_await` on an import), which is why C++ is "through
+  the C SDK".
+- One trap to encode in the SDK: synchronous builtins (`cancel-read`,
+  `drop`) trap on a waitable that is still joined to a set; remove it
+  first. The first run hit exactly this.
+- wasi-libc still imports WASI 0.2 (`wasi:cli`, `wasi:io`, `wasi:clocks`);
+  the worker links 0.2 as a compatibility layer already (DESIGN.md §2).
+- A blocking style (`chariox_await()` that just waits) would need the
+  stackful async lift, which wasmtime supports and `wit-bindgen c` does
+  not generate today. Not needed for launch; it would make C look like
+  Rust.
+
+So: C at launch is a product decision about the SDK, not a feasibility
+question. The SDK is an M-size PR (§8, L2).
+
+### 6.2 The others
+
+- **C++:** header-only layer over the C SDK; coroutines replace the state
+  machine. Exceptions across the component boundary must be caught at the
+  export (no unwinding into the host). S after the C SDK.
+- **Python:** works and is slow to start (19 MB component, 8 ms cold,
+  0.7 s precompile) and cannot cancel. Preview after launch; the trigger is
+  componentize-py being able to abandon a future read.
+- **Go:** wait for async support in the Go toolchain; say so in the docs.
+
+**Consequences.** The world is the contract; every language is an SDK on
+top. Launch set: Rust, JS/TS, C. C++ follows in weeks, Python as a preview.
+
+**Open points for you.**
+1. C at launch with the state-machine SDK (recommend), or wait for a
+   blocking-style SDK?
+2. Ship C++ at launch too (header-only, S after C) or right after?
+   *Recommend: right after; do not widen the launch.*
+
+---
+
+## 7. Wrapped existing binaries
+
+Your ask: existing programs hooked as Chariox Apps even with no MCP,
+driven by agents through the UI in Chariox, reachable from a remote client.
+
+| Kind of program | How it runs | How clients see it | How agents act | Feasibility |
+|---|---|---|---|---|
+| GUI program (Linux) | a separate App kind `kind: "native"`, per-OS binary, OS sandbox (same bwrap/cgroup launcher as the worker), on a **virtual display** (Xvfb/Wayland headless) | streamed with the Browser display transport that replaces Selkies video (multidomain) | accessibility tree (AT-SPI) where the toolkit exposes one; Computer Use (screenshot + click) otherwise | good: we already run Chromium this way; the display transport is being built for the browser anyway |
+| GUI program (macOS) | native binary in the OS sandbox; no virtual display on macOS, so **per-window capture** of a real window (ScreenCaptureKit) | same transport | macOS AX API (rich on native apps) or Computer Use | possible, more work; headless use (nobody logged in) does not exist on macOS |
+| GUI program (Windows) | not today | — | — | later |
+| CLI program | a Chariox terminal pane with the binary in the OS sandbox | the existing pane/terminal transport | the agent's terminal tools, as with any CLI | good: mostly packaging and sandbox profile |
+| Existing web app | a Tab of the kernel browser pointing at it | the Browser mirror (DOM mirroring, region video) | browser driving, as today | good: already the product |
+
+Limits that stay true for wrapped programs: no portability (one binary per
+OS), no per-call limits (the sandbox limits the process, not a call), no
+typed actions unless the program exposes them through accessibility, and
+trust is only the OS sandbox plus the publisher signature on the wrapper.
+Agents interact through accessibility or pixels, which is slower and
+less reliable than §4's declared actions; the benchmark arm (C) measures
+exactly that gap.
+
+Relation to native Chariox Apps: the wrapped kind is the on-ramp
+("my program in Chariox today"); the WASM kind is the destination
+("portable, limited, agent-native"). The manifest, signing, install,
+generations, approvals and the view Tab are shared; only `runtime` differs.
+
+**Consequences.** A real but separate L-size track: sandbox profiles per OS
+for arbitrary binaries, a virtual display per App on Linux, window capture
+on macOS, and an accessibility bridge for agents. None of it blocks §2–§4.
+
+**Open points for you.**
+1. Scope for v2: Linux GUI + CLI wrapping first, macOS window capture
+   second, Windows not planned? *Recommend: yes, and only after §4 lands.*
+2. Should wrapped GUI Apps be able to **declare actions** too, through
+   accessibility scripts (e.g. "click the Save menu")? *Recommend: later;
+   see how far AX gets us first.*
+
+---
+
+## 7b. Adapting existing open-source projects
+
+Two filters: (a) is the UI already web? (b) does the backend compile to a
+WASI component (no threads, no raw sockets, no native GUI), or can the SDK
+brokers replace it? Licences verified 2026-10-22 from each repo's LICENSE
+or licence page; releases from GitHub.
+
+| Project | Licence | Flag | (a) web UI | (b) backend | State | Fit |
+|---|---|---|---|---|---|---|
+| Excalidraw | MIT | — | yes (React component) | none needed | v0.18.1 (04-2026), very active | **Good** |
+| Univer (sheets/docs/slides) | Apache-2.0 core; Pro is commercial | xlsx/docx import-export, charts, pivot, print, collaboration are **Pro-only** | yes (canvas) | none needed; add our own xlsx I/O | v1.2.0 (10-22-2026), very active | **Good** |
+| Typst | Apache-2.0 (typst and typst.ts) | — | partly (renderer exists, editor to assemble) | **yes**: Rust → `wasm32-wasip2`, fonts/packages via HTTP + file brokers | v0.15.1 (07-2026) | **Good** (best real backend component) |
+| PDF.js | Apache-2.0 | — | yes | none needed | v6.4 (10-2026) | Good |
+| pdf-lib | MIT | upstream dormant since 2021; use the maintained `cantoo-scribe` fork (MIT, 09-2026) | library | pure JS → QuickJS backend | fork active | Good as a library |
+| SQLite (sqlite-wasm) | public domain / Apache wrapper | — | n/a | C builds with wasi-sdk (rusqlite bundled works on wasip2) | 3.54 (10-2026) | Good as the storage of any App |
+| Monaco / CodeMirror 6 | MIT / MIT | CodeMirror's GitHub mirror archived 04-2026, canonical repo moved; npm current | yes | none | current | Good building blocks |
+| reveal.js | MIT | — | yes | none | 6.0.2 (09-2026) | Good |
+| Vega-Lite | BSD-3 | — | yes | none | v6.5 (10-2026) | Good; JSON spec is agent-friendly by itself |
+| Actual Budget | MIT | — | yes (React) | runs in-browser on sql.js WASM; sync-server optional → state/file broker; bank sync via HTTP broker | v26.10 (10-2026) | Possible (big) |
+| draw.io | Apache-2.0 source; icon/stencil sets under separate non-OSI terms (Atlassian carve-out); repo now called a "test version", paid production build | **asset terms, not the code** (the "editor moved off Apache in 2024" premise did not verify) | yes | none needed (export server optional) | v32.5 (10-2026), closed to PRs | Possible; Excalidraw is cleaner |
+| DuckDB (duckdb-wasm) | MIT | — | n/a | Emscripten only (exceptions, pthreads): runs in the **view's** Web Worker, not as a component (~30 MB) | v1.33 (12-2025) | In-view only |
+| Squoosh codecs | Apache-2.0 (codecs own BSD/MIT) | project dormant since 08-2024 | yes | Emscripten C++/Rust codecs; Rust ones trivial to rebuild for wasip2 | dormant | Possible (reuse codecs) |
+| MuPDF / mupdf.js | **AGPL-3.0** or commercial | **AGPL** covers the WASM binary; network-use copyleft | library | Emscripten; C core could rebuild with wasi-sdk | mupdf.js 0.3 (08-2024) | Avoid; PDF.js + pdf-lib cover it |
+| pandoc | **GPL-2.0+** (pandoc-wasm wrapper MIT) | **GPL**: bundling pandoc.wasm makes the App GPL | CLI | yes, GHC wasm backend builds a WASI p1 module (no Lua filters) | 3.12 (10-2026) | Wrapped binary / sidecar only |
+| LibreOffice WASM (ZetaJS) | MPL-2.0 (+LGPL parts); zetajs MIT | weak copyleft | **no**: Qt-for-WASM canvas | **no**: Emscripten + pthreads + SharedArrayBuffer (needs COOP/COEP), ~32 MB wasm + data, beta | zetajs 1.2 (06-2025) | No → **wrapped binary (§7)** |
+| Collabora Online | MPL-2.0 | weak copyleft | yes (JS client) | **no**: native C++ server + LibreOfficeKit processes | active | No → wrapped |
+| OnlyOffice Docs | **AGPL-3.0** | **AGPL** | yes (canvas) | **no**: Node services + x2t C++ converter + RabbitMQ/PostgreSQL | v10 (10-2026) | No → wrapped, and AGPL |
+
+### 7b.1 The two to build: Excalidraw first, Univer sheets second
+
+**Excalidraw (diagrams).** Views: the Excalidraw React component as the
+single UI entry, state kept by the App. Backend component (QuickJS or
+Rust): scene store (elements JSON in `state`, images through `files`),
+library/palette storage, PNG/SVG export. Declared actions: `add_shape`,
+`add_text`, `connect(a, b, label)`, `move/group`, `set_style`,
+`load/save scene`, `export(png|svg)`, and `describe_scene` (the snapshot:
+elements with ids, text, positions and connections). What the agent can
+then do that it cannot through Excalidraw + MCP today: there is no
+Excalidraw MCP; with Computer Use it must draw by pixels. Here it reads
+the structured scene and edits it by id while the user watches the same
+canvas, offline, in the user's kernel.
+
+**Univer (sheets).** Views: the Univer sheet workbench. Backend component
+(Rust): workbook persistence (snapshot JSON via `state`/`files`), CSV and
+xlsx import/export (Univer's own are Pro-only; use a Rust xlsx crate),
+formula recalculation stays in Univer's engine in the view. Declared
+actions: `get/set_range`, `insert/delete rows|columns`, `set_formula`,
+`add_sheet`, `sort/filter`, `import_csv`, `export(xlsx|csv)`; snapshot =
+the active sheet's used range (capped) plus sheet names. Beyond the
+original + MCP: a spreadsheet the agent edits cell by cell with typed
+calls and immediate visual feedback, with the data never leaving the
+machine; Univer has a Facade API but no MCP and no sandboxed local runtime.
+
+Typst is the best "real backend" showcase (a Rust compiler as a component
+with brokered fonts and packages) and the third candidate once the first
+two exist.
+
+**Consequences.** Two M-size reference Apps that also serve as the
+benchmark Apps (§5.3). Licence rule for first-party Apps: permissive only
+(MIT/BSD/Apache/MPL as a dependency); no GPL/AGPL code in a Chariox App we
+ship; copyleft programs go through the wrapped kind if at all.
+
+**Open points for you.**
+1. Excalidraw first, Univer second (recommend)?
+2. The licence rule above for first-party Apps (recommend: yes).
+3. Univer's Pro-only features: build our own xlsx I/O (recommend) or
+   accept csv-only at first?
+
+---
+
+## 8. Revised migration plan and your decisions
+
+Sizes: S ≈ 1–2 days, M ≈ 3–5 days, L ≈ 1–2 weeks, one lane each. Apps are
+paused; this is the order to resume in. Tracks run in parallel; the WASM
+runtime (R) and the agent-side UI work (A) do not depend on each other.
+
+| # | PR | Size | Depends on |
+|---|---|---|---|
+| R1 | Async WIT world 1.0 + import allowlist (`packages/app-wit`) | S | — |
+| R2 | Kernel: queue broker calls per App instead of `BUSY`, cap 64; worker-side cancel; protocol bump + drill | M | — |
+| R3 | Async wasm worker (from `worker-async/`): streams, cancel, CPU slices, culprit, OOM recycling, `precompile`/`check` | L | R1 |
+| R4 | Kernel install + launch for `engine: "wasm"`, AOT cache in the release store | L | R3 |
+| R5 | Sandbox profiles for the worker (seccomp, Seatbelt, executable memory) | M | R3 |
+| R6 | WASI virtualization: `wasi:http` onto the broker, preopens | M | R3 |
+| L1 | JS SDK on QuickJS + `app pack` bundling + pinned componentize-qjs; Rust SDK crate | L | R1 |
+| L2 | **C SDK** (task helpers, await macros, JSON, request builders) + template; C++ header after | M (+S) | R1 |
+| D1 | Dev channel: `channel` on installations, dev identity, `/app register`, kernel reload of dev views, measured save→serve times | M | — |
+| D2 | `AppDevPush` kernel operation + agent tool; `/app dev` on top | M | D1 |
+| A1 | View SDK: `chariox.action`, `data-chariox-action`, `view.state`, `view.changed`; action manifest in the package | M | — |
+| A2 | Kernel action bridge: run actions in the Tab via the CDP binding with `Actor::Agent`; per-view queue; `app_<local>_<action>`, `_state`, `_batch` on the runtime MCP; protocol bump | L | A1 |
+| A3 | Headless Tab mode in the kernel browser + cost measurement + idle rules | M | A2 |
+| A4 | Dev-mode discovery: `/app actions`, "as the agent sees it" panel, undeclared-control warnings | S | A1, D1 |
+| P1 | Port first-party Apps to wasm, delete the Node engine, real-path drills | M + S | R4, L1 |
+| X1 | Excalidraw App; X2 Univer sheets App (also the benchmark Apps) | M each | A2, L1 |
+| B1 | Benchmark (§5.3) and the public claim | S | X1 |
+| W1 | Wrapped-binary kind: Linux GUI on a virtual display + CLI panes; W2 macOS window capture | L, L | later |
+
+Critical path to "Apps v2 usable": R1 → R3 → R4 → P1 (≈ 6 weeks) in
+parallel with A1 → A2 → A3 (≈ 4 weeks) and D1 (1 week). C and the
+reference Apps follow inside the same window.
+
+### Your decisions (each with my recommendation)
+
+| # | Decision | Recommendation |
+|---|---|---|
+| 1 | Broker cap: queue instead of `BUSY`, 64 in flight per App | yes |
+| 2 | Debugger gap at launch (logs + stack traces, no step debugger) | accept |
+| 3 | Dev copy = `channel: "dev"` of the same App ID, signed by a kernel-generated dev identity without a prompt | yes to both |
+| 4 | Agents in the dev Room see the dev copy automatically | yes |
+| 5 | Approvals: no prompt when capabilities are unchanged (README rule), for both channels | yes |
+| 6 | Headless Tab in the kernel browser hosts the view when nobody has the App open | yes, measure cost in A3 |
+| 7 | Effect classes `read / write / approval`; `write` runs unprompted | yes (UX-first) |
+| 8 | Action manifest inside the signed package | yes |
+| 9 | Benchmark target: SaaS + MCP (headline) and Computer Use | both |
+| 10 | C at launch with the state-machine SDK; C++ right after | yes |
+| 11 | Python as a preview after launch; Go wait | yes |
+| 12 | Wrapped binaries: Linux GUI + CLI first, macOS second, after A-track lands | yes |
+| 13 | Reference Apps: Excalidraw first, Univer sheets second; permissive-licence rule for first-party Apps | yes |
+| 14 | Resume order: R-track and A-track in parallel, D1 first week | yes |
+
+What is **not** asked of you: the detailed WIT, the SDK function names,
+the queue sizes and the sandbox profiles are engineering choices inside
+the PRs above.
