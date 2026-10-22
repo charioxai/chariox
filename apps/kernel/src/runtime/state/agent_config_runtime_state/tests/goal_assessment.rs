@@ -1273,7 +1273,7 @@ fn recovered_continuation_envelope(
 // MP-08 / MP-10 / MP-11: completion checks get the objective through the same
 // hidden dispatch context; their visible labels must not replay attached notes.
 #[tokio::test]
-async fn completion_check_keeps_original_notes_in_hidden_provider_context() {
+async fn completion_check_keeps_notes_and_current_deadlines_in_hidden_context() {
     use crate::durable_state::agent_lifecycle::Operation;
     use base64::Engine;
     let mut config = crate::config::DaemonConfig::for_tests();
@@ -1373,6 +1373,27 @@ async fn completion_check_keeps_original_notes_in_hidden_provider_context() {
         envelope.assessment_only,
         "exercise the real neutral assessment boundary"
     );
+    // MP-08 / MP-10 / MP-11: examples must obey the same clock/bound as replies.
+    let context = &envelope.hidden_system_context;
+    let start = context.find(r#"{"status":"waiting","#).unwrap();
+    let end = start + context[start..].find('}').unwrap() + 1;
+    let example: serde_json::Value = serde_json::from_str(&context[start..end]).unwrap();
+    let data = context
+        .rsplit_once("Untrusted assessment data: ")
+        .unwrap()
+        .1;
+    let data = serde_json::Deserializer::from_str(data)
+        .into_iter::<serde_json::Value>()
+        .next()
+        .unwrap()
+        .unwrap();
+    let now = data["now_ms"].as_u64().unwrap();
+    let deadline = example["deadline_ms"].as_u64().unwrap();
+    assert!(
+        deadline > now,
+        "the assessment prompt must not teach an expired deadline"
+    );
+    assert!(deadline <= now + data["check_in_minutes"].as_u64().unwrap() * 60_000);
     for private in ["QUOTED_CHECK_REQUIREMENT", "COMMENT_FOR_CHECK"] {
         assert!(!envelope.visible_user_prompt.contains(private));
         assert!(envelope.hidden_system_context.contains(private));
