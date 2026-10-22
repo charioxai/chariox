@@ -11,12 +11,13 @@ export const keysyms = { Tab: 0xff09, Enter: 0xff0d, Space: 0x20, Escape: 0xff1b
   ArrowLeft: 0xff51, ArrowUp: 0xff52, ArrowRight: 0xff53, ArrowDown: 0xff54, Home: 0xff50, End: 0xff57 };
 // MP-08/MP-10: mouse-wheel notches animate like a native wheel through the
 // owned display (Selkies forwards every wheel event as X button notches).
-// Viewers report a notch as 120 (wheelDelta) or 100 (Chrome on Windows).
+// A native X11 notch moves 120 pixels. Other viewer steps, including a
+// 100-pixel Windows wheel step, must retain their distance through CDP.
 // Fine trackpad motion must retain its pixel distance through CDP: turning
 // each small delta into a whole notch amplifies a gesture and its momentum tail.
 
 const FOCUS_GRACE_MS = 100;
-export const notches = delta => delta % 120 === 0 ? delta / 120 : delta % 100 === 0 ? delta / 100 : null;
+export const notches = delta => delta % 120 === 0 ? delta / 120 : null;
 // MP-11: native pointer input is at most once. An action sent to the native
 // worker without a reply may have reached the page, so it counts as dispatched
 // (the retired source re-observes the outcome) and is never replayed via CDP.
