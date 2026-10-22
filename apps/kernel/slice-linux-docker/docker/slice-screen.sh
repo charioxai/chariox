@@ -225,6 +225,33 @@ require_screen_available() {
   return 1
 }
 
+# The browser draws at the Room viewer's scale: the controller emulates that
+# scale per Tab, and a window that is not natively at it leaves the page in one
+# corner of the screen. Chromium fixes its scale at launch, so a viewer scale
+# change relaunches it; the file holds the scale of the current launch.
+chromium_scale() {
+  local scale
+  scale="$(cat "$LOGS/chromium-scale" 2>/dev/null || true)"
+  [[ "$scale" =~ ^[12]$ ]] && printf '%s' "$scale" || printf '1'
+}
+
+# Prints "unchanged", or "relaunching" once the running browser is retired and
+# the supervisor starts the next one without its crash backoff.
+set_browser_scale() {
+  local wanted="${1:-}"
+  [[ "$wanted" =~ ^[12]$ ]] || { log "browser scale must be 1 or 2"; return 2; }
+  if [[ "$(chromium_scale)" == "$wanted" ]]; then
+    printf 'unchanged\n'
+    return 0
+  fi
+  printf '%s\n' "$wanted" >"$LOGS/chromium-scale.next"
+  mv "$LOGS/chromium-scale.next" "$LOGS/chromium-scale"
+  : >"$LOGS/chromium-planned-restart"
+  python3 "$ROOT/browser-lifecycle.py" stop "$CHROME_PROFILE" >>"$LOGS/chromium-gui.log" 2>&1 \
+    || { log "previous browser lifetime is not retired"; return 1; }
+  printf 'relaunching\n'
+}
+
 # Desktop startup, supervised recovery and URL forwarding share one Chromium
 # launch configuration. `owned` starts one browser-lifecycle.py lifetime and
 # prints its record; `forward` hands the URL to the running browser.
@@ -267,6 +294,7 @@ run_chromium() {
     --disable-dev-shm-usage \
     --disable-gpu \
     --force-renderer-accessibility \
+    --force-device-scale-factor="$(chromium_scale)" \
     --remote-debugging-address=127.0.0.1 \
     --remote-debugging-port=9222 \
     "${chrome_startup_target_args[@]}" )
@@ -312,10 +340,15 @@ PYTHON
     else
       log "Chromium lifetime did not start; retrying in 6 seconds"
     fi
-    sleep 6 3>&- &
-    backoff_pid=$!
-    wait "$backoff_pid" || true
-    backoff_pid=""
+    # A planned relaunch (a scale change) needs no storm guard.
+    if [[ -e "$LOGS/chromium-planned-restart" ]]; then
+      rm -f "$LOGS/chromium-planned-restart"
+    else
+      sleep 6 3>&- &
+      backoff_pid=$!
+      wait "$backoff_pid" || true
+      backoff_pid=""
+    fi
     set --
   done
 }
@@ -949,6 +982,7 @@ cleanup_failed_start() {
 
 case "${1:-status}" in
   supervise-browser) shift; supervise_chromium "$@" ;;
+  browser-scale) shift; set_browser_scale "$@" ;;
   start)
     # Keep errexit active inside start_desktop. An `if start_desktop` wrapper
     # would suppress failures inside the function and could report success.

@@ -140,6 +140,22 @@ test('MP-08 / MP-11 Xvfb uses owned private tmp without global socket or keymap 
   } finally { await desktop.stop(); await rm(root, { recursive: true, force: true }); }
 });
 
+// MP-08/MP-10/MP-11 (mirrorfix r2 F1): the owned screen holds the whole Chrome window, so its page area
+// is the full emulated layout and `position:fixed; bottom:0` page UI is never below the visible crop.
+test('MP-08 / MP-11 owned Xvfb screen holds the window that gives the page its full layout', async () => {
+  const {ownedWindowSize, ownedScreenSize} = await import('./kernel-browser-geometry.mjs');
+  const root = await mkdtemp(path.join(os.tmpdir(), 'culinux-screen-size-'));
+  const desktop = new LinuxOwnedDesktop(root);
+  desktop.uid = 1000;
+  let args;
+  desktop.launch = async (name, launchArgs) => { args = launchArgs; throw new Error('MP-08: stop before executing Xvfb'); };
+  try {
+    await assert.rejects(desktop.start(), /stop before executing/);
+    assert.equal(args[args.indexOf('-screen') + 2], `${ownedScreenSize.width}x${ownedScreenSize.height}x24`);
+    assert(ownedScreenSize.width > ownedWindowSize.width && ownedScreenSize.height > ownedWindowSize.height, 'a window that fills the screen loses a pixel');
+  } finally { await desktop.stop(); await rm(root, { recursive: true, force: true }); }
+});
+
 // MP-08/MP-10/MP-11 fresh real host: identify missing desktop programs without exposing PATH entries.
 test('missing owned-desktop prerequisites name the fixed program before spawning',async()=>{
  const root=await mkdtemp(path.join(os.tmpdir(),'mdmain-desktop-prereq-'));

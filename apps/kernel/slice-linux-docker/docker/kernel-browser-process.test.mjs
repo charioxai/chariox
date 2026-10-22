@@ -72,6 +72,16 @@ test('MP-08/MP-10 relaunch after an unclean stop shows no crash-restore bubble',
  }
 });
 
+// MP-08/MP-10/MP-11 (mirrorfix r2 F1): the owned window is the layout plus Chrome's band and frame, so the page
+// area equals the emulated layout instead of a 1272x708 crop of it.
+test('MP-08/MP-10 owned window leaves the page area the full canonical layout',async()=>{
+ const {launchArguments}=await import('./kernel-browser-process.mjs');
+ const {displayGeometry,chromeBandHeight,windowFrame,ownedWindowSize}=await import('./kernel-browser-geometry.mjs');
+ assert.deepEqual(ownedWindowSize,{width:displayGeometry.width+windowFrame.width,height:displayGeometry.height+chromeBandHeight+windowFrame.height});
+ assert(launchArguments('/private',false,true).includes(`--window-size=${ownedWindowSize.width},${ownedWindowSize.height}`));
+ assert(launchArguments('/private',false,false).includes(`--window-size=${displayGeometry.width},${displayGeometry.height}`));
+});
+
 // Chromium 137+ gives WebGL no software fallback on a host without a usable GPU
 // unless SwiftShader is opted in; without it getContext("webgl") returns null.
 test('kernel browser renders WebGL in software on hosts without a GPU',async()=>{

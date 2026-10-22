@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { desktopApplication } from './desktop-applications.mjs';
+import { ownedScreenSize } from './kernel-browser-geometry.mjs';
 import { processIdentity, settleOwned, descendants, observedDescendants } from './linux-owned-process.mjs';
 const readyDesktops = new WeakSet();
 export const ownsDesktopDisplay = desktop => readyDesktops.has(desktop) && Boolean(desktop.binding()) &&
@@ -160,7 +161,7 @@ export class LinuxOwnedDesktop {
       // Its exclusive bind also keeps displayfd allocation safe across kernels.
       const x = await this.launch('bwrap', [
         '--dev-bind', '/', '/', '--bind', this.runtime, '/tmp', '--die-with-parent', '--',
-        this.commands.Xvfb ?? 'Xvfb', '-displayfd', '3', '-screen', '0', '1280x800x24',
+        this.commands.Xvfb ?? 'Xvfb', '-displayfd', '3', '-screen', '0', `${ownedScreenSize.width}x${ownedScreenSize.height}x24`,
         '-auth', '/tmp/Xauthority', '-nolisten', 'tcp', '-noreset',
       ], { ...env, TMPDIR: '/tmp', XAUTHORITY: '/tmp/Xauthority' }, ['ignore', 'ignore', 'ignore', 'pipe']);
       const display = await firstLine(x.stdio[3], x);

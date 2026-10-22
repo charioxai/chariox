@@ -1,0 +1,9 @@
+{
+  "local_protocol": 568,
+  "peer_protocol": 176,
+  "allocation": "provisional 568/176 (mirrorfix r3): renumbered at integration",
+  "accept": { "KernelBrowser": { "command": { "op": "dialog", "tab_id": "tab-1", "generation": 7, "accept": true } } },
+  "answer_prompt": { "KernelBrowser": { "command": { "op": "dialog", "tab_id": "tab-1", "generation": 7, "accept": true, "prompt_text": "Ada" } } },
+  "dismiss": { "KernelBrowser": { "command": { "op": "dialog", "tab_id": "tab-1", "generation": 7, "accept": false } } },
+  "state_tab_with_dialog": { "tab_id": "tab-1", "document_id": "doc-1", "url": "https://example.test/", "title": "Example", "dialog": { "type": "prompt", "message": "Your name?" } }
+}

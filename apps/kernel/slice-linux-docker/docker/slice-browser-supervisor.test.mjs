@@ -18,7 +18,10 @@ async function waitFor(check, timeout = 12000) {
 async function fixture(prefix) {
   const root = await mkdtemp(path.join(os.tmpdir(), prefix));
   await mkdir(path.join(root, "bin"));
-  for (const name of ["slice-screen.sh", "browser-lifecycle.py", "browser-upload-store.py"]) {
+  // The browser starts on the Room's private desktop bus.
+  await mkdir(path.join(root, "private"));
+  await writeFile(path.join(root, "private/desktop-session-address"), "unix:path=/nonexistent-bus", { mode: 0o600 });
+  for (const name of ["slice-screen.sh", "browser-lifecycle.py", "browser-upload-store.py", "room-desktop-environment.py"]) {
     await copyFile(new URL(`./${name}`, import.meta.url), path.join(root, name));
   }
   const env = { ...process.env, PATH: `${root}/bin:${process.env.PATH}`, CHARIOX_SLICE_ROOT: root,
@@ -63,6 +66,39 @@ test("browser supervisor owns one lifetime, reaps TERM exits and restarts withou
   } finally {
     if (supervisor.exitCode === null) { supervisor.kill("SIGKILL"); await exited; }
     if (child) { try { process.kill(child, "SIGKILL"); } catch {} }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("browser-scale relaunches the browser at the Room scale at once and leaves a matching scale alone", { timeout: 45000 }, async () => {
+  const { root, env } = await fixture("slice-browser-scale-");
+  await fakeChromium(root, recordingBrowser);
+  const slice = (...args) => spawnSync("bash", [path.join(root, "slice-screen.sh"), ...args], { env, encoding: "utf8", timeout: 20000 });
+  const launches = async () => (await readFile(path.join(root, "arguments"), "utf8")).split("\n").filter(Boolean);
+  const supervisor = spawn("bash", [path.join(root, "slice-screen.sh"), "supervise-browser"], { env, stdio: "ignore" });
+  const exited = once(supervisor, "exit");
+  try {
+    await waitFor(async () => { try { return (await launches()).length === 1; } catch { return false; } });
+    assert.match((await launches())[0], /--force-device-scale-factor=1(\s|$)/, "a Room browser starts at scale 1 until a viewer asks for more");
+    const same = slice("browser-scale", "1");
+    assert.equal(same.status, 0, same.stderr);
+    assert.equal(same.stdout.trim(), "unchanged");
+    const begin = Date.now();
+    const changed = slice("browser-scale", "2");
+    assert.equal(changed.status, 0, changed.stderr);
+    assert.equal(changed.stdout.trim(), "relaunching");
+    await waitFor(async () => (await launches()).length === 2);
+    assert.ok(Date.now() - begin < 5000, "a planned relaunch must not wait for the crash backoff");
+    assert.match((await launches())[1], /--force-device-scale-factor=2(\s|$)/);
+    assert.equal(slice("browser-scale", "2").stdout.trim(), "unchanged");
+    assert.equal(slice("browser-scale", "3").status, 2, "only the viewer scales 1 and 2 exist");
+    await delay(500);
+    assert.equal((await launches()).length, 2, "an unchanged scale must not relaunch");
+    supervisor.kill("SIGTERM");
+    assert.equal((await exited)[0], 0);
+  } finally {
+    if (supervisor.exitCode === null) { supervisor.kill("SIGKILL"); await exited; }
+    try { for (const pid of (await readFile(path.join(root, "children"), "utf8")).split("\n").filter(Boolean)) { try { process.kill(Number(pid), "SIGKILL"); } catch {} } } catch {}
     await rm(root, { recursive: true, force: true });
   }
 });

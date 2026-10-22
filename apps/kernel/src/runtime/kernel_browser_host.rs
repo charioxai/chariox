@@ -511,6 +511,7 @@ impl KernelBrowserHost {
                             | "mirror_subscribe"
                             | "mirror_next"
                             | "mirror_close"
+                            | "dialog"
                     )
                 )
             {
@@ -717,6 +718,8 @@ impl KernelBrowserHost {
             // MP-08/MP-10: a navigation waits for the page's load; mirror credits and
             // state reads keep flowing meanwhile (mutations stay serial on the lane).
             || (method == "host.browser" && params["op"] == "navigate")
+            // A dialog answer is what the held input waits for: it must not queue behind the controller lock.
+            || (method == "host.browser" && params["op"] == "dialog")
         {
             let signal = cancellation
                 .clone()

@@ -13,6 +13,7 @@ import { candidates as macCandidates, launchEnvironment as macEnvironment } from
 import { launchEnvironment as linuxEnvironment } from "./kernel-browser-linux.mjs";
 import { launchArguments, HostChromium, chromiumTemporaryEnvironment } from "./kernel-browser-process.mjs";
 import { PointerOutsideViewport } from "./kernel-browser-refusal.mjs";
+import { BrowserOpenDialogs } from "./browser-controller-dialogs.mjs";
 
 test('MP-08 / MP-11: Chromium temporary sockets use the held private directory through a bounded path', () => {
   const environment = { TMPDIR: '/private/' + 'long/'.repeat(60), XAUTHORITY: '/private/authority' };
@@ -60,7 +61,7 @@ function fixture(root) {
     },
   };
   const chromium = { child: null, start: async () => { chromium.child = { exitCode: null, signalCode: null }; return "http://127.0.0.1:1"; }, stop: async () => { chromium.child = null; } };
-  const browserFactory = () => ({ connection, ensureConnection: async () => connection,ensureTargetSession:async (_connection,target)=>`session-${target}`, close: async () => {},
+  const browserFactory = () => { const browser = ({ connection, ensureConnection: async () => connection,ensureTargetSession:async (_connection,target)=>`session-${target}`, close: async () => {},
     reconcile: async viewport => { connection.density=viewport.device_scale_factor; return { tabs: [...pages].map(([target_id, tab]) => ({ target_id, document_id: `doc-${target_id}`, title: "fixture", ...tab })) }; },
     manageTab: async ({ target_id }) => pages.delete(target_id),
     navigate: async ({ target_id, url }) => { pages.set(target_id, { url }); },
@@ -69,6 +70,10 @@ function fixture(root) {
     clearViewport: async target => connection.send('Emulation.clearDeviceMetricsOverride', {}, `session-${target}`),
     inputCapture: { hold: async()=>async()=>{}, run: async (_connection, _session, operation) => operation() },
   });
+  // The page dialog seam of BrowserCdpClient (protocol 568).
+  browser.openDialogs = new BrowserOpenDialogs(() => browser.onDialogChange?.());
+  browser.handleDialog = async ({ action }) => connection.send('Page.handleJavaScriptDialog', { accept: action === 'accept' });
+  return browser; };
   return { host: new KernelBrowserHost(root, { chromium, browserFactory }), chromium, handlers, sent, pages, connection };
 }
 
@@ -1997,6 +2002,29 @@ test('MP-08/MP-10 the Chrome window follow-up is a concurrent observation',()=>u
  await assert.rejects(host.request({op:'chrome_window_follow',tab_id:'t',switches:false}),/MP-11: user browser is stopped/);
 }));
 
+// Protocol 568: a page dialog holds its page (and any input it blocks) until a person answers it, so the answer
+// passes the barrier lane and reads no renderer state.
+test('MP-08/MP-10 a Tab lists its open page dialog and the person answers it through the host',()=>using(async({host,sent})=>{
+ assert.equal(scheduleHostRequest({method:'host.browser',params:{op:'dialog',tab_id:'t'}}).kind,'bridge');
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0],target=host.tabs.get(tab.tab_id).target_id;
+ assert.equal(tab.dialog,undefined);
+ const woken=host.stateSignal.count;
+ host.browser.openDialogs.observe({method:'Page.javascriptDialogOpening',params:{type:'confirm',message:'Leave this page?'}},target);
+ assert.equal(host.stateSignal.count>woken,true,'a dialog wakes parked state reads');
+ assert.deepEqual(host.tabState().tabs[0].dialog,{type:'confirm',message:'Leave this page?'});
+ // The frozen renderer answers no reconcile: state reads come from the Tab list and pass the barrier lane.
+ assert.equal(scheduleHostRequest({method:'host.browser',params:{op:'state'}},host.browser).kind,'bridge');
+ { const reconcile=host.browser.reconcile; host.browser.reconcile=()=>new Promise(()=>{}); const read=await host.request({op:'state'}); host.browser.reconcile=reconcile; assert.equal(read.tabs[0].dialog.type,'confirm'); }
+ await assert.rejects(host.request({op:'dialog',tab_id:tab.tab_id,generation:opened.generation,accept:true,_agent_input:true}),/not_granted|refused/i);
+ await assert.rejects(host.request({op:'dialog',tab_id:tab.tab_id,generation:opened.generation+1,accept:true}),/stale|refused/i);
+ const answered=await host.request({op:'dialog',tab_id:tab.tab_id,generation:opened.generation,accept:false});
+ assert.equal(answered.tabs[0].tab_id,tab.tab_id);
+ assert.deepEqual(sent.filter(call=>call.method==='Page.handleJavaScriptDialog').map(call=>call.params),[{accept:false}]);
+ host.browser.openDialogs.observe({method:'Page.javascriptDialogClosed',params:{result:false}},target);
+ assert.equal(host.tabState().tabs[0].dialog,undefined);
+ await assert.rejects(host.request({op:'dialog',tab_id:tab.tab_id,generation:opened.generation,accept:true}),/stale|refused/i);
+}));
+
 // MP-08/MP-10 (BROWSER-UX-05): a Tab that just opened has a busy renderer; its own-Tab read (the subscribe
 // preflight) is answered from the page session's navigation events, and asks the renderer only when none named it.
 test("MP-08/MP-10 a Tab's own read uses the document the page session named and asks the renderer otherwise", async () => {
@@ -2231,6 +2259,20 @@ test('MP-08/MP-10/MP-11 a busy renderer that is late to acknowledge a click neve
  assert.ok(sent.some(x=>x.method==='Input.dispatchMouseEvent'&&x.params.type==='mouseReleased'),'the release was queued with the press');
  connection.beforeSend=null;
  assert.ok((await host.request({op:'state'})).tabs.length,'the browser is still there');
+}));
+
+// F2b: the kernel stops a browser whose input may be half-dispatched (no held keys or buttons); that is not the person's stop, so the
+// browser comes back with its Tabs, as after a crash. The person's own stop stays stopped (MP-11).
+test('MP-08/MP-10/MP-11 a browser the kernel stopped after a failed click comes back with its Tabs; the person\'s stop stays stopped',()=>using(async({host,connection})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ connection.beforeSend=async(method,params)=>{if(method==='Input.dispatchMouseEvent'&&params.type==='mousePressed')throw Object.assign(Error('Runtime.evaluate target_closed'),{code:'browser_cdp_command_failed'})};
+ await assert.rejects(host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'click',x:10,y:10}}),error=>error.code==='browser_cdp_command_failed');
+ connection.beforeSend=null;
+ const state=await host.request({op:'state'});
+ assert.equal(state.generation,opened.generation+1,'a new browser generation, not a stopped browser');
+ assert.equal(state.tabs[0].tab_id,opened.tab_id,'the Tab keeps its identity');
+ await host.request({op:'stop'});
+ await assert.rejects(host.request({op:'state'}),{code:'browser_unavailable'});
 }));
 
 // r55: Chrome's band input has its own busy lane; page input and unbound input share the page lane.

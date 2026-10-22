@@ -481,6 +481,44 @@ fn mp08_mp10_mp11_browser_omnibox_warm_540_snapshot() {
     );
 }
 
+// MP-08/MP-10 (provisional 568/176): a person answers the page dialog their Tab has open; the Tab lists it as
+// `dialog` in the state until the page has its answer.
+#[test]
+fn mp08_mp10_browser_dialog_568_snapshot() {
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 568);
+    };
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 176);
+    };
+    let bytes = include_bytes!("browser-dialog-568.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "e2e99d8c183c5a88e4fcf4061b638df31c70081cc2aa269cf4c4f2a4c5ffec19"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    for key in ["accept", "answer_prompt", "dismiss"] {
+        let request: crate::local::LocalDaemonRequest =
+            serde_json::from_value(snapshot[key].clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), snapshot[key]);
+    }
+    // The command is the host's `dialog` op: the serialized command is exactly what the controller reads.
+    let accept: crate::local::LocalDaemonRequest =
+        serde_json::from_value(snapshot["accept"].clone()).unwrap();
+    assert!(matches!(
+        accept,
+        crate::local::LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+            command: crate::local::KernelBrowserCommand::Dialog {
+                accept: true,
+                prompt_text: None,
+                ..
+            }
+        })
+    ));
+    // A dialog answer names the Tab, its generation and the decision, nothing else.
+    assert!(serde_json::from_value::<crate::local::LocalDaemonRequest>(serde_json::json!({"KernelBrowser":{"command":{"op":"dialog","tab_id":"t","generation":1,"accept":true,"url":"x"}}})).is_err());
+}
+
 // MP-08/MP-10 (allocated 556/164): `state_wait` parks a Browser state read until the
 // state differs from the `revision` the caller holds; the reply is the state plus a new `revision`.
 #[test]
@@ -557,7 +595,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "30553a86ec7f8e0d98844a5dce6ef4b05250cc0ad35eeb64b771dffc8cec3bb1"
+        "d6777f8ef1b76dc5ff003c937129d83d58c36383e44939113e7b0faf79f63857"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);

@@ -42,7 +42,7 @@ import {
   BrowserHistoryError,
   navigateBrowserHistory,
 } from "./browser-controller-history.mjs";
-import { BrowserDialogDefaults } from "./browser-controller-dialogs.mjs";
+import { BrowserDialogDefaults, BrowserOpenDialogs } from "./browser-controller-dialogs.mjs";
 import { applyBrowserBar } from "./browser-controller-bar.mjs";
 import { acquireBrowserCookieWriterFence } from "./browser-controller-cookie-fence.mjs";
 import {retireNativeStates} from './kernel-browser-native-worker.mjs';
@@ -96,9 +96,12 @@ export class BrowserCdpClient {
     stageUploads,
     eventJournal = new BrowserEventJournal(),
     applyCanonicalDisplay,
+    applyBrowserScale,
     focusWorldSource,
   } = {}) {
     this.applyCanonicalDisplay = applyCanonicalDisplay;
+    this.applyBrowserScale = applyBrowserScale;
+    this.appliedBrowserScale = null;
     this.focusWorldSource = focusWorldSource;
     this.debuggerEndpoint = new URL(debuggerEndpoint);
     this.requestTimeoutMs = requestTimeoutMs;
@@ -138,6 +141,7 @@ export class BrowserCdpClient {
     this.fillTargets = new Map();
     this.fillRevision = 0;
     this.dialogDefaults = new BrowserDialogDefaults();
+    this.openDialogs = new BrowserOpenDialogs(() => this.onDialogChange?.());
     this.networkRequestsBySession = new Map();
     this.responseBodies = new BrowserResponseBodies();
     this.cookieWriterFence = null;
@@ -180,7 +184,13 @@ export class BrowserCdpClient {
     }
     try {
       await this.applyCanonicalDisplay?.(viewport);
+      // The relaunched Chromium has retired the old connection; ensureConnection opens a new one.
+      if (this.appliedBrowserScale !== viewport.device_scale_factor) {
+        await this.applyBrowserScale?.(viewport);
+        this.appliedBrowserScale = viewport.device_scale_factor;
+      }
     } catch (error) {
+      this.appliedBrowserScale = null;
       this.appliedViewport = null;
       throw error;
     }
@@ -266,6 +276,7 @@ export class BrowserCdpClient {
         this.documentIdsByTarget.clear(); this.pageFramesByTarget.clear(); this.suspendedPageFrames.clear();
     this.fillTargets.clear();
         this.dialogDefaults.clear();
+        this.openDialogs.clear();
         this.networkRequestsBySession.clear();
         this.responseBodies.clear();
         this.cookieWriterFence = null;
@@ -297,6 +308,7 @@ export class BrowserCdpClient {
     this.fillTargets.clear();
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
+    this.openDialogs.clear();
     this.networkRequestsBySession.clear();
     this.responseBodies.clear();
     this.cookieWriterFence = null;
@@ -418,6 +430,7 @@ export class BrowserCdpClient {
     this.fillTargets.clear();
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
+    this.openDialogs.clear();
     this.networkRequestsBySession.clear();
     this.responseBodies.clear();
     this.cookieWriterFence = null;
@@ -470,6 +483,7 @@ export class BrowserCdpClient {
     this.focusWorldsByTarget.delete(targetId);
     this.snapshotStateByTarget.delete(targetId);
     this.dialogDefaults.delete(targetId);
+    this.openDialogs.delete(targetId);
     this.targetsByFrame.removeTarget(targetId);
     await this.frameSessions.removeTarget(targetId);
   }
@@ -1264,7 +1278,9 @@ export class BrowserCdpClient {
     });
     if (this.frameSessions.observe(message, this.connection)) return;
     const dialogTargetId = this.targetsBySession.get(message?.sessionId) ?? message?.params?.targetId;
-    this.dialogDefaults.observe(redactObservation(message, this.protectedValues), dialogTargetId, this.documentIdsByTarget.get(dialogTargetId));
+    const observedDialog = redactObservation(message, this.protectedValues);
+    this.dialogDefaults.observe(observedDialog, dialogTargetId, this.documentIdsByTarget.get(dialogTargetId));
+    this.openDialogs.observe(observedDialog, dialogTargetId);
     if (message?.method === "Target.detachedFromTarget") {
       const sessionId = message.params?.sessionId ?? message.sessionId;
       const targetId = this.targetsBySession.get(sessionId) ?? message.params?.targetId;
@@ -1279,6 +1295,7 @@ export class BrowserCdpClient {
         this.viewportByTarget.delete(targetId);
         this.focusWorldsByTarget.delete(targetId);
         this.dialogDefaults.delete(targetId);
+        this.openDialogs.delete(targetId);
         this.targetsByFrame.removeTarget(targetId);
         void this.frameSessions.removeTarget(targetId);
       }

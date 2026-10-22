@@ -1,4 +1,4 @@
-import {displayGeometry as geometry, chromeBandHeight} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry, ownedWindowSize} from './kernel-browser-geometry.mjs';
 // MD-2: host Chromium lifetime. Never touches a slice or an existing Chrome.
 import { spawn } from "node:child_process";
 import { access, mkdir, readlink, open } from "node:fs/promises";
@@ -44,7 +44,7 @@ export function launchArguments(profile, headless, display = false, scale = 1) {
     "--enable-unsafe-extension-debugging",
     // Without a usable GPU Chromium refuses WebGL unless software GL is opted in; real GPUs still win.
     "--enable-unsafe-swiftshader",
-    `--window-size=${geometry.width},${geometry.height+(display?chromeBandHeight:0)}`, ...(headless ? ["--headless=new"] : []),
+    `--window-size=${display?ownedWindowSize.width:geometry.width},${display?ownedWindowSize.height:geometry.height}`, ...(headless ? ["--headless=new"] : []),
     // MP-08/MP-10: remote panels have no shared physical LCD subpixel order.
     ...(display ? ["--disable-lcd-text", `--force-device-scale-factor=${scale}`, "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
       // MP-08/MP-11 (BROWSER-UX-14): sign-in is policy-blocked; no dead-end "Sign in to Chrome?" chip in the band.

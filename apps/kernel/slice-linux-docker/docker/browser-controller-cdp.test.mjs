@@ -859,6 +859,36 @@ test("prompt defaults remain document-bound, private, and cleared when the dialo
   await browser.close();
 });
 
+test("an open page dialog is listed for its Tab, bounded, and gone when its lifecycle ends (568)", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  let changes = 0;
+  browser.onDialogChange = () => { changes++; };
+  await browser.reconcile(viewport);
+  const open = (params) => connection.emit({ method: "Page.javascriptDialogOpening", sessionId: "session-a", params });
+  open({ type: "confirm", message: "Delete it?", defaultPrompt: "" });
+  assert.deepEqual(browser.openDialogs.get("target-a"), { type: "confirm", message: "Delete it?" });
+  assert.equal(changes, 1);
+  open({ type: "prompt", message: "é".repeat(2_000), defaultPrompt: "private default" });
+  const listed = browser.openDialogs.get("target-a");
+  assert.equal(new TextEncoder().encode(listed.message).length <= 2_048, true);
+  assert.equal(JSON.stringify(listed).includes("private"), false);
+  open({ type: "unknown", message: "ignored" });
+  assert.equal(browser.openDialogs.get("target-a").type, "prompt");
+  for (const event of [
+    { method: "Page.javascriptDialogClosed", sessionId: "session-a", params: { result: true } },
+    { method: "Page.frameNavigated", sessionId: "session-a", params: { frame: { id: "frame-a", loaderId: "loader-a" } } },
+    { method: "Target.targetCrashed", params: { targetId: "target-a" } },
+    { method: "Target.targetDestroyed", params: { targetId: "target-a" } },
+  ]) {
+    open({ type: "alert", message: "hi" });
+    assert.equal(browser.openDialogs.get("target-a")?.type, "alert", event.method);
+    connection.emit(event);
+    assert.equal(browser.openDialogs.get("target-a"), null, event.method);
+  }
+  await browser.close();
+});
+
 test("permission decisions derive the current target origin", async () => {
   const connection = new FakeConnection();
   const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
@@ -1671,6 +1701,44 @@ test("browser bar and App panel changes are not admitted as concurrent reconcili
   assert.equal(browser.canReconcileConcurrently(viewport, layout), true);
   assert.equal(browser.canReconcileConcurrently(viewport, { ...layout, browserBarVisible: true }), false);
   assert.equal(browser.canReconcileConcurrently(viewport, { ...layout, appPanelCssWidth: 400 }), false);
+  assert.equal(browser.canReconcileConcurrently(viewport), false);
+  await browser.close();
+});
+
+// A Room browser draws at the viewer's scale: the scale follows the display
+// resize, and a relaunched Chromium is reached through a fresh connection.
+const viewportAtScale1 = { css_width: 1280, css_height: 720, device_scale_factor: 1, desktop_pixel_width: 1280, desktop_pixel_height: 720 };
+
+test("a scale change relaunches the browser after the display apply and reconciles on the new connection", async () => {
+  const steps = [], connections = [];
+  const browser = new BrowserCdpClient({
+    applyCanonicalDisplay: async () => { steps.push("display"); },
+    applyBrowserScale: async (applied) => {
+      steps.push(`scale ${applied.device_scale_factor}`);
+      if (connections.length) for (const connection of connections) connection.open = false;
+    },
+    connectionFactory: async () => { const connection = new FakeConnection(); connections.push(connection); return connection; },
+  });
+  await browser.reconcile(viewportAtScale1);
+  await browser.reconcile(viewportAtScale1);
+  assert.deepEqual(steps, ["display", "scale 1", "display"], "an applied scale is not asked again");
+  const state = await browser.reconcile(viewport);
+  assert.deepEqual(steps.slice(3), ["display", "scale 2"]);
+  assert.equal(connections.length, 2, "the relaunched browser needs its own connection");
+  assert.equal(state.tabs.length > 0, true);
+  await browser.close();
+});
+
+test("a failed browser relaunch withdraws concurrent reconciliation admission", async () => {
+  let refuse = false;
+  const browser = new BrowserCdpClient({
+    applyBrowserScale: async () => { if (refuse) throw new Error("browser relaunch refused"); },
+    connectionFactory: async () => new FakeConnection(),
+  });
+  await browser.reconcile(viewportAtScale1);
+  assert.equal(browser.canReconcileConcurrently(viewportAtScale1), true);
+  refuse = true;
+  await assert.rejects(browser.reconcile(viewport), /browser relaunch refused/);
   assert.equal(browser.canReconcileConcurrently(viewport), false);
   await browser.close();
 });

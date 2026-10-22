@@ -173,6 +173,15 @@ pub enum KernelBrowserCommand {
         generation: u64,
         url: String,
     },
+    /// Protocol 568: the person answers the page dialog (alert, confirm, prompt, beforeunload) their Tab has
+    /// open. `prompt_text` is what a prompt returns; absent applies the page's own default.
+    Dialog {
+        tab_id: String,
+        generation: u64,
+        accept: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_text: Option<String>,
+    },
     Snapshot {
         tab_id: String,
         generation: u64,

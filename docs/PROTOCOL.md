@@ -4797,6 +4797,18 @@ clears the list. `browser-mirror2-font-absent-567.json` pins the shape (Rust has
 `browser_mirror2_font_absent_567_shape_is_pinned`). Older kernels never send the field; older
 viewers refuse it, so they must stay below 567 or negotiate the same wire.
 
+MP-08 / MP-10: provisional 568/176 (renumbered at integration) adds the `dialog` kernel-browser command
+and the Tab's `dialog` state. A Tab whose page opened an alert, confirm, prompt or beforeunload dialog
+lists `dialog: {type, message}` (message at most 2048 UTF-8 bytes; a prompt's default stays private to the
+controller) in every state read until the page has its answer, and the state signal wakes parked reads.
+`{"op":"dialog","tab_id","generation","accept","prompt_text"?}` answers it: `accept: false` dismisses
+(Stay for beforeunload, Cancel for confirm and prompt), an absent `prompt_text` lets the controller
+apply the page's own default. The answer is served beside the host's barrier lane, because the input
+that opened the dialog may still be waiting on it; it is refused for agents, for a stale generation and
+for a Tab with no open dialog. `browser-dialog-568.json` pins the shape (Rust hash test
+`mp08_mp10_browser_dialog_568_snapshot`). Older kernels refuse the command and never list a dialog;
+viewers feature-detect 568.
+
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
 `layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.
 A viewer narrower than the canonical desktop (a phone) sends its page area; the kernel lays that

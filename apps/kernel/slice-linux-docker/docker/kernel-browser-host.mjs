@@ -61,12 +61,16 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
     (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && (request.params.target || nativeDesktop && request.method === 'host.browser')) && browser?.canReconcileConcurrently?.(viewport) === true ||
     request.params?.op === 'state_signal' ||
+    // A page dialog answer must pass the input its own page dialog may be holding on the barrier lane.
+    request.params?.op === 'dialog' ||
+    // A page dialog freezes its renderer: a state read then answers from the kernel's own Tab list and must not queue behind the input that opened it.
+    request.params?.op === 'state' && browser?.openDialogs?.size > 0 ||
     ['chrome_window_follow', 'note_selection'].includes(request.params?.op))
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
 // Read-only host operations: they never dispatch input into a page.
-const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'subscribe', 'poll', 'unsubscribe', 'note_selection', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target']);
+const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'subscribe', 'poll', 'unsubscribe', 'note_selection', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'dialog', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target']);
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
 const SLOW_OP_MS = 1000;
 const POST_INPUT_OBSERVE_MS = 500;
@@ -246,6 +250,7 @@ export class KernelBrowserHost {
     assertNotCancelled(signal);
     this.browser = this.browserFactory(connection);
     this.browser.pageTiming = this.timing;
+    this.browser.onDialogChange = () => this.stateSignal.notify();
     connection.presentationFence?.bindOwner?.(this.browser, this.timing);
     this.browser.protectedValues = new Set(this.protection.values);
     this.pendingActive = { tab_id: typeof saved.active_tab_id === 'string' ? saved.active_tab_id : null,
@@ -440,6 +445,14 @@ export class KernelBrowserHost {
     }
     return await entry.ready;
   }
+  // A stop the kernel chooses (input that may be half-dispatched must not leave a key or button held) is not one the person asked
+  // for: the browser comes back with its Tabs through the recovery that follows a crash. Only an explicit stop stays stopped.
+  async stopAndRecover() {
+    if (!this.recovery.enabled) return this.stop();
+    const stopped = await this.stop({ recovering: true });
+    this.recovery.schedule();
+    return stopped;
+  }
   async stop({ recovering = false, preserveDesktop = false } = {}) {
     if (!recovering) {
       this.recovery?.stop();
@@ -477,7 +490,11 @@ export class KernelBrowserHost {
     // MP-08: private creation evidence for the kernel, stripped before client projection.
     const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
     return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
-      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => tab), viewport:this.viewport(), chrome_window: this.chromeWindow(),
+      tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => {
+        // Protocol 568: the page dialog this Tab has open, for the viewer to answer.
+        const dialog = this.browser?.openDialogs?.get(target_id);
+        return dialog ? { ...tab, dialog } : tab;
+      }), viewport:this.viewport(), chrome_window: this.chromeWindow(),
       // MP-11: whether Chromium's managed policies apply, or only the kernel's CDP lockdown layer.
       browser_lockdown: this.chromium?.policy ?? null }, this.protection.values);
   }
@@ -773,13 +790,15 @@ export class KernelBrowserHost {
     if (command.op.startsWith("display_") && process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
     if (command.op === "stop") return this.stop();
     // MP-11: observation never launches/relaunches the browser.
-    await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_input_target", "note_selection", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
+    await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_input_target", "note_selection", "mirror_subscribe", "mirror_next", "mirror_close", "dialog", "chrome_window_follow"].includes(command.op) });
     assertNotCancelled(signal);
     const browserAtStart = this.browser;
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
     for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
     // MP-08/MP-10: the kernel's navigate/subscribe preflight reads only its own Tab
     // live; an all-tab reconcile waits for every busy (loading) page.
+    // The renderer of a Tab with an open page dialog answers nothing until the dialog is handled (protocol 568).
+    if (command.op === "state" && this.browser?.openDialogs?.size > 0) return this.observe(this.tabState(), null, scope);
     if (command.op === "state" && typeof command.tab_id === "string") {
       const tab = await this.displayTarget(command);
       this.observed = ++this.observations; // newest observation, as at a navigation commit
@@ -826,6 +845,15 @@ export class KernelBrowserHost {
     if(command.op==='mirror_subscribe') return this.mirror.subscribe(command,scope);
     if(command.op==='mirror_next') return this.mirror.next(command,scope,{signal});
     if(command.op==='mirror_close') {this.mirror.require(command.subscription_id,scope,command.generation);this.mirror.drop(command.subscription_id);return {closed:true};}
+    // Protocol 568: a person answers their Tab's page dialog. The page (and any input it blocks) waits for this, so
+    // it reads no renderer state: the dialog's own target and document answer it.
+    if(command.op==='dialog') {
+      if(command.focused_agent||command._agent_input)throw new UserDomainRefusal('not_granted');
+      const tab=this.tabs.get(command.tab_id);
+      if(command.generation!==this.generation||!tab||!this.browser.openDialogs.get(tab.target_id))throw new UserDomainRefusal('stale_reference','dialog_closed');
+      await this.browser.handleDialog({target_id:tab.target_id,document_id:tab.document_id,action:command.accept===true?'accept':'dismiss',...(typeof command.prompt_text==='string'?{prompt_text:command.prompt_text}:{})},{signal});
+      return this.observe(this.tabState(),tab,scope);
+    }
     const encodedCapture = command.op === "screenshot" && typeof command.display_subscription_id === "string";
     if (encodedCapture || command.op === "display_attach" || (command.op === "unsubscribe" && this.displays.has(command.subscription_id))) {
       const stream = this.displays.get(command.display_subscription_id ?? command.subscription_id);
@@ -990,7 +1018,7 @@ export class KernelBrowserHost {
         if (dispatched && !lateInputAck(error) && this.isBrowserLive(browserAtStart)) {
           // Clear any dispatched key/button state before another actor can use
           // the browser. Recovery rotates generation; cancelled input never replays.
-          await this.stop();
+          await this.stopAndRecover();
         }
         throw error;
       }
@@ -1186,7 +1214,7 @@ export class KernelBrowserHost {
       if (error?.code === "browser_action_cancelled" && request.method !== "host.computer" && !request.params?.display_subscription_id
         && this.browser === browserAtEntry
         && !(request.method === "host.browser" && request.params?.op === "input" && error.afterDispatch !== true)
-        && !(request.method === "host.browser" && OBSERVATION_OPS.has(request.params?.op))) await this.stop();
+        && !(request.method === "host.browser" && OBSERVATION_OPS.has(request.params?.op))) await this.stopAndRecover();
       if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }
