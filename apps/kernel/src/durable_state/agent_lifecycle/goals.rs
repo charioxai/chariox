@@ -217,6 +217,12 @@ pub(super) const CORRECTION_PROMPT_PREFIX: &str = "task-correction-";
 pub(crate) fn is_correction_prompt_id(prompt_id: &str) -> bool {
     prompt_id.starts_with(CORRECTION_PROMPT_PREFIX)
 }
+const GOAL_CONTINUE_PROMPT_PREFIX: &str = "goal-continue-";
+/// The kernel's goal continuation instruction is internal protocol text; the
+/// agent's work in that turn stays visible, the instruction itself does not.
+pub(crate) fn is_goal_continuation_prompt_id(prompt_id: &str) -> bool {
+    prompt_id.starts_with(GOAL_CONTINUE_PROMPT_PREFIX)
+}
 pub(super) const OWNER_RESUME_PROMPT_PREFIX: &str = "task-resume-";
 /// The owner's Resume is a UI action; the instruction the kernel sends the
 /// agent for it is internal protocol text and never a user prompt row.
@@ -288,7 +294,18 @@ pub(super) fn evaluate(
             }
         }
         Some(Assessment::Continue { reason, .. }) if !reason.trim().is_empty() => {
-            again = continue_work(&mut t, &reason);
+            // A continuation already made no handled progress and the agent yielded
+            // again on live sources covering every obligation: honour that wait.
+            if t.no_progress_wakes >= NO_PROGRESS_LIMIT && covered_wait(tx, &t, now)? {
+                blocked(&mut t, "Goal check-ins made no progress; owner must inspect and explicitly resume");
+            } else if t.no_progress_wakes > 0 && covered_wait(tx, &t, now)? {
+                t.reason = reason;
+                t.state = ExecutionState::Waiting;
+                let deadline = t.wait.as_ref().map(|w| w.deadline_ms);
+                if let Some(g) = &mut t.goal { g.next_check_in_ms = deadline; }
+            } else {
+                again = continue_work(&mut t, &reason);
+            }
         }
         Some(Assessment::Waiting { reason, registration_ids, deadline_ms }) if !reason.trim().is_empty() => {
             let interval = t.goal.as_ref().map_or(10, |g| g.check_in_minutes) as u64 * 60_000;
@@ -345,6 +362,32 @@ pub(super) fn evaluate(
     })
 }
 
+/// The turn's accepted wait still names live sources that cover every open obligation.
+fn covered_wait(
+    tx: &Transaction<'_>,
+    t: &AgentTaskExecution,
+    now: u64,
+) -> Result<bool, DaemonError> {
+    let Some(w) = &t.wait else {
+        return Ok(false);
+    };
+    let regs = registrations(tx, &t.task_id)?;
+    let live = |id: &String| regs.iter().any(|r| &r.id == id && r.live);
+    Ok(w.deadline_ms > now
+        && !w.registration_ids.is_empty()
+        && w.registration_ids.iter().all(live)
+        && t.obligations
+            .iter()
+            .filter(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
+            .all(|o| {
+                regs.iter().any(|r| {
+                    r.live
+                        && w.registration_ids.contains(&r.id)
+                        && r.obligation_id.as_deref() == Some(&o.id)
+                })
+            }))
+}
+
 fn continue_work(t: &mut AgentTaskExecution, reason: &str) -> bool {
     if t.no_progress_wakes >= NO_PROGRESS_LIMIT {
         blocked(t, "Goal repeated continuation without handled progress; owner must inspect and explicitly resume");
@@ -357,7 +400,7 @@ fn continue_work(t: &mut AgentTaskExecution, reason: &str) -> bool {
     g.continuation_sequence += 1;
     g.next_check_in_ms = None;
     t.pending_prompt_id = Some(format!(
-        "goal-continue-{}-{}",
+        "{GOAL_CONTINUE_PROMPT_PREFIX}{}-{}",
         t.task_id, g.continuation_sequence
     ));
     true

@@ -152,7 +152,11 @@ fn completion_check_turn_is_not_delivered_to_clients() {
 // The kernel's correction instruction is internal too; the agent's answer is not.
 #[test]
 fn correction_prompt_echo_is_hidden_but_its_answer_is_delivered() {
-    for prompt_id in ["task-correction-prompt-1", "agent-event-agent-1-42"] {
+    for prompt_id in [
+        "task-correction-prompt-1",
+        "agent-event-agent-1-42",
+        "goal-continue-prompt-1-1",
+    ] {
         let mut terminal = TerminalStreamService::new();
         let recipients = || vec!["attachment-1".to_string()];
         terminal.fan_out_prompt_output(

@@ -63,25 +63,40 @@ impl KernelRuntimeOwnedState {
         &self,
         room: &str,
         agent: &str,
-        prompt: &str,
+        prompt: &crate::session::PromptQueueItem,
         run: Option<&str>,
     ) -> Result<(), DaemonError> {
         if self
             .durable_state_store
             .agent_tasks(Some(room), Some(agent))?
             .iter()
-            .any(|t| t.prompt_id == prompt)
+            .any(|t| t.prompt_id == prompt.id())
         {
             return Ok(());
         }
-        self.durable_state_store.agent_lifecycle(Operation::Begin {
-            owner: self.session_store.get_session(room)?.owner_user_id().into(),
+        let session = self.session_store.get_session(room)?;
+        let Outcome::Task(task) = self.durable_state_store.agent_lifecycle(Operation::Begin {
+            owner: session.owner_user_id().into(),
             room: room.into(),
             agent: agent.into(),
-            prompt: prompt.into(),
+            prompt: prompt.id().into(),
             run: run.map(str::to_owned),
             now: crate::session::unix_epoch_ms(),
-        })?;
+        })?
+        else {
+            unreachable!()
+        };
+        // A workflow node turn dispatched before an upgrade keeps its live node, so
+        // the run stays supervised and its continuation stays in the invocation.
+        let live_run = prompt.workflow_run_id().is_some_and(|run| {
+            session
+                .workflow_runs()
+                .iter()
+                .any(|r| r.id() == run && !r.status().is_terminal())
+        });
+        if live_run {
+            self.bind_agent_workflow_task(&task, prompt)?;
+        }
         Ok(())
     }
     /// Binds the provider run that carries a dispatched prompt to its task. A prompt that waited in
@@ -255,7 +270,7 @@ impl KernelRuntimeOwnedState {
         {
             return Ok(None);
         }
-        self.ensure_agent_task(room, agent, prompt.id(), Some(run))?;
+        self.ensure_agent_task(room, agent, prompt, Some(run))?;
         self.reconcile_workflow_delegation(room, agent, prompt)?;
         if prompt.prompt_origin() != crate::session::PromptOrigin::CompletionCheck {
             if cancelled {

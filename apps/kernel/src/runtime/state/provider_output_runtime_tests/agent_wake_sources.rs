@@ -719,6 +719,21 @@ async fn event_tools_arm_wait_and_cancel_through_the_runtime_mcp_entry() {
             "an invalid wait is refused"
         );
     }
+    // A12-S02: a duration passed as deadline_ms is refused with what to send instead.
+    let duration = call(
+        &f,
+        &token,
+        "chariox.events.yield",
+        &task,
+        serde_json::json!({"registration_ids":[registration],"inbox_cursor":0,"deadline_ms":3_600_000,"reason":"one hour"}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        duration.contains("absolute Unix time in milliseconds") && duration.contains("now_ms"),
+        "{duration}"
+    );
     let mut stale = task.clone();
     stale.prompt_id = "an-older-turn".into();
     assert!(call(
