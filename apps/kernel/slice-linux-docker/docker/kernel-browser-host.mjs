@@ -770,7 +770,7 @@ export class KernelBrowserHost {
     const scope = command.observed_by ?? (command.focused_agent ? "focused-agent" : "adapter");
     assertNotCancelled(signal);
     if (command.op.startsWith("mirror_") && process.env.CHARIOX_KERNEL_BROWSER_MIRROR !== "1") throw new Error("MP-08: DOM mirror disabled");
-    if (command.op.startsWith("display_") && process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
+    if (command.op.startsWith("display_") && process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: display disabled");
     if (command.op === "stop") return this.stop();
     // MP-11: observation never launches/relaunches the browser.
     await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_input_target", "note_selection", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
@@ -865,7 +865,7 @@ export class KernelBrowserHost {
     }
     const binding = { target_id: tab.target_id, document_id: tab.document_id };
     if (command.op === "display_subscribe") return this.initialPush(command, await reserveDisplay(this,async()=>{
-      if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: experimental display disabled");
+      if (process.env.CHARIOX_KERNEL_BROWSER_DISPLAY !== "1") throw new Error("MD-DISPLAY: display disabled");
       if (!Array.isArray(command.codecs) || !command.codecs.includes("png") || command.codecs.length > 8 ||
         !Number.isInteger(command.bitrate) || command.bitrate < 500_000 || command.bitrate > 64_000_000 ||
         ![1, 2].includes(command.device_scale_factor) || this.displays.size >= 8) throw new Error("MD-DISPLAY: invalid display negotiation");
@@ -1072,7 +1072,7 @@ export class KernelBrowserHost {
         await admitComputerMutation(this, request.params);
         const nativeParams={...request.params,observed_by:observer};
         if (request.params.op === 'display_subscribe') {
-          if(process.env.CHARIOX_KERNEL_BROWSER_DISPLAY!=='1')throw new Error('MP-08: experimental display disabled');
+          if(process.env.CHARIOX_KERNEL_BROWSER_DISPLAY!=='1')throw new Error('MP-08: display disabled');
           return {id:request.id,ok:true,result:await this.desktopDisplay.subscribe(nativeParams,request.params.observed_by??'terminal')};
         }
         if (['installed_applications','launch_application'].includes(request.params.op)) {

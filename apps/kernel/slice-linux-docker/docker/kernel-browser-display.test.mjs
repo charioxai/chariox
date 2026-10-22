@@ -81,7 +81,7 @@ test('MD-DISPLAY disabled commands fail before launching host Chromium', async (
   const host = new KernelBrowserHost('/unused-md-display-profile', { chromium: { start: async () => { throw new Error('must not launch'); } } });
   const original = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY; delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
   try {
-    for (const op of ['display_subscribe','display_next','display_input']) await assert.rejects(host.request({op}), /experimental display disabled/);
+    for (const op of ['display_subscribe','display_next','display_input']) await assert.rejects(host.request({op}), /display disabled/);
   } finally { if(original !== undefined) process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original; }
 });
 test('MP-08/MP-11 DPR mismatch refuses capture without sampling pixels', async () => {
