@@ -81,7 +81,7 @@ pub(super) struct RemoteSkillTurn {
     pub catalog_revision: u64,
 }
 /// The skills a native composer on a leased worker may select before any turn
-/// is dispatched from the home.
+/// is dispatched from the home; `None` when this kernel does not own the catalog.
 pub(super) fn prepare_remote_launch_skills(
     state: &KernelRuntimeState,
     session_id: &str,
@@ -240,7 +240,8 @@ impl SkillDispatchService {
             &rows,
             &BTreeSet::new(),
         )?;
-        Ok((!set.manifest.skills.is_empty()).then_some(set))
+        // An empty set is sent too: it is how a lease forgets skills turned Off or removed.
+        Ok(Some(set))
     }
     fn remote_turn_needs_native_inventory(
         &self,

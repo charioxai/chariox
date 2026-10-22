@@ -1504,6 +1504,29 @@ async fn leased_native_launch_carries_the_manual_skill_before_any_turn() {
     );
 }
 
+// MP-08 / MP-10: when the last effective skill is set Off, the lease must still get a
+// view, an empty one, or its composer keeps resolving the skill that was turned off.
+#[tokio::test]
+async fn leased_native_launch_clears_the_view_when_no_skill_is_effective() {
+    let (runtime, service, skill, _context, session_id, _agent_id) = manual_review_fixture().await;
+    let off = SkillCatalogMutation {
+        scope: SkillScope::Chariox,
+        expected_revision: service.storage.snapshot().unwrap().revision,
+        actions: vec![SkillCatalogAction::SetState {
+            skill_id: skill.id.clone(),
+            state: Some(SkillState::Off),
+        }],
+    };
+    let prepared = service.prepare(&off).unwrap();
+    service.publish_authorized(&off, &prepared).unwrap();
+    let set = super::super::skills_dispatch::prepare_remote_launch_skills(&runtime, &session_id)
+        .unwrap()
+        .expect("an empty view is still sent so the lease forgets the skill");
+    assert!(set.manifest.skills.is_empty());
+    assert!(set.packages.is_empty());
+    assert_eq!(set.names, None);
+}
+
 // MP-08 / MP-10: the home never trusts the worker's name or digest for a typed load.
 #[tokio::test]
 async fn leased_typed_skill_load_is_recorded_only_for_a_current_effective_skill() {

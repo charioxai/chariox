@@ -58,9 +58,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &manifest,
             &packages,
         )?;
-        // The newest transfer is the home's current view, including "nothing typable".
+        // The newest catalog's transfer is the home's current view, including "nothing
+        // typable". Refreshes run concurrently, so an older one can arrive last: its
+        // packages are cached but it never replaces a newer view.
         if let Some(agent) = self.app.leased_agents.get_mut(&context.leased_agent_id) {
-            agent.skill_names = skill_names;
+            if manifest.catalog_revision >= agent.skill_view_revision {
+                agent.skill_view_revision = manifest.catalog_revision;
+                agent.skill_names = skill_names;
+            }
         }
         Ok(materialized)
     }

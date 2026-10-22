@@ -458,6 +458,7 @@ async fn assert_remote_agent_profile_response(
             home_steer_receipts: Vec::new(),
             replayable_completion: None,
             skill_names: None,
+            skill_view_revision: 0,
             created_at_ms: 1,
         },
     };
@@ -722,6 +723,7 @@ async fn assert_remote_agent_profile_response(
             home_steer_receipts: Vec::new(),
             replayable_completion: None,
             skill_names: None,
+            skill_view_revision: 0,
             created_at_ms: 1,
         },
     };

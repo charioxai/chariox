@@ -14,6 +14,18 @@ struct Transfer {
     names: LeasedSkillNames,
 }
 
+impl Transfer {
+    fn clone_for_test(&self) -> Transfer {
+        Transfer {
+            context: self.context.clone(),
+            lease_id: self.lease_id.clone(),
+            manifest: self.manifest.clone(),
+            package: self.package.clone(),
+            names: self.names.clone(),
+        }
+    }
+}
+
 fn lease_with_skill(app: &mut DaemonApp) -> Transfer {
     let scratch = std::env::temp_dir().join(format!(
         "chariox-skill-names-{}-{}",
@@ -84,7 +96,11 @@ fn send(
             transfer.context.clone(),
             transfer.lease_id.clone(),
             transfer.manifest.clone(),
-            vec![transfer.package.clone()],
+            if transfer.manifest.skills.is_empty() {
+                vec![]
+            } else {
+                vec![transfer.package.clone()]
+            },
             names,
         )
         .map(|_| ())
@@ -120,4 +136,31 @@ fn a_name_view_naming_an_untransferred_skill_is_refused_and_keeps_the_previous_v
     foreign.skills[0].skill_id = "skill-foreign".into();
     assert!(send(&mut app, &transfer, Some(foreign)).is_err());
     assert_eq!(stored(&app, &transfer), Some(transfer.names.clone()));
+}
+
+// Publications refresh leases from independent tasks, so transfers can arrive in either
+// order: the older catalog still materializes its packages but never replaces the view.
+#[test]
+fn an_older_transfer_never_replaces_a_newer_name_view() {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let mut newer = lease_with_skill(&mut app);
+    newer.manifest.catalog_revision = 5;
+    newer.names.catalog_revision = 5;
+    send(&mut app, &newer, Some(newer.names.clone())).unwrap();
+    let mut older = newer.clone_for_test();
+    older.manifest.catalog_revision = 4;
+    older.names.catalog_revision = 4;
+    send(&mut app, &older, Some(older.names.clone())).unwrap();
+    assert_eq!(stored(&app, &newer), Some(newer.names.clone()));
+    let mut empty_older = older.clone_for_test();
+    empty_older.manifest.skills.clear();
+    send(&mut app, &empty_older, None).unwrap();
+    assert_eq!(stored(&app, &newer), Some(newer.names.clone()));
+    let mut empty_newer = newer.clone_for_test();
+    empty_newer.manifest.catalog_revision = 6;
+    empty_newer.manifest.skills.clear();
+    send(&mut app, &empty_newer, None).unwrap();
+    assert_eq!(stored(&app, &newer), None);
 }
