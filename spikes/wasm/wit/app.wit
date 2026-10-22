@@ -1,0 +1,94 @@
+// Spike subset of the Chariox App world (full surface: DESIGN.md).
+// JSON values stay JSON text: the kernel validates them against the signed
+// package schemas, so the guest and the wire see the same bytes.
+package chariox:app@0.1.0;
+
+interface types {
+  /// JSON text. The host checks it with the wire rules before sending.
+  type json = string;
+
+  record app-error {
+    code: string,
+    message: string,
+    retryable: option<bool>,
+  }
+
+  enum actor-kind { human, agent, background }
+  record actor { kind: actor-kind, id: string }
+
+  /// Kernel-issued context of one call (InvocationContext in the JS SDK).
+  record invocation-context {
+    deadline-ms: u64,
+    installation-id: option<string>,
+    room-id: option<string>,
+    operation-id: option<string>,
+    agent-id: option<string>,
+    task-id: option<string>,
+    turn-id: option<string>,
+    actor: option<actor>,
+  }
+}
+
+/// Registration: called only from `lifecycle.register`; sealed by worker.ready.
+interface registry {
+  tool: func(name: string);
+  event: func(name: string);
+  lifecycle: func(event: string);
+}
+
+interface state {
+  use types.{json, app-error};
+  record state-record { value: json, version: u64 }
+  record check { key: string, version: option<u64> }
+  variant write { put(tuple<string, json>), delete(string) }
+  record transaction {
+    schema-version: u32,
+    checks: list<check>,
+    writes: list<write>,
+  }
+  record committed { revision: u64 }
+
+  get: func(key: string) -> result<option<state-record>, app-error>;
+  transact: func(tx: transaction) -> result<committed, app-error>;
+}
+
+interface http {
+  use types.{app-error};
+  record request {
+    url: string,
+    method: string,
+    headers: list<tuple<string, string>>,
+    body: option<list<u8>>,
+    connection-id: option<string>,
+    operation-id: option<string>,
+  }
+  record response {
+    status: u16,
+    headers: list<tuple<string, string>>,
+    url: string,
+    body: list<u8>,
+  }
+  /// Buffered request through the kernel HTTP broker (512 KiB response cap).
+  send: func(req: request) -> result<response, app-error>;
+}
+
+interface log {
+  use types.{json};
+  enum level { debug, info, warn, error }
+  write: func(level: level, message: string, fields: json);
+}
+
+interface handlers {
+  use types.{json, app-error, invocation-context};
+  /// Registers tools/events/lifecycle names through `registry`.
+  register: func() -> result<_, app-error>;
+  call-tool: func(name: string, input: json, context: invocation-context) -> result<json, app-error>;
+}
+
+world app {
+  import registry;
+  import state;
+  import http;
+  import log;
+  export handlers;
+}

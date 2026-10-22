@@ -1,0 +1,12 @@
+[package]
+name = "chariox-wasm-harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+chariox-app-runtime = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+base64 = "0.22.1"
+libc = "0.2.172"
