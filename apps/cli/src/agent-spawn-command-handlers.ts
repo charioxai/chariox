@@ -16,6 +16,8 @@ import {
   remoteKernelReadinessForProvider,
 } from "@chariox/kernel-client/shell-remote-format"
 
+import { formatAgentLabel } from "./agent-label.js"
+
 type FooterTone = "info" | "error"
 
 type AgentSpawnPayload = {
@@ -125,7 +127,7 @@ export async function handleAgentSpawnCommand(
       deps.setProviderRunState(payload.providerRun ?? null)
       deps.rebuildTranscript()
       deps.refreshSplitPaneFocusRepaint()
-      deps.flashFooter(`attached agent ${parsed.externalSessionId} as ${payload.agent.agent_ref}`, "info")
+      deps.flashFooter(`attached agent ${parsed.externalSessionId} as ${formatAgentLabel(payload.agent)}`, "info")
       return
     }
     if (count !== null && parsed.positional.length === 1) {
@@ -386,7 +388,7 @@ function formatSpawnedAgentFooter(
       : "local"
   const worktree = options.resolvedWorktreeId || agent.worktree_id || null
   const parts = [
-    `spawned ${agent.meta_mode ? "meta-mode agent" : "agent"} ${agent.agent_ref}${alias ? ` (${alias})` : ""}`,
+    `spawned ${formatAgentLabel({ ...agent, alias })}`,
     placement,
     worktree ? `worktree ${worktree}` : null,
     options.sliceRef && worker ? `worker ${worker}` : null,

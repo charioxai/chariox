@@ -293,7 +293,7 @@ test("agent spawn command can create and start a new slice", async () => {
     "rebuild",
     "repaint",
   ])
-  assert.equal(flashedMessage, "spawned agent agent-slice (builder) · slice slice-created · worktree worktree-1 · worker machine-slice")
+  assert.equal(flashedMessage, "spawned builder · slice slice-created · worktree worktree-1 · worker machine-slice")
 })
 
 test("agent spawn command creates a new slice on an exact kernel without also spawning on the kernel", async () => {
@@ -448,7 +448,7 @@ test("agent spawn command reuses resolved slice id after validating scope", asyn
     "rebuild",
     "repaint",
   ])
-  assert.equal(flashedMessage, "spawned agent agent-slice (builder) · slice slice-resolved · worktree worktree-1 · worker machine-slice")
+  assert.equal(flashedMessage, "spawned builder · slice slice-resolved · worktree worktree-1 · worker machine-slice")
 })
 
 test("agent spawn command rejects reusable slices from another worktree", async () => {
@@ -612,7 +612,7 @@ test("agent spawn command treats --slice off as normal local placement", async (
     "rebuild",
     "repaint",
   ])
-  assert.equal(flashedMessage, "spawned agent agent-local (builder) · local · worktree worktree-1")
+  assert.equal(flashedMessage, "spawned builder · local · worktree worktree-1")
 })
 
 test("agent spawn command targets an exact kernel without machine resolution", async () => {
@@ -665,7 +665,7 @@ test("agent spawn command targets an exact kernel without machine resolution", a
     "rebuild",
     "repaint",
   ])
-  assert.equal(flashedMessage, "spawned agent agent-worker (builder) · remote machine-worker")
+  assert.equal(flashedMessage, "spawned builder · remote machine-worker")
 })
 
 function baseSpawnDeps(options: {
