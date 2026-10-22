@@ -17,7 +17,7 @@ use super::{map_failure, GatewayError, KernelGateway};
 
 const SUBSCRIBE_DEADLINE: Duration = Duration::from_secs(30);
 /// Hosted relay tokens last five minutes.
-const RENEW_EVERY: Duration = Duration::from_secs(3 * 60 + 30);
+pub(super) const RENEW_EVERY: Duration = Duration::from_secs(3 * 60 + 30);
 const RENEW_RETRIES: u32 = 2;
 const RENEW_RETRY_AFTER: Duration = Duration::from_secs(15);
 static SUBSCRIPTION_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -102,6 +102,20 @@ impl KernelGateway {
         })
     }
 
+    /// Gets a fresh relay token and puts it on the open connection.
+    pub(super) async fn renew_once(
+        &self,
+        target: &str,
+        kernel: &chariox_relay::protocol::RelayKernelPresence,
+        link: &Link,
+    ) -> bool {
+        let renewed = match self.identity() {
+            Ok(identity) => self.connection(target, kernel, &identity).await,
+            Err(error) => Err(error),
+        };
+        renewed.is_ok_and(|connection| link.renew(connection.relay_token))
+    }
+
     async fn renew_tokens(
         self: Arc<Self>,
         target: String,
@@ -115,14 +129,8 @@ impl KernelGateway {
                 if !link.is_alive() {
                     return;
                 }
-                let renewed = match self.identity() {
-                    Ok(identity) => self.connection(&target, &kernel, &identity).await,
-                    Err(error) => Err(error),
-                };
-                if let Ok(connection) = renewed {
-                    if link.renew(connection.relay_token) {
-                        break;
-                    }
+                if self.renew_once(&target, &kernel, &link).await {
+                    break;
                 }
                 // Retried within the token's remaining minute; if it still fails the
                 // relay closes the connection at expiry and the agent hears

@@ -216,7 +216,10 @@ impl KernelGateway {
             crate::session::unix_epoch_ms(),
             REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
-        match link.request(request_id, &plaintext, deadline).await {
+        match self
+            .request_keeping_token_fresh(&link, &kernel, target, request_id, &plaintext, deadline)
+            .await
+        {
             Ok(bytes) => {
                 serde_json::from_slice(&bytes).map_err(|error| GatewayError::Unreachable {
                     name: target.into(),
@@ -235,6 +238,35 @@ impl KernelGateway {
                     }
                 }
                 Err(error)
+            }
+        }
+    }
+
+    /// A wait that can outlast the relay token (a person answering a popup takes minutes) renews
+    /// the token on the open connection first and then before each expiry; a short request does not.
+    async fn request_keeping_token_fresh(
+        &self,
+        link: &Link,
+        kernel: &chariox_relay::protocol::RelayKernelPresence,
+        target: &str,
+        request_id: String,
+        plaintext: &[u8],
+        deadline: Duration,
+    ) -> Result<Vec<u8>, LinkFailure> {
+        let request = link.request(request_id, plaintext, deadline);
+        if deadline <= subscription::RENEW_EVERY {
+            return request.await;
+        }
+        tokio::pin!(request);
+        let mut renewals = tokio::time::interval(subscription::RENEW_EVERY);
+        loop {
+            tokio::select! {
+                answered = &mut request => return answered,
+                _ = renewals.tick() => {
+                    if !self.renew_once(target, kernel, link).await {
+                        tracing::warn!(target = %target, "could not renew the relay token of a long wait; it may be cut at expiry");
+                    }
+                }
             }
         }
     }
