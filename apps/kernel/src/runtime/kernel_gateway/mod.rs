@@ -47,6 +47,9 @@ const GRANTS_END_AFTER_REVOKE: Duration = Duration::from_secs(2);
 pub(super) static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// The grant a forwarded request acts under, as the origin kernel knows it.
+/// How often a long wait or a watch asks the target whether it still accepts the gateway.
+const REVOCATION_PROBE: Duration = Duration::from_secs(4);
+
 pub(crate) struct Origin {
     pub(crate) grant_id: String,
     pub(crate) harness: String,
@@ -211,6 +214,39 @@ impl KernelGateway {
         let link = self.open_link(target, kernel).await?;
         links.insert(kernel.kernel_id.clone(), Arc::clone(&link));
         Ok(link)
+    }
+
+    /// Asks `target` whether it still accepts this gateway; `Some` with the definitive error when
+    /// the owner revoked it there. Any other failure says nothing about acceptance.
+    async fn unaccepted(&self, target: &str, origin: &Origin) -> Option<GatewayError> {
+        let probe =
+            LocalDaemonRequest::HeartbeatAttachments(crate::local::HeartbeatAttachmentsRequest {
+                attachments: Vec::new(),
+            });
+        let command_id = format!("gw-probe-{}", crate::session::unix_epoch_ms());
+        match self
+            .forward(target, origin, &command_id, &probe, REVOCATION_PROBE)
+            .await
+        {
+            Err(error) if error.code() == "kernel_unpaired" => Some(error),
+            _ => None,
+        }
+    }
+
+    /// Resolves with the error as soon as `target` stops accepting this gateway. Used beside a
+    /// request or a watch that can wait for minutes: the relay does not cut a self-hosted link
+    /// when the owner revokes the gateway, so the origin asks every few seconds.
+    pub(crate) async fn until_unaccepted(&self, target: &str, origin: &Origin) -> GatewayError {
+        let mut tick = tokio::time::interval_at(
+            tokio::time::Instant::now() + REVOCATION_PROBE,
+            REVOCATION_PROBE,
+        );
+        loop {
+            tick.tick().await;
+            if let Some(error) = self.unaccepted(target, origin).await {
+                return error;
+            }
+        }
     }
 
     /// A revoked gateway finds out because the relay cuts its link. A lost link is therefore

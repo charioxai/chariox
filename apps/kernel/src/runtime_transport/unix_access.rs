@@ -405,9 +405,6 @@ pub(super) enum GatewayRoute {
 }
 
 const SUBSCRIPTION_SILENCE: std::time::Duration = std::time::Duration::from_secs(30);
-/// While a watch is open the origin asks the target this often whether it still accepts the
-/// gateway: a revoked gateway's stream ends at once with `kernel_unpaired` instead of going quiet.
-const REVOCATION_PROBE: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// Serves an admitted subscription on another kernel: the target's events are
 /// relayed to this connection until the agent unsubscribes or the kernel stops
@@ -477,10 +474,9 @@ pub(super) async fn serve_gateway_subscription(
         // The kernel sends a heartbeat every 5 s; silence for six of them means it is gone
         // (the relay does not say so when a target dies with a subscription open).
         let mut quiet_since = tokio::time::Instant::now();
-        let mut probe = tokio::time::interval_at(
-            tokio::time::Instant::now() + REVOCATION_PROBE,
-            REVOCATION_PROBE,
-        );
+        let probed_kernel = kernel.clone();
+        let unaccepted = gateway.until_unaccepted(&probed_kernel, &origin);
+        tokio::pin!(unaccepted);
         loop {
             let (event_id, body) = tokio::select! {
                 next = events.recv() => match next {
@@ -488,30 +484,14 @@ pub(super) async fn serve_gateway_subscription(
                     None => break,
                 },
                 _ = tokio::time::sleep_until(quiet_since + SUBSCRIPTION_SILENCE) => break,
-                _ = probe.tick() => {
-                    let still_accepted = gateway
-                        .forward(
-                            &kernel,
-                            &origin,
-                            &format!("gw-watch-probe-{}", crate::session::unix_epoch_ms()),
-                            &crate::local::LocalDaemonRequest::HeartbeatAttachments(
-                                crate::local::HeartbeatAttachmentsRequest { attachments: Vec::new() },
-                            ),
-                            REVOCATION_PROBE,
-                        )
-                        .await;
-                    if let Err(failure) = still_accepted {
-                        if failure.code() == "kernel_unpaired" {
-                            send(KernelOutgoingFrame::Response {
-                                kernel: Some(kernel),
-                                request_id,
-                                response: Box::new(None),
-                                error: Some(failure.transport_error()),
-                            });
-                            return;
-                        }
-                    }
-                    continue;
+                error = &mut unaccepted => {
+                    send(KernelOutgoingFrame::Response {
+                        kernel: Some(kernel),
+                        request_id,
+                        response: Box::new(None),
+                        error: Some(error.transport_error()),
+                    });
+                    return;
                 }
             };
             quiet_since = tokio::time::Instant::now();
@@ -649,15 +629,22 @@ pub(super) fn serve_gateway(
         let outcome = match route {
             GatewayRoute::Forward { kernel, request } => {
                 let gateway = router.kernel_gateway();
-                let answered = gateway
-                    .forward(
-                        &kernel,
-                        &origin,
-                        &command_id,
-                        &request,
-                        crate::runtime::kernel_gateway::ledger::deadline_for(&request),
-                    )
-                    .await;
+                let forwarded = gateway.forward(
+                    &kernel,
+                    &origin,
+                    &command_id,
+                    &request,
+                    crate::runtime::kernel_gateway::ledger::deadline_for(&request),
+                );
+                // A wait that outlasts the owner revoking the gateway ends with the revoke.
+                let answered = if crate::runtime::kernel_gateway::ledger::is_long_wait(&request) {
+                    tokio::select! {
+                        answered = forwarded => answered,
+                        error = gateway.until_unaccepted(&kernel, &origin) => Err(error),
+                    }
+                } else {
+                    forwarded.await
+                };
                 if let Ok(response) = &answered {
                     gateway.note_forwarded(&kernel, &origin, &request, response);
                 }

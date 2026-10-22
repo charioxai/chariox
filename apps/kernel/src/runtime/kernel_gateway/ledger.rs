@@ -228,6 +228,12 @@ pub(crate) fn deadline_for(request: &crate::local::LocalDaemonRequest) -> std::t
     super::REQUEST_DEADLINE + std::time::Duration::from_millis(wait_ms.min(240_000))
 }
 
+/// A request that holds the connection for a wait (a terminal wait or long read) rather than
+/// answering at once.
+pub(crate) fn is_long_wait(request: &crate::local::LocalDaemonRequest) -> bool {
+    deadline_for(request) > super::REQUEST_DEADLINE
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,6 +457,35 @@ mod tests {
             .await;
         assert!(matches!(other, Settled::Done(Ok(_))));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    // Only a request that holds the connection for a wait is watched for a revoke while it waits.
+    #[test]
+    fn only_a_wait_counts_as_a_long_wait() {
+        use crate::local::RoomTerminalOperation as Op;
+        let terminal = |operation| {
+            LocalDaemonRequest::RoomTerminal(crate::local::RoomTerminalRequest {
+                session_id: "s".into(),
+                acting_agent: None,
+                host_agent: None,
+                operation,
+            })
+        };
+        assert!(!is_long_wait(&LocalDaemonRequest::ListSessions(
+            ListSessionsRequest
+        )));
+        assert!(!is_long_wait(&terminal(Op::List)));
+        assert!(is_long_wait(&terminal(Op::ReadOutput {
+            terminal_id: "t".into(),
+            after_offset: 0,
+            wait_ms: 20_000,
+        })));
+        assert!(is_long_wait(&terminal(Op::Wait {
+            terminal_id: "t".into(),
+            watches: Vec::new(),
+            after_offset: None,
+            timeout_ms: 60_000,
+        })));
     }
 
     #[test]
