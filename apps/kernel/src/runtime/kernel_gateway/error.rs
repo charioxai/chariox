@@ -20,6 +20,10 @@ pub(crate) enum GatewayError {
     Unpaired {
         name: String,
     },
+    /// The relay's kernel list could not be fetched.
+    ListUnavailable {
+        detail: String,
+    },
     /// The owner revoked this kernel's gateway in the Cloud clients list.
     GatewayRevoked,
     /// The grant the request acts under ended while the connection was being set up.
@@ -54,13 +58,20 @@ pub(crate) enum GatewayError {
     },
 }
 
+/// A transport failure in plain words for the agent. The raw text can carry the relay URL with
+/// account and realm ids and OS error codes: it goes to the kernel's log, not to the caller.
+pub(crate) fn plain_cause(what: &str, error: &dyn std::fmt::Display) -> String {
+    tracing::warn!(%error, "{what}");
+    what.to_string()
+}
+
 impl GatewayError {
     pub(crate) fn code(&self) -> &str {
         match self {
             Self::Unknown { .. } => "kernel_unknown",
             Self::Ambiguous { .. } => "kernel_ambiguous",
             Self::Offline { .. } => "kernel_offline",
-            Self::Unreachable { .. } => "kernel_unreachable",
+            Self::Unreachable { .. } | Self::ListUnavailable { .. } => "kernel_unreachable",
             Self::Unpaired { .. } | Self::GatewayRevoked => "kernel_unpaired",
             Self::AccessEnded { .. } => "kernel_access_ended",
             Self::Incompatible { .. } => "kernel_incompatible",
@@ -87,6 +98,9 @@ impl GatewayError {
             ),
             Self::Unreachable { name, detail } => format!(
                 "Could not reach kernel \"{name}\" ({detail}). Retry; check that the relay is reachable."
+            ),
+            Self::ListUnavailable { detail } => format!(
+                "Could not get the list of your kernels ({detail}). Retry; check that this machine can reach the Chariox relay."
             ),
             Self::Unpaired { name } => format!(
                 "Kernel \"{name}\" does not accept this kernel. Pair it again from a Chariox terminal."
@@ -119,6 +133,7 @@ impl GatewayError {
     pub(crate) fn retryable(&self) -> bool {
         match self {
             Self::Unreachable { .. }
+            | Self::ListUnavailable { .. }
             | Self::RequestTimeout { .. }
             | Self::ConnectionLost { .. }
             | Self::SubscriptionEnded { .. } => true,
@@ -156,4 +171,27 @@ pub(crate) fn is_public_code(code: &str) -> bool {
             | "command_id_required"
             | "ledger_unavailable"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_transport_failure_reaches_the_agent_without_its_raw_text() {
+        let raw = "relay wss://relay.example/?accountId=acct-1&realmId=realm-2: os error 111";
+        let detail = plain_cause("the relay connection failed", &raw);
+        let error = GatewayError::Unreachable {
+            name: "b3".into(),
+            detail,
+        };
+        assert!(!error.message().contains("accountId") && !error.message().contains("os error"));
+        assert!(error.message().contains("the relay connection failed"));
+        let list = GatewayError::ListUnavailable {
+            detail: plain_cause("the relay did not answer", &raw),
+        };
+        assert_eq!(list.code(), "kernel_unreachable");
+        assert!(!list.message().contains("realmId"));
+        assert!(list.message().contains("list of your kernels"));
+    }
 }

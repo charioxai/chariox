@@ -59,7 +59,10 @@ impl HostedClient {
         .await
         .map_err(|error| GatewayError::Unreachable {
             name: target.into(),
-            detail: format!("could not register the agent gateway with Cloud: {error}"),
+            detail: super::error::plain_cause(
+                "could not register the agent gateway with Cloud",
+                &error,
+            ),
         })?;
         if state.registered_for.len() >= REMEMBERED_GRANTS {
             state.registered_for.clear();

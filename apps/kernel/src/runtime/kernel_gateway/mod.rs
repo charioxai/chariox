@@ -350,7 +350,7 @@ impl KernelGateway {
             Err(error) if hosted::is_revoked(&error) => Err(self.gateway_revoked().await),
             Err(error) => Err(GatewayError::Unreachable {
                 name: target.into(),
-                detail: error.to_string(),
+                detail: error::plain_cause("the relay did not accept the connection", &error),
             }),
         }
     }

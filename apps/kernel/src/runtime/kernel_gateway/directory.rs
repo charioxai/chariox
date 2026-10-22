@@ -121,7 +121,12 @@ impl Directory {
         tokio::time::timeout(REFRESH_TIMEOUT, self.source.refresh())
             .await
             .map_err(|_| unreachable_inventory("the kernel list did not refresh in time".into()))?
-            .map_err(|error| unreachable_inventory(error.to_string()))
+            .map_err(|error| {
+                unreachable_inventory(super::error::plain_cause(
+                    "the relay did not answer the request for the kernel list",
+                    &error,
+                ))
+            })
     }
 
     /// Takes the source's latest list as what is live now.
@@ -146,10 +151,7 @@ impl Directory {
 }
 
 fn unreachable_inventory(detail: String) -> GatewayError {
-    GatewayError::Unreachable {
-        name: "kernel list".into(),
-        detail,
-    }
+    GatewayError::ListUnavailable { detail }
 }
 
 pub(super) fn is_gateway_ready(kernel: &RelayKernelPresence) -> bool {
