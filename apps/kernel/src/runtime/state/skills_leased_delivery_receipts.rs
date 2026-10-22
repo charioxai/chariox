@@ -14,6 +14,11 @@ pub(super) enum LeasedSkillAcknowledgement {
         skill_id: String,
         digest: String,
     },
+    /// The worker's harness completed its own `skill` tool for this name; the home maps
+    /// the name to the load it pinned at dispatch and checks that record's digest.
+    NativeTool {
+        name: String,
+    },
     /// A `$name` typed in the worker's native composer: the home never prepared a
     /// pending load for it and validates the full identity against its catalog.
     Typed {
@@ -30,6 +35,9 @@ impl LeasedSkillAcknowledgement {
                 .contains(&record.skill_id),
             Self::Tool { skill_id, digest } => {
                 &record.skill_id == skill_id && &record.digest == digest
+            }
+            Self::NativeTool { name } => {
+                authority.native_tool_loads.get(name) == Some(&record.skill_id)
             }
             Self::Typed { .. } => false,
         }

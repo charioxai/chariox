@@ -1245,7 +1245,7 @@ mod tests {
             public["leased_native_skills"] = serde_json::to_value(&native).unwrap();
             let mut recovered: PromptQueueItem = serde_json::from_value(public).unwrap();
             assert!(
-                recovered.leased_native_skills().is_empty(),
+                recovered.leased_native_skills().is_unbound(),
                 "public JSON cannot mint a worker invocation"
             );
             recovered.restore_durable_private_state(&serde_json::from_value(private).unwrap());

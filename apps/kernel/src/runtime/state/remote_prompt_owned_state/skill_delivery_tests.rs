@@ -293,6 +293,221 @@ async fn leased_skill_native_duplicate_retains_manual_receipt_and_next_turn_load
     assert_eq!(next.native_selections, vec![native.selection]);
 }
 
+/// One leased turn that selects `review` on a worker harness `provider`: the Chariox
+/// copy (deduped against the equal native one) or only the native entry.
+async fn leased_native_selection_turn(
+    provider: &str,
+    chariox_copy: bool,
+) -> (
+    KernelRuntimeState,
+    RemoteWorkspaceLiveSyncContext,
+    SkillCatalogStorage,
+    SkillTurnAuthority,
+    String,
+) {
+    use crate::skill::service::SkillCatalogService;
+    let (runtime, session_id, agent_id, attachment, binding) =
+        super::tests::mp11_fixture(crate::DaemonConfig::for_tests()).await;
+    let config = runtime.owned.config_projection.snapshot();
+    let storage = SkillCatalogStorage::new(
+        config.user_config_path.parent().unwrap(),
+        runtime.owned.durable_state_store.clone(),
+    )
+    .unwrap();
+    let digest = "d".repeat(64);
+    let native_selection = SkillSelection::Native {
+        entry_id: "native-review".into(),
+        name: "review".into(),
+        provider: provider.into(),
+        account_profile: "account".into(),
+        execution_id: "worker-run-1".into(),
+        inventory_revision: "native-revision".into(),
+    };
+    let (selection, digest, expected_id) = if chariox_copy {
+        let service = SkillCatalogService::new(storage.clone());
+        let mutation = SkillCatalogMutation {
+            scope: SkillScope::Chariox,
+            expected_revision: 0,
+            actions: vec![SkillCatalogAction::Install {
+                source: SkillInstallSource::Content {
+                    skill_md: "---\nname: review\ndescription: Review safely\ndisable-model-invocation: true\n---\nReview source.\n".into(),
+                },
+                collision: SkillCollisionAction::Reject,
+                package_id: None,
+            }],
+        };
+        let prepared = service.prepare(&mutation).unwrap();
+        let catalog = service.publish_authorized(&mutation, &prepared).unwrap();
+        let skill = &catalog.catalogs[0].skills[0];
+        (
+            SkillSelection::Chariox {
+                skill_id: skill.id.clone(),
+                name: skill.name.clone(),
+                catalog_revision: catalog.revision,
+            },
+            skill.digest.clone(),
+            skill.id.clone(),
+        )
+    } else {
+        (
+            native_selection.clone(),
+            digest,
+            "native-review".to_string(),
+        )
+    };
+    let native = NativeSkillEntry {
+        selection: native_selection,
+        description: "Review safely".into(),
+        digest: Some(digest),
+        exposure: NativeSkillExposure::Confirmed,
+        default_state: SkillState::Manual,
+        complete_manifest: true,
+        supports_load_ack: true,
+        discovery_error: None,
+    };
+    let submission = runtime
+        .owned
+        .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+            session_id: session_id.clone(),
+            prompt: crate::session::PromptQueueItem::new(
+                "native-selection-turn",
+                &attachment,
+                &agent_id,
+                "$review inspect source",
+                crate::session::PromptStatus::Queued,
+            )
+            .with_skill_selections(vec![selection])
+            .with_user_skill_syntax(true),
+            force_queue: false,
+            refresh_projection: true,
+        })
+        .unwrap()
+        .unwrap();
+    runtime
+        .owned
+        .settle_remote_dispatch_if_current(
+            &submission.remote_dispatch.unwrap(),
+            Some("worker-run-1"),
+        )
+        .unwrap();
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let prompt = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &agent_id)
+        .unwrap();
+    super::super::skills_dispatch::prepare_remote_turn(
+        &runtime,
+        &session_id,
+        &agent_id,
+        prompt.id(),
+        &binding.leased_agent_id,
+        &[native],
+        &super::super::skills_dispatch::ReportedWorkerRun::Unknown,
+    )
+    .unwrap()
+    .unwrap();
+    let prompt = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &agent_id)
+        .unwrap();
+    let authority = prompt.skill_turn_authority().unwrap().clone();
+    let context = RemoteWorkspaceLiveSyncContext {
+        home_kernel_id: config.daemon_id.clone(),
+        home_session_id: session_id,
+        home_agent_id: agent_id,
+        home_prompt_id: Some(prompt.id().into()),
+        leased_agent_id: binding.leased_agent_id,
+        worker_kernel_id: binding.worker_kernel_id,
+        worker_machine_id: binding.worker_machine_id,
+        worker_provider_run_id: "worker-run-1".into(),
+        worker_worktree_path: session.worktree_id().into(),
+        worker_workspace_identity: crate::io::WorkspaceIdentity::local("fixture"),
+    };
+    (runtime, context, storage, authority, expected_id)
+}
+
+// A native-only `From Codex` selection has no Chariox row: the home still reserves a
+// receipt for it, and the worker's real prompt delivery settles it as Loaded.
+#[tokio::test]
+async fn leased_native_only_selection_is_recorded_loaded_on_the_home() {
+    let (runtime, context, storage, authority, skill_id) =
+        leased_native_selection_turn("codex", false).await;
+    assert_eq!(authority.pending_loads.len(), 1);
+    assert_eq!(authority.pending_loads[0].skill_id, skill_id);
+    assert_eq!(
+        authority.pending_loads[0].reason,
+        SkillLoadReason::ConfirmedNative
+    );
+    assert!(authority.prompt_delivery_skill_ids.contains(&skill_id));
+    assert!(storage.loads(&context.home_session_id).unwrap().is_empty());
+    acknowledge(&runtime, &context, serde_json::json!({"delivery":"prompt"}))
+        .await
+        .unwrap();
+    let loads = storage.loads(&context.home_session_id).unwrap();
+    assert_eq!(loads.len(), 1);
+    assert_eq!(loads[0].skill_id, skill_id);
+}
+
+// OpenCode loads a native-only selection with its own `skill` tool: the worker reports
+// the completed tool by name and the home settles the load that name maps to.
+#[tokio::test]
+async fn leased_opencode_native_only_selection_settles_on_the_native_tool_receipt() {
+    let (runtime, context, storage, authority, skill_id) =
+        leased_native_selection_turn("opencode", false).await;
+    assert_eq!(
+        authority.native_tool_loads.get("review"),
+        Some(&skill_id),
+        "home maps the tool name to its pending load"
+    );
+    acknowledge(&runtime, &context, serde_json::json!({"delivery":"prompt"}))
+        .await
+        .unwrap();
+    acknowledge(
+        &runtime,
+        &context,
+        serde_json::json!({"delivery":"native_tool","name":"unrelated"}),
+    )
+    .await
+    .unwrap();
+    assert!(storage.loads(&context.home_session_id).unwrap().is_empty());
+    acknowledge(
+        &runtime,
+        &context,
+        serde_json::json!({"delivery":"native_tool","name":"review"}),
+    )
+    .await
+    .unwrap();
+    let loads = storage.loads(&context.home_session_id).unwrap();
+    assert_eq!(loads.len(), 1);
+    assert_eq!(loads[0].skill_id, skill_id);
+}
+
+// A Chariox skill deduped against an equal OpenCode package is loaded by OpenCode's
+// own tool; its completed call settles the pending ProvidedBy load on the home.
+#[tokio::test]
+async fn leased_opencode_deduped_selection_settles_on_the_native_tool_receipt() {
+    let (runtime, context, storage, authority, skill_id) =
+        leased_native_selection_turn("opencode", true).await;
+    assert_eq!(authority.native_tool_loads.get("review"), Some(&skill_id));
+    assert!(storage.loads(&context.home_session_id).unwrap().is_empty());
+    acknowledge(
+        &runtime,
+        &context,
+        serde_json::json!({"delivery":"native_tool","name":"review"}),
+    )
+    .await
+    .unwrap();
+    let loads = storage.loads(&context.home_session_id).unwrap();
+    assert_eq!(loads.len(), 1);
+    assert_eq!(loads[0].skill_id, skill_id);
+}
+
 // A Claude copy that cannot acknowledge its own load cannot own the turn's one
 // body: the home transfers its equal Chariox copy and delivers that instead.
 #[tokio::test]
@@ -605,6 +820,16 @@ async fn leased_turn_requests_worker_inventory_only_when_it_can_use_it() {
 // the home must not touch the catalog it does not own.
 #[tokio::test]
 async fn second_named_kernel_leased_turn_skips_inventory_without_reading_the_catalog() {
+    second_named_kernel_leased_turn_skips_inventory("refactor the parser", false).await;
+}
+
+// Unresolved dollar prose is an ordinary prompt: no selection resolved it.
+#[tokio::test]
+async fn second_named_kernel_leased_dollar_prose_skips_inventory() {
+    second_named_kernel_leased_turn_skips_inventory("why is $total null", true).await;
+}
+
+async fn second_named_kernel_leased_turn_skips_inventory(text: &str, user_skill_syntax: bool) {
     let root = std::env::temp_dir().join(format!("skillsk-second-{:032x}", rand::random::<u128>()));
     std::fs::create_dir(&root).unwrap();
     let config = |name: &str| {
@@ -628,9 +853,10 @@ async fn second_named_kernel_leased_turn_skips_inventory_without_reading_the_cat
                 "ordinary-turn",
                 &attachment,
                 &agent_id,
-                "refactor the parser",
+                text,
                 crate::session::PromptStatus::Queued,
-            ),
+            )
+            .with_user_skill_syntax(user_skill_syntax),
             force_queue: false,
             refresh_projection: true,
         })
@@ -670,6 +896,15 @@ async fn second_named_kernel_leased_turn_skips_inventory_without_reading_the_cat
 // delivery and is not refused for lack of the catalog it does not own.
 #[tokio::test]
 async fn second_named_kernel_ordinary_local_turn_is_not_refused_by_the_skills_catalog() {
+    second_named_kernel_local_turn_is_not_refused("refactor the parser", false).await;
+}
+
+#[tokio::test]
+async fn second_named_kernel_local_dollar_prose_is_not_refused_by_the_skills_catalog() {
+    second_named_kernel_local_turn_is_not_refused("why is $total null", true).await;
+}
+
+async fn second_named_kernel_local_turn_is_not_refused(text: &str, user_skill_syntax: bool) {
     let root = std::env::temp_dir().join(format!("skillsk-second-{:032x}", rand::random::<u128>()));
     std::fs::create_dir(&root).unwrap();
     let config = |name: &str| {
@@ -693,9 +928,10 @@ async fn second_named_kernel_ordinary_local_turn_is_not_refused_by_the_skills_ca
                 "ordinary-turn",
                 &attachment,
                 &agent_id,
-                "refactor the parser",
+                text,
                 crate::session::PromptStatus::Queued,
-            ),
+            )
+            .with_user_skill_syntax(user_skill_syntax),
             force_queue: false,
             refresh_projection: true,
         })
@@ -744,7 +980,7 @@ async fn second_named_kernel_ordinary_local_turn_is_not_refused_by_the_skills_ca
         },
     );
     let envelope = crate::prompt_assembly::PromptEnvelope::new(
-        "refactor the parser",
+        text,
         "",
         Vec::new(),
         crate::prompt_assembly::PromptManifest::default(),

@@ -330,10 +330,6 @@ pub struct LeasedNativeSkills {
 }
 
 impl LeasedNativeSkills {
-    pub fn is_empty(&self) -> bool {
-        self.selections.is_empty()
-    }
-
     /// No selections and no home catalog revision binding the turn.
     pub fn is_unbound(&self) -> bool {
         self.selections.is_empty() && self.catalog_revision == 0
@@ -895,7 +891,7 @@ pub enum RelayPeerRequest {
         provider_launch_credential: Option<RemoteProviderLaunchCredential>,
         /// Source-bound `From <Provider>` skills the home validated; the worker
         /// applies its own harness invocation and never receives native packages.
-        #[serde(default, skip_serializing_if = "LeasedNativeSkills::is_empty")]
+        #[serde(default, skip_serializing_if = "LeasedNativeSkills::is_unbound")]
         native_skill_selections: LeasedNativeSkills,
     },
     /// A10: install or replace the worker fence for one exact leased home

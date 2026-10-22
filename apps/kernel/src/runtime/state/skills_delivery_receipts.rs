@@ -50,9 +50,7 @@ impl SkillDispatchService {
                 self.record_hook_receipts(run, run.session_id(), agent_id, prompt.id())?;
             }
         }
-        if crate::provider::canonical_provider_family(run.provider()) == Some("opencode")
-            && !self.runs.is_leased_provider_run(run.id())
-        {
+        if crate::provider::canonical_provider_family(run.provider()) == Some("opencode") {
             self.record_native_tool_receipts(run, agent_id, batch)?;
         }
         for ack in &batch.skill_tool_delivery_acknowledgements {
@@ -219,13 +217,25 @@ impl SkillDispatchService {
                 crate::provider::completed_native_skill_tool(chunk.kind.clone(), &chunk.bytes)
             })
             .collect();
-        if names.is_empty() {
+        if names.is_empty() || self.runs.is_leased_provider_run(run.id()) {
             return Ok(());
         }
         let session = self.sessions.get_session(run.session_id())?;
         let Some(prompt) = self.prompts.active_prompt_for_agent(&session, agent_id) else {
             return Ok(());
         };
+        if prompt.leased_skill_context().is_some() {
+            // The worker holds no authority: the home settles the load the name maps to.
+            return names.into_iter().try_for_each(|name| {
+                self.forward_leased_delivery(
+                    run,
+                    run.session_id(),
+                    agent_id,
+                    prompt.id(),
+                    leased_receipts::LeasedSkillAcknowledgement::NativeTool { name },
+                )
+            });
+        }
         let skill_ids: std::collections::BTreeSet<String> = prompt
             .skill_turn_authority()
             .map(|authority| {

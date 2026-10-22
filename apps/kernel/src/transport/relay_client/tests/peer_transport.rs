@@ -335,7 +335,39 @@ fn submit_leased_prompt_carries_native_skill_selections() {
         .remove("native_skill_selections");
     let older: RelayPeerRequest = serde_json::from_value(value).expect("omitted field decodes");
     assert!(
-        matches!(older, RelayPeerRequest::SubmitLeasedPrompt { native_skill_selections, .. } if native_skill_selections.is_empty())
+        matches!(older, RelayPeerRequest::SubmitLeasedPrompt { native_skill_selections, .. } if native_skill_selections.is_unbound())
+    );
+}
+
+// A Chariox-only leased turn has no selections but its nonzero home catalog revision
+// binds the hidden bodies; the wire must carry that revision to the worker.
+#[test]
+fn submit_leased_prompt_carries_a_body_only_catalog_revision() {
+    let request = RelayPeerRequest::SubmitLeasedPrompt {
+        leased_agent_id: "leased-agent-1".to_string(),
+        expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile {
+            provider: "codex".to_string(),
+            account_profile: "work".to_string(),
+            model: None,
+            effort: None,
+        },
+        prompt: "$review the diff".to_string(),
+        hidden_system_context: "skill body".to_string(),
+        attachments: Vec::new(),
+        workflow_context: None,
+        git_context: None,
+        required_mcps: Vec::new(),
+        remote_extension_manifest: Default::default(),
+        provider_launch_credential: None,
+        native_skill_selections: crate::transport::relay_peer::LeasedNativeSkills {
+            catalog_revision: 9,
+            selections: Vec::new(),
+        },
+    };
+    let value = serde_json::to_value(&request).expect("request should serialize");
+    let decoded: RelayPeerRequest = serde_json::from_value(value).expect("round trip");
+    assert!(
+        matches!(decoded, RelayPeerRequest::SubmitLeasedPrompt { native_skill_selections, .. } if native_skill_selections.catalog_revision == 9)
     );
 }
 

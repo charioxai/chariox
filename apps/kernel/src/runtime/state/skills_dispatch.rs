@@ -41,10 +41,10 @@ fn failure(message: &str) -> DaemonError {
 pub(super) fn bridge(state: &KernelRuntimeState) -> Arc<dyn SkillPromptBridge> {
     Arc::new(service(state))
 }
+/// Only a selection the client resolved names a skill; `$word` prose that nothing
+/// resolved is an ordinary prompt, so a kernel without the catalog still admits it.
 fn names_skills(prompt: &crate::session::PromptQueueItem) -> bool {
     !prompt.skill_selections().is_empty()
-        || (prompt.user_skill_syntax()
-            && !crate::skill::selection::explicit_skill_names(prompt.prompt()).is_empty())
 }
 fn service(state: &KernelRuntimeState) -> SkillDispatchService {
     let owned = &state.owned;
@@ -258,13 +258,17 @@ impl SkillDispatchService {
             .skill_selections()
             .iter()
             .any(|selection| matches!(selection, SkillSelection::Native { .. }))
-            || (prompt.user_skill_syntax()
-                && !crate::skill::selection::explicit_skill_names(prompt.prompt()).is_empty())
         {
             return Ok(true);
         }
+        // Without the catalog nothing can resolve `$word` prose: it is an ordinary prompt.
         if !self.catalog_available() {
             return Ok(false);
+        }
+        if prompt.user_skill_syntax()
+            && !crate::skill::selection::explicit_skill_names(prompt.prompt()).is_empty()
+        {
+            return Ok(true);
         }
         let catalog = self.catalog()?.storage.snapshot()?;
         Ok(
@@ -456,6 +460,10 @@ impl SkillDispatchService {
             remote_roots: Default::default(),
             native_tool_loads: Default::default(),
         };
+        // The worker reports a completed OpenCode `skill` tool by name; the home maps it.
+        // Other harnesses never report one, so the map is inert for them.
+        authority.native_tool_loads =
+            native_tool_loads(&context.loaded, &context.native_selections, native);
         for body in &context.loaded {
             if !matches!(body.delivery, SkillDelivery::ProvidedBy { .. })
                 || matches!(&body.delivery, SkillDelivery::ProvidedBy { provider, .. } if provider == "codex")
@@ -484,6 +492,29 @@ impl SkillDispatchService {
                 context_generation: generation.clone(),
                 delivered_at_ms: 0,
             });
+        }
+        // A native-only selection has no Chariox row; the home still records the
+        // worker's acknowledged delivery, without any native package copy.
+        for (entry_id, digest, provider) in
+            verified_native_only(&context.loaded, &context.native_selections, native)
+        {
+            authority.pending_loads.push(SkillLoadRecord {
+                skill_id: entry_id.clone(),
+                digest,
+                session_id: session_id.into(),
+                agent_id: agent_id.into(),
+                run_id: run_id.clone(),
+                prompt_id: prompt.id().into(),
+                reason: SkillLoadReason::ConfirmedNative,
+                context_generation: generation.clone(),
+                delivered_at_ms: 0,
+            });
+            if matches!(
+                crate::provider::canonical_provider_family(&provider),
+                Some("codex" | "claude")
+            ) {
+                authority.prompt_delivery_skill_ids.insert(entry_id);
+            }
         }
         // Dispatch retries rebuild the same turn: keep the first admitted authority
         // (including loads already reserved by a running list/load tool).
@@ -543,7 +574,7 @@ impl SkillDispatchService {
         // Claude PTY admission can precede its first injection while startup
         // settles. Revalidate/rewrite the pinned invocation at that boundary.
         let staged = prompt.leased_native_skills();
-        if staged.is_empty() {
+        if staged.selections.is_empty() {
             // A nonzero home catalog revision binds this leased skill context.
             // Its body is already in the envelope: preserve strict ACK semantics
             // without appending it a second time or discovering a worker catalog.
@@ -686,7 +717,8 @@ impl SkillPromptBridge for SkillDispatchService {
             .prompts
             .active_prompt_for_agent(&session, agent_id)
             .is_some_and(|prompt| {
-                prompt.leased_skill_context().is_some() || !prompt.leased_native_skills().is_empty()
+                prompt.leased_skill_context().is_some()
+                    || !prompt.leased_native_skills().is_unbound()
             });
         if self.runs.is_leased_provider_run(run.id()) || leased {
             return self.prepare_leased_native(
@@ -905,25 +937,17 @@ impl SkillPromptBridge for SkillDispatchService {
                 });
             }
         }
-        for selection in &context.native_selections {
-            let SkillSelection::Native { entry_id, .. } = selection else {
-                continue;
-            };
-            if context.loaded.iter().any(|body|matches!(&body.delivery,SkillDelivery::ProvidedBy{entry_id:id,..} if id==entry_id)) {continue}
-            let Some(entry) = native.iter().find(|entry| &entry.selection == selection) else {
-                continue;
-            };
-            let Some(digest) = entry.digest.as_ref().filter(|_| entry.complete_manifest) else {
-                continue;
-            };
+        for (entry_id, digest, _) in
+            verified_native_only(&context.loaded, &context.native_selections, native)
+        {
             if !authority
                 .pending_loads
                 .iter()
-                .any(|record| record.skill_id == *entry_id && record.digest == *digest)
+                .any(|record| record.skill_id == entry_id && record.digest == digest)
             {
                 authority.pending_loads.push(SkillLoadRecord {
                     skill_id: entry_id.clone(),
-                    digest: digest.clone(),
+                    digest,
                     session_id: session_id.into(),
                     agent_id: agent_id.into(),
                     run_id: run.id().into(),
@@ -939,7 +963,7 @@ impl SkillPromptBridge for SkillDispatchService {
                 crate::provider::canonical_provider_family(run.provider()),
                 Some("codex" | "claude")
             ) {
-                authority.prompt_delivery_skill_ids.insert(entry_id.clone());
+                authority.prompt_delivery_skill_ids.insert(entry_id);
             }
         }
         self.prompts.update_skill_authority_durably(&self.sessions,&self.durable,session_id,agent_id,prompt.id(),|current| {
@@ -956,6 +980,35 @@ impl SkillPromptBridge for SkillDispatchService {
             && delivery.visible_prompt == envelope.visible_user_prompt;
         Ok((!carries_nothing).then_some(delivery))
     }
+}
+
+/// `From <Provider>` selections the harness runs itself with a complete verified
+/// manifest, and no Chariox row provides: the (entry ID, digest, provider) each settles as.
+fn verified_native_only(
+    loaded: &[SkillResolvedBody],
+    selections: &[SkillSelection],
+    native: &[NativeSkillEntry],
+) -> Vec<(String, String, String)> {
+    selections
+        .iter()
+        .filter_map(|selection| {
+            let SkillSelection::Native {
+                entry_id, provider, ..
+            } = selection
+            else {
+                return None;
+            };
+            let provided = loaded.iter().any(|body| {
+                matches!(&body.delivery, SkillDelivery::ProvidedBy { entry_id: id, .. } if id == entry_id)
+            });
+            if provided {
+                return None;
+            }
+            let entry = native.iter().find(|entry| &entry.selection == selection)?;
+            let digest = entry.digest.as_ref().filter(|_| entry.complete_manifest)?;
+            Some((entry_id.clone(), digest.clone(), provider.clone()))
+        })
+        .collect()
 }
 
 /// OpenCode loads deduped Chariox skills and `From OpenCode` selections with its own
