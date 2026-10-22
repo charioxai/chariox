@@ -590,14 +590,7 @@ pub(super) fn serve_gateway(
     let harness = router
         .runtime_state()
         .access_grant_summary(&grant_id)
-        .map(|grant| {
-            std::path::Path::new(&grant.holder_executable)
-                .file_name()
-                .map_or_else(
-                    || grant.holder_executable.clone(),
-                    |n| n.to_string_lossy().into(),
-                )
-        })
+        .map(|grant| crate::runtime::kernel_gateway::harness_name(&grant))
         .unwrap_or_else(|| "unknown".into());
     let router = Arc::clone(router);
     let health = runtime.transport_health.clone();

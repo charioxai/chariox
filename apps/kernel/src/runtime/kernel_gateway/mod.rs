@@ -51,6 +51,23 @@ pub(super) static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// How often a long wait or a watch asks the target whether it still accepts the gateway.
 const REVOCATION_PROBE: Duration = Duration::from_secs(4);
 
+/// What the target's popup calls the requesting agent: the provider harness the origin kernel
+/// recognised, else the holder's executable name (a version number or `node` says nothing).
+pub(crate) fn harness_name(grant: &crate::local::KernelAccessGrant) -> String {
+    use crate::local::KernelAccessProviderHarness::{Claude, Codex, Opencode};
+    match grant.holder_harness {
+        Some(Claude) => "claude".into(),
+        Some(Codex) => "codex".into(),
+        Some(Opencode) => "opencode".into(),
+        None => std::path::Path::new(&grant.holder_executable)
+            .file_name()
+            .map_or_else(
+                || grant.holder_executable.clone(),
+                |name| name.to_string_lossy().into(),
+            ),
+    }
+}
+
 pub(crate) struct Origin {
     pub(crate) grant_id: String,
     pub(crate) harness: String,
@@ -481,6 +498,37 @@ fn map_failure(target: &str, failure: LinkFailure) -> GatewayError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // EA2-11: the target's popup names the agent, not the file the origin happened to run
+    // ("2.1.296" for Claude Code, "node" for Codex).
+    #[test]
+    fn a_grant_holder_is_named_by_its_harness_before_its_executable() {
+        use crate::local::{KernelAccessGrant, KernelAccessProviderHarness, KernelAccessTerm};
+        let grant = |executable: &str, harness| KernelAccessGrant {
+            grant_id: "g".into(),
+            owner_user_id: "local".into(),
+            holder_pid: 1,
+            holder_executable: executable.into(),
+            holder_harness: harness,
+            term: KernelAccessTerm::UntilHolderExits,
+            expires_at_ms: None,
+        };
+        assert_eq!(
+            harness_name(&grant(
+                "/home/u/.local/share/claude/versions/2.1.296",
+                Some(KernelAccessProviderHarness::Claude)
+            )),
+            "claude"
+        );
+        assert_eq!(
+            harness_name(&grant(
+                "/usr/bin/node",
+                Some(KernelAccessProviderHarness::Codex)
+            )),
+            "codex"
+        );
+        assert_eq!(harness_name(&grant("/usr/bin/aider", None)), "aider");
+    }
 
     // A request whose grant ended is not sent: it never gets as far as resolving the kernel.
     #[tokio::test]
