@@ -358,6 +358,14 @@ impl KernelRuntimeState {
                 }
                 service.resolve_repository(&url)
             }
+            SkillsV2Request::ResolveRepositoryUpdate { package_id } => {
+                if origin.is_some() || !self.skills_host_owner(user) {
+                    return Err(skill_error(
+                        "only the home kernel owner can update a repository package, from Skills",
+                    ));
+                }
+                service.resolve_repository_update(&package_id)
+            }
             SkillsV2Request::Mutate {
                 mutation,
                 review_receipt_id,

@@ -4980,6 +4980,20 @@ members from another commit and cannot join a custom package. Credentials in
 the URL, private or auth-required repositories and agent-initiated repository
 sources are refused.
 
+MP-08 / MP-10 / MP-11: the unpublished Skills allocation 571/179 also carries
+`resolve_repository_update { package_id }` for the home owner. Its
+`repository_update` response contains the old and resolved commits, changed,
+added, removed, unchanged and skipped members, plus one revision-bound mutation.
+The owner reviews and confirms that mutation through the usual path; confirmation
+uses staged bytes and never fetches again. Remaining source-package members must
+advance together to one attested commit. Member IDs, state overrides and original
+install times remain stable; members moved to custom packages and directories
+left unselected at install are skipped. Invalid current members refuse the whole
+update. Empty repositories and updates removing every remaining member require
+explicit removal or ungrouping instead. The normal 512-action limit applies.
+The TUI exposes `/skills repo-update <package>`; the Web update entry point is
+not implemented by this addition.
+
 `SkillProjection.delivery` distinguishes Chariox delivery, verified native
 provision, content conflict and unverified native exposure. Equal complete
 content and compatible exposure produce one Chariox picker row with

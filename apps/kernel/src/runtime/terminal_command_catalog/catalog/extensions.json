@@ -178,6 +178,12 @@
         "value": "/skills update-package "
       },
       {
+        "id": "skills-repo-update",
+        "label": "repo-update",
+        "description": "Review a repository package at its current commit",
+        "value": "/skills repo-update "
+      },
+      {
         "id": "skills-remove-package",
         "label": "remove-package",
         "description": "Review removing a package and its skills",

@@ -60,6 +60,10 @@ fn publication_mutation(
             SkillCatalogAction::Install {
                 source: SkillInstallSource::Repository { url, .. },
                 ..
+            }
+            | SkillCatalogAction::Update {
+                source: SkillInstallSource::Repository { url, .. },
+                ..
             } => *url = safe_locator(url)?,
             SkillCatalogAction::Install { source, .. }
             | SkillCatalogAction::Update { source, .. } => {
