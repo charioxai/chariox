@@ -230,6 +230,7 @@ mod tests {
     #[cfg(unix)]
     mod provider_setup_token;
     mod relay_leased_prompt_steer;
+    mod relay_subscription_attachment;
     mod remote_agent_message_origin;
     mod remote_authorization;
     mod remote_workspace_live_sync_authorization;
