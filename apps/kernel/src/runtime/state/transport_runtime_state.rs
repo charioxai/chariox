@@ -118,7 +118,7 @@ impl KernelRuntimeState {
             .owned
             .workflow_collect_due_watchdog_dispatches(crate::session::unix_epoch_ms());
         self.spawn_workflow_prompt_dispatches(watchdog_dispatches);
-        self.dispatch_due_agent_prompt_schedules(crate::session::unix_epoch_ms())
+        self.dispatch_due_agent_triggers(crate::session::unix_epoch_ms())
             .await;
     }
 
