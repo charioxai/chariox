@@ -314,6 +314,21 @@ async fn a02_unloaded_room_cannot_abort_live_room_supervision() {
             now: 1,
         })
         .unwrap();
+    // A plain turn with no live executor is cancelled; ledger work (an obligation)
+    // is what makes the sweep block it for the owner.
+    store
+        .agent_lifecycle(Operation::RegisterObligation {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "idle-agent".into(),
+            prompt: "z-current-idle".into(),
+            run: None,
+            id: "z-current-obligation".into(),
+            kind: "delegate".into(),
+            resource: Some("child".into()),
+            now: 1,
+        })
+        .unwrap();
     f.state
         .sweep_agent_lifecycle()
         .await

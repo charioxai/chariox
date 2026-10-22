@@ -2,6 +2,7 @@
 """MP-08 / MP-11: copy exact public helpers for a non-root disposable local drill."""
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import signal
@@ -19,8 +20,9 @@ parser.add_argument('--native-prefix',help='MP-08: optional lane-owned public na
 parser.add_argument('--native-worker',help='MP-08/MP-10: kernel ELF built with native-display; the desktop source then uses its XShm/x264 worker')
 args=parser.parse_args()
 source=Path(__file__).resolve().parent
-files=['native-x11.py','browser-desktop-protection.py','browser-protection-regions.mjs','browser-controller-frames.mjs','kernel-browser-refusal.mjs','kernel-browser-timing.mjs','native-keyboard-channel.mjs','browser-controller-snapshot.mjs','linux-owned-desktop.mjs','desktop-applications.mjs','linux-owned-process.mjs','linux-desktop-session.py','native-computer.mjs','native-computer.py','native-clipboard.py','slice-keyboard.py','slice-text-finder.py','x11-text-keyboard.py','x11-keymap-fence.py', 'browser-controller-actions.mjs', 'kernel-browser-native-tab-state.mjs', 'kernel-browser-native-worker.mjs', 'kernel-browser-policy.mjs', 'kernel-browser-tab-groups.mjs']
-files += [name for name in ['native-accessibility.mjs','native-accessibility.py','room-native-protection.py'] if (source/'docker'/name).exists()]
+closure_spec=importlib.util.spec_from_file_location('drill_helper_closure',source/'drill-helper-closure.py')
+closure=importlib.util.module_from_spec(closure_spec);closure_spec.loader.exec_module(closure)
+files=closure.default_helpers(source/'docker')
 if args.desktop_capture:
     files=sorted(path.name for path in (source/'docker').iterdir() if path.suffix in ('.mjs','.py'))
 head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()
@@ -42,7 +44,7 @@ with tempfile.TemporaryDirectory(prefix='cn-',dir='/var/tmp') as temporary:
     command=['/usr/bin/node',str(root/drill)]
     manifest={'items':['MP-08','MP-11'],'head':head,'helper_sha256':hashes,'drill_sha256':hashlib.sha256((root/drill).read_bytes()).hexdigest(),'command':command,'fixture_sha256':fixture_hash,'runner_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'exit':None}
     receipt=evidence/(args.drill+'.json');receipt.write_text(json.dumps(manifest,indent=2)+'\n')
-    tracked=[str(source/'docker'/name) for name in files]+[str(source/drill),str(Path(__file__).resolve())]
+    tracked=[str(source/'docker'/name) for name in files]+[str(source/drill),str(source/'drill-helper-closure.py'),str(Path(__file__).resolve())]
     if fixture_hash:tracked.append(str(source/'native-accessibility-fixture.py'))
     dirty=subprocess.check_output(['git','status','--porcelain','--',*tracked],cwd=source,text=True).strip()
     identity=head+('+recorded-working-tree' if dirty else '')
