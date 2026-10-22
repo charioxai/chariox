@@ -225,29 +225,13 @@ fn load_scoped_agent_outline(
     before_sequence: Option<u64>,
     agent_import: Option<&ExternalProviderImportMetadata>,
 ) -> Result<SessionHistoryOutlineAgent, DaemonError> {
-    let mut prompts = load_latest_scoped_user_prompt_events(
+    let mut prompts = load_visible_outline_prompt_events(
         operational_history,
         session_id,
         agent_id,
+        latest_prompt_count,
         before_sequence,
-        outline_prompt_candidate_limit(latest_prompt_count, agent_import),
         agent_import,
-    )?;
-    prompts.retain(|prompt| {
-        !prompt.is_completion_check_turn()
-            && (!prompt.is_internal_prompt_echo()
-                || prompt
-                    .prompt_id
-                    .as_deref()
-                    .is_some_and(crate::session::is_agent_inbox_prompt_id))
-            && !external_observed_tool_call_prompt(prompt)
-            && !external_recovery_envelope_prompt(prompt)
-    });
-    suppress_chariox_owned_external_prompt_echoes(
-        &mut prompts,
-        operational_history,
-        session_id,
-        agent_id,
     )?;
     let has_more = prompts.len() > latest_prompt_count;
     if has_more {
@@ -325,6 +309,55 @@ fn load_scoped_agent_outline(
         turns,
         next_cursor,
     })
+}
+
+fn load_visible_outline_prompt_events(
+    operational_history: &OperationalHistoryStore,
+    session_id: &str,
+    agent_id: &str,
+    latest_prompt_count: usize,
+    before_sequence: Option<u64>,
+    agent_import: Option<&ExternalProviderImportMetadata>,
+) -> Result<Vec<HistoryEvent>, DaemonError> {
+    let limit = outline_prompt_candidate_limit(latest_prompt_count, agent_import);
+    let mut next_before_sequence = before_sequence;
+    let mut prompts = Vec::new();
+    loop {
+        let mut candidates = load_latest_scoped_user_prompt_events(
+            operational_history,
+            session_id,
+            agent_id,
+            next_before_sequence,
+            limit,
+            agent_import,
+        )?;
+        let exhausted = candidates.len() < limit;
+        let oldest_sequence = candidates.first().map(|event| event.sequence);
+        candidates.retain(|prompt| {
+            !prompt.is_completion_check_turn()
+                && (!prompt.is_internal_prompt_echo()
+                    || prompt
+                        .prompt_id
+                        .as_deref()
+                        .is_some_and(crate::session::is_agent_inbox_prompt_id))
+                && !external_observed_tool_call_prompt(prompt)
+                && !external_recovery_envelope_prompt(prompt)
+        });
+        suppress_chariox_owned_external_prompt_echoes(
+            &mut candidates,
+            operational_history,
+            session_id,
+            agent_id,
+        )?;
+        // Hidden prompts consume SQL candidates, never the visible page or
+        // its lookahead. Keep scanning until an older visible anchor exists.
+        candidates.append(&mut prompts);
+        prompts = candidates;
+        if prompts.len() > latest_prompt_count || exhausted {
+            return Ok(prompts);
+        }
+        next_before_sequence = oldest_sequence;
+    }
 }
 
 fn outline_prompt_candidate_limit(
