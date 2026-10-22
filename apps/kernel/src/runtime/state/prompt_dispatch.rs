@@ -714,6 +714,7 @@ impl KernelRuntimeState {
             let delegated_parent = self.delegated_prompt_parent(&prepared.session_id)?;
             // Boxed: keeps the outer submission future small on deep call stacks.
             let submission = Box::pin(async {
+                authorize()?;
                 if let Some(mut submission) =
                     owned.submit_local_prepared_prompt_with_queue_policy(&prepared, allow_queue)?
                 {
