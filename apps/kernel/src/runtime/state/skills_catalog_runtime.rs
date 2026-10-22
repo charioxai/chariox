@@ -338,6 +338,14 @@ impl KernelRuntimeState {
                 };
                 service.preview_review_with_source_access(user, &mutation, &native, access)
             }
+            SkillsV2Request::ResolveRepository { url } => {
+                if origin.is_some() || !self.skills_host_owner(user) {
+                    return Err(skill_error(
+                        "only the home kernel owner can import a repository, from Skills",
+                    ));
+                }
+                service.resolve_repository(&url)
+            }
             SkillsV2Request::Mutate {
                 mutation,
                 review_receipt_id,

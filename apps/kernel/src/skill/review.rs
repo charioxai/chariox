@@ -1,7 +1,7 @@
 //! MP-08 / MP-10 / MP-11: home-owned source reviews; approval never refetches bytes.
 //! Runtime callers retain ordinary owner + ask/yolo authorization around publication.
 use super::{
-    catalog::{failure, safe_locator, validate_id, SkillCatalogSet},
+    catalog::{failure, validate_id, SkillCatalogSet},
     package::{materialize_skill_package_for_id, package_skill_directory},
     service::SkillCatalogService,
     v2::*,
@@ -59,9 +59,6 @@ fn publication_mutation(
                 *source = SkillInstallSource::Content {
                     skill_md: "reviewed staged package".into(),
                 };
-            }
-            SkillCatalogAction::SetPackageSource { source_locator, .. } => {
-                *source_locator = safe_locator(source_locator)?
             }
             _ => {}
         }
@@ -284,8 +281,7 @@ fn review_affected(
             }
             SkillCatalogAction::SetPackageState { package_id, .. }
             | SkillCatalogAction::RemovePackage { package_id, .. }
-            | SkillCatalogAction::RenamePackage { package_id, .. }
-            | SkillCatalogAction::SetPackageSource { package_id, .. } => {
+            | SkillCatalogAction::RenamePackage { package_id, .. } => {
                 ids.extend(
                     old.values()
                         .chain(new.values())

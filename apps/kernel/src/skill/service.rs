@@ -4,6 +4,7 @@ use super::{
     catalog::{failure, safe_locator, SkillCatalogSet},
     frontmatter::parse_frontmatter,
     package::{instruction_body, package_skill_directory},
+    repository::{staging_directory, RepositoryCheckout, RepositoryCheckouts},
     resolver::*,
     selection::explicit_skill_names,
     source_access::SkillSourceAccess,
@@ -49,6 +50,21 @@ impl SkillCatalogService {
             projections(&snapshot, project_id, native),
         ))
     }
+    /// Lists what a public repository carries at its current commit. Nothing is
+    /// installed; the owner's later install pins the returned revision.
+    pub fn resolve_repository(&self, url: &str) -> Result<SkillsV2Response, DaemonError> {
+        let checkout = RepositoryCheckout::fetch(staging_directory(&self.storage)?, url, None)?;
+        let (skills, skipped) = checkout.skills()?;
+        if skills.is_empty() {
+            return Err(failure("the repository has no installable SKILL.md"));
+        }
+        Ok(SkillsV2Response::Repository {
+            locator: checkout.locator.clone(),
+            revision: checkout.revision.clone(),
+            skills,
+            skipped,
+        })
+    }
     /// Prepare sources without publishing names, grants, catalog records or scripts.
     pub fn prepare(
         &self,
@@ -74,13 +90,34 @@ impl SkillCatalogService {
             return Err(failure("catalog changed; refresh before reviewing sources"));
         }
         let mut prepared = BTreeMap::new();
+        let mut checkouts = RepositoryCheckouts::default();
         for (index, action) in mutation.actions.iter().enumerate() {
             let source = match action {
                 SkillCatalogAction::Install { source, .. }
                 | SkillCatalogAction::Update { source, .. } => source,
                 _ => continue,
             };
-            let (package, locator) = if let SkillInstallSource::Native { selection } = source {
+            let mut source_revision = None;
+            let (package, locator) = if let SkillInstallSource::Repository {
+                url,
+                revision,
+                path,
+            } = source
+            {
+                if !matches!(action, SkillCatalogAction::Install { .. }) {
+                    return Err(failure(
+                        "updating from a repository revision is not supported; install the repository again",
+                    ));
+                }
+                if !matches!(access, SkillSourceAccess::Owner) {
+                    return Err(failure(
+                        "repository import is owner-initiated; ask the owner to import it from Skills",
+                    ));
+                }
+                let checkout = checkouts.get(&self.storage, url, revision)?;
+                source_revision = Some(checkout.revision.clone());
+                (checkout.package(path)?, Some(checkout.locator.clone()))
+            } else if let SkillInstallSource::Native { selection } = source {
                 let verified=native_sources.get(&index)
                     .filter(|verified|&verified.selection==selection)
                     .ok_or_else(||failure("provider import requires a current execution-local source; refresh the focused provider"))?;
@@ -143,6 +180,7 @@ impl SkillCatalogService {
                         SkillInstallSource::Folder { .. } => "folder",
                         SkillInstallSource::Content { .. } => "content",
                         SkillInstallSource::Url { .. } => "url",
+                        SkillInstallSource::Repository { .. } => "repository",
                         SkillInstallSource::Native { .. } => "provider_import",
                     }
                     .into(),
@@ -152,7 +190,7 @@ impl SkillCatalogService {
                     locator,
                     // Only a source adapter that actually resolves a repository
                     // revision may attest one; a caller-supplied label is not proof.
-                    source_revision: None,
+                    source_revision,
                     provider: match source {
                         SkillInstallSource::Native {
                             selection: SkillSelection::Native { provider, .. },
@@ -515,6 +553,9 @@ impl SkillCatalogService {
                     Some(safe_locator(url)?),
                 )
             }
+            SkillInstallSource::Repository { .. } => Err(failure(
+                "repository sources are prepared together with their reviewed checkout",
+            )),
             SkillInstallSource::Native { .. } => Err(failure(
                 "provider import requires a confirmed execution-local inventory source",
             )),

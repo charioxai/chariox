@@ -163,15 +163,6 @@ mod tests {
                 package_id: "package-1".into(),
                 name: "Review package".into(),
             },
-            SkillCatalogAction::SetPackageSource {
-                package_id: "package-1".into(),
-                source_locator: "https://github.com/example/skills".into(),
-                source_revision: "a".repeat(40),
-                upstream_members: std::collections::BTreeMap::from([(
-                    "review".into(),
-                    "skill-1".into(),
-                )]),
-            },
             SkillCatalogAction::RenamePackage {
                 package_id: "package-1".into(),
                 name: "Reviewed".into(),

@@ -217,6 +217,14 @@ pub enum SkillInstallSource {
     Native {
         selection: SkillSelection,
     },
+    /// One skill directory of a public git repository, pinned to the commit the
+    /// owner reviewed through `ResolveRepository`. Owner-initiated only.
+    Repository {
+        url: String,
+        revision: String,
+        /// Directory relative to the repository root; empty for a root skill.
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,12 +258,6 @@ pub enum SkillCatalogAction {
     CreatePackage {
         package_id: String,
         name: String,
-    },
-    SetPackageSource {
-        package_id: String,
-        source_locator: String,
-        source_revision: String,
-        upstream_members: BTreeMap<String, String>,
     },
     RenamePackage {
         package_id: String,
@@ -339,6 +341,11 @@ pub enum SkillsV2Request {
     Preview {
         mutation: SkillCatalogMutation,
     },
+    /// Fetch a public git repository and list the skills it carries at its
+    /// current commit. Owner-only; nothing is installed.
+    ResolveRepository {
+        url: String,
+    },
     List {
         session_id: String,
         agent_id: String,
@@ -390,6 +397,14 @@ pub enum SkillsV2Response {
         collisions: Vec<String>,
         review_receipt: SkillReviewReceipt,
     },
+    Repository {
+        locator: String,
+        /// Commit the listing was read at; installs pin exactly this commit.
+        revision: String,
+        skills: Vec<RepositorySkill>,
+        /// SKILL.md directories that cannot be installed, with the reason.
+        skipped: Vec<RepositorySkillSkip>,
+    },
     Published {
         revision: u64,
         changed_skill_ids: Vec<String>,
@@ -410,6 +425,21 @@ pub enum SkillsV2Response {
     Submitted {
         outcome: crate::session::PromptSubmissionOutcome,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepositorySkill {
+    pub path: String,
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepositorySkillSkip {
+    pub path: String,
+    pub reason: String,
 }
 
 /// MP-08 / MP-10 / MP-11: shared event payload for catalog and load invalidation.

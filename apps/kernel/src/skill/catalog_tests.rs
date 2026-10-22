@@ -413,12 +413,12 @@ fn skills_v2_safe_locators_remove_url_secrets() {
     );
 }
 
-struct StorageFixture {
-    root: std::path::PathBuf,
-    storage: super::storage::SkillCatalogStorage,
+pub(super) struct StorageFixture {
+    pub(super) root: std::path::PathBuf,
+    pub(super) storage: super::storage::SkillCatalogStorage,
 }
 impl StorageFixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let root =
             std::env::temp_dir().join(format!("skills-v2-storage-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(&root).unwrap();

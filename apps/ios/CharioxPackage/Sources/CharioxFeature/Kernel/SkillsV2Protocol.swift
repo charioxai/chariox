@@ -251,6 +251,12 @@ public enum SkillInstallSource: Codable, Equatable, Sendable {
     public struct NativePayload: Codable, Equatable, Sendable {
         public var selection: SkillSelection
     }
+    case repository(RepositoryPayload)
+    public struct RepositoryPayload: Codable, Equatable, Sendable {
+        public var url: String
+        public var revision: String
+        public var path: String
+    }
     private enum Tag: String, CodingKey { case kind }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: Tag.self)
@@ -259,6 +265,7 @@ public enum SkillInstallSource: Codable, Equatable, Sendable {
         case "content": self = .content(try ContentPayload(from: decoder))
         case "url": self = .url(try UrlPayload(from: decoder))
         case "native": self = .native(try NativePayload(from: decoder))
+        case "repository": self = .repository(try RepositoryPayload(from: decoder))
         default: throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Unknown Skills v2 variant")
         }
     }
@@ -277,8 +284,22 @@ public enum SkillInstallSource: Codable, Equatable, Sendable {
         case let .native(payload):
             try container.encode("native", forKey: .kind)
             try payload.encode(to: encoder)
+        case let .repository(payload):
+            try container.encode("repository", forKey: .kind)
+            try payload.encode(to: encoder)
         }
     }
+}
+
+public struct RepositorySkill: Codable, Equatable, Sendable {
+    public var path: String
+    public var name: String
+    public var description: String
+}
+
+public struct RepositorySkillSkip: Codable, Equatable, Sendable {
+    public var path: String
+    public var reason: String
 }
 
 public enum SkillCollisionAction: Codable, Equatable, Sendable {
@@ -343,13 +364,6 @@ public enum SkillCatalogAction: Codable, Equatable, Sendable {
         public var package_id: String
         public var name: String
     }
-    case setPackageSource(SetPackageSourcePayload)
-    public struct SetPackageSourcePayload: Codable, Equatable, Sendable {
-        public var package_id: String
-        public var source_locator: String
-        public var source_revision: String
-        public var upstream_members: [String: String]
-    }
     case renamePackage(RenamePackagePayload)
     public struct RenamePackagePayload: Codable, Equatable, Sendable {
         public var package_id: String
@@ -384,7 +398,6 @@ public enum SkillCatalogAction: Codable, Equatable, Sendable {
         case "remove": self = .remove(try RemovePayload(from: decoder))
         case "set_state": self = .setState(try SetStatePayload(from: decoder))
         case "create_package": self = .createPackage(try CreatePackagePayload(from: decoder))
-        case "set_package_source": self = .setPackageSource(try SetPackageSourcePayload(from: decoder))
         case "rename_package": self = .renamePackage(try RenamePackagePayload(from: decoder))
         case "regroup": self = .regroup(try RegroupPayload(from: decoder))
         case "remove_package": self = .removePackage(try RemovePackagePayload(from: decoder))
@@ -410,9 +423,6 @@ public enum SkillCatalogAction: Codable, Equatable, Sendable {
             try payload.encode(to: encoder)
         case let .createPackage(payload):
             try container.encode("create_package", forKey: .action)
-            try payload.encode(to: encoder)
-        case let .setPackageSource(payload):
-            try container.encode("set_package_source", forKey: .action)
             try payload.encode(to: encoder)
         case let .renamePackage(payload):
             try container.encode("rename_package", forKey: .action)
@@ -488,6 +498,10 @@ public enum SkillsV2Request: Codable, Equatable, Sendable {
     public struct PreviewPayload: Codable, Equatable, Sendable {
         public var mutation: SkillCatalogMutation
     }
+    case resolveRepository(ResolveRepositoryPayload)
+    public struct ResolveRepositoryPayload: Codable, Equatable, Sendable {
+        public var url: String
+    }
     case list(ListPayload)
     public struct ListPayload: Codable, Equatable, Sendable {
         public var session_id: String
@@ -521,6 +535,7 @@ public enum SkillsV2Request: Codable, Equatable, Sendable {
         case "loads": self = .loads(try LoadsPayload(from: decoder))
         case "mutate": self = .mutate(try MutatePayload(from: decoder))
         case "preview": self = .preview(try PreviewPayload(from: decoder))
+        case "resolve_repository": self = .resolveRepository(try ResolveRepositoryPayload(from: decoder))
         case "list": self = .list(try ListPayload(from: decoder))
         case "load": self = .load(try LoadPayload(from: decoder))
         case "submit": self = .submit(try SubmitPayload(from: decoder))
@@ -550,6 +565,9 @@ public enum SkillsV2Request: Codable, Equatable, Sendable {
             try payload.encode(to: encoder)
         case let .preview(payload):
             try container.encode("preview", forKey: .action)
+            try payload.encode(to: encoder)
+        case let .resolveRepository(payload):
+            try container.encode("resolve_repository", forKey: .action)
             try payload.encode(to: encoder)
         case let .list(payload):
             try container.encode("list", forKey: .action)
@@ -598,6 +616,13 @@ public enum SkillsV2Response: Codable, Equatable, Sendable {
         public var collisions: [String]
         public var review_receipt: SkillReviewReceipt
     }
+    case repository(RepositoryPayload)
+    public struct RepositoryPayload: Codable, Equatable, Sendable {
+        public var locator: String
+        public var revision: String
+        public var skills: [RepositorySkill]
+        public var skipped: [RepositorySkillSkip]
+    }
     case published(PublishedPayload)
     public struct PublishedPayload: Codable, Equatable, Sendable {
         public var revision: UInt64
@@ -632,6 +657,7 @@ public enum SkillsV2Response: Codable, Equatable, Sendable {
         case "native_details": self = .nativeDetails(try NativeDetailsPayload(from: decoder))
         case "loads": self = .loads(try LoadsPayload(from: decoder))
         case "preview": self = .preview(try PreviewPayload(from: decoder))
+        case "repository": self = .repository(try RepositoryPayload(from: decoder))
         case "published": self = .published(try PublishedPayload(from: decoder))
         case "page": self = .page(try PagePayload(from: decoder))
         case "loaded": self = .loaded(try LoadedPayload(from: decoder))
@@ -659,6 +685,9 @@ public enum SkillsV2Response: Codable, Equatable, Sendable {
             try payload.encode(to: encoder)
         case let .preview(payload):
             try container.encode("preview", forKey: .kind)
+            try payload.encode(to: encoder)
+        case let .repository(payload):
+            try container.encode("repository", forKey: .kind)
             try payload.encode(to: encoder)
         case let .published(payload):
             try container.encode("published", forKey: .kind)

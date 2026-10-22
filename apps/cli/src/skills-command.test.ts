@@ -44,6 +44,9 @@ function harness(packages: Extract<SkillsV2Response, { kind: "catalog" }>["packa
         case "catalog": return catalog
         case "loads": return { kind: "loads", records: [] }
         case "preview": return { kind: "preview", expected_revision: 7, affected: [], collisions: [], review_receipt: { id: "receipt-1", expires_at_ms: 0, mutation_sha256: "x", sources: [] } }
+        case "resolve_repository": return { kind: "repository", locator: request.url, revision: "c".repeat(40),
+          skills: [{ path: "skills/alpha", name: "alpha", description: "A" }, { path: "skills/beta", name: "beta", description: "B" }],
+          skipped: [{ path: "skills/bad", reason: "SKILL.md must start with YAML frontmatter" }] }
         case "mutate": return { kind: "published", revision: 8, changed_skill_ids: ["skill-review"], removed_skill_ids: [] }
         default: throw new Error(`unexpected ${request.action}`)
       }
@@ -112,4 +115,32 @@ test("/skills import reviews installing the focused provider's skill", async () 
   const preview = requests.find(request => request.action === "preview")
   assert.deepEqual(preview?.action === "preview" && preview.mutation.actions, [{ action: "install", source: { kind: "native", selection: native.selection },
     collision: { action: "rename", name: "house-lint" }, package_id: null }])
+})
+
+test("/skills repo reviews one source-backed package of every skill at the resolved commit", async () => {
+  const { requests, notices, run } = harness()
+  await run("/skills repo https://github.com/acme/skills.git")
+  assert.deepEqual(requests.find(request => request.action === "resolve_repository"), { action: "resolve_repository", url: "https://github.com/acme/skills.git" })
+  const preview = requests.find(request => request.action === "preview")
+  const actions = preview?.action === "preview" ? preview.mutation.actions : []
+  const created = actions[0]
+  assert.equal(created?.action === "create_package" && created.name, "skills")
+  const packageId = created?.action === "create_package" ? created.package_id : ""
+  assert.deepEqual(actions.slice(1), ["skills/alpha", "skills/beta"].map(path => ({
+    action: "install", source: { kind: "repository", url: "https://github.com/acme/skills.git", revision: "c".repeat(40), path },
+    collision: { action: "reject" }, package_id: packageId,
+  })))
+  assert.match(notices.join("\n"), /skipped skills\/bad: SKILL.md must start with YAML frontmatter/)
+})
+
+test("/skills repo --only installs just the named directories and refuses an unknown one", async () => {
+  const { requests, footers, run } = harness()
+  await run("/skills repo https://github.com/acme/skills.git --only skills/beta --name Acme")
+  const preview = requests.find(request => request.action === "preview")
+  const actions = preview?.action === "preview" ? preview.mutation.actions : []
+  assert.equal(actions.length, 2)
+  assert.equal(actions[0]?.action === "create_package" && actions[0].name, "Acme")
+  assert.equal(actions[1]?.action === "install" && actions[1].source.kind === "repository" && actions[1].source.path, "skills/beta")
+  await run("/skills repo https://github.com/acme/skills.git --only skills/nope")
+  assert.match(footers.at(-1)!, /no skill at skills\/nope/)
 })

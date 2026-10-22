@@ -45,7 +45,6 @@ pub(super) fn manage() -> Value {
         variant("action","remove",&["skill_id"],json!({"skill_id":id})),
         variant("action","set_state",&["skill_id","state"],json!({"skill_id":id,"state":state})),
         variant("action","create_package",&["package_id","name"],json!({"package_id":id,"name":name})),
-        variant("action","set_package_source",&["package_id","source_locator","source_revision","upstream_members"],json!({"package_id":id,"source_locator":text,"source_revision":text,"upstream_members":{"type":"object","additionalProperties":id}})),
         variant("action","rename_package",&["package_id","name"],json!({"package_id":id,"name":name})),
         variant("action","regroup",&["skill_id","package_id"],json!({"skill_id":id,"package_id":optional_id})),
         variant("action","remove_package",&["package_id","remove_skills"],json!({"package_id":id,"remove_skills":{"type":"boolean"}})),

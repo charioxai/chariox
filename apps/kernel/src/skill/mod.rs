@@ -15,6 +15,9 @@ mod package;
 mod package_tests;
 mod paths;
 mod provider_import;
+mod repository;
+#[cfg(test)]
+mod repository_tests;
 pub mod resolver;
 pub mod review;
 pub mod selection;

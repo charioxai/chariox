@@ -191,9 +191,9 @@ impl SkillCatalogSet {
         for (index, action) in mutation.actions.iter().enumerate() {
             match action {
                 SkillCatalogAction::Install {
+                    source,
                     collision,
                     package_id,
-                    ..
                 } => {
                     let mut record = prepared
                         .get(&index)
@@ -221,6 +221,11 @@ impl SkillCatalogSet {
                             *next.record_mut(skill_id)? = record;
                             continue;
                         }
+                    }
+                    if let (SkillInstallSource::Repository { path, .. }, Some(package_id)) =
+                        (source, &record.package_id)
+                    {
+                        next.attach_repository_member(&mutation.scope, package_id, path, &record)?;
                     }
                     next.catalog_mut(&mutation.scope).skills.push(record);
                 }
@@ -272,18 +277,6 @@ impl SkillCatalogSet {
                 }
                 SkillCatalogAction::RenamePackage { package_id, name } => {
                     next.package_mut(&mutation.scope, package_id)?.name = name.clone();
-                }
-                SkillCatalogAction::SetPackageSource {
-                    package_id,
-                    source_locator,
-                    source_revision,
-                    upstream_members,
-                } => {
-                    let package = next.package_mut(&mutation.scope, package_id)?;
-                    package.custom = false;
-                    package.source_locator = Some(safe_locator(source_locator)?);
-                    package.source_revision = Some(source_revision.clone());
-                    package.upstream_members = upstream_members.clone();
                 }
                 SkillCatalogAction::Regroup {
                     skill_id,
@@ -405,6 +398,44 @@ impl SkillCatalogSet {
             }
         } else {
             return Err(failure("skill is outside the selected scope"));
+        }
+        Ok(())
+    }
+    /// A package becomes source-backed only through members whose revision the
+    /// repository adapter attested; the revision is read from their provenance.
+    fn attach_repository_member(
+        &mut self,
+        scope: &SkillScope,
+        package_id: &str,
+        path: &str,
+        record: &SkillRecord,
+    ) -> Result<(), DaemonError> {
+        let has_members = self
+            .catalog(scope)
+            .into_iter()
+            .flat_map(|c| &c.skills)
+            .any(|s| s.package_id.as_deref() == Some(package_id));
+        let locator = record.provenance.locator.clone();
+        let revision = record.provenance.source_revision.clone();
+        let package = self.package_mut(scope, package_id)?;
+        if package.custom && !has_members {
+            package.custom = false;
+            package.source_locator = locator;
+            package.source_revision = revision;
+        } else if package.custom
+            || package.source_locator != locator
+            || package.source_revision != revision
+        {
+            return Err(failure(
+                "a repository installs into its own new package or one from the same repository commit; create a new package for it",
+            ));
+        }
+        if package
+            .upstream_members
+            .insert(path.into(), record.id.clone())
+            .is_some()
+        {
+            return Err(failure("a repository directory can be installed only once"));
         }
         Ok(())
     }

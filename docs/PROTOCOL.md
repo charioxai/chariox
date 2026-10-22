@@ -4967,6 +4967,19 @@ source-bound selections alongside the ordinary prompt/attachment identities.
 A native selection includes kernel entry ID, provider, account, execution place
 and inventory revision; no client skill path or body is accepted.
 
+`resolve_repository` (home owner only, never an agent tool) fetches a public git
+repository with the machine's `git` and answers its current commit and every
+SKILL.md directory (`repository` response: `locator`, `revision`, `skills`,
+`skipped`). Nothing is installed. The owner then reviews a batch of `install`
+actions with `source.kind = "repository"` (`url`, full commit `revision`, member
+`path`) plus one `create_package`. Each install is fetched at exactly that
+commit, and the kernel itself records the commit as `source_revision` on every
+member and on the package, with `upstream_members` mapping path to skill ID. A
+revision is never accepted from a client label: a repository package refuses
+members from another commit and cannot join a custom package. Credentials in
+the URL, private or auth-required repositories and agent-initiated repository
+sources are refused.
+
 `SkillProjection.delivery` distinguishes Chariox delivery, verified native
 provision, content conflict and unverified native exposure. Equal complete
 content and compatible exposure produce one Chariox picker row with

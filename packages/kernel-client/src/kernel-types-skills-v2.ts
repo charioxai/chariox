@@ -131,11 +131,14 @@ export type SkillLoadRecord = {
   delivered_at_ms: number
 }
 
+export type RepositorySkill = { path: string; name: string; description: string }
+export type RepositorySkillSkip = { path: string; reason: string }
 export type SkillInstallSource =
   | { kind: "folder"; path: string }
   | { kind: "content"; skill_md: string }
   | { kind: "url"; url: string; pinned_revision: string | null }
   | { kind: "native"; selection: SkillSelection }
+  | { kind: "repository"; url: string; revision: string; path: string }
 
 export type SkillCollisionAction =
   | { action: "reject" }
@@ -148,7 +151,6 @@ export type SkillCatalogAction =
   | { action: "remove"; skill_id: string }
   | { action: "set_state"; skill_id: string; state: SkillState | null }
   | { action: "create_package"; package_id: string; name: string }
-  | { action: "set_package_source"; package_id: string; source_locator: string; source_revision: string; upstream_members: Record<string, string> }
   | { action: "rename_package"; package_id: string; name: string }
   | { action: "regroup"; skill_id: string; package_id: string | null }
   | { action: "remove_package"; package_id: string; remove_skills: boolean }
@@ -183,6 +185,7 @@ export type SkillsV2Request =
   | { action: "loads"; session_id: string; agent_id: string | null }
   | { action: "mutate"; mutation: SkillCatalogMutation; review_receipt_id: string }
   | { action: "preview"; mutation: SkillCatalogMutation }
+  | { action: "resolve_repository"; url: string }
   | { action: "list"; session_id: string; agent_id: string; cursor: string | null; limit: number }
   | { action: "load"; session_id: string; agent_id: string; skill_id: string }
   | { action: "submit"; session_id: string; attachment_id: string; target_agent_id: string; prompt: string; attachments: (PromptAttachmentPart)[]; selections: (SkillSelection)[] }
@@ -194,6 +197,7 @@ export type SkillsV2Response =
   | { kind: "native_details"; details: NativeSkillDetails }
   | { kind: "loads"; records: (SkillLoadRecord)[] }
   | { kind: "preview"; expected_revision: number; affected: (SkillRecord)[]; collisions: (string)[]; review_receipt: SkillReviewReceipt }
+  | { kind: "repository"; locator: string; revision: string; skills: (RepositorySkill)[]; skipped: (RepositorySkillSkip)[] }
   | { kind: "published"; revision: number; changed_skill_ids: (string)[]; removed_skill_ids: (string)[] }
   | { kind: "page"; revision: number; skills: (SkillProjection)[]; next_cursor: string | null }
   | { kind: "loaded"; skill_id: string; digest: string; body: string; root: string; files: (SkillFileManifest)[] }

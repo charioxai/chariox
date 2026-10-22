@@ -42,7 +42,7 @@ export type SkillsCommandDeps = {
 
 const USAGE = "usage: /skills list | chariox | project | environment | from | show <skill> | show-from <name> | "
   + "install <folder|url> [--project] [--revision <rev>] [--rename <name> | --replace <skill>] [--package <package>] | "
-  + "import <name> [--project] [--rename <name> | --replace <skill>] | update <skill> [<folder|url>] | remove <skill> | "
+  + "import <name> [--project] [--rename <name> | --replace <skill>] | repo <https-url> [--project] [--name <package>] [--only <path,path>] | update <skill> [<folder|url>] | remove <skill> | "
   + "state <skill> auto|manual|off|reset [--project] | create-package <name> [--project] | move-to-package <skill> <package> | "
   + "ungroup <skill> | package-state <package> auto|manual|off|reset [--project] | update-package <package> | "
   + "remove-package <package> | ungroup-package <package> | confirm | cancel"
@@ -60,7 +60,7 @@ function parseFlags(args: readonly string[]): Flags {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!
     if (arg === "--project") flags.project = true
-    else if (arg === "--revision" || arg === "--rename" || arg === "--replace" || arg === "--package") {
+    else if (arg === "--revision" || arg === "--rename" || arg === "--replace" || arg === "--package" || arg === "--name" || arg === "--only") {
       const value = args[index + 1]
       if (!value) throw new SkillsCommandError(`${arg} needs a value`)
       flags.values.set(arg.slice(2), value)
@@ -84,7 +84,7 @@ function sourceFrom(value: string, revision: string | null): SkillInstallSource 
 
 function recordedSource(row: SkillProjection): SkillInstallSource | null {
   const locator = row.skill.provenance.locator
-  if (!locator) return null
+  if (!locator || row.skill.provenance.kind === "repository") return null
   if (row.skill.provenance.kind === "folder") return { kind: "folder", path: locator }
   return /^https?:\/\//.test(locator) ? { kind: "url", url: locator, pinned_revision: null } : null
 }
@@ -312,6 +312,30 @@ export function createSkillsCommand(deps: SkillsCommandDeps): (args: readonly st
         const packageRef = flags.values.get("package")
         return stage(result, scope, [{ action: "install", source: sourceFrom(first, flags.values.get("revision") ?? null),
           collision: collision(result, flags), package_id: packageRef ? findPackage(result, packageRef).id : null }])
+      }
+      case "repo": {
+        if (!first) throw new SkillsCommandError("usage: /skills repo <https-url> [--project] [--name <package>] [--only <path,path>]")
+        const scope = flags.project ? requireProject() : { kind: "chariox" as const }
+        const listing = await request(skillsV2Request({ action: "resolve_repository", url: first }), "repository")
+        const only = flags.values.get("only")?.split(",").map(path => path.trim().replace(/^\/+|\/+$/g, ""))
+        const chosen = only ? listing.skills.filter(skill => only.includes(skill.path)) : listing.skills
+        const unknown = only?.filter(path => !listing.skills.some(skill => skill.path === path)) ?? []
+        if (unknown.length) throw new SkillsCommandError(`the repository has no skill at ${unknown.join(", ")}; see the listing above or omit --only`)
+        const lines = [`Repository ${listing.locator} @ ${listing.revision}: ${listing.skills.length} skill(s)`]
+        for (const skill of listing.skills) lines.push(`  $${skill.name}  ${skill.path || "(repository root)"}${chosen.includes(skill) ? "" : " · not selected"}`)
+        for (const skip of listing.skipped) lines.push(`  skipped ${skip.path || "(repository root)"}: ${skip.reason}`)
+        deps.appendNotice(lines.join("\n"))
+        const packageId = randomUUID()
+        const packageName = flags.values.get("name") ?? (listing.locator.replace(/\/+$/, "").split("/").pop() ?? "repository").replace(/\.git$/, "")
+        return stage(result, scope, [
+          { action: "create_package", package_id: packageId, name: packageName },
+          ...chosen.map((skill): SkillCatalogAction => ({
+            action: "install",
+            source: { kind: "repository", url: first, revision: listing.revision, path: skill.path },
+            collision: { action: "reject" },
+            package_id: packageId,
+          })),
+        ])
       }
       case "import": {
         const entry = findNative(result, first)
