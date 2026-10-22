@@ -278,7 +278,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const source = sheet.ownerNode?.localName === 'style' && !sheet.ownerNode.sheet?.media?.length ? sheet.ownerNode.textContent : null;
       return source ? sanitizeMirrorCss(source, base, cssResource) : text;
     };
-    const inlineStyle = (element, base) => { const live = element.style.cssText; return sanitizeMirrorCss(LOSSY.test(live) ? element.getAttribute('style') ?? live : live, base, resource); };
+    const inlineStyle = (element, base) => { const live = element.style.cssText; return sanitizeMirrorCss(LOSSY.test(live) ? element.getAttribute('style') ?? live : live, base, cssResource); };
     const box = node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
     // Layout size (untransformed: the mirrored DOM applies the same transforms); SVG/text boxes use the rendered box.
     const layoutSize = node => node.nodeType === 1 && node.offsetWidth !== undefined ? [node.offsetWidth, node.offsetHeight] : (node.nodeType === 1 ? box(node) : textBox(node)).slice(2);
@@ -438,7 +438,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // drain, and their rule text when CDP reports a constructed sheet changed (replaceSync, rule edits).
     // A disabled sheet keeps its ordered slot as an empty sheet; a sheet's media list is its @media condition.
     const sheetIds = new WeakMap(), adoptedTexts = new WeakMap(); let sheetSerial = 0;
-    const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { const base = root.baseURI ?? document.baseURI, text = sheetText(sheet, base), media = sheet.media.mediaText; adoptedTexts.set(sheet, text); sheets.push(sheet.disabled ? '' : sanitizeMirrorCss(media ? `@media ${media}{${text}}` : text, base, resource)); } catch { sheets.push(''); } } return sheets; };
+    const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { const base = root.baseURI ?? document.baseURI, text = sheetText(sheet, base), media = sheet.media.mediaText; adoptedTexts.set(sheet, text); sheets.push(sheet.disabled ? '' : sanitizeMirrorCss(media ? `@media ${media}{${text}}` : text, base, cssResource)); } catch { sheets.push(''); } } return sheets; };
     const adoptedSignature = root => (root.adoptedStyleSheets ?? []).map(sheet => { let id = sheetIds.get(sheet); if (!id) sheetIds.set(sheet, id = ++sheetSerial); return `${id}:${sheetSignature(sheet)}`; }).join(',');
     const adoptedEdited = () => {
       const edited = new Map(), out = new Set();

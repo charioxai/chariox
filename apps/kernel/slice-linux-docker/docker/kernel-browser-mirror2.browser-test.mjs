@@ -1952,6 +1952,18 @@ test('MP-10: a stylesheet image also used by an off-screen <img> is still delive
     assert(sprite, 'the CSS-referenced sprite reaches the viewer although its <img> twin is far off screen');
   }, {'/sprite.svg':{type:'image/svg+xml',body:svg('#123456')}}));
 
+// The same shared URL when the visible use is an inline style or a constructed (adopted) stylesheet.
+const sharedSpriteDelivered = async ({next}) => {
+  const until = Date.now() + 8000; let sprite = false;
+  for (let packet = await next(); !sprite && Date.now() < until; packet = await next(500)) sprite = Object.values(packet.resources ?? {}).some(r => r.mime_type === 'image/svg+xml');
+  assert(sprite, 'the CSS-referenced sprite reaches the viewer although its <img> twin is far off screen');
+};
+const farTwin = '<div style="height:6000px"></div><img src="/sprite.svg" width="40" height="40">';
+test('MP-10: an inline-style image also used by an off-screen <img> is still delivered', () => mirrored(
+  `<div style="width:60px;height:30px;background-image:url(/sprite.svg)"></div>${farTwin}`, sharedSpriteDelivered, {'/sprite.svg':{type:'image/svg+xml',body:svg('#123456')}}));
+test('MP-10: an adopted-stylesheet image also used by an off-screen <img> is still delivered', () => mirrored(
+  `<div class="logo" style="width:60px;height:30px"></div>${farTwin}<script>const sheet=new CSSStyleSheet();sheet.replaceSync('.logo{background:url(/sprite.svg)}');document.adoptedStyleSheets=[sheet]</script>`, sharedSpriteDelivered, {'/sprite.svg':{type:'image/svg+xml',body:svg('#123456')}}));
+
 // MP-08/MP-10/MP-11: a deferred valid image may use a sized placeholder; an image the native page cannot decode keeps its native broken-image layout.
 test('MP-10: an already broken native image has no deferred resource placeholder', () => mirrored(
   '<img id="photo" width="728" height="90" alt="Unavailable" src="/broken.png">', async ({next,evaluate}) => {
