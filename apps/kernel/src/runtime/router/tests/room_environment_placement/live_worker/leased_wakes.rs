@@ -1683,3 +1683,82 @@ async fn leased_process_runs_on_worker_and_only_home_owns_task() {
     assert!(worker_receipts[0].process_start_ticks.is_some());
     assert_eq!(worker_receipts[0].wake.id, settled.id);
 }
+
+#[test]
+fn mp10_leased_required_agent_with_a_home_sudo_window_types_without_approval() {
+    run_test(leased_required_agent_with_a_home_sudo_window_types_without_approval);
+}
+
+/// A Required agent on a worker whose owner holds a live home /sudo window
+/// types into its terminal without a question; without the window it asks.
+async fn leased_required_agent_with_a_home_sudo_window_types_without_approval() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start_with_home_passkey(OWNER_PASSKEY).await;
+    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
+    let room = fixture.rooms[0].clone();
+    let attachment = owner_attachment(&fixture, &room).await;
+    let placement = fixture.placement();
+    let spawned = dispatch_json(
+        &fixture.home,
+        json!({"SpawnAgent":{
+            "session_id":room, "provider":"managed-dev-stub", "model":"controlled-cancel-idle",
+            "kernel_ref":AGENT_WORKER, "worktree_placement":placement,
+            "permission_level":"required"
+        }}),
+    )
+    .await
+    .expect("spawn a Required leased agent on the worker");
+    let agent = spawned["AgentSpawned"]["agent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (owner, _) =
+        open_leased_sudo(&fixture, &room, &attachment, &agent, Duration::from_secs(60)).await;
+    let home_prompt = fixture
+        .home
+        .runtime_state
+        .list_sudo_turns(&owner)
+        .pop()
+        .unwrap()
+        .prompt_id
+        .unwrap();
+    let run = worker.run_for(&fixture, &agent, &home_prompt).await;
+    let token = run.runtime_mcp_auth_token().unwrap().to_string();
+    let call = |tool: &'static str, arguments: serde_json::Value| {
+        let router = worker.router.clone();
+        let token = token.clone();
+        async move {
+            timeout(
+                Duration::from_secs(5),
+                router.dispatch_authenticated_runtime_tool_call(&token, tool, arguments),
+            )
+            .await
+        }
+    };
+    let opened = call("mcp__chariox__terminal_open", json!({"command": ["/bin/cat"]})).await;
+    let terminal_id = opened
+        .as_ref()
+        .ok()
+        .and_then(|result| result.as_ref().ok())
+        .and_then(|result| result.payload["terminal"]["terminal_id"].as_str())
+        .map(str::to_owned);
+    let sent = match &terminal_id {
+        Some(id) => Some(
+            call(
+                "mcp__chariox__terminal_send",
+                json!({"terminal_id": id, "text": "leased-sudo-input", "enter": true}),
+            )
+            .await,
+        ),
+        None => None,
+    };
+    worker.stop().await;
+    fixture.stop().await;
+    assert!(terminal_id.is_some(), "the leased agent opens a terminal: {opened:?}");
+    let sent = sent.unwrap();
+    assert!(
+        sent.as_ref()
+            .is_ok_and(|result| result.as_ref().is_ok_and(|result| result.ok)),
+        "a live home sudo window covers terminal input, no approval is asked: {sent:?}"
+    );
+}
