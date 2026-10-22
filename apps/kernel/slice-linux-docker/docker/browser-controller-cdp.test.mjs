@@ -1750,6 +1750,7 @@ test("a scale change over blank pages only, or one the browser already has, rela
   const original = blank.send.bind(blank);
   blank.send = async (method, params) => {
     if (method === "Target.getTargets") return { targetInfos: [{ targetId: "target-a", type: "page", url: "about:blank", title: "" }] };
+    if (method === "Runtime.evaluate" && /outerHTML/.test(params.expression)) return { result: { value: true } };
     return original(method, params);
   };
   const browser = new BrowserCdpClient({

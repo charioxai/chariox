@@ -42,3 +42,50 @@ test("a scale change never retires a page that holds unsaved in-memory work", { 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+async function withBlankBrowser(run) {
+  const root = await mkdtemp(path.join(tmpdir(), "mirror-scale-blank-"));
+  const child = spawn(process.env.CHARIOX_KERNEL_BROWSER_EXECUTABLE, [`--user-data-dir=${root}/chrome`, "--remote-debugging-pipe", "--headless=new", "--no-sandbox", "--force-device-scale-factor=1", "about:blank"], { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] });
+  const connection = connectCdpPipe(child.stdio[3], child.stdio[4], 10000);
+  const steps = [];
+  const browser = new BrowserCdpClient({
+    connectionFactory: () => connection,
+    applyCanonicalDisplay: async () => { steps.push("display"); },
+    applyBrowserScale: async () => { steps.push("relaunch"); await connection.send("Browser.close"); },
+    browserScaleChange: async () => true,
+  });
+  try {
+    const { targetInfos } = await connection.send("Target.getTargets");
+    const { targetId } = targetInfos.find((target) => target.type === "page");
+    const { sessionId } = await connection.send("Target.attachToTarget", { targetId, flatten: true });
+    const evaluate = async (expression) => (await connection.send("Runtime.evaluate", { expression, returnByValue: true }, sessionId)).result.value;
+    await run({ browser, steps, evaluate });
+  } finally {
+    await connection.send("Browser.close").catch(() => {});
+    for (let attempt = 0; attempt < 50 && child.exitCode === null && child.signalCode === null; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+test("a scale change keeps a populated about:blank document alive", { timeout: 60000 }, async () => {
+  for (const populate of [
+    "document.body.innerHTML = '<textarea id=draft></textarea>'; document.getElementById('draft').value = 'unsaved'",
+    "window.editorState = { draft: 'unsaved' }",
+  ]) {
+    await withBlankBrowser(async ({ browser, steps, evaluate }) => {
+      await evaluate(populate);
+      const marker = await evaluate("window.documentMarker = Math.random()");
+      await assert.rejects(browser.reconcile(viewportAtScale2), (error) => error.code === "viewport_apply_failed");
+      assert.deepEqual(steps, [], `${populate}: neither the display nor the browser lifetime was touched`);
+      assert.equal(await evaluate("window.documentMarker"), marker, "the same document is still live");
+    });
+  }
+});
+
+test("a scale change retires an untouched about:blank startup page", { timeout: 60000 }, async () => {
+  await withBlankBrowser(async ({ browser, steps }) => {
+    await browser.reconcile(viewportAtScale2);
+    assert.deepEqual(steps, ["display", "relaunch"]);
+  });
+});

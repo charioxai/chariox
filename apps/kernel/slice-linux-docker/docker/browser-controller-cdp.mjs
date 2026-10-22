@@ -50,6 +50,17 @@ import {retireNativeStates} from './kernel-browser-native-worker.mjs';
 const DEFAULT_DEBUGGER_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 const BLANK_PAGE_URLS = new Set(["about:blank", "chrome://newtab/", "chrome://new-tab-page/"]);
+// An about:blank document is unused only while nothing has populated it: an
+// untouched skeleton, no history, and no window property a fresh blank frame lacks.
+const UNUSED_BLANK_DOCUMENT_PROBE = `(() => {
+  if (document.documentElement.outerHTML !== "<html><head></head><body></body></html>" || history.length !== 1) return false;
+  const frame = document.body.appendChild(document.createElement("iframe"));
+  const names = (scope) => Object.getOwnPropertyNames(scope).filter((name) => !/^\\d+$/.test(name));
+  const fresh = new Set(names(frame.contentWindow));
+  const unused = names(window).every((name) => fresh.has(name));
+  frame.remove();
+  return unused;
+})()`;
 const PERSISTENT_COOKIE_WRITER_TARGET_TYPES = new Set(["worker", "shared_worker"]);
 // Focus is read in a controller-owned isolated world: a page can redefine
 // document.visibilityState in its own world, but not in this one.
@@ -180,13 +191,30 @@ export class BrowserCdpClient {
 
   // The native scale is a launch flag: changing it retires the browser and
   // every page's in-memory state with it. That is only acceptable while all
-  // pages are blank, and is refused before the display is touched otherwise.
+  // pages are unused startup pages, and is refused before the display is
+  // touched otherwise. A blank URL alone does not make a document unused.
   async refuseScaleChangeOverLivePages(viewport) {
     if (this.appliedBrowserScale === viewport.device_scale_factor || !await this.browserScaleChange?.(viewport)) return;
-    const { targetInfos = [] } = await (await this.ensureConnection()).send("Target.getTargets");
-    if (targetInfos.every((target) => target?.type !== "page" || BLANK_PAGE_URLS.has(target.url))) return;
+    const connection = await this.ensureConnection();
+    const { targetInfos = [] } = await connection.send("Target.getTargets");
+    const pages = targetInfos.filter((target) => target?.type === "page");
+    if (pages.every((target) => BLANK_PAGE_URLS.has(target.url)) && (await Promise.all(pages.map((target) => this.isUnusedBlankPage(connection, target)))).every(Boolean)) return;
     throw new BrowserControllerError("viewport_apply_failed",
       "the Room browser is open on pages and a different display scale would close them and lose their unsaved state; close the pages, or keep the viewer at the current scale");
+  }
+
+  async isUnusedBlankPage(connection, target) {
+    if (target.url !== "about:blank") return true;
+    let sessionId;
+    try {
+      sessionId = (await connection.send("Target.attachToTarget", { targetId: target.targetId, flatten: true })).sessionId;
+      const probed = await connection.send("Runtime.evaluate", { expression: UNUSED_BLANK_DOCUMENT_PROBE, returnByValue: true }, sessionId);
+      return probed?.result?.value === true;
+    } catch {
+      return false;
+    } finally {
+      if (sessionId) await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
+    }
   }
 
   async reconcile(rawViewport, { browserBarVisible, appPanelCssWidth, visibleTargetId } = {}) {
