@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, oneshot, RwLock};
-use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use crate::runtime::cloud_api_client::CLOUD_PRESENCE_REQUEST_TIMEOUT;
@@ -771,19 +770,8 @@ pub(super) async fn publish_cloud_presence(
     }
 }
 
-pub(super) fn spawn_cloud_presence_publish(
-    router: Arc<CommandRouter>,
-    online: bool,
-    reason: impl Into<String>,
-) -> JoinHandle<()> {
-    let reason = reason.into();
-    tokio::spawn(async move {
-        publish_cloud_presence(&router, online, &reason).await;
-    })
-}
-
 pub(super) async fn publish_offline_and_set_disconnected(
-    router: &Arc<CommandRouter>,
+    presence: &super::CloudPresencePublisher,
     state: &Arc<RwLock<RelayClientState>>,
     reason: &str,
 ) {
@@ -795,7 +783,7 @@ pub(super) async fn publish_offline_and_set_disconnected(
         }),
     );
     set_disconnected(state).await;
-    spawn_cloud_presence_publish(Arc::clone(router), false, reason.to_string());
+    presence.publish(false, reason);
 }
 
 pub(super) async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
