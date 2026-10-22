@@ -1,4 +1,5 @@
 // MP-08/MP-10/MP-11: one trusted isolated world per live CDP document.
+import { BrowserActionError } from './browser-controller-actions.mjs';
 export const FOCUS_WORLD = 'chariox-controller-focus';
 export async function ensureFocusWorld(browser, connection, sessionId, targetId, frame, { timeoutMs } = {}) {
   const cache = browser.focusWorldsByTarget;
@@ -20,6 +21,8 @@ export async function ensureFocusWorld(browser, connection, sessionId, targetId,
         // request times out later. It cannot revive a retired cache entry.
         if (cache.get(targetId) === creating && creating.uniqueContextId) return creating;
         if (cache.get(targetId) === creating) cache.delete(targetId);
+        // A navigation retired the frame between the caller's frame-tree read and this request: a replaced document.
+        if (/No frame (?:for|with the) given id/i.test(String(error?.message))) throw new BrowserActionError('stale_document_reference', 'browser document retired during focus world creation');
         throw error;
       }
     })();

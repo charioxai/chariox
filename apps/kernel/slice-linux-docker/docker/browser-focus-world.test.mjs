@@ -113,3 +113,9 @@ test('MP-11 a new unique context gets a fresh owner even when its numeric ID and
  f.b.recordConnectionEvent({sessionId:'s',method:'Runtime.executionContextDestroyed',params:{executionContextId:7,executionContextUniqueId:f.context.uniqueId}});
  assert.equal(f.b.focusWorldsByTarget.get('t'),current);
 });
+// r80 (wired consent click): the frame navigated away before the world was created; the mirror input then showed Chrome's words.
+test('MP-08/MP-10 r80 a frame that vanished before its world was created is a stale document',async()=>{
+ const b=browser(),c={send:async()=>{throw Object.assign(Error('Page.createIsolatedWorld: No frame for given id found'),{code:'browser_cdp_command_failed'});}};
+ await assert.rejects(b.ensureFocusWorld(c,'s','t',{id:'gone',loaderId:'doc'}),error=>error.code==='stale_document_reference');
+ assert.equal(b.focusWorldsByTarget.has('t'),false,'a vanished frame leaves no world behind');
+});

@@ -56,9 +56,10 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
       if (!fresh && cached?.document === tab.document_id) return cached.contextId;
       const { frameTree } = await connection.send("Page.getFrameTree", {}, sessionId);
       if (frameTree?.frame?.loaderId !== tab.document_id) throw new BrowserActionError("stale_document_reference", "browser document retired before focus world creation");
+      // A navigation between the frame-tree read and this call retires the frame: that is a replaced document.
       const { executionContextId } = await connection.send("Page.createIsolatedWorld", {
         frameId: frameTree.frame.id, worldName: "chariox-host-input", grantUniveralAccess: false,
-      }, sessionId);
+      }, sessionId).catch(error => { throw /No frame (?:for|with the) given id/i.test(String(error?.message)) ? new BrowserActionError("stale_document_reference", "browser document retired during focus world creation") : error; });
       if (frameTree.frame.loaderId === tab.document_id) cache.set(tab.target_id, { document: tab.document_id, contextId: executionContextId });
       return executionContextId;
     };

@@ -391,3 +391,15 @@ test('MP-11 ordinary page input applies a retired visible crop guard before any 
  await assert.rejects(inputHostTab(browser,{target_id:'t',document_id:'d'},{kind:'click',x:12,y:700},{inputGuard:async()=>{throw Error('retired visible crop');}}),/retired visible crop/);
  assert(!sent.some(m=>m.startsWith('Input.')),'a retired crop must dispatch no button press');
 });
+
+// r80 (wired, cookie banner): the document is replaced between the frame-tree read and the focus world creation, and Chrome
+// answers "No frame for given id found". That is a retired document, not a browser failure the person should read.
+test('MP-08/MP-10 r80 a frame that vanished during focus world creation is a stale document',async()=>{
+  const connection={send:async(method)=>{
+    if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'f',loaderId:'doc'}}};
+    if(method==='Page.createIsolatedWorld')throw Object.assign(new Error('Page.createIsolatedWorld: No frame for given id found'),{code:'browser_cdp_command_failed'});
+    return {};}};
+  const browser={resolvePageTarget:async()=>({connection,sessionId:'s'}),inputCapture:{run:async(_c,_s,fn)=>fn()}};
+  await assert.rejects(inputHostTab(browser,{target_id:'t',document_id:'doc'},{kind:'key',key:'a'},{nativeKey:()=>true,chromeFocused:()=>false}),
+    error=>error.code==='stale_document_reference');
+});
