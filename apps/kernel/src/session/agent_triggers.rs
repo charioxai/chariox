@@ -65,6 +65,8 @@ pub struct AgentTrigger {
     last_error: Option<String>,
     #[serde(skip)]
     dispatch_in_flight: bool,
+    #[serde(skip)]
+    dispatch_generation: u64,
 }
 
 impl AgentTrigger {
@@ -102,6 +104,7 @@ impl AgentTrigger {
             last_outcome: None,
             last_error: None,
             dispatch_in_flight: false,
+            dispatch_generation: 0,
         }
     }
 
@@ -176,7 +179,16 @@ impl AgentTrigger {
             return false;
         }
         self.dispatch_in_flight = true;
+        self.dispatch_generation = self.dispatch_generation.wrapping_add(1);
         true
+    }
+
+    pub(crate) fn dispatch_generation(&self) -> u64 {
+        self.dispatch_generation
+    }
+
+    pub(crate) fn matches_dispatch_claim(&self, generation: u64) -> bool {
+        self.enabled && self.dispatch_in_flight && self.dispatch_generation == generation
     }
 
     /// A firing reached the agent. `steer_refusal` is set when a steer policy
@@ -227,6 +239,10 @@ impl AgentTrigger {
             if enabled && !self.enabled {
                 self.schedule_next_run(now_ms, 0);
             }
+            if !enabled {
+                self.dispatch_in_flight = false;
+                self.dispatch_generation = self.dispatch_generation.wrapping_add(1);
+            }
             self.enabled = enabled;
         }
     }
@@ -267,6 +283,7 @@ impl AgentTrigger {
             last_outcome: None,
             last_error: schedule.last_error,
             dispatch_in_flight: false,
+            dispatch_generation: 0,
         }
     }
 
@@ -389,6 +406,7 @@ impl<'de> Deserialize<'de> for AgentTriggers {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentTriggerDispatch {
+    pub(crate) claim_generation: u64,
     pub session_id: String,
     pub trigger_id: String,
     pub agent_id: String,

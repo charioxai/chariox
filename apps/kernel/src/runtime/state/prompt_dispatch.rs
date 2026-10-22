@@ -642,7 +642,7 @@ impl KernelRuntimeState {
         prepared: crate::app::KernelPreparedPromptSubmission,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
-        self.submit_prepared_prompt_authorized(prepared, true, authority)
+        self.submit_prepared_prompt_authorized(prepared, true, authority, None)
             .await
     }
 
@@ -651,7 +651,16 @@ impl KernelRuntimeState {
         prepared: crate::app::KernelPreparedPromptSubmission,
         allow_queue: bool,
     ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
-        self.submit_prepared_prompt_authorized(prepared, allow_queue, None)
+        self.submit_prepared_prompt_authorized(prepared, allow_queue, None, None)
+            .await
+    }
+
+    pub(super) async fn submit_prepared_agent_trigger_prompt(
+        &self,
+        prepared: crate::app::KernelPreparedPromptSubmission,
+        claim: &crate::session::AgentTriggerDispatch,
+    ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
+        self.submit_prepared_prompt_authorized(prepared, true, None, Some(claim))
             .await
     }
 
@@ -660,12 +669,17 @@ impl KernelRuntimeState {
         mut prepared: crate::app::KernelPreparedPromptSubmission,
         allow_queue: bool,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
+        trigger_claim: Option<&crate::session::AgentTriggerDispatch>,
     ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
         // MP-08 / MP-11: delegated prompts also retain the room caller's epoch
         // and typed authority, including after waiting to launch a cold peer.
-        let authorize = || {
+        let authorize = || -> Result<(), DaemonError> {
             self.authorize_current_external_command()?;
-            self.authorize_prompt_command(authority)
+            self.authorize_prompt_command(authority)?;
+            if let Some(claim) = trigger_claim {
+                self.owned.ensure_current_agent_trigger_claim(claim)?;
+            }
+            Ok(())
         };
         authorize()?;
         self.owned.require_publication_activation()?;
@@ -955,15 +969,37 @@ impl KernelRuntimeState {
             .remote_execution()
             .is_none()
         {
-            if let Some(steer) =
-                owned.steer_queued_prompt(session_id, target_agent_id, attachment_id, prompt_id)?
-            {
-                return Ok(steer);
+            let prepared = owned.prepare_local_queued_prompt_steer(
+                session_id,
+                target_agent_id,
+                attachment_id,
+                prompt_id,
+            )?;
+            let result = async {
+                let _permit = self
+                    .provider_runtime_lanes
+                    .acquire(&prepared.dispatch.provider_run_id)
+                    .await;
+                self.authorize_prompt_command(authority)?;
+                if !self
+                    .enqueue_prompt_dispatch_with_acceptance(&prepared.dispatch)
+                    .await?
+                {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "steer queued prompt",
+                        message: "provider did not accept the queued prompt steer".into(),
+                    });
+                }
+                owned.finish_local_queued_prompt_steer(&prepared)
             }
-            return Err(DaemonError::LocalTransport {
-                operation: "steer queued prompt",
-                message: "local queued prompt steer did not produce a dispatch".to_string(),
-            });
+            .await;
+            drop(prepared);
+            if result.is_err() {
+                // Completion may have found the reserved head and left the run
+                // idle. Resume the retained queue after releasing its reservation.
+                self.spawn_idle_local_prompt_queue_promotion(session_id, target_agent_id)?;
+            }
+            return result;
         }
         let prepared = owned
             .prepare_remote_queued_prompt_steer(

@@ -30,6 +30,22 @@ pub(super) struct RemoteQueuedPromptSteerReceiptQuery {
     pub(super) leased_agent_id: String,
 }
 
+pub(super) struct LocalQueuedPromptSteerPreparation {
+    context: QueuedPromptSteerContext,
+    attachment_id: String,
+    reservation: u64,
+    pub(super) dispatch: crate::app::KernelPromptDispatch,
+}
+
+impl Drop for LocalQueuedPromptSteerPreparation {
+    fn drop(&mut self) {
+        let _ = self
+            .context
+            .queued_prompt
+            .release_remote_steer(self.reservation);
+    }
+}
+
 struct QueuedPromptSteerContext {
     session: crate::session::RuntimeSession,
     agent: crate::agent::AgentInstance,
@@ -1146,15 +1162,15 @@ impl KernelRuntimeOwnedState {
         persisted
     }
 
-    fn commit_queued_prompt_steer(
+    pub(super) fn finish_local_queued_prompt_steer(
         &self,
-        session_id: &str,
-        agent_id: &str,
-        attachment_id: &str,
-        prompt_id: &str,
-        context: QueuedPromptSteerContext,
-        dispatch_locally: bool,
+        prepared: &LocalQueuedPromptSteerPreparation,
     ) -> Result<crate::app::KernelQueuedPromptSteer, DaemonError> {
+        let context = &prepared.context;
+        let session_id = prepared.dispatch.session_id.as_str();
+        let agent_id = prepared.dispatch.agent_id.as_str();
+        let attachment_id = prepared.attachment_id.as_str();
+        let prompt_id = prepared.dispatch.prompt_id.as_str();
         let target_active_prompt_id = context.active_prompt.id().to_string();
         let source_attachment_id = self.promoted_prompt_source_attachment_id(
             session_id,
@@ -1207,13 +1223,37 @@ impl KernelRuntimeOwnedState {
             ),
         );
         let session = self.session_snapshot(session_id)?;
-        let dispatch = dispatch_locally.then(|| crate::app::KernelPromptDispatch {
+        Ok(crate::app::KernelQueuedPromptSteer {
+            dispatch: None,
+            prompt,
+            session,
+        })
+    }
+
+    pub(super) fn prepare_local_queued_prompt_steer(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        attachment_id: &str,
+        prompt_id: &str,
+    ) -> Result<LocalQueuedPromptSteerPreparation, DaemonError> {
+        let context =
+            self.queued_prompt_steer_context(session_id, agent_id, attachment_id, prompt_id, None)?;
+        if context.agent.remote_execution().is_some() {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer queued prompt",
+                message: "agent moved to a remote worker before local steer preparation".into(),
+            });
+        }
+        let prompt = &context.queued_prompt;
+        let dispatch = crate::app::KernelPromptDispatch {
             session_id: session_id.to_string(),
-            provider_run_id: context.provider_run_id,
+            provider_run_id: context.provider_run_id.clone(),
             agent_id: agent_id.to_string(),
             prompt_id: prompt.id().to_string(),
-            target_active_prompt_id: Some(target_active_prompt_id),
-            source_attachment_id,
+            target_active_prompt_id: Some(context.active_prompt.id().to_string()),
+            source_attachment_id: self
+                .promoted_prompt_source_attachment_id(session_id, prompt.source_attachment_id())?,
             prompt: prompt.prompt().to_string(),
             hidden_system_context: prompt.hidden_system_context().to_string(),
             attachments: prompt.attachments().to_vec(),
@@ -1222,35 +1262,23 @@ impl KernelRuntimeOwnedState {
             external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),
             external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
             steering: true,
-        });
-        Ok(crate::app::KernelQueuedPromptSteer {
-            dispatch,
-            prompt,
-            session,
-        })
-    }
-
-    pub(super) fn steer_queued_prompt(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        attachment_id: &str,
-        prompt_id: &str,
-    ) -> Result<Option<crate::app::KernelQueuedPromptSteer>, DaemonError> {
-        let context =
-            self.queued_prompt_steer_context(session_id, agent_id, attachment_id, prompt_id, None)?;
-        if context.agent.remote_execution().is_some() {
-            return Ok(None);
-        }
-        self.commit_queued_prompt_steer(
-            session_id,
+        };
+        // The existing queue-owner reservation prevents completion from promoting
+        // this firing while delivery waits for the provider lane. The durable
+        // queue entry remains present until acceptance; dropping preparation on
+        // any refusal or cancellation releases the reservation.
+        let reservation = self.prompt_state_owner.reserve_queued_prompt_remote_steer(
+            &context.session,
             agent_id,
-            attachment_id,
-            prompt_id,
+            context.active_prompt.id(),
+            &context.queued_prompt,
+        )?;
+        Ok(LocalQueuedPromptSteerPreparation {
             context,
-            true,
-        )
-        .map(Some)
+            attachment_id: attachment_id.to_string(),
+            reservation,
+            dispatch,
+        })
     }
 
     #[expect(
