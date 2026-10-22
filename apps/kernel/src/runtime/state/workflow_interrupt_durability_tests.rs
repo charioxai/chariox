@@ -2428,3 +2428,81 @@ async fn amfix_r11_adopted_goal_observes_archived_workflow_completion() {
         .unwrap();
     assert!(current.obligations.iter().all(|o| o.status == "settling"));
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11 A01-S01 (accam r6): an inbox delivery queued as
+// a workflow prompt never reached a provider when the run is cancelled. It
+// returns to the inbox instead of staying `submitting` until the sweep turns it
+// into an "Unconfirmed delivery" owner task.
+#[tokio::test]
+async fn a01_cancelled_workflow_run_releases_its_queued_inbox_delivery() {
+    use crate::durable_state::agent_lifecycle::{occurrence, Operation, Outcome};
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("a01-cancel-queued-delivery"),
+        config,
+        false,
+    );
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let (_, queued) = owned
+        .prompt_state_owner
+        .state_parts(&session, &fixture.target_agent_id);
+    let queued = queued
+        .iter()
+        .find(|prompt| prompt.workflow_run_id() == Some(fixture.workflow_run_id.as_str()))
+        .expect("the fixture queues a workflow prompt for the target")
+        .id()
+        .to_string();
+    let store = &owned.durable_state_store;
+    let Outcome::Event(event) = store
+        .agent_lifecycle(Operation::Occur(occurrence(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            "peer",
+            "queued-workflow-message",
+            "message",
+            serde_json::json!({"message":"Review the build"}),
+        )))
+        .unwrap()
+    else {
+        panic!("event")
+    };
+    store
+        .agent_lifecycle(Operation::Attempt {
+            room: fixture.session_id.clone(),
+            agent: fixture.target_agent_id.clone(),
+            sequence: event.sequence,
+            prompt: queued.clone(),
+            target: None,
+            run: None,
+            now: crate::session::unix_epoch_ms(),
+            work: None,
+        })
+        .unwrap();
+    let (cancelled, _) = fixture
+        .runtime
+        .execute_workflow_cancel_run_request(crate::local::CancelWorkflowRunRequest {
+            session_id: fixture.session_id.clone(),
+            workflow_run_ref: fixture.workflow_run_id.clone(),
+        })
+        .await;
+    assert!(matches!(
+        cancelled.unwrap(),
+        LocalDaemonResponse::WorkflowRunCancelled { .. }
+    ));
+    let event = store
+        .agent_inbox(&fixture.session_id, &fixture.target_agent_id, 0)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.sequence == event.sequence)
+        .unwrap();
+    assert_ne!(
+        event.state, "submitting",
+        "the removed queued prompt never reached the provider: {event:?}"
+    );
+    assert!(event.prompt_id.is_none(), "{event:?}");
+}

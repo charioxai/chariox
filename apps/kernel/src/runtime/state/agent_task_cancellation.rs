@@ -4,6 +4,51 @@ use crate::durable_state::agent_lifecycle::{
     AgentTaskExecution, ExecutionState, Operation, Outcome,
 };
 impl KernelRuntimeOwnedState {
+    /// A01-S01: removed queued prompts never reached a provider. A wake or
+    /// message one carried goes back to the inbox as a refused attempt: a
+    /// terminal task then expires it and a live receiver gets it later, so it
+    /// never strands as an unconfirmed delivery that asks the owner.
+    pub(super) fn release_unsent_agent_events(
+        &self,
+        room: &str,
+        prompts: &[crate::session::PromptQueueItem],
+    ) {
+        for prompt in prompts {
+            let agent = prompt.target_agent_id();
+            let event = match self.durable_state_store.agent_event_for_prompt(
+                room,
+                agent,
+                prompt.id(),
+            ) {
+                Ok(Some(event)) if event.state == "submitting" => event,
+                Ok(_) => continue,
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.agent_task",
+                        "unsent agent event lookup failed",
+                        serde_json::json!({"session_id": room, "agent_id": agent, "prompt_id": prompt.id(), "error": error.to_string()}),
+                    );
+                    continue;
+                }
+            };
+            if let Err(error) = self
+                .durable_state_store
+                .agent_lifecycle(Operation::Receipt {
+                    room: room.into(),
+                    agent: agent.into(),
+                    sequence: event.sequence,
+                    state: "rejected".into(),
+                    now: crate::session::unix_epoch_ms(),
+                })
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.agent_task",
+                    "unsent agent event release failed",
+                    serde_json::json!({"session_id": room, "agent_id": agent, "sequence": event.sequence, "error": error.to_string()}),
+                );
+            }
+        }
+    }
     /// MP-08 / MP-09 / MP-10 / MP-11 A10/G03: the worker has settled this
     /// exact prompt; cancel its home task before promoting a queued successor.
     pub(super) fn cancel_settled_remote_prompt_task(

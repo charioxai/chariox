@@ -19,6 +19,13 @@ struct TestDriver {
     fail_arm: AtomicBool,
     cancel_pending: AtomicBool,
     lost: AtomicBool,
+    /// Holds the next liveness probe until released, as a slow source would.
+    stall: StdMutex<
+        Option<(
+            std::sync::mpsc::SyncSender<()>,
+            std::sync::mpsc::Receiver<()>,
+        )>,
+    >,
 }
 
 impl WakeDriver for TestDriver {
@@ -45,6 +52,10 @@ impl WakeDriver for TestDriver {
         Recovery::Lost("test source does not survive a restart".into())
     }
     fn liveness(&self, _wake: &AgentWake) -> Liveness {
+        if let Some((entered, release)) = self.stall.lock().unwrap().take() {
+            let _ = entered.send(());
+            let _ = release.recv();
+        }
         if self.lost.load(Ordering::Acquire) {
             Liveness::Lost("test source vanished".into())
         } else {
@@ -121,6 +132,7 @@ async fn fixture(name: &str, running_prompt: bool) -> Fixture {
         fail_arm: AtomicBool::new(false),
         cancel_pending: AtomicBool::new(false),
         lost: AtomicBool::new(false),
+        stall: Default::default(),
     });
     runtime.register_wake_driver(driver.clone());
     Fixture {
@@ -824,4 +836,135 @@ async fn event_tools_cancel_a_timer_and_block_for_the_owner() {
     .await
     .unwrap();
     assert_eq!(f.task(&task.task_id).state, ExecutionState::Blocked);
+}
+
+/// A02-S03: an urgent message to an agent its owner stopped does not start a
+/// turn; it waits, shown once to the room, until the owner prompts it again.
+#[tokio::test]
+async fn urgent_message_to_an_owner_stopped_agent_waits_for_the_owner() {
+    let f = fixture("a02-stopped-receiver", false).await;
+    let stopped = f.begin("stopped-turn");
+    f.store()
+        .agent_lifecycle(Operation::CancelTask {
+            task: stopped.task_id.clone(),
+            owner: "local".into(),
+            revision: stopped.revision,
+        })
+        .unwrap();
+    let mut message = crate::durable_state::agent_lifecycle::occurrence(
+        &f.room,
+        &f.agent,
+        "peer-agent",
+        "urgent-after-stop",
+        "message",
+        serde_json::json!({"message": "status now"}),
+    );
+    message.urgent = true;
+    let Outcome::Event(message) = f
+        .store()
+        .agent_lifecycle(Operation::Occur(message))
+        .unwrap()
+    else {
+        panic!("event")
+    };
+    let inbox_state = |f: &Fixture| {
+        f.store()
+            .agent_inbox(&f.room, &f.agent, 0)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.sequence == message.sequence)
+            .unwrap()
+    };
+
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.agent)
+        .await
+        .unwrap();
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.agent)
+        .await
+        .unwrap();
+
+    let held = inbox_state(&f);
+    assert_eq!(held.state, "pending", "{held:?}");
+    assert!(
+        held.prompt_id.is_none(),
+        "no turn started for a stopped agent: {held:?}"
+    );
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert!(f
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &f.agent)
+        .is_none());
+    let notices = f.notices();
+    assert_eq!(
+        notices.matches("which you stopped").count(),
+        1,
+        "the waiting message is shown once: {notices}"
+    );
+
+    // The owner's next prompt lifts the stop; the message follows it.
+    let next = f.begin("owner-next");
+    f.store()
+        .agent_lifecycle(Operation::Settle {
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            prompt: next.prompt_id.clone(),
+            run: f.run.clone(),
+            has_answer: true,
+            cancelled: false,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.agent)
+        .await
+        .unwrap();
+    assert!(
+        inbox_state(&f).prompt_id.is_some(),
+        "delivered after the owner's prompt: {:?}",
+        inbox_state(&f)
+    );
+}
+
+/// amsudo r1: a sweep that stalls on its sources commits a `now` older than a
+/// newer sweep's. That is not a clock rollback and must not wake a live wait
+/// whose deadline has not passed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stalled_sweep_does_not_wake_a_live_wait_early() {
+    let f = fixture("stalled-sweep", false).await;
+    let task = f.begin("turn-1");
+    let wake = f.arm(&task, "wake-a").unwrap();
+    f.wait_on(&task, &wake.registration_id);
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    *f.driver.stall.lock().unwrap() = Some((entered_tx, release_rx));
+    let runtime = f.runtime.clone();
+    let stalled = tokio::spawn(async move { runtime.sweep_agent_lifecycle().await });
+    tokio::task::spawn_blocking(move || {
+        entered_rx.recv_timeout(std::time::Duration::from_secs(20))
+    })
+    .await
+    .unwrap()
+    .expect("the sweep probes the source before it commits");
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    f.store()
+        .agent_lifecycle(Operation::Sweep {
+            now: crate::session::unix_epoch_ms(),
+            busy_recipients: Vec::new(),
+            held_work: Vec::new(),
+        })
+        .unwrap();
+    release_tx.send(()).unwrap();
+    stalled.await.unwrap().unwrap();
+    let early = f
+        .store()
+        .agent_inbox(&f.room, &f.agent, 0)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "deadline_reached")
+        .count();
+    assert_eq!(early, 0, "no deadline has passed");
 }

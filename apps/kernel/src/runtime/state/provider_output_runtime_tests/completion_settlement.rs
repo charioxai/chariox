@@ -3534,3 +3534,145 @@ async fn a12_destroyed_bound_goal_source_reconciles_without_periodic_poll() {
     assert_eq!(task.obligations[0].status, "failed");
     assert!(task.goal.is_some());
 }
+
+/// G18: a durable write refused while a completed turn settles keeps that turn
+/// pending; after the writer recovers the retry settles it instead of leaving
+/// the agent busy for good.
+#[tokio::test]
+async fn g18_completed_turn_settles_after_a_refused_durable_write() {
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+    let faults =
+        std::env::temp_dir().join(format!("chariox-g18-faults-{:016x}", rand::random::<u64>()));
+    std::fs::create_dir_all(&faults).unwrap();
+    let guard = crate::durable_state::agent_lifecycle::faults::TestFaultDir::set(&faults);
+    let worktree = crate::test_support::TestWorktree::new("g18-refused-settlement");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "g18-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    app.update_provider_run_projection(run.clone());
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "status\n",
+        Vec::new(),
+    )
+    .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    drop(guard);
+    let snapshot = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap();
+    let prompt = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&snapshot, agent.id())
+        .expect("the turn is running");
+    runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: session.owner_user_id().into(),
+            room: session.id().into(),
+            agent: agent.id().into(),
+            prompt: prompt.id().into(),
+            run: Some(run.id().into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+
+    runtime
+        .owned
+        .structured_output_records
+        .mark_poll_enqueued(run.id(), Some(prompt.id().to_string()));
+    runtime
+        .owned
+        .provider_store
+        .write()
+        .push_finished_structured_output_poll_for_test(
+            run.id().to_string(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                prompt_completed: true,
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            })),
+        );
+    std::fs::write(faults.join("writer-fail"), "").unwrap();
+    let pumped = runtime
+        .pump_owned_structured_provider_output(session.id(), run.id(), Vec::new())
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(
+        crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS + 75,
+    ))
+    .await;
+    // Whether the refusal hits the signal itself or its deferred settlement,
+    // the completed turn must stay pending.
+    let deferred = runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), false, false, false)
+        .await;
+    assert!(
+        pumped.is_err() || deferred.is_err(),
+        "the refused write is reported"
+    );
+    std::fs::remove_file(faults.join("writer-fail")).unwrap();
+
+    // No new provider signal arrives: only the kernel's own retry can settle
+    // it, through the ready-run pump the runtime loop drives.
+    let active = |runtime: &KernelRuntimeState| {
+        let snapshot = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap();
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&snapshot, agent.id())
+            .is_some()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(12);
+    while active(&runtime) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        for ready in runtime.take_ready_provider_output_run_ids(crate::session::unix_epoch_ms()) {
+            runtime.pump_ready_provider_output_run(&ready).await;
+        }
+    }
+    assert!(
+        !active(&runtime),
+        "the completed turn settles once the writer recovers"
+    );
+    let task = runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(session.id()), Some(agent.id()))
+        .unwrap()
+        .into_iter()
+        .find(|t| t.prompt_id == prompt.id())
+        .unwrap();
+    assert_ne!(task.state, ExecutionState::Working, "{task:?}");
+    let _ = std::fs::remove_dir_all(&faults);
+}

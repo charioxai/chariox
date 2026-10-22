@@ -3066,3 +3066,48 @@ mod driver_sources {
         assert_eq!(f.inbox()[0].state, "handled");
     }
 }
+
+/// A02-S04 (amcore r1 live): a one-shot timer fired while its source
+/// registration was corrupt, so the task was quarantined to Blocked and the
+/// fire never reached the obligation. The ended timer has nothing to stop, but
+/// owner cancellation still settles that obligation instead of leaving it open.
+#[test]
+fn a02_task_cancellation_settles_the_obligation_of_an_already_fired_timer() {
+    let f = Fixture::new();
+    f.create("t1", "timer", Some(1_000), None);
+    f.wait_on(&["t1"]);
+    rusqlite::Connection::open(f.root.join("state.sqlite"))
+        .unwrap()
+        .execute(
+            "UPDATE agent_registrations SET payload='{corrupt source receipt' WHERE task_id='p'",
+            [],
+        )
+        .unwrap();
+    let _ = f.store.agent_lifecycle(Operation::FireWakes { now: 1_500 });
+    assert_eq!(f.wake("t1").state, "fired");
+    let task = f.task();
+    assert_eq!(task.state, ExecutionState::Blocked, "{task:?}");
+    assert_eq!(
+        task.obligations
+            .iter()
+            .find(|o| o.id == "t1")
+            .unwrap()
+            .status,
+        "open"
+    );
+    f.apply(Operation::CancelTask {
+        task: task.task_id.clone(),
+        owner: "owner".into(),
+        revision: task.revision,
+    });
+    f.apply(Operation::CancelWake {
+        id: "t1".into(),
+        task: task.task_id.clone(),
+        prompt: None,
+        pending: false,
+    });
+    let task = f.task();
+    assert_eq!(task.state, ExecutionState::Cancelled);
+    let timer = task.obligations.iter().find(|o| o.id == "t1").unwrap();
+    assert_eq!(timer.status, "cancelled", "{task:?}");
+}

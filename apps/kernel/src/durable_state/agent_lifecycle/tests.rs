@@ -3448,3 +3448,37 @@ fn a_stale_origin_prompt_error_names_the_turn_context_to_use() {
         "{error}"
     );
 }
+
+/// A02-S02 (accam r5, amcore r1 live): a message wakes a yielded agent in a
+/// new turn; yielding that turn on the earlier task's registration says the
+/// earlier wait continues and this turn only has to end.
+#[test]
+fn a02_message_turn_yielding_on_the_earlier_wait_is_told_to_finish() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.yield_now();
+    f.settle("p", false);
+    assert_eq!(f.task().state, ExecutionState::Waiting);
+    f.begin("message-turn");
+    let error = f
+        .store
+        .agent_lifecycle(Operation::Yield {
+            task: "message-turn".into(),
+            prompt: "message-turn".into(),
+            registrations: vec!["reg".into()],
+            cursor: 0,
+            deadline: 120_000,
+            reason: "back to the child result".into(),
+            now: 4,
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("earlier task is still waiting"), "{error}");
+    assert_eq!(
+        f.task().state,
+        ExecutionState::Waiting,
+        "the earlier wait is untouched"
+    );
+}

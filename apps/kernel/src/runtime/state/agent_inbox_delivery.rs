@@ -97,7 +97,7 @@ impl KernelRuntimeState {
             && event.kind == "message"
             && tasks.last().is_some_and(|t| t.stopped_by_owner())
         {
-            return Ok(());
+            return self.hold_message_for_stopped_agent(room, agent, &event);
         }
         if active.is_none()
             && event.kind != "message"
@@ -274,6 +274,37 @@ impl KernelRuntimeState {
         Ok(())
     }
     /// Marks the oldest unrelated pending event deferred once and says so.
+    /// The owner sees once that a message waits for the agent they stopped.
+    fn hold_message_for_stopped_agent(
+        &self,
+        room: &str,
+        agent: &str,
+        event: &ledger::InboxEvent,
+    ) -> Result<(), DaemonError> {
+        if event.attempted_at_ms.is_some() {
+            return Ok(());
+        }
+        self.owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Defer {
+                room: room.into(),
+                agent: agent.into(),
+                sequence: event.sequence,
+                now: crate::session::unix_epoch_ms(),
+            })?;
+        let name = self.agent_notice_name(agent);
+        self.owned.record_notice_for_agent(
+            room,
+            None,
+            Some(agent),
+            self.owned.attachment_store.list_session_attachment_ids(room),
+            format!(
+                "A message from {} is waiting for {name}, which you stopped. It is delivered after your next prompt to {name}.",
+                self.agent_notice_name(&event.source_id)
+            ),
+        );
+        Ok(())
+    }
     fn defer_unrelated_sudo_event(
         &self,
         room: &str,
