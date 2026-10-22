@@ -854,6 +854,35 @@ async fn event_tools_cancel_a_timer_and_block_for_the_owner() {
     assert_eq!(f.task(&task.task_id).state, ExecutionState::Blocked);
 }
 
+/// A03-S04: an agent that cancels a wake that already ended (here: lost) is
+/// told it is settled and how it ended, so it does not arm a replacement.
+#[tokio::test]
+async fn cancelling_a_wake_that_already_ended_answers_settled_with_its_final_state() {
+    let f = fixture("event-tools-cancel-settled", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = runtime_token(&f).await;
+    let wake = f.arm(&task, "wake-lost").unwrap();
+    f.runtime
+        .wake_sink(KIND)
+        .occurred(f.occurrence(&wake.id, "gone", Some(WakeEnd::Lost)))
+        .unwrap();
+    assert_eq!(f.wake_state("wake-lost"), "lost");
+
+    let cancelled = call(
+        &f,
+        &token,
+        "chariox.events.cancel_wake",
+        &task,
+        serde_json::json!({"wake_id": "wake-lost"}),
+    )
+    .await
+    .unwrap()
+    .payload;
+    assert_eq!(cancelled["settled"], true, "{cancelled}");
+    assert_eq!(cancelled["final_state"], "lost", "{cancelled}");
+    assert_eq!(f.wake_state("wake-lost"), "lost", "a lost wake stays lost");
+}
+
 /// A02-S03: an urgent message to an agent its owner stopped does not start a
 /// turn; it waits, shown once to the room, until the owner prompts it again.
 #[tokio::test]

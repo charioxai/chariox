@@ -814,6 +814,9 @@ with the original task; its cancellation outcome invalidates the original
 wait, and a watched process settles only after physical exit. An owner Resume
 or corrective continuation takes precedence over that task's pending inbox
 delivery, so the event cannot create a replacement task during admission.
+Cancelling a wake that already ended (fired, exited, lost or cancelled) is
+idempotent: the answer is `settled:true` plus `final_state`; an unknown wake ID
+stays an error.
 
 A workflow node that yields remains supervised by its durable task after the
 native provider turn ends. The returned workflow run ID stays live and

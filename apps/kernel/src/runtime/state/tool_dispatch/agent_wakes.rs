@@ -256,10 +256,16 @@ impl KernelRuntimeState {
                     .cancel_agent_wake(&wake, &task.task_id, Some(&task.prompt_id))
                     .await?;
                 self.refresh_wake_projection(&wake.room_id);
-                let settled = store
-                    .agent_wake(id)?
-                    .is_some_and(|w| w.state == "cancelled");
-                serde_json::json!({"cancel_requested":id,"process_signalled":terminated,"settled":settled})
+                // A wake that already ended (fired, exited, lost, cancelled) has
+                // nothing left to stop: report it settled with how it ended so
+                // the agent does not arm a replacement.
+                let state = store.agent_wake(id)?.map(|w| w.state).unwrap_or_default();
+                let settled = matches!(state.as_str(), "fired" | "exited" | "lost" | "cancelled");
+                let mut result = serde_json::json!({"cancel_requested":id,"process_signalled":terminated,"settled":settled});
+                if settled {
+                    result["final_state"] = state.into();
+                }
+                result
             }
             _ => return Err(ledger::error("unknown wake tool")),
         })
