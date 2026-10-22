@@ -21,25 +21,31 @@ test("waiting room key controller yields while attached or command center owns i
   assert.deepEqual(commandHarness.calls(), [])
 })
 
-test("opted-in slash opens command input without activating a session", () => {
-  for (const promptFocused of [false, true]) {
-    const harness = createHarness({ commandInput: true, promptFocused })
-    assert.equal(harness.controller.handleKey({name:"/",eventType:"press"}),true)
-    assert.deepEqual(harness.calls(),["begin-command"])
-  }
+test("a plain slash press focuses the waiting room prompt and leaves Enter activation alone", () => {
+  const harness = createHarness()
+  assert.equal(harness.controller.focusPromptOnSlash({ name: "/", eventType: "press" }), true)
+  assert.deepEqual(harness.calls(), ["focus-prompt"])
+  assert.equal(harness.controller.handleKey({ name: "enter" }), true)
+  assert.deepEqual(harness.calls(), ["focus-prompt", "activate"])
 })
-test("slash command entry ignores releases/modifiers, drafts and the disabled path", () => {
-  for (const event of [{name:"/",eventType:"release"},{name:"/",ctrl:true},{name:"/",alt:true}]) {
-    const harness = createHarness({ commandInput:true })
-    harness.controller.handleKey(event)
-    assert.deepEqual(harness.calls(),[])
+
+test("slash entry ignores releases, modifiers, other keys, a focused prompt, drafts, dialogs and sessions", () => {
+  const ignored: Array<[Parameters<ReturnType<typeof createHarness>["controller"]["focusPromptOnSlash"]>[0], Parameters<typeof createHarness>[0]]> = [
+    [{ name: "/", eventType: "release" }, {}],
+    [{ name: "/", ctrl: true }, {}],
+    [{ name: "/", alt: true }, {}],
+    [{ name: "k" }, {}],
+    [{ name: "/" }, { promptFocused: true }],
+    [{ name: "/" }, { promptFocused: true, commandCenterQuery: "/app" }],
+    [{ name: "/" }, { commandCenterOpen: true }],
+    [{ name: "/" }, { hotkeysOpen: true }],
+    [{ name: "/" }, { attached: true }],
+  ]
+  for (const [event, options] of ignored) {
+    const harness = createHarness(options)
+    assert.equal(harness.controller.focusPromptOnSlash(event), false, JSON.stringify([event, options]))
+    assert.deepEqual(harness.calls(), [])
   }
-  const disabled=createHarness()
-  disabled.controller.handleKey({name:"/"})
-  assert.deepEqual(disabled.calls(),[])
-  const draft=createHarness({commandInput:true,promptFocused:true,commandCenterQuery:"/app"})
-  assert.equal(draft.controller.handleKey({name:"/"}),false)
-  assert.deepEqual(draft.calls(),[])
 })
 
 test("waiting room key controller reconciles navigation keys", () => {
@@ -123,7 +129,6 @@ test("waiting room key controller renames and restores the focused project", () 
 })
 
 function createHarness(options: {
-  commandInput?: boolean
   attached?: boolean
   hotkeysOpen?: boolean
   promptFocused?: boolean
@@ -176,7 +181,7 @@ function createHarness(options: {
     restoreProject: (projectId) => {
       calls.push(`restore:${projectId}`)
     },
-    ...(options.commandInput ? {beginCommand: () => {calls.push("begin-command")}} : {}),
+    focusPrompt: () => { calls.push("focus-prompt") },
     activateWaitingRoom: () => {
       calls.push("activate")
     },
