@@ -137,6 +137,8 @@ fn project_error(value: &Value) -> KernelTransportError {
             | "pty_write_failed"
             | "pty_resize_failed"
             | "kernel_request_failed"
+            | "session_alias_conflict"
+            | "invalid_session_alias"
             | "kernel_access_denied"
             | "kernel_access_human_only"
             | "kernel_access_not_covered"
@@ -172,6 +174,11 @@ fn project_error(value: &Value) -> KernelTransportError {
         ))
     {
         projected.code = code.into();
+        projected.message = message.into();
+    }
+    // The kernel writes these sentences itself, from the alias and session the caller
+    // named; they say which session holds the alias so the caller can pick another.
+    if crate::error::is_session_alias_refusal(code, message) {
         projected.message = message.into();
     }
     // The gateway writes these messages itself, from the kernel name the agent

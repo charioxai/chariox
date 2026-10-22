@@ -15,6 +15,14 @@ pub(crate) fn external_request_failure_message(code: &str) -> &'static str {
     }
 }
 
+/// A session alias the caller chose that cannot be used: the kernel's own sentence names
+/// only what the caller sent and the session that holds the alias. Only that exact shape
+/// qualifies, so no other text can ride on these codes.
+pub(crate) fn is_session_alias_refusal(code: &str, message: &str) -> bool {
+    matches!(code, "session_alias_conflict" | "invalid_session_alias")
+        && message.starts_with("session alias `")
+}
+
 #[derive(Debug, Error)]
 pub enum DaemonError {
     #[error("User-domain request refused")]
@@ -99,8 +107,14 @@ pub enum DaemonError {
         alias: String,
         message: &'static str,
     },
-    #[error("session alias `{alias}` is already in use for workspace `{workspace_id}`")]
-    SessionAliasConflict { workspace_id: String, alias: String },
+    #[error(
+        "session alias `{alias}` is already in use by session `{session_id}` in workspace `{workspace_id}`; choose another alias or use that session"
+    )]
+    SessionAliasConflict {
+        workspace_id: String,
+        alias: String,
+        session_id: String,
+    },
     #[error("session reference `{session_ref}` is ambiguous: {matches:?}")]
     AmbiguousSessionRef {
         session_ref: String,

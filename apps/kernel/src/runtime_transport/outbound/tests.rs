@@ -268,6 +268,30 @@ fn outbound_lets_a_grant_holder_read_why_its_request_did_not_parse_and_nothing_e
     }
 }
 
+// A duplicate session alias names the session that holds it; other text on those codes stays private.
+#[test]
+fn outbound_lets_a_grant_holder_read_which_session_holds_an_alias() {
+    let error = crate::error::DaemonError::SessionAliasConflict {
+        workspace_id: "w1".into(),
+        alias: "main".into(),
+        session_id: "s-7".into(),
+    };
+    let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+    assert_eq!(mapped.code, "session_alias_conflict");
+    let frame = |message: &str| {
+        serde_json::json!({"type":"response","request_id":"r","response":null,
+        "error":{"code":mapped.code,"message":message,"retryable":false}})
+    };
+    let projected = project_payload(frame(&mapped.message)).unwrap();
+    assert_eq!(projected["error"]["code"], "session_alias_conflict");
+    assert!(projected["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("`s-7`"));
+    let hidden = project_payload(frame(CANARY)).unwrap();
+    assert!(!hidden.to_string().contains(CANARY));
+}
+
 // MP-08 / MP-11: cached and socket errors retain the same safe lookup reason.
 #[test]
 fn mp11_missing_session_socket_reason_is_public_without_private_details() {

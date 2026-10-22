@@ -959,6 +959,12 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             mapped
         }
         DaemonError::SessionNotFound { .. } => kernel_error("session_not_found", error, false),
+        DaemonError::SessionAliasConflict { .. } => {
+            kernel_error("session_alias_conflict", error, false)
+        }
+        DaemonError::InvalidSessionAlias { .. } => {
+            kernel_error("invalid_session_alias", error, false)
+        }
         DaemonError::AttachmentNotFound { .. } => {
             kernel_error("attachment_not_found", error, false)
         }

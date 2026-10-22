@@ -21,6 +21,12 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         DaemonError::SessionNotFound { .. } => {
             relay_error("session_not_found", &error.to_string(), false)
         }
+        DaemonError::SessionAliasConflict { .. } => {
+            relay_error("session_alias_conflict", &error.to_string(), false)
+        }
+        DaemonError::InvalidSessionAlias { .. } => {
+            relay_error("invalid_session_alias", &error.to_string(), false)
+        }
         DaemonError::AttachmentNotFound { .. } => {
             relay_error("attachment_not_found", &error.to_string(), false)
         }
