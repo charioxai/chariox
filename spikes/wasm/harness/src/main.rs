@@ -145,8 +145,43 @@ async fn measure(variant: &Variant, origin: &str) -> Value {
     report
 }
 
+/// N tool calls in flight at once, each waiting on the (delayed) HTTP broker.
+async fn concurrency(variant: &Variant, origin: &str, calls: usize) -> Value {
+    let worker = Arc::new(start(variant, origin).await);
+    let at = Instant::now();
+    let mut tasks = Vec::new();
+    for _ in 0..calls {
+        let worker = worker.clone();
+        tasks.push(tokio::spawn(async move {
+            worker.call("fetch", json!({ "url": format!("{}hello", broker::ALLOWED) }), LONG).await
+        }));
+    }
+    let mut ok = 0;
+    let mut errors = Vec::new();
+    for task in tasks {
+        match task.await.unwrap() {
+            Ok(_) => ok += 1,
+            Err(error) => errors.push(error),
+        }
+    }
+    let total = ms(at);
+    let memory = worker.spawned.memory();
+    let alive = worker.call("echo", json!({}), Duration::from_secs(5)).await.is_ok();
+    worker.peer.close();
+    worker.spawned.stop();
+    json!({ "variant": variant.name, "sandbox": variant.sandbox, "calls": calls, "ok": ok, "totalMs": total, "errors": errors.into_iter().take(3).collect::<Vec<_>>(), "workerAliveAfter": alive, "memory": memory })
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(4).map(String::as_str) == Some("concurrency") {
+        let variant = Variant::from_args(&args[1], args.get(2).map(String::as_str) == Some("bwrap"));
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let origin = broker::origin();
+        let calls = args.get(3).and_then(|v| v.parse().ok()).unwrap_or(16);
+        println!("{}", runtime.block_on(concurrency(&variant, &origin, calls)));
+        return;
+    }
     let variant = Variant::from_args(&args[1], args.get(2).map(String::as_str) == Some("bwrap"));
     let runs: usize = args.get(3).and_then(|v| v.parse().ok()).unwrap_or(1);
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();

@@ -8,7 +8,10 @@ use ipc::{error, wall_ms, Inbound, Ipc};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::os::fd::FromRawFd;
+use chariox_app_runtime::wire::RemoteError;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::Semaphore;
 use wasmtime::component::{Component, InstancePre, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store, Trap};
 
@@ -90,6 +93,7 @@ fn ready_continue(generation: &str, installation: &str, digest: &str) {
     }
 }
 
+#[derive(Clone, Copy)]
 struct Limits { memory: usize, call: Duration }
 
 fn store(engine: &Engine, ipc: &Ipc, limits: &Limits) -> Store<Host> {
@@ -158,7 +162,7 @@ async fn run() {
     let pre = linker.instantiate_pre(&component).unwrap_or_else(|_| std::process::exit(131));
 
     let first = Instant::now();
-    let mut live = instantiate(&pre, &engine, &ipc, &limits).await.unwrap_or_else(|_| std::process::exit(131));
+    let live = instantiate(&pre, &engine, &ipc, &limits).await.unwrap_or_else(|_| std::process::exit(131));
     let instantiate_ms = first.elapsed().as_secs_f64() * 1e3;
     let declared = json!({ "tools": live.store.data().tools, "events": live.store.data().events, "lifecycle": live.store.data().lifecycle });
     if ipc.call("worker.ready", declared).await.is_err() {
@@ -166,40 +170,73 @@ async fn run() {
     }
     metric(json!({ "loadMs": load_ms, "instantiateMs": instantiate_ms, "readyMs": started.elapsed().as_secs_f64() * 1e3 }));
 
+    // One instance runs one call at a time (the 1.x world is sync).
+    // CHARIOX_WASM_POOL=N lets N calls run on separate instances.
+    let size = std::env::var("CHARIOX_WASM_POOL").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    let pool = Arc::new(Pool { pre, engine, ipc, limits, idle: Mutex::new(vec![live]), slots: Semaphore::new(size) });
     while let Some(request) = requests.recv().await {
+        let pool = pool.clone();
+        tokio::spawn(async move { pool.serve(request).await });
+    }
+}
+
+struct Pool {
+    pre: InstancePre<Host>,
+    engine: Engine,
+    ipc: Ipc,
+    limits: Limits,
+    idle: Mutex<Vec<Live>>,
+    slots: Semaphore,
+}
+
+impl Pool {
+    async fn serve(&self, request: Inbound) {
         let Inbound { id, method, params, deadline_ms, context } = request;
-        match method.as_str() {
+        let outcome = match method.as_str() {
             "tools.invoke" if params["name"] == "__warm" => {
-                let samples = warm(&pre, &engine, &ipc, &limits, params["input"]["rounds"].as_u64().unwrap_or(20)).await;
-                ipc.respond(id, Ok(json!({ "samplesMs": samples }))).await;
+                let rounds = params["input"]["rounds"].as_u64().unwrap_or(20);
+                Ok(json!({ "samplesMs": warm(&self.pre, &self.engine, &self.ipc, &self.limits, rounds).await }))
             }
-            "tools.invoke" => {
-                let budget = Duration::from_millis(deadline_ms.saturating_sub(wall_ms())).min(limits.call);
-                live.store.set_epoch_deadline(ticks(budget));
-                live.store.data_mut().limits.refused = false;
-                let name = params["name"].as_str().unwrap_or_default().to_string();
-                let input = params["input"].to_string();
-                let called = live.app.chariox_app_handlers().call_call_tool(&mut live.store, &name, &input, &invocation(deadline_ms, context.as_ref())).await;
-                let outcome = match called {
-                    Ok(Ok(text)) => serde_json::from_str(&text).map_err(|_| error("INVALID_OUTPUT", "result is not JSON")),
-                    Ok(Err(app)) => Err(host::remote_error(app)),
-                    Err(trap) => {
-                        let code = match trap.downcast_ref::<Trap>() {
-                            Some(Trap::Interrupt) => "APP_CALL_TIMEOUT",
-                            _ if live.store.data().limits.refused => "APP_MEMORY_LIMIT",
-                            _ => "APP_TRAPPED",
-                        };
-                        let stopped = Instant::now();
-                        // A trapped instance is never re-entered: start a fresh one.
-                        live = instantiate(&pre, &engine, &ipc, &limits).await.unwrap_or_else(|_| std::process::exit(134));
-                        metric(json!({ "trap": code, "reinstantiateMs": stopped.elapsed().as_secs_f64() * 1e3 }));
-                        Err(error(code, "App code was stopped; the App was restarted"))
-                    }
+            "tools.invoke" => self.call_tool(&params, deadline_ms, context.as_ref()).await,
+            "lifecycle.dispatch" => Ok(Value::Null),
+            _ => Err(error("METHOD_NOT_FOUND", "unknown method")),
+        };
+        self.ipc.respond(id, outcome).await;
+    }
+
+    async fn call_tool(&self, params: &Value, deadline_ms: u64, context: Option<&Value>) -> Result<Value, RemoteError> {
+        let _slot = self.slots.acquire().await.map_err(|_| error("APP_UNAVAILABLE", "worker stopping"))?;
+        let idle = self.idle.lock().unwrap().pop();
+        let mut live = match idle {
+            Some(live) => live,
+            None => instantiate(&self.pre, &self.engine, &self.ipc, &self.limits).await
+                .map_err(|_| error("APP_TRAPPED", "App instance could not start"))?,
+        };
+        let budget = Duration::from_millis(deadline_ms.saturating_sub(wall_ms())).min(self.limits.call);
+        live.store.set_epoch_deadline(ticks(budget));
+        live.store.data_mut().limits.refused = false;
+        let name = params["name"].as_str().unwrap_or_default();
+        let input = params["input"].to_string();
+        let called = live.app.chariox_app_handlers().call_call_tool(&mut live.store, name, &input, &invocation(deadline_ms, context)).await;
+        match called {
+            Ok(result) => {
+                self.idle.lock().unwrap().push(live);
+                match result {
+                    Ok(text) => serde_json::from_str(&text).map_err(|_| error("INVALID_OUTPUT", "result is not JSON")),
+                    Err(app) => Err(host::remote_error(app)),
+                }
+            }
+            // A trapped instance is dropped, never re-entered; the next call
+            // gets a fresh one.
+            Err(trap) => {
+                let code = match trap.downcast_ref::<Trap>() {
+                    Some(Trap::Interrupt) => "APP_CALL_TIMEOUT",
+                    _ if live.store.data().limits.refused => "APP_MEMORY_LIMIT",
+                    _ => "APP_TRAPPED",
                 };
-                ipc.respond(id, outcome).await;
+                metric(json!({ "trap": code }));
+                Err(error(code, "App code was stopped; the App was restarted"))
             }
-            "lifecycle.dispatch" => ipc.respond(id, Ok(Value::Null)).await,
-            _ => ipc.respond(id, Err(error("METHOD_NOT_FOUND", "unknown method"))).await,
         }
     }
 }

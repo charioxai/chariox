@@ -126,8 +126,17 @@ pub struct Shared(pub Arc<SpikeBroker>);
 
 impl Broker for Shared {
     fn handle(&self, request: BrokerRequest) -> BrokerFuture {
+        // SPIKE_ORIGIN_DELAY_MS stands in for a slow remote origin.
+        let delay = (request.method == "http.headers")
+            .then(|| std::env::var("SPIKE_ORIGIN_DELAY_MS").ok()?.parse::<u64>().ok())
+            .flatten();
         let outcome = self.0.handle_sync(&request);
-        Box::pin(async move { outcome })
+        Box::pin(async move {
+            if let Some(ms) = delay {
+                tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+            }
+            outcome
+        })
     }
 }
 

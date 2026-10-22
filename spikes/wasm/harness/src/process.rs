@@ -147,6 +147,7 @@ pub fn spawn(variant: &Variant) -> Spawned {
         environment.push(("CHARIOX_WASM_ENTRY".into(), std::env::var("SPIKE_WASM_ENTRY").unwrap_or("app.cwasm".into())));
         environment.push(("CHARIOX_WASM_MEMORY_MB".into(), memory_mb()));
         environment.push(("CHARIOX_WASM_CALL_MS".into(), "1000".into()));
+        environment.push(("CHARIOX_WASM_POOL".into(), std::env::var("SPIKE_WASM_POOL").unwrap_or("1".into())));
         let worker = env("SPIKE_WORKER");
         let dir = std::path::Path::new(&worker).parent().unwrap().to_string_lossy().to_string();
         (worker, Vec::new(), vec![dir])
