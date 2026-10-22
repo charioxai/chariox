@@ -38,6 +38,20 @@ test("controller health is request-correlated and process-owned", async () => {
   });
 });
 
+test("every request but health and reconcile hands the browser out before it is served", async () => {
+  const calls = [];
+  const browser = {
+    handOutBrowser: async () => { calls.push("handed out"); },
+    reconcile: async () => { calls.push("reconcile"); throw new Error("stop here"); },
+    snapshot: async () => { calls.push("snapshot"); return { tabs: [] }; },
+  };
+  await handleBrowserControllerRequest({ id: 1, method: "health" }, { browser });
+  await handleBrowserControllerRequest({ id: 2, method: "browser.reconcile", params: {} }, { browser });
+  assert.deepEqual(calls, ["reconcile"]);
+  assert.equal((await handleBrowserControllerRequest({ id: 3, method: "browser.snapshot", params: {} }, { browser })).ok, true);
+  assert.deepEqual(calls, ["reconcile", "handed out", "snapshot"]);
+});
+
 test("controller rejects invalid and unknown requests", async () => {
   assert.equal((await handleBrowserControllerRequest({ id: 1, method: "missing" })).ok, false);
   assert.equal(

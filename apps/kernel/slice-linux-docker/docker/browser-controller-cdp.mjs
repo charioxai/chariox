@@ -50,17 +50,7 @@ import {retireNativeStates} from './kernel-browser-native-worker.mjs';
 const DEFAULT_DEBUGGER_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 const BLANK_PAGE_URLS = new Set(["about:blank", "chrome://newtab/", "chrome://new-tab-page/"]);
-// An about:blank document is unused only while nothing has populated it: an
-// untouched skeleton, no history, and no window property a fresh blank frame lacks.
-const UNUSED_BLANK_DOCUMENT_PROBE = `(() => {
-  if (document.documentElement.outerHTML !== "<html><head></head><body></body></html>" || history.length !== 1) return false;
-  const frame = document.body.appendChild(document.createElement("iframe"));
-  const names = (scope) => Object.getOwnPropertyNames(scope).filter((name) => !/^\\d+$/.test(name));
-  const fresh = new Set(names(frame.contentWindow));
-  const unused = names(window).every((name) => fresh.has(name));
-  frame.remove();
-  return unused;
-})()`;
+export const SCALE_CHANGE_REFUSED = "the Room browser is open on pages and a different display scale would close them and lose their unsaved state; close the pages, or keep the viewer at the current scale";
 const PERSISTENT_COOKIE_WRITER_TARGET_TYPES = new Set(["worker", "shared_worker"]);
 // Focus is read in a controller-owned isolated world: a page can redefine
 // document.visibilityState in its own world, but not in this one.
@@ -110,11 +100,17 @@ export class BrowserCdpClient {
     applyCanonicalDisplay,
     applyBrowserScale,
     browserScaleChange,
+    markBrowserHandedOut,
     focusWorldSource,
   } = {}) {
     this.applyCanonicalDisplay = applyCanonicalDisplay;
     this.applyBrowserScale = applyBrowserScale;
     this.browserScaleChange = browserScaleChange;
+    this.markBrowserHandedOut = markBrowserHandedOut;
+    // Once this controller serves a page to a user or agent, every browser
+    // lifetime it connects to is recorded as in use before it is served.
+    this.browserHandedOut = false;
+    this.handOutRecordedGeneration = null;
     this.appliedBrowserScale = null;
     this.focusWorldSource = focusWorldSource;
     this.debuggerEndpoint = new URL(debuggerEndpoint);
@@ -190,31 +186,32 @@ export class BrowserCdpClient {
   }
 
   // The native scale is a launch flag: changing it retires the browser and
-  // every page's in-memory state with it. That is only acceptable while all
-  // pages are unused startup pages, and is refused before the display is
-  // touched otherwise. A blank URL alone does not make a document unused.
+  // every page's in-memory state with it. Nothing inside a live document can
+  // prove it holds no state, so a relaunch is admitted only for a startup
+  // lifetime that no user or agent was ever given, still on its blank
+  // startup pages; any other change is refused before the display is touched.
   async refuseScaleChangeOverLivePages(viewport) {
-    if (this.appliedBrowserScale === viewport.device_scale_factor || !await this.browserScaleChange?.(viewport)) return;
-    const connection = await this.ensureConnection();
-    const { targetInfos = [] } = await connection.send("Target.getTargets");
-    const pages = targetInfos.filter((target) => target?.type === "page");
-    if (pages.every((target) => BLANK_PAGE_URLS.has(target.url)) && (await Promise.all(pages.map((target) => this.isUnusedBlankPage(connection, target)))).every(Boolean)) return;
-    throw new BrowserControllerError("viewport_apply_failed",
-      "the Room browser is open on pages and a different display scale would close them and lose their unsaved state; close the pages, or keep the viewer at the current scale");
+    if (this.appliedBrowserScale === viewport.device_scale_factor || !this.browserScaleChange) return;
+    const change = await this.browserScaleChange(viewport);
+    if (change === "unchanged") return;
+    if (change === "relaunch" && !this.browserHandedOut) {
+      const connection = await this.ensureConnection();
+      const { targetInfos = [] } = await connection.send("Target.getTargets");
+      if (targetInfos.filter((target) => target?.type === "page").every((target) => BLANK_PAGE_URLS.has(target.url))) return;
+    }
+    throw new BrowserControllerError("viewport_apply_failed", SCALE_CHANGE_REFUSED);
   }
 
-  async isUnusedBlankPage(connection, target) {
-    if (target.url !== "about:blank") return true;
-    let sessionId;
-    try {
-      sessionId = (await connection.send("Target.attachToTarget", { targetId: target.targetId, flatten: true })).sessionId;
-      const probed = await connection.send("Runtime.evaluate", { expression: UNUSED_BLANK_DOCUMENT_PROBE, returnByValue: true }, sessionId);
-      return probed?.result?.value === true;
-    } catch {
-      return false;
-    } finally {
-      if (sessionId) await connection.send("Target.detachFromTarget", { sessionId }).catch(() => {});
-    }
+  // Called before any request that serves a page to a user or agent.
+  async handOutBrowser() {
+    this.browserHandedOut = true;
+    await this.recordHandOut();
+  }
+
+  async recordHandOut() {
+    if (!this.markBrowserHandedOut || this.handOutRecordedGeneration === this.browserGeneration) return;
+    await this.markBrowserHandedOut();
+    this.handOutRecordedGeneration = this.browserGeneration;
   }
 
   async reconcile(rawViewport, { browserBarVisible, appPanelCssWidth, visibleTargetId } = {}) {
@@ -496,6 +493,7 @@ export class BrowserCdpClient {
       );
     }
     try {
+      if (this.browserHandedOut) await this.recordHandOut();
       await connection.send("Target.setDiscoverTargets", { discover: true });
       this.eventJournal.recordCdp(
         { method: "Chariox.browserConnected", params: {} },

@@ -99,6 +99,11 @@ test("browser-scale relaunches the browser at the Room scale at once and leaves 
     assert.equal(slice("browser-scale", "3").status, 2, "only the viewer scales 1 and 2 exist");
     await delay(500);
     assert.equal((await launches()).length, 2, "an unchanged scale must not relaunch");
+    assert.equal(slice("browser-handed-out").status, 0);
+    assert.equal(slice("browser-scale", "1", "check").stdout.trim(), "handed_out");
+    assert.equal(slice("browser-scale", "1").stdout.trim(), "handed_out", "a lifetime given to a user or agent is never retired for a scale");
+    await delay(500);
+    assert.equal((await launches()).length, 2);
     supervisor.kill("SIGTERM");
     assert.equal((await exited)[0], 0);
   } finally {

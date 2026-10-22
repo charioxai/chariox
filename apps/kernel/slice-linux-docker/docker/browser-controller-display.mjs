@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
-import { BrowserControllerError } from "./browser-controller-cdp.mjs";
+import { BrowserControllerError, SCALE_CHANGE_REFUSED } from "./browser-controller-cdp.mjs";
 
 const execute = promisify(execFile);
 const helper = fileURLToPath(new URL("./canonical-display.py", import.meta.url));
@@ -34,20 +34,41 @@ export function managedBrowserScale(environment = process.env, debuggerEndpoint 
   return (viewport) => applyBrowserScale(viewport, { ...environment, DISPLAY: environment.CHARIOX_SLICE_DISPLAY ?? ":99" }, debuggerEndpoint);
 }
 
-// Whether applying this viewport would retire the running browser: the scale
-// is a launch flag, so a changed scale costs every open page its live state.
+// What applying this viewport means for the running browser: "unchanged",
+// "relaunch" (an unused startup lifetime), or "handed_out" (its pages were
+// handed to a user or agent, so a relaunch would lose their live state).
 export function managedBrowserScaleChange(environment = process.env) {
   if (!managedHeadedSlice(environment)) return undefined;
   return (viewport) => browserScaleChange(viewport, { ...environment, DISPLAY: environment.CHARIOX_SLICE_DISPLAY ?? ":99" });
 }
 
 export async function browserScaleChange(viewport, environment, { run = execute } = {}) {
+  let outcome;
   try {
-    const { stdout } = await run("/bin/bash", [sliceScreen, "browser-scale", String(viewport.device_scale_factor), "check"],
-      { timeout: 35_000, maxBuffer: 1024, env: environment });
-    return stdout.trim() === "relaunch";
+    ({ stdout: outcome } = await run("/bin/bash", [sliceScreen, "browser-scale", String(viewport.device_scale_factor), "check"],
+      { timeout: 35_000, maxBuffer: 1024, env: environment }));
   } catch {
     throw new BrowserControllerError("viewport_apply_failed", "browser scale check failed; the Room browser scale could not be read");
+  }
+  outcome = outcome.trim();
+  if (!["unchanged", "relaunch", "handed_out"].includes(outcome)) {
+    throw new BrowserControllerError("viewport_apply_failed", "browser scale check failed; the Room browser reported an unknown scale state");
+  }
+  return outcome;
+}
+
+// Records, in the supervisor that owns the browser lifetime, that its pages
+// were handed to a user or agent. It survives a controller restart.
+export function managedBrowserHandOut(environment = process.env) {
+  if (!managedHeadedSlice(environment)) return undefined;
+  return () => markBrowserHandedOut({ ...environment, DISPLAY: environment.CHARIOX_SLICE_DISPLAY ?? ":99" });
+}
+
+export async function markBrowserHandedOut(environment, { run = execute } = {}) {
+  try {
+    await run("/bin/bash", [sliceScreen, "browser-handed-out"], { timeout: 10_000, maxBuffer: 1024, env: environment });
+  } catch {
+    throw new BrowserControllerError("browser_debugger_unavailable", "the Room browser lifetime could not be recorded as in use; retry the request");
   }
 }
 
@@ -58,6 +79,9 @@ export async function applyBrowserScale(viewport, environment, debuggerEndpoint,
       { timeout: 35_000, maxBuffer: 1024, env: environment }));
   } catch {
     throw new BrowserControllerError("viewport_apply_failed", "browser scale apply failed; the Room browser could not be relaunched at the viewer scale");
+  }
+  if (outcome.trim() === "handed_out") {
+    throw new BrowserControllerError("viewport_apply_failed", SCALE_CHANGE_REFUSED);
   }
   if (outcome.trim() !== "relaunching") return;
   const deadline = Date.now() + timeoutMs;

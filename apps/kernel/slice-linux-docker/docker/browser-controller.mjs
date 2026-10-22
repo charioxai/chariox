@@ -15,7 +15,7 @@ import {
   validateBrowserResourceInventory,
 } from "./browser-controller-resources.mjs";
 
-import { managedBrowserScale, managedBrowserScaleChange, managedCanonicalDisplay } from "./browser-controller-display.mjs";
+import { managedBrowserScale, managedBrowserScaleChange, managedBrowserHandOut, managedCanonicalDisplay } from "./browser-controller-display.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 
 import {hostErrorLabel} from './kernel-browser-error-label.mjs';
@@ -54,6 +54,9 @@ async function handleBrowserControllerRequestInner(
     return errorResponse(request?.id ?? null, "invalid_request", "request id must be a positive integer");
   }
   try {
+    // Every request but these two may give a page to a user or agent, after
+    // which a scale change must not relaunch the browser under it.
+    if (!["health", "browser.reconcile"].includes(request.method)) await browser.handOutBrowser?.();
     if (request.method === "room.display") {
       browser.roomComputer ??= new RoomNativeAccessibility();
       browser.roomDisplay ??= new RoomSharedDisplay({binding:viewport=>browser.roomComputer.displayBinding(viewport,browser)},
@@ -497,6 +500,7 @@ async function runCli() {
     applyCanonicalDisplay: managedCanonicalDisplay(),
     applyBrowserScale: managedBrowserScale(process.env, debuggerEndpoint),
     browserScaleChange: managedBrowserScaleChange(),
+    markBrowserHandedOut: managedBrowserHandOut(),
     ...(debuggerEndpoint ? { debuggerEndpoint } : {}),
     downloadDirectory: process.env.CHARIOX_BROWSER_DOWNLOAD_DIR,
     minimumDownloadFreeBytes,

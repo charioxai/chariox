@@ -245,6 +245,12 @@ set_browser_scale() {
     printf 'unchanged\n'
     return 0
   fi
+  # A lifetime that a user, an agent or a restored session has had may hold
+  # unsaved page state, and a relaunch would lose it.
+  if [[ -e "$LOGS/chromium-handed-out" ]]; then
+    printf 'handed_out\n'
+    return 0
+  fi
   if [[ "${2:-}" == check ]]; then
     printf 'relaunch\n'
     return 0
@@ -255,6 +261,11 @@ set_browser_scale() {
   python3 "$ROOT/browser-lifecycle.py" stop "$CHROME_PROFILE" >>"$LOGS/chromium-gui.log" 2>&1 \
     || { log "previous browser lifetime is not retired"; return 1; }
   printf 'relaunching\n'
+}
+
+# Records that the running lifetime's pages were handed to a user or agent.
+mark_browser_handed_out() {
+  : >"$LOGS/chromium-handed-out"
 }
 
 # Desktop startup, supervised recovery and URL forwarding share one Chromium
@@ -282,6 +293,14 @@ run_chromium() {
         fresh) ;;
         *) log "invalid App restore result"; return 1 ;;
       esac
+    fi
+  fi
+  if [[ "$launch_mode" == owned ]]; then
+    # Only a lifetime that starts on its own blank startup page is unused.
+    if [[ "$#" -gt 0 || "${#chrome_startup_target_args[@]}" -gt 0 ]]; then
+      mark_browser_handed_out
+    else
+      rm -f "$LOGS/chromium-handed-out"
     fi
   fi
   if [[ "$#" -gt 0 ]]; then
@@ -965,6 +984,7 @@ open_url() {
     status
     return 1
   fi
+  mark_browser_handed_out
   if chromium_running && run_browser_cdp navigate "$1" >/dev/null 2>&1; then
     sleep 1
     focus_chromium
@@ -988,6 +1008,7 @@ cleanup_failed_start() {
 case "${1:-status}" in
   supervise-browser) shift; supervise_chromium "$@" ;;
   browser-scale) shift; set_browser_scale "$@" ;;
+  browser-handed-out) mark_browser_handed_out ;;
   start)
     # Keep errexit active inside start_desktop. An `if start_desktop` wrapper
     # would suppress failures inside the function and could report success.

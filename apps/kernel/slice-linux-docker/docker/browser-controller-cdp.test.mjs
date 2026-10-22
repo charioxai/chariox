@@ -1734,7 +1734,7 @@ test("a scale change over open pages is refused before the display or the browse
   const browser = new BrowserCdpClient({
     applyCanonicalDisplay: async () => { steps.push("display"); },
     applyBrowserScale: async () => { steps.push("relaunch"); },
-    browserScaleChange: async () => true,
+    browserScaleChange: async () => "relaunch",
     connectionFactory: async () => new FakeConnection(),
   });
   await assert.rejects(browser.reconcile(viewport), (error) => error.code === "viewport_apply_failed" && /close the pages/.test(error.message));
@@ -1742,7 +1742,7 @@ test("a scale change over open pages is refused before the display or the browse
   await browser.close();
 });
 
-test("a scale change over blank pages only, or one the browser already has, relaunches as before", async () => {
+test("a scale change over an unused startup lifetime, or one the browser already has, relaunches as before", async () => {
   const steps = [];
   const blank = new FakeConnection();
   blank.closedTargetIds.add("target-b");
@@ -1750,13 +1750,12 @@ test("a scale change over blank pages only, or one the browser already has, rela
   const original = blank.send.bind(blank);
   blank.send = async (method, params) => {
     if (method === "Target.getTargets") return { targetInfos: [{ targetId: "target-a", type: "page", url: "about:blank", title: "" }] };
-    if (method === "Runtime.evaluate" && /outerHTML/.test(params.expression)) return { result: { value: true } };
     return original(method, params);
   };
   const browser = new BrowserCdpClient({
     applyCanonicalDisplay: async () => { steps.push("display"); },
     applyBrowserScale: async () => { steps.push("relaunch"); },
-    browserScaleChange: async () => true,
+    browserScaleChange: async () => "relaunch",
     connectionFactory: async () => blank,
   });
   await browser.reconcile(viewport);
@@ -1766,12 +1765,51 @@ test("a scale change over blank pages only, or one the browser already has, rela
   const same = new BrowserCdpClient({
     applyCanonicalDisplay: async () => { steps.push("display2"); },
     applyBrowserScale: async () => { steps.push("same"); },
-    browserScaleChange: async () => false,
+    browserScaleChange: async () => "unchanged",
     connectionFactory: async () => new FakeConnection(),
   });
   await same.reconcile(viewport);
   assert.deepEqual(steps.slice(2), ["display2", "same"], "a browser already at this scale keeps its open pages");
   await same.close();
+});
+
+test("a scale change is refused once the browser was handed out, and each new lifetime is recorded as in use", async () => {
+  const steps = [];
+  let connections = 0;
+  const blank = () => {
+    const connection = new FakeConnection();
+    const original = connection.send.bind(connection);
+    connection.send = async (method, params) => method === "Target.getTargets"
+      ? { targetInfos: [{ targetId: "target-a", type: "page", url: "about:blank", title: "" }] }
+      : original(method, params);
+    return connection;
+  };
+  const browser = new BrowserCdpClient({
+    applyCanonicalDisplay: async () => { steps.push("display"); },
+    applyBrowserScale: async () => { steps.push("relaunch"); },
+    browserScaleChange: async () => "relaunch",
+    markBrowserHandedOut: async () => { steps.push(`handed out ${connections}`); },
+    connectionFactory: async () => { connections += 1; return blank(); },
+  });
+  await browser.handOutBrowser();
+  await assert.rejects(browser.reconcile(viewport), (error) => error.code === "viewport_apply_failed" && /close the pages/.test(error.message));
+  assert.deepEqual(steps, ["handed out 0"], "even a blank page that was handed out may hold state");
+  browser.connection = null;
+  await browser.ensureConnection();
+  assert.deepEqual(steps, ["handed out 0", "handed out 1"], "a new browser lifetime is recorded before it is served");
+  await browser.handOutBrowser();
+  assert.equal(steps.length, 2, "one record per lifetime");
+  await browser.close();
+
+  const restarted = new BrowserCdpClient({
+    applyCanonicalDisplay: async () => { steps.push("display"); },
+    applyBrowserScale: async () => { steps.push("relaunch"); },
+    browserScaleChange: async () => "handed_out",
+    connectionFactory: async () => blank(),
+  });
+  await assert.rejects(restarted.reconcile(viewport), (error) => error.code === "viewport_apply_failed");
+  assert.equal(steps.length, 2, "a lifetime the supervisor records as handed out is never relaunched");
+  await restarted.close();
 });
 
 test("a failed browser relaunch withdraws concurrent reconciliation admission", async () => {
