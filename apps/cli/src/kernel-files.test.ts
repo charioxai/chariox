@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { createHash, randomBytes } from "node:crypto"
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -134,6 +134,45 @@ test("get refuses an existing local file unless --overwrite and asks nothing fir
     assert.equal(replaced.exit, 0, replaced.stderr)
     assert.equal(await readFile(join(dir, "f.txt"), "utf8"), "remote")
   })
+})
+
+// Runs `during` on the first chunk request, while the download is half done.
+const duringDownload = (during: () => Promise<void>) => (serve: ReturnType<typeof serveKernelFiles>) => {
+  let first = true
+  return (socket: WebSocket, frame: FakeKernelFrame) => {
+    if (first && "ReadKernelFile" in frame.request) {
+      first = false
+      void during().then(() => serve(socket, frame))
+      return
+    }
+    serve(socket, frame)
+  }
+}
+
+test("get keeps the unfinished download private and a replaced file keeps its own permissions", async () => {
+  let dir = ""
+  let partialMode = 0
+  await withRig(async ({ store, dir: rigDir, socket }) => {
+    dir = rigDir
+    store.files.set("/srv/f.txt", Buffer.from("remote"))
+    await writeFile(join(dir, "f.txt"), "local")
+    await chmod(join(dir, "f.txt"), 0o600)
+    const result = await chariox(["files", "get", ...socket, "--overwrite", "/srv/f.txt", join(dir, "f.txt")])
+    assert.equal(result.exit, 0, result.stderr)
+    assert.equal((await stat(join(dir, "f.txt"))).mode & 0o777, 0o600, "a 0600 file stays 0600 when it is replaced")
+  }, duringDownload(async () => { partialMode = (await stat(join(dir, "f.txt.chariox-partial"))).mode & 0o777 }))
+  assert.equal(partialMode, 0o600, "nobody else can read the bytes while they arrive")
+})
+
+test("get never replaces a file that appeared while it downloaded, unless --overwrite was given", async () => {
+  let dir = ""
+  await withRig(async ({ store, dir: rigDir, socket }) => {
+    dir = rigDir
+    store.files.set("/srv/f.txt", Buffer.from("remote"))
+    const result = await chariox(["files", "get", ...socket, "/srv/f.txt", join(dir, "f.txt")])
+    assert.equal(JSON.parse(result.stderr).error.code, "file_exists")
+    assert.equal(await readFile(join(dir, "f.txt"), "utf8"), "someone else's data")
+  }, duringDownload(async () => { await writeFile(join(dir, "f.txt"), "someone else's data") }))
 })
 
 test("get keeps no final file and no partial when the bytes do not match the source's sha256", async () => {
