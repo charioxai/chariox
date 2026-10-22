@@ -23,6 +23,8 @@ pub enum LocalDaemonResponse {
     KernelAccessGranted { grant: KernelAccessGrant, },
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },
     KernelAccessRevoked { revoked: usize, },
+    /// Protocol 569: whether the target still knows the requester (false: it ended there).
+    KernelSudoRequesterRenewed { renewed: bool, },
     GatewayKernelsListed { kernels: Vec<GatewayKernel>, },
     /// Protocol 568: the attachments that no longer exist on this kernel.
     AttachmentsHeartbeated { lapsed: Vec<String>, },

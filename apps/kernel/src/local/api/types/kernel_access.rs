@@ -175,6 +175,12 @@ pub struct RequestKernelSudoRequest {
     pub prompt: String,
 }
 
+/// Protocol 569: an origin kernel tells a sudo target that the grant behind its forwarded
+/// request is still live. Only a request that names its origin (`on_behalf_of`) is accepted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RenewKernelSudoRequesterRequest {}
+
 /// Protocol 413: public attribution for an ephemeral sudo authorization.
 /// `entry_id` is a revoke handle, never a credential. Protocol 484 makes it a
 /// finite window bound to one owner-authorized task (MP-08/MP-10/MP-11 A04).

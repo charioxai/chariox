@@ -19,7 +19,7 @@ const SUBSCRIBE_DEADLINE: Duration = Duration::from_secs(30);
 /// Hosted relay tokens last five minutes.
 pub(super) const RENEW_EVERY: Duration = Duration::from_secs(3 * 60 + 30);
 const RENEW_RETRIES: u32 = 2;
-const RENEW_RETRY_AFTER: Duration = Duration::from_secs(15);
+pub(super) const RENEW_RETRY_AFTER: Duration = Duration::from_secs(15);
 static SUBSCRIPTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// What the agent asked to watch on the kernel.
@@ -123,7 +123,7 @@ impl KernelGateway {
         link: Arc<Link>,
     ) {
         loop {
-            tokio::time::sleep(RENEW_EVERY).await;
+            tokio::time::sleep_until(link.token_renewal_due(RENEW_EVERY).into()).await;
             let mut attempts = 0;
             loop {
                 if !link.is_alive() {

@@ -67,7 +67,8 @@ pub(crate) struct AccessState {
     /// reads "access ended" rather than "never covered". Bounded, no secrets.
     pub(crate) ended: Vec<ProcessIdentity>,
     /// Requesters on other kernels that raised a sudo request here, by the grant id
-    /// their sudo entries carry. They live until their origin kernel says its grant ended.
+    /// their sudo entries carry. They live while their origin kernel keeps renewing the
+    /// lease and until it says its grant ended; silence ends them here without it.
     pub(crate) remote_requesters: BTreeMap<String, RemoteRequester>,
 }
 
@@ -76,7 +77,23 @@ pub(crate) struct AccessState {
 pub(crate) struct RemoteRequester {
     pub(crate) origin_name: String,
     pub(crate) harness: String,
+    /// The origin's last word that its grant lives, plus `REMOTE_REQUESTER_LEASE`.
+    pub(crate) lease_until: Instant,
 }
+
+impl RemoteRequester {
+    pub(crate) fn live(&self, now: Instant) -> bool {
+        now < self.lease_until
+    }
+}
+
+/// How long this kernel trusts a requester's origin to still hold its grant without hearing
+/// from it: the bound on how long A's crash, restart or a partition can leave B's popup or
+/// window running. The origin renews every `REMOTE_REQUESTER_RENEW_EVERY`, so a lease only
+/// lapses after several renewals were lost.
+pub(crate) const REMOTE_REQUESTER_LEASE: std::time::Duration = std::time::Duration::from_secs(45);
+pub(crate) const REMOTE_REQUESTER_RENEW_EVERY: std::time::Duration =
+    std::time::Duration::from_secs(10);
 
 const ENDED_HOLDERS: usize = 32;
 

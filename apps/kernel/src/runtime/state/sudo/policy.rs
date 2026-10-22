@@ -234,6 +234,7 @@ pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
         request,
         LocalDaemonRequest::RequestKernelSudo(_)
         | LocalDaemonRequest::ExtendKernelSudo(_)
+        | LocalDaemonRequest::RenewKernelSudoRequester(_)
         // Approvals belong to the user, including for elevated agents.
         | LocalDaemonRequest::RespondToInteraction(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
@@ -344,7 +345,10 @@ pub(super) fn requester_grant_live(
     access: &crate::runtime::kernel_access::AccessState,
 ) -> bool {
     turn.requester.as_ref().is_none_or(|requester| {
-        access.remote_requesters.contains_key(&requester.grant_id)
+        access
+            .remote_requesters
+            .get(&requester.grant_id)
+            .is_some_and(|remote| remote.live(std::time::Instant::now()))
             || access.grants.get(&requester.grant_id).is_some_and(|grant| {
                 grant.summary.owner_user_id == turn.owner_user_id
                     && grant.ended_reason(std::time::Instant::now()).is_none()

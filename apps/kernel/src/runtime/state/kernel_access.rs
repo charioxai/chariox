@@ -130,6 +130,7 @@ impl KernelRuntimeState {
             .kernel_access
             .lock()
             .expect("access state poisoned");
+        state.remote_requesters.retain(|_, remote| remote.live(now));
         let expired = state
             .grants
             .iter()

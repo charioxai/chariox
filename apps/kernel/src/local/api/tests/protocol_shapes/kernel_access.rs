@@ -299,6 +299,9 @@ fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
         LocalDaemonRequest::RevokeKernelAccessGrant(RevokeKernelAccessGrantRequest {
             grant_id: None,
         }),
+        LocalDaemonRequest::RenewKernelSudoRequester(
+            crate::local::RenewKernelSudoRequesterRequest {},
+        ),
     ];
     let responses = [
         LocalDaemonResponse::KernelAccessGranted {
@@ -309,6 +312,7 @@ fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
             sudo_turns: vec![],
         },
         LocalDaemonResponse::KernelAccessRevoked { revoked: 1 },
+        LocalDaemonResponse::KernelSudoRequesterRenewed { renewed: true },
         LocalDaemonResponse::KernelAccessDecisionResponded {
             interaction_id: "g-grant".into(),
         },
@@ -333,6 +337,13 @@ fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
         }}))
         .is_err(),
         "451 rejects session-scoped clients"
+    );
+    assert_eq!(
+        serde_json::to_value(LocalDaemonRequest::RenewKernelSudoRequester(
+            crate::local::RenewKernelSudoRequesterRequest {}
+        ))
+        .unwrap(),
+        serde_json::json!({"RenewKernelSudoRequester": {}})
     );
     // 568 replaced the lifetime by a term; the old field is refused, not ignored.
     assert!(
@@ -365,7 +376,7 @@ fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
     let digest = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{digest:x}"),
-        "e1cb510d6f0b0daf8261f90790a353663cc2df12c768257d03c85f9171220cdc"
+        "546509802affc87d8240d5c2bf3154d4f783ba5c049afc57af16a095a4f36619"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
         serde_json::json!({"RequestKernelAccess": {

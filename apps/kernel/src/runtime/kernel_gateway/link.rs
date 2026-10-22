@@ -58,6 +58,8 @@ pub(super) struct Link {
     subscriptions: Subscriptions,
     alive: Arc<AtomicBool>,
     opened_at: Instant,
+    /// When the relay token this connection runs on was issued; renewal restarts it.
+    token_issued_at: Mutex<Instant>,
     target: ClientTarget,
     target_public_key: String,
     client_private_key: String,
@@ -220,6 +222,7 @@ impl Link {
             subscriptions,
             alive,
             opened_at: Instant::now(),
+            token_issued_at: Mutex::new(Instant::now()),
             target,
             target_public_key: connected,
             client_private_key: params.client_private_key,
@@ -350,7 +353,18 @@ impl Link {
             target: self.target.clone(),
         };
         let text = serde_json::to_string(&envelope).expect("envelope serializes");
-        self.outgoing.send(Message::Text(text.into())).is_ok()
+        let sent = self.outgoing.send(Message::Text(text.into())).is_ok();
+        if sent {
+            *self.token_issued_at.lock().expect("token time poisoned") = Instant::now();
+        }
+        sent
+    }
+
+    /// When the token this connection runs on is due for renewal. A cached link is reused for
+    /// four minutes, so a request starting on it may find the token already most of the way
+    /// to its five-minute expiry.
+    pub(super) fn token_renewal_due(&self, renew_every: Duration) -> Instant {
+        *self.token_issued_at.lock().expect("token time poisoned") + renew_every
     }
 
     /// The key the target announced (and, when pinned, proved).
@@ -676,6 +690,22 @@ mod tests {
         assert_eq!(a.ok().unwrap(), b"first");
         assert_eq!(b.ok().unwrap(), b"second");
         assert!(link.usable());
+    }
+
+    // Review: a cached link is reused for four minutes, so the token a request starts on can
+    // already be most of the way to its five-minute expiry; renewal is due by token age.
+    #[tokio::test]
+    async fn token_renewal_is_due_by_the_age_of_the_token_not_of_the_request() {
+        let renew_every = Duration::from_secs(210);
+        let (private, public) = keys();
+        let url = fake_relay(private.clone(), public, Behaviour::Echo).await;
+        let link = open(url, &private).await.ok().expect("link opens");
+        let fresh = link.token_renewal_due(renew_every);
+        assert!(fresh > Instant::now() + Duration::from_secs(150));
+        *link.token_issued_at.lock().unwrap() = Instant::now() - Duration::from_secs(230);
+        assert!(link.token_renewal_due(renew_every) < Instant::now() + Duration::from_secs(1));
+        assert!(link.renew("fresh-token".into()));
+        assert!(link.token_renewal_due(renew_every) > Instant::now() + Duration::from_secs(150));
     }
 
     #[tokio::test]

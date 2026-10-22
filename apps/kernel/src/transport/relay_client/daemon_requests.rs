@@ -876,9 +876,12 @@ async fn dispatch_on_behalf_of(
             false,
         ));
     }
-    // The origin telling this kernel its grant ended is idempotent and only removes
-    // authority, so it needs neither a command id nor a ledger entry.
-    if ends_remote_sudo(on_behalf_of, &request) {
+    // The origin telling this kernel its grant ended or still lives is idempotent and
+    // only removes or keeps authority this kernel already gave, so it needs neither a
+    // command id nor a ledger entry.
+    if ends_remote_sudo(on_behalf_of, &request)
+        || matches!(request, LocalDaemonRequest::RenewKernelSudoRequester(_))
+    {
         let command = KernelCommand::from_local_request_with_caller(
             command_id.unwrap_or_else(|| format!("gw-end-{}", crate::session::unix_epoch_ms())),
             KernelCommandSource::RelayClient,

@@ -623,6 +623,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RestoreAppDataSnapshot(_)
         | LocalDaemonRequest::RevokeAppFileGrants(_)
         | LocalDaemonRequest::RequestKernelSudo(_)
+        | LocalDaemonRequest::RenewKernelSudoRequester(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
         | LocalDaemonRequest::ListKernelAccessGrants(_)
         | LocalDaemonRequest::RevokeKernelAccessGrant(_)

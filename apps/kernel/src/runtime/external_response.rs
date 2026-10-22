@@ -201,6 +201,7 @@ response_policies! {
         KernelAccessGranted,
         KernelAccessGrantsListed,
         KernelAccessRevoked,
+        KernelSudoRequesterRenewed,
         GatewayKernelsListed,
         AttachmentsHeartbeated,
         GatewayKernelJoined,

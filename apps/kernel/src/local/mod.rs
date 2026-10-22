@@ -285,9 +285,9 @@ pub use api::{
     GatewayKernelStatus, GatewayKernelVia, HeartbeatAttachmentsRequest, JoinKernelLinkRequest,
     KernelAccessGrant, KernelDirectoryEntry, KernelFileKind, KernelFileStat, KernelSudoTurn,
     ListGatewayKernelsRequest, ListKernelAccessGrantsRequest, ListKernelDirectoryRequest,
-    OnBehalfOf, ReadKernelFileRequest, RequestKernelAccessRequest, RequestKernelSudoRequest,
-    RevokeKernelAccessGrantRequest, StatKernelFileRequest, WriteKernelFileRequest,
-    KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES,
+    OnBehalfOf, ReadKernelFileRequest, RenewKernelSudoRequesterRequest, RequestKernelAccessRequest,
+    RequestKernelSudoRequest, RevokeKernelAccessGrantRequest, StatKernelFileRequest,
+    WriteKernelFileRequest, KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES,
 };
 pub use api::{
     GetKernelResourceTelemetryRequest, KernelResourceTelemetryDisk, KernelResourceTelemetryLogs,

@@ -254,17 +254,25 @@ impl KernelGateway {
         deadline: Duration,
     ) -> Result<Vec<u8>, LinkFailure> {
         let request = link.request(request_id, plaintext, deadline);
-        if deadline <= subscription::RENEW_EVERY {
-            return request.await;
-        }
+        let ends_at = std::time::Instant::now() + deadline;
         tokio::pin!(request);
-        let mut renewals = tokio::time::interval(subscription::RENEW_EVERY);
         loop {
+            let mut due = link.token_renewal_due(subscription::RENEW_EVERY);
+            if ends_at <= due {
+                // The token outlives this request: nothing to renew.
+                return request.await;
+            }
             tokio::select! {
                 answered = &mut request => return answered,
-                _ = renewals.tick() => {
+                _ = tokio::time::sleep_until(due.into()) => {
                     if !self.renew_once(target, kernel, link).await {
                         tracing::warn!(target = %target, "could not renew the relay token of a long wait; it may be cut at expiry");
+                        // Retried shortly, still inside the token's last minute and a half.
+                        due = std::time::Instant::now() + subscription::RENEW_RETRY_AFTER;
+                        tokio::select! {
+                            answered = &mut request => return answered,
+                            _ = tokio::time::sleep_until(due.into()) => {}
+                        }
                     }
                 }
             }

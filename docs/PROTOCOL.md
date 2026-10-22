@@ -4858,7 +4858,12 @@ authority for its own sessions, agents, terminals and files.
   lives on the target as `<origin_kernel>:<grant_id>` until the origin reports its grant ended: a forwarded
   `RevokeKernelAccessGrant { grant_id }` whose `grant_id` is the `on_behalf_of.grant_id` ends that requester's pending
   request and running window (idempotent, no `command_id`, nothing else is revoked). Without `on_behalf_of` the
-  request is still refused. No shape changed.
+  request is still refused.
+  The target also enforces the requester's liveness itself: the requester carries a 45 s lease, and the origin renews it
+  every 10 s while its grant lives with `RenewKernelSudoRequester {}` (only with `on_behalf_of`, no `command_id`, answered
+  `KernelSudoRequesterRenewed { renewed }`; `false` means the target no longer knows the requester). A lease that lapses
+  (origin killed, restarted, partitioned) ends the pending popup and the running window on the target without any report,
+  and a lapsed lease is never revived by a later renewal. Both shapes were added to the provisional 569/177.
 - The gateway on the target: a request carrying `on_behalf_of` records its sender, keyed by the relay's
   authenticated client key (`gateway-origins.json`), and `ListPairedClients` lists it as `Agent gateway of <origin
   kernel>` with client id `agent-gateway:<thumbprint>`. `RevokePairedClient` on that id refuses the key from then on,

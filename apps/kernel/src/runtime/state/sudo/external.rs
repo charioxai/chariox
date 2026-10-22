@@ -1,6 +1,6 @@
 //! Grant holders request authorization; only the host terminal can supply it.
 use super::*;
-use crate::runtime::kernel_access::RemoteRequester;
+use crate::runtime::kernel_access::{RemoteRequester, REMOTE_REQUESTER_LEASE};
 
 impl KernelRuntimeState {
     pub(crate) async fn request_kernel_sudo(
@@ -98,6 +98,7 @@ impl KernelRuntimeState {
                         .clone()
                         .unwrap_or_else(|| on_behalf_of.origin_kernel.clone()),
                     harness: on_behalf_of.harness.clone(),
+                    lease_until: std::time::Instant::now() + REMOTE_REQUESTER_LEASE,
                 },
             );
         self.raise_sudo_request(session_id, request, &owner, requester)
@@ -106,6 +107,22 @@ impl KernelRuntimeState {
 
     /// The origin kernel's grant ended: its pending requests and running windows end
     /// here through the same sweep a local grant's end takes.
+    pub(crate) fn renew_remote_kernel_sudo(&self, on_behalf_of: &OnBehalfOf) -> bool {
+        let now = std::time::Instant::now();
+        let renewed = self
+            .owned
+            .kernel_access
+            .lock()
+            .expect("access state poisoned")
+            .remote_requesters
+            .get_mut(&remote_requester_id(on_behalf_of))
+            .filter(|remote| remote.live(now))
+            .map(|remote| remote.lease_until = now + REMOTE_REQUESTER_LEASE)
+            .is_some();
+        self.sweep_sudo();
+        renewed
+    }
+
     pub(crate) fn end_remote_kernel_sudo(&self, on_behalf_of: &OnBehalfOf) -> usize {
         let ended = self
             .owned

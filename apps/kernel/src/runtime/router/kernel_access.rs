@@ -134,6 +134,11 @@ impl CommandRouter {
                         .request_remote_kernel_sudo(on_behalf_of, sudo.clone())
                         .await
                 }
+                LocalDaemonRequest::RenewKernelSudoRequester(_) => {
+                    Ok(LocalDaemonResponse::KernelSudoRequesterRenewed {
+                        renewed: self.runtime_state.renew_remote_kernel_sudo(on_behalf_of),
+                    })
+                }
                 _ => Ok(LocalDaemonResponse::KernelAccessRevoked {
                     revoked: self.runtime_state.end_remote_kernel_sudo(on_behalf_of),
                 }),
@@ -380,5 +385,42 @@ mod user_domain_admission_tests {
             }
             router.runtime_state.shutdown_cleanup().await.unwrap();
         });
+    }
+
+    // The origin's lease renewal is answered from the target's own record: a requester this
+    // kernel does not know (or whose lease lapsed) is reported as unknown, so the origin can stop.
+    #[tokio::test]
+    async fn a_lease_renewal_for_an_unknown_requester_is_answered_not_renewed() {
+        let app =
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let router = CommandRouter::with_interactive_capacity(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            4,
+        );
+        let request = LocalDaemonRequest::RenewKernelSudoRequester(
+            crate::local::RenewKernelSudoRequesterRequest {},
+        );
+        let command = KernelCommand::from_local_request_with_source(
+            "renew-1",
+            KernelCommandSource::RelayClient,
+            None,
+            None,
+            &request,
+        );
+        let origin = crate::local::OnBehalfOf {
+            origin_kernel: "kernel-a".into(),
+            origin_name: None,
+            grant_id: "access-1".into(),
+            harness: "codex".into(),
+        };
+        let answer = router
+            .dispatch_remote_sudo(&command, &origin, &request)
+            .await
+            .unwrap();
+        assert!(matches!(
+            answer,
+            LocalDaemonResponse::KernelSudoRequesterRenewed { renewed: false }
+        ));
+        router.runtime_state.shutdown_cleanup().await.unwrap();
     }
 }
