@@ -491,7 +491,7 @@ export class KernelBrowserHost {
     const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
     return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
       tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => {
-        // Protocol 569: the page dialog opening this Tab has, for the viewer to answer.
+        // Protocol 575: the page dialog opening this Tab has, for the viewer to answer.
         const dialog = this.browser?.openDialogs?.get(target_id);
         return dialog ? { ...tab, dialog } : tab;
       }), viewport:this.viewport(), chrome_window: this.chromeWindow(),
@@ -845,7 +845,7 @@ export class KernelBrowserHost {
     if(command.op==='mirror_subscribe') return this.mirror.subscribe(command,scope);
     if(command.op==='mirror_next') return this.mirror.next(command,scope,{signal});
     if(command.op==='mirror_close') {this.mirror.require(command.subscription_id,scope,command.generation);this.mirror.drop(command.subscription_id);return {closed:true};}
-    // Protocol 569: a person answers the page dialog opening they were shown. The page (and any input it blocks)
+    // Protocol 575: a person answers the page dialog opening they were shown. The page (and any input it blocks)
     // waits for this, so it reads no renderer state: the dialog's own target, document and opening answer it.
     if(command.op==='dialog') {
       if(command.focused_agent||command._agent_input)throw new UserDomainRefusal('not_granted');

@@ -481,20 +481,20 @@ fn mp08_mp10_mp11_browser_omnibox_warm_540_snapshot() {
     );
 }
 
-// MP-08/MP-10 (provisional 569/177): a person answers the page dialog opening their Tab lists as `dialog`
+// MP-08/MP-10 (provisional 575/183): a person answers the page dialog opening their Tab lists as `dialog`
 // in the state until the page has its answer; the answer names that opening.
 #[test]
-fn mp08_mp10_browser_dialog_569_snapshot() {
+fn mp08_mp10_browser_dialog_575_snapshot() {
     const {
-        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 569);
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 575);
     };
     const {
-        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 177);
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 183);
     };
-    let bytes = include_bytes!("browser-dialog-569.json");
+    let bytes = include_bytes!("browser-dialog-575.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "15ae92bcf4ba8b76cdef42e9d283cdc7ae098e924e71fdee826f4c5cd9d5630e"
+        "d266be1a05687dc7f3ab7821c2555e8460f109d629a897745d550470d573d7fb"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     for key in ["accept", "answer_prompt", "dismiss"] {
@@ -599,7 +599,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "e23d3cb641f38b8066cd8e162801bede2ea2bcdb36e23e2b21f1e942b2cbda02"
+        "d2f39564e3abdfafb606e49298c9985ccfcdb01d128dd832ecc5b9215e4ad270"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);

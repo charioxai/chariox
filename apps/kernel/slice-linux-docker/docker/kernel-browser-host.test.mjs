@@ -70,7 +70,7 @@ function fixture(root) {
     clearViewport: async target => connection.send('Emulation.clearDeviceMetricsOverride', {}, `session-${target}`),
     inputCapture: { hold: async()=>async()=>{}, run: async (_connection, _session, operation) => operation() },
   });
-  // The page dialog seam of BrowserCdpClient (protocol 569).
+  // The page dialog seam of BrowserCdpClient (protocol 575).
   browser.openDialogs = new BrowserOpenDialogs(() => browser.onDialogChange?.());
   browser.handleDialog = async ({ action, target_id, opening }) => {
     if (!browser.openDialogs.claim(target_id, opening)) throw Object.assign(new Error('answered'), { code: 'stale_dialog_reference' });
@@ -2028,7 +2028,7 @@ test('MP-08/MP-10 a Tab lists its open page dialog and the person answers it thr
  await assert.rejects(host.request({op:'dialog',tab_id:tab.tab_id,generation:opened.generation,opening:1,accept:true}),/stale|refused/i);
 }));
 
-// Protocol 569: two viewers see the same confirm. One answers it and the page at once asks the same question again
+// Protocol 575: two viewers see the same confirm. One answers it and the page at once asks the same question again
 // in the same document; the other's delayed answer to the first never answers the second, which it never saw.
 test('MP-08/MP-10 a delayed answer from a second viewer never answers the next dialog opening',()=>using(async({host,sent})=>{
  const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0],target=host.tabs.get(tab.tab_id).target_id;

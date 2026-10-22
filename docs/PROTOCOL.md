@@ -4797,6 +4797,11 @@ clears the list. `browser-mirror2-font-absent-567.json` pins the shape (Rust has
 `browser_mirror2_font_absent_567_shape_is_pinned`). Older kernels never send the field; older
 viewers refuse it, so they must stay below 567 or negotiate the same wire.
 
+Faces a script added with `document.fonts.add(new FontFace(...))` need no new field. Chrome reports where each loaded face
+came from; a face with a URL source reaches the viewer as a synthetic `@font-face` rule in a trailing sheet of the document's
+`adopted` op, its URL a `font` resource like a stylesheet face's. A face built from bytes cannot be sent: it is left out of
+`required` (it would hold the handover for nothing) and its family is listed in `absent`.
+
 MP-08 / MP-10: provisional 568/176 (renumbered at integration) adds the `dialog` kernel-browser command
 and the Tab's `dialog` state. A Tab whose page opened an alert, confirm, prompt or beforeunload dialog
 lists `dialog: {type, message}` (message at most 2048 UTF-8 bytes; a prompt's default stays private to the
@@ -4805,17 +4810,17 @@ controller) in every state read until the page has its answer, and the state sig
 (Stay for beforeunload, Cancel for confirm and prompt), an absent `prompt_text` lets the controller
 apply the page's own default. The answer is served beside the host's barrier lane, because the input
 that opened the dialog may still be waiting on it; it is refused for agents, for a stale generation and
-for a Tab with no open dialog. The 569 fixture below pins the current shape. Older kernels refuse the
+for a Tab with no open dialog. The 575 fixture below pins the current shape. Older kernels refuse the
 command and never list a dialog; viewers feature-detect 568.
 
-MP-08 / MP-10: provisional 569/177 (renumbered at integration) numbers each dialog opening. The Tab's
+MP-08 / MP-10: provisional 575/183 (renumbered at integration) numbers each dialog opening. The Tab's
 `dialog` state is `{type, message, opening}`, where `opening` is a positive integer the controller gives
 every new dialog, so a page that asks the same question twice in one document opens two different
 openings. The `dialog` command carries the `opening` it answers (required). The host refuses an answer
 whose opening is no longer the Tab's open one, and the controller checks it again right before the answer
 is dispatched and lets each opening take one answer, so two viewers' answers to one dialog never answer
-the dialog after it. `browser-dialog-569.json` pins the shape (Rust hash test
-`mp08_mp10_browser_dialog_569_snapshot`). Viewers below 569 send no opening and are refused.
+the dialog after it. `browser-dialog-575.json` pins the shape (Rust hash test
+`mp08_mp10_browser_dialog_575_snapshot`). Viewers below 575 send no opening and are refused.
 
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
 `layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.

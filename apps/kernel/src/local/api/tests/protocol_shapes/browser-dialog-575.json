@@ -1,7 +1,7 @@
 {
-  "local_protocol": 569,
-  "peer_protocol": 177,
-  "allocation": "provisional 569/177 (mirror r82): renumbered at integration",
+  "local_protocol": 575,
+  "peer_protocol": 183,
+  "allocation": "provisional 575/183 (mirror r83): renumbered at integration",
   "accept": { "KernelBrowser": { "command": { "op": "dialog", "tab_id": "tab-1", "generation": 7, "opening": 3, "accept": true } } },
   "answer_prompt": { "KernelBrowser": { "command": { "op": "dialog", "tab_id": "tab-1", "generation": 7, "opening": 3, "accept": true, "prompt_text": "Ada" } } },
   "dismiss": { "KernelBrowser": { "command": { "op": "dialog", "tab_id": "tab-1", "generation": 7, "opening": 3, "accept": false } } },

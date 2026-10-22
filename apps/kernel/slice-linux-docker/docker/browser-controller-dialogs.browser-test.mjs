@@ -1,4 +1,4 @@
-// MP-08/MP-10: real Chromium regression for dialog openings (protocol 569).
+// MP-08/MP-10: real Chromium regression for dialog openings (protocol 575).
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";

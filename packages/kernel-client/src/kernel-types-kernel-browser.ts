@@ -75,7 +75,7 @@ export function userDomainWindowBadge(access: UserDomainWindowAccess): string | 
 export type KernelBrowserTabActor = { actor_id: string; kind: "agent" | "human"; display_label: string }
 export type KernelBrowserAgentActivity = { sequence: number; tab_id: string; actor: KernelBrowserTabActor }
 /** Protocol 568: the page dialog a Tab has open; the page waits until a person answers it.
- * Protocol 569: `opening` numbers this dialog opening; the answer names it. */
+ * Protocol 575: `opening` numbers this dialog opening; the answer names it. */
 export type KernelBrowserDialog = { type: "alert" | "confirm" | "prompt" | "beforeunload"; message: string; opening: number }
 export type KernelBrowserTab = { tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null; dialog?: KernelBrowserDialog }
 export type KernelBrowserResult = {

@@ -889,7 +889,7 @@ test("an open page dialog is listed for its Tab, bounded, and gone when its life
   await browser.close();
 });
 
-test("a dialog answer takes only the opening it names, once, right before dispatch (569)", async () => {
+test("a dialog answer takes only the opening it names, once, right before dispatch (575)", async () => {
   const connection = new FakeConnection();
   const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
   await browser.reconcile(viewport);

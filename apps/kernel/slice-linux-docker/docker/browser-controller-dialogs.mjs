@@ -37,7 +37,7 @@ export class BrowserDialogDefaults {
 const DIALOG_TYPES = new Set(["alert", "confirm", "prompt", "beforeunload"]);
 const DIALOG_MESSAGE_BYTES = 2048;
 
-// The page dialog a Tab has open right now, for the person looking at it (protocol 569). A page that opened one
+// The page dialog a Tab has open right now, for the person looking at it (protocol 575). A page that opened one
 // answers nothing until it is handled, so the viewer shows it and answers through the `dialog` command. Prompt
 // defaults stay private (see BrowserDialogDefaults): the viewer answers `accept` and the controller applies it.
 // Each opening has its own number: two dialogs with the same type and text in one document are still different

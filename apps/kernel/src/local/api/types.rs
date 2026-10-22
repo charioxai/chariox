@@ -339,5 +339,5 @@ pub use workspace::*;
 /// replacing the viewer's 250 ms poll.
 /// MP-08/MP-10/MP-11: allocated 567 adds the mirror v2 `fonts` op's `absent` (stack families the native machine lacks).
 /// Provisional 568 adds the `dialog` kernel-browser command and the Tab's `dialog` state (renumbered at integration).
-/// Provisional 569 numbers each dialog opening: the state lists it and the `dialog` answer names it.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 569;
+/// Provisional 575 numbers each dialog opening: the state lists it and the `dialog` answer names it.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 575;
