@@ -134,7 +134,7 @@ test("/skills repo reviews one source-backed package of every skill at the resol
 })
 
 test("/skills repo --only installs just the named directories and refuses an unknown one", async () => {
-  const { requests, footers, run } = harness()
+  const { requests, notices, footers, run } = harness()
   await run("/skills repo https://github.com/acme/skills.git --only skills/beta --name Acme")
   const preview = requests.find(request => request.action === "preview")
   const actions = preview?.action === "preview" ? preview.mutation.actions : []
@@ -143,4 +143,5 @@ test("/skills repo --only installs just the named directories and refuses an unk
   assert.equal(actions[1]?.action === "install" && actions[1].source.kind === "repository" && actions[1].source.path, "skills/beta")
   await run("/skills repo https://github.com/acme/skills.git --only skills/nope")
   assert.match(footers.at(-1)!, /no skill at skills\/nope/)
+  assert.match(notices.at(-2)!, /\$alpha {2}skills\/alpha/, "the listing is shown before the refusal")
 })

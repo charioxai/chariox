@@ -319,12 +319,12 @@ export function createSkillsCommand(deps: SkillsCommandDeps): (args: readonly st
         const listing = await request(skillsV2Request({ action: "resolve_repository", url: first }), "repository")
         const only = flags.values.get("only")?.split(",").map(path => path.trim().replace(/^\/+|\/+$/g, ""))
         const chosen = only ? listing.skills.filter(skill => only.includes(skill.path)) : listing.skills
-        const unknown = only?.filter(path => !listing.skills.some(skill => skill.path === path)) ?? []
-        if (unknown.length) throw new SkillsCommandError(`the repository has no skill at ${unknown.join(", ")}; see the listing above or omit --only`)
         const lines = [`Repository ${listing.locator} @ ${listing.revision}: ${listing.skills.length} skill(s)`]
         for (const skill of listing.skills) lines.push(`  $${skill.name}  ${skill.path || "(repository root)"}${chosen.includes(skill) ? "" : " · not selected"}`)
         for (const skip of listing.skipped) lines.push(`  skipped ${skip.path || "(repository root)"}: ${skip.reason}`)
         deps.appendNotice(lines.join("\n"))
+        const unknown = only?.filter(path => !listing.skills.some(skill => skill.path === path)) ?? []
+        if (unknown.length) throw new SkillsCommandError(`the repository has no skill at ${unknown.join(", ")}; pick paths from the listing above or omit --only`)
         const packageId = randomUUID()
         const packageName = flags.values.get("name") ?? (listing.locator.replace(/\/+$/, "").split("/").pop() ?? "repository").replace(/\.git$/, "")
         return stage(result, scope, [
