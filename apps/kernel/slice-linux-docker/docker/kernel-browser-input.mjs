@@ -124,6 +124,14 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
         const ctrl = !printable && typeof input.key === "string" && /^Ctrl\+(Backspace|Delete)$/.test(input.key);
         if (!printable && !shift && !ctrl && !["Tab", "Enter", "Space", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
         const modifiers = (input.modifiers ?? 0) | (shift ? 8 : ctrl ? 2 : 0);
+        // CDP page keys do not invoke Chromium's browser-level history shortcuts.
+        // Keep this normal key gesture in the kernel so every client navigates the same history.
+        if (modifiers === 1 && ["ArrowLeft", "ArrowRight"].includes(input.key)) {
+          const history = await connection.send("Page.getNavigationHistory", {}, sessionId);
+          const entry = history.entries?.[history.currentIndex + (input.key === "ArrowLeft" ? -1 : 1)];
+          if (entry) await sendInput("Page.navigateToHistoryEntry", { entryId: entry.id });
+          return;
+        }
         const chord = (modifiers & 7) !== 0;
         const name = shift ? input.key.slice(6) : ctrl ? input.key.slice(5) : input.key;
         const key = { key: name === "Space" ? " " : name, code: /^[a-z]$/i.test(name) ? `Key${name.toUpperCase()}` : name,
