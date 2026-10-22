@@ -168,7 +168,7 @@ import {
   updateMetaagentTask,
 } from "./session-api.js"
 import { SESSION_CONFIG_RESPONSE_LAYOUT_KEY } from "@chariox/kernel-client/session-config-projection"
-import { submitPromptRequest, createAgentPromptScheduleRequest } from "@chariox/kernel-client/ipc-requests"
+import { submitPromptRequest } from "@chariox/kernel-client/ipc-requests"
 import { formatSessionList } from "./sessions.js"
 import {
   createSlice,
@@ -826,21 +826,13 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       resumeMetaagentTask(client, sessionId, metaagentId),
     abortMetaagentTask: (sessionId, metaagentId, reason) =>
       abortMetaagentTask(client, sessionId, metaagentId, reason),
-    createAgentPromptSchedule: async (sessionId, agentId, kind, intervalSeconds, prompt) => {
-      const response = await client.send<Record<string, unknown>>(
-        createAgentPromptScheduleRequest({
-          sessionId,
-          agentId,
-          kind,
-          intervalSeconds,
-          prompt,
-        }),
-      )
-      const payload = "AgentPromptScheduleCreated" in response
-        ? response.AgentPromptScheduleCreated as { session?: RuntimeSession }
-        : null
+    sendAgentTriggerRequest: async (request) => {
+      const response = await client.send<Record<string, unknown>>(request)
+      const payload = ["AgentTriggerCreated", "AgentTriggerUpdated", "AgentTriggerDeleted"]
+        .map((key) => response[key] as { session?: RuntimeSession } | undefined)
+        .find(Boolean)
       if (!payload?.session) {
-        throw new Error("kernel did not return the scheduled session")
+        throw new Error("kernel did not return the session after the trigger change")
       }
       return { session: payload.session }
     },

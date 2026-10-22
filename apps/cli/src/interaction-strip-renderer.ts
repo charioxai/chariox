@@ -21,6 +21,7 @@ import {
   queuedPromptMetaLabel,
   queuedPromptTitleLabel,
 } from "@chariox/kernel-client/queued-prompt-controls"
+import type { AgentTriggerStripItem } from "@chariox/kernel-client/agent-trigger-state"
 import type { QueuedPromptStripItem } from "@chariox/kernel-client/queued-prompt-strip-state"
 import { theme } from "./theme.js"
 
@@ -39,6 +40,7 @@ type InteractionStripRenderOptions = {
   queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
+  agentTriggerStripItemsForAgent: (agentId: string | null | undefined) => readonly AgentTriggerStripItem[]
   providerLoginState?: (interaction: RuntimeInteraction) => ProviderLoginStripState | null
   /** Focuses a login's code field the first time it is shown. */
   focusCustomChoiceOnce?: (interactionId: string, index: number, requestedAtMs: number) => void
@@ -70,7 +72,8 @@ function renderInteractionStrip(
   }
   const interaction = options.activeInteractionForAgent(agent?.id ?? null)
   const queuedPrompts = options.queuedPromptStripItemsForAgent(agent?.id ?? null)
-  const visible = Boolean(interaction) || queuedPrompts.length > 0
+  const triggers = options.agentTriggerStripItemsForAgent(agent?.id ?? null)
+  const visible = Boolean(interaction) || queuedPrompts.length > 0 || triggers.length > 0
   box.visible = visible
   box.flexDirection = "column"
   box.gap = 0
@@ -132,7 +135,26 @@ function renderInteractionStrip(
     renderInteractionChoices(options, box, interaction, focused)
   }
   renderQueuedPromptStrip(options, box, queuedPrompts, focused, selectedQueuedPromptIndex)
+  renderAgentTriggerStrip(options, box, triggers)
   box.requestRender?.()
+}
+
+function renderAgentTriggerStrip(
+  options: InteractionStripRenderOptions,
+  container: BoxRenderable,
+  triggers: readonly AgentTriggerStripItem[],
+): void {
+  for (const trigger of triggers) {
+    const state = trigger.enabled
+      ? `next ${new Date(trigger.nextRunAtMs ?? 0).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
+      : "off"
+    container.add(new TextRenderable(options.renderer, {
+      content: [`⏱ ${trigger.label}`, trigger.busyPolicy, state, `${trigger.fired} fired`, trigger.id]
+        .join(" · ") + (trigger.lastError ? ` · ${trigger.lastError}` : ""),
+      fg: trigger.lastError ? theme.warning : theme.textMuted,
+      wrapMode: "word",
+    }))
+  }
 }
 
 function renderQueuedPromptStrip(

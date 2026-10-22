@@ -71,6 +71,7 @@ export type RuntimeSession = {
   agent_wakes?: AgentWake[]
   metaagent_tasks?: MetaagentTask[]
   queued_metaagent_tasks?: QueuedMetaagentTask[]
+  agent_triggers?: AgentTrigger[]
   agent_prompt_schedules?: AgentPromptSchedule[]
   focused_agent_id: string | null
   max_agents: number
@@ -117,6 +118,33 @@ export type RuntimeProject = {
 
 export type MetaagentTaskStatus = "active" | "paused" | "blocked" | "completed" | "aborted"
 
+export type AgentTriggerBusyPolicy = "queue" | "steer"
+
+export type AgentTriggerSource = {
+  kind: "schedule"
+  interval_seconds: number
+  repeat: "once" | "every"
+  next_run_at_ms: number
+}
+
+/** Protocol 576: what fires prompts into an agent's own conversation. */
+export type AgentTrigger = {
+  id: string
+  agent_id: string
+  created_by_user_id?: string | null
+  source: AgentTriggerSource
+  busy_policy: AgentTriggerBusyPolicy
+  prompt: string
+  enabled: boolean
+  created_at_ms: number
+  fired: number
+  coalesced: number
+  last_fired_at_ms?: number | null
+  last_outcome?: "started" | "queued" | "steered" | "coalesced" | null
+  last_error?: string | null
+}
+
+/** The protocol < 576 view of an enabled schedule trigger. */
 export type AgentPromptSchedule = {
   id: string
   agent_id: string

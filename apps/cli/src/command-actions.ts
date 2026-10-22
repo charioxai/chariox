@@ -7,7 +7,13 @@ import type {
   RuntimeSession,
   SessionConfigState,
 } from "./cli-types.js"
-import type { ParsedSlashCommand } from "./commands.js"
+import {
+  createAgentScheduleTriggerRequest,
+  deleteAgentTriggerRequest,
+  updateAgentTriggerRequest,
+} from "@chariox/kernel-client/ipc-requests"
+import { agentTriggersForAgent } from "@chariox/kernel-client/agent-trigger-state"
+import { TRIGGER_USAGE, type ParsedSlashCommand } from "./commands.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import {
   ROOT_WORKFLOW_SHORTCUTS,
@@ -139,13 +145,8 @@ type CommandActionDeps =
   currentProviderId: () => string
   submitGoalPrompt?: (text: string, targetAgentId: string) => Promise<void>
   focusedAgentId: () => string | null
-  createAgentPromptSchedule?: (
-    sessionId: string,
-    agentId: string,
-    kind: "once" | "recurring",
-    intervalSeconds: number,
-    prompt: string,
-  ) => Promise<{ session: RuntimeSession }>
+  /** Sends CreateAgentTrigger, UpdateAgentTrigger or DeleteAgentTrigger. */
+  sendAgentTriggerRequest?: (request: Record<string, unknown>) => Promise<{ session: RuntimeSession }>
   runWorkflowRegistryEntry?: (
     name: string,
     endpointRef: string,
@@ -483,16 +484,16 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     await deps.submitGoalPrompt(raw, agent.id)
   }
 
-  const handleWaitCommand = async (
-    command: Extract<ParsedSlashCommand, { kind: "wait" }>,
+  const handleTriggerCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "trigger" }>,
   ): Promise<void> => {
-    const commandName = command.scheduleKind === "once" ? "/wait-in" : "/wait-every"
-    if (command.error || command.minutes === null || !command.prompt.trim()) {
-      deps.flashFooter(command.error ?? `usage: ${commandName} <minutes> <prompt>`, "error")
+    const action = command.action
+    if (command.error || !action) {
+      deps.flashFooter(command.error ?? TRIGGER_USAGE, "error")
       return
     }
     if (!deps.isAttached()) {
-      deps.flashFooter("must be attached to a session to schedule agent prompts", "error")
+      deps.flashFooter("must be attached to a session to use agent triggers", "error")
       return
     }
     const agentId = deps.focusedAgentId()
@@ -500,21 +501,44 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter("no focused agent", "error")
       return
     }
-    if (!deps.createAgentPromptSchedule) {
-      deps.flashFooter(`${commandName} is unavailable in this daemon`, "error")
+    const sessionId = deps.sessionState().id
+    if (action.type === "list") {
+      const triggers = agentTriggersForAgent(deps.sessionState(), agentId)
+      deps.appendNotice(triggers.length === 0
+        ? "No triggers on this agent. Add one with /trigger every <minutes> [--steer] <prompt>."
+        : ["Triggers", ...triggers.map((trigger) => [
+          `${trigger.id}  ${trigger.label} · ${trigger.busyPolicy}`,
+          trigger.enabled ? `next ${new Date(trigger.nextRunAtMs ?? 0).toLocaleTimeString()}` : "off",
+          `${trigger.fired} fired`,
+          trigger.lastError ? `last error: ${trigger.lastError}` : "",
+        ].filter(Boolean).join(" · "))].join("\n"))
       return
     }
-    const result = await deps.createAgentPromptSchedule(
-      deps.sessionState().id,
-      agentId,
-      command.scheduleKind,
-      Math.max(1, Math.round(command.minutes * 60)),
-      command.prompt,
-    )
+    if (!deps.sendAgentTriggerRequest) {
+      deps.flashFooter("agent triggers are unavailable in this kernel", "error")
+      return
+    }
+    const request = action.type === "create"
+      ? createAgentScheduleTriggerRequest({
+        sessionId,
+        agentId,
+        repeat: action.repeat,
+        intervalSeconds: Math.max(1, Math.round(action.minutes * 60)),
+        busyPolicy: action.busyPolicy,
+        prompt: action.prompt,
+      })
+      : action.type === "update"
+        ? updateAgentTriggerRequest(sessionId, action.triggerId, action.change === "on" || action.change === "off"
+          ? { enabled: action.change === "on" }
+          : { busyPolicy: action.change })
+        : deleteAgentTriggerRequest(sessionId, action.triggerId)
+    const result = await deps.sendAgentTriggerRequest(request)
     deps.applySessionState(result.session)
     await deps.refreshAgentPanes(result.session)
     deps.flashFooter(
-      `${commandName} scheduled for ${command.minutes} ${command.minutes === 1 ? "minute" : "minutes"}`,
+      action.type === "create"
+        ? `trigger ${action.repeat === "every" ? "every" : "in"} ${action.minutes} ${action.minutes === 1 ? "minute" : "minutes"} · ${action.busyPolicy}`
+        : action.type === "update" ? `trigger ${action.triggerId} ${action.change}` : `trigger ${action.triggerId} removed`,
       "info",
     )
   }
@@ -548,7 +572,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleSettingsCommand,
     handleLoopCommand,
     handleGoalCommand,
-    handleWaitCommand,
+    handleTriggerCommand,
     handleMcpCommand,
     handleSkillCommand,
     handleEnvCommand,
