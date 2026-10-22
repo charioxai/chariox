@@ -84,7 +84,7 @@ impl KernelRuntimeState {
     ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
         self.authorize_current_external_command()?;
         let state = self.clone();
-        tokio::task::spawn_blocking(move || {
+        let response = tokio::task::spawn_blocking(move || {
             let result = state.execute_skills_catalog_request_blocking(
                 request,
                 &caller_user_id,
@@ -93,7 +93,19 @@ impl KernelRuntimeState {
             Ok(crate::local::LocalDaemonResponse::SkillsV2 { result })
         })
         .await
-        .map_err(|_| skill_error("Skills catalog operation did not complete"))?
+        .map_err(|_| skill_error("Skills catalog operation did not complete"))?;
+        if matches!(
+            response,
+            Ok(crate::local::LocalDaemonResponse::SkillsV2 {
+                result: SkillsV2Response::Published { .. }
+            })
+        ) {
+            let state = self.clone();
+            tokio::spawn(async move {
+                state.refresh_open_leased_native_skill_views().await;
+            });
+        }
+        response
     }
 
     pub(super) fn skills_host_owner(&self, user: &str) -> bool {

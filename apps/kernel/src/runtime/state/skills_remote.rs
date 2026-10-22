@@ -244,6 +244,42 @@ impl KernelRuntimeState {
             .map(|_| ())
     }
 
+    /// A native composer resolves typed `$name` from the view the home pushed last.
+    /// After a published catalog change every lease with an open worker run gets the
+    /// new view, so a skill set Off or installed since is honoured at once instead of
+    /// at the next home turn. A worker that cannot be reached is logged and skipped;
+    /// its next dispatched turn carries the view again. Returns how many were tried.
+    pub(super) async fn refresh_open_leased_native_skill_views(&self) -> usize {
+        let config = self.owned.config_projection.snapshot();
+        let mut attempted = 0;
+        for agent in self.owned.agent_store.list_agents() {
+            let Some(remote) = agent
+                .remote_execution()
+                .filter(|remote| remote.active_worker_provider_run_id.is_some())
+                .cloned()
+            else {
+                continue;
+            };
+            let mut relay_config = config.clone();
+            if let (Some(url), Some(token)) = (remote.relay_url.clone(), remote.relay_token.clone())
+            {
+                relay_config.apply_remote_relay_override(url, token);
+            }
+            attempted += 1;
+            if let Err(error) = self
+                .ensure_native_launch_skills(&relay_config, &agent, &remote)
+                .await
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.skills",
+                    "leased native Skills view was not refreshed",
+                    serde_json::json!({"agent_id": agent.id(), "error": error.to_string()}),
+                );
+            }
+        }
+        attempted
+    }
+
     /// Home side: send what the lease's worker must hold and return its verified
     /// receipt. `config` already carries the lease's relay override.
     pub(super) async fn ensure_remote_skill_set(
