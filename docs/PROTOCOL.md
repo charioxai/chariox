@@ -704,7 +704,7 @@ Those lifecycle semantics belong to PR2.
 ## 3.3.5 Durable Agent Tasks and Events (MP-08 / MP-09 / MP-10 / MP-11, A02)
 
 MP-08 / MP-09 / MP-10 / MP-11: the integrated acceptance contract uses local
-protocol **570** and relay peer protocol **178** (the agent-model line's 537/145
+protocol **573** and relay peer protocol **181** (the agent-model line's 537/145
 allocation and the landing's 567/175 are merged into this number). It combines main 520/128 direct browser/terminal carriers and
 owner-managed machine/context admission with the agent-model 513/121 union:
 it retains the agent-model
@@ -715,11 +715,21 @@ at local 491. The display history includes bounded stripes (447), binary frames
 with WebP tiles and scroll rectangles (466), and relay display push/ACKs (475).
 Binary transport downgrade does not admit an obsolete worker runtime: remote
 lease creation, restored bindings, Room browser forwarding, context transfer and
-hosted slice receipts require peer 178 or newer. The aggregate also includes main's
+hosted slice receipts require peer 181 or newer. The aggregate also includes main's
 local 491 / relay peer 101 (#974) kernel ownership, waiting-room and Room
 workflow contracts. Client feature floors are listed separately below; the
-merged 570/178 allocation identifies the integrated runtime contract; the landing's
+merged 573/181 allocation identifies the integrated runtime contract; the landing's
 567/175 `fonts` op `absent` list is part of it.
+
+MP-08 / MP-10 / MP-11: 573/181 fences the leased assessment control identity.
+The worker maps `completion-assessment:<backing-prompt-id>` to
+`completion-assessment:home:<home-prompt-id>` only through its private durable
+admission binding. Other assessments cannot supply this check's verdict, even
+when their bytes arrive after its prompt boundary. Both kernels must speak 181;
+178 workers do not provide this identity. Ordinary failed completions retain the
+worker termination and settle as failed work. Upgrade/rollback keep 567 and 570
+reciprocal within the existing 32-entry policy; 370 is the oldest unpinned
+intermediate removed to make room.
 
 MP-08 / MP-10 / MP-11: coordinator-allocated 513/121 adds the paired terminal
 actor normalization for display metadata/credits and the historical workflow

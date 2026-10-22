@@ -126,9 +126,10 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Allocated 160 carries the local 552 `parked_input` reply field.
 /// MP-08/MP-10/MP-11: allocated 164 carries the local 556 `state_wait`.
 /// MP-08/MP-10/MP-11: allocated 175 carries the local 567 `fonts` op `absent`.
-/// Agent-model (145) and event-core (169) contracts are merged into this number until the coordinator allocates the final one (see local protocol note).
+/// Agent-model (145) and event-core (169) contracts were integrated in 570/178.
 /// The Room terminal service (`RoomTerminal`, formerly provisional 177) and its peer forwards ride this number too.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 178;
+/// MP-08/MP-10/MP-11: allocated 181 adds exact-home-check assessment wire identities.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 181;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

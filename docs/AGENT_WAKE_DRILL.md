@@ -126,3 +126,23 @@ Do not claim an MP item closed from these focused runs alone.
    `scheduler_confirmed: true` with the fired wake's exact `verified_at_ms`, then
    acknowledge its one event. Repeat on the base and retain the false-confirmation
    reply as RED evidence; firing alone does not prove the caller saw confirmation.
+
+## MP-08 / MP-10 / MP-11: leased completion and first-assessment correlation
+
+Use home and worker kernels with relay peer 181 or newer and the real built TUI.
+Run six fresh `/goal` tasks on the leased worker without restarting either kernel;
+record each first assessment, its exact home prompt and worker run, and capture
+the visible result. Include a completed repository task and a watched-process
+wait. A missing current reply must never consume a previous assessment. Delayed
+ordinary output or an earlier check must not turn a valid reply into malformed
+JSON. Repeat with the TUI detached during a later check.
+
+While a real repository review is using native provider tools, kill only the
+owned provider descendants and retain the exact PID receipt. The worker's typed
+termination must reach the home: an ordinary task ends Cancelled with its failure
+reason, and a goal ends Blocked for reconciliation. Neither partial prose nor a
+preamble proves success. Also replace a process wake's lease on the same live
+worker and cancel it; confirm physical source settlement, not just acceptance of
+the cancellation request. Preserve screenshots, timings, first-reply verdicts,
+source identities and cleanup outside the repository. These focused checks do not
+replace the complete ordinary/managed acceptance matrix.
