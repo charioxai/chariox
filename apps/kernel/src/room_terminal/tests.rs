@@ -1122,6 +1122,14 @@ async fn a_shell_started_inside_the_terminal_does_not_repeat_the_marks() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     });
+    // Input typed while the shell is still starting is refused as busy (or lands
+    // before the marks are on). Wait for the first prompt.
+    until("the shell's first prompt", || async {
+        service.pump_once();
+        let state = service.lock();
+        state.terminals[&id].mark_tracking && !state.terminals[&id].command_in_flight
+    })
+    .await;
     // The nested shell prints no marks of its own, so the outer command is
     // reported finished only when the nested shell exits.
     let fired = finish_of(&service, &id, "bash -c 'echo $PROMPT_COMMAND-[$PS0]'\r").await;
