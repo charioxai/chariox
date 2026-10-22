@@ -377,3 +377,30 @@ fn http_connect_keeps_the_deadline_after_resolution() {
         started.elapsed()
     );
 }
+
+#[tokio::test]
+async fn websocket_keeps_connecting_while_a_syn_is_retried() {
+    let delayed = unanswered_address();
+    let queued = delayed._queued.len();
+    let listener = delayed._listener.try_clone().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+    let server = tokio::spawn(async move {
+        sleep(Duration::from_millis(1200)).await;
+        for _ in 0..queued {
+            drop(listener.accept().await.unwrap());
+        }
+        let (stream, _) = listener.accept().await.unwrap();
+        tokio_tungstenite::accept_async(stream).await.unwrap()
+    });
+    let started = Instant::now();
+    let result = connect_websocket(format!("ws://{}/", delayed.address)).await;
+    assert!(
+        result.is_ok(),
+        "a single reachable path lost its TCP retry: {result:?}"
+    );
+    assert!(started.elapsed() >= Duration::from_secs(1));
+    assert!(started.elapsed() < SOCKET_CONNECT_TIMEOUT);
+    drop(result);
+    drop(server.await.unwrap());
+}
