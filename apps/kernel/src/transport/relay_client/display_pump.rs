@@ -288,7 +288,10 @@ enum Next {
     Fail,
     /// The source is gone for good (a retired document): the pump ends as stopped, so the client rebinds silently.
     Retire,
-    Retry { delay: Duration, reset: bool },
+    Retry {
+        delay: Duration,
+        reset: bool,
+    },
 }
 
 impl Faults {
@@ -590,7 +593,10 @@ mod tests {
             faults.error(&stale, t0 + STALE_LIMIT / 2),
             Next::Retry { .. }
         ));
-        assert!(matches!(faults.error(&stale, t0 + STALE_LIMIT), Next::Retire));
+        assert!(matches!(
+            faults.error(&stale, t0 + STALE_LIMIT),
+            Next::Retire
+        ));
         // A delivered credit forgets the stale run.
         assert!(matches!(
             Faults::default().error(&stale, t0 + STALE_LIMIT),
