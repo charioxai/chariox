@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { createHash, randomBytes } from "node:crypto"
-import { chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
+import { chmod, chown, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -204,7 +204,7 @@ test("get resumes an interrupted download from its .chariox-partial file", async
   await withRig(async ({ kernel, store, dir, socket }) => {
     const content = randomBytes(2 * CHUNK + 10)
     store.files.set("/srv/f.bin", content)
-    await writeFile(join(dir, "f.bin.chariox-partial"), content.subarray(0, CHUNK + 5))
+    await writeFile(join(dir, "f.bin.chariox-partial"), content.subarray(0, CHUNK + 5), { mode: 0o600 })
     const result = await chariox(["files", "get", ...socket, "/srv/f.bin", join(dir, "f.bin")])
     assert.equal(result.exit, 0, result.stderr)
     assert.deepEqual(requestsOf(kernel, "ReadKernelFile").map(read => read.offset), [CHUNK + 5, 2 * CHUNK + 5])
@@ -213,6 +213,42 @@ test("get resumes an interrupted download from its .chariox-partial file", async
     assert.equal(JSON.parse(result.stdout).resumed_from, CHUNK + 5)
     assert.equal(JSON.parse(result.stdout).bytes_sent_or_received, content.length - CHUNK - 5)
   })
+})
+
+// EA2-45: the download's staging name is predictable, so a link or another user's file planted there
+// must neither be written through nor have its bytes and owner kept.
+test("get never writes through a symlink planted at its staging name", async () => {
+  await withRig(async ({ store, dir, socket }) => {
+    const content = randomBytes(CHUNK + 10)
+    store.files.set("/srv/f.bin", content)
+    const victim = join(dir, "victim.txt")
+    await writeFile(victim, "private notes")
+    await symlink(victim, join(dir, "f.bin.chariox-partial"))
+    const result = await chariox(["files", "get", ...socket, "/srv/f.bin", join(dir, "f.bin")])
+    assert.equal(result.exit, 0, result.stderr)
+    assert.equal(await readFile(victim, "utf8"), "private notes")
+    assert.deepEqual(await readFile(join(dir, "f.bin")), content)
+    assert.equal(JSON.parse(result.stdout).resumed_from, 0)
+    assert.deepEqual((await readdir(dir)).sort(), ["f.bin", "victim.txt"])
+  })
+})
+
+test("get does not resume onto another user's file or one others can read", { skip: process.getuid?.() !== 0 }, async () => {
+  for (const [uid, mode] of [[65534, 0o600], [0, 0o644]] as const) {
+    await withRig(async ({ kernel, store, dir, socket }) => {
+      const content = randomBytes(CHUNK + 10)
+      store.files.set("/srv/f.bin", content)
+      const partial = join(dir, "f.bin.chariox-partial")
+      await writeFile(partial, content.subarray(0, 100))
+      await chown(partial, uid, uid)
+      await chmod(partial, mode)
+      const result = await chariox(["files", "get", ...socket, "/srv/f.bin", join(dir, "f.bin")])
+      assert.equal(result.exit, 0, result.stderr)
+      assert.deepEqual(requestsOf(kernel, "ReadKernelFile").map(read => read.offset), [0, CHUNK])
+      assert.equal((await stat(join(dir, "f.bin"))).uid, 0)
+      assert.deepEqual(await readFile(join(dir, "f.bin")), content)
+    })
+  }
 })
 
 test("stat and ls print the kernel's objects and ask for the sha256 only when told to", async () => {

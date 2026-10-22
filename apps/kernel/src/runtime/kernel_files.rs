@@ -35,6 +35,7 @@ pub(crate) fn is_public_code(code: &str) -> bool {
             | "file_hash_mismatch"
             | "file_exists"
             | "file_io_failed"
+            | "file_staging_untrusted"
     )
 }
 
@@ -407,6 +408,27 @@ pub(crate) fn write(request: &WriteKernelFileRequest) -> Result<LocalDaemonRespo
 
 #[cfg(test)]
 mod tests {
+    // EA2-45: the refusal names the staging file and what to do, so the agent must read it.
+    #[test]
+    fn every_code_this_module_raises_with_its_own_message_is_public() {
+        for code in [
+            "file_path_invalid",
+            "file_not_found",
+            "file_permission_denied",
+            "file_not_a_file",
+            "file_too_large",
+            "file_chunk_too_large",
+            "file_offset_mismatch",
+            "file_hash_mismatch",
+            "file_exists",
+            "file_io_failed",
+            "file_staging_untrusted",
+        ] {
+            assert!(is_public_code(code), "{code}");
+        }
+        assert!(!is_public_code("kernel_request_failed"));
+    }
+
     use super::*;
 
     fn scratch() -> PathBuf {

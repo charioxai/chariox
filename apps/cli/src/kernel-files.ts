@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
-import { createReadStream, type Stats } from "node:fs"
+import { constants, createReadStream, type Stats } from "node:fs"
 import { resolve } from "node:path"
-import { chmod, link, open, rename, rm, stat } from "node:fs/promises"
+import { link, lstat, open, rename, rm, stat, type FileHandle } from "node:fs/promises"
 import { CommandFailure } from "./agent-command-table.js"
 import { terminalCwd } from "./app-install-file.js"
 
@@ -38,19 +38,48 @@ async function sha256Of(path: string): Promise<string> {
 // A replaced file keeps its permissions (a 0600 credentials file stays private); a new file gets
 // what the user's umask gives any new file. Without --overwrite nothing that appeared at `localPath`
 // meanwhile is replaced: a hard link fails on anything there, a dangling symlink included.
+async function publishedMode(localPath: string, overwrite: boolean): Promise<number> {
+  const existing = overwrite ? await statLocal(localPath) : null
+  return existing ? existing.mode & 0o777 : 0o666 & ~process.umask()
+}
+
 async function publish(partialPath: string, localPath: string, overwrite: boolean): Promise<void> {
   if (overwrite) {
-    const existing = await statLocal(localPath)
-    await chmod(partialPath, existing ? existing.mode & 0o777 : 0o666 & ~process.umask())
     await rename(partialPath, localPath)
     return
   }
-  await chmod(partialPath, 0o666 & ~process.umask())
   try { await link(partialPath, localPath) } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new CommandFailure("file_exists", `${localPath} appeared while the download ran; the verified download is kept as ${partialPath}. Pass --overwrite to publish it over ${localPath}`)
     throw error
   }
   await rm(partialPath)
+}
+
+// The staging name is predictable, so in a directory others can write to it may be a planted link or
+// someone else's file. Resume only a private regular file of ours; anything else is replaced.
+async function openStaging(partialPath: string, size: number): Promise<{ handle: FileHandle; resumedFrom: number }> {
+  const untrusted = (detail: string) => new CommandFailure("file_staging_untrusted", `${partialPath} ${detail}; remove it and run the same command again`)
+  const mine = (info: Stats) => info.isFile() && info.uid === process.geteuid?.() && (info.mode & 0o077) === 0
+  const existing = await lstat(partialPath).catch(error => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
+    throw error
+  })
+  if (existing && mine(existing) && existing.size <= size) {
+    const handle = await open(partialPath, constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW)
+    const opened = await handle.stat()
+    if (mine(opened) && opened.ino === existing.ino && opened.dev === existing.dev) return { handle, resumedFrom: opened.size }
+    await handle.close()
+    throw untrusted("changed while it was being opened")
+  }
+  if (existing) await rm(partialPath).catch(() => { throw untrusted("is not a private file of yours and could not be removed") })
+  const handle = await open(partialPath, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600).catch(() => { throw untrusted("appeared while the download started") })
+  return { handle, resumedFrom: 0 }
+}
+
+async function hashOf(handle: FileHandle): Promise<string> {
+  const hash = createHash("sha256")
+  for await (const chunk of createReadStream("", { fd: handle.fd, start: 0, autoClose: false })) hash.update(chunk)
+  return hash.digest("hex")
 }
 
 async function getFile(send: SendRequest, remotePath: string, localPath: string, overwrite: boolean): Promise<Transfer> {
@@ -61,10 +90,8 @@ async function getFile(send: SendRequest, remotePath: string, localPath: string,
   if (source.kind !== "file" || source.size === null || source.sha256 === null) throw new CommandFailure("file_not_a_file", `${remotePath} is not a regular file; use files ls for a directory`)
   const { size, sha256 } = source
   const partialPath = localPath + PARTIAL_SUFFIX
-  const have = (await statLocal(partialPath))?.size ?? 0
-  const resumedFrom = have <= size ? have : 0
   // Private while the bytes arrive; the published file gets its permissions below.
-  const partial = await open(partialPath, resumedFrom > 0 ? "a" : "w", 0o600)
+  const { handle: partial, resumedFrom } = await openStaging(partialPath, size)
   try {
     for (let offset = resumedFrom; offset < size;) {
       const response = await send({ ReadKernelFile: { path: remotePath, offset, length: Math.min(CHUNK_BYTES, size - offset) } }) as { KernelFileChunk: { data_base64: string } }
@@ -73,11 +100,16 @@ async function getFile(send: SendRequest, remotePath: string, localPath: string,
       await partial.writeFile(bytes)
       offset += bytes.length
     }
+    if (await hashOf(partial) !== sha256) {
+      await rm(partialPath)
+      throw new CommandFailure("file_hash_mismatch", `The download did not match the sha256 of ${remotePath}, so nothing was kept; run the same command again to download it afresh`)
+    }
+    // Permissions are set on the file we hold, and what is published must still be that file.
+    await partial.chmod(await publishedMode(localPath, overwrite))
+    const published = await lstat(partialPath)
+    const held = await partial.stat()
+    if (published.ino !== held.ino || published.dev !== held.dev) throw new CommandFailure("file_staging_untrusted", `${partialPath} was replaced during the download; remove it and run the same command again`)
   } finally { await partial.close() }
-  if (await sha256Of(partialPath) !== sha256) {
-    await rm(partialPath)
-    throw new CommandFailure("file_hash_mismatch", `The download did not match the sha256 of ${remotePath}, so nothing was kept; run the same command again to download it afresh`)
-  }
   await publish(partialPath, localPath, overwrite)
   return { path: localPath, size, sha256, bytes_sent_or_received: size - resumedFrom, resumed_from: resumedFrom, elapsed_ms: Date.now() - started }
 }
