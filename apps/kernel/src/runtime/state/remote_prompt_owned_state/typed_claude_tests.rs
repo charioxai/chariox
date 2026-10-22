@@ -47,7 +47,7 @@ impl Composer {
                 process_label: "typed-composer-test".into(),
                 pty_target: Some("typed-native-pty".into()),
                 pty_program: Some("/bin/sh".into()),
-                pty_args: vec!["-c".into(), "exec cat".into()],
+                pty_args: vec!["-c".into(), "stty raw -echo; exec cat > pty-input".into()],
                 pty_env: [
                     ("HOME".into(), files.path().display().to_string()),
                     (
@@ -151,6 +151,22 @@ async fn typed_native_only_claude_skill_runs_the_prepared_command_before_loaded(
         )
         .unwrap();
         assert_eq!(retry["visible_prompt"], "/review inspect source");
+        let input_path = composer.files.path().join("pty-input");
+        for _ in 0..50 {
+            if fs::read(&input_path)
+                .unwrap_or_default()
+                .starts_with(b"\x15/review inspect source")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            fs::read(&input_path)
+                .unwrap_or_default()
+                .starts_with(b"\x15/review inspect source"),
+            "the native replacement must clear Claude's restored dollar draft"
+        );
         assert_eq!(
             composer.active_prompt_id().await,
             prompt_id,
