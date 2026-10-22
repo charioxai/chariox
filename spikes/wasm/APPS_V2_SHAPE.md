@@ -514,7 +514,7 @@ an S-size PR once §4 exists, and should gate the "Apps beat MCP" message.
 | **C** | wasi-sdk 33 (clang 22), wit-bindgen 0.63 `c` | **yes, full cancel** | **this round: all cells** | **yes, with a thin SDK (see below)** |
 | C++ | same, through the C SDK; C++20 coroutines map onto the callback ABI | yes (same ABI) | not run | after C |
 | Python | componentize-py 0.25.1 | yes; cannot cancel (traps on an abandoned future read) | r2 | preview |
-| Go | TinyGo `wasip2` + wit-bindgen-go | no async yet | not run | state only |
+| Go | TinyGo `wasip2` + wit-bindgen-go | async support not verified this round | not run | state only |
 
 ### 6.1 C: the measured answer to "from the get go?"
 
@@ -664,10 +664,11 @@ library/palette storage, PNG/SVG export. Declared actions: `add_shape`,
 `add_text`, `connect(a, b, label)`, `move/group`, `set_style`,
 `load/save scene`, `export(png|svg)`, and `describe_scene` (the snapshot:
 elements with ids, text, positions and connections). What the agent can
-then do that it cannot through Excalidraw + MCP today: there is no
-Excalidraw MCP; with Computer Use it must draw by pixels. Here it reads
-the structured scene and edits it by id while the user watches the same
-canvas, offline, in the user's kernel.
+then do that it cannot through Excalidraw + MCP today: community MCP
+servers for Excalidraw drive a separate server-side scene, not the canvas
+the user is looking at, and with Computer Use the agent draws by pixels.
+Here it reads the structured scene and edits it by id while the user
+watches the same canvas, offline, in the user's kernel.
 
 **Univer (sheets).** Views: the Univer sheet workbench. Backend component
 (Rust): workbook persistence (snapshot JSON via `state`/`files`), CSV and
@@ -678,7 +679,9 @@ actions: `get/set_range`, `insert/delete rows|columns`, `set_formula`,
 the active sheet's used range (capped) plus sheet names. Beyond the
 original + MCP: a spreadsheet the agent edits cell by cell with typed
 calls and immediate visual feedback, with the data never leaving the
-machine; Univer has a Facade API but no MCP and no sandboxed local runtime.
+machine; Univer's Facade API is a JavaScript API inside the page, so any
+MCP for it would be a second server-side surface, which is the thing §5
+argues against.
 
 Typst is the best "real backend" showcase (a Rust compiler as a component
 with brokered fonts and packages) and the third candidate once the first
