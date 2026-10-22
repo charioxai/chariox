@@ -1490,6 +1490,7 @@ impl Drop for DurableStateWriter {
     }
 }
 
+#[cfg(test)]
 fn run_durable_writer(
     connection: Connection,
     receiver: Receiver<DurableWriterRequest>,
