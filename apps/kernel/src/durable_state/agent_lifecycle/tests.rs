@@ -205,9 +205,10 @@ fn a02_deadline_occurrence_and_long_notice_coalesce() {
     assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap().len(), 1);
 }
 #[test]
-fn a02_empty_or_tool_only_end_never_silently_done() {
+fn a02_empty_or_tool_only_end_with_open_obligations_never_silently_done() {
     let f = Fixture::new();
     f.begin("p");
+    f.register();
     let Outcome::Settled { task, correction } = f.settle("p", false) else {
         panic!()
     };
@@ -1531,7 +1532,7 @@ fn a02_review_failed_turn_on_blocked_task_does_not_abort_settlement() {
         reason: "owner must choose".into(),
     });
     let before = f.task();
-    block_failed_turn(&f.store, &before, "Provider run failed".into())
+    end_failed_turn(&f.store, &before, "Provider run failed".into())
         .expect("an already blocked task keeps its owner action");
     assert_eq!(f.task(), before);
 }

@@ -14,6 +14,8 @@ mod delivery_waits;
 mod goal_tests;
 pub(crate) mod goals;
 mod migration;
+#[cfg(test)]
+mod plain_tests;
 mod quarantine;
 mod replies;
 mod supervision;
@@ -300,27 +302,6 @@ fn decode_task(
     if t.task_id != id || t.room_id != room || t.agent_id != agent || t.prompt_id != prompt {
         return Err(error("task identity corrupt; quarantine required"));
     }
-    if let Some(c) = &t.completion_check {
-        if t.goal.is_some()
-            || c.schema_version != 1
-            || c.original_prompt_id != t.task_id
-            || c.evaluation.as_ref().is_some_and(|e| {
-                e.origin != "completion_check"
-                    || e.objective_revision != 1
-                    || e.prompt_id.is_empty()
-                    || e.work_prompt_id.is_empty()
-                    || e.ledger_revision == 0
-                    || e.deadline_ms != e.started_at_ms.saturating_add(goals::CHECK_BOUND_MS)
-            })
-            || (t.state == ExecutionState::Done
-                && (c.final_answer.as_ref().is_none_or(|s| s.trim().is_empty())
-                    || c.evidence.is_empty()))
-        {
-            return Err(error(
-                "plain completion binding/schema corrupt; quarantine required",
-            ));
-        }
-    }
     if let Some(g) = &t.goal {
         if g.schema_version != 1
             || g.owner_user_id != t.owner_user_id
@@ -477,7 +458,6 @@ fn new_task(
 ) -> AgentTaskExecution {
     AgentTaskExecution {
         goal: None,
-        completion_check: None,
         task_id: prompt.clone(),
         room_id: room,
         owner_user_id: String::new(),
@@ -702,22 +682,45 @@ pub(crate) fn lacks_live_executor(
         && !awaiting_completion
 }
 
-/// MP-08/MP-09/MP-10/MP-11: a failed provider turn blocks a Working task;
-/// an already blocked/terminal task keeps its disposition.
-pub(crate) fn block_failed_turn(
+/// A plain turn has no goal, obligation, wait or owed reply: the ledger only
+/// records it, and it is never corrected, held to a wait or blocked.
+pub(super) fn is_plain(
+    tx: &Transaction<'_>,
+    task: &AgentTaskExecution,
+) -> Result<bool, DaemonError> {
+    if task.goal.is_some() || !task.obligations.is_empty() || task.wait.is_some() {
+        return Ok(false);
+    }
+    let owes_reply: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_urgent_reply_links WHERE target_task_id=?1)",
+            [&task.task_id],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    Ok(!owes_reply)
+}
+
+/// MP-08/MP-09/MP-10/MP-11: a failed or vanished provider turn ends a Working task
+/// (plain: cancelled; with ledger work: blocked for the owner); an already
+/// blocked/terminal task keeps its disposition.
+pub(crate) fn end_failed_turn(
     store: &DurableKernelStateStore,
     task: &AgentTaskExecution,
     reason: String,
-) -> Result<(), DaemonError> {
+) -> Result<Option<AgentTaskExecution>, DaemonError> {
     if task.state != ExecutionState::Working {
-        return Ok(());
+        return Ok(None);
     }
-    store.agent_lifecycle(Operation::Block {
+    let Outcome::Task(ended) = store.agent_lifecycle(Operation::EndFailedTurn {
         task: task.task_id.clone(),
         prompt: task.prompt_id.clone(),
         reason,
-    })?;
-    Ok(())
+    })?
+    else {
+        unreachable!()
+    };
+    Ok(Some(ended))
 }
 
 /// MP-08/MP-09/MP-10/MP-11: client-visible text for an exact delivery receipt.

@@ -120,6 +120,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
                 lease_id: leased_agent.lease_id.clone(),
             })?;
+        // A relaunch after a provider sign-in retains the home turn on a successor run; the home
+        // still names the ended one, so answer for the run that now carries the turn.
+        let provider_run_id = self.successor_provider_run_id(&leased_agent, provider_run_id);
+        let provider_run_id = provider_run_id.as_str();
         let home_prompt_id = leased_agent.active_home_prompt_id.clone().or_else(|| {
             replay_settled_completion
                 .then_some(())
@@ -857,6 +861,34 @@ impl<'a> RemoteLeaseRuntime<'a> {
             Some(provider_run_id),
         )?;
         Ok(true)
+    }
+
+    fn successor_provider_run_id(&self, leased_agent: &LeasedAgent, requested: &str) -> String {
+        if leased_agent.active_home_prompt_id.is_none() {
+            return requested.to_string();
+        }
+        let Ok(requested_run) = self.app.providers.get_run(requested) else {
+            return requested.to_string();
+        };
+        if requested_run.state() != crate::provider::ProviderRunState::Ended {
+            return requested.to_string();
+        }
+        // The active home turn stays with the agent's newest run until its completion is
+        // projected, so a replacement that already exited is still the one to answer for.
+        let current = self
+            .app
+            .providers
+            .get_run_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .or_else(|| {
+                self.app.providers.get_latest_run_for_agent(
+                    &leased_agent.backing_session_id,
+                    &leased_agent.backing_agent_id,
+                )
+            });
+        current.map_or_else(|| requested.to_string(), |run| run.id().to_string())
     }
 
     pub(crate) fn pump_leased_runtime_projections(
@@ -1821,6 +1853,88 @@ mod explicit_completion_tests {
                 .expect("provider projection should remain available")
                 .state(),
             crate::provider::ProviderRunState::Running
+        );
+    }
+
+    /// After a provider sign-in the worker relaunches the provider and keeps the home turn on a
+    /// successor run; a drain that still names the ended run answers for the successor.
+    #[test]
+    fn drain_of_an_ended_run_answers_for_its_successor_while_a_home_turn_is_active() {
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app =
+            crate::app::DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "home-kernel",
+                "session-1",
+                "agent-home-1",
+                false,
+                "user-home",
+            )
+            .expect("execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                "default",
+                Some("default".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("leased agent should be created");
+        let new_run = |id: &str| {
+            let mut run = provider_run(
+                id,
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+                "managed-dev-stub",
+                "managed-dev-stub",
+                ProviderClientInterface::Chariox,
+            );
+            run.mark_running();
+            run
+        };
+        let mut first = new_run("provider-run-first");
+        app.providers_mut().insert_run_for_test(first.clone());
+        first.mark_ended();
+        app.providers_mut().insert_run_for_test(first.clone());
+        app.providers_mut()
+            .insert_run_for_test(new_run("provider-run-successor"));
+
+        let drained_run_id = |app: &mut crate::app::DaemonApp| {
+            let (_, event) = RemoteLeaseRuntime::new(app)
+                .drain_leased_runtime_projection(&leased_agent.id, "provider-run-first", false)
+                .expect("drain should succeed")
+                .expect("the run state should be projected");
+            let RelayPeerEvent::LeasedRuntimeProjection {
+                provider_run_id, ..
+            } = event;
+            provider_run_id
+        };
+        assert_eq!(
+            drained_run_id(&mut app),
+            "provider-run-first",
+            "without a home turn the requested run is answered as asked"
+        );
+
+        app.leased_agents
+            .get_mut(&leased_agent.id)
+            .unwrap()
+            .active_home_prompt_id = Some("home-prompt-a".to_string());
+        assert_eq!(drained_run_id(&mut app), "provider-run-successor");
+
+        let mut successor = new_run("provider-run-successor");
+        successor.mark_ended();
+        app.providers_mut().insert_run_for_test(successor);
+        assert_eq!(
+            drained_run_id(&mut app),
+            "provider-run-successor",
+            "a successor that exited before the drain still answers for the home turn"
         );
     }
 

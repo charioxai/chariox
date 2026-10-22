@@ -33,13 +33,9 @@ fn assessment(status: &str) -> serde_json::Value {
 // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: old work age cannot consume a fresh check's service bound.
 #[test]
 fn a12_fresh_completion_intent_keeps_its_bound_after_long_work() {
-    for is_goal in [false, true] {
+    {
         let f = Fixture::new();
-        if is_goal {
-            goal(&f, 1);
-        } else {
-            plain(&f);
-        }
+        goal(&f, 1);
         let started = DELIVERY_TIMEOUT_MS + 2;
         f.apply(Operation::Settle {
             room: "room".into(),
@@ -76,14 +72,7 @@ fn a12_fresh_completion_intent_keeps_its_bound_after_long_work() {
             now: check.deadline_ms,
         });
         assert_eq!(f.task().state, ExecutionState::Blocked);
-        assert_eq!(
-            if is_goal {
-                f.task().goal.unwrap().check_count
-            } else {
-                f.task().completion_check.unwrap().check_count
-            },
-            1
-        );
+        assert_eq!(f.task().goal.unwrap().check_count, 1);
     }
 }
 
@@ -668,133 +657,6 @@ fn a12_rejected_fresh_admission_leaves_no_goal_or_supervised_work() {
     assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
 }
 
-// MP-08 / MP-09 / MP-10 / MP-11 A12: plain confirmation never grants goal mode.
-#[test]
-fn a12_plain_done_candidate_must_be_confirmed_without_a_goal_loop() {
-    let f = Fixture::new();
-    f.begin("p");
-    f.apply(Operation::EnableCompletionCheck { task: "p".into() });
-    f.settle("p", true);
-    assert_eq!(
-        f.task().state,
-        ExecutionState::Working,
-        "plain done candidate needs a native check"
-    );
-}
-
-// MP-08 / MP-09 / MP-10 / MP-11 A12: supplementary plain/delegate parity guards.
-fn plain(f: &Fixture) {
-    f.begin("p");
-    f.apply(Operation::EnableCompletionCheck { task: "p".into() });
-}
-#[test]
-fn a12_plain_check_has_one_correction_and_no_continuation_mode() {
-    let f = Fixture::new();
-    plain(&f);
-    f.settle("p", true);
-    let first = f.task();
-    f.settle("p", true);
-    assert_eq!(first, f.task());
-    let t = check(&f, assessment("continue"));
-    assert!(t.goal.is_none());
-    assert!(t.correction_used);
-    assert_eq!(t.completion_check.as_ref().unwrap().check_count, 1);
-    assert_eq!(t.pending_prompt_id.as_deref(), Some("task-correction-p"));
-    let id = t.pending_prompt_id.unwrap();
-    f.begin(&id);
-    f.settle(&id, true);
-    let t = check(&f, assessment("continue"));
-    assert_eq!(t.state, ExecutionState::Blocked);
-    assert!(t.pending_prompt_id.is_none());
-    assert_eq!(t.completion_check.unwrap().check_count, 2);
-}
-#[test]
-fn a12_plain_achieved_needs_evidence_and_fences_checks_from_work() {
-    let f = Fixture::new();
-    plain(&f);
-    f.settle("p", true);
-    let id = f.task().pending_prompt_id.clone().unwrap();
-    f.begin(&id);
-    assert!(f
-        .store
-        .agent_lifecycle(Operation::Progress {
-            task: "p".into(),
-            prompt: id.clone(),
-            receipt: "forbidden".into(),
-            now: 4
-        })
-        .is_err());
-    let Outcome::Settled{task:t,..}=f.apply(Operation::EvaluateGoal { task:"p".into(),prompt:id.clone(),result:serde_json::json!({"status":"achieved","final_answer":"Verified original request","evidence":["public:artifact"]}).to_string(),now:4 }) else {panic!()};
-    assert_eq!(t.state, ExecutionState::Done);
-    assert!(t.goal.is_none());
-    f.settle(&id, true);
-    assert_eq!(f.task(), t);
-}
-#[test]
-fn a12_plain_wait_and_failure_are_not_done_candidates() {
-    let f = Fixture::new();
-    plain(&f);
-    f.register();
-    f.subscribe();
-    f.apply(Operation::Yield {
-        task: "p".into(),
-        prompt: "p".into(),
-        registrations: vec!["reg".into()],
-        cursor: 0,
-        deadline: 60000,
-        reason: "depends on peer".into(),
-        now: 2,
-    });
-    f.settle("p", true);
-    assert_eq!(f.task().state, ExecutionState::Waiting);
-    assert_eq!(f.task().completion_check.unwrap().check_count, 0);
-    let f = Fixture::new();
-    plain(&f);
-    f.settle("p", false);
-    let t = f.task();
-    assert!(t.correction_used);
-    assert_eq!(t.completion_check.unwrap().check_count, 0);
-}
-#[test]
-fn a12_plain_timeout_receipt_is_idempotent_and_owner_resume_fences_late_check() {
-    let f = Fixture::new();
-    plain(&f);
-    f.settle("p", true);
-    let id = f.task().pending_prompt_id.unwrap();
-    f.begin(&id);
-    f.apply(Operation::TimeoutGoal {
-        task: "p".into(),
-        prompt: id.clone(),
-        now: 60003,
-    });
-    let t = f.task();
-    assert_eq!(t.state, ExecutionState::Blocked);
-    assert!(matches!(
-        f.apply(Operation::TimeoutGoal {
-            task: "p".into(),
-            prompt: id.clone(),
-            now: 70000
-        }),
-        Outcome::Saved
-    ));
-    assert_eq!(f.task(), t);
-    f.apply(Operation::OwnerResponse {
-        task: "p".into(),
-        revision: t.revision,
-        resume: true,
-        now: 70001,
-    });
-    let resumed = f.task();
-    f.apply(Operation::EvaluateGoal {
-        task: "p".into(),
-        prompt: id,
-        result: serde_json::json!({"status":"achieved","final_answer":"late","evidence":["late"]})
-            .to_string(),
-        now: 70002,
-    });
-    assert_eq!(f.task(), resumed);
-}
-
 // MP-08 / MP-09 / MP-10 / MP-11 A12: rejection must bound the stored receipt too.
 #[test]
 fn a12_oversized_json_receipt_never_crosses_public_result_limit() {
@@ -1076,39 +938,4 @@ fn a12_handled_paused_goal_outcome_preserves_nonzero_guard() {
     assert_eq!(after.no_progress_wakes, 1);
     assert_eq!(after.progress_sequence, before.progress_sequence);
     assert_eq!(after.blocked_revision, before.blocked_revision);
-}
-// MP-08 / MP-09 / MP-10 / MP-11 A12 (accam r3): a workflow node's completion
-// check is a continuation of its bound task. It keeps that lineage and can
-// neither rebind it nor block the B->C edge until the 60 s bound.
-#[test]
-fn a12_workflow_bound_check_keeps_its_lineage_and_settles() {
-    let f = Fixture::new();
-    plain(&f);
-    let bind = |prompt: &str, node: &str| {
-        f.store.agent_lifecycle(Operation::BindWorkflow {
-            task: "p".into(),
-            prompt: prompt.into(),
-            run: "run".into(),
-            node: node.into(),
-        })
-    };
-    bind("p", "node").unwrap();
-    f.settle("p", true);
-    let id = f.task().pending_prompt_id.clone().unwrap();
-    f.begin(&id);
-    bind(&id, "node").expect("the check continuation keeps its workflow lineage");
-    assert!(bind(&id, "other-node").is_err());
-    let Outcome::Settled { task, .. } = f.apply(Operation::EvaluateGoal {
-        task: "p".into(),
-        prompt: id,
-        result: serde_json::json!({"status":"achieved","final_answer":"Built and tested","evidence":["public:artifact"]}).to_string(),
-        now: 4,
-    }) else {
-        panic!()
-    };
-    assert_eq!(task.state, ExecutionState::Done);
-    assert_eq!(
-        f.store.agent_task_workflow("p").unwrap(),
-        Some(("run".into(), "node".into()))
-    );
 }

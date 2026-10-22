@@ -130,6 +130,8 @@ export class BrowserCdpClient {
     this.documentIdsByTarget = new Map();
     this.commitWaiters = new Map();
     this.pageFramesByTarget = new Map();
+    // Records that loading start retired until a same-document navigation proves the document unchanged.
+    this.suspendedPageFrames = new Map();
     this.focusWorldsByTarget = new Map();
     this.snapshotStateByTarget = new Map();
     this.protectedValues = new Set();
@@ -261,7 +263,7 @@ export class BrowserCdpClient {
         this.downloadCancellationReasons.clear();
         this.downloadDiskCheckPending = false;
         this.downloadDiskCheckRequested = false;
-        this.documentIdsByTarget.clear(); this.pageFramesByTarget.clear();
+        this.documentIdsByTarget.clear(); this.pageFramesByTarget.clear(); this.suspendedPageFrames.clear();
     this.fillTargets.clear();
         this.dialogDefaults.clear();
         this.networkRequestsBySession.clear();
@@ -291,7 +293,7 @@ export class BrowserCdpClient {
     this.downloadCancellationReasons.clear();
     this.downloadDiskCheckPending = false;
     this.downloadDiskCheckRequested = false;
-    this.documentIdsByTarget.clear(); this.pageFramesByTarget.clear();
+    this.documentIdsByTarget.clear(); this.pageFramesByTarget.clear(); this.suspendedPageFrames.clear();
     this.fillTargets.clear();
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
@@ -412,7 +414,7 @@ export class BrowserCdpClient {
     this.downloadCancellationReasons.clear();
     this.downloadDiskCheckPending = false;
     this.downloadDiskCheckRequested = false;
-    this.documentIdsByTarget.clear(); this.pageFramesByTarget.clear();
+    this.documentIdsByTarget.clear(); this.pageFramesByTarget.clear(); this.suspendedPageFrames.clear();
     this.fillTargets.clear();
     this.snapshotStateByTarget.clear();
     this.dialogDefaults.clear();
@@ -464,7 +466,7 @@ export class BrowserCdpClient {
     this.responseBodies.drop(sessionId);
     this.sessionsByTarget.delete(targetId);
     this.viewportByTarget.delete(targetId); this.layoutByTarget.delete(targetId); this.layoutQueue.delete(targetId);
-    this.documentIdsByTarget.delete(targetId); this.pageFramesByTarget.delete(targetId);
+    this.documentIdsByTarget.delete(targetId); this.pageFramesByTarget.delete(targetId); this.suspendedPageFrames.delete(targetId);
     this.focusWorldsByTarget.delete(targetId);
     this.snapshotStateByTarget.delete(targetId);
     this.dialogDefaults.delete(targetId);
@@ -1282,15 +1284,22 @@ export class BrowserCdpClient {
       }
     }
     this.targetsByFrame.record(message, this.targetsBySession.get(message?.sessionId));
-    if (message?.method === "Page.frameStartedLoading") {
+    // Navigation start, not loading start: fragment and pushState navigations also start loading but keep the document.
+    if (message?.method === "Page.frameStartedNavigating") {
       const targetId = this.targetsBySession.get(message.sessionId), entry = this.pageFramesByTarget.get(targetId);
-      if (entry?.frame.id === message.params?.frameId) this.pageFramesByTarget.delete(targetId);
+      if (entry?.frame.id === message.params?.frameId) { this.pageFramesByTarget.delete(targetId); this.suspendedPageFrames.set(targetId, entry); }
+    }
+    if (message?.method === "Page.navigatedWithinDocument") {
+      // A history traversal inside the document starts navigating but never commits one: the record it retired is still current.
+      const targetId = this.targetsBySession.get(message.sessionId), entry = this.suspendedPageFrames.get(targetId);
+      if (entry?.frame.id === message.params?.frameId) { this.suspendedPageFrames.delete(targetId); this.pageFramesByTarget.set(targetId, entry); }
     }
     if (message?.method === "Page.frameNavigated" && !message.params?.frame?.parentId) {
       const targetId = this.targetsBySession.get(message.sessionId);
       const documentId = message.params?.frame?.loaderId;
       if (targetId && typeof documentId === "string" && documentId) {
         this.documentIdsByTarget.set(targetId, documentId);
+        this.suspendedPageFrames.delete(targetId);
         const waiters = this.commitWaiters.get(targetId);
         if (waiters) { this.commitWaiters.delete(targetId); for (const wake of waiters) wake(); }
         const navigatedAt = performance.timeOrigin + performance.now();

@@ -27,8 +27,7 @@ test('MP-11 native Room handles refuse cross-observer reuse, stale trees and pro
  name='Edit';await assert.rejects(native.request(action),e=>e.code==='user_domain_stale_reference');
  const fresh=await native.request({op:'snapshot',observer:'agent:a',policy});
  const current={...action,tree_revision:fresh.tree_revision,target_id:fresh.nodes[0].target_id};
- await assert.rejects(native.request({...current,policy:{...policy,targets:[{kind:'native'}]}}),e=>e.code==='user_domain_not_granted');
- assert.equal(applied,0);assert.equal((await native.request(current)).applied,true);
+ assert.equal(applied,0);assert.equal((await native.request({...current,policy:{...policy,values:[],targets:[{kind:'native'}]}})).applied,true);
  await assert.rejects(native.request(current),e=>e.code==='user_domain_stale_reference');
  assert.equal(applied,1);
 });

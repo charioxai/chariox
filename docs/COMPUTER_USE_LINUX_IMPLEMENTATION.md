@@ -10,9 +10,8 @@ content. The existing document-bound Browser path remains available.
 Agent native text and single chords require a complete, uniquely bound owned
 foreground accessibility frame and a public focused leaf. Each text keystroke
 rechecks that leaf and fences the X11 focus; web-document leaves require the
-Browser/Vault path. Agent native clipboard writes, text drag/drop, middle-button paste and
-keyboard holds are refused because they cannot fence every text-producing
-repeat/paste. Human input retains its separate admitted path.
+Browser/Vault path. Authorized agents also drag, hold, write the clipboard and
+middle-click (see below).
 
 Capture coverage is proved per visible window using a unique showing AT-SPI
 frame, title and X11 geometry. An unmatched/ambiguous window is masked even
@@ -35,17 +34,15 @@ MP-10 acceptance evidence. Real-live hosted/client/provider parity still
 requires the current validation matrix and independently reviewed anchors.
 
 
-MP-08 / MP-11 reviewer R1/R2: authenticated Room worker routes refuse agent
-keyboard/pointer holds, clipboard writes, drags and middle-button paste before
-spawning a physical helper. Human and approved Vault input keep their admitted
-paths. The keyboard helper independently refuses agent holds.
-Native paste chords (including Ctrl+V and Shift+Insert variants) share the direct
-clipboard-read protection policy. Unknown selection owners are protected even
-with an otherwise public desktop. A public clipboard requires a live owned
-native source, complete public accessibility coverage and unchanged selection
-owner/tree; each paste press rechecks the admitted clipboard contents. Registered
-or unknown Room protection also fences agent shortcuts. Browser-origin clipboard
-content remains opaque. These are conservative input restrictions, not PR5
+MP-08 / MP-11: authorized agents hold keys and buttons, drag, write the
+clipboard and middle-click through the same Room worker route as humans, with
+validation, authority and cancellation unchanged. Agent keys, text and clicks
+still pass the live focus admission; who owns the X clipboard never refuses them,
+so an agent can paste what it wrote itself. Clipboard reads that reach the model
+stay protected: unknown selection owners are withheld even with an otherwise
+public desktop, and a public clipboard requires a live owned native source,
+complete public accessibility coverage and an unchanged selection owner/tree.
+Browser-origin clipboard content remains opaque. These are conservative input restrictions, not PR5
 display or MP-10 acceptance evidence.
 
 

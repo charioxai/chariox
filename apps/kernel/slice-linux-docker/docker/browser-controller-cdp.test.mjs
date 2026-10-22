@@ -1737,12 +1737,37 @@ test('MP-08/MP-10/MP-11 cached mirror frames follow navigation and retire with t
  await browser.ensureConnection();const sessionId=await browser.ensureTargetSession(connection,'target-a');
  browser.recordConnectionEvent({method:'Page.frameNavigated',sessionId,params:{frame:{id:'frame-a',loaderId:'doc-a'}}});
  const cached=browser.currentPageFrame('target-a');assert.equal(cached.frame.loaderId,'doc-a');assert.ok(Number.isFinite(cached.navigatedAt));
- browser.recordConnectionEvent({method:'Page.frameStartedLoading',sessionId,params:{frameId:'frame-a'}});
+ browser.recordConnectionEvent({method:'Page.frameStartedNavigating',sessionId,params:{frameId:'frame-a'}});
  assert.equal(browser.currentPageFrame('target-a'),null);
  browser.recordConnectionEvent({method:'Page.frameNavigated',sessionId,params:{frame:{id:'frame-a',loaderId:'doc-b'}}});
  assert.equal(browser.currentPageFrame('target-a').frame.loaderId,'doc-b');
  browser.recordConnectionEvent({method:'Target.detachedFromTarget',params:{sessionId}});
  assert.equal(browser.currentPageFrame('target-a'),null);await browser.close();
+});
+
+test('a same-document navigation keeps the cached page frame of its document', async () => {
+ const connection=new FakeConnection(),browser=new BrowserCdpClient({connectionFactory:async()=>connection});
+ await browser.ensureConnection();const sessionId=await browser.ensureTargetSession(connection,'target-a');
+ const event=(method,params)=>browser.recordConnectionEvent({method,sessionId,params});
+ event('Page.frameNavigated',{frame:{id:'frame-a',loaderId:'doc-a'}});
+ const cached=browser.currentPageFrame('target-a');
+ // Fragment links and pushState load but do not navigate: the record is never absent, so no lease on it dies.
+ event('Page.frameStartedLoading',{frameId:'frame-a'});
+ assert.equal(browser.currentPageFrame('target-a'),cached);
+ event('Page.navigatedWithinDocument',{frameId:'frame-a',url:'https://example.test/#x'});
+ assert.equal(browser.currentPageFrame('target-a'),cached);
+ // A history traversal navigates (the record retires) and then proves the document unchanged.
+ event('Page.frameStartedNavigating',{frameId:'frame-a'});
+ assert.equal(browser.currentPageFrame('target-a'),null);
+ event('Page.navigatedWithinDocument',{frameId:'child',url:'https://example.test/#y'});
+ assert.equal(browser.currentPageFrame('target-a'),null,'a subframe navigation proves nothing about the page');
+ event('Page.navigatedWithinDocument',{frameId:'frame-a',url:'https://example.test/#y'});
+ assert.equal(browser.currentPageFrame('target-a'),cached);
+ event('Page.frameStartedNavigating',{frameId:'frame-a'});
+ event('Page.frameNavigated',{frame:{id:'frame-a',loaderId:'doc-b'}});
+ event('Page.navigatedWithinDocument',{frameId:'frame-a',url:'https://example.test/#z'});
+ assert.equal(browser.currentPageFrame('target-a').frame.loaderId,'doc-b','a committed document is never replaced by the retired record');
+ await browser.close();
 });
 
 test('MP-08/MP-10 the controller marks the commit and the load event of a top-level navigation for the kernel timing', async () => {

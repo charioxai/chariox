@@ -10,7 +10,7 @@ import { sliceDiskQuotaIdentityFromEnvironment } from "../apps/kernel/slice-linu
 
 const brokerUrl = new URL("../apps/kernel/slice-linux-docker/managed-docker-broker.mjs", import.meta.url)
 const broker = readFileSync(brokerUrl, "utf8")
-const executeSource = broker.slice(broker.indexOf("async function execute(request, report)"), broker.indexOf("function errorResponse"))
+const executeSource = broker.slice(broker.indexOf("async function execute(request)"), broker.indexOf("function errorResponse"))
   .replaceAll("import.meta.url", JSON.stringify(brokerUrl.href))
 const layout = readFileSync(new URL("../apps/kernel/slice-linux-docker/protected-managed-layout.mjs", import.meta.url), "utf8")
 const retainedSource = layout.slice(layout.indexOf("    retainedHomeVolumes(container) {"), layout.indexOf("    recordLegacyImage("))

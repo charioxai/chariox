@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { NativeComputer, nativeInput, executeNative } from './native-computer.mjs';
 import { LinuxOwnedDesktop } from './linux-owned-desktop.mjs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 const binding = {surface_id:'surface',generation:'generation',width:1280,height:800,environment:{DISPLAY:':999'}};
@@ -112,13 +112,21 @@ test('MP-08 provider shortcut casing resolves to physical base keys', () => {
   assert.equal(nativeInput({kind:'hold',key:'CTRL+A',duration_ms:5},binding).key,'ctrl+a');
 });
 
-test('MP-11 finding 1 agents cannot lend native clipboard, repeats or middle-button paste', async () => {
+test('agents drag, hold, write the clipboard and middle-click like any other input', async () => {
+  const sent=[];
+  const adapter=new NativeComputer({placement:'host',binding:()=>binding,execute:async request=>{sent.push(request);return {};}});
+  adapter.writeClipboard=async()=>({applied:true});
+  const inputs=[{kind:'hold',key:'a',duration_ms:500},{kind:'drag',x:10,y:10,to_x:20,to_y:20},
+    {kind:'click',button:2,x:10,y:10},{kind:'pointer_hold',button:2,x:10,y:10,duration_ms:1}];
+  for(const input of inputs)await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input},{});
+  assert.deepEqual(sent.map(request=>request.input.kind),['hold','drag','click','pointer_hold']);
+  assert.deepEqual(await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'clipboard_write',text:'ordinary'}},{}),{applied:true});
+});
+
+test('MP-11 agents still cannot hold raw physical keycodes', async () => {
   let calls=0;
   const adapter=new NativeComputer({placement:'host',binding:()=>binding,execute:async()=>{calls++;return {};}});
-  for(const input of [{kind:'clipboard_write',text:'ordinary'}, {kind:'hold',key:'a',duration_ms:500},
-    {kind:'drag',x:10,y:10,to_x:20,to_y:20}, {kind:'click',button:2,x:10,y:10}, {kind:'pointer_hold',button:2,x:10,y:10,duration_ms:1}]) {
-    await assert.rejects(adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input},{}));
-  }
+  await assert.rejects(adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'keycode',keycode:38,state:'down'}},{}));
   assert.equal(calls,0);
 });
 
@@ -161,14 +169,7 @@ test('MP-11 an agent click carries the CDP-placed active page for the X11 hit te
  assert.equal(sent[2].browser_page,null,'an unplaceable page is browser UI to the helper');
 });
 
-test('MP-11 R1 agent pointer holds require the same human admission as keyboard holds',async()=>{
-  let calls=0;
-  const adapter=new NativeComputer({placement:'host',binding:()=>binding,execute:async()=>{calls++;return {};}});
-  await assert.rejects(adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'pointer_hold',button:1,x:10,y:10,duration_ms:100}},{}));
-  assert.equal(calls,0);
-});
-
-test('MP-11 #904 review 1/3 agent clicks and keys reach the helper clipboard-owner gate, not the read policy',async()=>{
+test('MP-11 #904 review 1/3 agent clicks and keys reach the helper without a clipboard read',async()=>{
   const calls=[];
   const scoped={...binding,ownedProcesses:async()=>[{pid:200,started:'1'}]};
   const adapter=new NativeComputer({placement:'host',binding:()=>scoped,execute:async request=>{calls.push(request);return request.op==='clipboard_read'?{text:'[protected]'}:{applied:true};}});
@@ -176,6 +177,24 @@ test('MP-11 #904 review 1/3 agent clicks and keys reach the helper clipboard-own
     await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input},{});
   assert.deepEqual(calls.map(request=>request.op),Array(6).fill('input'));
   assert(calls.every(request=>request.agent_input===true && request.processes?.[0]?.pid===200));
+});
+
+test('MP-11 an agent clipboard write does not stop its next paste, typing or unrelated click',async()=>{
+  const dir=await mkdtemp(path.join(os.tmpdir(),'fake-xclip-'));
+  const calls=[];
+  try {
+    // A headless selection owner like the real xclip: no window, no accessibility nodes.
+    await writeFile(path.join(dir,'xclip'),'#!/bin/sh\ncat >/dev/null\nexec sleep 30\n',{mode:0o755});
+    const scoped={...binding,environment:{...binding.environment,PATH:`${dir}:${process.env.PATH}`},ownedProcesses:async()=>[{pid:200,started:'1'}]};
+    const adapter=new NativeComputer({placement:'host',binding:()=>scoped,execute:async request=>{calls.push(request);return {applied:true};}});
+    const send=input=>adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input},{});
+    assert.deepEqual(await send({kind:'clipboard_write',text:'ordinary agent text'}),{applied:true});
+    for(const input of [{kind:'key',key:'CTRL+V'},{kind:'text',text:'typed'},{kind:'click',button:1,x:10,y:10}])
+      assert.deepEqual(await send(input),{applied:true});
+    assert.deepEqual(calls.map(request=>request.input.kind),['key','text','click']);
+    assert(calls.every(request=>request.agent_input===true));
+    await adapter.close();
+  } finally {await rm(dir,{recursive:true,force:true});}
 });
 
 test('MP-08 / MP-10 / MP-11 human text and committed composition use the warm channel while every agent press keeps admission', async () => {
@@ -197,7 +216,7 @@ test('MP-08 / MP-10 / MP-11 human text and committed composition use the warm ch
 // where they appear as accessible text and are redacted from OCR and clipboard text.
 test('MP-08 / MP-11 Vault values never black out the desktop and are redacted from OCR and clipboard text', async () => {
   const sent=[];
-  const replies={screenshot:{data_base64:'',protected:false},ocr:{text:'header synthetic-vault-value footer',targets:[{text:'synthetic-vault-value',x:1,y:1},{text:'Save',x:2,y:2}]},clipboard_read:{text:'copied synthetic-vault-value'}};
+  const replies={screenshot:{data_base64:'',protected:false},ocr:{text:'header synthetic-vault-value footer',targets:[{text:'synthetic-vault-value',x:1,y:1},{text:'Save',x:2,y:2}]},clipboard_read:{text:'copied synthetic-vault-value'},input:{}};
   const bound={...binding,ownedProcesses:async()=>[]};
   const adapter=new NativeComputer({placement:'host',binding:()=>bound,execute:async request=>{sent.push(request);return structuredClone(replies[request.op]);}});
   const policy={values:['synthetic-vault-value'],targets:[{kind:'native',target:{focus_window:1,active_window:2}}],unknown:false};
@@ -206,5 +225,8 @@ test('MP-08 / MP-11 Vault values never black out the desktop and are redacted fr
   assert.equal(replies.ocr.result.text,'header [redacted] footer');
   assert.deepEqual(replies.ocr.result.targets.map(target=>target.text),['Save'],'OCR targets that echo a value are dropped');
   assert.equal(replies.clipboard_read.result.text,'copied [redacted]');
-  await assert.rejects(adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input:{kind:'click',x:1,y:1}},policy),e=>e.code==='user_domain_sensitive_requires_focus','agent input stays refused under a registry');
+  // UX-first: a registered Vault value never stops the agent clicking or typing elsewhere.
+  sent.length=0;
+  for(const input of [{kind:'click',x:1,y:1},{kind:'text',text:'Landsmall Tester'}])await adapter.request({op:'input',surface_id:'surface',generation:'generation',_agent_input:true,input},policy);
+  assert.deepEqual(sent.map(request=>request.op),['input','input'],'agent input still reaches the native helper under a registry');
 });

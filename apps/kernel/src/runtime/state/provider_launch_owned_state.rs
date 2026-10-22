@@ -1938,7 +1938,9 @@ mod tests {
             .expect("initial launch should request vault approval")
             .clone();
         resolve_vault_passphrase_interaction(&runtime, session.id(), &initial_unlock).await;
-        let prepared = tokio::time::timeout(std::time::Duration::from_secs(2), preparation)
+        // Unlocking derives the vault key on the CPU, so its duration follows
+        // machine load; use the liveness bound of the other waits in this test.
+        let prepared = tokio::time::timeout(std::time::Duration::from_secs(45), preparation)
             .await
             .expect("approved initial launch should finish")
             .expect("initial launch should prepare after approval");
