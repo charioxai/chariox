@@ -15,7 +15,7 @@ const DEFAULT_ROWS = 30
 const WAIT_CHUNK_MS = 240_000
 const ENTER = "\r"
 // CSI, OSC and the other two-byte escape sequences a shell prints for colours, titles and the cursor.
-const ESCAPES = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)|[@-Z\\-_])/g
+const ESCAPES = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])/g
 
 type Flag = string | true | undefined
 export type TerminalFlags = {
@@ -50,7 +50,7 @@ function watchOf(spec: string): { kind: string; text?: string } {
 }
 
 // A page can end inside an escape sequence; the cut tail is left for the next read, which then starts at its ESC.
-const CUT_ESCAPE = /\u001b(?:\[[0-?]*[ -/]*|\][^\u0007\u001b]*\u001b?)?$/
+const CUT_ESCAPE = /\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*\x1b?)?$/
 
 function plainPage(output: { data_base64: string; next_offset: number }): { text: string; next_offset: number } {
   const raw = Buffer.from(output.data_base64, "base64").toString("utf8")

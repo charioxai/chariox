@@ -134,3 +134,17 @@ test("an escape sequence cut by the end of a page is held back for the next read
   const title = await runTerminalVerb("read", [], flags({ since: "0" }), recorder([page("a\u001b]0;ops", 20)]).send) as any
   assert.deepEqual([title.text, title.next_offset], ["a", 13])
 })
+
+test("plain text strips numeric ESC/BEL bytes and preserves printable caret notation", async () => {
+  const esc = String.fromCharCode(27), bel = String.fromCharCode(7)
+  const page = (text: string, next: number) => ({ RoomTerminal: { result: { result: "output", output: { terminal: summary(), data_base64: Buffer.from(text).toString("base64"), next_offset: next, gap: false } } } })
+  const raw = `${esc}]0;private title${bel}${esc}[32mok${esc}[0m ^[[32m`
+  const result = await runTerminalVerb("read", [], flags({ since: "0" }), recorder([page(raw, Buffer.byteLength(raw))]).send) as any
+  assert.equal(result.text, "ok ^[[32m")
+  const partial = `ok${esc}]133;A${esc}`
+  const cut = await runTerminalVerb("read", [], flags({ since: "0" }), recorder([page(partial, Buffer.byteLength(partial))]).send) as any
+  assert.deepEqual([cut.text, cut.next_offset], ["ok", 2])
+  const completed = `${esc}]133;A${esc}\\done`
+  const rest = await runTerminalVerb("read", [], flags({ since: "2" }), recorder([page(completed, 2 + Buffer.byteLength(completed))]).send) as any
+  assert.equal(rest.text, "done")
+})

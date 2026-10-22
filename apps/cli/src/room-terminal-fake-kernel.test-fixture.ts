@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events"
+import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import type { RoomTerminalSummary } from "@chariox/kernel-client/kernel-types"
 
 type Operation = { operation: string; [key: string]: unknown }
@@ -44,7 +45,7 @@ export class FakeTerminalKernel {
     this.requests.push(operation)
     if (this.failNext > 0) {
       this.failNext--
-      throw new Error("connection lost")
+      throw new LocalIpcError("write kernel request", "connection lost", "connection_closed", true)
     }
     if (this.refuse) return { Error: { message: this.refuse } }
     const wrap = (result: unknown) => ({ RoomTerminal: { result } })
