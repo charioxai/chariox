@@ -99,9 +99,11 @@ MCP server (`WIRE.md:3-7`).
 
 Note: the dev-loop README says an update with unchanged capabilities is
 approved without a prompt (`apps/cli/src/app-install-file/README.md:72-74`),
-while the install-control code prompts for every update
-(`pump.rs:272-299`; only previously consented deployment releases skip,
-`requests.rs:224-229`). One of the two is wrong; §3 decides which we want.
+while the install-control code prompts for every update ("Replace the
+installed App with this release and its declared capabilities?",
+`pump.rs:272-299`); I found no unchanged-capabilities skip in the kernel,
+only the consented-deployment skip (`requests.rs:224-229`). One of the two
+is wrong; §3 decides which we want.
 
 ### 1.5 Dev loop, package, install, generations, Library
 
@@ -354,9 +356,13 @@ every client (runtime rule 5), the same interaction Vault and sudo use.
 
 ### 4.2 Execution: the same path a user triggers
 
-An action runs **inside the view**, in the page's JavaScript, via the
-existing CDP binding in reverse (the kernel calls into the page the way it
-already delivers `panel` answers). The handler then calls
+An action runs **inside the view**, in the page's JavaScript. The path
+exists in both directions already: the page calls the kernel through the
+`__charioxAppCall` binding, and the kernel sends the room controller
+`app_view` commands (`{op: "reload", …}`, protocol 356) which the controller
+applies to the Tab with `Runtime.evaluate`
+(`browser-controller-apps.mjs:26,130`; `docs/PROTOCOL.md:2880-2888`). An
+`{op: "action", name, params, actor}` command is the addition. The handler then calls
 `window.chariox.call(tool)` exactly as a click does, with
 `Actor::Agent` attached (`app_view_runtime.rs:900-930` already does this
 for driven views). So:
@@ -513,7 +519,7 @@ an S-size PR once §4 exists, and should gate the "Apps beat MCP" message.
 ### 6.1 C: the measured answer to "from the get go?"
 
 **Yes, C works today on the async world, with no SDK and no C-specific
-worker change.** `spikes/wasm/apps/c-app/app.c` (≈330 lines) implements
+worker change.** `spikes/wasm/apps/c-app/app.c` (430 lines) implements
 the same ten tools as the Rust App against `wit/app.wit`, compiled with
 `wit-bindgen c` (callback ABI) and `wasm32-wasip2-clang -mexec-model=reactor`,
 and ran every r2 cell on the unchanged async worker under bubblewrap:
