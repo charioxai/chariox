@@ -9,6 +9,13 @@ import {
 
 const knownFlags = new Set(COMMANDS.flatMap(spec => spec.flags.map(flag => flag.name)))
 
+test("sudo refusal and expiry have separate typed CLI outcomes", () => {
+  assert.equal(exitCodeFor("kernel_sudo_refused"), 3)
+  assert.equal(exitCodeFor("kernel_sudo_expired"), 5)
+  assert.match(guideText(), /kernel_sudo_refused/)
+  assert.match(guideText(), /kernel_sudo_expired/)
+})
+
 test("the guide mentions exactly the commands and flags the parser knows", () => {
   const guide = guideText()
   const names = [...guide.matchAll(/chariox ([a-z]+)(?: ([a-z]+))?/g)]

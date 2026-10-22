@@ -18,7 +18,7 @@ Protocol 478 adds the kernel pairing confirmation. Relay peer protocol is unchan
 
 ## For agents
 
-An external agent (Claude Code, Codex) talks only to its local kernel over the Unix socket. Run `chariox guide` for the short, static agent guide; it is generated from the same command table the CLI parser uses and installs nothing into the agent's harness.
+An external agent (Claude Code, Codex, OpenCode) talks only to its local kernel over the Unix socket. Run `chariox guide` for the short, static agent guide; it is generated from the same command table the CLI parser uses and installs nothing into the agent's harness.
 
 - `chariox access request --until-exit` asks the user for access once. With `--no-wait` it exits 6 and a detached waiter keeps the request; `chariox access status` then prints `granted`, `pending`, `ended` or `not_requested`.
 - `chariox kernels` lists the kernels this kernel can reach, grouped by machine. A kernel's name is its machine's name when you have one kernel there and `<machine>/<label>` when the machine runs several (a name that fits two kernels is `kernel_ambiguous` and lists both). `chariox request [--kernel M] [--command-id ID] [--timeout SECONDS]` sends one `LocalDaemonRequest` read from stdin to this kernel, or through it to kernel `M`, and prints the response JSON.
@@ -33,10 +33,17 @@ Exit codes and the error codes behind them:
 | --- | --- | --- |
 | 0 | ok | |
 | 2 | usage | `usage` |
-| 3 | refused | `kernel_access_human_only`, `kernel_access_ended`, `kernel_access_not_covered`, `kernel_access_already_granted`, `command_id_required`, `duplicate_command_conflict` |
+| 3 | refused | `kernel_sudo_refused`, `kernel_access_human_only`, `kernel_access_ended`, `kernel_access_not_covered`, `kernel_access_already_granted`, `command_id_required`, `duplicate_command_conflict` |
 | 4 | kernel unavailable | `kernel_unknown`, `kernel_ambiguous`, `kernel_offline`, `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_not_available` |
-| 5 | timeout or unknown outcome | `kernel_request_timeout`, `kernel_connection_lost`, `kernel_outcome_unknown` |
+| 5 | timeout or unknown outcome | `kernel_sudo_expired`, `kernel_request_timeout`, `kernel_connection_lost`, `kernel_outcome_unknown` |
 | 6 | approval pending | |
 
 On `kernel_request_timeout` or `kernel_connection_lost`, retry once with the same `--command-id`. On `kernel_outcome_unknown`, read the state first. When the local connection drops with a request in flight, the CLI probes the kernel once: `kernel_access_ended` means the grant ended during the request; anything else is `kernel_connection_lost`.
 
+
+MP-08 / MP-10 / MP-11: `kernel_sudo_refused` means the person refused the request;
+`kernel_sudo_expired` means no approval arrived before its deadline. Neither
+starts elevation or retries automatically. Submit a new request only when needed,
+and approve it in an already paired Chariox client. The launcher and the bare
+TypeScript CLI both walk past shells to the nearest installed provider harness;
+no `CHARIOX_CLI_ACCESS_HOLDER_PID` override is needed for ordinary use.

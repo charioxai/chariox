@@ -85,16 +85,16 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
   },
 ]
 
-const REFUSED = ["kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "command_id_required", "duplicate_command_conflict"]
+const REFUSED = ["kernel_sudo_refused", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "command_id_required", "duplicate_command_conflict"]
 const KERNEL_UNAVAILABLE = ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_not_available"]
-const OUTCOME_UNCERTAIN = ["kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown"]
+const TIMEOUT_OR_UNKNOWN = ["kernel_sudo_expired", "kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown"]
 
 export const EXIT_CODES: readonly { exit: number; meaning: string; codes: readonly string[] }[] = [
   { exit: 0, meaning: "ok", codes: [] },
   { exit: 2, meaning: "usage error", codes: ["usage", "file_path_invalid"] },
   { exit: 3, meaning: "refused: the user, the grant or the file permissions do not allow it", codes: [...REFUSED, "file_permission_denied"] },
   { exit: 4, meaning: "kernel unavailable", codes: KERNEL_UNAVAILABLE },
-  { exit: 5, meaning: "timeout or unknown outcome: the request may have run", codes: OUTCOME_UNCERTAIN },
+  { exit: 5, meaning: "timeout or unknown outcome", codes: TIMEOUT_OR_UNKNOWN },
   { exit: 6, meaning: "approval pending (access request --no-wait)", codes: [] },
 ]
 
