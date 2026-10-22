@@ -396,10 +396,10 @@ fn repository_update_refuses_a_batch_that_leaves_one_member_at_an_old_commit() {
     git(&repo.root, &["commit", "--quiet", "-m", "second"]);
     let mut update = update_members(&repo, &repo.head(), &catalog);
     update.actions.truncate(1);
-    let prepared = service.prepare(&update).unwrap();
     let error = service
-        .publish_authorized(&update, &prepared)
-        .unwrap_err()
+        .prepare(&update)
+        .err()
+        .expect("preview must refuse a partially advanced repository package")
         .to_string();
     assert!(error.contains("every remaining member"), "{error}");
     assert_eq!(service.storage.snapshot().unwrap(), catalog);
