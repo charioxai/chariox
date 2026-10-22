@@ -245,6 +245,11 @@ impl DisplayPump {
         self.wake.notify_one();
         status
     }
+    /// The source is gone for good: the client's next acknowledgement reads `stopped` and rebinds, unlike `failed`.
+    fn retire(&self) {
+        self.with(|state| state.stopped = true);
+        self.wake.notify_one();
+    }
     pub(super) fn stop(&self) {
         self.with(|state| state.stopped = true);
         self.wake.notify_one();
@@ -281,6 +286,8 @@ struct Faults {
 
 enum Next {
     Fail,
+    /// The source is gone for good (a retired document): the pump ends as stopped, so the client rebinds silently.
+    Retire,
     Retry { delay: Duration, reset: bool },
 }
 
@@ -289,13 +296,14 @@ impl Faults {
         match error {
             // A navigation between capture and commit refuses one credit as a stale document and
             // the next credit binds the new one. Staleness that persists is a retired source: only
-            // the client can rebind it, so end the pump now instead of after the failure backoff.
+            // the client can rebind it, so end the pump now instead of after the failure backoff. It ends as
+            // stopped, not failed: nothing broke, the source moved on, and a failed pump shows the person a notice.
             DaemonError::UserDomainRefused {
                 reason: crate::error::UserDomainRefusalReason::StaleReference,
             } => {
                 let since = *self.stale_since.get_or_insert(now);
                 if now.duration_since(since) >= STALE_LIMIT {
-                    Next::Fail
+                    Next::Retire
                 } else {
                     Next::Retry {
                         delay: Duration::from_millis(10),
@@ -411,6 +419,11 @@ pub(super) async fn run(route: PumpRoute, pump: Arc<DisplayPump>) {
                 Next::Fail => {
                     crate::transport::kernel_browser_display::pump_failed(&error);
                     pump.with(|state| state.failed = true);
+                    return;
+                }
+                Next::Retire => {
+                    crate::transport::kernel_browser_display::pump_failed(&error);
+                    pump.retire();
                     return;
                 }
                 Next::Retry { delay, reset } => {
@@ -577,7 +590,7 @@ mod tests {
             faults.error(&stale, t0 + STALE_LIMIT / 2),
             Next::Retry { .. }
         ));
-        assert!(matches!(faults.error(&stale, t0 + STALE_LIMIT), Next::Fail));
+        assert!(matches!(faults.error(&stale, t0 + STALE_LIMIT), Next::Retire));
         // A delivered credit forgets the stale run.
         assert!(matches!(
             Faults::default().error(&stale, t0 + STALE_LIMIT),
@@ -585,6 +598,13 @@ mod tests {
         ));
         let refused = DaemonError::UserDomainRefused { reason: NotGranted };
         assert!(matches!(Faults::default().error(&refused, t0), Next::Fail));
+    }
+
+    #[test]
+    fn a_retired_source_reads_stopped_to_the_client_not_failed() {
+        let pump = DisplayPump::new(7, "display");
+        pump.retire();
+        assert_eq!(pump.acknowledge(7, 0, false, None), Some("stopped"));
     }
 
     #[test]
