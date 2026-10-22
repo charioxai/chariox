@@ -269,6 +269,7 @@ export class KernelBrowserHost {
       // target so startup and closing the last user tab never stop the browser.
       const pages = targetInfos.filter(target => target.type === "page");
       this.keepaliveTarget = await this.openKeepalive(connection, pages);
+      await this.tabGroups?.keepalive(this.keepaliveTarget);
       for (const target of (await connection.send("Target.getTargets")).targetInfos.filter(target => target.type === "page")) {
         if (target.targetId !== this.keepaliveTarget) {
           await connection.send("Target.closeTarget", { targetId: target.targetId });
