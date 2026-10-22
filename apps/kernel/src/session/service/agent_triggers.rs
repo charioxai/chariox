@@ -131,6 +131,7 @@ impl SessionService {
             for trigger in session.agent_triggers_mut() {
                 if trigger.claim_dispatch(now_ms) {
                     dispatches.push(AgentTriggerDispatch {
+                        claim_generation: trigger.dispatch_generation(),
                         session_id: session_id.clone(),
                         trigger_id: trigger.id().to_string(),
                         agent_id: trigger.agent_id().to_string(),
