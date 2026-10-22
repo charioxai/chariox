@@ -128,6 +128,16 @@ pub(crate) fn entries(config: &DaemonConfig) -> Result<Vec<PersistedClientPairin
     }
     Ok(grants)
 }
+/// The redeemed grant of one terminal, revoked or not; pending links are not grants.
+pub(crate) fn grant(
+    config: &DaemonConfig,
+    client_id: &str,
+) -> Result<Option<PersistedClientPairing>, DaemonError> {
+    Ok(read(config)?
+        .grants
+        .into_iter()
+        .find(|grant| grant.client_id == client_id))
+}
 pub(crate) fn admit(
     config: &DaemonConfig,
     public_key: &str,

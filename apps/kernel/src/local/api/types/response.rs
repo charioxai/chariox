@@ -336,6 +336,8 @@ pub enum LocalDaemonResponse {
     PairedClientsListed { clients: Vec<PairedClientRecord>, },
     PairedClientRecorded { client: PairedClientRecord, },
     PairedClientRevoked { client: PairedClientRecord, },
+    RelayIssuer { issuer: Option<RelayIssuerRecord>, },
+    RelayClientTokenIssued { token: RelayClientToken, },
     ProviderAuthStatus { status: ProviderAuthStatus, },
     ProviderLoginStarted { login: ProviderLoginStart, },
     ProviderLoginStatus { login: ProviderLoginStatus, },

@@ -76,6 +76,8 @@ impl KernelRuntimeState {
                 | LocalDaemonRequest::CreateTerminalPairingLink(_)
                 | LocalDaemonRequest::JoinTerminalPairingLink(_)
                 | LocalDaemonRequest::RecordPairedClient(_)
+                | LocalDaemonRequest::ConfigureRelayIssuer(_)
+                | LocalDaemonRequest::IssueRelayClientToken(_)
                 | LocalDaemonRequest::ApproveRemoteMachine(_)
                 | LocalDaemonRequest::JoinSessionInvite(_)
                 | LocalDaemonRequest::CreateCloudSessionInvite(_)

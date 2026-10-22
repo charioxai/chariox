@@ -578,6 +578,9 @@ fn validate_cli_relay_sender_key(
         LocalDaemonRequest::ResolveKernelClientConnection(request) => {
             request.public_key_thumbprint.as_deref()
         }
+        LocalDaemonRequest::IssueRelayClientToken(request) => {
+            Some(request.public_key_thumbprint.as_str())
+        }
         _ => return Ok(()),
     };
     let Some(claimed_thumbprint) = claimed_thumbprint else {

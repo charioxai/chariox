@@ -94,6 +94,36 @@ export function issueCloudRelayClientTokenRequest(
   }
 }
 
+// MP-11: protocol 572 lets a Cloud-free home kernel sign its terminals' relay tokens.
+export const relayIssuerMinimumProtocolVersion = 572
+
+export type RelayIssuerStep = "enable" | "stage_rotation" | "activate_rotation" | "disable"
+export type RelayClientTokenScope = "attach" | "metadata"
+
+export function relayIssuerStatusRequest() {
+  return { RelayIssuerStatus: null }
+}
+
+export function configureRelayIssuerRequest(step: RelayIssuerStep) {
+  return { ConfigureRelayIssuer: { step } }
+}
+
+export function issueRelayClientTokenRequest(input: {
+  clientId: string
+  publicKeyThumbprint: string
+  scope: RelayClientTokenScope
+  lifetimeMs?: number
+}) {
+  return {
+    IssueRelayClientToken: {
+      client_id: input.clientId,
+      public_key_thumbprint: input.publicKeyThumbprint,
+      scope: input.scope,
+      ...(input.lifetimeMs === undefined ? {} : { lifetime_ms: input.lifetimeMs }),
+    },
+  }
+}
+
 export function resolveKernelClientConnectionRequest(input: {
   kernelRef: string
   machineRef?: string | null

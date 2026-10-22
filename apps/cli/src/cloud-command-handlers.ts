@@ -49,6 +49,10 @@ export async function handleRelaySlashCommand(
     await listRelayMembers(deps)
     return
   }
+  if (subcommand === "issuer") {
+    await handleRelayIssuerCommand(deps, args)
+    return
+  }
   if (!subcommand || subcommand === "status") {
     if (!deps.getRelayStatus) {
       deps.flashFooter("relay status is unavailable in this build", "error")
@@ -95,7 +99,7 @@ export async function handleRelaySlashCommand(
     deps.flashFooter("relay disabled", "info")
     return
   }
-  deps.flashFooter("usage: /relay status | /relay use <ws-url> [token] | /relay disable | /relay invite create [max-uses] [--level private|transparent|full] | /relay invite accept <token> | /relay members", "error")
+  deps.flashFooter("usage: /relay status | /relay use <ws-url> [token] | /relay disable | /relay issuer [status|enable|stage-rotation|activate-rotation|disable] | /relay invite create [max-uses] [--level private|transparent|full] | /relay invite accept <token> | /relay members", "error")
 }
 
 export async function handleCloudSlashCommand(
@@ -299,4 +303,33 @@ function parsePositiveInt(value: string | undefined): number | null | undefined 
   if (value === undefined) return undefined
   const parsed = Number.parseInt(value, 10)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+const RELAY_ISSUER_STEPS = {
+  enable: "enable",
+  "stage-rotation": "stage_rotation",
+  "activate-rotation": "activate_rotation",
+  disable: "disable",
+} as const
+
+// MP-11: a Cloud-free kernel signs its terminals' relay tokens; the relay
+// operator pins the printed public key line, never a shared client secret.
+async function handleRelayIssuerCommand(deps: CloudCommandHandlerDeps, args: string[]): Promise<void> {
+  if (!deps.relayIssuer) {
+    deps.flashFooter("the relay issuer is unavailable in this build", "error")
+    return
+  }
+  const action = args[0] ?? "status"
+  if (action !== "status" && !(action in RELAY_ISSUER_STEPS)) {
+    deps.flashFooter("usage: /relay issuer [status|enable|stage-rotation|activate-rotation|disable]", "error")
+    return
+  }
+  const issuer = await deps.relayIssuer(action === "status" ? null : RELAY_ISSUER_STEPS[action as keyof typeof RELAY_ISSUER_STEPS])
+  if (!issuer) {
+    deps.appendNotice("relay issuer disabled\nenable it with /relay issuer enable")
+    return
+  }
+  deps.appendNotice(
+    `relay issuer ${issuer.issuer_id}\nactive_key=${issuer.active_key.key_id}${issuer.next_key ? `\nstaged_key=${issuer.next_key.key_id}` : ""}\nstart the relay with:\nCHARIOX_RELAY_KERNEL_ISSUER_KEYS=${issuer.relay_issuer_keys}`,
+  )
 }

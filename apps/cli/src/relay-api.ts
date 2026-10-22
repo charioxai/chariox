@@ -5,7 +5,7 @@ import type {
   WaitingRoomTerminalView,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
-import type { TerminalPairingLinkJoined } from "@chariox/kernel-client/kernel-types"
+import type { RelayClientToken, RelayIssuerRecord, TerminalPairingLinkJoined } from "@chariox/kernel-client/kernel-types"
 import type { RelayCloudProfile } from "./preferences.js"
 import { parseAbsoluteInstantMs } from "@chariox/kernel-client/time"
 import {
@@ -14,6 +14,11 @@ import {
   connectCloudRelayRequest,
   createTerminalPairingLinkRequest,
   issueCloudRelayClientTokenRequest,
+  issueRelayClientTokenRequest,
+  configureRelayIssuerRequest,
+  relayIssuerStatusRequest,
+  type RelayIssuerStep,
+  relayIssuerMinimumProtocolVersion,
   joinTerminalPairingLinkRequest,
   logoutCloudRelayRequest,
   pairCloudRelayClientRequest,
@@ -238,6 +243,50 @@ export async function issueKernelCloudRelayClientToken(
     ...(typeof grantSessionId === "string" && grantSessionId ? { sessionId: grantSessionId } : {}),
     profile: relayCloudProfileFromKernel(payload.profile),
   }
+}
+
+// MP-11: a Cloud-free home kernel signs its terminals' tokens with EdDSA;
+// Cloud grants are HS256. The relay verifies either signature.
+export function isKernelIssuedRelayToken(token: string): boolean {
+  const header = token.trim().split(".")[0]
+  if (!header || token.length > 16_384) return false
+  try {
+    return JSON.parse(Buffer.from(header, "base64url").toString("utf8"))?.alg === "EdDSA"
+  } catch {
+    return false
+  }
+}
+
+export async function issueKernelRelayClientToken(
+  client: LocalIpcClient,
+  clientId: string,
+  publicKeyThumbprint: string,
+) {
+  const response = await sendWithProtocolMinimum<Record<string, unknown>>(
+    client.send.bind(client),
+    issueRelayClientTokenRequest({ clientId, publicKeyThumbprint, scope: "attach" }),
+    {
+      capability: "self-hosted relay token renewal",
+      requestVariant: "IssueRelayClientToken",
+      minimumProtocolVersion: relayIssuerMinimumProtocolVersion,
+    },
+  )
+  const { token } = expectVariant<{ token: RelayClientToken }>(response, "RelayClientTokenIssued")
+  requireRelayTokenKeyBinding(token.relay_token, publicKeyThumbprint, "self-hosted relay token")
+  return { relayUrl: token.relay_url, relayToken: token.relay_token, tokenExpiresAtMs: token.expires_at_ms }
+}
+
+export async function relayIssuer(client: LocalIpcClient, step: RelayIssuerStep | null) {
+  const response = await sendWithProtocolMinimum<Record<string, unknown>>(
+    client.send.bind(client),
+    step ? configureRelayIssuerRequest(step) : relayIssuerStatusRequest(),
+    {
+      capability: "the self-hosted relay issuer",
+      requestVariant: step ? "ConfigureRelayIssuer" : "RelayIssuerStatus",
+      minimumProtocolVersion: relayIssuerMinimumProtocolVersion,
+    },
+  )
+  return expectVariant<{ issuer: RelayIssuerRecord | null }>(response, "RelayIssuer").issuer ?? null
 }
 
 export async function joinKernelTerminalPairingLink(

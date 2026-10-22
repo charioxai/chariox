@@ -156,6 +156,15 @@ impl CommandRouter {
                 )
                 .await
             }),
+            request @ (LocalDaemonRequest::RelayIssuerStatus(_)
+            | LocalDaemonRequest::ConfigureRelayIssuer(_)
+            | LocalDaemonRequest::IssueRelayClientToken(_)) => boxed_handler(|| async move {
+                crate::runtime::relay_issuer::execute_relay_issuer_request(
+                    &self.config_projection.snapshot(),
+                    &command.caller,
+                    request,
+                )
+            }),
             request @ (LocalDaemonRequest::CreatePairingInvite(_)
             | LocalDaemonRequest::JoinPairingInvite(_)
             | LocalDaemonRequest::CreateTerminalPairingLink(_)

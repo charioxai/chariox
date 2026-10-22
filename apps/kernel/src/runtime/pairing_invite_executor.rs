@@ -132,6 +132,15 @@ pub(crate) async fn execute_create_pairing_invite_request(
             message: "scoped kernel credentials cannot be exported in an invite; use an operator-issued transport credential and a terminal pairing link".into(),
         });
     }
+    if request.intent == PairingInviteIntent::Client
+        && super::self_host_terminal_grants::required(&config)
+        && super::relay_issuer::enabled(&config)?
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "create pairing invite",
+            message: "this kernel issues its own client relay tokens; pair the client with a terminal pairing link".into(),
+        });
+    }
     let issued_at_ms = current_unix_ms();
     let expires_at_ms =
         issued_at_ms.saturating_add(request.expires_in_ms.unwrap_or(15 * 60 * 1000));
@@ -229,7 +238,12 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
         )
     };
     let relay_token = if super::self_host_terminal_grants::required(&config) {
-        super::self_host_terminal_grants::pairing_transport_token(relay_token)
+        // With the kernel issuer on, the link carries a pairing-only client
+        // token, never the operator's registration token.
+        match super::relay_issuer::pairing_link_token(&config, &terminal_id, expires_at_ms)? {
+            Some(token) => token,
+            None => super::self_host_terminal_grants::pairing_transport_token(relay_token),
+        }
     } else {
         relay_token
     };
@@ -421,6 +435,10 @@ pub(crate) async fn execute_join_terminal_pairing_link_request(
                 revoked: false,
             },
         )?;
+        let relay_token = match request.public_key_thumbprint {
+            Some(_) => super::relay_issuer::paired_terminal_token(&config, &grant)?,
+            None => None,
+        };
         return Ok(LocalDaemonResponse::TerminalPairingLinkJoined {
             terminal: terminal_record(grant),
             pairing: PairingJoinRecord {
@@ -432,7 +450,7 @@ pub(crate) async fn execute_join_terminal_pairing_link_request(
                 public_key_thumbprint: joined_thumbprint,
                 paired_at_ms: now_ms,
             },
-            relay_token: None,
+            relay_token,
             kernel_pairing: request.public_key_thumbprint.is_some(),
         });
     }

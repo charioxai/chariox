@@ -43,3 +43,19 @@ test("denial support is an explicit poll capability; legacy requests retain thei
     PollCloudRelayLogin: { ...legacy.PollCloudRelayLogin, supports_access_denied: true },
   })
 })
+
+test("MP-11 relay issuer request builders match the kernel's 572 wire snapshot", async () => {
+  const { readFileSync } = await import("node:fs")
+  const { configureRelayIssuerRequest, issueRelayClientTokenRequest, relayIssuerStatusRequest } = await import("./ipc-relay-control-requests.js")
+  const snapshot = JSON.parse(readFileSync(new URL("../../../apps/kernel/src/local/api/tests/protocol_shapes/relay-issuer-572.json", import.meta.url), "utf8"))
+  const thumbprint = "a".repeat(64)
+  assert.deepEqual([
+    relayIssuerStatusRequest(),
+    configureRelayIssuerRequest("enable"),
+    configureRelayIssuerRequest("stage_rotation"),
+    configureRelayIssuerRequest("activate_rotation"),
+    configureRelayIssuerRequest("disable"),
+    issueRelayClientTokenRequest({ clientId: "cli-1", publicKeyThumbprint: thumbprint, scope: "attach" }),
+    issueRelayClientTokenRequest({ clientId: "cli-1", publicKeyThumbprint: thumbprint, scope: "metadata", lifetimeMs: 600_000 }),
+  ], snapshot.requests)
+})

@@ -129,6 +129,8 @@ response_policies! {
         PairingInviteJoined,
         TerminalPairingLinkCreated,
         TerminalPairingLinkJoined,
+        RelayIssuer,
+        RelayClientTokenIssued,
         ProviderLoginStarted,
         ProviderLoginStatus,
         ProviderLoginCancelled,

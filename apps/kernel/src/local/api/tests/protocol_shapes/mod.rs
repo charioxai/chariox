@@ -34,6 +34,7 @@ mod managed_context;
 mod managed_environment;
 mod native_spawn_slice;
 mod notes;
+mod relay_issuer;
 mod panes_history;
 mod project_environment_aggregate;
 mod project_environment_manifest;
