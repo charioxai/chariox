@@ -155,7 +155,7 @@ function validateOp(op: Mirror2Op, known: (id: string) => Mirror2Record | undefi
   switch (op.op) {
     case 'children': if (!Array.isArray(op.children) || op.children.length > 200000 || op.children.some(c => !id.test(c)) || !Array.isArray(op.nodes)) fail('op'); validateTree(op.nodes, known, op.id); break
     case 'attr': { const record = known(op.id); if (!record) break; validateAttrs({ ...record, attrs: op.value === null ? {} : { [op.name]: op.value } }); if (typeof op.name !== 'string' || op.value !== null && typeof op.value !== 'string' || record.kind === 'mask') fail('op'); break }
-    case 'text': if (typeof op.text !== 'string' || op.text.length > 16 * 1024 * 1024 || known(op.id) && known(op.id)!.kind !== 'text') fail('op'); break
+    case 'text': if (typeof op.text !== 'string' || op.text.length > 16 * 1024 * 1024) fail('op'); if (known(op.id) && known(op.id)!.kind !== 'text') throw Error('MP-11: mirror lost base'); break
     case 'css': validateMirror2Css(op.css); if (known(op.id) && known(op.id)!.tag !== 'style') fail('op'); break
     case 'adopted': if (!Array.isArray(op.sheets) || op.sheets.length > 256) fail('op'); op.sheets.forEach(validateMirror2Css); break
     case 'form': { // protocol 489: only the changed properties
@@ -168,7 +168,7 @@ function validateOp(op: Mirror2Op, known: (id: string) => Mirror2Record | undefi
     case 'res': if (op.res !== null && !/^r[0-9]{1,9}$/.test(op.res)) fail('op'); break
     case 'state': if (!validState(op.state) || known(op.id) && known(op.id)!.kind !== 'element') fail('op'); break
     case 'fragment': if (!validFragment(op.fragment) || known(op.id) && known(op.id)!.kind !== 'document') fail('op'); break
-    case 'fonts': if (Object.keys(op).some(key => !['op', 'id', 'required', 'absent'].includes(key)) || op.absent !== undefined && (!Array.isArray(op.absent) || op.absent.length > 64 || new Set(op.absent).size !== op.absent.length || op.absent.some(value => typeof value !== 'string' || !/^[^\x00-\x1f"'\\{}<>;`]{1,128}$/.test(value))) || known(op.id)?.kind !== 'document' || op.required !== null && (!Array.isArray(op.required) || op.required.length > 128 || new Set(op.required).size !== op.required.length || op.required.some(value => typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)))) fail('fonts'); break
+    case 'fonts': if (Object.keys(op).some(key => !['op', 'id', 'required', 'absent'].includes(key)) || op.absent !== undefined && (!Array.isArray(op.absent) || op.absent.length > 64 || new Set(op.absent).size !== op.absent.length || op.absent.some(value => typeof value !== 'string' || !/^[^\x00-\x1f"'\\{}<>;`]{1,128}$/.test(value))) || known(op.id) && known(op.id)!.kind !== 'document' || op.required !== null && (!Array.isArray(op.required) || op.required.length > 128 || new Set(op.required).size !== op.required.length || op.required.some(value => typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)))) fail('fonts'); if (!known(op.id)) throw Error('MP-11: mirror lost base'); break
     default: fail('op')
   }
 }

@@ -571,6 +571,7 @@ test("MD-3 b220: cancelled pending input never inserts text", () => using(async 
   cancel.abort(); release.resolve();
   await assert.rejects(pending, error => error.code === "browser_action_cancelled");
   assert(!sent.some(call => call.method === "Input.insertText"));
+  assert(host.browser, "MP-08/MP-10/MP-11: a refusal before dispatch leaves the browser running");
 }));
 
 test("MP-08/MP-11: revocation after a key press permits only its non-text release", () => using(async ({ host, sent, connection }) => {
@@ -597,6 +598,14 @@ test("MD-3 b220: input rejects replacement documents and missing observation bin
   assert(!sent.some(call => call.method.startsWith("Input.")));
 }));
 
+test("MP-08/MP-10/MP-11 a stale input lane before dispatch keeps every tab alive", () => using(async ({host,sent}) => {
+  const opened=await host.request({op:'open',url:'about:blank'}),browser=host.browser;
+  host.sampleLane=()=>({run:async()=>{throw Object.assign(Error('stale document'),{code:'stale_document_reference'})}});
+  await assert.rejects(host.request({op:'input',tab_id:opened.tab_id,generation:opened.generation,document_id:opened.tabs[0].document_id,input:{kind:'text',text:'synthetic'}}),{code:'stale_document_reference'});
+  assert.equal(host.browser,browser,'nothing was dispatched, so there are no held keys to clear');
+  assert(!sent.some(call=>call.method==='Input.insertText'));
+}));
+
 test("MD-3 b220: navigation during text preparation rejects input before insert", () => using(async ({ host, sent, connection, pages }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
   const target = host.tabs.get(opened.tab_id).target_id;
@@ -605,6 +614,7 @@ test("MD-3 b220: navigation during text preparation rejects input before insert"
   await assert.rejects(host.request({ op: "input", tab_id: opened.tab_id, generation: opened.generation,
     document_id: opened.tabs[0].document_id, input: { kind: "text", text: "synthetic" } }), error => error.code === "stale_document_reference");
   assert(!sent.some(call => call.method === "Input.insertText"));
+  assert(host.browser, "MP-08/MP-10/MP-11: a refusal before dispatch leaves the browser running");
 }));
 
 
@@ -635,7 +645,7 @@ test("MD-3 b220: production stdio cancellation reaches held host input and settl
     assert(!sent.some(call => call.method === "Input.insertText"));
     connection.beforeSend = null;
     const recovered = await host.request({ op: "start" });
-    assert.equal(recovered.generation, opened.generation + 1);
+    assert.equal(recovered.generation, opened.generation, "MP-08/MP-10/MP-11: no restart for an input that was never dispatched");
     assert.equal((await rpc(3, "host.browser", { ...command, generation: recovered.generation, document_id: recovered.tabs[0].document_id })).ok, true);
     assert.equal(sent.filter(call => call.method === "Input.insertText").length, 1);
   } finally { release.resolve(); input.end(); await running; lines.close(); output.end(); }

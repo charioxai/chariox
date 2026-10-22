@@ -21,7 +21,7 @@ async function regionLease({ host, subscription_id, generation }, sequence) {
 const settle = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function stayDom(next, ms, label) { const until = Date.now() + ms; let packet, tiles = 0; while (Date.now() < until) { packet = await next(300); tiles += packet.tiles.length; assert.equal(packet.fallback, undefined, label); } return { ...packet, tiles: packet.tiles, seenTiles: tiles }; }
 
-async function mirrored(html, run, routes = {}) {
+async function mirrored(html, run, routes = {}, { painted = false } = {}) {
   const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "mirror2-"));
   const server = createServer((request, response) => {
     const port = String(server.address().port), route = routes[request.url];
@@ -40,6 +40,17 @@ async function mirrored(html, run, routes = {}) {
     };
     // about:blank is "complete" too: wait for the fixture document itself.
     for (let i = 0; i < 400 && await evaluate("location.protocol === 'http:' && document.readyState === 'complete'").catch(() => false) !== true; i++) await new Promise(resolve => setTimeout(resolve, 25));
+    // The 420k-node budget fixture tests continuation, not Chrome's initial layout deadline.
+    // Wait for real native paint without changing any production capture or CDP timeout.
+    if (painted) {
+      const connection = await host.browser.ensureConnection();
+      const sessionId = await host.browser.ensureTargetSession(connection, host.tabs.get(opened.tab_id).target_id);
+      const reply = await connection.send('Runtime.evaluate', {
+        expression: 'new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))',
+        returnByValue: true, awaitPromise: true,
+      }, sessionId, { timeoutMs: 30000 });
+      assert(!reply.exceptionDetails && reply.result.value === true, 'large fixture has painted before mirror observation');
+    }
     await host.request({ op: "state" });
     const subscribe = async (extra = {}) => {
       const { subscription_id } = await host.request({ op: "mirror_subscribe", tab_id: opened.tab_id, generation: opened.generation, device_scale_factor: 1, wire: 2, ...extra });
@@ -47,6 +58,7 @@ async function mirrored(html, run, routes = {}) {
       let applied = 0, context = Buffer.alloc(0);
       const next = async (wait_ms = 0, reset = false) => {
         let packet = await host.request({ op: "mirror_next", subscription_id, generation: opened.generation, after_sequence: reset ? 0 : applied, drift_nodes: [], wait_ms }); applied = packet.sequence;
+        next.wireBytes = Buffer.byteLength(JSON.stringify(packet));
         if (packet.reset) context = Buffer.alloc(0);
         if (packet.encoding === "deflate") { context = Buffer.concat([context, Buffer.from(packet.packet_base64, "base64")]); const out = inflateRawSync(context, { finishFlush: zlib.Z_SYNC_FLUSH }); packet = { ...JSON.parse(out.subarray(out.length - packet.packet_bytes)), resources: packet.resources ?? [], tiles: packet.tiles ?? [] }; }
         return { ops: [], resources: [], tiles: [], ...packet };
@@ -792,6 +804,12 @@ test("MP-08: protocol 492 `blur` leaves the kernel's focus only while the viewer
   assert.equal(await evaluate("document.activeElement.id"), "b", "MP-08: a stale blur never takes focus from another control");
 }));
 
+test('MP-08/MP-10/MP-11 a native cross-origin stylesheet with a URL fragment reaches the copy',()=>mirrored('<link rel="stylesheet" href="http://localhost:PORT/fragment.css?v=1#client-flags"><p class="hit">Styled source</p>',async({next,evaluate})=>{
+  assert.equal(await evaluate('getComputedStyle(document.querySelector(".hit")).color'),'rgb(12, 34, 56)');
+  const packet=await next();
+  assert.match(JSON.stringify(packet),/rgb\(12, 34, 56\)/,'CSS bytes come from the resource URL without its fragment');
+},{'/fragment.css?v=1':{type:'text/css',body:'.hit{color:rgb(12,34,56)}'}}));
+
 // Audit 2026-10-10 §4.5: CDP CSS events replace stylesheet polling and its caps (GitHub's main sheet
 // exceeds 4000 rules; insertRule into it never mirrored).
 const bigSheets = '<style id="big"></style><p class="hit">text</p><div id="h"></div><script>document.getElementById("big").textContent=Array.from({length:5000},(_,i)=>".c"+i+"{color:rgb(1,1,1)}").join("");window.k=new CSSStyleSheet();k.replaceSync(Array.from({length:5000},(_,i)=>".d"+i+"{color:rgb(2,2,2)}").join(""));document.adoptedStyleSheets=[k];const r=document.getElementById("h").attachShadow({mode:"open"});r.innerHTML="<b>shadow</b>";r.adoptedStyleSheets=[k]</script>';
@@ -804,7 +822,9 @@ test("MP-10: CSSOM edits of sheets over 4000 rules (style element, adopted in do
   assert.equal(packet.ops.filter(op => op.op === "adopted").length, 2, "MP-10: both adopting roots are updated");
   assert(Date.now() - started < 1500, "MP-10: reported by the CSS agent, not a periodic check");
   // A rule's declaration edit (no rule count change) travels too.
-  await evaluate("document.getElementById('big').sheet.cssRules[5000].style.color='rgb(3,4,5)';true");
+  // Begin the credit after the native page has painted the declaration change.
+  // The CSS agent coalesces notifications after the evaluating task returns.
+  await evaluate("document.getElementById('big').sheet.cssRules[5000].style.color='rgb(3,4,5)';new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))");
   const edited = await next(2000);
   assert.match(JSON.stringify(edited.ops) + JSON.stringify(edited.sheets ?? {}), /rgb\(3, 4, 5\)/);
 }));
@@ -882,7 +902,8 @@ test("MP-10: a subscription whose observer instance was evicted resyncs (reset w
 }));
 
 test("MP-10: past the resource-key budget the least recently used URL mapping goes; new images keep getting keys", () => mirrored(
-  `<div id="g"></div><script>const g=document.getElementById("g");for(let i=0;i<4200;i++){const img=document.createElement("img");img.width=1;img.height=1;img.src="data:image/gif;base64,R0lGODlhAQABAAAAACw=#"+i;g.append(img)}</script>`, async ({ next }) => {
+  `<div id="g"></div><script>const g=document.getElementById("g");for(let i=0;i<4200;i++){const img=document.createElement("img");img.width=1;img.height=1;img.src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7#"+i;g.append(img)}</script>`, async ({ next, evaluate }) => {
+    assert.equal(await evaluate("[...document.images].filter(img=>img.complete&&img.naturalWidth===1).length"),4200,"the LRU fixture uses successfully decoded native images");
     const snapshot = await next(), images = snapshot.nodes.filter(row => row[2] === "img");
     assert.equal(images.length, 4200);
     assert.equal(images.filter(row => typeof row[4]?.res === "string").length, 4200, "MP-10: every image has a key");
@@ -1113,6 +1134,17 @@ test("MP-10: an inline style attribute and a <style> element keep var() shorthan
     assert(attrs.includes("border:var(--w) solid") || attrs.includes("border: var(--w) solid"), `MP-10: the style attribute keeps its shorthand: ${attrs.slice(0, 400)}`);
     assert(!/border-top-width: ;/.test(attrs), "MP-10: no empty longhand in the style attribute");
   }, {}));
+
+// MP-08/MP-10/MP-11: the real DDG breadcrumb combines a var() shorthand, longhand override and !important.
+const ddgPaddingCss=':root{--one:4px;--two:8px}.crumb{padding:var(--one) var(--two)!important;padding-left:var(--one)!important;margin-right:var(--one)!important}'+'.not-present{color:red}'.repeat(2000)
+for(const linked of [false,true])test(`MP-10: important variable shorthands survive CSSOM serialization (linked=${linked})`,()=>mirrored(
+ (linked?'<link rel="stylesheet" href="/ddg.css">':'<style>'+ddgPaddingCss+'</style>')+'<a class="crumb"><img width="16" height="16">result</a>',async({next,evaluate})=>{
+  assert.equal(await evaluate('getComputedStyle(document.querySelector("a")).paddingRight'),'8px')
+  const packets=[await next()];for(let i=0;i<5;i++)packets.push(await next(200))
+  const css=mirroredCss(packets)+'\n'+packets.flatMap(p=>Object.values(p.sheets??{})).join('\n')
+  assert(css.includes('padding:var(--one) var(--two)')||css.includes('padding: var(--one) var(--two)'), `the authored shorthand survives: ${css.slice(0,350)}`)
+  assert(!/[;{]\s*(?!--)[a-z][a-z-]*:\s*(?:!important\s*)?(?:;|})/i.test(css),'no empty important longhand travels')
+ },{'/ddg.css':{type:'text/css',body:ddgPaddingCss}}))
 
 // r61 DuckDuckGo results: result videos sit at opacity 0 (shown on hover) with no data yet. An invisible element paints
 // nothing, so it must never hand the page to video (it did, "region_transform", whenever the carousel scrolled into view).
@@ -1469,7 +1501,7 @@ test("MP-10 M2: large documents paint a bounded prefix then continue on existing
     await host.request({op:'mirror_next',subscription_id:otherMirror.subscription_id,generation:other.generation,after_sequence:0,drift_nodes:[],wait_ms:0});
     const resumed = await next();assert(resumed.ops.reduce((n,op)=>n+(op.nodes?.length??0),0)<8192,'another small document cannot change this viewer continuation budget');
     assert.equal(await evaluate('document.querySelector("h1").textContent'), 'Viewport first');
-  }));
+  }, {}, { painted: true }));
 
 test('MP-10 M2: a busy first task includes the visible viewport after a detailed header', () => mirrored(
   '<header>'+'<span>item </span>'.repeat(150)+'</header><p>Visible viewport tail</p><main>'+'<p>Later content</p>'.repeat(10001)+'</main>', async ({next,host,evaluate}) => {
@@ -1498,17 +1530,20 @@ test('MP-10 M2: continuations finish the full DOM with bounded ordinary children
 // snapshot continues. Each restart re-sent the whole head CSS (3 x 362 KB on an 8 Mbit/s link).
 test('MP-10/MP-11 M2: mutations during a continuation travel as deltas, never a restarted snapshot', () => mirrored(
   '<style>h1:not(.marker-once){color:#123456}' + '.pad{margin:1px}'.repeat(6000) + '</style><h1 class="pad">Viewport first</h1><main id="m"><p>kept</p><p id="gone">removed later</p>' + '<p>middle</p>'.repeat(10001) + '<p>Last paragraph</p></main>'
-  + '<script>let n=0;window.tick=setInterval(()=>{document.querySelector("h1").append(" t"+(n++))},15)</script>', async ({next,evaluate,host,subscription_id}) => {
+  + '<script>window.tick=0</script>', async ({next,evaluate,host,subscription_id}) => {
     const first=await next();assert(!first.fallback);assert(first.nodes.length<4096);
     const [main]=elements(first).find(([,,attrs])=>attrs.id==='m'),[gone]=elements(first).find(([,,attrs])=>attrs.id==='gone');
     // Hydration shape: script/style churn in head, a removal and an insertion under the parent being walked.
     await evaluate(`document.head.append(Object.assign(document.createElement('script'),{textContent:'1'}),Object.assign(document.createElement('style'),{textContent:'i{}'}));document.querySelector('#gone').remove();document.querySelector('#m').append(Object.assign(document.createElement('section'),{textContent:'Appended paragraph'}));true`);
     const seen=new Set(first.nodes.map((_,i,rows)=>rows.slice(0,i+1).reduce((n,row)=>n+row[0],0)));
+    const firstWireBytes=next.wireBytes;let wireBytes=firstWireBytes;
     let bytes=JSON.stringify(first).length,tail=false,appended=false,mainKids=null,ticks=false;
+    const byteParts={first:bytes,ops:0,resources:0,sheets:0,packets:0,children:0};
     const marker=JSON.stringify(first).split('marker-once').length-1;assert.equal(marker,1,'the head CSS is in the first packet');
     for(let n=0;n<300&&!(tail&&appended&&mainKids&&!mainKids.includes(gone)&&ticks);n++){
+      await evaluate('document.querySelector("h1").append(" t"+(window.tick++));true');
       const packet=await next(200);assert.notEqual(packet.reset,true,'a mutation never restarts the snapshot');assert(!packet.fallback);
-      const json=JSON.stringify(packet);bytes+=json.length;assert(!json.includes('marker-once'),'the head CSS crosses once');
+      const json=JSON.stringify(packet);bytes+=json.length;wireBytes+=next.wireBytes;byteParts.packets++;for(const key of ['ops','resources','sheets'])byteParts[key]+=JSON.stringify(packet[key]??[]).length;byteParts.children+=packet.ops.reduce((sum,op)=>sum+(op.children?.length??0),0);assert(!json.includes('marker-once'),'the head CSS crosses once');
       for(const op of packet.ops){
         if(op.op!=='children')continue;
         let id=0;for(const row of op.nodes){id+=row[0];assert(!seen.has(id),'a node is introduced once');seen.add(id);tail||=row[2]===0&&row[3]==='Last paragraph';appended||=row[2]===0&&row[3]==='Appended paragraph';ticks||=row[2]===0&&/^ t\d+$/.test(row[3]);}
@@ -1517,8 +1552,9 @@ test('MP-10/MP-11 M2: mutations during a continuation travel as deltas, never a 
     }
     assert(tail,'the continuation reaches the last paragraph');assert(appended,'an insertion under the walked parent arrives');assert(ticks,'changes to finished nodes arrive while it continues');
     assert(mainKids&&!mainKids.includes(gone),'a child removed from the walked parent leaves the viewer');
-    assert(bytes<2*JSON.stringify(first).length+1024*1024,`bounded total bytes: ${bytes}`);
-    await evaluate('clearInterval(window.tick);true');
+    // Adaptive chunks repeat reconstructed child lists; that is not their deflated transport cost.
+    assert(wireBytes<2*firstWireBytes+1024*1024,`bounded mirror wire bytes: ${wireBytes}; raw ${bytes}; ${JSON.stringify(byteParts)}`);
+    // Mutations are driven per credit, independent of a loaded builder's clock.
     const world=host.mirror.streams.get(subscription_id).world;
     for(let n=0;n<20&&await host.mirror.v2.evaluate(world,`${world.ref}.pending()`);n++)await next(100);
     assert.equal(await host.mirror.v2.evaluate(world,`${world.ref}.pending()`),false,'the continuation settles');
@@ -1527,8 +1563,9 @@ test('MP-10/MP-11 M2: mutations during a continuation travel as deltas, never a 
 test('MP-10 M2: more than 100000 records on nodes the continuation has not reached do not restart it', () => mirrored(
   '<h1>Viewport first</h1><main>' + '<p>middle</p>'.repeat(10001) + '<p>Last paragraph</p></main>', async ({next,evaluate,host,subscription_id}) => {
     const first=await next();assert(!first.fallback);
-    // A parsing or hydrating document: 110011 records, almost all about nodes not yet sent.
-    await evaluate(`const ps=[...document.querySelectorAll('main p')];for(let i=0;i<11;i++)for(const p of ps)p.append('.');true`);
+    // A parsing or hydrating document: 110011 character-data records, almost all about nodes not yet sent.
+    const mutations=await evaluate(`const ps=[...document.querySelectorAll('main p')].slice(0,-1);let count=0;for(let i=0;i<11;i++)for(const p of ps){p.firstChild.appendData('.');count++}count`);
+    assert.equal(mutations,110011,'the record burst keeps the document size and final marker fixed');
     let tail=false;
     for(let n=0;n<200&&!tail;n++){const packet=await next(200);assert.notEqual(packet.reset,true,'no overflow restart');for(const op of packet.ops)if(op.op==='children')tail||=op.nodes.some(row=>row[2]===0&&row[3]==='Last paragraph');}
     assert(tail,'the continuation reaches the last paragraph');
@@ -1870,6 +1907,66 @@ test("protocol 560/168: a credit whose page size changed while it was observed p
     assert.match(JSON.stringify(next), /changed/, "the changed text reaches the viewer");
   }));
 
+// MP-08/MP-10/MP-11: CNN can put more than 1 MiB in one sanitized sheet.
+test("MP-10: a large stylesheet uses the existing bounded record transport", () => mirrored(
+  '<style>' + Array.from({length:36000}, (_, i) => `p{--i:${i};color:rgb(1,2,3)}`).join('') + '</style><p>Public article</p>', async ({next}) => {
+    const packet = await next();
+    assert.equal(packet.fallback, undefined);
+    assert(Object.values(packet.sheets ?? {}).some(css => css.length > 1024 * 1024));
+  }));
+
+// MP-08/MP-10/MP-11: public pages often leave an advertising/image request pending after parsing.
+test("MP-10: a parsed short page completes its snapshot while a subresource is pending", async () => {
+  const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "mirror2-parsed-"));
+  const server = createServer((request, response) => {
+    if (request.url === '/pending') return; // closed with this test's server, never left behind
+    response.setHeader('Content-Type', 'text/html'); response.end('<!doctype html><h1>Public page</h1><img src="/pending">');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const host = new KernelBrowserHost(root);
+  try {
+    const opened = await host.request({ op: 'open', url: `http://127.0.0.1:${server.address().port}/` });
+    const { connection, sessionId } = await host.browser.resolvePageTarget(host.tabs.get(opened.tab_id).target_id);
+    let ready;
+    for (let i = 0; i < 100; i++) {
+      ready = (await connection.send('Runtime.evaluate', { expression: 'document.readyState', returnByValue: true }, sessionId)).result.value;
+      if (ready === 'interactive') break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(ready, 'interactive');
+    const { subscription_id } = await host.request({ op: 'mirror_subscribe', tab_id: opened.tab_id, generation: opened.generation, wire: 2, device_scale_factor: 1 });
+    const packet = await host.request({ op: 'mirror_next', subscription_id, generation: opened.generation, after_sequence: 0, drift_nodes: [], wait_ms: 0 });
+    const body = packet.encoding === 'deflate' ? JSON.parse(inflateRawSync(Buffer.from(packet.packet_base64, 'base64'), { finishFlush: zlib.Z_SYNC_FLUSH })) : packet;
+    assert.equal(body.snapshot_complete, true, 'all parsed DOM is serialized; a pending image must not pin native video');
+  } finally {
+    await host.stop(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await rm(root, { recursive: true, force: true });
+  }
+});
+
+// MP-08/MP-10/MP-11: a deferred valid image may use a sized placeholder; an image the native page cannot decode keeps its native broken-image layout.
+test('MP-10: an already broken native image has no deferred resource placeholder', () => mirrored(
+  '<img id="photo" width="728" height="90" alt="Unavailable" src="/broken.png">', async ({next,evaluate}) => {
+    assert.deepEqual(await evaluate('(()=>{const i=document.querySelector("img");return [i.complete,i.naturalWidth]})()'),[true,0]);
+    const first=await next(), row=first.nodes.find(r=>r[2]==='img');assert(row);
+    assert.equal(row[4]?.res,undefined,'a native broken image must keep its alt text and broken-image intrinsic sizing');
+  }, {'/broken.png':{type:'image/png',body:'not an image'}}));
+test('MP-10: a native image decode failure retires its former resource key', () => mirrored(
+  '<img id="photo" width="728" height="90" src="/good.svg">', async ({next,evaluate}) => {
+    const first=await next(), row=first.nodes.find(r=>r[2]==='img');assert(row?.[4]?.res);
+    await evaluate('new Promise(resolve=>{const i=document.querySelector("img");i.onerror=()=>resolve(true);i.src="/broken.png"})');
+    const packet=await next(500);assert(packet.ops.some(op=>op.op==='res'&&op.res===null),'native error clears the deferred image resource');
+  }, {'/good.svg':{type:'image/svg+xml',body:svg('#123456')},'/broken.png':{type:'image/png',body:'not an image'}}));
+
+for(const edge of [8,360])test(`MP-08/MP-10 an oversized frame reveals the clicked point near ${edge}`,()=>mirrored(
+ '<div id="pane" style="position:absolute;left:20px;top:50px;width:300px;height:100px;overflow:auto"><div style="height:300px"></div><iframe src="http://localhost:PORT/edge" style="width:200px;height:400px;border:0"></iframe></div><script>window.childHits=0;addEventListener("message",e=>{if(e.data==="child-hit")childHits++})</script>',async({next,input,evaluate})=>{
+ await new Promise(resolve=>setTimeout(resolve,500));const packet=await next(600),[id]=elements(packet).find(([id,tag,attrs])=>tag==='button'&&attrs.id==='edge'&&Number(id.slice(1))>=1e9)??[];assert(id)
+ await input(packet.sequence,{kind:'click',node_id:id,x:5,y:5});assert.equal(await evaluate('childHits'),1,'the intended point inside the child frame receives the real click')
+ },{'/edge':{type:'text/html',body:`<!doctype html><style>body{margin:0}</style><button id="edge" style="position:absolute;top:${edge}px;width:80px;height:30px" onclick="parent.postMessage('child-hit','*')">edge</button>`}}))
+
+test('MP-08/MP-10 an oversized page reveals the clicked background point',()=>mirrored(
+ '<style>body{margin:0;height:4000px}</style><script>window.hits=0;addEventListener("click",()=>hits++)</script>',async({next,input,evaluate})=>{
+ const packet=await next(),[body]=elements(packet).find(([,tag])=>tag==='body');await evaluate('scrollTo(0,2200)');await input(packet.sequence,{kind:'click',node_id:body,x:100,y:100});assert.equal(await evaluate('hits'),1);assert(await evaluate('scrollY')<800)
+ }))
 test('MP-08/MP-10/MP-11: typing already sent survives a same-document mirror reset', () => mirrored(
   '<input id="q" autofocus onkeydown="if(event.key===\'Enter\')window.submitted=this.value"><p id="status">ready</p>',
   async ({ next, input, evaluate }) => {

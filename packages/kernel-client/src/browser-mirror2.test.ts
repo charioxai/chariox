@@ -736,8 +736,24 @@ test('MP-08/MP-10/MP-11 native font requirements are bounded and target a known 
  const hashes=Array.from({length:129},(_,i)=>i.toString(16).padStart(64,'0'))
  for(const required of [null,[],hashes.slice(0,128)])validateMirror2Packet(base(nodes,{ops:[{op:'fonts',id:'n1',required}]}),new Map())
  for(const required of [undefined,'x',[hashes[0],hashes[0]],hashes,['invalid']])assert.throws(()=>validateMirror2Packet(base(nodes,{ops:[{op:'fonts',id:'n1',required}]}as any),new Map()),/unsafe mirror fonts/)
- for(const id of ['n2','n99'])assert.throws(()=>validateMirror2Packet(base(nodes,{ops:[{op:'fonts',id,required:[]}]}),new Map()),/unsafe mirror fonts/)
+ for(const id of ['n2'])assert.throws(()=>validateMirror2Packet(base(nodes,{ops:[{op:'fonts',id,required:[]}]}),new Map()),/unsafe mirror fonts/)
  assert.throws(()=>validateMirror2Packet(base(nodes,{ops:[{op:'fonts',id:'n1',required:[],family:'unexpected'}]}as any),new Map()),/unsafe mirror fonts/)
  validateMirror2Packet(base(nodes,{ops:[{op:'fonts',id:'n1',required:[],absent:['-apple-system','segoe ui']}]}),new Map())
  for(const absent of ['x',[1],['a"b'],['a\\b'],['a{b'],[''],['x'.repeat(129)],['a','a'],Array.from({length:65},(_,i)=>`f${i}`)])assert.throws(()=>validateMirror2Packet(base(nodes,{ops:[{op:'fonts',id:'n1',required:[],absent}]}as any),new Map()),/unsafe mirror fonts/)
+})
+
+// MP-08/MP-10/MP-11: a departed child document is recoverable tree divergence; the next credit must reset it.
+test('a late font update for a departed document requests resynchronization',()=>{
+ const nodes:Mirror2Record[]=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'p'}]
+ assert.throws(()=>validateMirror2Packet(base(nodes,{ops:[{op:'fonts',id:'n99',required:[]}]}),new Map()),/mirror lost base/)
+ assert.throws(()=>validateMirror2Packet(base(nodes,{ops:[{op:'fonts',id:'n2',required:[]}]}),new Map()),/unsafe mirror fonts/)
+ assert.throws(()=>validateMirror2Packet(base(nodes,{ops:[{op:'fonts',id:'n99',required:['invalid']}]}),new Map()),/unsafe mirror fonts/)
+})
+
+// MP-08/MP-10/MP-11: reject a late text delta, then use the existing reset path.
+test('a text delta whose target changed kind is a recoverable lost base',()=>{
+ const known=new Map<string,Mirror2Record>([['n2',{id:'n2',parent:'n1',kind:'element',tag:'span'}]])
+ const packet=base(tree(),{reset:false,base_sequence:1,sequence:2,ops:[{op:'text',id:'n2',text:'public caption'}]})
+ assert.throws(()=>validateMirror2Packet(packet,known),/mirror lost base/)
+ assert.throws(()=>validateMirror2Packet({...packet,ops:[{op:'text',id:'n2',text:17}]} as unknown as Mirror2Packet,known),/unsafe mirror op/)
 })

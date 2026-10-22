@@ -106,3 +106,13 @@ test('MP-08/MP-10 a font-only credit does not consume the image retry that a new
  await mirror.materialize({ref:'m'},stream,null,5);
  assert.deepEqual(due.flat().filter(key=>key==='r1'),[],'and only once per count');
 });
+
+// MP-08/MP-10/MP-11: real public pages keep supplying images while cookie controls become visible.
+test('full stylesheets cannot starve behind a continuing image stream',async()=>{
+ const {mirror,stream,command}=page(true);const image={key:'r1',resource_id:'b'.repeat(64),mime_type:'image/png',data_base64:'AAAA'};mirror.materialize=async()=>[image];
+ await mirror.packet(stream,command,'scope');
+ stream.deferredSheets=[{op:'css',id:'n9',css:'.consent{position:fixed;bottom:0}'}];stream.deferredAt=Date.now()-2000;
+ const packet=await mirror.packet(stream,{...command,after_sequence:1},'scope',undefined,Date.now());
+ assert(packet.ops?.some(op=>op.op==='css'&&op.id==='n9'),'a due full stylesheet must travel even while image bytes continue');
+ assert.deepEqual(packet.resources,[image]);
+})

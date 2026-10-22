@@ -987,7 +987,7 @@ export class KernelBrowserHost {
       catch (error) {
         if (dispatched) markDispatched(error);
         // A busy renderer that is only late to acknowledge a CDP press/release (both already queued in order) leaves nothing held: it must not take the browser down.
-        if ((dispatched && !lateInputAck(error) || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) && this.isBrowserLive(browserAtStart)) {
+        if (dispatched && !lateInputAck(error) && this.isBrowserLive(browserAtStart)) {
           // Clear any dispatched key/button state before another actor can use
           // the browser. Recovery rotates generation; cancelled input never replays.
           await this.stop();
@@ -1179,10 +1179,14 @@ export class KernelBrowserHost {
       }
       if (error instanceof UserDomainRefusal || error instanceof CaptureRefusal) return {id:request.id,ok:false,error:{code:error.code,message:error.message}};
       if (isTrustedStaleReferenceError(error)) return {id:request.id,ok:false,error:{code:"user_domain_stale_reference",message:"User-domain request refused"}};
+      // MP-08/MP-10/MP-11: an input refused before dispatch holds no keys/buttons.
+      // Keep its browser and tabs alive; a dispatched action still takes the cleanup path.
       // A cancelled request that may have dispatched input stops the browser (no held keys/buttons). A
       // cancelled read-only observation (a viewer's credit on a huge page) must not stop every Tab (MP-08/MP-10).
       if (error?.code === "browser_action_cancelled" && request.method !== "host.computer" && !request.params?.display_subscription_id
-        && this.browser === browserAtEntry && !(request.method === "host.browser" && OBSERVATION_OPS.has(request.params?.op))) await this.stop();
+        && this.browser === browserAtEntry
+        && !(request.method === "host.browser" && request.params?.op === "input" && error.afterDispatch !== true)
+        && !(request.method === "host.browser" && OBSERVATION_OPS.has(request.params?.op))) await this.stop();
       if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }

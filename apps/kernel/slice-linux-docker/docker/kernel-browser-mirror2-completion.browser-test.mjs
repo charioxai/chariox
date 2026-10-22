@@ -185,3 +185,23 @@ test('MP-08/MP-10/MP-11 a font stack that changes after completion reports its a
     assert.deepEqual(absent, ['chariox late one', 'chariox late two']);
   } finally { await browser.close(); }
 });
+
+// MP-08/MP-10/MP-11: CSSOM updates bypass MutationObserver; the CDP sheet-change bridge must refresh stacks too.
+for (const adopted of [false, true]) test(`MP-10 absent families follow stylesheet-only edits (adopted=${adopted})`, async () => {
+  const browser = await launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<style>p{font-family:system-ui}</style><p>Native fallback</p>');
+    if (adopted) await page.evaluate(() => { const sheet = new CSSStyleSheet(); sheet.replaceSync('p{font-family:system-ui}'); document.adoptedStyleSheets = [sheet]; });
+    await install(page);
+    assert(!(await page.evaluate(() => window.observer.snapshot())).ops.find(op => op.op === 'fonts').absent);
+    await page.evaluate(adopted => {
+      if (adopted) document.adoptedStyleSheets[0].replaceSync('p{font-family:"chariox css-only absent",system-ui}');
+      else document.styleSheets[0].cssRules[0].style.fontFamily = '"chariox css-only absent",system-ui';
+      window.observer.sheetChanged(adopted ? 'adopted' : document.querySelector('style'));
+    }, adopted);
+    let absent;
+    for (let n = 0; n < 4 && !absent; n++) absent = (await page.evaluate(() => window.observer.waitDrain(700))).ops.find(op => op.op === 'fonts' && op.absent)?.absent;
+    assert.deepEqual(absent, ['chariox css-only absent']);
+  } finally { await browser.close(); }
+});

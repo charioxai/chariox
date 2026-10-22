@@ -884,6 +884,29 @@ test('MP-08/MP-10/MP-11 the credit after an expired one builds only once the aba
  assert.ok(events.indexOf('abandoned settled') >= 0 && events.indexOf('abandoned settled') < (events.indexOf('snapshot') < 0 ? Infinity : events.indexOf('snapshot')), 'abandoned build settled first');
 });
 
+// MP-08/MP-10/MP-11: NBC's completed snapshot exceeded one credit when
+// independent root-sheet and child-frame reads waited serially.
+for (const failSheet of [false, true]) test(`MP-08/MP-10/MP-11 snapshot projections start together and settle together (${failSheet})`, async () => {
+ const { mirror, stream } = busyFixture();
+ const started = []; let releaseSheets, releaseFrames, settled = false;
+ const sheets = new Promise((resolve, reject) => { releaseSheets = () => failSheet ? reject(Object.assign(Error('sheet timeout'), { code: 'browser_cdp_timeout' })) : resolve([]); });
+ const frames = new Promise(resolve => { releaseFrames = () => resolve({ records: [], ops: [], opaque: [] }); });
+ mirror.evaluate = async (_, expression) => expression === 'm.snapshot()' ? SNAPSHOT : { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0] };
+ mirror.sheetOps = () => { started.push('sheets'); return sheets; };
+ mirror.frames.attach = () => { started.push('frames'); return frames; };
+ const pending = mirror.packet(stream, { subscription_id: 's', generation: 1, after_sequence: 0 }, 'scope', undefined, Date.now(), stream.hurry);
+ pending.then(() => { settled = true; }, () => { settled = true; });
+ try {
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(started, ['sheets', 'frames'], 'neither independent projection waits for the other');
+  releaseSheets(); await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(settled, false, 'a rejected read cannot leave its sibling mutating after the build retires');
+  releaseFrames();
+  if (failSheet) await assert.rejects(pending, error => error.code === 'browser_cdp_timeout');
+  else assert.equal((await pending).reset, true);
+ } finally { releaseSheets(); releaseFrames(); await pending.catch(() => {}); }
+});
+
 test('MP-08/MP-10/MP-11 a credit that answers in time is not touched by the deadline', async () => {
  const { mirror, stream } = busyFixture();
  mirror.busyMs = 30; mirror.creditSlackMs = 20;

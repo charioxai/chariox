@@ -4,7 +4,32 @@
 // attributes travel instead of a computed-style dump. Page code never sees
 // this object; raw mutation records, URLs and unsanitized values stay here.
 import { nativeFontRequirements, nativeAbsentFonts } from './kernel-browser-mirror2-fonts.mjs';
-export const mirror2ObserverExpression = () => `(${installMirror2.toString()})(${sanitizeMirrorCss.toString()},${nativeFontRequirements.toString()},${nativeAbsentFonts.toString()})`;
+// Reveal the requested point through scrolling panes and enclosing same-origin frames.
+// Moving the whole element to the centre loses points near the ends of a large element.
+export function revealMirrorPoint(node, locate, top, frameStep) {
+  for (let view = node.ownerDocument.defaultView; ; view = view.parent) {
+    let fixed = view.getComputedStyle(node).position === 'fixed';
+    for (let el = node.parentElement ?? node.getRootNode()?.host; el; el = el.parentElement ?? el.getRootNode()?.host) {
+      const style = view.getComputedStyle(el);
+      if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
+        const r = el.getBoundingClientRect(), sx = el.offsetWidth > 0 && r.width > 0 ? r.width / el.offsetWidth : 1, sy = el.offsetHeight > 0 && r.height > 0 ? r.height / el.offsetHeight : 1;
+        const left = r.x + el.clientLeft * sx, right = left + el.clientWidth * sx, y = r.y + el.clientTop * sy, bottom = y + el.clientHeight * sy;
+        const [px, py] = locate();
+        el.scrollBy({ left: style.overflowX !== 'visible' && (px < left || px >= right) ? (px - (left + right) / 2) / sx : 0,
+          top: style.overflowY !== 'visible' && (py < y || py >= bottom) ? (py - (y + bottom) / 2) / sy : 0, behavior: 'instant' });
+      }
+      if (style.position === 'fixed') { fixed = true; break; }
+    }
+    const [x, y] = locate();
+    if (!fixed) view.scrollBy({ left: x < 0 || x >= view.innerWidth ? x - view.innerWidth / 2 : 0, top: y < 0 || y >= view.innerHeight ? y - view.innerHeight / 2 : 0, behavior: 'instant' });
+    if (view === top) return [top.scrollX, top.scrollY];
+    const owner = view.frameElement, childPoint = locate;
+    if (!owner) throw new Error('mirror2 frame unavailable');
+    locate = () => { const step = frameStep(owner), [x, y] = childPoint(); return [step.x + step.sx * x, step.y + step.sy * y]; };
+    node = owner;
+  }
+}
+export const mirror2ObserverExpression = () => `(${installMirror2.toString()})(${sanitizeMirrorCss.toString()},${nativeFontRequirements.toString()},${nativeAbsentFonts.toString()},${revealMirrorPoint.toString()})`;
 
 // Pure CSS sanitizer, shared verbatim with the kernel (cross-origin sheets read
 // through CDP). Every url() becomes a kernel resource key or `none`; nothing
@@ -47,7 +72,7 @@ export function sanitizeMirrorCss(text, base, resource) {
 }
 
 // The sanitizer is passed in: the isolated world has no module scope.
-export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontRequirements, absentFonts = nativeAbsentFonts) {
+export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontRequirements, absentFonts = nativeAbsentFonts, revealPoint = revealMirrorPoint) {
   if (globalThis.__charioxMirror2) return true;
   // One independent observer per subscription (viewer): its own ids, mutation
   // journal and listeners, so one viewer's snapshot never resets another's.
@@ -236,11 +261,11 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       // root's :host rules cannot be checked by a query.
       if (text.length < FIRST_PAINT_SHEET || window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9) return text;
       const used = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, resource), usedBy(root));
-      return used.length < text.length ? used : text;
+      return used.length < text.length && !LOSSY.test(used) ? used : text;
     };
     // Chrome serializes a var() shorthand that a later declaration partly overrides as empty longhands; such
     // a linked sheet is read as source text through the kernel instead of through the CSSOM.
-    const LOSSY = /[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;
+    const LOSSY = /[;{]\s*(?!--)[a-z][a-z-]*:\s*(?:!important\s*)?(?:;|})/i;
     const css = (sheet, base) => {
       const text = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, resource));
       if (!LOSSY.test(text)) return text;
@@ -297,12 +322,14 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         const stateEvent = event => { const target = event.composedPath()[0] ?? event.target; if (target?.nodeType === 1) { dirty.state.add(target); wake(); } };
         listen('toggle', stateEvent); listen('close', stateEvent); listen('selectionchange', event => { selectedDoc = event.target.nodeType === 9 ? event.target : event.target.ownerDocument; soon(); });
         listen('load', event => { const target = event.target; if (target?.localName === 'iframe') dirty.frames.add(target); else if (target?.localName === 'img') dirty.attrs.set(target, new Set(['src'])); else if (target?.localName === 'link') dirty.sheets.add(target); else return; wake(); });
+        listen('error', event => { const target = event.target; if (target?.localName !== 'img') return; dirty.attrs.set(target, new Set(['src'])); wake(); });
       }
     };
     let budget = { nodes: 0, bytes: 0 }, continuation = null, progressive = false, yielded = false;
     // Nodes the continuation is still walking, and those whose children changed meanwhile: diffed once it leaves them.
     const open = new Set(), deferred = new Set();
-    const spend = (bytes) => { if (bytes > 1024 * 1024) throw new Error('mirror2:byte_budget'); budget.nodes++; budget.bytes += bytes; if (budget.nodes > NODE_BUDGET) throw new Error('mirror2:node_budget'); if (budget.bytes > BYTE_BUDGET) throw new Error('mirror2:byte_budget'); };
+    // CSS and text already have a 16 MiB viewer bound; record size is independent of chunk size.
+    const spend = (bytes, limit = 1024 * 1024) => { if (bytes > limit) throw new Error('mirror2:byte_budget'); budget.nodes++; budget.bytes += bytes; if (budget.nodes > NODE_BUDGET) throw new Error('mirror2:node_budget'); if (budget.bytes > BYTE_BUDGET) throw new Error('mirror2:byte_budget'); };
     const forget = id => {
       const node = nodes.get(id);
       for (const child of kids.get(id) ?? []) forget(child);
@@ -312,6 +339,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // Mirrored form controls: property writes (value, checked, selectedIndex) make no mutation record.
     // Each option of a multiple select carries its own selectedness (selectedIndex names only the first).
     const formNodes = new Map(), imageNodes = new Map();
+    const imageKey = node => node.currentSrc && (!node.complete || node.naturalWidth > 0) ? resource(node.currentSrc, node.baseURI, 'image') : null;
     // The control shape recorded for the current serialized node identity.
     const controlShapes = new Map(), controlShape = node => node.localName === 'input' ? node.type : node.localName === 'select' ? node.multiple : undefined;
     const formControl = node => ['input', 'textarea', 'select'].includes(node.localName) || node.localName === 'option' && node.closest('select')?.multiple === true;
@@ -462,7 +490,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (type === 3) {
         if (node.parentNode?.localName === 'style') return null;
         record.kind = 'text'; record.text = node.data;
-        spend(32 + (record.text?.length ?? 0)); remember(record, node); yield record; return id;
+        spend(32 + (record.text?.length ?? 0), 16 * 1024 * 1024 + 32); remember(record, node); yield record; return id;
       }
       if (type === 9 || type === 11) {
         record.kind = type === 9 ? 'document' : 'shadow';
@@ -484,8 +512,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       else return null;
       if (secretElement(node)) { maskRecord(node, record); spend(64); remember(record, node); yield record; return id; }
       if (closedHosts.has(node)) { opaqueRecord(node, record, 'closed_shadow'); spend(64); remember(record, node); yield record; return id; }
-      if (ns === HTML && (tag === 'style' || tag === 'link')) { styleRecord(node, record); spend(64 + record.css.length); remember(record, node); yield record; return id; }
-      if (ns === SVG && tag === 'style') { styleRecord(node, record); record.ns = 'svg'; spend(64 + record.css.length); remember(record, node); yield record; return id; }
+      if (ns === HTML && (tag === 'style' || tag === 'link')) { styleRecord(node, record); spend(64 + record.css.length, 16 * 1024 * 1024 + 64); remember(record, node); yield record; return id; }
+      if (ns === SVG && tag === 'style') { styleRecord(node, record); record.ns = 'svg'; spend(64 + record.css.length, 16 * 1024 * 1024 + 64); remember(record, node); yield record; return id; }
       if (ns === SVG && tag === 'foreignObject' || ns === HTML && OPAQUE.has(tag)) { opaqueRecord(node, record, tag === 'canvas' || tag === 'video' || tag === 'audio' ? 'opaque_media' : 'opaque_plugin'); spend(64); remember(record, node); yield record; return id; }
       if (ns === HTML && !/^[a-z][a-z0-9-]*$/.test(tag)) { record.tag = 'span'; } else record.tag = tag;
       if (ns === SVG) record.ns = 'svg'; else if (ns === MATH) record.ns = 'math';
@@ -500,7 +528,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if (!mirrored(nested)) { open.add(id); try { yield* serializeTree(nested, id, depth + 1); } finally { open.delete(id); } }
         return id;
       }
-      if (ns === HTML && tag === 'img' && node.currentSrc) { const key = resource(node.currentSrc, base, 'image'); if (key) { record.res = key; resOf.set(id, key); } }
+      if (ns === HTML && tag === 'img') { const key = imageKey(node); if (key) { record.res = key; resOf.set(id, key); } }
       if (ns === SVG && (tag === 'image' || tag === 'use')) { const key = tag === 'image' ? svgImageKey(node) : spriteKey(node); if (key) { record.res = key; resOf.set(id, key); } }
       if (ns === HTML && formControl(node)) record.form = formRecord(node);
       if (stateful(node)) stateRecord(node, record);
@@ -604,7 +632,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     };
     const fontsChanged = () => [...roots].some(([id, root]) => root.nodeType === 9 && reportedRequirements.get(id) !== JSON.stringify(fontRequirements(root, fontDescriptor, sha256)));
     let reported = '', reportedComplete = false;
-    const complete = () => continuation === null && document.readyState === 'complete';
+    // Completion certifies the serialized DOM, not that every advertising/image request fired load.
+    const complete = () => continuation === null && document.readyState !== 'loading';
     const header = () => {
       const { focused, selection, range } = focusState(); reported = JSON.stringify([focused, selection, range]);
       reportedComplete = complete(); const font_failures = fontFailures(); reportedFonts = JSON.stringify(font_failures);
@@ -638,7 +667,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const svgImageKey = node => { const href = node.getAttribute('href') ?? node.getAttribute('xlink:href'); return href && !href.startsWith('#') ? resource(href, node.baseURI, 'image') : null; };
     // Protocol 501: `<use href="sprite.svg#icon">` names a symbol in another document (no fragment: nothing).
     const spriteKey = node => { const href = node.getAttribute('href') ?? node.getAttribute('xlink:href'), hash = href?.indexOf('#') ?? -1; return hash > 0 ? resource(href.slice(0, hash), node.baseURI, 'sprite') : null; };
-    const imageOp = (node, id, ops, key = node.currentSrc ? resource(node.currentSrc, node.baseURI, 'image') : null) => { if ((key ?? null) === (resOf.get(id) ?? null)) return; if (key) resOf.set(id, key); else resOf.delete(id); ops.push({ op: 'res', id, res: key }); };
+    const imageOp = (node, id, ops, key = imageKey(node)) => { if ((key ?? null) === (resOf.get(id) ?? null)) return; if (key) resOf.set(id, key); else resOf.delete(id); ops.push({ op: 'res', id, res: key }); };
     // Morph (keystroke/typeahead bytes): a page that rebuilds a subtree with the
     // same shape (innerHTML of a suggestion list) keeps the viewer's nodes. A new
     // node of the same kind takes over a removed node's id; only attribute, text
@@ -995,9 +1024,14 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     };
     // The viewer is scrolled ahead of the native page: bring the node into the native viewport and say where the page now is.
     const reveal = request => {
-      const node = live(request.node_id); if (node.nodeType !== 1) throw new Error('mirror2 element required');
-      node.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-      return [scrollX, scrollY];
+      let node = live(request.node_id); if (node.nodeType !== 1) throw new Error('mirror2 element required');
+      let [bx, by, width, height] = box(node), moved = false;
+      for (let up = 0; !(width > 0 && height > 0) && node.parentElement && up < 32; up++) { node = node.parentElement; [bx, by, width, height] = box(node); moved = true; }
+      const target = node, ox = !moved && Number.isFinite(request.x) ? Math.min(Math.max(request.x, 0.5), width - 0.5) : width / 2;
+      const oy = !moved && Number.isFinite(request.y) ? Math.min(Math.max(request.y, 0.5), height - 0.5) : height / 2;
+      const locate = request.frame_point ? () => { const step = frameStep(target); return [step.x + step.sx * request.frame_point[0], step.y + step.sy * request.frame_point[1]]; }
+        : () => { const [x, y] = box(target); return [x + ox, y + oy]; };
+      return revealPoint(target, locate, window, frameStep);
     };
     // Re-validates at dispatch time: nothing protected is at the point now.
     const hitCheck = (pt, id) => {
@@ -1118,6 +1152,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       return { mirrored: mirroredText, total };
     };
     const sheetChanged = owner => {
+      stacksDirty = true; armStacks();
       if (owner === 'adopted') adoptedDirty = true;
       else if (owner === 'imports') { for (const entry of styleNodes.values()) if (entry.imports) dirty.sheets.add(entry.node); }
       else { const id = owner && mirrored(owner); if (id && styleNodes.has(id)) dirty.sheets.add(owner); }
