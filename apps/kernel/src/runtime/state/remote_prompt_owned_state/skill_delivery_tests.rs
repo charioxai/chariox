@@ -1673,22 +1673,18 @@ async fn claude_hook_delivery_receipt_records_the_local_run_load_once() {
     assert_eq!(loads[0].run_id, "local-claude-run");
 }
 
-// A lease whose worker run is open keeps resolving typed `$name` from the view the home pushed
-// last, so a published catalog change has to reach it without waiting for a home turn.
+// A native composer outlives the typed turns that clear its binding's active run id, so a
+// published catalog change has to reach every lease, not only those with a running turn.
 #[tokio::test]
-async fn catalog_changes_refresh_only_leases_with_an_open_worker_run() {
+async fn catalog_changes_refresh_the_view_of_every_lease() {
     let (runtime, _session_id, agent_id, _attachment, _binding) =
         super::tests::mp11_fixture(crate::DaemonConfig::for_tests()).await;
-    runtime
-        .owned
-        .agent_store
-        .set_remote_execution_active_worker_provider_run_id(&agent_id, None)
-        .unwrap();
-    assert_eq!(runtime.refresh_open_leased_native_skill_views().await, 0);
-    runtime
-        .owned
-        .agent_store
-        .set_remote_execution_active_worker_provider_run_id(&agent_id, Some("worker-run-1".into()))
-        .unwrap();
-    assert_eq!(runtime.refresh_open_leased_native_skill_views().await, 1);
+    for active in [Some("worker-run-1".to_string()), None] {
+        runtime
+            .owned
+            .agent_store
+            .set_remote_execution_active_worker_provider_run_id(&agent_id, active)
+            .unwrap();
+        assert_eq!(runtime.refresh_leased_native_skill_views().await, 1);
+    }
 }

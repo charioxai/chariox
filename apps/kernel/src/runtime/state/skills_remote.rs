@@ -245,19 +245,17 @@ impl KernelRuntimeState {
     }
 
     /// A native composer resolves typed `$name` from the view the home pushed last.
-    /// After a published catalog change every lease with an open worker run gets the
-    /// new view, so a skill set Off or installed since is honoured at once instead of
-    /// at the next home turn. A worker that cannot be reached is logged and skipped;
-    /// its next dispatched turn carries the view again. Returns how many were tried.
-    pub(super) async fn refresh_open_leased_native_skill_views(&self) -> usize {
+    /// After a published catalog change every lease gets the new view, so a skill set
+    /// Off or installed since is honoured at once instead of at the next home turn.
+    /// The home does not know which worker composers are open (a binding's active run
+    /// id is cleared when a typed turn completes while the composer stays), so every
+    /// lease is tried: a worker that cannot be reached is logged and skipped, and its
+    /// next dispatched turn carries the view again. Returns how many were tried.
+    pub(super) async fn refresh_leased_native_skill_views(&self) -> usize {
         let config = self.owned.config_projection.snapshot();
         let mut attempted = 0;
         for agent in self.owned.agent_store.list_agents() {
-            let Some(remote) = agent
-                .remote_execution()
-                .filter(|remote| remote.active_worker_provider_run_id.is_some())
-                .cloned()
-            else {
+            let Some(remote) = agent.remote_execution().cloned() else {
                 continue;
             };
             let mut relay_config = config.clone();

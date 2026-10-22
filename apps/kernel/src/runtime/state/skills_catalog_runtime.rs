@@ -102,7 +102,7 @@ impl KernelRuntimeState {
         ) {
             let state = self.clone();
             tokio::spawn(async move {
-                state.refresh_open_leased_native_skill_views().await;
+                state.refresh_leased_native_skill_views().await;
             });
         }
         response
