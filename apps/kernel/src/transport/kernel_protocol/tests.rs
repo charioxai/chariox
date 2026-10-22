@@ -1138,3 +1138,22 @@ fn env_ux01_unrelated_transport_failures_remain_retryable() {
     };
     assert!(super::map_kernel_error(&error).retryable);
 }
+
+// MP-08 / MP-10 / MP-11: paging metadata changes without a visible-row change.
+#[test]
+fn waiting_room_row_updates_keep_the_full_catalog_count_and_cursor_current() {
+    let initial = waiting_room_snapshot("inventory-a", vec![session_summary("session-a", 1)]);
+    let mut wire = serde_json::to_value(initial).unwrap();
+    wire["sessions_total"] = serde_json::json!(10_100);
+    wire["sessions_next_cursor"] = serde_json::json!("page-a");
+    let previous = serde_json::from_value(wire.clone()).unwrap();
+    wire["inventory_version"] = serde_json::json!("inventory-b");
+    wire["sessions_total"] = serde_json::json!(10_101);
+    wire["sessions_next_cursor"] = serde_json::json!("page-b");
+    let current = serde_json::from_value(wire).unwrap();
+    let event = waiting_room_rows_changed_event(current, Some(&previous))
+        .expect("catalog metadata must be pushed even when the recent rows stay the same");
+    let wire = serde_json::to_value(event).unwrap();
+    assert_eq!(wire["sessions_total"], 10_101);
+    assert_eq!(wire["sessions_next_cursor"], "page-b");
+}

@@ -1209,6 +1209,7 @@ fn waiting_room_session_pages_have_versioned_shapes_and_hash() {
     let snapshot = serde_json::json!({
         "request": request, "response": response,
         "inventory_fields": ["sessions_total", "sessions_next_cursor"],
+        "event_fields": ["sessions_total", "sessions_next_cursor"],
     });
     assert_eq!(
         snapshot["request"],
@@ -1223,6 +1224,6 @@ fn waiting_room_session_pages_have_versioned_shapes_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "3ad2bd5107288d67c66be75058261a5e04fb90dc4458183665000b0abc29e880"
+        "6e6c7820650983eb841ef1d97325bd16484a0a9e1d0692e6b56db81ef69ee842"
     );
 }

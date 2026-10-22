@@ -170,6 +170,10 @@ pub(crate) enum KernelEvent {
         inventory_version: String,
     },
     WaitingRoomRowsChanged {
+        #[serde(default)]
+        sessions_total: usize,
+        #[serde(default)]
+        sessions_next_cursor: Option<String>,
         inventory_version: String,
         structural_version: String,
         activity_revision: String,
@@ -434,6 +438,8 @@ pub(crate) fn waiting_room_rows_changed_event(
             && previous.launch_target == snapshot.launch_target
             && previous.projects == snapshot.projects
             && previous.sessions == snapshot.sessions
+            && previous.sessions_total == snapshot.sessions_total
+            && previous.sessions_next_cursor == snapshot.sessions_next_cursor
     }) {
         return None;
     }
@@ -498,6 +504,8 @@ pub(crate) fn waiting_room_rows_changed_event(
         })
         .unwrap_or_default();
     Some(KernelEvent::WaitingRoomRowsChanged {
+        sessions_total: snapshot.sessions_total,
+        sessions_next_cursor: snapshot.sessions_next_cursor,
         inventory_version: snapshot.inventory_version,
         structural_version: snapshot.structural_version,
         activity_revision: snapshot.activity_revision,

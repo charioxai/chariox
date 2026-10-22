@@ -5129,7 +5129,9 @@ sessions (fewer when the byte budget is reached), `sessions_total`, and an optio
 `sessions_next_cursor`. A client opens the full session list by sending
 `ListWaitingRoomSessions { cursor, limit }`; `WaitingRoomSessionsListed { page }`
 returns `sessions`, `total`, and `next_cursor`. Limits default to 500 and clamp to
-1–500. Cursors order by last-used time and session id, so equal timestamps do not
+1–500. Row updates also carry the current count and cursor, including metadata-only
+changes while the visible recent rows stay the same. Cursors order by last-used
+time and session id, so equal timestamps do not
 skip or repeat rows. New activity may move a row into the recent inventory;
 clients merge by session id. Each snapshot/page stays below 2 MiB of JSON, leaving
 room for the encrypted/base64 relay envelope within 4 MiB. Oversized metadata or
