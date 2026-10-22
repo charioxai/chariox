@@ -1549,58 +1549,101 @@ mod tests {
         (runtime, task, prompt, binding)
     }
 
-    // MP-08 / MP-10 / MP-11 A12: a leased provider run that died mid-turn leaves its partial output
-    // unanswered, so the goal ends Blocked for the owner instead of Done.
+    // MP-08 / MP-10 / MP-11: exercise the wire projection before task settlement.
     #[tokio::test]
-    async fn leased_turn_whose_provider_run_failed_blocks_its_goal_instead_of_finishing() {
-        use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+    async fn leased_failed_projection_cancels_an_ordinary_task_with_failure_reason() {
+        assert_leased_failed_projection_ends_task(false).await;
+    }
+
+    #[tokio::test]
+    async fn leased_failed_projection_blocks_a_goal_without_assessing_partial_output() {
+        assert_leased_failed_projection_ends_task(true).await;
+    }
+
+    async fn assert_leased_failed_projection_ends_task(goal: bool) {
+        use crate::durable_state::agent_lifecycle::{completion, ExecutionState, Operation};
+        use crate::transport::relay_peer::{RelayPeerEvent, RelayProjectedCompletion};
         let (runtime, session, agent, attachment, binding) =
             mp11_fixture(crate::DaemonConfig::for_tests()).await;
         let mut config = runtime.owned.config_projection.snapshot();
         config.room_agent_tools = true;
         runtime.owned.config_projection.update(config);
+        let prompt = mp11_submit(&runtime, &session, &agent, &attachment, "p");
         let store = &runtime.owned.durable_state_store;
+        let run = crate::provider::projected_leased_provider_run_id(
+            &binding.leased_agent_id,
+            "worker-run-1",
+        );
+        let now = crate::session::unix_epoch_ms();
         store
             .agent_lifecycle(Operation::Begin {
                 owner: "owner".into(),
                 room: session.clone(),
                 agent: agent.clone(),
-                prompt: "p".into(),
-                run: Some("run".into()),
-                now: 1,
+                prompt: prompt.id().into(),
+                run: Some(run),
+                now,
             })
             .unwrap();
-        store
-            .agent_lifecycle(Operation::StartGoal {
-                task: "p".into(),
-                owner: "owner".into(),
-                objective: "Review the repository".into(),
-                minutes: 1,
-                now: 1,
-            })
-            .unwrap();
-        let completed = crate::session::PromptQueueItem::new(
-            "p",
-            &attachment,
-            &agent,
-            "Review the repository",
-            crate::session::PromptStatus::Completed,
-        );
+        if goal {
+            store
+                .agent_lifecycle(Operation::StartGoal {
+                    task: prompt.id().into(),
+                    owner: "owner".into(),
+                    objective: "Review the repository".into(),
+                    minutes: 1,
+                    now,
+                })
+                .unwrap();
+        }
         runtime
-            .settle_leased_agent_task(
-                &session,
-                &agent,
-                &completed,
-                &binding.leased_agent_id,
-                "worker-run-1",
-                Some("provider process was killed"),
+            .project_relay_remote_runtime_projection(
+                crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
+                RelayPeerEvent::LeasedRuntimeProjection {
+                    home_session_id: session.clone(),
+                    home_agent_id: agent.clone(),
+                    provider_run_id: "worker-run-1".into(),
+                    provider_run: None,
+                    prompts: Vec::new(),
+                    output_chunks: vec![crate::transport::relay_peer::RelayProjectedOutputChunk {
+                        kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                        merge_key: Some("partial-answer".into()),
+                        bytes: b"Partial repository review, not a completed result.".to_vec(),
+                    }],
+                    notices: Vec::new(),
+                    completions: vec![RelayProjectedCompletion {
+                        message_id: "partial-answer".into(),
+                        completed_at_ms: now,
+                        home_prompt_id: Some(prompt.id().into()),
+                        provider_termination: Some(
+                            crate::provider::ProviderRunTermination::signal("SIGKILL", now),
+                        ),
+                    }],
+                },
             )
-            .await;
-        let task = store.agent_tasks(None, None).unwrap().remove(0);
-        assert_eq!(task.state, ExecutionState::Blocked);
-        assert!(task
-            .reason
-            .contains("Provider run failed: provider process was killed"));
+            .await
+            .unwrap();
+        let task = store
+            .agent_tasks(Some(&session), Some(&agent))
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            task.state,
+            if goal {
+                ExecutionState::Blocked
+            } else {
+                ExecutionState::Cancelled
+            }
+        );
+        assert!(
+            task.reason.contains("Provider run failed:"),
+            "{}",
+            task.reason
+        );
+        assert!(
+            completion::evaluation(&task).is_none(),
+            "a failed run must not assess partial output"
+        );
     }
 
     // MP-08 / MP-10 / MP-11 A12-S02: the worker restarted inside the check and is back on a new lease.

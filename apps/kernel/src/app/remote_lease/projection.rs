@@ -1338,6 +1338,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .as_ref()
                 .filter(|_| !intentionally_cancelled)
             {
+                outcome.provider_failed = true;
                 let _ = self
                     .app
                     .agents()
