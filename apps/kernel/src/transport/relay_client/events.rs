@@ -51,7 +51,7 @@ pub(super) async fn emit_relay_event(
     event: KernelEvent,
 ) -> Result<(), DaemonError> {
     let prepared_at_ms = crate::session::unix_epoch_ms();
-    router.admit_self_host_terminal(client_public_key)?;
+    router.admit_relay_stream(client_public_key)?;
     let daemon_private_key = router.relay_private_key();
     let plaintext = serde_json::to_vec(&event).map_err(|error| DaemonError::LocalTransport {
         operation: "serialize relay event",
@@ -96,7 +96,7 @@ pub(super) async fn replay_recent_relay_events(
     let Some(cursor) = resume_from_event_id else {
         return Ok(());
     };
-    router.admit_self_host_terminal(client_public_key)?;
+    router.admit_relay_stream(client_public_key)?;
     let event_stream_id = subscription_event_stream_id(session_id, attachment_id);
     let events = match event_runtime
         .event_log
@@ -157,7 +157,7 @@ pub(super) async fn replay_recent_relay_events(
         if !event_is_relevant_to_attachment(&persisted.event, attachment_id) {
             continue;
         }
-        router.admit_self_host_terminal(client_public_key)?;
+        router.admit_relay_stream(client_public_key)?;
         let daemon_private_key = router.relay_private_key();
         let plaintext =
             serde_json::to_vec(&persisted.event).map_err(|error| DaemonError::LocalTransport {
@@ -201,7 +201,7 @@ async fn emit_relay_replay_gap_snapshot(
     session_id: &str,
     attachment_id: &str,
 ) -> Result<(), DaemonError> {
-    router.admit_self_host_terminal(client_public_key)?;
+    router.admit_relay_stream(client_public_key)?;
     let event_stream_id = subscription_event_stream_id(session_id, attachment_id);
     let snapshot = router.session_snapshot_projection_for_attachment(
         session_id,

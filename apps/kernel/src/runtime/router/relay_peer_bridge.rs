@@ -180,6 +180,22 @@ impl CommandRouter {
             public_key,
         )
     }
+    /// Admission of an event stream (and of every event on it): a terminal that is paired
+    /// here, and a gateway key the owner has not revoked. Revoking a gateway ends its
+    /// streams as it ends its requests.
+    pub(crate) fn admit_relay_stream(
+        &self,
+        public_key: &str,
+    ) -> Result<Option<crate::config::PersistedClientPairing>, DaemonError> {
+        let grant = self.admit_self_host_terminal(public_key)?;
+        if !self.kernel_gateway.admit_origin(public_key, None)? {
+            return Err(DaemonError::LocalTransport {
+                operation: "authorize gateway stream",
+                message: "this kernel's owner revoked that gateway (unpaired or revoked)".into(),
+            });
+        }
+        Ok(grant)
+    }
     pub(crate) fn self_host_terminal_pairing_required(&self) -> bool {
         crate::runtime::self_host_terminal_grants::required(&self.config_projection.snapshot())
     }

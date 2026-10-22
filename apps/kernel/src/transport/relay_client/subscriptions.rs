@@ -81,7 +81,7 @@ pub(super) async fn handle_relay_subscribe(
     subscription_scope: Option<String>,
     resume_from_event_id: Option<u64>,
 ) -> Result<(), DaemonError> {
-    let paired = match router.admit_self_host_terminal(&client_public_key) {
+    let paired = match router.admit_relay_stream(&client_public_key) {
         Ok(grant) => grant.is_some(),
         Err(error) => {
             send_outgoing_envelope(
@@ -447,7 +447,7 @@ pub(super) async fn run_relay_subscription_loop(
     let event_stream_id = subscription_event_stream_id(&session_id, &attachment_id);
 
     loop {
-        if router.admit_self_host_terminal(&client_public_key).is_err() {
+        if router.admit_relay_stream(&client_public_key).is_err() {
             break;
         }
         if let Some(event) = passkey_prompts.next_event(&router) {
@@ -861,7 +861,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     let mut tick: u64 = 0;
     let mut next_heartbeat_at = Instant::now();
     loop {
-        if router.admit_self_host_terminal(&client_public_key).is_err() {
+        if router.admit_relay_stream(&client_public_key).is_err() {
             break;
         }
         if let Some(event) = passkey_prompts.next_event(&router) {
