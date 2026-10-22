@@ -1,5 +1,6 @@
 import { kernelUnixClient } from "./kernel-unix-client.js"
-import { execFileSync, spawn } from "node:child_process"
+import { spawn } from "node:child_process"
+import { defaultAccessHolder } from "./access-holder.js"
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { kernelSocketConfigRoot } from "@chariox/kernel-client/kernel-unix-socket-path"
@@ -12,16 +13,6 @@ const WAITER_START_TIMEOUT_MS = 10_000
 // The kernel verifies the holder through the requester's live parent chain, so
 // the parent must outlive the moment the waiter's request reaches the socket.
 const WAITER_REQUEST_GRACE_MS = 250
-
-function parentPid(pid: number): number {
-  const parent = Number(execFileSync("/bin/ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" }).trim())
-  if (!Number.isSafeInteger(parent) || parent <= 1) throw new CommandFailure("usage", "Cannot determine holder; provide --holder-pid")
-  return parent
-}
-
-function defaultHolder(): number {
-  return process.env.CHARIOX_CLI_ACCESS_HOLDER_PID ? Number(process.env.CHARIOX_CLI_ACCESS_HOLDER_PID) : parentPid(parentPid(process.pid))
-}
 
 function holderPid(flags: Map<string, string | true>, fallback: () => number): number {
   const holder = flags.has("--holder-pid") ? Number(flags.get("--holder-pid")) : fallback()
@@ -49,7 +40,9 @@ function waiterPidFile(holder: number): string {
 
 function waiterAlive(holder: number): boolean {
   try {
-    process.kill(Number(readFileSync(waiterPidFile(holder), "utf8")), 0)
+    const pid = Number(readFileSync(waiterPidFile(holder), "utf8"))
+    if (!Number.isSafeInteger(pid) || pid <= 1) throw new Error("Invalid access waiter pid")
+    process.kill(pid, 0)
     return true
   } catch {
     try { unlinkSync(waiterPidFile(holder)) } catch { /* no waiter was recorded */ }
@@ -74,7 +67,10 @@ async function startWaiter(argv: string[], holder: number): Promise<void> {
     const timer = setTimeout(() => reject(new CommandFailure("cli_error", "the access waiter did not start")), WAITER_START_TIMEOUT_MS)
     child.stderr.once("data", chunk => { clearTimeout(timer); resolve(String(chunk)) })
     child.once("error", error => { clearTimeout(timer); reject(error) })
-  }).catch(error => { child.kill(); throw error })
+  }).catch(error => {
+    if (typeof child.pid === "number" && Number.isSafeInteger(child.pid) && child.pid > 1) child.kill()
+    throw error
+  })
   if (!output.startsWith("Waiting")) throw waiterFailure(output)
   await new Promise(resolve => setTimeout(resolve, WAITER_REQUEST_GRACE_MS))
   mkdirSync(join(waiterPidFile(holder), ".."), { recursive: true, mode: 0o700 })
@@ -84,7 +80,7 @@ async function startWaiter(argv: string[], holder: number): Promise<void> {
 }
 
 async function requestAccess(argv: string[]): Promise<void> {
-  const { request, socket, noWait } = parseAccessRequest(argv, defaultHolder)
+  const { request, socket, noWait } = parseAccessRequest(argv, defaultAccessHolder)
   const holder = request.RequestKernelAccess.holder_pid
   if (noWait) {
     await startWaiter(argv, holder)
@@ -102,7 +98,7 @@ async function requestAccess(argv: string[]): Promise<void> {
 
 async function accessStatus(argv: string[]): Promise<void> {
   const flags = parseFlags("access status", argv)
-  const holder = holderPid(flags, defaultHolder)
+  const holder = holderPid(flags, defaultAccessHolder)
   let status: "granted" | "pending" | "ended" | "not_requested"
   try {
     await probeKernel(flags.get("--socket") as string | undefined)

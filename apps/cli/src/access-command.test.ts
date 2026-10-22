@@ -56,5 +56,9 @@ test("access status reports granted, ended, pending and not_requested from a pro
     writeFileSync(join(dir, "access-waiter-4242.pid"), String(process.pid), { mode: 0o600 })
     assert.equal((await statusOf(refusal("kernel_access_not_covered"), dir, 4242)).out, '{"status":"pending"}')
     assert.equal((await statusOf(refusal("kernel_access_not_covered"), dir, 4243)).out, '{"status":"not_requested"}')
+    for (const invalid of ["0", "1", "-1", "NaN", ""]) {
+      writeFileSync(join(dir, "access-waiter-4242.pid"), invalid, { mode: 0o600 })
+      assert.equal((await statusOf(refusal("kernel_access_not_covered"), dir, 4242)).out, '{"status":"not_requested"}')
+    }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
