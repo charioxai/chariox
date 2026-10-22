@@ -1712,8 +1712,14 @@ async fn leased_required_agent_with_a_home_sudo_window_types_without_approval() 
         .as_str()
         .unwrap()
         .to_string();
-    let (owner, _) =
-        open_leased_sudo(&fixture, &room, &attachment, &agent, Duration::from_secs(60)).await;
+    let (owner, _) = open_leased_sudo(
+        &fixture,
+        &room,
+        &attachment,
+        &agent,
+        Duration::from_secs(60),
+    )
+    .await;
     let home_prompt = fixture
         .home
         .runtime_state
@@ -1735,7 +1741,11 @@ async fn leased_required_agent_with_a_home_sudo_window_types_without_approval() 
             .await
         }
     };
-    let opened = call("mcp__chariox__terminal_open", json!({"command": ["/bin/cat"]})).await;
+    let opened = call(
+        "mcp__chariox__terminal_open",
+        json!({"command": ["/bin/cat"]}),
+    )
+    .await;
     let terminal_id = opened
         .as_ref()
         .ok()
@@ -1754,7 +1764,10 @@ async fn leased_required_agent_with_a_home_sudo_window_types_without_approval() 
     };
     worker.stop().await;
     fixture.stop().await;
-    assert!(terminal_id.is_some(), "the leased agent opens a terminal: {opened:?}");
+    assert!(
+        terminal_id.is_some(),
+        "the leased agent opens a terminal: {opened:?}"
+    );
     let sent = sent.unwrap();
     assert!(
         sent.as_ref()
