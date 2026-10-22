@@ -15,7 +15,7 @@ const INSTALLATION: &str = "installation_1";
 const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const TOOLS: [&str; 9] = ["echo", "counter", "fetch", "transform", "compute", "spin", "hog", "shared", "stream"];
 
-const ASYNC: [&str; 3] = ["wasm-rust-async", "wasm-qjs", "wasm-py"];
+const ASYNC: [&str; 4] = ["wasm-rust-async", "wasm-qjs", "wasm-py", "wasm-c"];
 
 pub struct Variant {
     pub name: String,
