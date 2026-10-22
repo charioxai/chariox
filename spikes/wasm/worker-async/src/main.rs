@@ -154,6 +154,12 @@ impl Attribution {
 fn store(engine: &Engine, shared: &Shared) -> Store<Host> {
     let mut wasi = wasmtime_wasi::WasiCtxBuilder::new();
     wasi.inherit_stderr().allow_tcp(false).allow_udp(false).allow_ip_name_lookup(false);
+    // MP-08/MP-11 compiler spike: the two private directories already bound
+    // by the harness are the only guest filesystem authority.
+    for (host, guest) in [("CHARIOX_APP_DATA", "/data"), ("CHARIOX_APP_TMP", "/tmp")] {
+        wasi.preopened_dir(env(host), guest, wasmtime_wasi::FsPerms::ReadWrite).unwrap();
+    }
+
     let host = Host {
         ipc: shared.ipc.clone(),
         wasi: wasi.build(),

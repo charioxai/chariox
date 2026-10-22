@@ -193,6 +193,53 @@ async fn fetch_standard(variant: &Variant, origin: &str) -> Value {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // MP-08/MP-10: compiler research through the same WorkerPeer and brokers.
+    if args.get(3).map(String::as_str) == Some("tex") {
+        let variant = Variant::from_args(&args[1], args.get(2).map(String::as_str) == Some("bwrap"));
+        let input: Value = serde_json::from_slice(&std::fs::read(&args[4]).unwrap()).unwrap();
+        let origin = std::env::var("SPIKE_TEX_ORIGIN").expect("SPIKE_TEX_ORIGIN");
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let report = runtime.block_on(async {
+            let worker = start(&variant, &origin).await;
+            let mut report = json!({ "coldReadyMs": worker.ready_ms, "ready": worker.broker.ready.borrow().clone() });
+            report["filesystemProbe"] = json!(worker.call("filesystem_probe", json!({}), LONG).await);
+            let mut cells = Vec::new();
+            for phase in ["cold", "warm", "edit"] {
+                let mut v = input.clone();
+                if phase == "edit" {
+                    let main = v["main"].as_str().unwrap().to_string();
+                    let mut source: Vec<u8> = serde_json::from_value(v["files"][&main].clone()).unwrap();
+                    let needle = b"\\end{document}";
+                    let at = source.windows(needle.len()).position(|w| w == needle).unwrap();
+                    source.splice(at..at, b"One line edited.\n".iter().copied());
+                    v["files"][main] = json!(source);
+                }
+                let at = Instant::now();
+                let mut fetched = 0u64;
+                let mut preparation_error = None;
+                if phase == "cold" {
+                    for chunk in v["resources"].as_array().unwrap().chunks(32) {
+                        match worker.call("prepare_resources", json!({ "resources": chunk }), LONG).await {
+                            Ok(result) => fetched += result["fetchedBytes"].as_u64().unwrap_or(0),
+                            Err(error) => { preparation_error = Some(error); break; }
+                        }
+                    }
+                }
+                v["resources"] = json!([]);
+                let preparation_ms = ms(at);
+                let result = if let Some(error) = preparation_error { Err(error) } else { worker.call("compile", v, LONG).await };
+                cells.push(json!({ "phase": phase, "ms": ms(at), "prepareMs": preparation_ms, "fetchedBytes": fetched, "outcome": result, "memory": worker.spawned.memory() }));
+                if cells.last().unwrap()["outcome"].get("Err").is_some() { break; }
+            }
+            report["cells"] = json!(cells);
+            report["brokerLogs"] = json!(*worker.broker.logs.lock().unwrap());
+            worker.peer.close();
+            worker.spawned.stop();
+            report
+        });
+        println!("{report}");
+        return;
+    }
     // Async-world cells: <variant> <bwrap|none> <mode> [n] [work]
     if let Some(mode) = args.get(3).filter(|m| ["shared", "stream", "subscribe", "cancel", "blast", "hol"].contains(&m.as_str())) {
         let variant = Variant::from_args(&args[1], args.get(2).map(String::as_str) == Some("bwrap"));
