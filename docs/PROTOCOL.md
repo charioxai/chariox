@@ -5120,3 +5120,26 @@ as `input`. Rules every client follows:
 - Input that was in flight when the connection dropped is not replayed.
 - While a person types or output flows, the kernel looks at the PTY every 5 ms (every 100 ms when idle), so an echo
   does not wait for the idle tick.
+
+
+### MP-08 / MP-10 / MP-11: bounded waiting-room sessions (provisional 569/177)
+
+The waiting-room inventory and public snapshot return the 100 most recently used
+sessions (fewer when the byte budget is reached), `sessions_total`, and an optional
+`sessions_next_cursor`. A client opens the full session list by sending
+`ListWaitingRoomSessions { cursor, limit }`; `WaitingRoomSessionsListed { page }`
+returns `sessions`, `total`, and `next_cursor`. Limits default to 500 and clamp to
+1–500. Cursors order by last-used time and session id, so equal timestamps do not
+skip or repeat rows. New activity may move a row into the recent inventory;
+clients merge by session id. Each snapshot/page stays below 2 MiB of JSON, leaving
+room for the encrypted/base64 relay envelope within 4 MiB. Oversized metadata or
+an individual summary returns a typed error and a recovery instruction. The
+relay's message cap is unchanged. Old clients receive the recent inventory;
+clients that need the full list feature-detect the cursor and fetch older pages
+when the person opens the picker. These shapes stay on the coordinator-approved
+provisional 569/177 pair pending integration renumbering.
+
+`RequestKernelSudo` returns distinct `kernel_sudo_refused` and
+`kernel_sudo_expired` errors, on Unix and forwarded paths. The first records a
+person's refusal; the second tells the caller to submit a new request and approve
+it in a Chariox client. Neither error retries automatically.

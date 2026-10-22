@@ -1102,14 +1102,17 @@ async fn external_sudo_unix_socket_requires_grant_projects_identity_and_expires_
     assert!(message.contains("full external prompt"));
     let refused = kernel.request(serde_json::json!({"RespondToInteraction":{"session_id":SESSION,"interaction_id":id,"choice_id":"refuse"}})).await;
     assert!(refused["error"].is_null(), "{refused}");
-    assert!(holder.result()["error"]["message"]
+    let refused = holder.result();
+    assert_eq!(refused["error"]["code"], "kernel_sudo_refused", "{refused}");
+    assert!(refused["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("refused"));
+        .contains("sudo request refused"));
     kernel.tcp.close(None).await.unwrap();
     holder.send(request);
     kernel.control("sudo-timeout").await;
     let expired = holder.result();
+    assert_eq!(expired["error"]["code"], "kernel_sudo_expired", "{expired}");
     assert!(
         expired["error"]["message"]
             .as_str()

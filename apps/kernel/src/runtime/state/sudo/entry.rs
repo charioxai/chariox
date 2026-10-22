@@ -1,5 +1,6 @@
 use super::external::remote_requester_projection;
 use super::*;
+use crate::runtime::kernel_access::SudoRequestFailure;
 
 // MP-08/MP-10/MP-11: includes the policy relaunch delay and provider startup.
 const SUDO_PROVIDER_RELAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
@@ -312,15 +313,13 @@ impl KernelRuntimeState {
         }
         let answer = tokio::time::timeout(Duration::from_secs(seconds), rx)
             .await
-            .map_err(|_| error("sudo request expired; answer the popup in a Chariox terminal"))?
+            .map_err(|_| SudoRequestFailure::Expired.error())?
             .map_err(|_| error("sudo request cancelled"))?;
         if answer.status == "timed_out" {
-            return Err(error(
-                "sudo request expired; answer the popup in a Chariox terminal",
-            ));
+            return Err(SudoRequestFailure::Expired.error());
         }
         if answer.choice_id.as_deref() != Some("approve") {
-            return Err(error("sudo request refused"));
+            return Err(SudoRequestFailure::Refused.error());
         }
         let minutes = super::sudo_window_minutes(answer.reply.as_deref())?;
         let verified = self

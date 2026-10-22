@@ -374,6 +374,7 @@ response_policies! {
         RemoteMachineKernelsListed,
         FreshRemoteMachineKernelsObserved,
         WaitingRoomInventory,
+        WaitingRoomSessionsListed,
         WaitingRoomPublicSnapshot,
         ExternalProviderSessionsListed,
         ExternalProviderSessionsRefreshed,

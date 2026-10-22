@@ -58,6 +58,21 @@ pub(crate) async fn execute_waiting_room_request(
     caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
+        LocalDaemonRequest::ListWaitingRoomSessions(request) => {
+            let snapshot = projected_waiting_room_full_snapshot(
+                runtime_state,
+                session_projection,
+                waiting_room_session_summaries,
+                relay_state,
+                config_projection,
+                remote_relay_inventory_projection,
+                caller_user_id,
+            )
+            .await?;
+            Ok(LocalDaemonResponse::WaitingRoomSessionsListed {
+                page: super::waiting_room_sessions::session_page(snapshot.sessions, request)?,
+            })
+        }
         LocalDaemonRequest::GetWaitingRoomInventory(_) => {
             execute_waiting_room_inventory_request(
                 runtime_state,
@@ -113,6 +128,28 @@ pub(crate) async fn execute_waiting_room_public_snapshot_request(
 }
 
 pub(crate) async fn projected_waiting_room_public_snapshot(
+    runtime_state: &KernelRuntimeState,
+    session_projection: &SessionStateProjectionStore,
+    waiting_room_session_summaries: &WaitingRoomSessionSummaryProjectionStore,
+    relay_state: Arc<RwLock<RelayClientState>>,
+    config_projection: DaemonConfigProjectionStore,
+    remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
+    caller_user_id: &str,
+) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
+    let snapshot = projected_waiting_room_full_snapshot(
+        runtime_state,
+        session_projection,
+        waiting_room_session_summaries,
+        relay_state,
+        config_projection,
+        remote_relay_inventory_projection,
+        caller_user_id,
+    )
+    .await?;
+    super::waiting_room_sessions::recent_snapshot(snapshot)
+}
+
+async fn projected_waiting_room_full_snapshot(
     runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
     waiting_room_session_summaries: &WaitingRoomSessionSummaryProjectionStore,

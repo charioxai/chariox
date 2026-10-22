@@ -184,6 +184,8 @@ fn project_error(value: &Value) -> KernelTransportError {
     // The gateway writes these messages itself, from the kernel name the agent
     // chose; they carry no provider or parser text.
     if crate::runtime::kernel_gateway::is_public_code(code)
+        || crate::runtime::kernel_access::SudoRequestFailure::is_public_code(code)
+        || crate::runtime::waiting_room_sessions::is_public_code(code)
         || crate::runtime::kernel_files::is_public_code(code)
         || crate::room_terminal::is_public_code(code)
     {

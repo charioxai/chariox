@@ -1,6 +1,65 @@
 use super::*;
 
 #[test]
+fn waiting_room_inventory_sends_recent_sessions_before_the_full_catalog() {
+    run_with_large_test_stack("waiting-room-recent-sessions", || {
+        let worktree = crate::test_support::TestWorktree::new("waiting-room-recent-sessions");
+        let harness = LocalRouterTestHarness::new();
+        for index in 0..140 {
+            harness
+                .dispatch(LocalDaemonRequest::CreateSession(
+                    worktree
+                        .session_request()
+                        .with_alias(format!("session-{index}")),
+                ))
+                .unwrap();
+        }
+        let response = harness
+            .dispatch(LocalDaemonRequest::GetWaitingRoomInventory(
+                GetWaitingRoomInventoryRequest,
+            ))
+            .unwrap();
+        let LocalDaemonResponse::WaitingRoomInventory { snapshot } = response else {
+            panic!("expected inventory");
+        };
+        assert!(
+            snapshot.sessions.len() <= 100,
+            "the initial inventory must not grow with the catalog: {}",
+            snapshot.sessions.len()
+        );
+        assert_eq!(snapshot.sessions_total, 140);
+        let mut ids = snapshot
+            .sessions
+            .iter()
+            .map(|s| s.id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut cursor = snapshot.sessions_next_cursor.clone();
+        while cursor.is_some() {
+            let response = harness
+                .dispatch(LocalDaemonRequest::ListWaitingRoomSessions(
+                    crate::local::ListWaitingRoomSessionsRequest {
+                        cursor,
+                        limit: Some(7),
+                    },
+                ))
+                .unwrap();
+            let LocalDaemonResponse::WaitingRoomSessionsListed { page } = response else {
+                panic!("expected session page");
+            };
+            assert_eq!(page.total, 140);
+            assert!(page.sessions.len() <= 7);
+            for session in page.sessions {
+                assert!(ids.insert(session.id), "page repeated a session");
+            }
+            cursor = page.next_cursor;
+        }
+        assert_eq!(ids.len(), 140);
+        let wire = serde_json::to_vec(&snapshot).unwrap();
+        assert!(wire.len() < 4 * 1024 * 1024);
+    });
+}
+
+#[test]
 fn waiting_room_inventory_includes_session_workspace_display_labels() {
     run_with_large_test_stack(
         "waiting-room-inventory-session-workspace-display-labels",

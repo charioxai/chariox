@@ -750,6 +750,8 @@ fn waiting_room_snapshot(
         structural_version: format!("structural-{inventory_version}"),
         activity_revision: format!("activity-{inventory_version}"),
         generated_at_ms: 100,
+        sessions_total: sessions.len(),
+        sessions_next_cursor: None,
         sessions,
         projects: Vec::new(),
         external_provider_sessions: Vec::new(),

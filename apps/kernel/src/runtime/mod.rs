@@ -155,6 +155,7 @@ pub(crate) mod user_domain_access;
 pub(crate) mod waiting_room_activity;
 pub(crate) mod waiting_room_control;
 pub(crate) mod waiting_room_public_projection;
+pub(crate) mod waiting_room_sessions;
 pub mod workflow_actor;
 pub(crate) mod workflow_projection;
 pub(crate) mod workspace_command_executor;

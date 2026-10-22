@@ -298,6 +298,7 @@ pub enum LocalDaemonResponse {
         kernels: Vec<RelayKernelPresence>,
     },
     WaitingRoomInventory { snapshot: WaitingRoomInventorySnapshot, },
+    WaitingRoomSessionsListed { page: WaitingRoomSessionPage, },
     WaitingRoomPublicSnapshot { snapshot: WaitingRoomPublicSnapshot, },
     ExternalProviderSessionsListed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionsRefreshed { page: ExternalProviderSessionPage, },

@@ -369,11 +369,19 @@ export type WaitingRoomGitCredentialSummary = {
   label: string
 }
 
+export type WaitingRoomSessionPage = {
+  sessions: WaitingRoomPublicSessionSummary[]
+  total: number
+  next_cursor: string | null
+}
+
 export type WaitingRoomInventorySnapshot = {
   inventory_version: string
   structural_version: string
   activity_revision: string
   sessions: WaitingRoomPublicSessionSummary[]
+  sessions_total?: number
+  sessions_next_cursor?: string | null
   projects: WaitingRoomPublicProjectSummary[]
   relay_status: RelayStatus
   remote_machines?: RemoteMachineRecord[]

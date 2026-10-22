@@ -802,6 +802,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListRemoteMachineKernels(_)
         | LocalDaemonRequest::GetWaitingRoomInventory(_)
         | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)
+        | LocalDaemonRequest::ListWaitingRoomSessions(_)
         | LocalDaemonRequest::ListExternalProviderSessions(_)
         | LocalDaemonRequest::RefreshExternalProviderSessions(_)
         | LocalDaemonRequest::ImportExternalProviderSession(_)

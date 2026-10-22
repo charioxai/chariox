@@ -284,6 +284,7 @@ pub enum LocalDaemonRequest {
     ListRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     QueryFreshRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     GetWaitingRoomInventory(GetWaitingRoomInventoryRequest),
+    ListWaitingRoomSessions(ListWaitingRoomSessionsRequest),
     GetWaitingRoomPublicSnapshot(GetWaitingRoomPublicSnapshotRequest),
     ListExternalProviderSessions(ListExternalProviderSessionsRequest),
     RefreshExternalProviderSessions(RefreshExternalProviderSessionsRequest),
