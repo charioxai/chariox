@@ -401,7 +401,7 @@ pub(crate) async fn handle_connection(
                                 send_close(&sender, "daemon reconnected".to_string());
                             }
                             if let Some(released) = released {
-                                announce_released_daemon(released).await;
+                                announce_released_daemon(released);
                             }
                         }
                         RelayEnvelope::DaemonHeartbeat {
@@ -1056,7 +1056,7 @@ pub(crate) async fn handle_connection(
             }),
         );
     }
-    announce_released_daemon(released).await;
+    announce_released_daemon(released);
     drop(control_tx);
     drop(outgoing_tx);
     if let Some(mut writer_task) = writer_task {
