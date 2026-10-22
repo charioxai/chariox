@@ -569,8 +569,9 @@ pub(crate) fn infer_waiting_room_launch_target(
     }
 }
 
-/// Only a workspace this kernel's host still has qualifies: a session imported
-/// from another machine, or from a managed one, names paths that do not exist here.
+/// Only a workspace and worktree this kernel's host still has qualify: a session
+/// imported from another machine, or from a managed one, or whose linked worktree
+/// was removed outside Chariox, names paths CreateSession would reject.
 fn last_used_workspace_target(
     sessions: &[WaitingRoomPublicSessionSummary],
 ) -> Option<WaitingRoomLaunchTarget> {
@@ -578,9 +579,10 @@ fn last_used_workspace_target(
     by_recency.sort_by_key(|session| {
         std::cmp::Reverse(session.last_used_at_ms.unwrap_or(session.created_at_ms))
     });
-    let session = by_recency
-        .into_iter()
-        .find(|session| std::path::Path::new(&session.workspace_id).is_dir())?;
+    let session = by_recency.into_iter().find(|session| {
+        std::path::Path::new(&session.workspace_id).is_dir()
+            && std::path::Path::new(&session.worktree_id).is_dir()
+    })?;
     Some(WaitingRoomLaunchTarget {
         repository_state: session.repository_state.clone(),
         workspace_id: session.workspace_id.clone(),
@@ -1375,6 +1377,33 @@ mod tests {
         assert_eq!(target(&[]), user_home.display().to_string());
         std::env::set_current_dir(&project).unwrap();
         assert_eq!(target(&sessions), project.display().to_string());
+    }
+
+    // CreateSession rejects a workspace/worktree pair whose worktree is gone,
+    // so a linked worktree removed outside Chariox must not become the default.
+    #[test]
+    fn default_workspace_skips_a_session_whose_linked_worktree_was_removed() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("launch-target-removed-worktree");
+        let user_home = root.path().join("user");
+        let chariox_home = user_home.join(".chariox/dev/md-staging");
+        let bundle = chariox_home.join("releases/186c31ef/bundle");
+        let repository = user_home.join("src/repository");
+        let older = user_home.join("src/older");
+        for directory in [&bundle, &repository, &older] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        let mut removed_worktree = used_session(repository.to_str().unwrap(), 20);
+        removed_worktree.worktree_id = user_home
+            .join("src/repository-linked")
+            .display()
+            .to_string();
+        let sessions = [used_session(older.to_str().unwrap(), 10), removed_worktree];
+
+        let _restore = LaunchEnvironment::enter(&user_home, &chariox_home, &bundle);
+        let target = infer_waiting_room_launch_target(&sessions).unwrap();
+        assert_eq!(target.workspace_id, older.display().to_string());
+        assert_eq!(target.worktree_id, older.display().to_string());
     }
 
     fn slice_with_agent(
