@@ -81,6 +81,7 @@ export async function getProviderCatalog(
 export async function getProviderCommandCatalogs(
   client: LocalIpcClient,
   logger?: CharioxLogger | null,
+  fallbackOnError = true,
 ): Promise<ProviderCommandCatalogs> {
   try {
     const response = await client.send<Record<string, unknown>>(getProviderCommandCatalogsRequest())
@@ -100,6 +101,7 @@ export async function getProviderCommandCatalogs(
       ]),
     ) as ProviderCommandCatalogs
   } catch (error) {
+    if (!fallbackOnError) throw error
     const message = describeCliError(error)
     logger?.warn("provider command catalog lookup failed; using fallback command catalogs", {
       error: message,
@@ -308,7 +310,7 @@ export async function listProviderAccountProfiles(client: LocalIpcClient, provid
   return expectVariant<{ profiles: ProviderAccountProfile[] }>(response, "ProviderAccountProfilesListed").profiles
 }
 
-/** MP-08 / MP-11: saved observations do not run official token verification. */
+/** MP-08 / MP-11: read saved observations in the same account namespace as launch, without token verification. */
 export async function getProviderAccountProfile(client: LocalIpcClient, provider: string, accountProfile: string): Promise<ProviderAccountProfile> {
   const response = await client.send<Record<string, unknown>>(getProviderAccountProfileRequest(provider, accountProfile))
   return expectVariant<{ profile: ProviderAccountProfile }>(response, "ProviderAccountProfile").profile

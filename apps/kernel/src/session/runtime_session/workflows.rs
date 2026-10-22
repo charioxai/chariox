@@ -11,6 +11,19 @@ impl RuntimeSession {
         now_ms: u64,
         grace_period_ms: u64,
     ) -> usize {
+        self.reconcile_live_orphaned_workflow_runs_with_tasks(
+            now_ms,
+            grace_period_ms,
+            &BTreeSet::new(),
+        )
+    }
+
+    pub(crate) fn reconcile_live_orphaned_workflow_runs_with_tasks(
+        &mut self,
+        now_ms: u64,
+        grace_period_ms: u64,
+        supervised_tasks: &BTreeSet<(String, String)>,
+    ) -> usize {
         let durable_workflow_prompt_targets = self
             .prompt_runtime
             .prompt_states()
@@ -41,6 +54,10 @@ impl RuntimeSession {
                     .iter()
                     .any(|(run_id, _)| run_id == workflow_run.id())
                 || settling_workflow_run_ids.contains(workflow_run.id())
+                || supervised_tasks.iter().any(|(run, node)| {
+                    run == workflow_run.id()
+                        && workflow_run.node_runs().iter().any(|n| n.id() == node)
+                })
             {
                 continue;
             }
@@ -682,13 +699,24 @@ impl RuntimeSession {
     }
 
     pub fn reconcile_after_kernel_restart(&mut self) -> KernelRestartReconciliation {
-        let mut reconciliation = KernelRestartReconciliation::default();
-        reconciliation.removed_orphaned_workflow_prompt_count =
-            self.reconcile_workflow_queue_ownership();
+        let mut reconciliation = KernelRestartReconciliation {
+            removed_orphaned_workflow_prompt_count: self.reconcile_workflow_queue_ownership(),
+            ..KernelRestartReconciliation::default()
+        };
         if self.active_provider_run_id.take().is_some() {
             reconciliation.cleared_active_provider_run = true;
         }
         reconciliation.cleared_attachment_count = self.clear_attachments();
+        // Agent decisions wait on process-local responders. A restored popup
+        // cannot answer the old provider or unlock request and must not block
+        // a new one. Recovered turns request fresh permission; no approval is
+        // carried across a kernel restart. Kernel operation decisions retain
+        // their existing owner-controlled supersession path.
+        let interaction_count = self.active_interactions.len();
+        self.active_interactions
+            .retain(|interaction| interaction.agent_id().is_none());
+        reconciliation.cleared_agent_interaction_count =
+            interaction_count - self.active_interactions.len();
         let terminal_workflow_run_ids = self
             .workflow_runs
             .iter()

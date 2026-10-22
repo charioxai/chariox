@@ -38,6 +38,10 @@ const emit = (message) => {
 persist();
 // MP-08/MP-10/MP-11: synthetic CDP pixels; runtime routing stays production.
 const { blackPng } = await import(pathToFileURL(join(directory, "browser-controller-image.mjs")));
+// Chrome announces every committed document; the controller's frame-owner cache follows these events.
+const announceDocument = () => emit({ method: "Page.frameNavigated", sessionId: "worker-cdp-session", params: { frame: {
+  id: "worker-frame", loaderId: state.documentId, url: state.url,
+} } });
 const chromium = {
   browserInstanceId: "fixture-physical-browser",
   isOpen: () => state.open,
@@ -47,6 +51,16 @@ const chromium = {
   },
   close: async () => { state.open = false; persist(); },
   async send(method, params = {}, sessionId) {
+    // MP-08 / MP-10 / MP-11: native navigation happens independently of reads.
+    const externalNavigation = join(dirname(pidFile), "external-browser-navigation");
+    if (existsSync(externalNavigation)) {
+      const url = readFileSync(externalNavigation, "utf8").trim();
+      unlinkSync(externalNavigation);
+      if (url.startsWith("https://")) state.url = url;
+      state.documentId = `worker-document-${++state.documentSequence}`;
+      persist();
+      announceDocument();
+    }
     switch (method) {
       case "SystemInfo.getProcessInfo": return (await uploadBrowser.ensure()).processInfo;
       case "Target.getTargets": {
@@ -58,15 +72,7 @@ const chromium = {
           state.documentId = `worker-document-${++state.documentSequence}`;
           state.focusedTarget = "worker-tab";
           persist();
-        }
-        const externalNavigation = join(dirname(pidFile), "external-browser-navigation");
-        if (existsSync(externalNavigation)) {
-          unlinkSync(externalNavigation);
-          state.documentId = `worker-document-${++state.documentSequence}`;
-          persist();
-          emit({ method: "Page.frameNavigated", sessionId: "worker-cdp-session", params: { frame: {
-            id: "worker-frame", loaderId: state.documentId, url: state.url,
-          } } });
+          announceDocument();
         }
         // External browser fault: the user can close every page while a
         // browser-owned download continues in the background.
@@ -124,6 +130,7 @@ const chromium = {
         });
         state.historyIndex = state.history.length - 1;
         persist();
+        announceDocument();
         return { frameId: "worker-frame", loaderId: state.documentId };
       }
       case "Page.getNavigationHistory": return {
@@ -137,12 +144,14 @@ const chromium = {
         state.url = state.history[index].url;
         state.documentId = `worker-document-${++state.documentSequence}`;
         persist();
+        announceDocument();
         return {};
       }
       case "Page.reload":
         state.reloadCount = (state.reloadCount ?? 0) + 1;
         state.documentId = `worker-document-${++state.documentSequence}`;
         persist();
+        announceDocument();
         return {};
       case "Page.createIsolatedWorld": return {
         executionContextId: sessionId === "worker-popup-session" ? 8 : 7,
@@ -226,7 +235,7 @@ const chromium = {
           })}\n`);
           return { result: { value: { state: "disabled" } } };
         }
-        if (params.functionDeclaration.includes("function(text, append, expectedDocumentUrl, submit)")) {
+        if (params.functionDeclaration.includes("function(text, append, expectedDocumentUrl, submit")) {
           const [text, , expectedDocumentUrl] = params.arguments.map(argument => argument.value);
           if (state.url !== expectedDocumentUrl) return { result: { value: { ok: false, reason: "target_url_changed" } } };
           if (params.objectId !== "worker-note" || !existsSync(join(dirname(pidFile), "secret-input-mode"))) {
@@ -237,6 +246,14 @@ const chromium = {
           state.secretInputCount = (state.secretInputCount ?? 0) + 1;
           persist();
           return { result: { value: { ok: true } } };
+        }
+        // The Vault fill-target state probe: the field exists, is editable and holds what the fill set.
+        if (params.functionDeclaration.includes("unprovedPaint")) {
+          return { result: { value: {
+            exists: true, editable: params.objectId === "worker-note", unprovedPaint: false, contenteditable: false,
+            changed: false, password: false, textShadow: "none",
+            value: state.secretInputMatches ? "home-room-vault-regression-value" : "",
+          } } };
         }
         if (params.functionDeclaration.includes("requestSubmit")) {
           state.submitted = state.note;
@@ -357,6 +374,9 @@ const chromium = {
             mimeType: "application/json",
           },
         } });
+        // The announced document is the one the frame tree reports next.
+        state.documentId = "worker-navigation-document";
+        persist();
         emit({ method: "Page.frameNavigated", sessionId: "worker-cdp-session", params: { frame: {
           id: "worker-frame", loaderId: "worker-navigation-document",
           url: "https://worker.test/next?secret=must-not-cross-relay",

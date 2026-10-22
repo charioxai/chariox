@@ -1,5 +1,6 @@
 """MP-08 / MP-11: target checks and keystroke batching without real secrets."""
 import importlib.util
+import importlib.machinery
 import pathlib
 import sys
 import types
@@ -41,10 +42,29 @@ class SecretTargetTests(unittest.TestCase):
         self.module.ComputerTextKeyboard = Mock(return_value=self.keyboard)
         self.target = {"focus_window": 101, "active_window": 100,
                        "geometry": [20, 30, 200, 40], "window_geometry": [0, 0, 800, 600]}
+        self.fill_targets = types.SimpleNamespace(begin=Mock(return_value=object()), finish=Mock())
 
     def type_with_targets(self, targets):
-        with patch.object(self.module, "focused_target", side_effect=targets), patch.object(self.module.time, "sleep"):
+        # These tests isolate X11 focus/geometry batching. The AT-SPI fill
+        # registry has its own tests; do not query a build container's desktop.
+        original_spec = importlib.util.spec_from_file_location
+        loader = types.SimpleNamespace(create_module=lambda spec: None,
+            exec_module=lambda module: vars(module).update(vars(self.fill_targets)))
+        def spec_for(name, location):
+            if name == "native_fill_targets":
+                return importlib.machinery.ModuleSpec(name, loader)
+            return original_spec(name, location)
+        with patch.object(self.module, "focused_target", side_effect=targets), patch.object(self.module.time, "sleep"), \
+                patch.object(importlib.util, "spec_from_file_location", side_effect=spec_for):
             self.module.type_text("abc", self.target)
+
+    def test_fill_registration_failure_aborts_before_typing(self):
+        self.fill_targets.begin.side_effect = ValueError("Vault fill field unavailable")
+        with self.assertRaisesRegex(ValueError, "Vault fill field unavailable"):
+            self.type_with_targets([self.target])
+        self.keyboard.press.assert_not_called()
+        self.fill_targets.finish.assert_not_called()
+        self.connection.close.assert_called_once()
 
     def test_native_target_recognizes_a_reparented_active_client(self):
         root = Mock(id=10)
@@ -98,6 +118,8 @@ class SecretTargetTests(unittest.TestCase):
         self.keyboard.press.side_effect = lambda *_: events.append("press")
         self.keyboard.release.side_effect = lambda *_: events.append("release")
         self.type_with_targets([self.target] * 4)
+        self.fill_targets.begin.assert_called_once_with(100, "abc", self.connection)
+        self.fill_targets.finish.assert_called_once_with(self.fill_targets.begin.return_value, "abc")
         self.assertEqual(events, ["grab", "press", "release", "ungrab"] * 3)
         self.assertEqual(self.keyboard.press.call_count, 3)
 

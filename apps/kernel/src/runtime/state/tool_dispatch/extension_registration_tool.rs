@@ -372,7 +372,7 @@ impl KernelRuntimeState {
         ))
     }
 
-    async fn maybe_gate_extension_registration(
+    pub(in crate::runtime::state) async fn maybe_gate_extension_registration(
         &self,
         session: &crate::session::RuntimeSession,
         agent: &crate::agent::AgentInstance,
@@ -384,6 +384,26 @@ impl KernelRuntimeState {
             crate::session::effective_agent_extension_registration_authority(session, Some(agent));
         if !authority.requires_approval() {
             return Ok(None);
+        }
+        // MP-08 / MP-11 S18: reuse consent for source in this workspace.
+        // Inline descriptors and outside/staged source roots still ask.
+        if let Some(source) = source_path {
+            if self
+                .sudo_task_authorizes_agent(session.id(), agent.id())
+                .await
+            {
+                let root = self
+                    .owned
+                    .provider_store
+                    .get_run_for_agent(session.id(), agent.id())
+                    .and_then(|run| run.working_directory().cloned())
+                    .unwrap_or_else(|| session.worktree_id().into());
+                if let (Ok(source), Ok(root)) = (source.canonicalize(), root.canonicalize()) {
+                    if source.starts_with(root) {
+                        return Ok(None);
+                    }
+                }
+            }
         }
         let title = "Chariox extension registration approval".to_string();
         let subject = name
@@ -475,6 +495,10 @@ impl KernelRuntimeState {
         }))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing append_extension_registration_audit_event operation signature and explicit context arguments"
+    )]
     fn append_extension_registration_audit_event(
         &self,
         event_kind: &'static str,
@@ -522,6 +546,10 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing grant_registered_extension_if_requested operation signature and explicit context arguments"
+    )]
     async fn grant_registered_extension_if_requested(
         &self,
         session: &crate::session::RuntimeSession,

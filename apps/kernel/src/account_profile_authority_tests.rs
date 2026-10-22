@@ -46,17 +46,29 @@ fn cloud_lease_account_owner_preserves_exact_profile_and_rejects_other_owners() 
         .with_account_profile(profiles[1].profile_id.clone());
     let agent = agents.create_agent(request.clone(), &mut sessions).unwrap();
     registry
-        .require_agent_authenticated(&config, &agent, "MP-08/MP-10/MP-11 lease account")
+        .require_agent_authenticated(
+            &owner(&config, &registry, &agent),
+            &agent,
+            "MP-08/MP-10/MP-11 lease account",
+        )
         .unwrap();
     request = request.with_account_profile(profiles[0].profile_id.clone());
     let local = agents.create_agent(request.clone(), &mut sessions).unwrap();
     registry
-        .require_agent_authenticated(&config, &local, "MP-08/MP-10/MP-11 home alias")
+        .require_agent_authenticated(
+            &owner(&config, &registry, &local),
+            &local,
+            "MP-08/MP-10/MP-11 home alias",
+        )
         .unwrap();
     request = request.with_account_profile(profiles[2].profile_id.clone());
     let foreign = agents.create_agent(request, &mut sessions).unwrap();
     assert!(registry
-        .require_agent_authenticated(&config, &foreign, "MP-08/MP-10/MP-11 foreign denial")
+        .require_agent_authenticated(
+            &owner(&config, &registry, &foreign),
+            &foreign,
+            "MP-08/MP-10/MP-11 foreign denial"
+        )
         .is_err());
     registry
         .update_observation(
@@ -71,7 +83,11 @@ fn cloud_lease_account_owner_preserves_exact_profile_and_rejects_other_owners() 
         )
         .unwrap();
     assert!(registry
-        .require_agent_authenticated(&config, &agent, "MP-08/MP-10/MP-11 expired replica")
+        .require_agent_authenticated(
+            &owner(&config, &registry, &agent),
+            &agent,
+            "MP-08/MP-10/MP-11 expired replica"
+        )
         .is_err());
     let alias = agents
         .create_agent(
@@ -82,6 +98,25 @@ fn cloud_lease_account_owner_preserves_exact_profile_and_rejects_other_owners() 
         )
         .unwrap();
     registry
-        .require_agent_authenticated(&config, &alias, "MP-08/MP-10/MP-11 alias must stay local")
+        .require_agent_authenticated(
+            &owner(&config, &registry, &alias),
+            &alias,
+            "MP-08/MP-10/MP-11 alias must stay local",
+        )
         .unwrap();
+}
+
+fn owner(
+    config: &crate::config::DaemonConfig,
+    registry: &ProviderAccountProfileRegistry,
+    agent: &crate::agent::AgentInstance,
+) -> String {
+    provider_account_authority_owner_for_profile(
+        config,
+        registry,
+        agent.owner_user_id(),
+        "opencode",
+        agent.provider_account_profile(),
+    )
+    .unwrap()
 }

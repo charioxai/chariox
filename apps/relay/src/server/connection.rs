@@ -17,6 +17,7 @@ use crate::registry::{
     PendingRequestKind, RelayRegistry, RelaySender,
 };
 
+mod client_connect;
 mod support;
 #[cfg(test)]
 mod tests;
@@ -106,15 +107,68 @@ pub(crate) async fn handle_connection(
     auth_verifier: RelayAuthVerifier,
     relay_request_counter: Arc<AtomicU64>,
 ) -> Result<(), std::io::Error> {
+    stream.set_nodelay(true)?;
     let mut chunks = false;
+    let mut binary_events = false;
+    let mut initial_resume_negotiated = false;
     let handshake = accept_hdr_async(
         stream,
-        |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+        |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+         mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
             chunks = request.uri().query().is_some_and(|query| {
                 query
                     .split('&')
                     .any(|part| part == crate::frame_transport::TRANSPORT_QUERY)
             });
+            // MP-08/MP-10/MP-11: never send multiplexed chunks to a v1 receiver.
+            if request.uri().query().is_some_and(|query| {
+                query.split('&').any(|part| {
+                    part.starts_with("chariox_transport=")
+                        && part != crate::frame_transport::TRANSPORT_QUERY
+                })
+            }) {
+                return Err(tokio_tungstenite::tungstenite::http::Response::builder()
+                    .status(426)
+                    .body(Some(
+                        "relay requires chunks-v2 (protocol 532 / peer 140)".into(),
+                    ))
+                    .unwrap());
+            }
+            let protocols = request
+                .headers()
+                .get("sec-websocket-protocol")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("");
+            let protocol_offered = protocols
+                .split(',')
+                .any(|p| p.trim() == crate::binary_event::CAPABILITY);
+            initial_resume_negotiated = protocols
+                .split(',')
+                .any(|p| p.trim() == crate::frame_transport::DISPLAY_RESUME_CONNECT_CAPABILITY);
+            binary_events = protocol_offered
+                || initial_resume_negotiated
+                || request
+                    .headers()
+                    .get(crate::binary_event::VERSION_HEADER)
+                    .is_some_and(|version| version == "96");
+            if initial_resume_negotiated {
+                response.headers_mut().insert(
+                    "sec-websocket-protocol",
+                    crate::frame_transport::DISPLAY_RESUME_CONNECT_CAPABILITY
+                        .parse()
+                        .unwrap(),
+                );
+            } else if protocol_offered {
+                response.headers_mut().insert(
+                    "sec-websocket-protocol",
+                    crate::binary_event::CAPABILITY.parse().unwrap(),
+                );
+            }
+            if binary_events {
+                response
+                    .headers_mut()
+                    .insert(crate::binary_event::VERSION_HEADER, "96".parse().unwrap());
+            }
             Ok(response)
         },
     );
@@ -126,20 +180,30 @@ pub(crate) async fn handle_connection(
     let (writer, mut reader) = socket.split();
     let (outgoing_tx, outgoing_rx) = mpsc::channel::<Message>(relay_outgoing_queue_capacity());
     let routes = registry.read().await.route_index();
-    let (receipt_tx, receipt_rx) = mpsc::channel(8);
+    let (receipt_tx, receipt_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
     let (control_tx, control_rx) = mpsc::channel(8);
+    let writer_routes = routes.clone();
+    let writer_sender = outgoing_tx.downgrade();
     let mut writer_task = Some(tokio::spawn(writer::run_writer(
         writer,
         outgoing_rx,
         chunks,
+        binary_events,
         receipt_rx,
         control_rx,
+        move |subscription_id: &str| {
+            writer_sender
+                .upgrade()
+                .is_some_and(|sender| writer_routes.display_for_sender(subscription_id, &sender))
+        },
     )));
     let mut registered_daemon_key: Option<DaemonKey> = None;
     let mut verified_identity: Option<VerifiedRelayIdentity> = None;
     let mut auth_expiry_deadline: Option<Instant> = None;
     let mut revocation_updates = auth_verifier.revocation_updates();
     let mut first_message_received = false;
+    let mut end_reason: &'static str = "message_handling";
+    let mut peer_close_code: Option<u16> = None;
     let mut last_read_at = Instant::now();
     let mut last_ping_at = Instant::now() - RELAY_HEARTBEAT_INTERVAL;
     let mut connection_check = tokio::time::interval(RELAY_CONNECTION_CHECK_INTERVAL);
@@ -164,6 +228,7 @@ pub(crate) async fn handle_connection(
                         }),
                     );
                     send_close(&outgoing_tx, "relay token expired".to_string());
+                    end_reason = "token_expired";
                     break;
                 }
                 _ = wait_for_revocation_update(&mut revocation_updates) => {
@@ -178,6 +243,7 @@ pub(crate) async fn handle_connection(
                             }),
                         );
                         send_close(&outgoing_tx, "relay token revoked".to_string());
+                        end_reason = "token_revoked";
                         break;
                     }
                     continue;
@@ -197,6 +263,7 @@ pub(crate) async fn handle_connection(
                             }),
                         );
                         send_close(&outgoing_tx, "relay connection idle timeout".to_string());
+                        end_reason = "idle_timeout";
                         break;
                     }
                     if last_ping_at > last_read_at && last_ping_at.elapsed() >= RELAY_PONG_TIMEOUT {
@@ -210,32 +277,35 @@ pub(crate) async fn handle_connection(
                             }),
                         );
                         send_close(&outgoing_tx, "relay heartbeat timeout".to_string());
+                        end_reason = "heartbeat_timeout";
                         break;
                     }
                     if last_ping_at.elapsed() >= RELAY_HEARTBEAT_INTERVAL {
                         if control_tx.try_send(Message::Ping(Vec::new().into())).is_err() {
+                            end_reason = "control_queue_full";
                             break;
                         }
                         last_ping_at = Instant::now();
                     }
                     continue;
                 }
-                _ = async {
+                writer_end = async {
                     match writer_task.as_mut() {
-                        Some(task) => {
-                            let _ = task.await;
-                        }
+                        Some(task) => task.await.unwrap_or("writer_panicked"),
                         None => pending().await,
                     }
                 }, if writer_task.is_some() => {
                     writer_task = None;
+                    end_reason = writer_end;
                     break;
                 }
             };
             let Some(message) = message else {
+                end_reason = "peer_stream_ended";
                 break;
             };
             let message = message.map_err(|error| std::io::Error::other(error.to_string()))?;
+            crate::transport_timing::record("relay_read", crate::transport_timing::message_signature(&message));
             last_read_at = Instant::now();
             match message {
                 Message::Text(text) => {
@@ -243,10 +313,10 @@ pub(crate) async fn handle_connection(
                         .is_some_and(|value| value.get("kind").and_then(|kind| kind.as_str()) == Some("transport_ack")) {
                         match serde_json::from_str::<crate::frame_transport::TransportFrame>(&text) {
                             Ok(crate::frame_transport::TransportFrame::TransportAck { transfer_id, offset }) => {
-                                if receipt_tx.try_send((transfer_id, offset)).is_err() { break; }
+                                if receipt_tx.try_send((transfer_id, offset)).is_err() { end_reason = "receipt_queue_full"; break; }
                                 continue;
                             }
-                            _ => break,
+                            _ => { end_reason = "invalid_receipt"; break; }
                         }
                     }
                     first_message_received = true;
@@ -375,99 +445,12 @@ pub(crate) async fn handle_connection(
                                 guard.daemons.insert(current_daemon_key, registration);
                             }
                         }
-                        RelayEnvelope::ClientConnect { auth_token, target } => {
-                            let identity = verify_relay_token(
-                                &auth_verifier,
-                                &auth_token,
-                                RelayAction::ClientConnect,
-                                target
-                                    .daemon_id
-                                    .as_deref()
-                                    .or(target.daemon_alias.as_deref()),
-                            )?;
-                            if verified_identity.as_ref().is_some_and(|previous| {
-                                !super::client_renewal::retains_client_authority(previous, &identity)
-                            }) {
-                                send_close(&outgoing_tx, "relay authorization renewal changed identity or reduced permissions".into());
-                                break;
-                            }
-                            auth_expiry_deadline = relay_auth_expiry_deadline(
-                                &auth_verifier,
-                                identity.expires_at_ms,
-                            );
-                            let allowed_actions = identity.allowed_actions.clone();
-                            let allowed_targets = identity.allowed_targets.clone();
-                            verified_identity = Some(identity.clone());
-                            let Some(daemon_key) =
-                                resolve_target_daemon_key(
-                                    &registry,
-                                    &auth_verifier,
-                                    &identity.realm_id,
-                                    &target,
-                                )
-                                .await
-                            else {
-                                log_target_not_connected(
-                                    "client_connect",
-                                    &registry,
-                                    peer_addr,
-                                    &identity.realm_id,
-                                    &target,
-                                )
-                                .await;
-                                send_close(
-                                    &outgoing_tx,
-                                    "target daemon is not connected to relay".to_string(),
-                                );
-                                break;
-                            };
-                            let existing_client_key = {
-                                let guard = registry.read().await;
-                                guard
-                                    .peers
-                                    .get(&peer_addr)
-                                    .filter(|peer| peer.role == RelayConnectionRole::Client)
-                                    .and_then(|peer| peer.client_daemon_key.clone())
-                            };
-                            if existing_client_key
-                                .as_ref()
-                                .is_some_and(|existing| existing != &daemon_key)
-                            {
-                                send_close(
-                                    &outgoing_tx,
-                                    "client connection already bound to target".to_string(),
-                                );
-                                break;
-                            }
-                            let daemon_public_key = {
-                                let guard = registry.read().await;
-                                guard
-                                    .daemons
-                                    .get(&daemon_key)
-                                    .map(|registration| registration.public_key.clone())
-                            };
-                            let mut guard = registry.write().await;
-                            guard.peers.insert(
-                                peer_addr,
-                                PeerHandle {
-                                    sender: outgoing_tx.clone(),
-                                    role: RelayConnectionRole::Client,
-                                    realm_id: Some(identity.realm_id.clone()),
-                                    identity: Some(identity.into()),
-                                    allowed_actions,
-                                    allowed_targets,
-                                    daemon_registration: None,
-                                    client_daemon_key: Some(daemon_key.clone()),
-                                },
-                            );
-                            routes.set_client_sender(peer_addr, outgoing_tx.clone());
-                            send_envelope(
-                                &outgoing_tx,
-                                &RelayEnvelope::ClientConnected {
-                                    target,
-                                    daemon_public_key: daemon_public_key.unwrap_or_default(),
-                                },
-                            )?;
+                        envelope @ (RelayEnvelope::ClientConnect { .. } | RelayEnvelope::ClientConnectDisplayResume { .. }) => {
+                            if !client_connect::admit(envelope,client_connect::ClientConnectContext {
+                                registry:&registry,routes:&routes,auth_verifier:&auth_verifier,peer_addr,
+                                outgoing_tx:&outgoing_tx,relay_request_counter:&relay_request_counter,
+                                verified_identity:&mut verified_identity,auth_expiry_deadline:&mut auth_expiry_deadline,initial_resume_negotiated,
+                            }).await? { break; }
                         }
                         RelayEnvelope::ClientMetadataRequest {
                             request_id,
@@ -718,6 +701,7 @@ pub(crate) async fn handle_connection(
                                     if error.is_none() {
                                         match &pending.kind {
                                             PendingRequestKind::Subscribe {
+                                                display,
                                                 subscription_id,
                                                 client_public_key,
                                             } => {
@@ -737,6 +721,7 @@ pub(crate) async fn handle_connection(
                                                         routes.set_subscription(
                                                             subscription_id.clone(),
                                                             ActiveEventRoute {
+                                                                display: *display,
                                                                 daemon_key: pending.daemon_key.clone(),
                                                                 client_sender,
                                                             },
@@ -988,13 +973,23 @@ pub(crate) async fn handle_connection(
                         | RelayEnvelope::ClientEvent { .. } => {}
                     }
                 }
+                Message::Binary(bytes) => {
+                    let Some(current_daemon_key) = registered_daemon_key.as_ref().filter(|_| binary_events) else {
+                        send_close(&outgoing_tx, "binary events require a negotiated daemon connection".into());
+                        break;
+                    };
+                    route_daemon_binary_event(&registry, &routes, current_daemon_key, &relay_request_counter, &bytes).await?;
+                }
                 Message::Ping(payload) => {
                     if control_tx.try_send(Message::Pong(payload)).is_err() {
+                        end_reason = "control_queue_full";
                         break;
                     }
                 }
                 Message::Pong(_) => {}
                 Message::Close(frame) => {
+                    peer_close_code = frame.as_ref().map(|frame| u16::from(frame.code));
+                    end_reason = "peer_closed";
                     let _ = control_tx.try_send(Message::Close(frame));
                     break;
                 }
@@ -1030,6 +1025,10 @@ pub(crate) async fn handle_connection(
     )
     .await;
     if connection_result.is_err()
+        || !matches!(
+            end_reason,
+            "peer_closed" | "peer_stream_ended" | "message_handling"
+        )
         || registered_daemon_key.is_some()
         || !disconnect_errors.is_empty()
         || !disconnect_peer_errors.is_empty()
@@ -1055,6 +1054,8 @@ pub(crate) async fn handle_connection(
                 "daemon_subscription_cleanups": daemon_subscription_cleanups,
                 "client_pending_request_drops": dropped_client_pending_requests,
                 "error": connection_result.as_ref().err().map(|error| error.to_string()),
+                "end_reason": end_reason,
+                "peer_close_code": peer_close_code,
             }),
         );
     }

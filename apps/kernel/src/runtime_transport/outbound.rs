@@ -37,7 +37,7 @@ impl OutboundBoundary {
         }
         let message = match payload {
             Payload::Frame(frame) => {
-                let payload = if self.peer.is_some() {
+                if self.peer.is_some() {
                     if let KernelOutgoingFrame::Event { event, .. } = &frame {
                         classify_event(event);
                     }
@@ -45,7 +45,7 @@ impl OutboundBoundary {
                         Ok(v) => v,
                         Err(_) => return false,
                     };
-                    match project_payload(value) {
+                    let payload = match project_payload(value) {
                         Ok(value) => {
                             match crate::transport::kernel_protocol::serialize_frame_value(value) {
                                 Ok(s) => s,
@@ -66,14 +66,28 @@ impl OutboundBoundary {
                             }
                             KernelOutgoingFrame::Event { .. } => return false,
                         },
-                    }
+                    };
+                    Message::Text(payload.into())
                 } else {
-                    match serialize_frame(&frame) {
-                        Ok(s) => s,
-                        Err(_) => return false,
+                    // MP-08/MP-10: protocol 466 display events are binary WebSocket
+                    // messages with raw payload segments; other frames stay JSON text.
+                    match frame {
+                        KernelOutgoingFrame::Event { event, .. }
+                            if matches!(*event, KernelEvent::KernelBrowserFrame { .. }) =>
+                        {
+                            match crate::transport::kernel_browser_display::encode_display_event(
+                                *event,
+                            ) {
+                                Ok(bytes) => Message::Binary(bytes.into()),
+                                Err(_) => return false,
+                            }
+                        }
+                        frame => match serialize_frame(&frame) {
+                            Ok(s) => Message::Text(s.into()),
+                            Err(_) => return false,
+                        },
                     }
-                };
-                Message::Text(payload.into())
+                }
             }
             Payload::Control(Message::Close(mut frame)) => {
                 if self.peer.is_some() {
@@ -139,7 +153,7 @@ fn project_error(value: &Value) -> KernelTransportError {
             "kernel_request_overloaded" => "kernel request admission queue overloaded",
             "duplicate_command_unavailable" => "original duplicate command result was unavailable",
             "duplicate_command_conflict" => "command_id was already used for a different request",
-            _ => "external request failed; details are available only in the host terminal",
+            _ => crate::error::external_request_failure_message(code),
         }
         .into();
     }
@@ -158,6 +172,8 @@ macro_rules! public_events {
             match event {
                 $(KernelEvent::$variant { .. } => {},)*
                 KernelEvent::PasskeyPromptsChanged { .. } => {},
+                // MP-11: browser display frames stay off external streams.
+                KernelEvent::KernelBrowserFrame { .. } => {},
             }
         }
         fn public_event(name: &str) -> bool { matches!(name, $($wire)|*) }
@@ -168,6 +184,7 @@ public_events! {
     RuntimeNotices => "runtime_notices",
     AssistantMessageCompleted => "assistant_message_completed",
     SessionSnapshot => "session_snapshot",
+    AgentTaskUpdated => "agent_task_updated",
     AgentActivityChanged => "agent_activity_changed",
     ProviderRunChanged => "provider_run_changed",
     SessionMetadataChanged => "session_metadata_changed",
@@ -177,6 +194,7 @@ public_events! {
     RemoteMachinesChanged => "remote_machines_changed",
     WaitingRoomInventoryChanged => "waiting_room_inventory_changed",
     WaitingRoomRowsChanged => "waiting_room_rows_changed",
+    ClientCatalogChanged => "client_catalog_changed",
     ProviderCatalogChanged => "provider_catalog_changed",
     SlicesChanged => "slices_changed",
     WorkflowDesignOp => "workflow_design_op",

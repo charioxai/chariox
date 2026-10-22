@@ -1,5 +1,6 @@
-// Todo view. It talks to the App only through window.chariox.call, which runs
-// the App's own tools as the signed-in person; agents use the same tools.
+// Todo view. It talks to the App only through window.chariox.call. The kernel
+// runs each call as whoever drives this page: the person, or an agent acting
+// in it as itself (agents also use the same tools directly).
 const $ = (id) => document.getElementById(id)
 const list = $("todos")
 const status = $("status")
@@ -57,6 +58,12 @@ function item(todo) {
   title.className = "title"
   title.textContent = todo.title
   li.append(box, title)
+  if (todo.created_by === "agent") {
+    const by = document.createElement("span")
+    by.className = "by-agent"
+    by.textContent = "added by an agent"
+    li.append(by)
+  }
   if (todo.due_at_ms != null) {
     const due = document.createElement("time")
     due.className = "due"

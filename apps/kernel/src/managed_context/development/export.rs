@@ -75,8 +75,6 @@ pub(crate) fn export_development_context_with_vault(
     let mut source_repositories = Vec::with_capacity(request.repositories.len());
     let mut repository_ids = BTreeSet::new();
     let mut target_directories = BTreeSet::new();
-    let mut uncompressed_artifact_bytes = 0_u64;
-    let mut checkout_bytes = 0_u64;
     let mut materialized_entries = 0_u64;
     let mut manifest_budget = ManifestMemoryBudget::new();
     manifest_budget.consume(request.project_id.len().saturating_add(256))?;
@@ -90,25 +88,11 @@ pub(crate) fn export_development_context_with_vault(
             &mut manifest_budget,
             vault,
         )?;
-        checkout_bytes = checkout_bytes.saturating_add(estimate.checkout_bytes);
         materialized_entries = materialized_entries.saturating_add(estimate.materialized_entries);
-        if checkout_bytes > MAX_CHECKOUT_BYTES_PER_PROJECT {
-            return Err(context_error(format!(
-                "development context materialization exceeds the project budget of {MAX_CHECKOUT_BYTES_PER_PROJECT} bytes"
-            )));
-        }
         source_repositories.push(DevelopmentSourceRepositoryMapping {
             source_workspace_id: selection.workspace_id.clone(),
             repository_id: exported.repository_id.clone(),
         });
-        uncompressed_artifact_bytes = uncompressed_artifact_bytes
-            .saturating_add(exported.bundle_size_bytes)
-            .saturating_add(exported.overlay_size_bytes);
-        if uncompressed_artifact_bytes > MAX_PACKAGE_BYTES {
-            return Err(context_error(format!(
-                "development context artifacts exceed {MAX_PACKAGE_BYTES} bytes"
-            )));
-        }
         repositories.push(exported);
     }
 
@@ -154,6 +138,8 @@ pub(crate) fn export_development_context_with_vault(
         repositories,
         project_environment: environment,
     };
+    // The gzip writer is bounded by the room left beside the staged artifacts, so only the bytes
+    // actually written are admitted.
     write_archive(
         &temporary_archive_path,
         temporary_archive,
@@ -163,11 +149,6 @@ pub(crate) fn export_development_context_with_vault(
     let archive_size_bytes = fs::metadata(&temporary_archive_path)
         .map_err(|error| context_io_error("inspect development context archive", error))?
         .len();
-    if archive_size_bytes > MAX_PACKAGE_BYTES {
-        return Err(context_error(format!(
-            "development context archive is {archive_size_bytes} bytes; maximum is {MAX_PACKAGE_BYTES}"
-        )));
-    }
     let archive_sha256 = sha256_file(&temporary_archive_path)?;
     cleanup.remove_staging()?;
     publish_archive_no_clobber(
@@ -251,10 +232,10 @@ fn validate_export_request(request: &DevelopmentContextExportRequest) -> Result<
     {
         return Err(context_error("development context project id is required"));
     }
-    if request.repositories.is_empty() || request.repositories.len() > MAX_REPOSITORIES {
-        return Err(context_error(format!(
-            "development context must contain between 1 and {MAX_REPOSITORIES} repositories"
-        )));
+    if request.repositories.is_empty() {
+        return Err(context_error(
+            "development context must contain at least one repository",
+        ));
     }
     if request
         .repositories
@@ -346,7 +327,10 @@ fn export_repository(
     let bundle_relative = format!("repositories/{repository_id}/repository.bundle");
     let (bundle_size_bytes, bundle_sha256) = if let Some(vault) = vault {
         let items = super::super::credential_free::scan_repository(worktree)?;
-        let bytes = git::create_git_bundle_bytes(worktree, MAX_BUNDLE_BYTES_PER_REPOSITORY)?;
+        let bytes = git::create_git_bundle_bytes(
+            worktree,
+            crate::managed_context::limits::memory_budget(),
+        )?;
         git::verify_git_bundle_header_reader(
             &mut std::io::Cursor::new(bytes.as_slice()),
             &head_sha,
@@ -356,7 +340,11 @@ fn export_repository(
         vault.stage(staging_root, &bundle_relative, &bytes, items)?;
         (size, digest)
     } else {
-        create_git_bundle(worktree, &bundle_path, MAX_BUNDLE_BYTES_PER_REPOSITORY)?;
+        create_git_bundle(
+            worktree,
+            &bundle_path,
+            crate::managed_context::limits::disk_budget(&repository_root),
+        )?;
         verify_git_bundle(worktree, &bundle_path, &head_sha)?;
         (
             fs::metadata(&bundle_path)
@@ -372,37 +360,19 @@ fn export_repository(
         manifest_budget,
         vault,
     )?;
-    let source_estimate = charge_overlay_materialization(
-        source_estimate,
-        &overlay,
-        MAX_CHECKOUT_BYTES_PER_REPOSITORY,
-        u64::MAX,
-    )?;
-    let verification_root = repository_root.join("snapshot-verification");
-    create_private_directory(&verification_root)?;
-    let mut verification_budget = ManifestMemoryBudget::new();
-    let verification_vault = vault.map(|v| {
-        vault_artifacts::ExportVault::new(
-            v.config,
-            v.context_id,
-            v.target_kernel_id,
-            v.target_public_key,
-            v.project_id,
-        )
-    });
-    let (verified_overlay, verified_overlay_size_bytes) = export_overlay(
+    let source_estimate =
+        charge_overlay_materialization(source_estimate, &overlay, UNBOUNDED_BYTES, u64::MAX)?;
+    let (verified_overlay, verified_overlay_size_bytes) = overlay::verify_overlay(
         worktree,
         &repository_id,
-        &verification_root,
-        &mut verification_budget,
-        verification_vault.as_ref(),
+        &repository_root,
+        &mut ManifestMemoryBudget::new(),
+        vault.is_some(),
     )?;
-    fs::remove_dir_all(&verification_root)
-        .map_err(|error| context_io_error("remove snapshot verification", error))?;
     let verified_estimate = charge_overlay_materialization(
         inspect_export_repository(worktree)?,
         &verified_overlay,
-        MAX_CHECKOUT_BYTES_PER_REPOSITORY,
+        UNBOUNDED_BYTES,
         u64::MAX,
     )?;
     let source_after = repository_source_state(worktree)?;

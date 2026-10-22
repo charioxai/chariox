@@ -44,3 +44,43 @@ test("worker resource observation fails closed when no main Chromium process is 
     (error) => error.code === "browser_resource_inventory_invalid",
   );
 });
+
+// MP-08 / MP-10 / MP-11: actual Linux Chromium rewrites argv into one title.
+test("joined Chromium titles preserve profile spaces and exclude renderer processes", async () => {
+  const files = new Map([
+    ["/worker-proc/101/cmdline", "/usr/lib/chromium/chromium --user-data-dir=/home/slice/Profile Data --remote-debugging-port=9222 --headless about:blank\0"],
+    ["/worker-proc/102/cmdline", "/usr/lib/chromium/chromium --type=renderer --user-data-dir=/home/slice/Profile Data --no-sandbox\0"],
+    ["/worker-proc/103/cmdline", "/usr/lib/chromium/chromium --type renderer --user-data-dir /home/slice/Profile Data --no-sandbox\0"],
+  ]);
+  const observed = await observeBrowserResources({
+    procRoot: "/worker-proc",
+    fileSystem: {
+      readdir: async () => ["101", "102", "103"],
+      readFile: async (file) => files.get(file),
+      realpath: async (file) => {
+        assert.equal(file, "/home/slice/Profile Data");
+        return file;
+      },
+      stat: async () => ({ dev: 7, ino: 41, isDirectory: () => true }),
+    },
+  });
+  assert.deepEqual(observed.browser_ids, ["browser-pid-101"]);
+  assert.equal(observed.profile_ids.length, 1);
+});
+
+test("joined title accepts separate profile flag without interpreting shell syntax", async () => {
+  const profile = "/home/slice/Profile $(literal) Data";
+  const observed = await observeBrowserResources({
+    procRoot: "/worker-proc",
+    fileSystem: {
+      readdir: async () => ["101"],
+      readFile: async () => `/usr/lib/chromium/chromium --user-data-dir ${profile} --headless\0`,
+      realpath: async (file) => {
+        assert.equal(file, profile);
+        return file;
+      },
+      stat: async () => ({ dev: 7, ino: 41, isDirectory: () => true }),
+    },
+  });
+  assert.deepEqual(observed.browser_ids, ["browser-pid-101"]);
+});

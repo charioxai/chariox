@@ -588,6 +588,14 @@ impl KernelRuntimeOwnedState {
             Some(session_id.clone()),
             serde_json::json!({ "session": &session }),
         ) {
+            for agent in self
+                .agent_store
+                .list_agents()
+                .iter()
+                .filter(|a| a.session_id() == session_id)
+            {
+                self.forget_room_computer_access(agent.id());
+            }
             self.agent_store.remove_session_agents(&session_id);
             let _ = self
                 .session_store

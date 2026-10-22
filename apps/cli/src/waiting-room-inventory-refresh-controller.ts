@@ -15,6 +15,7 @@ import type {
   WaitingRoomInventory,
 } from "./waiting-room-inventory-api.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
+import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
 import type { ManagedEnvironmentCatalog } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import type { LocalIpcClient } from "./ipc.js"
 
@@ -100,6 +101,17 @@ export function createWaitingRoomInventoryRefreshController(
 
   const retainedMachines = createWaitingRoomRetainedRows<RemoteMachineView>(row => row.machine_id, options.nowMs ?? Date.now)
   const retainedKernels = createWaitingRoomRetainedRows<RemoteKernelView>(row => row.kernel_id, options.nowMs ?? Date.now)
+  const setProjects = (projects: WaitingRoomProjectSummary[]) => {
+    const state = options.getWaitingRoomState()
+    const focused = state.focus === "project-entry"
+      ? waitingRoomProjectsForNavigation(options.getProjects?.(), Boolean(state.showArchivedProjects))[state.projectIndex ?? 0]?.id
+      : undefined
+    options.setProjects?.(projects)
+    if (!focused) return
+    const index = waitingRoomProjectsForNavigation(projects, Boolean(state.showArchivedProjects)).findIndex(project => project.id === focused)
+    if (index >= 0 && index !== (state.projectIndex ?? 0)) options.reconcileWaitingRoom({ ...state, projectIndex: index })
+  }
+
   const restoreCachedInventory = () => {
     options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
     const snapshots = [...inventoriesByKernel.values()].filter(snapshot => !directTargetKernelId || snapshot.kernelId === directTargetKernelId)
@@ -109,7 +121,7 @@ export function createWaitingRoomInventoryRefreshController(
     options.setRemoteKernels(retainedKernels.restore(kernels).map(row => ({ ...row, accepting_remote_leases: false })))
     const workspaceSnapshots = snapshots.filter(snapshot => options.shouldApplyWorkspaceInventory?.(snapshot) !== false)
     if (workspaceSnapshots.length || !snapshots.length) {
-      options.setProjects?.([...new Map(workspaceSnapshots.flatMap(snapshot => snapshot.projects ?? []).map(row => [row.id, row])).values()])
+      setProjects([...new Map(workspaceSnapshots.flatMap(snapshot => snapshot.projects ?? []).map(row => [row.id, row])).values()])
     }
   }
   if ((options.cachedInventories?.length ?? 0) > 0) restoreCachedInventory()
@@ -249,7 +261,7 @@ export function createWaitingRoomInventoryRefreshController(
     if (options.shouldApplyWorkspaceInventory?.(snapshot) !== false) {
       options.applyWorkspaceInventory?.(snapshot)
       options.setLaunchTarget?.(snapshot.launchTarget)
-      options.setProjects?.(snapshot.projects ?? [])
+      setProjects(snapshot.projects ?? [])
     }
     const externalProviderSessionsPage = {
       ...(snapshot.externalProviderSessions !== undefined ? { externalProviderSessions: snapshot.externalProviderSessions } : {}),
@@ -303,7 +315,7 @@ export function createWaitingRoomInventoryRefreshController(
       options.persistInventory?.(inventory)
       options.setAvailableSessions(visibleSessions(inventoriesByKernel, currentDirectTargetKernelId(options)))
       options.setLaunchTarget?.(inventory.launchTarget)
-      options.setProjects?.(inventory.projects ?? [])
+      setProjects(inventory.projects ?? [])
       await options.applyWorkspaceInventory?.(inventory, client)
       options.reconcileWaitingRoom(options.getWaitingRoomState())
     },
@@ -353,7 +365,7 @@ export function createWaitingRoomInventoryRefreshController(
       options.persistInventory?.(nextInventory)
       options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
       if (options.shouldApplyWorkspaceInventory?.(nextInventory) !== false) {
-        options.setProjects?.(nextInventory.projects)
+        setProjects(nextInventory.projects)
       }
       options.reconcileWaitingRoom(options.getWaitingRoomState())
     },

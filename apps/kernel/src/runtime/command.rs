@@ -6,6 +6,8 @@ use crate::local::LocalDaemonRequest;
 use crate::session::unix_epoch_ms;
 
 mod caller;
+mod terminal_lifetime;
+pub(crate) use terminal_lifetime::TerminalLifetime;
 mod local_request_metadata;
 
 pub(crate) use caller::command_caller_user_id;
@@ -30,6 +32,8 @@ pub struct KernelCommand {
     pub source: KernelCommandSource,
     #[serde(default)]
     pub caller: KernelCaller,
+    #[serde(skip)]
+    pub(crate) terminal_lifetime: Option<TerminalLifetime>,
     pub session_id: Option<String>,
     pub attachment_id: Option<String>,
     pub agent_id: Option<String>,
@@ -50,6 +54,12 @@ impl KernelCommand {
                 == Some(crate::local::KernelConnectionClass::KernelAgent)
                 && self.caller.caller_id.starts_with("sudo:")))
         .then(|| self.caller.caller_id.clone())
+    }
+
+    /// A command an elevated provider turn submitted through its sudo grant.
+    pub(crate) fn is_sudo_command(&self) -> bool {
+        self.external_grant_id()
+            .is_some_and(|id| id.starts_with("sudo:") && self.causation_id.as_deref() == Some(&id))
     }
 
     pub(crate) fn durable_operation_id(&self, suffix: Option<&str>) -> String {
@@ -121,6 +131,7 @@ impl KernelCommand {
             submitted_at_ms: unix_epoch_ms(),
             source,
             caller,
+            terminal_lifetime: None,
             session_id: metadata.session_id,
             attachment_id: metadata.attachment_id,
             agent_id: metadata.agent_id,
@@ -165,6 +176,13 @@ fn local_request_payload(request: &LocalDaemonRequest) -> Value {
                 "overwrite": request.overwrite
             }
         }),
+        LocalDaemonRequest::AnswerUserDomainInteraction(request) => serde_json::json!({
+            "AnswerUserDomainInteraction": {
+                "interaction_id": request.interaction_id, "choice_id": request.choice_id,
+                "passkey": request.passkey.as_ref().map(|_| "[redacted]"),
+                "passkey_remember_minutes": request.passkey_remember_minutes,
+            }
+        }),
         LocalDaemonRequest::RespondToInteraction(request) => serde_json::json!({
             "RespondToInteraction": {
                 "session_id": request.session_id,
@@ -173,6 +191,13 @@ fn local_request_payload(request: &LocalDaemonRequest) -> Value {
                 "custom_reply": request.custom_reply.as_ref().map(|_| "[redacted]"),
                 "passkey": request.passkey.as_ref().map(|_| "[redacted]"),
                 "passkey_remember_minutes": request.passkey_remember_minutes
+            }
+        }),
+        LocalDaemonRequest::RespondToHandoff(request) => serde_json::json!({
+            "RespondToHandoff": {
+                "session_id": request.session_id,
+                "interaction_id": request.interaction_id,
+                "action": request.action.kind(),
             }
         }),
         LocalDaemonRequest::RequestCredentialEnrollmentInteraction(request) => {

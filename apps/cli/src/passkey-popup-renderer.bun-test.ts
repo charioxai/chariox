@@ -18,6 +18,22 @@ const view: PasskeyPopupView = {
 }
 const noActions = { show() {}, approve() {}, refuse() {}, cycleRemember() {} }
 
+test("MP-08/MP-10/MP-11 sudo scope approval names the operation without renewing time", async () => {
+  const harness = await createTestRenderer({ width: 90, height: 30, useThread: false })
+  const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
+  harness.renderer.root.add(box)
+  const surface = createPasskeyPopupRenderer(harness.renderer, noActions)
+  surface.assign(box)
+  try {
+    surface.render({ ...view, prompt: { ...prompt, kind: "sudo", title: "Authorize sudo operation scope", message: "Review this exact operation for the original owner work." } }, { width: 90, height: 30 })
+    await harness.renderOnce()
+    const frame = harness.captureCharFrame()
+    assert.match(frame, /Sudo operation scope/)
+    assert.match(frame, /Operation scope · fresh passkey required/)
+    assert.doesNotMatch(frame, /Tab duration|Tab remember|undefined|maximum/)
+  } finally { harness.renderer.destroy() }
+})
+
 test("the passkey popup is shaped like the hot-keys popup and shows only the kernel's facts", async () => {
   const harness = await createTestRenderer({ width: 90, height: 30, useThread: false })
   const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
@@ -52,8 +68,8 @@ test("the passkey popup is shaped like the hot-keys popup and shows only the ker
     surface.render({ ...view, open: false }, { width: 90, height: 30 })
     await harness.renderOnce()
     frame = harness.captureCharFrame()
-    assert.match(frame, /Chariox · 1 passkey request · F8/)
-    assert.doesNotMatch(frame, /Approve App action/)
+    assert.match(frame, /Chariox · Approve App action · F8/)
+    assert.doesNotMatch(frame, /Action: pay|Passkey:|Enter approves/)
     assert.match(frame, /Waiting room · Projects/)
   } finally { harness.renderer.destroy() }
 })
@@ -178,19 +194,21 @@ test("Escape hides the popup and gives the prompt back; the passkey is gone", as
   } finally { h.dispose() }
 })
 
-test("sudo popup describes a fresh one-turn decision without grant lifetime controls", async () => {
+test("MP-08/MP-10/MP-11 A04 sudo popup shows the window duration and its 8-hour maximum", async () => {
   const harness = await createTestRenderer({ width: 90, height: 30, useThread: false })
   const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
   harness.renderer.root.add(box)
   const surface = createPasskeyPopupRenderer(harness.renderer, noActions)
   surface.assign(box)
   try {
-    surface.render({ ...view, prompt: { ...prompt, kind: "sudo" } }, { width: 90, height: 30 })
+    surface.render({ ...view, passkey: { ...view.passkey, accessLifetimeMinutes: 120 }, prompt: { ...prompt, kind: "sudo", lifetime_minutes: 60, max_lifetime_minutes: 480 } }, { width: 90, height: 30 })
     await harness.renderOnce()
     const frame = harness.captureCharFrame()
-    assert.match(frame, /One sudo turn/)
+    assert.match(frame, /Sudo window/)
+    assert.match(frame, /Window: 2 hours · maximum 8 hours/)
     assert.match(frame, /fresh passkey/i)
-    assert.doesNotMatch(frame, /External agent access|undefined|Tab lifetime|Tab remember|Remember for/)
+    assert.match(frame, /Tab duration/)
+    assert.doesNotMatch(frame, /External agent access|undefined|Tab lifetime|Tab remember|Remember for|One sudo turn/)
   } finally { harness.renderer.destroy() }
 })
 
@@ -275,4 +293,116 @@ test("EXT-UX-04 the pending status takes the hint row's place and no row moves",
     for (const marker of [/External agent access/, /Passkey:/, /\[ Approve \]/]) assert.equal(rowOf(after, marker), rowOf(before, marker))
     assert.equal(rowOf(after, /Waiting for the kernel…/), rowOf(before, /Enter approves/))
   } finally { h.renderer.destroy() }
+})
+
+// MP-08 / MP-11: a pending notice reserves a row instead of covering code.
+test("MP-08/MP-11 passkey notice reserves an opaque row above the prompt", async () => {
+  const h = await createTestRenderer({ width: 90, height: 12, useThread: false })
+  const column = new BoxRenderable(h.renderer, { flexDirection: "column", width: 90 })
+  h.renderer.root.add(column)
+  column.add(new TextRenderable(h.renderer, { content: "const denseCode = 42;" }))
+  const banner = new BoxRenderable(h.renderer, { flexShrink: 0, visible: false })
+  column.add(banner)
+  column.add(new TextRenderable(h.renderer, { content: "Prompt > draft kept" }))
+  const overlay = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+  h.renderer.root.add(overlay)
+  let opened = false
+  const surface = createPasskeyPopupRenderer(h.renderer, { ...noActions, show() { opened = true } })
+  surface.assign(overlay)
+  try {
+    ;(surface as unknown as { assignBanner(value: BoxRenderable): void }).assignBanner(banner)
+    surface.render({ ...view, open: false }, { width: 90, height: 12 })
+    await h.renderOnce()
+    const lines = h.captureCharFrame().split("\n")
+    assert.match(lines[0]!, /const denseCode = 42;/)
+    assert.match(lines[1]!, /Chariox · Approve App action/)
+    assert.match(lines[2]!, /Prompt > draft kept/)
+    await h.mockMouse.click(5, 1, 0)
+    assert.equal(opened, true)
+    surface.render({ ...view, count: 0, prompt: null }, { width: 90, height: 12 })
+    await h.renderOnce()
+    assert.match(h.captureCharFrame().split("\n")[1]!, /Prompt > draft kept/)
+  } finally { h.renderer.destroy() }
+})
+
+// MP-08 / MP-11: requester attribution uses only kernel-verified harness metadata.
+test("MP-08/MP-11 notice names the request and verified requester", async () => {
+  const h = await createTestRenderer({ width: 100, height: 12, useThread: false })
+  const box = new BoxRenderable(h.renderer, { position: "absolute", left: 0, top: 0 })
+  h.renderer.root.add(box)
+  const surface = createPasskeyPopupRenderer(h.renderer, noActions)
+  surface.assign(box)
+  try {
+    surface.render({ ...view, open: false, prompt: { ...prompt, kind: "access_extension", requester: {
+      executable: "/opt/claude", pid: 42, process_start_id: "1", process_exec_version: 0, provider_harness: "claude",
+    } } }, { width: 100, height: 12 })
+    await h.renderOnce()
+    assert.match(h.captureCharFrame(), /Claude Code asks to extend access/)
+    assert.doesNotMatch(h.captureCharFrame(), /42|\/opt\/claude/)
+  } finally { h.renderer.destroy() }
+})
+
+test("MP-08/MP-11 both pending notice and popup show the live request countdown", async () => {
+  const h = await createTestRenderer({width: 110, height: 30, useThread: false})
+  const box = new BoxRenderable(h.renderer, {position: "absolute", left: 0, top: 0})
+  h.renderer.root.add(box)
+  const surface = createPasskeyPopupRenderer(h.renderer, noActions)
+  surface.assign(box)
+  try {
+    surface.render({...view, remainingMs: 192_000}, {width: 110, height: 30})
+    await h.renderOnce()
+    assert.match(h.captureCharFrame(), /3:12 left/)
+    surface.render({...view, open: false, remainingMs: 192_000}, {width: 110, height: 30})
+    await h.renderOnce()
+    assert.match(h.captureCharFrame(), /3:12 left/)
+  } finally {h.renderer.destroy()}
+})
+
+test("MP-08/MP-11 a countdown tick preserves the request scroll surface", async () => {
+  const {ScrollBoxRenderable} = await import("@opentui/core")
+  const h = await createTestRenderer({width: 90, height: 30, useThread: false})
+  const box = new BoxRenderable(h.renderer, {position: "absolute", left: 0, top: 0})
+  h.renderer.root.add(box)
+  const surface = createPasskeyPopupRenderer(h.renderer, noActions)
+  surface.assign(box)
+  const findBody = (node: BoxRenderable): InstanceType<typeof ScrollBoxRenderable> | undefined => {
+    if (node instanceof ScrollBoxRenderable) return node
+    for (const child of node.getChildren()) if (child instanceof BoxRenderable) {
+      const found = findBody(child)
+      if (found) return found
+    }
+  }
+  try {
+    surface.render({...view, remainingMs: 192_000}, {width: 90, height: 30})
+    await h.renderOnce()
+    const body = findBody(box)
+    assert.ok(body)
+    surface.render({...view, remainingMs: 191_000}, {width: 90, height: 30})
+    await h.renderOnce()
+    assert.equal(findBody(box), body)
+    assert.match(h.captureCharFrame(), /3:11 left/)
+  } finally {h.renderer.destroy()}
+})
+
+// MP-08 / MP-10 / MP-11: normal sudo decisions stay readable at terminal sizes.
+test("MP-08/MP-11 typed sudo request collapses technical facts and full task", async () => {
+  const h = await createTestRenderer({width: 100, height: 40, useThread: false})
+  const box = new BoxRenderable(h.renderer, {position: "absolute", left: 0, top: 0})
+  h.renderer.root.add(box)
+  const surface = createPasskeyPopupRenderer(h.renderer, noActions)
+  surface.assign(box)
+  try {
+    const p = Object.assign({...prompt, kind: "sudo" as const, title: "Claude Code wants to run one sudo task",
+      message: "Sudo allows critical approvals until this task yields or is revoked."}, {sudo_request: {
+        requester_name: "Claude Code", agent_name: "Reviewer", session_name: "Payments", task_summary: "Review the release",
+        task: "Review the release\n" + "full task line\n".repeat(100), grant_id: "grant-handle", terminal_id: "terminal-handle",
+      }})
+    surface.render({...view, prompt: p}, {width: 100, height: 40})
+    await h.renderOnce()
+    const frame = h.captureCharFrame()
+    assert.match(frame, /Reviewer/)
+    assert.match(frame, /“Review the release”/)
+    assert.match(frame, /Show details/)
+    assert.doesNotMatch(frame, /full task line|grant-handle|session-1/)
+  } finally {h.renderer.destroy()}
 })

@@ -183,6 +183,9 @@ pub(super) fn render_snapshot_output_chunks(
                         },
                         &mut chunks,
                     );
+                    if message.info.time.completed.is_some() && !part.text.is_empty() {
+                        state.finalized_text_part_ids.insert(part.id.clone());
+                    }
                 }
                 "tool" => {
                     let summary = render_tool_transcript_update(part, remote_extension_manifest);

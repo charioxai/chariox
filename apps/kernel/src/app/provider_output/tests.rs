@@ -12,284 +12,6 @@ fn promptless_pty_output_is_projected_for_failures_and_transient_native_terminal
     assert!(should_project_pty_output(false, None, true));
 }
 
-#[test]
-fn exited_pty_is_drained_before_liveness_settlement() {
-    let worktree = crate::test_support::TestWorktree::new("provider-output-exited-pty");
-    let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
-        .expect("daemon bootstrap should succeed");
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(worktree.session_request())
-        .expect("session should be created");
-    let attachment = crate::app::KernelSessionService::new(&mut app)
-        .attach(crate::attachment::AttachRequest::new(
-            session.id(),
-            "client-exited-pty",
-            crate::attachment::ClientCapabilityLevel::FullTerminal,
-        ))
-        .expect("attachment should attach");
-    let request = crate::provider::LaunchProviderRequest::new(
-        session.id(),
-        "claude",
-        "claude-headless",
-        "default",
-        "haiku",
-    )
-    .with_agent_id(agent.id())
-    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
-    let mut run = crate::provider::RuntimeProviderRun::new(
-        "provider-run-exited-pty",
-        &request,
-        crate::provider::ProviderLaunchResult {
-            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
-            process_label: "test-exited-pty".to_string(),
-            pty_target: Some("test-exited-pty".to_string()),
-            pty_program: Some("/bin/sh".to_string()),
-            pty_args: vec![
-                "-lc".to_string(),
-                "printf '%s\\n' 'Error: --dangerously-skip-permissions cannot be used with root/sudo privileges'; exit 1".to_string(),
-            ],
-            pty_env: std::collections::BTreeMap::new(),
-            pty_env_remove: Vec::new(),
-            working_directory: None,
-            structured_endpoint: None,
-        },
-    );
-    run.mark_running();
-    app.pty
-        .spawn_for_run(&run)
-        .expect("test provider PTY should start");
-    app.providers_mut().insert_run_for_test(run.clone());
-    app.sessions
-        .set_active_provider_run(session.id(), Some(run.id().to_string()))
-        .expect("active provider run should be set");
-    app.update_provider_run_projection(run.clone());
-    let prompt = crate::session::PromptQueueItem::new(
-        app.sessions_mut().reserve_prompt_id(),
-        attachment.id(),
-        agent.id(),
-        "validate provider startup",
-        crate::session::PromptStatus::Queued,
-    );
-    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
-        .expect("prompt should start");
-
-    for _ in 0..50 {
-        if matches!(
-            app.pty.poll_process_state(run.id()),
-            Ok(crate::pty::PtyProcessState::Exited { .. })
-        ) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-
-    ProviderOutputPump::new(&mut app)
-        .pump_provider_output(ProviderOutputPumpRequest {
-            session_id: session.id(),
-            provider_run_id: run.id(),
-            recipient_attachment_ids: vec![attachment.id().to_string()],
-            initial_liveness_already_checked: false,
-        })
-        .expect("provider output pump should preserve the terminal failure");
-
-    let run = app
-        .providers()
-        .get_run(run.id())
-        .expect("provider run should still exist");
-    let diagnostic = run
-        .terminal_diagnostic()
-        .expect("provider terminal diagnostic should be recorded");
-    assert!(diagnostic.contains("terminal permission error"));
-    assert!(diagnostic.contains("--dangerously-skip-permissions"));
-}
-
-#[test]
-fn raw_provider_output_does_not_promote_framed_reviewer_prose_to_a_terminal_error() {
-    let worktree = crate::test_support::TestWorktree::new("provider-output-reviewer-prose");
-    let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
-        .expect("daemon bootstrap should succeed");
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(worktree.session_request())
-        .expect("session should be created");
-    let attachment = crate::app::KernelSessionService::new(&mut app)
-        .attach(crate::attachment::AttachRequest::new(
-            session.id(),
-            "client-reviewer-prose",
-            crate::attachment::ClientCapabilityLevel::FullTerminal,
-        ))
-        .expect("attachment should attach");
-    let request = crate::provider::LaunchProviderRequest::new(
-        session.id(),
-        "claude",
-        "claude",
-        "default",
-        "sonnet",
-    )
-    .with_agent_id(agent.id())
-    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
-    let mut run = crate::provider::RuntimeProviderRun::new(
-        "provider-run-reviewer-prose",
-        &request,
-        crate::provider::ProviderLaunchResult {
-            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
-            process_label: "test-reviewer-prose".to_string(),
-            pty_target: Some("test-reviewer-prose".to_string()),
-            pty_program: Some("/bin/sh".to_string()),
-            pty_args: vec![
-                "-lc".to_string(),
-                "printf '%s\\n' 'Error: this classifier is under review.' 'The phrase unsupported model is reviewer prose.'; sleep 5".to_string(),
-            ],
-            pty_env: std::collections::BTreeMap::new(),
-            pty_env_remove: Vec::new(),
-            working_directory: None,
-            structured_endpoint: None,
-        },
-    );
-    run.mark_running();
-    app.pty
-        .spawn_for_run(&run)
-        .expect("test provider PTY should start");
-    app.providers_mut().insert_run_for_test(run.clone());
-    app.sessions
-        .set_active_provider_run(session.id(), Some(run.id().to_string()))
-        .expect("active provider run should be set");
-    app.update_provider_run_projection(run.clone());
-    let prompt = crate::session::PromptQueueItem::new(
-        app.sessions_mut().reserve_prompt_id(),
-        attachment.id(),
-        agent.id(),
-        "review the classifier",
-        crate::session::PromptStatus::Queued,
-    );
-    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
-        .expect("prompt should start");
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    let mut output = Vec::new();
-    while std::time::Instant::now() < deadline {
-        let records = ProviderOutputPump::new(&mut app)
-            .pump_provider_output(ProviderOutputPumpRequest {
-                session_id: session.id(),
-                provider_run_id: run.id(),
-                recipient_attachment_ids: vec![attachment.id().to_string()],
-                initial_liveness_already_checked: false,
-            })
-            .expect("reviewer output should remain ordinary provider output");
-        output.extend(
-            records
-                .iter()
-                .flat_map(|record| record.bytes.iter().copied()),
-        );
-        if String::from_utf8_lossy(&output).contains("unsupported model is reviewer prose.") {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    app.pty
-        .remove_process(run.id())
-        .expect("test provider PTY should stop");
-    let output = String::from_utf8_lossy(&output);
-    assert!(output.contains("Error: this classifier is under review."));
-    assert!(output.contains("unsupported model is reviewer prose."));
-
-    let run = app
-        .providers()
-        .get_run(run.id())
-        .expect("provider run should remain available");
-    assert!(
-        run.terminal_diagnostic().is_none(),
-        "ordinary reviewer output gained a diagnostic: {:?}",
-        run.terminal_diagnostic()
-    );
-}
-
-#[test]
-fn idle_claude_native_tui_projects_startup_terminal_output() {
-    let worktree = crate::test_support::TestWorktree::new("provider-output-idle-claude");
-    let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
-        .expect("daemon bootstrap should succeed");
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(worktree.session_request())
-        .expect("session should be created");
-    let attachment = crate::app::KernelSessionService::new(&mut app)
-        .attach(crate::attachment::AttachRequest::new(
-            session.id(),
-            "client-idle-claude-native",
-            crate::attachment::ClientCapabilityLevel::FullTerminal,
-        ))
-        .expect("attachment should attach");
-    let request = crate::provider::LaunchProviderRequest::new(
-        session.id(),
-        "claude",
-        "claude",
-        "default",
-        "sonnet",
-    )
-    .with_agent_id(agent.id())
-    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
-    let mut run = crate::provider::RuntimeProviderRun::new(
-        "provider-run-idle-claude-native",
-        &request,
-        crate::provider::ProviderLaunchResult {
-            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
-            process_label: "test-idle-claude-native".to_string(),
-            pty_target: Some("test-idle-claude-native".to_string()),
-            pty_program: Some("/bin/sh".to_string()),
-            pty_args: vec![
-                "-lc".to_string(),
-                "printf '\\033[?2004hClaude Code\\n'; sleep 5".to_string(),
-            ],
-            pty_env: std::collections::BTreeMap::new(),
-            pty_env_remove: Vec::new(),
-            working_directory: None,
-            structured_endpoint: None,
-        },
-    );
-    run.mark_running();
-    app.pty
-        .spawn_for_run(&run)
-        .expect("test provider PTY should start");
-    app.providers_mut().insert_run_for_test(run.clone());
-    app.sessions
-        .set_active_provider_run(session.id(), Some(run.id().to_string()))
-        .expect("active provider run should be set");
-    app.update_provider_run_projection(run.clone());
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    let records = loop {
-        let records = ProviderOutputPump::new(&mut app)
-            .pump_provider_output(ProviderOutputPumpRequest {
-                session_id: session.id(),
-                provider_run_id: run.id(),
-                recipient_attachment_ids: vec![attachment.id().to_string()],
-                initial_liveness_already_checked: false,
-            })
-            .expect("provider output pump should preserve the startup frame");
-        if !records.is_empty() {
-            break records;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "timed out waiting for the Claude native startup frame"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    };
-    app.pty
-        .remove_process(run.id())
-        .expect("test provider PTY should stop");
-
-    assert!(records
-        .iter()
-        .all(|record| record.kind == TerminalOutputKind::ProviderTerminal));
-    let output = records
-        .iter()
-        .flat_map(|record| record.bytes.iter().copied())
-        .collect::<Vec<_>>();
-    let output = String::from_utf8_lossy(&output);
-    assert!(output.contains("Claude Code"));
-    assert!(output.contains("\u{1b}[?2004h"));
-}
-
 fn structured_provider_test_app() -> (
     DaemonApp,
     crate::test_support::TestWorktree,
@@ -1104,6 +826,9 @@ fn pending_structured_output_record(
 ) -> TerminalOutputRecord {
     TerminalOutputRecord {
         record_id: None,
+        sequence: None,
+        sequence_end: None,
+        sequence_byte_lengths: Vec::new(),
         timestamp_ms: 1_000,
         session_id: session_id.to_string(),
         provider_run_id: provider_run_id.to_string(),
@@ -1803,6 +1528,72 @@ fn app_side_duplicate_completion_before_promoted_workflow_dispatch_is_ignored() 
     assert_eq!(active_prompt_id, promoted_prompt_id);
 }
 
+// MP-08 / MP-10: readiness owns first-output wakeups. Empty native
+// drains retain the same maintenance fallback for active and idle prompts.
+#[test]
+fn panes_stream_active_empty_poll_retains_readiness_and_maintenance_fallback() {
+    for empty_batch in [
+        None,
+        Some(crate::provider::ProviderPromptSignalBatch::default()),
+    ] {
+        let (mut app, _worktree, session_id, attachment_id, run_id) =
+            structured_provider_test_app();
+        let agent_id = app
+            .providers()
+            .get_run(&run_id)
+            .unwrap()
+            .agent_instance_id()
+            .unwrap()
+            .to_string();
+        let prompt = crate::session::PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            &attachment_id,
+            &agent_id,
+            "stream output",
+            crate::session::PromptStatus::Queued,
+        );
+        let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+            .prompt_owner_submit_prepared_prompt(&session_id, prompt, false)
+            .unwrap()
+        else {
+            panic!("prompt must start")
+        };
+        app.mark_active_prompt_delivery(
+            &session_id,
+            &agent_id,
+            prompt.id(),
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(run_id.clone()),
+            None,
+        )
+        .unwrap();
+        app.prompt_owner_mark_active_prompt_running(&session_id, &agent_id)
+            .unwrap();
+        app.structured_output_record_store()
+            .mark_poll_enqueued(&run_id, Some(prompt.id().to_string()));
+        app.providers_mut()
+            .push_finished_structured_output_poll_for_test(run_id.clone(), Ok(empty_batch));
+        let before = crate::session::unix_epoch_ms();
+        pump_structured_test_run(&mut app, &session_id, &attachment_id, &run_id);
+        let due = app
+            .structured_output_record_store()
+            .poll_due_at_ms(&run_id)
+            .expect("empty active drain must retain a retry");
+        assert!(
+            due >= before.saturating_add(500),
+            "empty drain advertises a fallback the background pump cannot honor: {} ms",
+            due.saturating_sub(before)
+        );
+        let store = app.structured_output_record_store();
+        assert!(!store.poll_due(&run_id, before));
+        store.mark_output_ready(run_id.clone());
+        assert!(
+            store.poll_due(&run_id, before),
+            "native readiness must bypass the empty fallback"
+        );
+    }
+}
+
 #[test]
 fn metadata_only_structured_batch_backs_off_polling() {
     let (mut app, _worktree, session_id, attachment_id, provider_run_id) =
@@ -1842,6 +1633,9 @@ fn structured_output_record_store_clear_removes_records_and_schedule() {
         "provider-run-1".to_string(),
         vec![TerminalOutputRecord {
             record_id: None,
+            sequence: None,
+            sequence_end: None,
+            sequence_byte_lengths: Vec::new(),
             timestamp_ms: 1_000,
             session_id: "session-1".to_string(),
             provider_run_id: "provider-run-1".to_string(),

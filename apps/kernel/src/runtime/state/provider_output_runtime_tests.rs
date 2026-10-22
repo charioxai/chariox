@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 mod inert_pty;
+mod native_pty_projection;
 use inert_pty::{spawn_inert_pty_for_run, InertPtyCleanup};
 
 async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
@@ -154,6 +155,7 @@ mod completion_settlement;
 mod detached_provider_run;
 mod diagnostics_timeouts;
 mod external_queue;
+mod focus_recovery_tests;
 mod history_projection;
 mod large_codex_resume;
 mod leased_output;
@@ -261,6 +263,7 @@ async fn mcp_catalog_continuation_uses_kernel_attachment_after_client_detach() {
     let continuation = PendingMcpContinuation {
         session_id: session.id().into(),
         agent_id: agent.id().into(),
+        source_prompt_id: None,
         mcp_name: "mid_session_script".into(),
         previous_prompt: "invoke the granted script".into(),
         reload_reason: ProviderReloadReason::RuntimeToolCatalog,
@@ -302,6 +305,70 @@ async fn mcp_catalog_continuation_uses_kernel_attachment_after_client_detach() {
     assert_eq!(attribution.owner_user_id(), agent.owner_user_id());
     runtime.owned.detach(&source).unwrap();
     std::fs::remove_dir_all(scratch).unwrap();
+}
+
+// MP-08/MP-10/MP-11: admission journals a started prompt in one prompt-state
+// commit, so publication and the reply wait for one fsync.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn started_local_prompt_commits_its_prompt_state_once() {
+    let worktree = crate::test_support::TestWorktree::new("single-prompt-state-commit");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            worktree
+                .session_request()
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+        )
+        .unwrap();
+    let attachment = app
+        .attach(crate::attachment::AttachRequest::for_user(
+            session.id(),
+            "single-commit-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+            agent.owner_user_id(),
+        ))
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let prompt_state_events = || {
+        runtime
+            .owned
+            .durable_state_store
+            .load_events_by_kind(crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.subject_id.as_deref() == Some(session.id()))
+            .collect::<Vec<_>>()
+    };
+    let before = prompt_state_events().len();
+    let submission = runtime
+        .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+            session_id: session.id().into(),
+            prompt: crate::session::PromptQueueItem::new(
+                "single-commit",
+                attachment.id(),
+                agent.id(),
+                "one durable prompt-state commit",
+                crate::session::PromptStatus::Queued,
+            ),
+            force_queue: false,
+            refresh_projection: true,
+        })
+        .await
+        .unwrap();
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = submission.outcome else {
+        panic!("prompt should start on the idle agent");
+    };
+    let events = prompt_state_events();
+    assert_eq!(events.len(), before + 1, "{events:#?}");
+    let committed: crate::durable_prompt_state::DurablePromptStateEventPayload =
+        serde_json::from_value(events.last().unwrap().payload.clone()).unwrap();
+    assert_eq!(
+        committed
+            .active_prompt
+            .map(|active| active.id().to_string()),
+        Some(prompt.id().to_string())
+    );
 }
 
 // MP-08/MP-10: a persistent grant does not make a newly registered definition live.
@@ -392,3 +459,9 @@ async fn mcp_catalog_reregistration_marks_existing_grant_pending_synchronously()
 mod credential_copy_recovery;
 
 mod popup_notices;
+
+mod catalog_continuation;
+
+mod native_context_rejection;
+
+mod native_startup_trust;

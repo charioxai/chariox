@@ -23,6 +23,10 @@ struct LineSpan<'a> {
 pub struct TextDocumentDomain;
 
 impl TextDocumentDomain {
+    #[allow(
+        clippy::result_large_err,
+        reason = "Preserve the existing plan_operation typed error contract"
+    )]
     pub(crate) fn plan_operation(
         base: &str,
         operation: &AgentEditOperation,
@@ -81,12 +85,11 @@ impl TextDocumentDomain {
                 })
             }
             AgentEditOperation::WriteArtifact { content } => {
-                let new_text =
-                    content
-                        .as_text()
-                        .ok_or_else(|| ArtifactEditError::UnsupportedDomain {
-                            domain: crate::io::types::ArtifactDomainKind::TextDocument,
-                        })?;
+                let new_text = content
+                    .as_text()
+                    .ok_or(ArtifactEditError::UnsupportedDomain {
+                        domain: crate::io::types::ArtifactDomainKind::TextDocument,
+                    })?;
                 Ok(TextEditPlan {
                     range: TextRange::new(0, base.len()),
                     old_text: base.to_string(),
@@ -103,6 +106,10 @@ impl TextDocumentDomain {
             .collect()
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "Preserve the existing rebase_plan typed error contract"
+    )]
     pub(crate) fn rebase_plan(
         base: &str,
         current: &str,
@@ -141,6 +148,10 @@ impl TextDocumentDomain {
         })
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "Preserve the existing apply_plan typed error contract"
+    )]
     pub(crate) fn apply_plan(
         current: &str,
         plan: &TextEditPlan,
@@ -152,7 +163,7 @@ impl TextDocumentDomain {
                 message: "rebased range is outside the current artifact".to_string(),
             });
         }
-        if &current[plan.range.start..plan.range.end] != plan.old_text {
+        if current[plan.range.start..plan.range.end] != plan.old_text {
             return Err(ArtifactEditError::InvalidOperation {
                 message: "rebased range content does not match old_text".to_string(),
             });
@@ -207,6 +218,10 @@ impl TextDocumentDomain {
         range.overlaps(delta.range)
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "Preserve the existing shift_offset typed error contract"
+    )]
     fn shift_offset(offset: usize, shift: isize) -> Result<usize, ArtifactEditError> {
         if shift.is_negative() {
             offset.checked_sub(shift.unsigned_abs()).ok_or_else(|| {
@@ -223,6 +238,10 @@ impl TextDocumentDomain {
         }
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "Preserve the existing validate_boundary typed error contract"
+    )]
     fn validate_boundary(text: &str, offset: usize) -> Result<(), ArtifactEditError> {
         if offset <= text.len() && text.is_char_boundary(offset) {
             return Ok(());

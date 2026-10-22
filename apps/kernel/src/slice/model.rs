@@ -168,6 +168,7 @@ pub struct SliceLocalDockerPorts {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SliceDisplayEndpointKind {
+    Shared,
     Novnc,
     Selkies,
     CharioxViewer,
@@ -232,6 +233,8 @@ pub struct SliceDisplayEndpoint {
     pub stream_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer_public_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_display: Option<super::RoomDisplayBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -331,6 +334,7 @@ pub struct CreateSliceInput {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalDockerSliceAction {
+    BuildImage,
     Provision,
     RestoreState,
     Recover,

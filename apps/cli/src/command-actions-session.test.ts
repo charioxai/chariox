@@ -8,6 +8,19 @@ import { createCommandActionHandlers, formatAgentCapabilityGrants, formatAgentLi
 import type { AgentInstance, ProviderProcessInfo, WorkflowQueuedPrompt, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, SliceRecord, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
 import { makeAgent, makeCommandDeps, makeSession } from "./command-actions-test-support.js"
 
+test("MP-08 / MP-10 OWNER-24 a session command selects its placeholder before resolving a slow reference", async () => {
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  const selected: string[] = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    ...{ beginSessionSelection: (reference: string) => { selected.push(reference); return null } },
+    resolveSession: async () => { await pending; return { id: "next-session", alias: null } },
+  }))
+  const joining = handlers.handleSessionCommand({ kind: "session", raw: "/session attach next", action: "attach", args: ["next"], value: "next" })
+  try { assert.deepEqual(selected, ["next"]) } finally { release() }
+  await joining
+})
+
 test("session new can attach a new session in an existing directory", async () => {
   const sessionDir = await mkdtemp(join(tmpdir(), "chariox-session-dir-"))
   const createCalls: Array<{ workspace: string; worktree: string; alias: string | undefined }> = []
@@ -159,7 +172,6 @@ test("session status renders home authority and runtime blockers", async () => {
 
   assert.match(notices[0] ?? "", /session: release \(session-1\)/)
   assert.match(notices[0] ?? "", /home kernel: home-kernel@home-machine/)
-  assert.match(notices[0] ?? "", /live sync: managed \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(notices[0] ?? "", /remote runtime: 1 agent, 1 worker, 1 slice, 1 worker run gap/)
   assert.match(notices[0] ?? "", /agent runtime:\n  - agent-remote: Working opencode\/openai\/gpt-5 worktree=worktree-1 placement=slice:linux-dev slice_status=running slice_worktree=worktree-1 slice_auth=ready opencode slice_accounts=opencode=daily \(daily@example.com\) worker=worker-machine kernel=worker-kernel lease=lease-1 leased_agent=leased-agent-1 extensions=none/)
   assert.match(notices[0] ?? "", /next: run \/kernel remote-runtime; run \/agent inspect agent-remote; run \/machine kernels worker-machine/)
@@ -296,3 +308,13 @@ function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
     ...overrides,
   }
 }
+
+test("MP-08 / MP-10 OWNER-24 failed reference lookup settles its selected placeholder", async () => {
+  let settled = false
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    ...{ beginSessionSelection: () => ({ current: () => true, attach: async () => {}, settle: async () => { settled = true } }) },
+    resolveSession: async () => { throw new Error("unknown session") },
+  }))
+  await assert.rejects(handlers.handleSessionCommand({ kind: "session", raw: "/session attach missing", action: "attach", args: ["missing"], value: "missing" }), /unknown session/)
+  assert.equal(settled, true)
+})

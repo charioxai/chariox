@@ -147,3 +147,11 @@ test("MP-08 detached TUI projects a connection label only when supplied for a lo
   controller.apply()
   assert.doesNotMatch(calls.find(call => call.startsWith("summary:")) ?? "", /connection/)
 })
+
+test("MP-08 / MP-10 OWNER-24 pending chrome identifies the selected session without an attachment", () => {
+  const calls: string[] = []
+  const controller = createSessionChromeRenderController({ ...createDeps({ calls, attached: false }), ...{ getSessionHydrating: () => true } })
+  controller.apply()
+  assert(calls.some(line => line.includes("Loading session session-1")))
+  assert(calls.every(line => !line.includes("Waiting room")))
+})

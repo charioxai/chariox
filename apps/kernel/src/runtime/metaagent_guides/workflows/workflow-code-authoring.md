@@ -259,3 +259,13 @@ Read `workflows/workflow-code-patterns` for canonical, kernel-compiled scripts c
 Keep toy drills small. For prompt chaining use two generated agents and one edge. For routing use one router and two workers. For parallel fan-out use one planner, two workers, and one synthesizer. For adversarial workflows use one proposer and one critic with a loop edge plus a finalizer when needed. For tournament workflows use a seeder, two contestants, and one judge when a single endpoint must start both branches. For evaluator-optimizer workflows use one optimizer and one evaluator with a loop edge. For orchestrator-worker workflows use one orchestrator, one or two workers, and one synthesizer.
 
 Use a mixture of providers in drills that have at least three generated nodes. Apply-time `provider_rebindings` should be tested with the same script on a kernel where one provider/model choice is unavailable.
+
+## Compiler runtime (MP-08 / MP-11)
+
+The kernel selects the compiler runtime. Caller `node_path` values are retained
+for compatibility and ignored. Operators select Node through the kernel's
+`NODE` environment. Use a Node runtime with isolated realm support and, for
+TypeScript source, the native TypeScript transformer. Linux requires Bubblewrap and a kernel supporting safe
+beneath-root schema opens and close-on-exec descriptor ranges. Compilation
+fails closed where the isolation backend is unavailable; it never falls back
+to a compiler with home-kernel access.

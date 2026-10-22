@@ -223,6 +223,32 @@ impl KernelRuntimeOwnedState {
                 ),
             });
         };
+        if self.config_projection.snapshot().room_agent_tools
+            && self
+                .durable_state_store
+                .agent_tasks(Some(session_id), Some(prompt.target_agent_id()))?
+                .iter()
+                .any(|t| {
+                    t.prompt_id == prompt.id()
+                        && !matches!(
+                            t.state,
+                            crate::durable_state::agent_lifecycle::ExecutionState::Done
+                                | crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
+                        )
+                })
+        {
+            // The provider's native turn ended, but its task is still
+            // supervised. Commit prompt removal without completing/archiving
+            // the node; the same run remains addressable for cancellation.
+            self.persist_workflow_runtime_session_with_prompt_and_rollback(
+                session_id,
+                "workflow_task_waiting",
+                prompt_agent_id,
+                activity_mutation,
+                rollback_prompt.take().expect("prompt rollback"),
+            )?;
+            return Ok(WorkflowPromptDispatches::default());
+        }
         let workflow_run_before =
             match self
                 .session_store

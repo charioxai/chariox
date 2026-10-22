@@ -145,3 +145,36 @@ test("MP-08/MP-10 recovery retries a failed session subscription before declarin
   await createCliSessionLifecycleComposition(deps).recoverAttachedSessionAfterKernelRestart()
   assert.deepEqual({ subscriptions, repairs, recovered, retries }, { subscriptions: 2, repairs: 2, recovered: 1, retries: 1 })
 })
+
+// MP-08 / MP-10 (panes R12, PANE-15; panetest-d T-10 RED): a remote TUI whose
+// attachment the kernel no longer has re-attaches and re-subscribes instead of
+// retrying the rejected session/attachment pair forever.
+test("a stale attachment subscription failure runs session-unavailable recovery", async () => {
+  const recoveries: string[] = []
+  const deps = {
+    client: {
+      subscribeToKernelEvents: async () => {
+        throw new Error("kernel local transport `subscribe` failed: attachment `att-old` does not belong to session `s-1`")
+      },
+    },
+    options: {}, renderer: {}, appLogger: { error: () => {}, debug: () => {} },
+    closingStateController: { isClosing: () => false, setClosing: () => {} },
+    supportsKernelEventStream: true,
+    kernelConnected: () => true,
+    attachmentState: () => ({ id: "att-old", session_id: "s-1" }),
+    sessionState: () => ({ id: "s-1" }),
+    isAttached: () => true,
+    formatError: (error: Error) => error.message,
+    setDaemonDisconnected: () => {},
+    setStatusLine: () => {},
+    appendNotice: () => {},
+    updateSessionChrome: () => {},
+    onKernelTransportClosed: () => {},
+    handleSessionUnavailable: (message: string) => { recoveries.push(message) },
+  } as unknown as CliSessionLifecycleCompositionDeps
+
+  await createCliSessionLifecycleComposition(deps).syncKernelEventSubscription()
+
+  assert.equal(recoveries.length, 1)
+  assert.match(recoveries[0] ?? "", /does not belong to session/)
+})

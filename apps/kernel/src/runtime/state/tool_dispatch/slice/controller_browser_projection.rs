@@ -7,6 +7,13 @@ use crate::runtime::browser_controller_snapshot::{
 
 const MAX_CONTROLLER_BROWSER_TEXT_BYTES: usize = 256 * 1024;
 const MAX_CONTROLLER_BROWSER_TEXT_QUERY_BYTES: usize = 64 * 1024;
+// Provider tool-output caps start near 10k tokens (Codex); 24 KiB of JSON stays under
+// that while a heavy page (Wikipedia, ~240 KB of links) would otherwise be refused.
+const MAX_CONTROLLER_BROWSER_STATUS_BYTES: usize = 24 * 1024;
+const MAX_CONTROLLER_BROWSER_STATUS_ITEM_CHARS: usize = 200;
+const MAX_CONTROLLER_BROWSER_STATUS_TAB_BYTES: usize = 6 * 1024;
+const BROWSER_STATUS_ELEMENT_KEYS: [&str; 3] = ["fields", "buttons", "links"];
+
 pub(super) fn controller_browser_status_surfaces(
     snapshot: Option<&RoomBrowserStructuredSnapshot>,
 ) -> serde_json::Map<String, serde_json::Value> {
@@ -101,6 +108,102 @@ pub(super) fn controller_browser_status_compatibility(
         "links": surfaces.get("links").cloned().unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
         "snapshot_revision": surfaces.get("snapshot_revision").cloned().unwrap_or(serde_json::Value::Null),
     })
+}
+
+/// Bounds a status payload to the tool-output cap. Elements are paged in
+/// fields, buttons, links order; `page.next_cursor` continues where this stopped.
+pub(super) fn bound_controller_browser_status(
+    mut payload: serde_json::Value,
+    cursor: usize,
+) -> serde_json::Value {
+    if cursor == 0 && payload.to_string().len() <= MAX_CONTROLLER_BROWSER_STATUS_BYTES {
+        return payload;
+    }
+    let Some(browser) = payload
+        .get_mut("browser")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return payload;
+    };
+    let mut totals = serde_json::Map::new();
+    let mut elements = Vec::new();
+    for key in BROWSER_STATUS_ELEMENT_KEYS {
+        let items = match browser.insert(key.to_string(), serde_json::json!([])) {
+            Some(serde_json::Value::Array(items)) => items,
+            _ => Vec::new(),
+        };
+        totals.insert(key.to_string(), items.len().into());
+        elements.extend(items.into_iter().map(|item| (key, item)));
+    }
+    let current_tab = payload.get("tab_id").cloned();
+    // Titles, URLs and the tab inventory share the cap with the element pages.
+    truncate_status_strings(&mut payload);
+    if let Some(tabs) = payload
+        .get_mut("tabs")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        tabs.sort_by_key(|tab| tab.get("tab_id") != current_tab.as_ref());
+        let (mut used, mut kept) = (0, Vec::new());
+        let total_tabs = tabs.len();
+        for tab in tabs.drain(..) {
+            used += tab.to_string().len();
+            if used <= MAX_CONTROLLER_BROWSER_STATUS_TAB_BYTES {
+                kept.push(tab);
+            }
+        }
+        if kept.len() < total_tabs {
+            payload["tabs_omitted"] = (total_tabs - kept.len()).into();
+        }
+        payload["tabs"] = kept.into();
+    }
+    let total = elements.len();
+    let mut used = payload.to_string().len() + 512;
+    let mut next_cursor = cursor.min(total);
+    for (key, mut item) in elements.into_iter().skip(cursor) {
+        truncate_status_strings(&mut item);
+        used += item.to_string().len() + 1;
+        if used > MAX_CONTROLLER_BROWSER_STATUS_BYTES && next_cursor > cursor {
+            break;
+        }
+        payload["browser"][key]
+            .as_array_mut()
+            .expect("status element lists were just inserted")
+            .push(item);
+        next_cursor += 1;
+    }
+    payload["page"] = serde_json::json!({
+        "cursor": cursor,
+        "total": totals,
+        "next_cursor": (next_cursor < total).then_some(next_cursor),
+    });
+    // Never return an oversized tool result, even if a future metadata field
+    // grows independently of the element pages. Keep the continuation handle.
+    if payload.to_string().len() > MAX_CONTROLLER_BROWSER_STATUS_BYTES {
+        payload = serde_json::json!({
+            "session_id": payload["session_id"], "environment_id": payload["environment_id"],
+            "tab_id": payload["tab_id"], "document_revision": payload["document_revision"],
+            "browser": {"fields": payload["browser"]["fields"], "buttons": payload["browser"]["buttons"], "links": payload["browser"]["links"]},
+            "page": payload["page"],
+        });
+    }
+    payload
+}
+
+fn truncate_status_strings(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => {
+            if let Some((end, _)) = text
+                .char_indices()
+                .nth(MAX_CONTROLLER_BROWSER_STATUS_ITEM_CHARS)
+            {
+                text.truncate(end);
+                text.push('…');
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(truncate_status_strings),
+        serde_json::Value::Object(map) => map.values_mut().for_each(truncate_status_strings),
+        _ => {}
+    }
 }
 
 pub(super) fn controller_browser_find(
@@ -434,11 +537,29 @@ pub(super) fn controller_browser_permission_tool_result(
 }
 
 pub(super) fn controller_browser_document_text(snapshot: &RoomBrowserStructuredSnapshot) -> String {
+    // Script, style and template contents are page code, not document text.
+    let code = snapshot
+        .dom_nodes
+        .iter()
+        .filter(|node| {
+            ["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"]
+                .iter()
+                .any(|tag| node.node_name.eq_ignore_ascii_case(tag))
+        })
+        .map(|node| node.element_ref.as_str())
+        .collect::<BTreeSet<_>>();
     let mut text = String::new();
     let mut seen = BTreeSet::new();
     for candidate in snapshot
         .dom_nodes
         .iter()
+        .filter(|node| {
+            !code.contains(node.element_ref.as_str())
+                && !node
+                    .parent_ref
+                    .as_deref()
+                    .is_some_and(|parent| code.contains(parent))
+        })
         .map(|node| node.text.as_str())
         .chain(
             snapshot
@@ -518,48 +639,6 @@ fn append_bounded_text(output: &mut String, candidate: &str) {
         output.push('\n');
     }
     output.push_str(&candidate[..end]);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn controller_browser_find_preserves_opaque_references_and_kind_filtering() {
-        let status = serde_json::json!({
-            "fields": [{"field_id": "element-1", "label": "Email", "text": ""}],
-            "buttons": [{"field_id": "element-2", "label": "Continue", "text": "Continue"}],
-            "links": [{"field_id": "element-3", "label": "Help", "text": "Help"}],
-        });
-
-        let result = controller_browser_find(&status, "cont", "button")
-            .expect("supported kind should return matches");
-
-        assert_eq!(result["matches"][0]["field_id"], "element-2");
-        assert_eq!(result["matches"].as_array().map(Vec::len), Some(1));
-        assert!(controller_browser_find(&status, "", "image").is_err());
-    }
-
-    #[test]
-    fn controller_browser_action_requires_a_kernel_issued_element_reference() {
-        assert_eq!(
-            controller_browser_element_ref(None, Some("element-7"), "test")
-                .expect("opaque reference should be accepted"),
-            "element-7"
-        );
-        assert!(controller_browser_element_ref(Some("#password"), None, "test").is_err());
-    }
-
-    #[test]
-    fn controller_browser_text_bound_never_splits_utf8() {
-        let mut output = "a".repeat(MAX_CONTROLLER_BROWSER_TEXT_BYTES - 2);
-
-        append_bounded_text(&mut output, "😀");
-
-        assert!(output.len() <= MAX_CONTROLLER_BROWSER_TEXT_BYTES);
-        assert!(std::str::from_utf8(output.as_bytes()).is_ok());
-        assert!(!output.ends_with('\n'));
-    }
 }
 
 fn empty_surfaces() -> serde_json::Map<String, serde_json::Value> {
@@ -689,4 +768,179 @@ fn browser_element_summary(
         "disabled": disabled,
         "readOnly": read_only,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn controller_browser_find_preserves_opaque_references_and_kind_filtering() {
+        let status = serde_json::json!({
+            "fields": [{"field_id": "element-1", "label": "Email", "text": ""}],
+            "buttons": [{"field_id": "element-2", "label": "Continue", "text": "Continue"}],
+            "links": [{"field_id": "element-3", "label": "Help", "text": "Help"}],
+        });
+
+        let result = controller_browser_find(&status, "cont", "button")
+            .expect("supported kind should return matches");
+
+        assert_eq!(result["matches"][0]["field_id"], "element-2");
+        assert_eq!(result["matches"].as_array().map(Vec::len), Some(1));
+        assert!(controller_browser_find(&status, "", "image").is_err());
+    }
+
+    #[test]
+    fn controller_browser_action_requires_a_kernel_issued_element_reference() {
+        assert_eq!(
+            controller_browser_element_ref(None, Some("element-7"), "test")
+                .expect("opaque reference should be accepted"),
+            "element-7"
+        );
+        assert!(controller_browser_element_ref(Some("#password"), None, "test").is_err());
+    }
+
+    #[test]
+    fn controller_browser_text_bound_never_splits_utf8() {
+        let mut output = "a".repeat(MAX_CONTROLLER_BROWSER_TEXT_BYTES - 2);
+
+        append_bounded_text(&mut output, "😀");
+
+        assert!(output.len() <= MAX_CONTROLLER_BROWSER_TEXT_BYTES);
+        assert!(std::str::from_utf8(output.as_bytes()).is_ok());
+        assert!(!output.ends_with('\n'));
+    }
+
+    fn synthetic_status(link_count: usize, link_text: &str) -> serde_json::Value {
+        let dom_nodes = (0..link_count)
+            .map(|index| RoomBrowserDomNode {
+                element_ref: format!("element-{index}"),
+                parent_ref: None,
+                document_index: 0,
+                node_type: 1,
+                node_name: "A".to_string(),
+                text: format!("{link_text} {index}"),
+                attributes: BTreeMap::from([("href".to_string(), format!("/wiki/{index}"))]),
+                bounds: Some(
+                    crate::runtime::browser_controller_snapshot::BrowserControllerNodeBounds {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 10.0,
+                        height: 10.0,
+                    },
+                ),
+            })
+            .collect();
+        let snapshot = RoomBrowserStructuredSnapshot {
+            session_id: "s".to_string(),
+            environment_id: "e".to_string(),
+            runtime_generation: 1,
+            browser_generation: 1,
+            tab_id: "tab".to_string(),
+            document_revision: 1,
+            snapshot_revision: 1,
+            accessibility_nodes: Vec::new(),
+            accessibility_truncated: false,
+            dom_documents: Vec::new(),
+            shadow_roots: Vec::new(),
+            dom_nodes,
+        };
+        let surfaces = controller_browser_status_surfaces(Some(&snapshot));
+        serde_json::json!({
+            "source": "browser_controller",
+            "tab_id": "tab",
+            "tabs": [{"tab_id": "tab", "url": "https://de.wikipedia.org/wiki/Hamburg"}],
+            "browser": controller_browser_status_compatibility(
+                "https://de.wikipedia.org/wiki/Hamburg",
+                "de.wikipedia.org",
+                "Hamburg",
+                &surfaces,
+            ),
+        })
+    }
+
+    #[test]
+    fn controller_browser_status_of_a_heavy_page_is_bounded_and_resumable() {
+        let status = synthetic_status(2_000, &"Hamburg ".repeat(40));
+        assert!(status.to_string().chars().count() > 200_000);
+
+        let mut seen = Vec::new();
+        let mut cursor = 0;
+        loop {
+            let page = bound_controller_browser_status(status.clone(), cursor);
+            let text = page.to_string();
+            assert!(text.chars().count() <= 24 * 1024, "{} chars", text.len());
+            assert_eq!(page["page"]["total"]["links"], 2_000);
+            seen.extend(
+                page["browser"]["links"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|link| link["field_id"].as_str().unwrap().to_string()),
+            );
+            match page["page"]["next_cursor"].as_u64() {
+                Some(next) => cursor = next as usize,
+                None => break,
+            }
+        }
+        let expected = (0..2_000)
+            .map(|i| format!("element-{i}"))
+            .collect::<Vec<_>>();
+        assert_eq!(seen, expected);
+    }
+
+    #[test]
+    fn controller_browser_status_bounds_oversized_titles_and_tab_inventories() {
+        let long = "T".repeat(30_000);
+        let mut status = synthetic_status(0, "Link");
+        status["title"] = long.clone().into();
+        status["browser"]["title"] = long.clone().into();
+        status["browser"]["url"] = format!("https://example.test/{long}").into();
+        let bounded = bound_controller_browser_status(status, 0);
+        assert!(
+            bounded.to_string().len() <= 24 * 1024,
+            "{}",
+            bounded.to_string().len()
+        );
+        assert!(bounded["page"]["next_cursor"].is_null());
+
+        let mut single = synthetic_status(0, "Link");
+        single["tabs"] = serde_json::json!([{"tab_id": "focused", "title": long, "url": long}]);
+        single["tab_id"] = "focused".into();
+        let bounded = bound_controller_browser_status(single, 0);
+        assert!(bounded.to_string().len() <= MAX_CONTROLLER_BROWSER_STATUS_BYTES);
+        assert_eq!(bounded["tabs"][0]["tab_id"], "focused");
+        assert!(
+            bounded["tabs"][0]["title"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count()
+                <= 201
+        );
+
+        let mut status = synthetic_status(5, "Link");
+        status["tabs"] = (0..200)
+            .map(|i| serde_json::json!({"tab_id": format!("tab-{i}"), "title": long, "url": format!("https://example.test/{i}/{long}")}))
+            .collect();
+        status["tab_id"] = "tab-150".into();
+        let bounded = bound_controller_browser_status(status, 0);
+        assert!(
+            bounded.to_string().len() <= 24 * 1024,
+            "{}",
+            bounded.to_string().len()
+        );
+        assert_eq!(bounded["tabs"][0]["tab_id"], "tab-150");
+        assert_eq!(
+            bounded["tabs_omitted"],
+            200 - bounded["tabs"].as_array().unwrap().len()
+        );
+    }
+
+    #[test]
+    fn controller_browser_status_of_a_small_page_is_unchanged() {
+        let status = synthetic_status(3, "Link");
+
+        assert_eq!(bound_controller_browser_status(status.clone(), 0), status);
+    }
 }

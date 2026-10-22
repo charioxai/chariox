@@ -51,6 +51,9 @@ pub enum PasskeyPromptKind {
 /// choice without it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PasskeyPrompt {
+    /// MP-08 / MP-11 protocol 538: structured sudo decision presentation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sudo_request: Option<SudoRequestPresentation>,
     /// Protocol 470: present for access_grant/access_extension; absent on older kernels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<KernelAccessRequester>,
@@ -136,8 +139,9 @@ pub struct RequestKernelSudoRequest {
     pub prompt: String,
 }
 
-/// Protocol 413: public attribution for an ephemeral, one-turn authorization.
-/// `entry_id` is a revoke handle, never a credential. No time expiry applies.
+/// Protocol 413: public attribution for an ephemeral sudo authorization.
+/// `entry_id` is a revoke handle, never a credential. Protocol 484 makes it a
+/// finite window bound to one owner-authorized task (MP-08/MP-10/MP-11 A04).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KernelSudoTurn {
     pub entry_id: String,
@@ -148,6 +152,70 @@ pub struct KernelSudoTurn {
     /// Protocol 415: OS-established requester attribution for external entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<KernelAccessGrant>,
+    /// The current (or last) elevated turn; `None` while authorization is pending.
     pub prompt_id: Option<String>,
     pub provider_run_id: Option<String>,
+    /// Protocol 484: the owner-authorized work this window covers.
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub duration_minutes: u32,
+    /// Wall-clock display only; authority uses the kernel's monotonic deadline.
+    #[serde(default)]
+    pub expires_at_ms: Option<u64>,
+    /// Increments on each fresh-passkey extension; Extend must name it.
+    #[serde(default)]
+    pub revision: u64,
+    #[serde(default)]
+    pub warning_sent: bool,
+    /// Kernel memory only: a restored or deserialized entry is never live.
+    #[serde(skip)]
+    pub deadline: Option<std::time::Instant>,
+    /// Kernel memory only (A10): the execution lease the window was granted
+    /// on, `None` for a local agent. Any other placement ends the window.
+    #[serde(skip)]
+    pub placement: Option<String>,
+}
+
+/// Protocol 484: the host asks to extend a live sudo window. The kernel opens
+/// one passkey interaction; the new expiry is verification time plus the
+/// selected duration (at most 8 hours), never banked time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtendKernelSudoRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub entry_id: String,
+    pub revision: u64,
+}
+
+/// Protocol 538: presentation only; the pending interaction remains the authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SudoRequestPresentation {
+    pub requester_name: String,
+    pub agent_name: String,
+    pub session_name: String,
+    pub task_summary: String,
+    pub task: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_id: Option<String>,
+    pub terminal_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PasskeyPromptClosureReason {
+    Expired,
+    Answered,
+    Revoked,
+}
+
+/// Protocol 538: an authoritative delta for a prompt previously projected on this subscription.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PasskeyPromptClosure {
+    pub session_id: String,
+    pub interaction_id: String,
+    pub kind: PasskeyPromptKind,
+    pub expires_at_ms: u64,
+    pub reason: PasskeyPromptClosureReason,
 }

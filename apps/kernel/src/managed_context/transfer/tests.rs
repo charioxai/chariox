@@ -81,6 +81,83 @@ fn internal_transfer_debug_redacts_capabilities() {
 }
 
 #[test]
+fn incoming_archive_is_admitted_on_the_transfer_store_volume_not_the_destination() {
+    use crate::managed_context::limits::{with_volume, DISK_RESERVE_BYTES};
+    let root = test_root("store-volume");
+    let destinations = root.join("destinations");
+    let store_root = root.join("store");
+    let now = current_time_ms();
+    let mut request = arm_request(b"portable context archive", now + 10_000);
+    request.archive_size_bytes = 8 << 20;
+    request.destination_parent = destinations.clone();
+    let store = ManagedContextTransferStore::open(store_root.clone()).expect("open store");
+    let roomy = DISK_RESERVE_BYTES + (64 << 20);
+    let tight = DISK_RESERVE_BYTES + (1 << 20);
+    let error = with_volume(&destinations, roomy, || {
+        with_volume(&store_root, tight, || store.arm(request.clone(), now))
+    })
+    .expect_err("a full store volume must refuse the archive although the destination has room");
+    assert!(error.to_string().contains("free space on that volume"));
+    with_volume(&destinations, DISK_RESERVE_BYTES, || {
+        with_volume(&store_root, roomy, || store.arm(request, now))
+    })
+    .expect("a full destination does not refuse bytes that fit the store");
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+// A replayed arm (the source retrying after a partial upload) is idempotent: the bytes already
+// accepted occupy the store volume, so only a new transfer is admitted against the full size.
+#[test]
+fn replayed_arm_after_a_partial_upload_is_not_readmitted_against_the_full_size() {
+    use crate::managed_context::limits::{with_volume, DISK_RESERVE_BYTES};
+    let root = test_root("replay-partial");
+    let store_root = root.join("store");
+    let archive = vec![7u8; 8 << 20];
+    let now = current_time_ms();
+    let mut request = arm_request(&archive, now + 10_000);
+    request.destination_parent = root.join("destinations");
+    let store = ManagedContextTransferStore::open(store_root.clone()).expect("open store");
+    let caller = caller(&sha256_bytes(b"source-key"));
+    with_volume(&store_root, DISK_RESERVE_BYTES + (12 << 20), || {
+        let armed = store
+            .arm(request.clone(), now)
+            .expect("arm with room for the archive");
+        store
+            .begin(&armed.transfer_id, &armed.capability, &caller, now + 1)
+            .expect("begin transfer");
+        let step = 512 << 10;
+        for index in 0..12u64 {
+            let chunk = &archive[index as usize * step..(index as usize + 1) * step];
+            store
+                .upload_chunk(
+                    &armed.transfer_id,
+                    &armed.capability,
+                    &caller,
+                    ManagedContextTransferChunk {
+                        offset: index * step as u64,
+                        bytes: chunk,
+                        sha256: &sha256_bytes(chunk),
+                    },
+                    now + 2,
+                )
+                .expect("upload chunk");
+        }
+        // 6 of 8 MiB are on the volume: 2 MiB of room is still enough to re-arm this transfer.
+        let replayed = store.arm(request.clone(), now + 3).expect("replay re-arms");
+        assert_eq!(replayed, armed);
+        // A different transfer of the same size is still refused.
+        let mut other = request.clone();
+        other.plan.context_id = "context-2".into();
+        assert!(store
+            .arm(other, now + 3)
+            .expect_err("a new transfer needs the full size")
+            .to_string()
+            .contains("free space on that volume"));
+    });
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
 fn transfer_resumes_retries_and_consumes_once_across_restart() {
     let root = test_root("resume");
     let archive = b"portable context archive";

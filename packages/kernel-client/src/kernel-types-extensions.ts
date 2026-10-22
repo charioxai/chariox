@@ -82,6 +82,7 @@ export type ExtensionGrant = {
   environment?: string | null
   credential?: string | null
   max_safety?: "read" | "write" | "destructive" | string | null
+  app_grant?: { grant_id: string; expires_at_ms: number; prompt_id?: string | null; delegated_by_agent_id?: string | null; delegated_from_grant_id?: string | null } | null
 }
 
 export type SkillImportSkip = {

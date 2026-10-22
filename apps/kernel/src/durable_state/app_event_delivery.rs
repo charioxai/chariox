@@ -15,7 +15,7 @@ use chariox_app_runtime::app_outbox::{
     VerifiedAutomation,
 };
 pub(crate) use preparation::PreparedAppEvent;
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 use std::sync::{mpsc, Arc};
 
 #[derive(Debug, thiserror::Error)]
@@ -56,9 +56,6 @@ pub(crate) struct AppEventCandidate {
 impl AppEventCandidate {
     pub(crate) fn receipt(&self) -> &Receipt {
         &self.receipt
-    }
-    pub(crate) fn session_id(&self) -> &str {
-        &self.configuration.target.session_id
     }
 }
 
@@ -218,6 +215,10 @@ fn write(tx: &Transaction<'_>, prepared: &PreparedAppEvent, recovery: bool) -> R
             "app_event_queued"
         },
         &prepared.candidate.receipt.receipt_id,
+        super::workflow_invocation_provenance::WorkflowUserInvocation {
+            queue_item_id: prepared.queued_id.clone(),
+            user_id: prepared.candidate.owner.clone(),
+        },
     )?;
     Ok(())
 }
@@ -229,6 +230,7 @@ pub(super) fn write_queue_state_in(
     encoded: &DurableWorkflowSessionWrite,
     reason: &str,
     receipt_id: &str,
+    invocation: super::workflow_invocation_provenance::WorkflowUserInvocation,
 ) -> std::result::Result<(), DaemonError> {
     let now = crate::session::unix_epoch_ms();
     let metadata=serde_json::json!({"owner_id":after.host_daemon_id(),"session_id":after.id(),"reason":reason,"receipt_id":receipt_id}).to_string();
@@ -246,6 +248,7 @@ pub(super) fn write_queue_state_in(
             workflow_runs: &encoded.workflow_runs,
             delivery_receipts: &encoded.delivery_receipts,
             prompt_state_jsons: &[],
+            invocation_creator: Some(&invocation),
         },
     )
     .map(|_| ())

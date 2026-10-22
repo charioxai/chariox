@@ -8,7 +8,8 @@ export const PROMPT_KEYBINDINGS = [
 
 export const LIVE_TRANSCRIPT_LIMIT = 400
 export const LIVE_TRANSCRIPT_MAX_CHARS = 250_000
-export const STREAM_BATCH_WINDOW_MS = 48
+// MP-08 / MP-10: leave a render frame within the 50 ms emit-to-visible budget.
+export const STREAM_BATCH_WINDOW_MS = 16
 export const STREAM_RECORDS_PER_FLUSH = 64
 export const RENDER_SCHEDULER_TREES_PER_FLUSH = 2
 export const RENDER_SCHEDULER_RENDERABLES_PER_FLUSH = 8

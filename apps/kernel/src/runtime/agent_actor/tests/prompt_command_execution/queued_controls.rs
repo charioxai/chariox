@@ -375,8 +375,15 @@ async fn prompt_steer_queued_removes_queue_entry_without_settling_active_prompt(
                 && record.merge_key.as_deref() == Some(steering_merge_key.as_str())
                 && record.source_attachment_id.as_deref() == Some(attachment.id())
                 && String::from_utf8_lossy(&record.bytes).contains(queued_prompt.prompt())
+                // MP-08 / MP-10 (panes R5): the echo carries its history row's
+                // sequence so clients place the steer where it happened.
+                && record.sequence.is_some()
         }),
-        "steered queued prompt should be echoed to the other attachment"
+        "steered queued prompt should be echoed to the other attachment with its history sequence: {:?}",
+        source_records
+            .iter()
+            .map(|record| (&record.kind, &record.merge_key, record.sequence))
+            .collect::<Vec<_>>()
     );
     let steering_records = app
         .lock()

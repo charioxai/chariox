@@ -10,22 +10,38 @@ fn provider_account_portability_websocket_drill() {
     let _guard = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!("chx-kp-{:x}", rand::random::<u64>()));
     std::fs::create_dir(&root).unwrap();
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            std::fs::remove_dir_all(&self.0).unwrap();
+    struct Cleanup(PathBuf, bool);
+    impl Cleanup {
+        fn dir(path: PathBuf) -> Self {
+            Self(path, true)
+        }
+        fn optional_dir(path: PathBuf) -> Self {
+            Self(path, false)
         }
     }
-    let _cleanup = Cleanup(root.clone());
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            if self.1 {
+                std::fs::remove_dir_all(&self.0).unwrap();
+            } else {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+    }
+    let _cleanup = Cleanup::dir(root.clone());
+    // The kernel creates and owns the socket's directory, so the socket cannot sit in /tmp itself.
+    let socket_dir = Path::new("/tmp").join(format!("chx-kp-{:x}", rand::random::<u64>()));
+    let socket = socket_dir.join("kernel.sock");
+    let _socket_cleanup = Cleanup::optional_dir(socket_dir);
     std::env::set_var("CHARIOX_HOME", &root);
     tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 * 1024 * 1024).build().unwrap().block_on(async {
         let tcp = StdTcpListener::bind("127.0.0.1:0").unwrap();
         let addr = tcp.local_addr().unwrap();
         let mcp = StdTcpListener::bind("127.0.0.1:0").unwrap();
         let mut config = daemon_config_for_runtime_mcp_listener(&mcp);
-        // The isolated child already owns TMPDIR; avoid nesting the socket path
-        // below the profile root, which exceeds Unix sun_path on long builders.
-        config.local_socket_path = std::env::temp_dir().join("kp.sock");
+        // A socket file holds no data but its path must fit Unix sun_path, which a
+        // builder's long TMPDIR plus the isolated child's nesting can exceed.
+        config.local_socket_path = socket.clone();
         config.user_config.state.path = Some(root.join("state.db").to_string_lossy().into());
         config.user_config_path = root.join("config.toml");
         config.cloud_relay = Some(PersistedCloudRelayProfile {

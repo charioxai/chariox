@@ -32,6 +32,7 @@ pub mod owner_managed_bootstrap;
 pub(crate) mod process_spawn;
 pub mod project_environment;
 pub(crate) mod prompt_assembly;
+pub mod prompt_notes;
 pub mod prompt_transcript;
 pub mod provider;
 pub(crate) mod provider_output_policy;
@@ -64,3 +65,6 @@ pub use error::DaemonError;
 mod lib_tests;
 #[cfg(test)]
 pub(crate) mod test_support;
+
+#[cfg(all(feature = "native-display", target_os = "linux"))]
+pub mod display_native;

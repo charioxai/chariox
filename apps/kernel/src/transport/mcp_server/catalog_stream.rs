@@ -41,9 +41,9 @@ pub(super) fn open(
                     return None;
                 }
                 let router = stream.router.upgrade()?;
-                if !router
+                if router
                     .runtime_mcp_catalog_run(&stream.token)
-                    .is_some_and(|run| run.id() == stream.run_id)
+                    .is_none_or(|run| run.id() != stream.run_id)
                 {
                     return None;
                 }

@@ -240,7 +240,8 @@ async fn enrolled_metadata_queries_bind_owner_targets_and_kernel_key() {
                         .contains("x-chariox-kernel-credential: synthetic-kernel-credential"));
                     json!({"targets": [
                         {"daemonId":"owner", "status":"ONLINE"},
-                        {"daemonId":"worker", "status":"OFFLINE"},
+                        {"daemonId":"worker", "status":"ONLINE"},
+                        {"daemonId":"dormant", "status":"OFFLINE"},
                         {"daemonId":"unlinked", "status":"REVOKED"}
                     ]})
                     .to_string()
@@ -282,4 +283,123 @@ async fn enrolled_metadata_queries_bind_owner_targets_and_kernel_key() {
         assert!(relay.await.unwrap());
         issuer.await.unwrap();
     }
+}
+
+// MP-08 / MP-10 / MP-11: historical account inventory must not block StartSlice.
+#[tokio::test]
+async fn eighty_six_targets_use_bounded_metadata_grants() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api_url = format!("http://{}", listener.local_addr().unwrap());
+    let issuer = tokio::spawn(async move {
+        let mut granted = std::collections::BTreeSet::new();
+        while granted.len() < 86 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            let header_end = loop {
+                let n = stream.read(&mut chunk).await.unwrap();
+                assert!(n > 0);
+                request.extend_from_slice(&chunk[..n]);
+                if let Some(end) = request.windows(4).position(|p| p == b"\r\n\r\n") {
+                    break end + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let (status, response) = if headers.starts_with("GET /relay/targets?") {
+                (
+                    200,
+                    json!({"targets": (0..86).map(|n| json!({"daemonId":format!("worker-{n:02}"),"status":"ONLINE"})).collect::<Vec<_>>() }),
+                )
+            } else {
+                assert!(headers.starts_with("POST /relay/token HTTP/1.1"));
+                let length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                while request.len() < header_end + length {
+                    let n = stream.read(&mut chunk).await.unwrap();
+                    assert!(n > 0);
+                    request.extend_from_slice(&chunk[..n]);
+                }
+                let body: Value =
+                    serde_json::from_slice(&request[header_end..header_end + length]).unwrap();
+                let targets = body["allowedTargets"].as_array().unwrap();
+                if targets.len() > 64 {
+                    let response = "{\"error\":\"target limit exceeded\"}";
+                    stream.write_all(format!("HTTP/1.1 403 Forbidden\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
+                    return false;
+                }
+                assert_eq!(body["allowedActions"], json!(["client.metadata.read"]));
+                for target in targets {
+                    assert!(granted.insert(target.as_str().unwrap().to_string()));
+                }
+                (
+                    200,
+                    json!({"token":"synthetic-metadata-grant", "expiresAt":"2030-01-01T00:00:00Z"}),
+                )
+            };
+            let response = response.to_string();
+            stream.write_all(format!("HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{response}",response.len()).as_bytes()).await.unwrap();
+        }
+        true
+    });
+    let relay_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay_url = format!("ws://{}", relay_listener.local_addr().unwrap());
+    let relay = tokio::spawn(async move {
+        for count in [64, 22] {
+            let (stream, _) = relay_listener.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            let Some(Ok(Message::Text(text))) = socket.next().await else {
+                panic!("missing query")
+            };
+            let RelayEnvelope::ClientMetadataRequest {
+                request_id,
+                query: RelayMetadataQuery::ListLiveMachines,
+                ..
+            } = serde_json::from_str(&text).unwrap()
+            else {
+                panic!("unexpected query")
+            };
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&RelayEnvelope::ClientMetadataResponse {
+                        request_id,
+                        machines: Some(vec![RelayMachinePresence {
+                            machine_id: "shared-machine".into(),
+                            machine_alias: None,
+                            kernel_count: count,
+                            available_providers: vec![],
+                            provider_accounts: vec![],
+                        }]),
+                        kernels: None,
+                        kernel: None,
+                        error: None,
+                    })
+                    .unwrap()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            let _ = timeout(Duration::from_secs(1), socket.next()).await;
+        }
+    });
+    let mut config = hosted_config(api_url, relay_url);
+    let profile = config.cloud_relay.as_mut().unwrap();
+    profile.kernel_credential = Some("synthetic-kernel-credential".into());
+    profile.kernel_public_key_thumbprint = Some("synthetic-kernel-key".into());
+    let result = timeout(Duration::from_secs(10), list_live_machines(&config))
+        .await
+        .unwrap();
+    assert!(
+        issuer.await.unwrap(),
+        "an account with 86 targets exceeded the 64-target API bound"
+    );
+    let machines = result.unwrap();
+    assert_eq!(machines.len(), 1);
+    assert_eq!(machines[0].kernel_count, 86);
+    relay.await.unwrap();
 }

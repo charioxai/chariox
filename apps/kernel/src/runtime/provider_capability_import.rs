@@ -430,6 +430,10 @@ fn duplicates_for_skill(
         .collect()
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing entry operation signature and explicit context arguments"
+)]
 fn entry(
     kind: &str,
     name: &str,

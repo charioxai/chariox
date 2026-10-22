@@ -8,7 +8,7 @@ fn project_lifecycle_archives_idle_sessions_and_restore_parks_them() {
         .dispatch(LocalDaemonRequest::CreateSession(
             worktree
                 .session_request()
-                .with_project_selection(SessionProjectSelection::New),
+                .with_project_selection(SessionProjectSelection::New { name: None }),
         ))
         .expect("named project session should be created")
     {
@@ -65,7 +65,7 @@ fn project_delete_cascades_when_last_session_removes_project_record() {
                 workspace.path().display().to_string(),
                 first_worktree.path().display().to_string(),
             )
-            .with_project_selection(SessionProjectSelection::New),
+            .with_project_selection(SessionProjectSelection::New { name: None }),
         ))
         .expect("named project session should be created")
     {
@@ -122,7 +122,7 @@ fn project_requests_enforce_owner_and_named_numbering() {
         .dispatch(LocalDaemonRequest::CreateSession(
             worktree
                 .session_request()
-                .with_project_selection(SessionProjectSelection::New),
+                .with_project_selection(SessionProjectSelection::New { name: None }),
         ))
         .expect("named project session should be created")
     {
@@ -180,7 +180,7 @@ fn project_workspace_membership_updates_through_the_local_api() {
                 primary_worktree.path().display().to_string(),
                 primary_worktree.path().display().to_string(),
             )
-            .with_project_selection(SessionProjectSelection::New),
+            .with_project_selection(SessionProjectSelection::New { name: None }),
         ))
         .expect("named project session should be created")
     {

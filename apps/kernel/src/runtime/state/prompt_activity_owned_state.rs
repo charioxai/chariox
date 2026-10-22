@@ -35,6 +35,27 @@ impl KernelRuntimeOwnedState {
             .then(|| (agent_id.to_string(), prompt))
     }
 
+    pub(super) fn settled_native_abort_has_no_successor(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+    ) -> bool {
+        if run.state() != crate::provider::ProviderRunState::Running
+            || !crate::provider::provider_run_uses_claude_native_bridge(run)
+        {
+            return false;
+        }
+        let Some(agent_id) = run.agent_instance_id() else {
+            return false;
+        };
+        self.session_store
+            .get_session(run.session_id())
+            .is_ok_and(|session| {
+                self.prompt_state_owner
+                    .active_prompt_for_agent(&session, agent_id)
+                    .is_none()
+            })
+    }
+
     pub(super) fn prompt_completion_recorded(&self, provider_run_id: &str) -> bool {
         self.prompt_activity
             .read()
@@ -84,6 +105,34 @@ impl KernelRuntimeOwnedState {
             .provider_store
             .drain_finished_structured_prompt_submit_jobs()
         {
+            match crate::durable_state::agent_lifecycle::finish_provider_event_submit(
+                &self.durable_state_store,
+                self.provider_store.structured_submit_epoch(),
+                &finished,
+            ) {
+                Ok(Some(receipt)) => {
+                    if let Some(notice) = receipt.notice {
+                        let recipients = self
+                            .attachment_store
+                            .list_session_attachment_ids(&finished.session_id);
+                        self.record_notice(
+                            &finished.session_id,
+                            Some(&finished.provider_run_id),
+                            recipients,
+                            notice,
+                        );
+                    }
+                    if receipt.steered || receipt.stale {
+                        continue;
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    self.provider_store
+                        .schedule_finished_structured_prompt_submit_retry(finished);
+                    continue;
+                }
+            }
             match crate::runtime::state::notification_delivery::finish_structured_notification_submit(
                 &self.durable_state_store,
                 &self.session_store,
@@ -829,7 +878,15 @@ impl KernelRuntimeOwnedState {
         };
         let claim_id =
             self.workflow_dispatch_claim_id(session_id, workflow_run_id, workflow_node_run_id);
-        if self.prompt_workspace_claims.contains(&claim_id) {
+        // The launch path keys the same node's claim by provider run, not by node.
+        let owner = format!("{workflow_run_id}:{workflow_node_run_id}");
+        if self.prompt_workspace_claims.contains(&claim_id)
+            || self.prompt_workspace_claims.any_matching(|claim| {
+                claim.session_id == session_id
+                    && claim.attachment_id.as_deref() == Some(owner.as_str())
+                    && claim.operation == "workflow_node_dispatch"
+            })
+        {
             return Ok(Some(false));
         }
         self.acquire_workflow_node_workspace_claim(

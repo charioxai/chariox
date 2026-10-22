@@ -1,3 +1,4 @@
+import { visibleUserConfigEntries, workspaceLiveSyncUiEnabled } from "./workspace-live-sync-mode.js"
 import type {
   CharioxUserConfigPayload,
   CharioxUserConfigSchemaPayload,
@@ -53,12 +54,12 @@ export async function executeConfigCommand(
   if (action === "keys" || action === "list") {
     const response = await deps.client.send(getUserConfigSchemaRequest())
     const payload = expectVariant<CharioxUserConfigSchemaPayload>(response, "UserConfigSchema")
-    return { ok: true, message: formatConfigSchemaKeys(payload.entries), data: payload }
+    return { ok: true, message: formatConfigSchemaKeys(visibleUserConfigEntries(payload.entries)), data: payload }
   }
   if (action === "schema") {
     const response = await deps.client.send(getUserConfigSchemaRequest())
     const payload = expectVariant<CharioxUserConfigSchemaPayload>(response, "UserConfigSchema")
-    return { ok: true, message: JSON.stringify(payload.entries, null, 2), data: payload, format: "json" }
+    return { ok: true, message: JSON.stringify(visibleUserConfigEntries(payload.entries), null, 2), data: payload, format: "json" }
   }
   if (action === "set") {
     const value = rest.join(" ").trim()
@@ -86,6 +87,7 @@ export async function executeConfigCommand(
     }
   }
   if (action === "workspace-live-sync") {
+    if (!workspaceLiveSyncUiEnabled) return { ok: false, message: "This command is unavailable" } // MP-08 OWNER-20
     const mode = normalizeWorkspaceLiveSyncPolicy(keyPath ?? "off")
     if (rest.length > 0 || !mode) {
       return { ok: false, message: "usage: config workspace-live-sync off|managed|tracked" }
@@ -98,7 +100,7 @@ export async function executeConfigCommand(
       data: payload,
     }
   }
-  return { ok: false, message: "usage: config show|path|keys|schema|set|unset|workspace-live-sync" }
+  return { ok: false, message: "usage: config show|path|keys|schema|set|unset" }
 }
 
 function normalizeWorkspaceLiveSyncPolicy(value: string): "off" | "managed" | "tracked" | null {

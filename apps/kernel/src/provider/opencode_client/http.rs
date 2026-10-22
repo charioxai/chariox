@@ -84,7 +84,23 @@ impl OpenCodeClient {
                 break;
             }
             attempts += 1;
-            match self.send_request_once(method, path, body, read_timeout) {
+            // MP-08 / MP-10: timings never include request paths or payloads.
+            let started = Instant::now();
+            crate::logging::debug_with_fields(
+                "daemon.provider.opencode.timing",
+                "http request started",
+                serde_json::json!({"provider_run_id": self.provider_run_id,
+                    "operation": method_to_operation(method, path), "attempt": attempt}),
+            );
+            let response = self.send_request_once(method, path, body, read_timeout);
+            crate::logging::debug_with_fields(
+                "daemon.provider.opencode.timing",
+                "http request finished",
+                serde_json::json!({"provider_run_id": self.provider_run_id,
+                    "operation": method_to_operation(method, path), "attempt": attempt,
+                    "elapsed_us": started.elapsed().as_micros(), "success": response.is_ok()}),
+            );
+            match response {
                 Ok(response) => return Ok(response),
                 Err(error) if is_retryable_opencode_http_error(method, path, &error) => {
                     last_error = Some(error.into_daemon_error(self, method, path));
@@ -307,6 +323,9 @@ fn method_to_operation(method: &str, path: &str) -> &'static str {
         ("GET", "/event") => "event_subscribe",
         ("POST", "/session") => "session_create",
         ("GET", "/session/status") => "session_status",
+        ("GET", "/provider") => "provider_catalog",
+        ("GET", "/config") => "configured_defaults",
+        _ if method == "PATCH" && path.starts_with("/session/") => "session_permissions",
         _ if method == "POST" && path.ends_with("/prompt_async") => "session_prompt",
         _ if method == "POST" && path.ends_with("/message") => "session_prompt",
         _ if method == "POST" && path.ends_with("/abort") => "session_abort",
@@ -627,6 +646,74 @@ mod tests {
             .expect("healthy native server must finish its cold Instance bootstrap")
             .all
             .is_empty());
+    }
+
+    #[test]
+    fn cold_native_catalog_and_defaults_can_finish_after_health_is_ready() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let stopped = Arc::new(AtomicBool::new(false));
+        let server_stopped = Arc::clone(&stopped);
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            let mut replies = Vec::new();
+            while !server_stopped.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                        let mut request = [0; 2048];
+                        let count = stream.read(&mut request).unwrap();
+                        requests.push(
+                            String::from_utf8_lossy(&request[..count])
+                                .lines()
+                                .next()
+                                .unwrap()
+                                .to_string(),
+                        );
+                        replies.push(thread::spawn(move || {
+                            // A healthy cold native server can still be initializing its catalog.
+                            thread::sleep(Duration::from_millis(3200));
+                            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+                        }));
+                    }
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10))
+                    }
+                    Err(error) => panic!("test listener failed: {error}"),
+                }
+            }
+            for reply in replies {
+                reply.join().unwrap();
+            }
+            requests
+        });
+        let client = super::OpenCodeClient::new("cold-native", &endpoint).unwrap();
+        let responses = ["/provider", "/config", "/agent"]
+            .map(|path| client.send_json_request::<serde_json::Value>("GET", path, None));
+        stopped.store(true, Ordering::Release);
+        let requests = server.join().unwrap();
+        for response in responses {
+            assert!(
+                response.is_ok(),
+                "cold native initialization timed out: {response:?}"
+            );
+        }
+        assert_eq!(
+            requests.len(),
+            3,
+            "initialization requests must not restart while the native server is still replying"
+        );
     }
 
     #[test]

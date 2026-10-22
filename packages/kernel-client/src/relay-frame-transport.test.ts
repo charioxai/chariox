@@ -27,8 +27,44 @@ test("MP-08 MP-10 MP-11 forged bounds, overlapping and cross-transfer chunks fai
   receiver.receive(chunk(1,0,17000,secret),() => {})
   for (const value of [chunk(1,0,17000,secret),chunk(2,secret.length,17000,secret),chunk(1,secret.length,18000,secret)]) assert.throws(() => receiver.receive(value,receipt))
 })
-test("MP-08 MP-10 MP-11 transport wire snapshot requires protocol 491", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION,520)
-  assert.equal(relayTransportUrl("wss://example.test/socket?existing=1"),"wss://example.test/socket?existing=1&chariox_transport=chunks-v1")
+test("MP-08 MP-10 MP-11 transport wire snapshot requires protocol 532", () => {
+  assert.ok(LOCAL_DAEMON_PROTOCOL_VERSION >= 532)
+  assert.equal(relayTransportUrl("wss://example.test/socket?existing=1"),"wss://example.test/socket?existing=1&chariox_transport=chunks-v2")
   assert.equal(createHash("sha256").update(chunk(1,0,17000,"public")).digest("hex"),"63f2c15eb230dffa4358b314b5c798c07ac7d6c726781fd09314f6e2810b9e05")
+})
+
+// MP-08 / MP-10 / MP-11: completion order differs from transfer-start order.
+test("MP-08 MP-10 MP-11 multiplex medium reply completes before catalog without replay", () => {
+  const receiver = new RelayFrameReceiver(), receipt = () => {}
+  const catalog = JSON.stringify({kind:"client_response",request_id:"catalog",payload:"x".repeat(40000)})
+  const mirror = JSON.stringify({kind:"client_response",request_id:"mirror",payload:"y".repeat(18000)})
+  assert.equal(receiver.receive(chunk(1,0,catalog.length,catalog.slice(0,8000)),receipt),null)
+  assert.equal(receiver.receive(chunk(2,0,mirror.length,mirror.slice(0,8000)),receipt),null)
+  assert.equal(receiver.receive(chunk(2,8000,mirror.length,mirror.slice(8000)),receipt),mirror)
+  let complete: string | null = null
+  for (let offset=8000;offset<catalog.length;offset+=8000) complete=receiver.receive(chunk(1,offset,catalog.length,catalog.slice(offset,offset+8000)),receipt)
+  assert.equal(complete,catalog)
+  assert.throws(()=>receiver.receive(chunk(1,0,catalog.length,"x"),receipt))
+})
+test("MP-08 MP-10 MP-11 v2 small transfer and binary delivery checkpoint release wire credit", () => {
+  const receiver = new RelayFrameReceiver(), receipts: string[] = []
+  const text = '{"kind":"client_event","event_id":1}'
+  assert.equal(receiver.receive(chunk(1,0,text.length,text), ack=>receipts.push(ack)),text)
+  assert.equal(receiver.receive(chunk(2,0,0,""), ack=>receipts.push(ack)),null)
+  assert.equal(receipts.length,2)
+  assert.throws(()=>receiver.receive(chunk(2,0,0,""),()=>assert.fail()))
+})
+
+test("MP-08 MP-10 MP-11 multiplex receiver bounds simultaneous streams and reserved bytes", () => {
+  const receipt=()=>{}, excess=()=>assert.fail("invalid admission cannot release credit")
+  const receiver=new RelayFrameReceiver()
+  for(let id=1;id<=4;id++) receiver.receive(chunk(id,0,17000,"x"),receipt)
+  assert.throws(()=>receiver.receive(chunk(5,0,17000,"x"),excess))
+  const budget=new RelayFrameReceiver()
+  budget.receive(chunk(1,0,relayMaxMessageBytes,"x"),receipt)
+  budget.receive(chunk(2,0,relayMaxMessageBytes,"x"),receipt)
+  assert.throws(()=>budget.receive(chunk(3,0,17000,"x"),excess))
+  const nested=new RelayFrameReceiver(), text=JSON.stringify({kind:"transport_ack",transfer_id:1,offset:0})
+  assert.throws(()=>nested.receive(chunk(1,0,text.length,text),excess))
+  for(const invalid of [chunk(2,1,0,""),chunk(2,0,0,"x"),chunk(2,0,2,"")]) assert.throws(()=>nested.receive(invalid,excess))
 })

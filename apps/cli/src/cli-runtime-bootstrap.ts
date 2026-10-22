@@ -1,3 +1,4 @@
+import { getClientCatalogRevisions } from "./client-catalog-api.js"
 import { startPairedRelayRenewal } from "./paired-relay-renewal.js"
 import { issueCloudPairingBootstrapToken } from "./cloud-client.js"
 import type { LocalIpcClient } from "./ipc.js"
@@ -18,6 +19,7 @@ import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
 import { joinKernelTerminalPairingLink } from "./relay-api.js"
 import {
   attachToSession,
+  attachSessionView,
   createSession,
   deleteSessionByRef,
   getSessionState,
@@ -51,7 +53,7 @@ import {
   resolveMaxAgentsPerScreen,
   type CharioxPreferences,
 } from "./preferences.js"
-import { getUserConfig } from "./config-api.js"
+import { getCredentialVaultStatus, getUserConfig } from "./config-api.js"
 import {
   bootstrapSession,
 } from "./session-bootstrap.js"
@@ -130,6 +132,7 @@ export type CliRuntimeBootstrapOptions = {
   argv: string[]
   cwd: string
   logger?: CharioxLogger | null
+  onClientReady?: (client: LocalIpcClient, options: CliOptions, preferences: CharioxPreferences) => void
 }
 
 export type CliRuntimeBootstrapResult =
@@ -234,6 +237,7 @@ export async function bootstrapCliRuntime(
       throw error
     }
   }
+  options.onClientReady?.(client, cliOptions, preferences)
   // MP-08 / MP-11: keep relay targets on their authenticated carrier. A
   // discovery record and a matching daemon ID do not authenticate TCP peers.
   const inferredTargets = await deps.inferWorkspaceTargetsFromLaunchDirectory(options.cwd)
@@ -319,8 +323,12 @@ export async function bootstrapCliRuntime(
       session_id: bootstrap.binding.session.id,
       attachment_id: bootstrap.binding.attachment.id,
       created_session: bootstrap.binding.createdSession,
+      // Kernel requests made to reach the first transcript (PANE-03 "requests on open").
+      kernel_requests: client.requestStats().kinds,
     })
-    await deps.maybeResize(client, bootstrap.binding.session.id)
+    // Sizing is advisory. Send it before mounting, but do not put another
+    // relay round trip between the bundled transcript and the first frame.
+    void deps.maybeResize(client, bootstrap.binding.session.id).catch(() => {})
   } else {
     options.logger?.info("starting cli without attached session")
   }
@@ -359,6 +367,8 @@ async function bootstrapAttachedSessionWithRuntimeDeps(
   logger?: CharioxLogger | null,
 ): Promise<BootstrapState> {
   return bootstrapSession(client, options, workspace, worktree, preferences, {
+    // MP-08 / MP-10: mount before a launch can ask the human for Vault input.
+    deferProviderLaunch: true,
     listProviderAccountProfiles,
     logger: logger ?? null,
     getConfiguredProviderLaunchDefaults: async (ipcClient) => {
@@ -376,13 +386,16 @@ async function bootstrapAttachedSessionWithRuntimeDeps(
       return result
     },
     listSessions,
+    getClientCatalogRevisions,
     getProviderCatalog,
     getProviderCommandCatalogs,
     getTerminalCommandCatalog,
     createSession,
     resolveSession,
     attachToSession,
+    attachSessionView,
     getSessionState,
+    getCredentialVaultStatus,
     launchProviderRun,
     tryGetProviderRun,
     catchUpAttachedSession,

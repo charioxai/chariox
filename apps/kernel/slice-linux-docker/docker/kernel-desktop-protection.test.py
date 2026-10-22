@@ -1,0 +1,80 @@
+"""MP-08/MP-11: desktop protection oracle answers masks only for complete snapshots."""
+import importlib.util
+import unittest
+from unittest.mock import patch
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('kernel_desktop_protection', Path(__file__).with_name('kernel-desktop-protection.py'))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+REQUEST = {'processes': [], 'browser_processes': [], 'browser_protection': None}
+
+
+class OracleTests(unittest.TestCase):
+    def test_complete_unprotected_snapshot_returns_its_masks_and_a_stable_digest(self):
+        tree = {'available': True, 'complete': True, 'protected': False, 'masks': [[1, 2, 3, 4]], 'nodes': []}
+        first = module.answer(REQUEST, lambda *args: dict(tree))
+        self.assertEqual(first['masks'], [[1, 2, 3, 4]])
+        self.assertEqual(first['digest'], module.answer(REQUEST, lambda *args: dict(tree))['digest'])
+
+    def test_incomplete_or_unavailable_snapshots_mask_everything(self):
+        for change in ({'complete': False}, {'available': False}):
+            tree = {'available': True, 'complete': True, 'protected': False, 'masks': [], **change}
+            self.assertIsNone(module.answer(REQUEST, lambda *args: tree)['masks'], change)
+
+    def test_an_unplaceable_filled_window_answers_no_masks_instead_of_ending_the_oracle(self):
+        def unplaceable(*args):
+            raise ValueError('fill desktop placement unavailable')
+        answer = module.answer(REQUEST, unplaceable)
+        self.assertIsNone(answer['masks'])
+        self.assertEqual(answer['digest'], module.answer(REQUEST, unplaceable)['digest'])
+
+    def test_an_unplaced_filled_window_is_covered_whole_after_a_short_grace(self):
+        tree = {'available': True, 'complete': True, 'protected': False, 'masks': [[0, 0, 800, 600]], 'nodes': [], 'unplaced': True}
+        module.unplaced_since = None
+        with patch.object(module, 'UNPLACED_GRACE', 60):
+            self.assertIsNone(module.answer(REQUEST, lambda *args: dict(tree))['masks'], 'withheld while the placement settles')
+        with patch.object(module, 'UNPLACED_GRACE', 0):
+            self.assertEqual(module.answer(REQUEST, lambda *args: dict(tree))['masks'], [[0, 0, 800, 600]], 'then the window is covered, never frozen')
+        placed = {**tree, 'unplaced': False, 'masks': [[1, 2, 3, 4]]}
+        self.assertEqual(module.answer(REQUEST, lambda *args: placed)['masks'], [[1, 2, 3, 4]])
+        self.assertIsNone(module.unplaced_since, 'a placed field restarts the grace')
+
+    def test_the_fill_flag_reaches_the_snapshot_and_is_a_boolean(self):
+        seen = []
+        tree = {'available': True, 'complete': True, 'protected': False, 'masks': [], 'nodes': []}
+        module.answer({**REQUEST, 'fill': True}, lambda *args: seen.append(args) or tree)
+        module.answer(REQUEST, lambda *args: seen.append(args) or tree)
+        self.assertEqual([args[4] for args in seen], [True, False])
+        with self.assertRaises(ValueError):
+            module.scope({**REQUEST, 'fill': 1})
+
+    def test_native_password_dots_preserve_only_local_saved_value_masks(self):
+        for masks in ([], [[10, 20, 30, 40]]):
+            tree = {'available': True, 'complete': True, 'protected': True, 'masks': masks}
+            self.assertEqual(module.answer(REQUEST, lambda *args: tree)['masks'], masks)
+
+    def test_any_snapshot_change_changes_the_digest(self):
+        tree = {'available': True, 'complete': True, 'protected': False, 'masks': [], 'nodes': [{'name': 'a'}]}
+        other = {**tree, 'nodes': [{'name': 'b'}]}
+        self.assertNotEqual(module.answer(REQUEST, lambda *args: tree)['digest'], module.answer(REQUEST, lambda *args: other)['digest'])
+
+    def test_request_scope_is_exact_and_bounded(self):
+        for bad in ({**REQUEST, 'extra': 1}, {**REQUEST, 'processes': [{}] * 257}, {**REQUEST, 'browser_protection': []}):
+            with self.assertRaises(ValueError):
+                module.scope(bad)
+
+
+    def test_registered_values_do_not_choose_capture_masks(self):
+        # Owner 2026-10-09: Vault values never mask the whole desktop; the
+        # capture collector masks only the fill ledger, never echo text.
+        seen = []
+        tree = {'available': True, 'complete': True, 'protected': False, 'masks': [[5, 6, 7, 8]], 'nodes': []}
+        answer = module.answer({**REQUEST, 'values': ['synthetic-vault-value']}, lambda *args: seen.append(args) or tree)
+        self.assertEqual(answer['masks'], [[5, 6, 7, 8]])
+        self.assertEqual(seen[0][3], ['synthetic-vault-value'])
+        for bad in ({**REQUEST, 'values': 'x'}, {**REQUEST, 'values': [1]}, {**REQUEST, 'values': ['x'] * 257}):
+            with self.assertRaises(ValueError):
+                module.scope(bad)
+
+if __name__ == '__main__':
+    unittest.main()

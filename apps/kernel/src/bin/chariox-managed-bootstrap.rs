@@ -2,6 +2,7 @@
 const _: () = chariox_app_runtime::assert_production_build();
 
 fn main() -> Result<(), chariox_kernel::DaemonError> {
+    let _process_logs = chariox_kernel::logging::ProcessLogGuard;
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let command = args.first().and_then(|arg| arg.to_str());
     let disposable_worker = match (command, args.len()) {

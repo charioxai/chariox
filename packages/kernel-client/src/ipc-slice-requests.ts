@@ -118,6 +118,7 @@ export function getSliceDisplayEndpointRequest(
     sessionId: string
     attachmentId: string
     viewerPublicKey: string
+    sharedDisplay?: import("./kernel-types-cloud.js").RoomDisplayOffer
   },
 ) {
   return {
@@ -129,6 +130,7 @@ export function getSliceDisplayEndpointRequest(
             session_id: room.sessionId,
             attachment_id: room.attachmentId,
             viewer_public_key: room.viewerPublicKey,
+            ...(room.sharedDisplay ? {shared_display:room.sharedDisplay} : {}),
           }),
     },
   }

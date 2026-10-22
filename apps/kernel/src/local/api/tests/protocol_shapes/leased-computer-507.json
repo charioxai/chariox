@@ -1,0 +1,84 @@
+{
+  "local": [
+    {
+      "KernelBrowser": {
+        "command": {
+          "agent_id": "agent",
+          "op": "grant_leased_computer",
+          "target": {
+            "generation": "generation",
+            "surface_id": "surface"
+          }
+        }
+      }
+    },
+    {
+      "KernelBrowser": {
+        "command": {
+          "agent_id": "agent",
+          "op": "revoke_leased_computer"
+        }
+      }
+    }
+  ],
+  "local_protocol": 567,
+  "peer": [
+    {
+      "epoch": "epoch",
+      "grant": {
+        "desktop_kernel_id": "desktop",
+        "epoch": "epoch",
+        "home_agent_id": "agent",
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "leased_agent_id": "leased",
+        "target": {
+          "generation": "generation",
+          "surface_id": "surface"
+        }
+      },
+      "kind": "set_leased_computer_grant",
+      "leased_agent_id": "leased"
+    },
+    {
+      "epoch": "epoch",
+      "grant": null,
+      "kind": "set_leased_computer_grant",
+      "leased_agent_id": "leased"
+    },
+    {
+      "context": {
+        "home_agent_id": "agent",
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "leased_agent_id": "leased",
+        "worker_kernel_id": "desktop",
+        "worker_machine_id": "machine",
+        "worker_provider_run_id": "run"
+      },
+      "epoch": "epoch",
+      "kind": "check_leased_computer_grant"
+    }
+  ],
+  "peer_protocol": 175,
+  "responses": [
+    {
+      "kind": "leased_computer_grant_updated"
+    },
+    {
+      "grant": {
+        "desktop_kernel_id": "desktop",
+        "epoch": "epoch",
+        "home_agent_id": "agent",
+        "home_kernel_id": "home",
+        "home_session_id": "room",
+        "leased_agent_id": "leased",
+        "target": {
+          "generation": "generation",
+          "surface_id": "surface"
+        }
+      },
+      "kind": "leased_computer_grant_checked"
+    }
+  ]
+}

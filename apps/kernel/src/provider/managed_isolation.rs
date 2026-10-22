@@ -292,6 +292,32 @@ pub(crate) fn apply_preparation_home_to_managed_launch(
     Ok(())
 }
 
+/// The arguments of a fresh provider child that starts empty-handed. A managed
+/// launch keeps its bubblewrap prefix through the provider program and starts
+/// in the namespace's empty `/tmp` rather than the workspace; an unmanaged one
+/// is just the provider's own arguments.
+pub(crate) fn fresh_provider_child_args(
+    current: &[String],
+    provider_args: Vec<String>,
+) -> Vec<String> {
+    let separator = current.iter().position(|arg| arg == "--");
+    let Some(separator) = separator.filter(|separator| {
+        current[..*separator]
+            .windows(3)
+            .any(|window| window == ["--setenv", MANAGED_PROVIDER_ISOLATION_MARKER_ENV, "1"])
+    }) else {
+        return provider_args;
+    };
+    let mut args = current[..current.len().min(separator + 2)].to_vec();
+    if let Some(chdir) = args[..separator].iter().position(|arg| arg == "--chdir") {
+        if let Some(directory) = args.get_mut(chdir + 1) {
+            *directory = "/tmp".to_string();
+        }
+    }
+    args.extend(provider_args);
+    args
+}
+
 pub(crate) fn managed_launch_has_preparation_home(args: &[String], host_home: &Path) -> bool {
     let separator = args
         .iter()
@@ -805,6 +831,7 @@ fn managed_runtime_user_files_for_home(home: &Path, names: &[&str]) -> Vec<PathB
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(test)]
 fn managed_runtime_user_startup_files() -> Result<Vec<PathBuf>, DaemonError> {
     Ok(managed_runtime_user_home()?
         .as_deref()
@@ -815,6 +842,7 @@ fn managed_runtime_user_startup_files() -> Result<Vec<PathBuf>, DaemonError> {
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(test)]
 fn managed_runtime_user_openbox_files() -> Result<Vec<PathBuf>, DaemonError> {
     Ok(managed_runtime_user_home()?
         .as_deref()
@@ -1935,7 +1963,13 @@ fn managed_working_directory(
 fn managed_runtime_roots(launch: &ProviderLaunchResult) -> Result<Vec<PathBuf>, DaemonError> {
     let mut roots = Vec::new();
     for (name, value) in &launch.pty_env {
-        if !name.starts_with("CHARIOX_CLAUDE_NATIVE_") {
+        // The receipts flag and chunk index are not paths; every other native value is.
+        if !name.starts_with("CHARIOX_CLAUDE_NATIVE_")
+            || matches!(
+                name.as_str(),
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS" | "CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK"
+            )
+        {
             continue;
         }
         let path = PathBuf::from(value);
@@ -1978,7 +2012,7 @@ fn managed_inherited_github_config(
     };
     // The inherited protected setting belongs to the configured provider HOME.
     // It may not exist before login. Never expose an arbitrary ambient directory.
-    if PathBuf::from(directory) != provider_home.join(".config/gh") {
+    if directory != provider_home.join(".config/gh") {
         return Err(isolation_error(
             "inherited GitHub configuration is outside managed provider HOME",
         ));
@@ -2987,6 +3021,46 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn managed_claude_runtime_roots_ignore_the_context_receipts_flag() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-receipts-flag-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("runtime root should exist");
+        let launch = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "managed-receipts-flag-test".to_string(),
+            pty_target: None,
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::from([
+                (
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
+                    root.join("events.jsonl").display().to_string(),
+                ),
+                (
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS".to_string(),
+                    "1".to_string(),
+                ),
+            ]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        };
+
+        let roots = managed_runtime_roots(&launch)
+            .expect("a managed Claude launch with context receipts should be accepted");
+
+        assert_eq!(
+            roots,
+            vec![root.canonicalize().expect("root should canonicalize")]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn managed_custom_claude_runtime_root_remains_rebindable_after_masks() {
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-custom-runtime-root-{}-{}",
@@ -3536,7 +3610,7 @@ mod tests {
         std::fs::set_permissions(&ordinary_repo, std::fs::Permissions::from_mode(0o777))
             .expect("ordinary repository should be writable");
         std::fs::write(&ordinary_seed, "seed\n").expect("ordinary repository seed should exist");
-        std::fs::write(&sibling.join("sibling.txt"), "sibling\n")
+        std::fs::write(sibling.join("sibling.txt"), "sibling\n")
             .expect("sibling marker should exist");
         std::fs::write(&protected_payload, "protected baseline\n")
             .expect("protected payload should exist");
@@ -3599,11 +3673,6 @@ mod tests {
         let ordinary_seed = ordinary_seed
             .canonicalize()
             .expect("ordinary repository seed should canonicalize");
-        let ordinary_write = ordinary_write;
-        let protected_payload = protected_payload;
-        let profile = profile;
-        let openbox_rc = openbox_rc;
-        let command_payloads = command_payloads;
 
         let request = LaunchProviderRequest::new(
             format!("managed-runtime-home-{workspace_kind}"),
@@ -4471,8 +4540,7 @@ mod tests {
         for relative in MANAGED_RUNTIME_USER_COMMAND_DIRECTORY_NAMES {
             assert!(
                 !home.join(relative).join("provider-created").exists(),
-                "provider command payload escaped {}",
-                relative
+                "provider command payload escaped {relative}"
             );
         }
         // Bubblewrap may materialize an empty host-side mountpoint when a

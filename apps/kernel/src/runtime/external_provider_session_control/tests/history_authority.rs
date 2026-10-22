@@ -468,6 +468,19 @@ fn chariox_owned_agent_message_with_provider_attachment_suffix_is_not_imported_a
 
 #[test]
 fn claude_internal_task_notification_stays_with_active_chariox_prompt() {
+    assert_claude_internal_continuation_stays_with_active_chariox_prompt(
+        "<task-notification><task-id>sleep-1</task-id><status>completed</status></task-notification>",
+    );
+}
+
+#[test]
+fn claude_auto_compaction_stays_with_active_chariox_prompt() {
+    assert_claude_internal_continuation_stays_with_active_chariox_prompt(
+        "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation. Summary: Preserve the audit and answer the current memory probe.",
+    );
+}
+
+fn assert_claude_internal_continuation_stays_with_active_chariox_prompt(prompt: &str) {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -513,7 +526,7 @@ fn claude_internal_task_notification_stays_with_active_chariox_prompt() {
                 ObservedExternalProviderTurn {
                     provider_turn_id: Some("task-notification-1".to_string()),
                     role: ObservedExternalProviderTurnRole::User,
-                    text: "<task-notification><task-id>sleep-1</task-id><status>completed</status></task-notification>".to_string(),
+                    text: prompt.to_string(),
                     observed_at_ms: Some(100),
                 },
                 ObservedExternalProviderTurn {
@@ -1029,4 +1042,24 @@ fn observed_external_completion_does_not_dispatch_queued_chariox_prompt() {
             .expect("queued count should load"),
         1
     );
+}
+
+#[test]
+fn observed_native_paste_consumes_only_one_owned_prompt() {
+    let prompt = "Audit the native prompt path.";
+    let mut counts = BTreeMap::from([(prompt.to_string(), 1)]);
+    let wrapped = format!("<pasted_content id=\"71b3\"> {prompt} </pasted_content id=\"71b3\">");
+    assert!(consume_chariox_owned_prompt_text_match(
+        &mut counts,
+        &wrapped
+    ));
+    assert!(counts.is_empty());
+    assert!(!consume_chariox_owned_prompt_text_match(
+        &mut counts,
+        &wrapped
+    ));
+    assert!(!consume_chariox_owned_prompt_text_match(
+        &mut counts,
+        prompt
+    ));
 }

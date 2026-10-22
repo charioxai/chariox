@@ -1,5 +1,22 @@
 # Chariox v1 Protocol
 
+### MP-08 / MP-10 / MP-11 handoff brief configuration (local protocol 527)
+
+`UserConfig.config.history.handoff` and `UserConfigUpdated.config.history.handoff`
+carry optional `codex_brief_model` and `claude_brief_model` strings. Unset keys
+are omitted; the entire `handoff` object is omitted when both keys are unset.
+Normal `/config set history.handoff.<key> <model>` writes use the shared kernel
+config service and persist across restarts. No kernel-to-kernel peer shape changes
+or client minimum-version changes are required for this optional config surface.
+
+The populated response snapshot/hash is in
+`apps/kernel/src/local/api/tests/protocol_shapes/handoff_config.rs`. The focused
+live drill is `scripts/e2e-stack/context-switch/handoff-config-live.mjs` in the
+companion validation-tooling change; it drives the built TUI over hosted WSS,
+checks both populated response variants and protocol advertisements, and verifies
+persistence after restart. Source tests alone do not establish live acceptance.
+
+
 ### Hosted terminal renewal (local protocol 472)
 
 `RelayStatus.capabilities` advertises `terminal_relay_authorization_renewal_v1`.
@@ -11,14 +28,23 @@ never substitute for a terminal grant. Transient target loss reconnects and
 retries within the admitted grant lifetime. The existing relay peer protocol
 and `client_connect` frames remain unchanged.
 
-Client grants retain the existing 30-minute lifetime, including keyed issuance
-and renewal. Initial `/relay cloud client-token` commands issued by a local
+Account-session CLIENT grants are capped at Cloud’s 15-minute ceiling, including
+keyed issuance and renewal. Machine-capability grants retain their existing
+30-minute lifetime; clients use the returned expiry. Initial `/relay cloud client-token` commands issued by a local
 account-linked kernel carry `--relay-token-issuer LOCAL_ENDPOINT ISSUER_DAEMON_ID`.
 The shared client authenticates that local endpoint from the same private CLI
 profile, checks the issuing kernel ID and renewal capability, and renews the
 admitted subject, key, session and target through that kernel. Runtime requests
 and events still travel directly to the target over the encrypted relay lanes.
 A machine-only managed target must never replace the account issuer.
+
+MP-08/MP-10/MP-11: an issuing kernel grants one canonical kernel target. For
+this account's own kernels (the issuing kernel or its relay inventory) a Room
+ID stays in the kernel attachment path and is not sent as a Cloud
+shared-session identity. A foreign target keeps the Cloud shared-session scope
+that admits the grant, and the client reports the session the grant carries.
+Pairing aliases label the invitation and never appear in the grant’s allowed
+targets.
 
 If the original issuer is unavailable, the client displays a notice and retries
 within the existing grant lifetime without changing authority or dropping the
@@ -43,7 +69,7 @@ private resume payloads, launch manifests and free-form diagnostics. Native TUI
 structured endpoints are projected only when the URL has no userinfo, query or
 fragment. Internal persistence and authenticated worker launch/projection
 contracts retain `RuntimeProviderRun`; no relay-peer shape changes in this
-revision (peer protocol remains 70 on this branch).
+revision (peer protocol remains 73 on this branch).
 
 The focused synthetic protocol drill is
 `apps/cli/scripts/public-provider-run-protocol-drill.mjs`. It runs the Rust DTO,
@@ -57,6 +83,97 @@ Draft protocol aligned with `docs/spec-v1.md`.
 
 Apps Phase 1 protocol numbers were renumbered above release F on 2026-10-03 (local
 N → N + 9 for 368–406, relay 58 → 69); see [PROTOCOL_PHASE1_RENUMBERING.md](PROTOCOL_PHASE1_RENUMBERING.md).
+
+## MP-08 / MP-11: user-domain grant contract (local 432 / relay 78)
+
+The owner-approved multidomain access contract is specified in
+[MULTIDOMAIN_USER_DOMAIN_ACCESS.md](MULTIDOMAIN_USER_DOMAIN_ACCESS.md).
+MP-11: authenticated human-terminal focus grants resource-scoped authority.
+Agent-originated focus, attach, cycle and alias-routed prompts preserve session
+orchestration without creating or refreshing browser/Notes grants. Changing
+human focus does not revoke prior
+holders. Existing kernel turn/wake state retains grants until fully idle expiry,
+session/agent end or explicit revocation. Authenticated owner terminals use
+`KernelBrowser` operations `list_grants`, `subscribe_grants` and `revoke_grants`;
+agent tools cannot invoke these owner controls. Snapshots carry the live cursor,
+holders and non-focused-use notice. Revocation cancels grant epochs and idle
+subscriptions. MP-11: retained holders have the same input and mutations as
+focused agents on granted resources, including typing, keys, Tab and clicks.
+Explicit start/open is allowed; open grants its newly created tab. Claiming an
+unrelated existing resource requires focus. Loading a capability requires focus
+or the A05 owner approval described below. Vault,
+protected regions, sensitive approvals and App/passkey validation keep their
+shared protections. Ordinary input has no retained/focused classification;
+revoke and idle lapse still cancel authority immediately. Observation reads,
+including state, never start/restart Chromium or its controller for any caller;
+stopped/unavailable reads require explicit start/open (`browser_unavailable`).
+Browser/App window projections identify the owning kernel and focused-agent
+reachability; cross-kernel control is refused. Consumers of these new fields and
+commands require local 432. Existing multidomain feature minima remain 427.
+The focused MP-10 drill and protocol snapshots cover these changes; they do not
+alone establish ordinary/managed parity or official-provider wait behavior.
+
+MP-08 / MP-11: ordinary text and text-producing key events use the same
+Vault-only protected-target check, including password/OTP fields, focused
+frames and open nested shadow fields, for both focused and retained holders.
+Successful browser results are bound to the exact admission epoch under the
+grant lock before resource/subscription registration or inventory projection;
+revocation followed by refocus cannot adopt an old call's result into a fresh
+grant. A final live cancellation/provider-run check fences returned results.
+
+### MP-08 / MP-10 / MP-11: A06 Vault generation and login (local 469)
+
+Local 469 combines A04 (460) and A05 (462); relay peer 87 combines peer 82 and
+86. A06 adds no serialized request or event shape: the sudo-only MCP tool
+`chariox.vault.generate` replaces `chariox.create_generated_credential`, and
+`chariox.kernel_browser_paste_secret` accepts a live sudo window in place of
+focus for a retained grant. See [Sudo windows](KERNEL_SUDO.md).
+
+### MP-08 / MP-10 / MP-11: A05 capability acquisition (local 462)
+
+With `CHARIOX_ROOM_AGENT_TOOLS=1`, a running prompt submitted by the owner
+through a human attachment supplies acquisition causation. Agent messages,
+workflows, schedules and continuations do not. A new App binding or kernel
+browser grant also requires the owner's resource-specific `RuntimeInteraction`
+reply; a human prompt alone cannot authorize unrelated resources. Owner Deny
+and a missing owner request return the typed `user_domain_not_requested`
+refusal; a revoke reaching that agent while its decision is pending returns
+`user_domain_not_granted`. Other holders' grant changes do not affect a pending
+decision. Provider MCP errors carry the same code. Existing focus grants remain
+available through the shared browser authority path; focus is the owner's live
+act, so focus grants have no absolute lifetime (no `expires_at_ms`) and retire
+through idle, revocation or session/agent end.
+Explicit owner focus promotes an existing requested or delegated browser grant
+to that focus lifecycle without retiring its resources, subscriptions or epoch.
+
+Browser loader arguments may request `lifetime_hours` from 1 through 24; the
+default is 8 hours. A prompt grant covers newly opened tabs, while claiming an
+existing resource and Vault-sensitive actions retain the focus checks.
+`chariox.kernel_browser_share` transfers an explicit nonempty resource subset
+to a direct local child. A delegated grant cannot open additional tabs, outlive
+its source or survive source revocation. Grant projections include absolute
+`expires_at_ms` and optional prompt/delegation attribution. Absolute and idle
+expiry have live kernel wakes that cancel in-flight work and subscription scopes.
+
+App bindings use the existing trusted installation, admitted publisher key and
+capability checks. Issued bindings carry an optional `app_grant` generation,
+absolute expiry and prompt/delegation attribution; agents cannot submit this
+issued authority as grant input. App grants default to 8 hours and child
+bindings inherit the parent's deadline. Revocation removes only bindings
+actually delegated from that generation, wakes retained calls and prevents an
+old call or expiry wake from adopting a replacement binding. Recovery rearms
+absolute expiry; an untimed legacy binding needs fresh owner approval in room
+mode, and recovery without a live expiry executor fails closed. Recovery
+removals record the normal `agent.extension_revoked` event and
+`home_extension.grant.revoked` audit. Leased, remote and slice agents cannot acquire these user-domain
+resources; they use their Room Browser/Computer route.
+
+Clients consuming this metadata require local 462; relay peer shapes are
+unchanged. The focused A05 drill exercises the built TUI, kernel and official
+Codex resource-approval path: owner Deny with the typed refusal code, owner
+Allow with the 462 grant projection over the real client transport, and the
+live absolute-expiry wake. Source refusal and protocol snapshot tests are
+supplementary and do not establish hosted, public-site or managed acceptance.
 
 ## 1. Scope
 
@@ -120,6 +237,98 @@ The kernel remains the workspace/runtime authority in all cases.
 ## 3. Protocol Lanes
 
 ## 3.1 Terminal Lane (Provider Output Stream)
+
+MP-08 / MP-10, allocated local protocol 508 / peer 116: persisted terminal
+output carries its history `sequence`. Consecutive output or reasoning rows
+with the same run, merge key and recipient scope may coalesce. `sequence_end`
+is the inclusive last sequence; `sequence_byte_lengths` gives each persisted
+row's UTF-8 byte length, in order. A single row omits both fields. Clients split
+the range at these byte boundaries before replay deduplication, preserving
+unseen rows when history hydration overlaps only part of a range. Gaps and
+unsequenced bytes never join a persisted range.
+
+`GetSessionHistoryOutline.include_prefetched_content=true` returns optional
+`prefetched_blobs` on each requested agent, including an explicit empty array
+when no content is selected. The kernel selects up to 64 latest-turn detail,
+assistant-output and steering blobs per agent, with a shared 1 MiB encoded
+content budget. Other details remain available through the existing blob
+requests. The outline's `steering` flag identifies budgeted steering prompts;
+observed and recovery prompt envelopes retain their collapsed, on-demand role.
+Clients that omit the request flag retain the earlier outline and blob paths.
+
+MP-08 / MP-10 / MP-11: `AttachSessionView` was introduced in 508/116 and
+its first-screen behavior is updated in the allocated 518/126 bump. It
+accepts the ordinary session/client/capability binding plus an optional
+`preferred_agent_id`. `SessionViewAttached` returns an attachment, the normal
+`SessionState` response under `state`, and the normal `SessionHistoryOutline`
+response under `history`. The kernel uses the existing authorized and redacted
+read commands, selects at most six visible agents in the preferred agent's pane
+group and the latest turn without downloading tool/thought bodies. State and
+history reads run concurrently after the ordinary attachment; details and older
+turns remain available through normal history requests.
+It binds through `AttachToSession` before either read, so later output
+already includes the new recipient; a history failure retires that exact new
+attachment through normal detach. This removes client round trips without
+adding session or history authority.
+The event subscription remains the existing attachment-scoped path. Its first
+pump replays output for the new attachment, including output produced between
+the initial read and subscription. Clients render the initial view while event
+admission is pending, deduplicate replay by persisted sequence, and enable
+prompt controls only after subscription and hydration settle. Clients below
+508 retain their existing attach, subscribe, state and history requests.
+External-agent grants cannot request this full-terminal response bundle.
+
+MP-08 / MP-10 / MP-11, allocated 518/126: `GetClientCatalogRevisions` accepts
+exactly the same owner/provider/profile/execution-location scope as
+`GetProviderCatalog`. `ClientCatalogRevisions.revisions` returns content hashes
+for `provider_accounts`, `provider_catalog`, `provider_commands`, and the existing
+`terminal_commands` revision (`sha256:` prefix). It uses the normal scoped catalog
+loader and refreshes stale metadata before returning a revision. It adds no
+credential or provider execution path. Clients show their bounded private stored
+inventories immediately, then compare revisions in the background after four
+hours or explicit invalidation; unchanged inventories need no full download.
+Older kernels retain ordinary full catalog requests. Projection subscriptions
+send activity/metadata before terminal output batches on the same wake; the relay
+still routes opaque packets and owns no session state.
+
+
+### Conditional client catalogs (MP-08 / MP-10 / MP-11, protocol534 / peer142)
+
+`GetClientCatalogSnapshot` takes the ordinary `GetProviderCatalog` selection in
+`scope` plus nullable `known: ClientCatalogRevisions`. The response has
+`ClientCatalogSnapshot.snapshot.revisions` and only changed sections:
+`provider_accounts`, `provider_catalog`, `provider_commands`, `terminal_commands`.
+An omitted section means unchanged only when its returned revision equals the
+client's revision. No cache means `known: null`, returning all four sections.
+Model discovery for a scope the kernel has not yet read can take many seconds.
+A caller that already holds a catalog (`known` set) is answered at once: accounts,
+commands and revisions are current, `provider_catalog` is omitted with the caller's
+own revision, discovery continues in the background and `client_catalog_changed`
+follows when it ends. Accounts are read after discovery, and a discovery that an
+invalidation overtook is kept as stale metadata, never turned into a failed read.
+Provider kinds/availability are projected from `provider_catalog`; a session's
+live agent roster is never part of this cache. Account selection and admission
+remain kernel-owned and caller-scoped.
+
+Both local and relay session/waiting-room subscriptions emit
+`client_catalog_changed { revision }` on catalog invalidation or changed model
+metadata. `revision` is a process-local change sequence, not a cross-restart
+content hash. It contains no account data. Clients fetch conditional snapshots
+on first connection, reconnect, and this event; they do not poll catalog data.
+Authorized user/kernel-scoped cached catalogs can paint while revalidation
+runs. Sign-out/account switch clears private browser caches; cache values never
+include bootstrap credentials, provider authentication state files or clients.
+Older kernels use the preexisting catalog requests rather than receiving a
+protocol534 request.
+
+
+MP-08 / MP-10: complete owned output/thought groups in initial history pages
+also compact repeated delta metadata. `sequence_end`, `sequence_byte_lengths`
+and `sequence_indices` retain each original row identity, including gaps left
+by another agent. Clients reconstruct the rows before fragment reconciliation;
+inline summaries admit all those identities while displaying one message.
+The first row's timestamp is retained. Partial rows, tool snapshots and external
+observations are not compacted; persisted operational history is unchanged.
 
 Purpose:
 
@@ -220,6 +429,7 @@ Provider hidden-context injection contract:
 - Prompt submission from the kernel to a provider adapter is conceptually a `PromptEnvelope`, not one concatenated string.
 - `visible_user_prompt` is the only prompt body that may be shown in Chariox prompt blobs, terminal input history, native provider prompt boxes, or user-facing prompt echoes.
 - `hidden_system_context` carries Chariox runtime/system prompt material: runtime instructions, Workspace Live Sync managed/tracked instructions, native permission rules, workflow-level prompts, node-level instructions, granted capability summaries, continuation instructions, and utility-call instructions.
+- Notes the user attaches in the web client (protocol 566) are prompt attachments with mime `application/vnd.chariox.note+json` (inline JSON `{quote, comment, source}`). Prompt assembly removes them from provider attachments and adds a `<user-notes>` block (source, selected text, comment) to `hidden_system_context`; Claude native TUI receives it through the same `additionalContext` bridge. History keeps the attachment, so the transcript shows chips. See `docs/MULTIDOMAIN_NOTES.md`.
 - `attachments` remain structured prompt attachments and are not used to smuggle hidden system instructions.
 - `manifest` records prompt template ids, template hashes or versions, assembly conditions, and the provider injection channel selected for the turn; the manifest is audit/debug metadata, not prompt UI content.
 - Chariox MUST NOT implement hidden context by prepending text to `visible_user_prompt` and later redacting it from UI surfaces.
@@ -451,6 +661,234 @@ visible prompt mechanism, but filtering and durable inbox state remain
 kernel-owned. A missing provider run or delivery failure must be surfaced in
 the event status and retry path rather than being silently dropped.
 
+## 3.3.4 Regular Agent Room Tools (MP-08 / MP-10 / MP-11, A01)
+
+PR1 is enabled with `CHARIOX_ROOM_AGENT_TOOLS=1`. Ordinary provider runs receive
+`chariox.room.*`, command/guide discovery, public room history/trace, and the
+existing workflow-code/registry tools. Legacy `/meta` remains available during
+migration. Aliases share the kernel admission path; they do not create another
+prompt or authority path.
+
+Local daemon protocol 450 adds immutable `spawned_by_agent_id` to agent
+projections and `created_by_agent_id` to workflows, runs and queued workflow
+prompts. Missing legacy creators decode as unknown; controller identity never
+backfills creator authority. Spawn creator is derived from the authenticated
+provider actor, not accepted from a client command. Relay peer shapes are
+unchanged in this PR.
+
+Agents may spawn without room agent-count limits, message any current room
+agent, create workflows, and observe/run peers' workflows. Agent rename/delete
+requires the caller's direct spawned child in the same room; self, peers,
+parents and grandchildren are denied. Workflow mutations require the caller
+or its direct child as immutable object creator. A peer workflow invocation
+creates a separately caller-owned run, without changing definition ownership.
+Running a peer's saved source may create a caller-owned definition/run; it
+does not rewrite the peer artifact's provenance or application history.
+PR1 agent-authored workflow declarations cannot provision extension grants;
+owner-admitted capability paths remain separate until the capability-grants PR.
+Current room, run/lease and creator fences apply after waits before effects;
+a replaced provider run cannot receive an asynchronous room-tool result.
+
+Before delegation, message submission or workflow invocation, the kernel
+persists `room.obligation.registered` with actor/room/run/prompt, kind and
+resource reference. A dispatch receipt records accepted resource identity or
+a proven pre-admission rejection. Receipt-write failure after admission must
+preserve dispatch and return the obligation/resource IDs so callers inspect
+existing work before retrying. The receipt transaction finishes before newly
+admitted provider dispatches are spawned, including when the receipt fails,
+so a failing receipt cannot batch-roll back those startup writes.
+Ambiguous post-commit failures retain intent;
+PR1 does not add automatic replay, settlement, yield or recovery scheduling.
+Those lifecycle semantics belong to PR2.
+
+## 3.3.5 Durable Agent Tasks and Events (MP-08 / MP-09 / MP-10 / MP-11, A02)
+
+MP-08 / MP-09 / MP-10 / MP-11: the integrated acceptance contract uses local
+protocol **513** and relay peer protocol **121**. It combines the agent-model
+493/102 task, wake, Goal and leased-watcher contracts; main's local 490 bounded
+relay response framing and socket-local receipts; and the native display,
+App-view, Notes, grant, capture, DOM-mirror and agent-tab contracts integrated
+at local 491. The display history includes bounded stripes (447), binary frames
+with WebP tiles and scroll rectangles (466), and relay display push/ACKs (475).
+Binary transport downgrade does not admit an obsolete worker runtime: remote
+lease creation, restored bindings, Room browser forwarding, context transfer and
+hosted slice receipts require peer 121 or newer. 513/121 also includes main's
+local 491 / relay peer 101 (#974) kernel ownership, waiting-room and Room
+workflow contracts. Client feature floors depend on
+the contracts they use; this entry allocates no new protocol version.
+
+MP-08 / MP-10 / MP-11: coordinator-allocated 513/121 adds the paired terminal
+actor normalization for display metadata/credits and the historical workflow
+read policy. A run with neither immutable agent creator nor invoking-user proof
+is visible only to the authenticated kernel owner, even when another member
+has Full collaboration. List, Get, snapshots and updates mark it with
+`created_before_ownership_tracking=true`; current endpoint/Room ownership never
+reassigns it. Web/TUI label it **Created before ownership tracking · read-only**.
+Coordinator decision of 2026-10-13 17:12: the authenticated kernel owner may
+stop/cancel a non-terminal historical run, including a captured Room Stop.
+Pause and Resume remain denied for everyone; other callers and all controls of
+terminal historical records remain denied before idempotent shortcuts. Stop
+never creates invoker proof or removes the historical label. New admissions retain
+the transactional immutable proof. Managed upgrade policy retains 506 as an
+explicit predecessor; the consuming web floor is 513.
+
+MP-08 / MP-10 / MP-11: local protocol **516** orders a DOM mirror read
+(`mirror_next`) behind every earlier `mirror_input` of the same mirror
+subscription and generation that reached the kernel first; the read never holds
+later input. A 516 client writes the read right behind a key, so the key's echo
+shares one relay round trip with input; kernels through 515 retain the
+input-reply-then-read path. The target's 513/121 lacked this ordering, so the
+coordinator allocated 516/124 above it; 511 is no longer an ordering floor.
+
+MP-08 / MP-10 / MP-11 G08: legacy recall tools (`chariox.search_recall`,
+`chariox.query_recall`, used while room agent tools are off) keep the
+`scope` values `current_session` and `all`; the argument shape is unchanged.
+Both values resolve to the caller's own session, including under `/sudo`; any
+other `session_id` is denied before lookup. The room history tools
+(`chariox.history.search`, `chariox.history.read`) follow the same rule. An agent
+in a live `/sudo` window reads another session through `chariox_kernel_request`
+with the typed recall request, which needs the owner's per-operation scope
+approval and is audited.
+
+MP-08 / MP-09 / MP-10 / MP-11 A10: leased watched processes use the existing
+signed, lease-scoped peer connection. Home owns the task, registration and inbox;
+worker owns a durable launch receipt and the common watched-process supervisor.
+Start is pinned to the current home prompt, worker run, placement and lease.
+Queries and cancellation retain that exact launch identity across turns. A lost
+Start response is reconciled by query, never by another execution. Worker restart
+or lost supervision produces source loss; a persisted PID is not a live handle.
+Older workers fail admission before creating a launch. Kernel-managed cwd,
+permission approval, output protection and pinned process signals apply on worker.
+
+
+With `CHARIOX_ROOM_AGENT_TOOLS=1`, local protocol 452 projects independent
+`agent_tasks` in the shared session snapshot. The kernel owns their SQLite
+ledger, attributed inbox, obligations and exact provider acceptance receipts.
+Task prompt IDs stay stable through admission, queueing, promotion and replay;
+provider-native settlement must reconcile the same task. New user work cannot
+hide an older incomplete task. The shared TUI status prioritizes blocked tasks
+and shows wait reason/deadline and aggregate unresolved obligations. Web and
+native clients must consume the same projection; client integration is required
+before claiming visibility on those clients.
+
+Ordinary provider runs receive `chariox.events.subscribe`, `subscriptions`,
+`unsubscribe`, `inbox`, `ack`, `yield` and `blocked`. Each requires current
+`task_id` and `origin_prompt_id`; room/run/turn fences precede resource lookup
+or mutation. A valid yield names admitted completion registrations, covers all
+unresolved obligations and has a finite future deadline. Waiting commits only
+when the official provider turn settles. Source completion/loss and overdue
+waits wake the retained task; ACK and provider acceptance remain distinct.
+
+MP-08 / MP-09 / MP-10 / MP-11: `chariox.events.cancel_wake` also accepts an
+earlier task's retained source from the same agent, room and owner. The caller
+still supplies the running turn's task and prompt IDs. Source ownership stays
+with the original task; its cancellation outcome invalidates the original
+wait, and a watched process settles only after physical exit. An owner Resume
+or corrective continuation takes precedence over that task's pending inbox
+delivery, so the event cannot create a replacement task during admission.
+
+A workflow node that yields remains supervised by its durable task after the
+native provider turn ends. The returned workflow run ID stays live and
+addressable for cancellation. Wake and owner continuations retain the same
+workflow/node context; cancelling the run cancels its bound tasks and resources.
+Orphan reconciliation and workflow completion must respect those retained
+tasks, including physical resource settlement after cancellation. The canonical
+`workflow_run` obligation and legacy `workflow` spelling share completion-source
+admission and settlement, so cancellation also releases the parent's wait.
+This lineage is private kernel storage and adds no serialized client fields.
+
+A final answer with unresolved obligations gets one persisted corrective turn,
+then blocks if still invalid. Unfinished work without a live wake source is
+corrected or shown as blocked, never silently left idle. The kernel sweeps every
+30 seconds. Three consecutive settled wake turns without real progress block
+further automatic wakes; the third turn may still handle progress. A handled
+result or verified public artifact resets the counter; repeated status, ACK,
+cursor or deadline changes do not. Fifteen minutes waiting without progress
+produces a notice. Unconfirmed provider delivery blocks within two minutes and
+requires reconciliation of the original receipt; uncertainty never permits
+blind replay. Damaged ledger/source rows are retained and quarantined.
+MP-08/MP-10/MP-11: each admitted delivery gets a full two-minute receipt
+window. Repeated refusals while idle have a separate bounded escalation clock;
+an active recipient turn clears that clock. Unsupported or refused steering
+stays queued through long turns and retries when the recipient becomes idle.
+Steer rejections do not start the idle-refusal clock; idle refusals start it at
+receipt time. A damaged refusal clock is retained and quarantines only its
+own delivery through the owner-action path; supervision of other Rooms continues.
+
+`chariox.send_agent_message` defaults to nonurgent and no reply. Nonurgent
+messages wait behind active work; idle/yielded receivers wake. Urgent messages
+use the existing exact-turn steer path, with rejected/unsupported steering
+retained for a later wake and uncertainty pinned. Explicitly stopped receivers
+keep pending items. `reply_requested=true` creates one correlated reply
+obligation; ordinary messages must not produce courtesy feedback loops.
+
+Blocked tasks create one kernel-owned **Agent needs your action** interaction,
+projected to every session client. In the TUI, open it with F8, Ctrl+G or
+`/approvals`, explicitly select Resume or Cancel, then confirm. Resume
+revalidates the blocked revision and retained receipts; progress or reconnect
+alone cannot resume. Cancellation retains obligations until actual owned
+resource settlement. MP-08/MP-10/MP-11: cancellation applies to the addressed
+task; an older independent wait still receives its source completion or deadline
+wake. Historical task ordering is not an agent stop disposition.
+Legacy `/agent task` commands still address Meta tasks;
+they are not selectors for regular `agent_tasks`. Process/timer watcher sources
+belong to PR3 and leased delivery reconciliation to PR10; unsupported leased
+paths fail visibly instead of fabricating acceptance.
+
+## 3.3.6 Hybrid Goals (MP-08 / MP-09 / MP-10 / MP-11, A12)
+
+With room agent tools enabled, owner terminal prompts `/goal [--interval N]
+<objective>` enter ordinary prompt admission on the focused ordinary agent.
+The interval defaults to 10 minutes and accepts 1–60. `/sudo /goal` uses the
+existing fresh elevation interaction; goal and elevation duration remain
+independent. Delegates inherit neither goal mode nor elevation.
+
+`agent_tasks[].goal` has schema version 1 and binds its immutable goal/task ID
+to owner, room, agent and original prompt. It persists the protected objective,
+objective revision, elapsed active/wait time, interval/next due, continuation
+sequence, evaluation intent/result, check count and verified final answer/evidence.
+Obligations, progress, blocked interactions and delivery receipts stay in the
+shared task ledger. No separate goal scheduler or relay/Cloud authority exists.
+
+Each work-turn end admits one same-provider `completion_check` turn, bounded
+by 60 seconds and an 8 KiB public assessment. Its bounded public context carries
+obligation and registration coverage. It runs through the same provider actor
+using a fresh tool-free official-provider conversation in a neutral directory;
+ordinary conversation/resume state and permissions remain available for later
+work. Native shell, file, network, configured MCP and runtime tools are disabled
+before dispatch. Unsupported unstructured assessment paths block explicitly.
+It cannot use sudo, recursively evaluate or count its assessment as progress. The home kernel
+validates achieved/continue/waiting/blocked against current objective and ledger
+bindings. Achieved requires no open, settling or failed obligations. Valid
+continue retains sources and admits one durable continuation; valid waiting
+requires coverage and a deadline no later than the goal interval. Both immediate
+continuations and periodic wakes share the no-progress guard. Malformed/timeout
+checks block once with explicit owner recovery. A plain turn (no goal, obligation
+or wait) only gets a task row and its task id in hidden context: it is never
+checked, corrected, held to a wait or blocked, and a failed plain turn is
+cancelled.
+
+Owner controls use the existing `SubmitPrompt` frame:
+`/goal pause|resume|cancel|interval|edit <goal-id> <task-revision> [value]`.
+The TUI binds short commands to its displayed goal revision; web buttons send
+the same command. Stale/foreign controls fail. Pause/edit suspend looping while
+retaining obligations; edit fences prior evaluations. Resume revalidates retained
+resources and admits one continuation without renewing sudo. Source events and
+reconnect cannot resume a blocked goal. All clients read the same home goal row.
+
+New `/goal` no longer invokes `planner-worker-reviewer`. Existing templates,
+`/loop` and workflow history remain available. Legacy records without trustworthy
+command provenance continue draining and require explicit owner adoption:
+`/goal adopt <run-id> <owner-confirmed objective>` on the authoritative ordinary
+entry agent. Adoption atomically fences the run ID, records its original
+invocation reference, and tracks the existing run/nodes as covered obligations.
+It never replays a template launch. Completed/cancelled runs stay terminal;
+restart retains the migration receipt, source cursors and finite check-in.
+
+The goal shape, compact task acknowledgements and `completion_check` origin were
+introduced at local protocol 493 and are retained in the integrated 513/121
+contract above, with matching snapshots and dependent Goal client gates.
+
 ## 3.4 Workflow Coordination Semantics
 
 Multi-agent workflow coordination is a daemon-owned structured protocol concern.
@@ -509,6 +947,15 @@ prompt ownership assignment. Confirming an unchanged profile is safe during a
 replayed active turn; changing it requires an idle agent. This makes the next prompt
 use the profile committed at home even if an earlier worker update acknowledgement
 was lost. Incompatible peer versions must be rebound before dispatch.
+
+A worker refuses a `SubmitLeasedPrompt` before the receipt fence and provider launch
+when the selected account cannot start work there (not authenticated, or no usable
+credential) with the non-retryable relay error code `provider_account_unusable`. It
+is an additive error code in the existing error field, so it carries no peer protocol
+number. The home treats it as a known pre-admission rejection and settles the prompt
+as failed with the worker's message instead of reconciling it as indeterminate. A home
+that predates the code treats it as an unknown error and reconciles through the
+worker's `Rejected` receipt.
 
 Version 25 also removes the separate `ForwardWorkflowProviderFailure` request and
 its acknowledgement. Workers settle failed leased turns locally without waiting
@@ -728,6 +1175,18 @@ inventory selections. The source kernel derives source identity, context ID and
 canonical plan digest, validates Project/Workspace/worktree ownership and obtains
 a Cloud ticket. A disconnected source refuses the request. The selected destination
 must be an enrolled ordinary kernel owned by the same account/user in the same realm.
+
+Managed-context transfers (Project/slice development context, kernel Extension snapshot and the
+package that carries them) have no fixed total file, Extension, repository or byte ceiling. The
+sender writes the archive and package to disk and the receiver admits the declared size against the
+free space of the volume that holds it (the transfer store for the received archive, the
+destination staging volume again after staging and cloning for the checkout) and the in-memory kernel
+snapshot against half of available memory (Linux `MemAvailable` capped by the memory cgroup
+headroom, macOS reclaimable pages; a machine that cannot report memory gets a fixed 512 MiB)
+before it accepts, refusing with a message that names the volume and how to recover. The
+manifest's per-component sizes and digests, and the per-artifact digests inside the archive, are the
+receipt the receiver verifies; per-file, per-package and parser bounds are unchanged. No wire shape
+changes.
 
 MP-08 / MP-11 owner destination bindings are
 `{kind:"owner_managed_machine", machineId, kernelId}`. Plans, import arms,
@@ -980,18 +1439,37 @@ OpenCode current runtime note:
 - PTY remains a liveness/process-management surface for the OpenCode server process, not the primary prompt/output transport
 - the same daemon-owned local request/response surface remains the client contract while the adapter becomes more provider-specific internally
 
-### MP-08 / MP-10 / MP-11: bounded relay transport (local 490, peer 100)
+### MP-08 / MP-10 / MP-11: bounded multiplexed relay transport (local 532, peer 140)
 
-Updated browser, TUI, kernel and temporary peer/metadata sockets opt in with
-`chariox_transport=chunks-v1` on the relay URL. This is socket-local framing
-around the existing opaque relay envelope; it grants no runtime or relay
-admission authority and does not change encryption or request correlation.
-Direct local kernel sockets retain their existing transport.
+Browser, TUI, kernel and temporary peer/metadata relay sockets negotiate
+`chariox_transport=chunks-v2`. This socket-local framing wraps the existing
+opaque encrypted envelopes. It grants no admission authority, changes no
+request correlation, and does not apply to direct local kernel sockets.
+
+Every egress text envelope, including the connection acknowledgment, uses JSON
+`transport_chunk` frames with `transfer_id`, `offset`, `total_bytes` and `payload`.
+Offsets/totals count UTF-8 bytes of the original envelope. Each serialized frame
+is at most 16 KiB. The receiver immediately sends `transport_ack` with that ID
+and the exclusive offset received; only a complete original envelope reaches
+application dispatch. Small binary encrypted events remain binary, followed by
+a zero-total/zero-offset/empty-payload chunk checkpoint with its own increasing
+ID. Its receipt accounts for both the preceding binary envelope and checkpoint.
+Larger binary events use the existing encrypted JSON envelope and bounded
+chunks; the ciphertext is never decrypted or inspected by the relay.
+The lane's unreleased local534/peer142 allocation adds the optional query
+`chariox_window=262144` beside `chariox_transport=chunks-v1`. Updated clients
+request a 256KiB bound so a typical catalog can leave in one transport flight.
+An older relay ignores this additive hint and retains its existing bound;
+without the exact hint, the new relay also retains64KiB. The chunk size,
+receiver grammar, total bound, ordered receipts, independent small/control
+traffic and all admission/encryption checks are unchanged. The hint alone
+without `chunks-v1` does not opt a socket into bounded framing.
+
 
 Relay egress text envelopes larger than 16 KiB use JSON `transport_chunk`
 frames with `transfer_id`, `offset`, `total_bytes` and `payload`. Offsets and
 totals count UTF-8 bytes of the original envelope. Each serialized chunk is at
-most 16 KiB; at most 64 KiB of unacknowledged chunk bytes are written. The
+most 16 KiB; at most 64 KiB of unacknowledged chunk bytes are written by default. The
 receiver immediately returns `transport_ack` with the same transfer ID and the
 exclusive byte offset received, then dispatches only the completely reassembled
 original envelope. Totals are bounded to 64 MiB, IDs increase per connection,
@@ -999,23 +1477,53 @@ and a receiver admits one contiguous transfer. Invalid bounds, duplicate or
 cross-transfer receipts, overlap, unknown chunk fields, and nested transport
 frames terminate the connection without retaining payloads in errors.
 
-Ping/Pong have a separate bounded writer control queue. Small correlation-addressed
-requests/responses and admission acknowledgments may interleave with bulk
-responses/events; requests retain their order relative to earlier bulk requests.
-Subscription events retain their original order. Close takes precedence over
-unfinished data. Receipts are ordinary inbound transport progress for the
-existing heartbeat check. The 30-second heartbeat interval, 15-second Pong
-deadline, token expiry and revocation enforcement remain unchanged; a silent
-peer cannot keep a transfer alive.
+A socket admits at most four active transfers and 128 MiB of aggregate declared
+assembly, with a 64 MiB per-envelope maximum. Buffers grow only with received
+bytes. Completed wire writes release their assembly/lane slots immediately;
+their exact outstanding receipts retain byte credit in the shared window. A
+completed message awaiting its receipt is not an unfinished assembly. This
+keeps small events and replies pipelined across the RTT within the same limits.
+IDs increase in first-wire-write order, not completion order; an earlier
+active stream may finish after a later one. Unknown/reused IDs, changed totals,
+overlapping offsets, unknown fields, nested transport frames and invalid
+checkpoints close the connection without including payloads in errors.
 
-An older relay ignores the opt-in and uses its existing envelopes. Updated
-receivers accept those envelopes, but the bounded-drain guarantee requires the
-updated relay. An unopted receiver on the updated relay still accepts small
-traffic; a large envelope closes explicitly with an updated-client requirement
-rather than sending chunk frames that receiver cannot decode. All deployed
-relay consumers must therefore be upgraded for large-envelope traffic. The
-local 490 and peer 100 snapshots bind this framing change; existing API-specific
-minimums remain applicable because no new daemon operation is introduced.
+All data shares one 256 KiB unacknowledged wire window, including frame metadata,
+small replies, binary envelopes and checkpoints. A single-chunk message (at most
+16 KiB) may additionally use a 32 KiB reserve, so an interactive frame never
+waits a round trip behind a window full of bulk data. Receipts must match the
+oldest outstanding wire frame, across IDs; a receipt for another stream cannot
+release credit. Each side queues receipts for at most the frames that window
+plus reserve admits (`MAX_UNACKED_FRAMES`); a conforming peer acknowledging a
+whole window in one burst never overflows the queue, and an overflow closes the
+connection with a logged `receipt_queue_full` end reason. There is no unchunked 2 MiB reply bypass. Up to two correlated replies
+can progress concurrently (e.g. catalog plus first viewport), with one lane each
+reserved for requests and events. Requests retain FIFO within their lane and
+display events retain FIFO per subscription, so a small frame of one display
+stream (the browser band) never queues behind another stream's bulk frames;
+when several messages can start, a single-chunk message starts first. Only events of this socket's acknowledged `kernel_browser_display`
+route may pass an unfinished correlated response; ordinary terminal/peer events
+still wait behind the earlier snapshot. The relay uses its existing route scope
+and sender binding, never decrypted payloads, to choose the scheduling lane. Unknown
+lifecycle envelopes are ordering barriers for requests/events. Correlated replies
+can pass barriers to avoid request/reply deadlock. Chunks rotate fairly among
+active streams, so display events do not wait for an entire snapshot and a
+continuous event stream does not starve the snapshot.
+
+Ping/Pong and Close retain the separate bounded control queue. Close takes
+precedence over unfinished data. Transport receipts do not acknowledge kernel
+operations. Heartbeat, token expiry, revocation, routing scopes and encrypted
+payload admission remain unchanged.
+
+The updated relay rejects an explicit older/unknown `chariox_transport` capability
+with HTTP 426 before switching protocols. Unopted legacy sockets can receive
+small envelopes; a large envelope closes with an actionable updated-client
+reason. An older relay can ignore the new opt-in; updated receivers still accept
+its ordinary envelopes, but multiplex/window guarantees require the updated
+relay. Kernel API-specific client minimums remain unchanged because this changes
+relay framing rather than daemon operations. The 532/140 transport snapshot
+binds capability, wire fields, checkpoints and limits; generated protocol pins
+must match the runtime constants.
 
 ## 4.1.1 Unified Node-Transport Direction
 
@@ -1171,11 +1679,11 @@ Protocol v296 and relay peer protocol v32 add bounded Room Environment screensho
 
 Protocol v298 and relay peer protocol v34 bind a browser secret fill to the exact document URL inspected before vault resolution. The worker controller rechecks that URL inside the same document-scoped operation that focuses and fills the opaque element reference; a same-document URL change and a target that cannot receive focus fail with distinct stable errors before secret insertion, and the secret is never sent through global keyboard input. Clients that do not invoke browser secret insertion need no new behavior, but home and worker kernels must use the same relay peer version.
 
-Protocol v299 and relay peer protocol v35 add the owning `document_index` to every browser DOM snapshot node. The home kernel uses this internal association to authorize a vault credential against the exact top-level or iframe document that owns the target element, while explicit `expected_url` and `expected_host` guards continue to describe the visible top-level page. Missing or invalid document metadata fails before vault resolution. The frame URL is passed back only as the action's document-bound insertion guard and is not added to MCP browser field projections. Secret paste accepts only an editable HTML password input. The kernel rejects an unmasked or non-editable field before vault resolution, and the controller rechecks the field inside the document-bound insertion operation both before and after focus handlers run.
+Protocol v299 and relay peer protocol v35 add the owning `document_index` to every browser DOM snapshot node. The home kernel uses this internal association to authorize a vault credential against the exact top-level or iframe document that owns the target element, while explicit `expected_url` and `expected_host` guards continue to describe the visible top-level page. Missing or invalid document metadata fails before vault resolution. The frame URL is passed back only as the action's document-bound insertion guard and is not added to MCP browser field projections. MP-08/MP-11 amendment (Miguel 2026-10-09): secret paste accepts an editable input, textarea or contenteditable field. The kernel binds the Vault fill to its frame/backend node/document/generation. Each capture masks only its plain-text box with small device-pixel padding; password fields already render dots. Show-password toggles are rechecked each capture. Removal, document/generation change or user clearing/replacement retires tracking. No echo, container/order/bidi/budget, iframe or media mask remains.
 
-Protocol v300 and relay peer protocol v36 add approval-gated Computer credential input. A Computer credential must declare both `allowed_uses = ["computer"]` and `injection = { kind = "computer" }`. The home kernel validates that policy and obtains an explicit user confirmation before resolving the secret. A leased worker forwards only the credential handle and its authenticated active-run context to home through the existing credential-tool request; it must not resolve the Computer secret or admit an Action against its private provider session. Home admits the redacted Action against the authoritative Room and sends the one-operation secret through the existing encrypted Room controller command. The physical worker types the value from process stdin into the already-focused desktop control; it does not focus Chromium or use the clipboard. The tool result may expose the credential handle, actor, target, action ID, and outcome. Action history records the actor, target, lifecycle, and outcome without the credential handle or secret. Debug and helper output are also secret-free. Because X11 cannot universally prove that an arbitrary native control masks its contents, the confirmation explicitly requires the user to verify masking; Browser input continues to enforce the password-field invariant automatically. This correction reuses the existing v300/v36 serialized shapes and therefore requires no version bump.
+Protocol v300 and relay peer protocol v36 add approval-gated Computer credential input. A Computer credential must declare both `allowed_uses = ["computer"]` and `injection = { kind = "computer" }`. The home kernel validates that policy and obtains an explicit user confirmation before resolving the secret. A leased worker forwards only the credential handle and its authenticated active-run context to home through the existing credential-tool request; it must not resolve the Computer secret or admit an Action against its private provider session. Home admits the redacted Action against the authoritative Room and sends the one-operation secret through the existing encrypted Room controller command. The physical worker types the value from process stdin into the already-focused desktop control; it does not focus Chromium or use the clipboard. The tool result may expose the credential handle, actor, target, action ID, and outcome. Action history records the actor, target, lifecycle, and outcome without the credential handle or secret. Debug and helper output are also secret-free. Because X11 cannot universally prove that an arbitrary native control masks its contents, the confirmation explicitly requires the user to verify masking; Browser input binds the exact filled field and masks it on capture only while it is plain text. This correction reuses the existing v300/v36 serialized shapes and therefore requires no version bump.
 
-MP-08 / MP-11: local protocol v374 and relay peer v67 bind Computer credential approval to the native display target. The home queries `computer_secret_target` through the ordinary Room controller command and projects the window identity, native focused-control identity and geometry in one RuntimeInteraction. `SecretText.expected_target` is required; unbound input fails closed. Home rechecks after approval/unlock and rejects a changed Room generation. The worker checks the target before typing and between single-keystroke batches; an X server grab prevents another display client changing native focus between the check and delivery. A changed observable focus, window or geometry aborts with an actionable error. Already delivered keystrokes cannot be rolled back. Computer mode observes X11 native focus/geometry, not DOM field identity or masking within a shared native surface. User-confirmed masking remains the guarantee boundary; the prompt says that approving an unmasked field can expose the credential. Browser mode retains automatic expected-host and masked-field validation.
+MP-08 / MP-11: local protocol v374 and relay peer v67 bind Computer credential approval to the native display target. The home queries `computer_secret_target` through the ordinary Room controller command and projects the window identity, native focused-control identity and geometry in one RuntimeInteraction. `SecretText.expected_target` is required; unbound input fails closed. Home rechecks after approval/unlock and rejects a changed Room generation. The worker checks the target before typing and between single-keystroke batches; an X server grab prevents another display client changing native focus between the check and delivery. A changed observable focus, window or geometry aborts with an actionable error. Already delivered keystrokes cannot be rolled back. Computer mode observes X11 native focus/geometry, not DOM field identity or masking within a shared native surface. User-confirmed masking remains the guarantee boundary; the prompt says that approving an unmasked field can expose the credential. Browser mode retains automatic expected-host and editable-field validation with fill-target capture protection.
 
 MP-08 / MP-11: the worker excludes agent screenshot, OCR, text-from-frame and generic screenshot capability capture while Computer insertion executes. Capture already in progress settles before typing begins. Capture and insertion permits stay with the blocking helper through completion or cancellation, including dropped async callers. Human display transport remains available. The legacy raw Computer-secret resolution request is rejected in favor of home-owned Room insertion. These changes apply to ordinary and managed placement through the same kernel paths; client feature minimums are unchanged.
 
@@ -2493,7 +3001,7 @@ Workflow trigger and deployment direction:
   persisted bindings and publication `event-bindings` documents that still
   carry the removed fields are read with them ignored.
 - protocol 365: direct workflow event bindings are retired. Initially events reached
-  workflows only through Apps (protocol 491 adds private workflow sources): an App inbox route (protocol 358) receives the
+  workflows only through Apps (protocol 452 adds private workflow sources): an App inbox route (protocol 358) receives the
   generator's events, and an App automation sends the App's outgoing event to
   an `event_based` publication. `CreateWorkflowEventBinding`,
   `ListWorkflowEventBindings`, `SetWorkflowEventBindingStatus`,
@@ -2928,6 +3436,22 @@ Workflow trigger and deployment direction:
   on the Unix socket gets `kernel_access_human_only`, EXT-UX-05): it is not
   audited and does not count toward the owner's limit. Nothing else changes; which
   connections answer as terminals is unchanged until enforcement.
+- MP-08 / MP-10 / MP-11, protocol 538 (peer 146): every
+  `passkey_prompts_changed` projection also includes `kernel_now_ms` and
+  `closed`. Each closure identifies a previously projected `session_id`,
+  `interaction_id`, `kind`, and `expires_at_ms`, with the kernel's explicit
+  `reason`: `expired`, `answered`, or `revoked`. Closures are scoped to the
+  subscription's authenticated owner and never replayed. Clients anchor
+  countdowns to kernel time plus monotonic elapsed time, and show expiry
+  notices from the authoritative closure rather than inferring why a request
+  disappeared. Reconnect starts with the current set and no historical toasts.
+  Sudo interactions and their passkey prompts carry optional `sudo_request`:
+  `requester_name`, `agent_name`, `session_name`, `task_summary`, full `task`,
+  optional `grant_id`, and `terminal_id`. These are presentation facts, never
+  authority. The default view shows names and the short quoted task; full task
+  text and identifiers stay inside bounded, scrollable Details. External sudo
+  also projects the OS-established `requester`. Authority and answers remain
+  on the existing pending interaction and fresh-passkey path.
 - protocol 403: passkey popups (kernel access plan D1). Every passkey prompt
   is a kernel-owned pending interaction; today each critical approval is one.
   It is projected as a popup to every terminal connected as its owner,
@@ -3073,7 +3597,9 @@ Workflow trigger and deployment direction:
 
   Kernel user config settings are live runtime policy. Set/unset is supported;
   unset restores the default. An extension popup is raised at the notice
-  time and a verified answer starts a new term.
+  time and a verified answer starts a new term. These terms apply to
+  external-agent grants only (default 8 h, at most 24 h); an older config
+  outside that range is clamped at load with a warning, never refused.
 
   ```toml
   [kernel_access]
@@ -3103,7 +3629,7 @@ Workflow trigger and deployment direction:
   than the command transport source. Only that class may submit a passkey or
   receive owner passkey popups. Unauthenticated Unix peers can only request
   access; approved external peers keep the process-bound, whole-local-kernel grant
-  path from protocol 404 and cannot answer critical approvals. Relay identities,
+  path from protocol 404 and cannot answer approvals. Relay identities,
   per-run runtime MCP admission and the publication gateway keep their existing
   credential paths. No first-party minimum version rises: token-aware clients
   also work with older log-mode kernels, and this change adds no request or event
@@ -3140,6 +3666,25 @@ Workflow trigger and deployment direction:
   Rotation, revoke all and session end revoke these entries as well. `/meta`
   retains delegation-only behavior for one release and emits a notice pointing
   to `/sudo`. See `KERNEL_SUDO.md` and `scripts/kernel-access-sudo-drill.sh`.
+- protocol 484 (MP-08/MP-10/MP-11 A04) replaces the one-turn authorization with
+  a finite window. The `sudo` popup carries `lifetime_minutes = 60` and
+  `max_lifetime_minutes = 480`; the approve answer's `custom_reply` selects 60,
+  120, 240 or 480 minutes (absent means 60), anything else is refused. The
+  window starts at the fresh verification and is bound to one owner-authorized
+  task: with room agent tools it covers that task's kernel-correlated
+  continuations across waits and wakes; without them, its first turn only.
+  `KernelSudoTurn` gains `task_id`, `duration_minutes`, `expires_at_ms`
+  (display only; authority uses the kernel's monotonic deadline, never
+  serialized), `revision` and `warning_sent`. `RuntimeSession.sudo_windows`
+  projects live windows only to each window's owner; other members see none. `ExtendKernelSudo { session_id,
+  attachment_id, entry_id, revision }` (host terminal only) raises one
+  fresh-passkey popup (`kernel_operation_id` `<entry>:extend:<revision>`); on
+  approval the expiry becomes now plus the chosen duration and `revision`
+  increments; the response is `KernelSudoExtended { turn }`. Stale revisions,
+  expired, revoked or restarted windows are refused. Agents can no longer answer
+  any interaction: `chariox_kernel_request` and every `KernelAgent` caller are
+  refused `RespondToInteraction`, `chariox.meta.resolve_runtime_interaction`
+  and its aliases are removed, and `kernel_access.sudo_approval` is retired.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
@@ -3431,7 +3976,9 @@ The accepting terminal performs the action on its own machine. TUI users type
 `/app host accept` after closing the approval panel selects the sole pending
 host offer in the attached session only when it matches the last offer displayed
 in that terminal's approval panel. Unviewed/replaced offers require re-opening
-the panel or an explicit ID. Multiple offers require
+the panel or an explicit ID. An offer from an owner's user-domain App Tab is a
+detached owner decision with session `""` (listed by `/app view approvals`);
+the TUI takes it only by explicit ID, sending `session_id: ""`. Multiple offers require
 `/app host accept OPERATION`. Copying uses the renderer-backed OSC 52/native
 clipboard helper and always shows the escaped text as a visible fallback
 because OSC 52 has no acknowledgement; link opening
@@ -3464,6 +4011,104 @@ Protocol 416 adds `AppRequestFailed {code: "receipt_expired"}` for an
   preserved through compaction. Legacy kernels fail closed on that journal
   rather than redispatch an expired identity after rollback; their App control
   requests report storage unavailable until a supporting kernel is restored.
+
+MP-08 / MP-10 / MP-11: a human's direct endpoint invocation records the authenticated
+invoking user atomically with queued admission in kernel-private durable metadata.
+Private run reads, snapshots and updates recognize that immutable creator proof;
+room ownership alone does not expose another user's or agent's private runs.
+The proof survives kernel restart and endpoint edits without adding a client or
+relay field. Legacy runs without creator proof remain fail-closed.
+
+### Workflow completion notifications (MP-08 / MP-10 / MP-11)
+
+Private same-user workflows are a second notification source kind beside Apps.
+The kernel emits successful final output or failure bare status once per run, with
+recorded subject/trigger provenance and optional declared output fields. Subscription
+filters use the shared AEGS equality/any-of semantics at source and target. Bindings
+and receipts generalize `app_automations` / `app_outbox` with source kinds `app_event`
+and `workflow_completion`; both use the existing App pump and ordinary durable queue
+handoff. App-specific signature/capability admission remains in the App adapter.
+
+These owner-bound messages use the shared current relay peer protocol version:
+`ListWorkflowNotificationSources`,
+`SubscribeWorkflowNotifications`, `UnsubscribeWorkflowNotifications` and
+`DeliverWorkflowNotification` over the existing E2EE channel. The original
+452/82 contract is included in the integrated 513/121 union; those introduction
+versions are not the current admission floor. Picker discovery reuses
+waiting-room kernel inventory; Cloud stores no workflow directory or event data.
+ACK means durable target acceptance, not run completion. Seven-day default / 1–30-day
+TTL and kernel-derived ancestry apply. Repeated target workflow identities drop
+with a diagnostic. Deletion/transfer leaves pending records to expire. See
+`EVENT_TRIGGER_PROTOCOL.md` for shared commands, bounded payloads, migration,
+source availability and the deferred workflow-owned run-scoped subscription design.
+
+MP-08 / MP-10: triggering metadata and optional subject pass through as opaque
+generator values; the kernel does not construct domain-specific subjects. Every
+App automation and workflow binding has `delivery_mode:queue|inject` (default queue).
+Injection retains the original durable admission until steering acceptance, joins
+ancestry to the selected run, and falls back to ordinary queue on idle/ended turns
+or multiple active workflow runs. Subscribers always belong to workflows.
+
+### MP-08 / MP-09 / MP-10 / MP-11 — transitional durable agent lifecycle (A02)
+
+Local daemon protocol **452** adds `RuntimeSession.agent_tasks`; relay82 is inherited
+from #885. The transitional `CHARIOX_ROOM_AGENT_TOOLS=1` surface publishes
+`chariox.events.subscribe/subscriptions/inbox/ack/yield/blocked`. Tools require the
+current task and prompt IDs; hidden turn context supplies both. Independent
+user prompts retain separate task records. Work can be working, waiting on
+admitted named sources with a future deadline, blocked on an explicit owner
+action, done, or owner-cancelled. Cancellation is never successful completion.
+
+Obligation/registration, wait intent, event admission and delivery intent commit
+through the shared SQLite writer. Native provider settlement commits the wait;
+a result racing it remains in the inbox. Done requires public output and no
+unresolved obligation. One persisted correction is permitted; another invalid
+end blocks on one kernel-owned interaction. Provider failures also block.
+The kernel sweeps every30 seconds; three consecutive wakes without handling a
+real result block;15 minutes without progress notifies attached/reconnecting
+clients; uncertain submission escalates after2 minutes without replay.
+
+`send_agent_message` adds `urgent=false` and `reply_requested=false`. Default
+messages wait behind busy turns in the event inbox. Urgent delivery targets the
+exact running turn and rechecks after acquiring its provider lane. Rejected or
+unsupported steering defers to a later wake; uncertain attempts remain pinned
+and preserve recipient FIFO. Explicitly stopped receivers retain pending items.
+Structured delivery is accepted only by the existing exact finished-submit
+receipt; enqueue and inbox ACK never substitute for provider acceptance.
+Reply opt-in registers one correlated result obligation; ordinary messages
+request no courtesy response. Legacy PR1 dispatch intents migrate idempotently
+as blocked obligations requiring exact reconciliation, without guessing success.
+
+Leased recipients (MP-08 / MP-09 / MP-10 / MP-11 A10, local protocol
+485, relay peer 83): the home kernel orders and delivers their events through the existing leased prompt
+dispatch. The worker's exact acceptance is the delivery receipt; a lost reply
+is reconciled from `GetLeasedPromptReceipt`, never a second turn; only a proven
+worker rejection returns the event to pending, and the retry uses a new home
+prompt id because the worker fences a rejected one. A leased turn's completion
+settles the home task as a local turn does, so delegators wake, and a leased
+run's `chariox.events.*` calls are forwarded home over `ForwardMetaRuntimeTool`
+with its current lease, worker run and running home prompt. Watched processes
+remain local-only. `UpdateLeasedSudo {leased_agent_id, home_prompt_id, grant:
+{entry_id, revision, remaining_ms, initial}}` installs, renews or ends
+(`remaining_ms` 0) the worker fence of a home sudo window for one exact leased
+home prompt; the worker lists and forwards `chariox_kernel_request` only under
+it and the home rechecks its own window on every call. A worker that lost the
+window refuses a non-initial renewal and the home ends the window. PR3
+supplies process/timer watcher sources. The real-provider/hosted validation
+matrix remains the acceptance gate.
+### Protocol 418: user-domain App views
+
+`OpenUserAppView`, `ListUserAppViews`, `CloseUserAppView`,
+`GetUserAppViewFrontend`, `CallUserAppView` and `SubscribeUserAppViews` address
+ephemeral owner-scoped App view instances with no session, Room or slice.
+Bundles contain only verified signed frontend assets; page calls retain the
+existing durable App tool/host-action path and omit the optional SDK
+`room_id`. The owner snapshot subscription includes detached kernel
+`RuntimeInteraction` decisions. `AnswerUserDomainInteraction` uses the
+existing terminal/passkey gate and shared pending-interaction authority;
+a detached passkey popup has an empty session routing field. Room App views
+retain their existing protocol. See [App views without a session](MULTIDOMAIN_APP_VIEWS.md)
+for host isolation, lifecycle and migration. No relay-peer shape changes.
 
 ### Kernel Cloud ownership, protocol 491 (MP-08 / MP-10 / MP-11)
 
@@ -3567,33 +4212,6 @@ replacement ACK and races two resume callers. Real acceptance additionally
 requires hosted WSS drop/blip/reconnect at DPR 1/2 and the built TUI, retained
 lists, cache reconciliation, unique bindings and zero decrypt failures.
 
-### Workflow completion notifications — local 491 / relay peer 101 (developed as 437 / 82; MP-08 / MP-10 / MP-11)
-
-Private same-user workflows are a second notification source kind beside Apps.
-The kernel emits successful final output or failure bare status once per run, with
-recorded subject/trigger provenance and optional declared output fields. Subscription
-filters use the shared AEGS equality/any-of semantics at source and target. Bindings
-and receipts generalize `app_automations` / `app_outbox` with source kinds `app_event`
-and `workflow_completion`; both use the existing App pump and ordinary durable queue
-handoff. App-specific signature/capability admission remains in the App adapter.
-
-Peer 101 adds owner-bound `ListWorkflowNotificationSources`,
-`SubscribeWorkflowNotifications`, `UnsubscribeWorkflowNotifications` and
-`DeliverWorkflowNotification` over the existing E2EE channel. Picker discovery reuses
-waiting-room kernel inventory; Cloud stores no workflow directory or event data.
-ACK means durable target acceptance, not run completion. Seven-day default / 1–30-day
-TTL and kernel-derived ancestry apply. Repeated target workflow identities drop
-with a diagnostic. Deletion/transfer leaves pending records to expire. See
-`EVENT_TRIGGER_PROTOCOL.md` for shared commands, bounded payloads, migration,
-source availability and the deferred workflow-owned run-scoped subscription design.
-
-MP-08 / MP-10: triggering metadata and optional subject pass through as opaque
-generator values; the kernel does not construct domain-specific subjects. Every
-App automation and workflow binding has `delivery_mode:queue|inject` (default queue).
-Injection retains the original durable admission until steering acceptance, joins
-ancestry to the selected run, and falls back to ordinary queue on idle/ended turns
-or multiple active workflow runs. Subscribers always belong to workflows.
-
 ### Retired kernel human Cloud controls, protocol 491 (MP-08 / MP-11)
 
 Kernel enrollment stores a kernel credential and cannot authorize human account
@@ -3613,6 +4231,644 @@ that login is required before creating any local invite. `/relay cloud pair` and
 `pair-machine` are retired; use `/client invite` for a terminal and independent
 `/cloud link` enrollment on the receiving kernel. Neither caller credentials nor
 human session tokens are sent to or persisted by the kernel.
+
+## MP-08 / MP-10 / MP-11 combined App Tab DOM mirror contract (517 / peer 125)
+
+Coordinator-allocated local protocol 517 combines the App Tab call, grant and
+input-attribution contract with DOM mirror v2 author CSS, text, live controls,
+compact deltas, per-document protection, native density, long-poll credits and
+resend. Mirror reads retain the shared per-viewer input ordering. Clients enable
+App echo pipelining only at the allocated ordering floor 516 or later; the
+v2 renderer requires 517 to admit inert layout-attribute deltas on opaque tiles. Old clients keep their existing
+minimum-version checks. App authority remains in the kernel App host; Cloud
+projects the kernel's Tab and surface geometry.
+
+The combined request snapshot is browser-mirror-517.json with a canonical SHA-256
+shape guard. Run the installed signed Todo App through the real /app open client
+flow, Notes and presented-glyph DPR1/2 drills from MULTIDOMAIN_DOM_MIRRORING.md.
+These tests supplement exact-head review and real hosted acceptance.
+### MP-08 / MP-10 / MP-11: Room Computer access (local 461, peer 92)
+
+Room membership grants Computer control by default. The owner can revoke a specific agent's Computer control through the existing Access command (`revoke_grants`) and restore it with `grant_room_computer`. Since local 461, `grant_room_computer` requires `agent_id`: an explicit `agent_id: null` restores every owned agent after `revoke_grants` with `agent_id: null`, and an omitted `agent_id` is rejected; the TUI exposes this as `/access grant all` and prints a visible notice for both bulk revoke and bulk restore. Older kernels reject the null shape, so clients gate only the bulk restore on 461. Drill: `node apps/cli/scripts/live-room-computer-access-drill.mjs --evidence <dir>` (real kernel and TUI, dev-stub agents). Membership and Browser access remain intact. The kernel checks the restriction at input admission, queued dispatch and active cancellation; workers retain the existing authenticated Room peer binding. Access snapshots project each owned agent's Room Computer permission. Room permission changes advance the existing owner Access cursor; the kernel captures permissions and cursor together so delayed projections cannot restore stale access.
+
+Slice Computer accessibility uses the existing controller and native AT-SPI backend through bounded `chariox.slice_accessibility` snapshots and `chariox.slice_target_action` actions. Handles belong to an observer and tree revision; stale or foreign handles fail closed. The controller joins the desktop session's private D-Bus address, scopes visible processes to the desktop user, applies the current observation policy and routes target actions through the normal Room Action ledger and cancellation path. The relay remains encrypted transport only.
+
+### MP-08 / MP-10 / MP-11: protected desktop display (local 474, peer 96)
+
+A human terminal subscribes with `KernelBrowser` Computer `display_subscribe`,
+its current native `surface_id` and generation, video codecs, bounded bitrate,
+and DPR 1 or 2. The kernel returns the native source identity and physical
+geometry alongside the existing numeric controller generation and viewer lease.
+Only this new desktop viewer requires protocol 474. Agent MCP retains bounded,
+on-demand protected observations and cannot subscribe to continuous video.
+
+The owned user-domain desktop uses the shared XDamage/XShm source, video encoder,
+credit window and encrypted CXD1 relay transport. It has no separate streaming
+service. Kernels built with `native-display` read the owned desktop root with the
+kernel's own native worker (`--display-native-worker`, desktop mode: XShm, x264,
+private raster slots and packet files, as for the browser display); others use
+the Python XShm helper. Before any encode, export or client sees a readback it is
+masked against native accessibility snapshots: the helper takes one before and
+one after its read; the native path binds a readback between the last snapshot
+that ended before it began and one requested after it arrived, all agreeing,
+with at most 200 ms unobserved (otherwise it is masked whole or read again).
+Unknown ownership, uncovered or unproved windows, incomplete trees, changed
+trees and registered private state fail closed. Protection changes retire
+capture and encoder state before acknowledgement. This does not assert that the
+live protection matrix has passed.
+
+A human actor's Desktop ownership (takeover or human Computer input) lasts while
+one of its desktop video leases is live. Relay clients have no gone event: a
+lease lapses 60 s after the last display request on it, or ends on unsubscribe,
+and the kernel then retires that actor's Desktop ownership before admitting
+other input. Viewers release ownership before closing; a reopen awaits that
+acknowledged release.
+
+Multiple admitted viewers share one protected capture source. Each lease remains
+bound to its authenticated terminal, native generation and controller generation;
+disconnect, expiry and last-viewer close release its resources. Per-credit
+cancellation does not own the encoder lifetime. The existing display attach,
+next and unsubscribe operations address these leases. This section adds no
+relay frame of its own; its events use the display encoding below. Peer 97
+remains unused.
+
+Display event encoding (local 466, peer 96). Only `kernel_browser_frame`
+events change; every other event stays JSON. On the local WebSocket they are
+binary messages; over the relay they are the encrypted plaintext. The format is
+`CXD1`, a big-endian u32 header length, the JSON event header naming its
+segments, then the raw segment bytes in order. JSON plaintexts never start with
+`CXD1`. These events are sent only on a display delivery: a local
+`display_subscribe` or a relay subscribe with scope `kernel_browser_display`. Clients
+that never register display delivery never receive `CXD1`. Peer 96 adds an
+optional `CXR1` WebSocket binary relay envelope, negotiated with the
+`chariox-relay-binary-v96` subprotocol: `CXR1`, a big-endian u32 header length,
+a JSON routing header of at most 4 KiB, then 16 B to 1 MiB of ciphertext. The
+relay reads only the routing header. Kernels fall back to JSON/base64 for older
+relays or receivers and for events over 1 MiB. Rollout: deploy a web bundle
+that decodes `CXD1` before kernels at 466 or later serve it Browser display;
+an older bundle cannot parse these frames.
+
+The shared presenter accepts desktop pixels only at the exact admitted physical
+geometry, with CSS dimensions divided by the selected DPR. It converts viewer
+coordinates to native coordinates and routes input, takeover and release through
+the existing kernel Computer admission and actor ledger. Browser viewports retain
+their existing path. A Cloud client must expose the native source and use this
+shared presenter before the desktop feature is user-visible.
+
+
+### MP-08 / MP-10 / MP-11: shared display resumption (local525 / peer133)
+
+`KernelBrowser` commands `display_suspend` and `display_resume` carry only
+`subscription_id` and numeric `generation`. They address the existing shared
+Browser/Desktop display producer, including region producers using that stream.
+They are human terminal operations; provider MCP cannot invoke them. A prior ID
+is a resume hint, never an admission credential. Resume repeats current terminal
+admission, caller ownership, controller generation, protected source/document
+binding and protection policy checks. Revocation, source replacement or a changed
+policy refuses resumption and retires the retained producer.
+
+Suspension keeps the encoder and a bounded independently decodable protected
+frame in the shared motion queue for at most five seconds. Repeated suspension
+cannot extend that grace. An unannounced transport loss can resume only within
+five seconds of the last admitted display request. Resume replaces the delivery
+ID, resets its sequence and fences old outstanding credits; encrypted relay
+delivery uses fresh packet nonces and a new delivery registration. Old packets,
+opening grants and input gestures are never replayed. Explicit unsubscribe,
+terminal retirement and expiry retain their permanent cleanup behavior.
+
+The shared presenter keeps the painted canvas on transient teardown and exposes
+a bounded resume hint to its application adapter. A replacement passes that hint
+through `display_resume` before registering the fresh delivery. Only adapters
+using this behavior require local525. Older adapters retain their existing
+minimum versions. Desktop ownership moves atomically from the old viewer lease
+to the new one after admission; suspension bounds that lease to the same grace.
+It does not take control anew or change session membership, attachments or history.
+
+Snapshot/hash: `mp08_mp10_mp11_display_resumption_525_133_snapshot_hash`.
+Shared producer/presenter lifetime tests supplement the required hosted live
+network-change drill; they do not establish its one-second repaint gate.
+
+### MP-08 / MP-10 / MP-11: combined delivery registration (local 535 / peer 143)
+
+A client that feature-detects local 535 may send one ordinary `ClientSubscribe`
+with scope `kernel_browser_display_resume`, the 525 hint as `session_id`, numeric
+old generation as `attachment_id`, a fresh relay subscription ID and its admitted
+viewer key. `resume_from_event_id` must be null: this is never event replay.
+The existing authenticated relay caller and pairing checks still apply. The
+relay treats both display scopes as opaque CXR1 delivery; it has no resume policy.
+
+The kernel repeats current display admission. For Room leases the home sends
+`RoomSharedDisplay.command={op:"resume_attach"}` to the exact bound worker,
+which invokes existing 525 `DisplaySessions.resume` and ordinary `display_attach`
+under the same protection/capture barriers. This neither opens a replacement
+producer nor creates another input authority. Home and worker rotate the lease
+only on the validated new binding. The encrypted registration reply contains
+`{ok:true,display_attached:true,binding:<resumed binding>}`. The home queues this
+reply before starting the sender-bound pump with independent-frame credit;
+subsequent acknowledgements retain the existing push contract.
+
+Clients retain at most eight early encrypted events and 8 MiB while establishing
+the new binding, then recheck current socket, target, key and binding before
+delivery to the installed presenter. Presenter registration also retains a
+bounded initial frame batch so its listener transition cannot discard the key.
+Failures and close clear these batches. Kernels without 535 support refuse the
+new scope; 525 adapters continue their separate resume/attach path. There is no
+replacement-open retry or cursor-based shortcut. The new snapshot/hash is
+`mp08_mp10_mp11_display_registration_535_143_snapshot_hash`; the 525 snapshots
+remain unchanged. Source tests do not establish the ≤ 1 s live repaint gate.
+
+MP-08 / MP-10 / MP-11: allocation 553/161 composes
+client admission and one initial resume registration. The client offers
+WebSocket subprotocol `chariox-room-display-resume-v553` alongside the existing
+binary-v96 protocol. Selection of the new subprotocol positively advertises
+both initial registration and binary-v96 events; a legacy selection retains
+the existing connect-then-subscribe exchange. Kernel version alone does not
+advertise relay support.
+
+On a fresh negotiated socket, `ClientConnectDisplayResume` contains the ordinary
+`auth_token` and `target`, the previously admitted `expected_daemon_public_key`,
+and a strict `registration` record with `request_id`, `subscription_id`,
+`session_id` (the prior delivery lease), `attachment_id` (its generation) and
+`client_public_key`. The nested record cannot select another target, scope or
+cursor. Normal client admission verifies token, realm, live target, retained
+authority and the expected home key pin. It sends normal `ClientConnected`,
+rechecks expiry/revocation, then passes a normal `ClientSubscribe` with fixed
+`kernel_browser_display_resume` scope and null cursor to the existing route
+handler. Packet-route permission, identifiers, capacity, caller projection,
+response ownership and subscription cleanup remain there. The expected home
+key is rechecked in the transaction that selects the subscription sender, so
+a registration replaced after `ClientConnected` cannot receive the initial
+registration. Repeated combined
+connects and unnegotiated combined envelopes refuse. Normal `ClientConnect`
+continues to renew authorization without triggering a resume.
+
+This changes the relay wire (new envelope, hence 553/161) but not resume authority: the existing 535 registration invokes
+the same525 home/worker resume authority. Clients reserve encrypted response
+correlation before writing, keep fresh frames held until presenter activation,
+and retain auth-generation, target, peer, generation, retirement and hint checks.
+The 535 snapshot stays unchanged; `mp08_mp10_mp11_display_connect_553_161_snapshot_hash` pins the combined form. A client sends the combined message only to a kernel that reported local protocol ≥ 553 and a relay that selected the 553 subprotocol; older kernels or relays keep the legacy connect-then-subscribe exchange. The live Room network drill accepts
+`CHARIOX_ROOM_DISPLAY_EXPECT_INITIAL_RESUME=1` to require the combined write after
+each fault, recording only its envelope kind. Run the same real clients against
+a legacy relay to validate fallback; neither source checks nor negotiation alone
+establish repaint or stability acceptance.
+
+### MP-08 / MP-11: explicit leased desktop Computer grant (local500 / peer109)
+
+The authenticated HOME owner sends `KernelBrowser.command={op:"grant_leased_computer",
+agent_id,target:{surface_id,generation}}` for the agent's bound ordinary Linux
+desktop worker. `revoke_leased_computer` names the same agent; ordinary Access
+revoke also retires it. The TUI exposes `/access grant-computer <agent-id>
+<surface-id> <generation>` and `/access revoke-computer <agent-id>`, requiring
+local500 and worker peer109 before sending the new contract.
+
+`SetLeasedComputerGrant` uses the existing authenticated home lease caller gate.
+It binds HOME kernel/session/agent, leased agent, desktop kernel, surface,
+generation and epoch. The desktop validates the current observed generation
+and grants only the Computer resource; it does not change focus or grant
+Browser, Vault, video, shell, Room access or authority over another kernel.
+Before every provider Computer invocation, `CheckLeasedComputerGrant` returns
+to HOME through the authenticated forwarded-worker/run gate. HOME requires
+the current explicit grant epoch, owner membership and live session/lease/run.
+The desktop then uses its ordinary protected Computer service, mutation ledger
+and human takeover. Queued admissions retain the epoch and provider run.
+
+HOME commits revocation before sending it to the worker; failed delivery cannot
+authorize a subsequent call. Delivered revocation cancels in-flight admission.
+Delayed revocations name their epoch and cannot retire a newer grant. Idle
+expiry, ended runs/sessions, changed leases and worker restarts fail closed.
+Ordinary focus cannot revive an expired or revoked explicit grant. No grant
+is restored from disk or inferred from Room membership. Agent `start` reads the
+already granted desktop and cannot create a replacement generation.
+
+### MP-08 / MP-11: installed graphical application launch (local494)
+
+`KernelBrowser.command={op:"computer",command:...}` and the official provider
+`chariox.kernel_computer` tool share two bounded commands:
+
+- `installed_applications`: current `target={surface_id,generation}`; returns
+  eligible installed desktop application IDs and names (at most256).
+- `launch_application`: the same current target plus one `application_id` from
+  that inventory. No command string, caller arguments, files, URLs or environment
+  are accepted. The kernel resolves the installed entry in its desktop user's
+  normal application inventory, starts its fixed Exec without a shell on the
+  existing owned display/bus, and retains process cleanup ownership. Unsupported
+  shell/env launchers and invalid desktop field codes refuse.
+
+Launch is a normal Computer mutation: provider capability/resource admission,
+current desktop generation, human takeover, cancellation and native observation
+protection all apply. Its reply identifies the application and includes a
+protected native observation; it never grants process control. Cancellation or
+failed launch observation settles the newly started process. Successful apps
+live until ordinary owned-desktop cleanup. No peer frame changes; peer103 is
+unused. Supplementary descriptor, command-shape and takeover tests cannot close
+MP-10 Drill D; that requires an official agent, real TUI/web/hostedWSS and public
+native document work at DPR1/2.
+
+### MP-08 / MP-10 / MP-11 bounded host-browser keys (517 / peer125)
+
+`KernelBrowserInput` keys accept an optional `modifiers` integer in 0..15,
+using Chromium's Alt=1, Control=2, Meta=4 and Shift=8 bits. Omitted/zero
+modifiers preserve the legacy key wire shape. Modified keys dispatch paired
+CDP key events under the existing document, cancellation, mirror and live
+sensitive-focus fences. Control/Meta/Alt chords emit no inserted text and
+cannot read or modify protected fields. Native input remains available for
+unmodified and Shift keys on the admitted owned display. Canvas clients send
+modifiers only to protocol517 or newer; trusted local paste retains the
+existing text-ingress path. The kernel remains the input authority.
+
+
+## MP-08 / MP-10 / MP-11 display region contract (519 / peer 127)
+
+Allocated local519/peer127 preserves the mirror517 snapshot and its modifier
+contract. `display_subscribe` accepts an optional `target`: `{kind:"region",
+mirror_subscription_id,document_id,sequence,region_id}` or
+`{kind:"browser_chrome",window_generation}`. The enclosing tab/generation and
+caller admission remain mandatory. No client rectangle, selector, PID or XID
+is accepted. The mirror resolver owns canonical live geometry, identity and
+protection; ChromeWindows owns the tabbed window, band and lifetime.
+
+A successful crop negotiation returns `source_kind:"region"`, `binding_id`,
+`document_id`, `sequence`, canonical crop `css_width`/`css_height`, scale and
+the existing subscription/codec/bitrate fields. Fractional page clips round
+inward to even device dimensions; input retains the canonical clip offset.
+Page document epochs and Chrome window epochs are distinct. Native readbacks,
+encoded delivery and input await the mirror's live geometry fence as well as
+checking its cheap synchronous lifetime predicate. Refusal never becomes a
+whole-page crop or PNG-polling source.
+
+Region `display_input` adds paired `binding_id` and `sequence`. The crop is
+caller-bound; agents cannot use this terminal-only path. A read-only private
+preflight resolves Chrome input to the owner arbiter's active page before the
+existing Rust actor ledger admits the action. Page-region input uses the same
+mirror hit/document/Vault fences. Frame credits and `display_ack` use the
+ordinary display sequence, independent of the region's applied mirror/window
+epoch. No second pump, grant, history or resumption mechanism is introduced.
+
+`browser-display-region-519.json` pins both targets, region input, ACK and
+response metadata. The focused drill is
+`docs/drills/MP08_BROWSER_DISPLAY_REGIONS.md`. The region client's floor is519;
+whole-page and mirror clients retain their existing floors. This contract is
+source implementation, not real-path acceptance.
+
+## MP-08 / MP-10 / MP-11 Browser chrome state (528 / peer 136)
+
+Allocated local528/peer136 adds two fields to the `KernelBrowser` `state`
+result. `chrome_window` is `{window_generation, active_tab_id}` when the kernel
+has a live, bound native tabbed window and its display is enabled, otherwise
+`null`; a viewer uses `window_generation` for the 519
+`{kind:"browser_chrome",window_generation}` subscription and follows
+`active_tab_id` when the person switches Tabs in Chrome's own strip.
+`browser_lockdown` is `"managed"` when the kernel's managed Chromium policies
+apply and `"unavailable"` when only the kernel's CDP fail-closed layer applies
+(for example Ubuntu ≥23.10 without the Setup's AppArmor profile); viewers show
+the second case. Clients feature-detect both fields, so no client floor moves.
+`browser-chrome-state-528.json` pins the public state keys (Rust hash test
+`mp08_mp10_mp11_browser_chrome_state_528_snapshot`; the host's Node test
+compares its real state keys to the fixture). The focused drill is the native
+band section of `docs/drills/MP08_BROWSER_DISPLAY_REGIONS.md`.
+
+
+## MP-08 / MP-10 / MP-11 page display placement (529 / peer 137)
+
+Allocated local529/peer137 extends a page `display_subscribe` result for
+`target.kind:"region"` with `region_offset:{x,y}`. Both values are finite,
+nonnegative CSS pixels relative to the original opaque element's border box.
+The kernel computes this from the private mirror lease's `element_offset`
+(viewport and ancestor-frame clipping) plus the producer's inward rounding:
+`x = element_offset.x + ceil(rect.x * scale) / scale - rect.x`, with the
+corresponding formula for `y`. Existing `css_width`, `css_height` and
+`device_scale_factor` describe the inward-rounded encoded crop. Placement may
+be fractional; a client must not round it or reuse PNG tile offsets, which
+have a different origin. No request accepts client-selected crop geometry.
+
+The page consumer uses this placement for paint and subtracts it before
+sending region-local input through the existing binding. The producer adds
+only its inward-rounding offset when translating that input into the private
+lease's canonical clip. Clipping must not be added twice. Missing, nonfinite,
+negative or out-of-element placement refuses video and preserves the existing
+still. Geometry, identity, protection and current-window fences remain kernel
+owned. Stream resumption retains the same admitted placement.
+
+The native producer derives the visible page rectangle from the owned window's
+validated GTK frame insets and the browser-owned active Tab dimensions, independently
+of page emulation. Its exact native page origin can have odd device-pixel coordinates;
+only the disjoint Chrome band rounds inward to even codec rows. Native page readback
+adds that origin, while protected CDP reference crops and mirror input remain page
+relative. The native origin is not added to element-relative `region_offset`.
+Missing or changed native page geometry refuses or retires the page stream; crops
+remain inside the visible native page. Exact pixel attestation remains required.
+
+Only page opaque-region video requires529. Native Chrome band clients retain
+519; whole-page video and mirror clients retain their existing floors. The
+historical519 snapshot is unchanged. `browser-display-placement-529.json`,
+its Rust hash/round-trip test and `scripts/browser-display-placement-529.test.mjs`
+pin the additive response and allocated pair. The focused real-path drill is
+the page-placement section of `docs/drills/MP08_BROWSER_DISPLAY_REGIONS.md`.
+The contract snapshot alone does not establish producer emission or acceptance.
+
+## MP-08 / MP-10 / MP-11 Browser chrome gestures and popups (530 / peer 138)
+
+Allocated local530/peer138 lets the band behave like Chromium's own strip.
+`KernelBrowserInput` `click` takes an optional `button: "middle" | "right"`
+(absent is the primary button, so pre-530 clicks keep their shape) and a new
+`{kind:"drag",x,y,to_x,to_y}` is a primary-button drag. The buttons reach only
+the `browser_chrome` band: middle-click closes a Tab and right-click opens
+Chrome's context menu. On the band a drag must start and end in the tab strip
+(Tab reorder; a Tab is never torn into a new window). A page `display_input`
+drag (selecting text while the page shows video, e.g. for a Note) is admitted
+only for the person watching that Tab through a live display lease: both points
+lie in the viewport, neither may be on a protected field (a cross-origin frame
+counts as protected), it passes the document fences, and its moves and release
+are queued with the press so cancellation cannot strand the button. Page
+regions and popups refuse drags. Agents remain refused on every band, popup and
+page drag path.
+
+`display_subscribe` accepts `{kind:"browser_auxiliary",window_generation,
+auxiliary_id}` for one popup of the band's window: Chrome's menus, the omnibox
+dropdown, extension popups and bubbles (same browser PID, transient for or
+anchored inside the tabbed window). The kernel issues `auxiliary_id`; the
+Browser state's `chrome_window.auxiliary` lists the current popups as
+`{auxiliary_id,x,y,width,height}` in CSS px from the window's top-left so a
+viewer paints each one where Chrome shows it. An id is new whenever its
+window or size changes, and the popup's stream retires when it closes. While
+a band stream is live the kernel follows the window's popups from the band's
+own native worker inventory. Popups take primary clicks, wheel, keys and text
+through the same arbiter and fences as the band, under the managed lockdown
+only. `browser-chrome-ui-530.json` pins the new requests and state keys (Rust
+hash test `mp08_mp10_mp11_browser_chrome_ui_530_snapshot`; the host's Node
+test compares its state keys to the fixture). Mirrored undo and redo travel as
+the mirror keys `"Ctrl+Z"` and `"Ctrl+Shift+Z"` (`mirror_input` `key`, no new
+field): the kernel's mirror resolver turns them into the editor's own chords
+under its observed-frame, live-focus and epoch guards (before 530 they were
+document-bound `display_input` chords, which refuse any focused frame). Clients
+feature-detect 530; no client floor moves.
+
+### MP-08 / MP-10 / MP-11: mirror initial snapshot completion (local 539 / peer 147)
+
+MP-08 / MP-10 / MP-11: the same coordinator-authorized additive unreleased539
+allocation adds `mirror_subscribe.font_requirements?: true` and the v2 operation
+`{op:"fonts", id, required}`. Kernels emit the operation only for explicitly
+negotiating v2 viewers and acknowledge `font_requirements:true` in the subscribe
+result; older viewers keep their existing operation set. An acknowledged viewer
+holds every document lacking its certificate; an older kernel without the
+acknowledgment retains the conservative legacy path. `id` must name a
+known document record, including same-origin and rebased cross-origin child
+roots. `required` is null while native font loading is pending, otherwise at
+most128 unique sorted SHA-256 descriptors for native loaded FontFaces, using
+the canonical descriptor below. More than4096 faces, a loaded descriptor above
+4096 characters, or more than128 distinct loaded descriptors stays pending;
+an incomplete list never becomes a ready empty certificate. Loading/completion
+wakes the existing credit. Snapshots carry the operation before deltas; each
+child's document ID is rebased, while descriptor hashes are unchanged.
+
+For a certified document, clients require every matching required face to load
+from the existing validated kernel font resources. A source-loaded offscreen
+face is explicitly preloaded. Failed unused fallbacks do not block a document
+whose requirements are satisfied; missing required faces do. Certificates
+retire with their document/frame or reset, and packet changes during hashing,
+font loading or image decoding invalidate the handover proof. No name, source
+URL, page text, credential or new input/protection authority is added. Older
+kernels without this operation retain the conservative failure-metadata path.
+The protocol/hash fixture is `browser-mirror2-font-requirements-550.json`.
+
+MP-08 / MP-10 / MP-11: the coordinator-authorized additive extension of mirror's
+unreleased 539/147 allocation (current union 540/148) adds
+`font_failures?: string[]`. It contains at most 128 unique lowercase SHA-256 hex
+descriptors. Every matching native FontFace must have status `error`; any
+unloaded, loading or loaded match prevents certification. Hash UTF-8 JSON of
+`[family, style, weight, stretch, unicodeRange]`: remove matching family quotes,
+trim/lowercase family, trim/collapse style and weight whitespace, normalize
+weight `normal` to `400` and stretch `normal` to `100%`, remove whitespace and
+uppercase unicodeRange. Descriptors above 4096 characters or FontFaceSets above
+4096 faces are not certified. A client failed face with a matching authenticated
+kernel descriptor may use the same fallback. Missing metadata is conservative.
+An explicit empty array clears prior failures; unchanged lists inherit through
+the existing compact/deflated delta. Native font completion/failure wakes the
+existing mirror credit. No font name, URL, credential or input authority is
+added. The snapshot/hash fixture is `browser-mirror2-font-failures-550.json`.
+
+The mirror v2 packet header adds `snapshot_complete?: boolean`. The kernel emits
+`true` only when the main document's initial serializer has drained and its
+native `document.readyState` is `complete`. A bounded prefix, even one with a
+hidden body, emits `false`. This is main-document readiness; child-frame
+completion cannot override it. Resources may continue refining independently.
+A readiness change wakes an outstanding credit. A completion change between
+credits is retained until the next drain, so an otherwise empty completion
+header cannot be lost. Compact deltas inherit an omitted value from their base,
+just like focus, scroll and selection; resets always carry the boolean.
+
+The shared renderer requires protocol 539. It keeps the previous inert page
+while an incoming prefix has no visible viewport content. Only confirmed
+completion starts the bounded two-second hold for an intentionally empty page.
+A completed empty timer also emits a local presentation notification carrying
+only the last applied packet metadata, so View promotion does not wait for another
+credit. This neither creates a packet nor advances sequence/acknowledgement state;
+closed renderers and replaced frames cannot publish it. Visible content may paint
+before completion; the serializer and opaque relay
+chunk transport remain bounded and keep their existing input/band interleaving.
+The field does not relax observation protection, frame admission or input fences.
+
+The frozen header fixture `browser-mirror2-completion-550.json` is hash-pinned by
+`mp08_mp10_mp11_mirror_completion_539_147_snapshot_hash`; real-Chromium observer,
+controller, compact-header and renderer drills cover pending prefixes, completion
+wakes (including between credits), completed empty pages and pre-539 rejection.
+These supplementary checks do not replace the MP-10 real hosted UI/timing matrix.
+
+#### MP-08 / MP-10 / MP-11: retained mirror sheets in the unreleased 539/147 allocation
+
+A `mirror_next` credit may carry `known_sheets`, at most 128 lowercase 24-digit
+hexadecimal stylesheet digests. These name sanitized CSS texts that this viewer
+actually retains until its subscription closes. Omission means no retained
+cross-document dictionary, preserving the existing client path. A reset includes
+all other sheet definitions; deltas keep the existing snapshot dictionary.
+The kernel uses the advertised digests only to omit repeated CSS text. They do
+not authorize a document, input, resource fetch or observation.
+
+The viewer keeps an immutable subscription dictionary of at most 128 sheets and
+8 MiB of UTF-8 text. It never evicts an advertised entry while a credit or reset
+could still refer to it. Additional definitions use ordinary per-document delivery.
+Every resolved CSS use passes the existing sandbox/CSS validation. Closing the
+renderer discards both dictionaries. This extends mirror's own unreleased
+539/147 allocation additively, as allocated by the coordinator; no new protocol
+number or client floor is introduced. `browser-mirror2-sheet-cache-550.json` pins
+the request extension and its hash, including legacy omission/round-trip coverage.
+
+MP-08 / MP-10 / MP-11 — 539/147 native navigation preview (same unreleased allocation):
+`mirror_subscribe.navigation_preview: true` opts into a `wire:2`, reset,
+`fallback:"navigation_preview"`, `snapshot_complete:false` notification before
+observer preparation. It is nonterminal only for the opting-in viewer; the next
+credit supplies the new document's actual snapshot. Old input epochs and region
+leases retire before the notification. No page pixels or new input authority
+travel in this packet. With protected display disabled it is never issued.
+
+The viewer may show the existing whole-page protected VIDEO display while
+preparing its script-free DOM offscreen. `mirror_next.flush:true` requires
+`wait_ms:0`, ends earlier long polls and performs a fresh observer drain; it
+never replays a history packet. Opted-in native input awaits CDP dispatch ACKs
+so a flush after those receipts is causal. The client must match document and
+geometry, await full snapshot/assets and settle in-flight input before atomic
+handover; a newer input or document invalidates that attempt. Active pointer
+and IME composition remain on the existing native input surface until complete.
+
+MP-08 / MP-10 / MP-11: allocated 540/148 keeps the omnibox suggestion list's
+stream warm. While the person's keys are in the band's address bar (a click on
+it, Ctrl+L, typing there; at most 30 s without such input) the Browser state's
+`chrome_window.auxiliary` keeps listing the last list of that window epoch under
+the same `auxiliary_id` with `height: 0` (nothing visible), so a viewer keeps
+its `browser_auxiliary` stream and the next list paints from a running stream
+instead of a new subscription (r12 quiet host: ~0.9 s list first paint). The
+stream is the same in-window popup capture as before: every readback carries the
+active Tab's masks at the page's native origin, input on it is refused outside
+the live list, and it covers no page region while closed. Enter, Tab, another
+toolbar button, the strip or another browser shortcut end it; a state read
+while it is warm re-reads Chrome's list first. `browser-omnibox-warm-540.json`
+pins the shape (Rust hash test `mp08_mp10_mp11_browser_omnibox_warm_540_snapshot`).
+Clients feature-detect 540 (a pre-540 viewer shows a zero-height popup box);
+no client floor moves. Within 540, the reply to a person's `display_input` on a
+`browser_chrome` or `browser_auxiliary` binding may also carry `chrome_window`
+(the same shape as the state's): the window the input left, read after a strip
+input had up to 150 ms to show another Tab and after an address-bar key had its
+list re-read. A viewer shows that Tab and those popups in the input's round trip
+instead of at its next state read; a state read issued before it does not undo
+it. The field is omitted when the active Tab is one the kernel has not adopted
+yet (a new Tab), and the viewer then reads the state at once. Older viewers
+ignore it. A 540 `display_subscribe` may also set `initial_push: true` (omitted
+when false): the viewer's relay registration holds frames that arrive before its
+registration response, so the kernel's push pump grants the first frame at
+registration (as a 535 resume does) instead of after the viewer's first
+`display_ack` — one round trip less per stream open. Kernels report it only on
+the kernel-private `display_attach` reply; the relay sees nothing new.
+
+MP-08 / MP-10 / MP-11: allocated 550/158 versions the mirror v2 wire contract
+that 539/540 kernels shipped unversioned: `mirror_subscribe`
+`navigation_preview`/`font_requirements`, `mirror_next` `known_sheets`/`flush`,
+explicit `snapshot_complete` and the font packets. No shape changes; the
+`browser-mirror2-*-550.json` fixtures pin them. Clients require 550 for mirror v2
+(`browserMirror2MinimumProtocolVersion`) and send every field without a schema
+retry; older kernels keep the legacy mirror.
+
+MP-08 / MP-10 / MP-11: allocated 552/160 adds the optional integer `parked_input`
+to a Browser reply (the input `op` and `state` for the observer; omitted when 0).
+A viewer's input that a busy renderer cannot pass the renderer-bound fences for is
+parked in order by the kernel and answered with success; `parked_input` is how many
+inputs of that observer are still parked. A `state` read for an observer with parked
+input answers from the kernel's last observation without waiting for the renderer.
+The viewer holds its preview-to-mirror handover while `parked_input` is positive,
+because the handover retires the display the parked input is bound to. The kernel
+never re-resolves or re-binds a display for parked input. The
+`browser-parked-input-552.json` fixture pins the shape. Older kernels never park
+(they refuse the input), so the field is simply absent.
+
+MP-08 / MP-10: allocated 556/164 adds the `KernelBrowser` command `state_wait {after, wait_ms}` so a
+viewer no longer polls `state` every 250 ms. Its reply is the `state` reply plus
+`revision`, an opaque string the viewer sends back as `after` (empty or invalid:
+read at once). The kernel answers when the state, as the caller sees it, differs
+from `after`, or after `wait_ms` (at most 2000), and re-reads Chromium once per
+wake, not per tick. The host raises a signal on Tab creation, destruction, retitle
+and navigation, loads, native window/active-Tab/zoom/resize events, popup and
+window changes, Tab or agent requests and a policy change; a person's keys and
+wheel raise none. A signal only means "read again": the reply's content decides, so
+a missed signal costs at most `wait_ms`. The wait holds no protection barrier, so
+Vault insertion never waits on a parked viewer. `state` itself is unchanged.
+`browser-state-wait-556.json` pins the shape (Rust hash test
+`mp08_mp10_browser_state_wait_556_snapshot`). Viewers feature-detect 556 and poll
+older kernels as before; no client floor moves.
+
+MP-08 / MP-10 / MP-11: allocated 560/168 adds the `display_subscribe` target
+`{kind:"browser_window", window_generation}`: the owner's view of the Chrome window's page area. It
+is bound to the window epoch (the same `window_generation` as `chrome_window`), not to a Tab or
+document: Tab create, switch and navigation neither retire it nor ask any page renderer anything
+before its first frame, and `tab_id` only labels the subscription. A page-geometry or window
+change retires it and the viewer subscribes again. Frames carry the window epoch as
+`document_id` (`chrome-window-<generation>-<window_generation>-page`) and `sequence`. Masks stay per
+document and are measured only while a Vault fill target exists. The display is view-only: input
+on it is refused (the mirror and the band own input). `browser-window-display-560.json` pins the
+shape (Rust hash test `mp08_mp10_mp11_browser_window_display_560_snapshot`). Older kernels refuse
+the target; viewers feature-detect 560.
+
+MP-08 / MP-10 / MP-11: allocated 567/175 adds the optional `absent` list to the mirror v2 `fonts` op
+(sent to viewers that negotiated `font_requirements`): the lowercase font family names the
+document's computed font stacks list that the native machine does not have (at most 64, each
+1-128 characters without quotes, backslashes, braces, `<>;` or control characters; page-defined
+faces and generic names never appear; omitted when empty). The viewer declares each name as a face
+that covers no character, so its stack falls through to the next family exactly where the native
+page's did, instead of landing on a family only the viewer installed. A `fonts` op without `absent`
+clears the list. `browser-mirror2-font-absent-567.json` pins the shape (Rust hash test
+`browser_mirror2_font_absent_567_shape_is_pinned`). Older kernels never send the field; older
+viewers refuse it, so they must stay below 567 or negotiate the same wire.
+
+MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
+`layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.
+A viewer narrower than the canonical desktop (a phone) sends its page area; the kernel lays that
+Tab out at the size through per-target device metrics (width 320-8192, at or above the canonical
+width means canonical, height clamped to the canonical height) and the mirror packets carry the
+laid-out size as `css_width`/`css_height`. The newest subscription owns the layout; a subscribe
+without the fields, or closing the owning subscription, restores the canonical page. Older
+kernels ignore nothing: they refuse unknown fields, so viewers send them only on 560+.
+`browser-mirror2-layout-560.json` pins the shape (Rust hash test
+`browser_mirror2_layout_560_shape_is_pinned`).
+
+MP-08 / MP-10 / MP-11: the 535 browser delivery client also negotiates the
+existing relay-96 `chariox-relay-binary-v96` capability. Bounded CXR1 routing
+metadata enters the same sender-authenticated display decrypt/binding path;
+text chunks remain compatible with peers that do not select that capability.
+No additional resume, input, or relay authority is introduced.
+
+Protected completion checks omit public privacy markers from their evidence.
+The existing neutral, tool-free assessment utility receives a bounded,
+exact-turn kernel-private assistant result only through an ephemeral internal
+envelope field excluded from serialization and Debug output. Known values and
+secret-shaped text are scrubbed before submission. Public prompts, history and
+durable hidden context never receive it. Missing, expired, oversized or unbound
+results fail closed; protected leased results unavailable at home cannot establish
+success. No native-thread/workspace/tool authority is inherited. The kernel-private
+structured response and public receipt/terminal/history privacy fences still apply.
+
+### MP-08 / MP-10 / MP-11: visible-page default display (536 / peer 144)
+
+On the kernel-owned desktop, a default Browser `display_subscribe` (without
+`target`) returns the existing region binding for the visible page content.
+The kernel intersects its current Chrome page rectangle with trusted live CDP
+content bounds and rounds inward to even device pixels, excluding native
+scrollbars. It never resizes Chrome or the shared desktop. The response's
+`css_width`, `css_height` and `device_scale_factor` are authoritative, including
+when the issued density differs from the viewer's offer. Input carries the
+returned `binding_id` and `sequence` through the ordinary display input ledger.
+CaptureVisibleRegion uses the same observer's current protected crop.
+All live active-Tab, document, window, Vault and exact-RGB checks still apply.
+Explicit region and Chrome UI targets retain their existing contract.
+This default-crop activation requires local536 / peer144; full-viewport
+producers on hosts without the owned desktop retain their negotiated geometry.
+
+### MP-08 / MP-10 / MP-11: timed display acknowledgements (536 / peer 144)
+
+The same unreleased allocation additively admits optional `held_ms` on
+`display_ack`: an integer receipt-to-ACK hold time in milliseconds (bounded by
+60000 by the viewer). A successful ACK advertises `ack_timing: true`. The
+viewer requires that capability and local protocol >=536 before sending the
+optional field; older kernels retain their original ACK shape. The receiver
+clock starts before local CXR1 conversion/decryption, and holds include time
+waiting to decode, present or send a bounded outstanding ACK. Frame clocks
+stay local and never become relay or session authority.
+
+The kernel subtracts a valid hold from the matching frame's send-to-ACK age
+when estimating ACK transport RTT. This still includes transport processing;
+the latency acceptance gate uses its separately measured wire RTT. A hold
+larger than the frame age cannot create a zero RTT sample. Untimed clients retain their existing allowance; timed clients
+use one observed frame interval plus recent RTT jitter. ACK requests pipeline
+within an eight-request bound and retain the newest pending sequence and any
+recovery request. Sender/generation admission, lease renewal and protected
+frame publication keep their existing paths. `browser-visible-page-536.json`
+pins the additive request and ACK capability response. See the display region
+drill for required real-path checks; source regressions do not close acceptance.
+
+MP-08 / MP-10 / MP-11 — native-to-DOM handover retains an issued visible-page
+crop as a presentation clip around the canonical mirror layout. The temporary
+video producer closes after handover. A subsequent protected capture may resolve
+the same crop afresh for a live opted-in mirror of that observer/document/policy;
+the kernel requires exact issued geometry, active owned window, density and
+pre/post-capture fences. A frame-size hint never supplies capture coordinates or
+observation authority. This composes unreleased mirror539 with union 540/148.
 
 ### BYOM C5 — local 520 / relay peer 128 (MP-05 / MP-08 / MP-10 / MP-11)
 
@@ -3649,3 +4905,30 @@ Web Copy and TUI `/kernel copy-status <context-id>` project the same authoritati
 outcome. Refusals occur before packaging or publication; no bytes are copied.
 The existing C5 allocation remains local 520 / peer 128: this correction changes
 error strings and client rendering, with no new serialized fields or variants.
+### MP-08 / MP-10 / MP-11: reuse of sudo task consent
+
+The live owner/task/run-bound sudo window also supplies prior permission at
+provider tool approval and watched-command execution seams. These seams return
+the official one-operation response before registering another interaction.
+They do not authorize responding to arbitrary RuntimeInteractions. Leased
+watched commands revalidate the current home window through the existing
+leased kernel-request path, including before execution. Startup workspace trust
+may reuse an approved exact-workspace launch without making a queued sudo task
+live for tools. Scope expansion, missing authentication values, identity choices,
+revocation, sandboxing, tenant/owner checks and once-only effects keep their
+normal fences. This is kernel policy on existing shapes; no protocol shape or
+version changes.
+
+### Live output prompt identity — local 545 / relay peer 153 (MP-08 / MP-10 / MP-11)
+
+Structured provider output and terminal stream events carry the existing optional
+`prompt_id`, now populated from kernel ownership: the active prompt of the agent
+(local runs) or the dispatched home prompt (leased remote runs, including the
+settled prompt for dispatch failures). Home worker projections use the home
+prompt ID, never the worker's. Providers that reuse assistant or reasoning merge
+keys across turns (Claude) therefore no longer merge a later reply into an
+earlier answer in clients that scope live rows by prompt. Clients must treat an
+absent `prompt_id` (kernels below local 545) as unscoped. No field or variant is
+added; the bump records the changed relay terminal-event semantics under the
+Protocol Change Rule. Web/native minimums are unchanged unless a client requires
+prompt-scoped live rows.

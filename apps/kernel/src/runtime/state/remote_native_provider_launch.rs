@@ -144,7 +144,10 @@ mod tests {
     #[tokio::test]
     async fn remote_native_launch_rejects_missing_or_old_protocol_before_credentials_or_relay() {
         let current = crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
-        for protocol in [None, Some(current.saturating_sub(1))] {
+        for protocol in [
+            None,
+            Some(crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION - 1),
+        ] {
             let credential_calls = Arc::new(AtomicUsize::new(0));
             let send_calls = Arc::new(AtomicUsize::new(0));
             let refresh_calls = Arc::new(AtomicUsize::new(0));
@@ -383,7 +386,12 @@ mod tests {
                     }))
                 }
             },
-            move || std::future::ready(Ok(binding(Some(current.saturating_sub(1)), None))),
+            move || {
+                std::future::ready(Ok(binding(
+                    Some(crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION - 1),
+                    None,
+                )))
+            },
         )
         .await;
 

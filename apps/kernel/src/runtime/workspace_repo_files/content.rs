@@ -186,7 +186,7 @@ fn normalize_workspace_file_content_path(path: &str) -> Result<String, DaemonErr
         .split('/')
         .filter(|part| !part.is_empty() && *part != ".")
         .collect::<Vec<_>>();
-    if parts.is_empty() || parts.iter().any(|part| *part == "..") {
+    if parts.is_empty() || parts.contains(&"..") {
         return Err(DaemonError::LocalTransport {
             operation: "read workspace file",
             message: "workspace file path must stay inside the repository".to_string(),

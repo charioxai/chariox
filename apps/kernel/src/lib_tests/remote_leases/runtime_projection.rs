@@ -160,6 +160,17 @@ fn native_worker_snapshot_can_establish_run_binding_without_home_dispatch() {
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .unwrap();
+    // `chariox codex` on the worker belongs to a home Codex agent.
+    app.agents()
+        .set_agent_runtime_profile_with_account_profile(
+            agent.id(),
+            "codex",
+            None,
+            None,
+            Some("default".into()),
+            Default::default(),
+        )
+        .unwrap();
     app.agents()
         .bind_remote_execution(
             agent.id(),
@@ -444,6 +455,7 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
         .drain_output_records(session.id(), attachment.id());
     assert_eq!(outputs.len(), 1);
     assert_eq!(outputs[0].agent_id.as_deref(), Some(agent.id()));
+    assert_eq!(outputs[0].prompt_id.as_deref(), Some(prompt.id()));
     assert_eq!(outputs[0].bytes, b"remote output".to_vec());
 
     let notices = app
@@ -465,6 +477,7 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
         .drain_output_records(session.id(), &trace_subscription.recipient_attachment_id);
     assert_eq!(trace_outputs.len(), 1);
     assert_eq!(trace_outputs[0].agent_id.as_deref(), Some(agent.id()));
+    assert_eq!(trace_outputs[0].prompt_id.as_deref(), Some(prompt.id()));
     assert_eq!(trace_outputs[0].bytes, b"remote output".to_vec());
 
     let trace_notices = app
@@ -502,6 +515,7 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
                 operational_history,
                 crate::local::GetSessionHistoryOutlineRequest {
                     session_id: session.id().to_string(),
+                    include_prefetched_content: false,
                     agent_ids: Some(vec![agent.id().to_string()]),
                     latest_prompt_count: Some(4),
                     cursor: None,

@@ -17,6 +17,10 @@ use chariox_app_runtime::{
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing broker operation signature and explicit context arguments"
+)]
 pub(crate) fn broker(
     store: DurableKernelStateStore,
     owner: String,
@@ -38,6 +42,10 @@ pub(crate) fn broker(
         event_config,
     )?))
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing build operation signature and explicit context arguments"
+)]
 fn build(
     store: DurableKernelStateStore,
     owner: String,
@@ -198,6 +206,10 @@ impl Broker for BackendBroker {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing fixture_http operation signature and explicit context arguments"
+)]
 pub(crate) fn fixture_http(
     store: DurableKernelStateStore,
     owner: String,

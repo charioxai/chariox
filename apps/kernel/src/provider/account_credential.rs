@@ -108,6 +108,19 @@ fn claude_login_runs_agents(
     }
 }
 
+/// Whether a launch reads the account's Chariox-vault credential, by the same
+/// rule as `resolve_provider_account_credentials_for_launch`: an enrolled
+/// credential is resolved first, including when a native login is available.
+pub(crate) fn launch_uses_vault_credential(
+    _profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    profile_id: &str,
+    _client_interface: crate::provider::ProviderClientInterface,
+) -> Result<bool, DaemonError> {
+    provider_account_credential_uses_vault(owner_user_id, provider, profile_id)
+}
+
 /// Whether a Chariox-held launch credential is registered for the account.
 /// Reads only the registry; no secret is resolved.
 pub(crate) fn provider_account_credential_registered(
@@ -220,6 +233,31 @@ fn canonical_label(provider: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // MP-08 / MP-09 / MP-10 / MP-11: adapter aliases must resolve the
+    // canonical profile's existing Vault handle, never a second credential.
+    #[test]
+    fn claude_execution_aliases_reuse_the_enrolled_credential_handle() {
+        let canonical = provider_account_credential_id("owner", "claude", "work");
+        assert_eq!(
+            canonical,
+            "provider-account-claude-7c5263ec8de6df8703dc016fe277740a618d6110"
+        );
+        for provider in ["claude-p", "claude-headless"] {
+            assert_eq!(
+                provider_account_credential_id("owner", provider, "work"),
+                canonical
+            );
+        }
+        assert_ne!(
+            provider_account_credential_id("other-owner", "claude-p", "work"),
+            canonical
+        );
+        assert_ne!(
+            provider_account_credential_id("owner", "claude-p", "other-profile"),
+            canonical
+        );
+    }
 
     #[test]
     fn credential_handle_is_stable_and_registry_safe() {

@@ -444,3 +444,42 @@ fn opencode_account_refresh_rolls_back_files_after_registry_commit_failure() {
         b"new-fixture-auth"
     );
 }
+
+#[test]
+fn a_home_claude_replica_defers_its_account_check_to_the_home_launch_credential() {
+    // The home keeps a setup-token Claude account in its vault and supplies it
+    // to every launch of the lease, so the worker's replica never carries it.
+    let home = ProfileFixture::new();
+    let account = home
+        .registry
+        .create_managed("owner", "claude", "Setup token")
+        .unwrap();
+    let materialization = home
+        .registry
+        .export_materialization("owner", "claude", &account.profile_id)
+        .unwrap();
+    let worker = ProfileFixture::new();
+    let replica = worker
+        .registry
+        .materialize_replica("owner", &materialization)
+        .unwrap();
+    worker
+        .registry
+        .require_authenticated(
+            "owner",
+            "claude",
+            &replica.profile_id,
+            None,
+            "submit prompt",
+        )
+        .expect("a home Claude replica waits for the home launch credential");
+
+    let local = worker
+        .registry
+        .create_managed("owner", "claude", "Local")
+        .unwrap();
+    assert!(worker
+        .registry
+        .require_authenticated("owner", "claude", &local.profile_id, None, "submit prompt")
+        .is_err());
+}

@@ -14,7 +14,7 @@ mod start;
 #[cfg(target_os = "macos")]
 pub(crate) use start::macos_storage_root;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod uninstall;
 use crate::{
     durable_state::{
@@ -85,6 +85,7 @@ pub(crate) enum LifecycleError {
     #[error("app_lifecycle_notification_not_dispatched")]
     NotificationNotDispatched,
     #[error("app_lifecycle_worker_exit")]
+    #[allow(dead_code)] // Existing worker lifecycle error vocabulary.
     WorkerExit,
     #[error("app_lifecycle_supervisor")]
     Supervisor,

@@ -308,6 +308,10 @@ async fn serve_worker_metadata_query(listener: TcpListener, worker_public_key: S
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
+    cancel_response_wait_keeps_home_app_lock_available(None).await;
+}
+
+async fn cancel_response_wait_keeps_home_app_lock_available(cancel_parent: Option<bool>) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("temporary relay listener should bind");
@@ -316,18 +320,34 @@ async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
     config.relay_url = Some(relay_url);
     config.relay_token = Some("cancel-lock-test-token".to_string());
     config.relay_request_timeout_ms = 2_000;
+    config.room_agent_tools = true;
     let home_public_key = config.relay_public_key.clone();
     let worker_config = crate::config::DaemonConfig::for_tests();
     let worker_private_key = worker_config.relay_private_key.clone();
     let worker_public_key = worker_config.relay_public_key.clone();
 
     let mut app = crate::app::DaemonApp::bootstrap(config).expect("home app should bootstrap");
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+    let (session, parent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             "cancel-lock-workspace",
-            "cancel-lock-worktree",
+            std::env::current_dir()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
         ))
         .expect("home session should be created");
+    // A child has a causal creator turn on the room-enabled surface.
+    crate::test_support::admit_room_test_turn(&mut app, session.id(), parent.id());
+    let creator_prompt = app
+        .prompt_owner_active_prompt_for_agent(session.id(), parent.id())
+        .unwrap()
+        .unwrap();
+    let agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_spawned_by_agent_id(parent.id()),
+        )
+        .unwrap();
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
@@ -385,6 +405,115 @@ async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
     let response_prompt = prompt.clone().with_id("worker-local-cancel-lock-prompt");
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
+    // MP-08 / MP-10 / MP-11: stale cleanup cannot cancel a successor,
+    // including at the atomic prompt-owner mutation boundary.
+    assert!(runtime
+        .cancel_remote_agent_prompt_if_matches(
+            &session_id,
+            &agent_id,
+            &attachment_id,
+            Some("stale-task-prompt"),
+            None,
+        )
+        .await
+        .unwrap()
+        .is_none());
+    assert!(runtime
+        .owned
+        .begin_remote_prompt_cancellation_if_matches(
+            &session_id,
+            &agent_id,
+            &attachment_id,
+            Some("stale-task-prompt"),
+        )
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(
+                &runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap(),
+                &agent_id
+            )
+            .unwrap()
+            .status(),
+        crate::session::PromptStatus::Running
+    );
+    let tasks = if cancel_parent.is_some() {
+        use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+        let store = &runtime.owned.durable_state_store;
+        let Outcome::Task(child_task) = store
+            .agent_lifecycle(Operation::Begin {
+                owner: session.owner_user_id().into(),
+                room: session_id.clone(),
+                agent: agent_id.clone(),
+                prompt: prompt.id().into(),
+                run: Some(crate::provider::projected_leased_provider_run_id(
+                    LEASED_AGENT_ID,
+                    WORKER_RUN_ID,
+                )),
+                now: 1,
+            })
+            .unwrap()
+        else {
+            panic!("child task");
+        };
+        let root = if cancel_parent == Some(true) {
+            let Outcome::Task(parent_task) = store
+                .agent_lifecycle(Operation::RegisterObligation {
+                    owner: session.owner_user_id().into(),
+                    room: session_id.clone(),
+                    agent: parent.id().into(),
+                    prompt: creator_prompt.id().into(),
+                    run: None,
+                    id: "remote-delegate".into(),
+                    kind: "delegate".into(),
+                    resource: Some(agent_id.clone()),
+                    now: 1,
+                })
+                .unwrap()
+            else {
+                panic!("parent task");
+            };
+            store
+                .agent_lifecycle(Operation::DispatchReceipt {
+                    id: "remote-delegate".into(),
+                    accepted: true,
+                    resource: Some(agent_id.clone()),
+                })
+                .unwrap();
+            store
+                .agent_lifecycle(Operation::BindDelegate {
+                    parent_task: parent_task.task_id.clone(),
+                    child_task: child_task.task_id.clone(),
+                })
+                .unwrap();
+            store
+                .agent_tasks(Some(&session_id), Some(parent.id()))
+                .unwrap()
+                .remove(0)
+        } else {
+            child_task.clone()
+        };
+        let Outcome::Task(cancelled) = store
+            .agent_lifecycle(Operation::CancelTask {
+                task: root.task_id,
+                owner: session.owner_user_id().into(),
+                revision: root.revision,
+            })
+            .unwrap()
+        else {
+            panic!("cancelled task");
+        };
+        Some((child_task, cancelled))
+    } else {
+        None
+    };
     let (request_seen_tx, request_seen_rx) = tokio::sync::oneshot::channel();
     let (release_response_tx, release_response_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
@@ -486,16 +615,24 @@ async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
     });
 
     let cancel_runtime = runtime.clone();
+    let child_task = tasks.as_ref().map(|(child, _)| child.clone());
     let cancellation = tokio::spawn(async move {
-        cancel_runtime
-            .cancel_remote_agent_prompt_if_remote(
-                &session_id,
-                &agent_id,
-                &attachment_id,
-                None,
-                None,
-            )
-            .await
+        if let Some((_, cancelled)) = tasks {
+            cancel_runtime.cancel_agent_task_resources(&cancelled).await
+        } else {
+            cancel_runtime
+                .cancel_remote_agent_prompt_if_remote(
+                    &session_id,
+                    &agent_id,
+                    &attachment_id,
+                    None,
+                    None,
+                )
+                .await
+                .map(|result| {
+                    assert!(result.is_some());
+                })
+        }
     });
     tokio::time::timeout(std::time::Duration::from_secs(2), request_seen_rx)
         .await
@@ -510,9 +647,39 @@ async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
     cancellation
         .await
         .expect("cancellation task should join")
-        .expect("temporary relay cancellation should succeed")
-        .expect("remote cancellation should be handled");
+        .expect("durable task cancellation should reach the remote worker");
     server.await.expect("temporary relay fixture should join");
+    if let Some(child_task) = child_task {
+        let current = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap();
+        let active = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&current, agent.id())
+            .unwrap();
+        assert_eq!(active.id(), prompt.id());
+        assert_eq!(active.status(), crate::session::PromptStatus::Cancelling);
+        assert!(
+            runtime
+                .owned
+                .agent_task_resources_unsettled(&child_task)
+                .unwrap(),
+            "MP-11 worker cancel ACK must not be mistaken for physical settlement"
+        );
+        let task = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(session.id()), Some(agent.id()))
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            task.state,
+            crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
+        );
+    }
     assert!(
         app_lock_available,
         "home DaemonApp lock must remain available while the temporary relay response is pending"
@@ -1404,6 +1571,17 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
     .expect("the exact terminal projection should settle the cancelled prompt");
 }
 
+// MP-08 / MP-10 / MP-11: owner and parent cancellation share the exact worker receipt path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn durable_owner_cancel_reaches_exact_remote_worker() {
+    cancel_response_wait_keeps_home_app_lock_available(Some(false)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn durable_parent_cancel_reaches_exact_remote_worker() {
+    cancel_response_wait_keeps_home_app_lock_available(Some(true)).await;
+}
+
 #[tokio::test]
 async fn resumed_remote_cancellation_fences_to_the_expected_prompt() {
     // MP-08: ACK-settlement and receipt-reconciliation resume cancellation for a specific
@@ -1481,7 +1659,7 @@ async fn resumed_remote_cancellation_fences_to_the_expected_prompt() {
         .await;
 
     assert!(
-        matches!(result, Err(DaemonError::NoActivePrompt { .. })),
+        matches!(result, Ok(None) | Err(DaemonError::NoActivePrompt { .. })),
         "a settled prompt's resumed cancellation must not select its successor: {:?}",
         result.as_ref().err()
     );

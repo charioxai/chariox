@@ -30,6 +30,7 @@ type PromptInputController = {
 
 type PromptTextController = {
   snapshot: () => string
+  currentText: () => string
 }
 
 export type CliAppWorkspaceViewProps = {
@@ -66,8 +67,10 @@ export type CliAppWorkspaceViewProps = {
   assignFooterSummaryBox: (value: any) => void
   assignDialogOverlayBox: (value: any) => void
   assignKernelApprovalBanner: (value: any) => void
+  assignSudoBand: (value: any) => void
   assignKernelApprovalBox: (value: any) => void
   assignPasskeyPopupBox: (value: any) => void
+  assignPasskeyPopupBanner?: (value: any) => void
   assignProviderAccountRecoveryBox?: (value: any) => void
   kernelApprovalOwnsInput: () => boolean
   handlePromptKeyDown: WorkspaceLayoutProps["onPromptKeyDown"]
@@ -118,7 +121,9 @@ export function CliAppWorkspaceView(props: CliAppWorkspaceViewProps) {
       onRootMouseUp={props.handleRootMouseUp}
       onKernelApprovalBoxRef={props.assignKernelApprovalBox}
       onKernelApprovalBannerRef={props.assignKernelApprovalBanner}
+      onSudoBandRef={props.assignSudoBand}
       onPasskeyPopupBoxRef={props.assignPasskeyPopupBox}
+      {...(props.assignPasskeyPopupBanner ? { onPasskeyPopupBannerRef: props.assignPasskeyPopupBanner } : {})}
       onProviderAccountRecoveryBoxRef={props.assignProviderAccountRecoveryBox}
       onResponseSurfaceMouseUp={props.handlePromptSelectionSurfaceMouseUp}
       onFooterMouseUp={props.handlePromptSelectionSurfaceMouseUp}
@@ -216,7 +221,7 @@ export function CliAppWorkspaceView(props: CliAppWorkspaceViewProps) {
       onPromptContentChange={props.handlePromptContentChange}
       onPromptSubmit={() => {
         if (props.kernelApprovalOwnsInput()) return
-        if (props.focusedAgentInteraction()) {
+        if (props.focusedAgentInteraction() && !props.promptTextController.currentText().trim()) {
           void props.submitFocusedInteractionChoice()
           return
         }

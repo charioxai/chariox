@@ -41,6 +41,18 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .into_iter()
             .enumerate()
             .map(|(index, attachment)| {
+                // A note stays inline so the worker's prompt assembly can read it.
+                if attachment.mime == crate::prompt_notes::NOTE_ATTACHMENT_MIME {
+                    let mut note = crate::session::PromptAttachment::new(
+                        attachment.url,
+                        attachment.mime,
+                        attachment.filename,
+                    );
+                    if let Some(contents_base64) = attachment.contents_base64 {
+                        note = note.with_contents_base64(contents_base64);
+                    }
+                    return Ok(note);
+                }
                 if let Some(contents_base64) = attachment.contents_base64 {
                     let bytes = base64::engine::general_purpose::STANDARD
                         .decode(contents_base64)

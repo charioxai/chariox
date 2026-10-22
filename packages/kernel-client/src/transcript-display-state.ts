@@ -27,6 +27,7 @@ type TranscriptDisplayKernelFields = Pick<
   | "blobCollapsed"
   | "blobTitle"
   | "blobSummary"
+  | "blobIcon"
   | "toggleMode"
 >
 
@@ -80,13 +81,14 @@ export type TranscriptBlobToggleProjection<TEntry extends TranscriptDisplayEntry
 export type CollapsedTranscriptTurnIdsByAgent = Record<string, number[]>
 
 type MutableTranscriptDisplayEntry =
-  Omit<TranscriptDisplayEntry, "turnId" | "hidden" | "blobCollapsible" | "blobCollapsed" | "blobTitle" | "blobSummary" | "toggleMode"> & {
+  Omit<TranscriptDisplayEntry, "turnId" | "hidden" | "blobCollapsible" | "blobCollapsed" | "blobTitle" | "blobSummary" | "blobIcon" | "toggleMode"> & {
   turnId?: number | null | undefined
   hidden?: boolean
   blobCollapsible?: boolean
   blobCollapsed?: boolean
   blobTitle?: string
   blobSummary?: string
+  blobIcon?: string
   toggleMode?: "expand" | "collapse"
 }
 
@@ -211,7 +213,6 @@ export function applyTranscriptDisplayState<TEntry extends TranscriptDisplayEntr
     hidden: false,
   })) as MutableTranscriptDisplayEntry[]
   const collapsedTurnIdSet = new Set(collapsedTurnIds)
-  let nextId = normalized.reduce((max, entry) => Math.max(max, entry.id), 0)
   const turnIds = [...new Set(normalized.map((entry) => entry.turnId).filter((turnId): turnId is number => typeof turnId === "number"))]
   const activeHistoryTurnIds = openHistoryTurnIds(normalized)
 
@@ -234,6 +235,11 @@ export function applyTranscriptDisplayState<TEntry extends TranscriptDisplayEntr
           if (preview) {
             entry.blobTitle = preview.title
             entry.blobSummary = preview.summary
+            if (preview.icon) {
+              entry.blobIcon = preview.icon
+            } else {
+              delete entry.blobIcon
+            }
           }
         }
       } else {
@@ -241,6 +247,7 @@ export function applyTranscriptDisplayState<TEntry extends TranscriptDisplayEntr
         delete entry.blobCollapsed
         delete entry.blobTitle
         delete entry.blobSummary
+        delete entry.blobIcon
       }
       if (!collapsibleTurn || expanded) {
         entry.hidden = false
@@ -261,8 +268,11 @@ export function applyTranscriptDisplayState<TEntry extends TranscriptDisplayEntr
       continue
     }
 
+    // Display-only toggles use non-positive ids (outside the entry id space) so
+    // a later history reindex never hands an id a client already saw to a new
+    // entry. `|| 0` avoids -0 for serialized turn 0.
     normalized.splice(anchorIndex + 1, 0, {
-      id: ++nextId,
+      id: -turnId || 0,
       role: "turn_toggle",
       text: expanded ? "click to collapse" : "click to expand",
       turnId,
@@ -311,18 +321,11 @@ export function projectSettledTranscriptTurnDisplayState<TEntry extends Transcri
 ): TranscriptTurnSettlementProjection<TEntry> {
   const normalized = normalizeTranscriptTurnIds(stripTranscriptDisplayEntries(entries))
   const settledTurnId = computeCurrentTranscriptTurnId(normalized)
+  // A finished turn stays as the user left it: terminal clients never fold it
+  // on their own (its toggle still folds it).
   const nextCollapsedTurnIds = new Set(collapsedTurnIds)
-  if (settledTurnId !== null) {
-    const activeHistoryTurnIds = openHistoryTurnIds(normalized)
-    const turnEntries = normalized.filter((entry) => entry.turnId === settledTurnId)
-    if (
-      !activeHistoryTurnIds.has(settledTurnId)
-      && transcriptTurnIsCollapsible(turnEntries)
-    ) {
-      nextCollapsedTurnIds.add(settledTurnId)
-    } else {
-      nextCollapsedTurnIds.delete(settledTurnId)
-    }
+  if (settledTurnId !== null && openHistoryTurnIds(normalized).has(settledTurnId)) {
+    nextCollapsedTurnIds.delete(settledTurnId)
   }
   const projection = projectTranscriptDisplayState(
     normalized,

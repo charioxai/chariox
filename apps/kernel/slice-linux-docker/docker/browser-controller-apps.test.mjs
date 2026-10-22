@@ -632,3 +632,203 @@ test("navigation keeps the enqueue wait armed and target close cancels it", asyn
   assert.deepEqual((await close).open_targets, []);
   assert.equal(tabs.callWaiters.size, 0);
 });
+
+test("explicit App close is target-bound and drops its queued calls and interception", async () => {
+  const {tabs,connection,result} = await opened();
+  await connection.emit({method:"Runtime.bindingCalled",sessionId:"s1",params:{name:"__charioxAppCall",payload:JSON.stringify({id:"close-pending",method:"echo",params:{text:"queued"}})}});
+  await tabs.close({target_id:result.target_id});
+  assert.equal(tabs.apps.size,0);
+  const drained = await tabs.takeCalls();
+  assert.deepEqual(drained.open_targets,[]);
+  assert.deepEqual(drained.calls,[]);
+  assert(connection.sent.some(c=>c.method==="Target.closeTarget" && c.params.targetId===result.target_id));
+  await assert.rejects(tabs.close({target_id:"foreign-target"}));
+  assert(!connection.sent.some(c=>c.method==="Target.closeTarget" && c.params.targetId==="foreign-target"));
+});
+
+
+test("user-domain instances of one App have independent targets and do not adopt Room placeholders", async () => {
+  const {browser,connection}=fakeBrowser();
+  connection.targets=[{targetId:"restored",type:"page",url:appPlaceholder(appOrigin("a"))}];
+  const tabs=new AppTabs(browser);
+  const params={origin_label:"a",installation_id:"same",assets:[asset("index.html","hi")]};
+  const first=await tabs.open({...params,instance_id:"user-app-a"});
+  const second=await tabs.open({...params,instance_id:"user-app-b"});
+  assert.notEqual(first.target_id,second.target_id);
+  assert.notEqual(first.target_id,"restored");
+  assert.deepEqual(await tabs.open({...params,instance_id:"user-app-a"}),first);
+  await tabs.close({target_id:first.target_id});
+  assert.deepEqual((await tabs.takeCalls()).open_targets,[second.target_id]);
+  for (const instance_id of ["", "../other", {}, "x".repeat(129)]) {
+    await assert.rejects(tabs.open({...params,instance_id}));
+  }
+});
+
+// MP-08/MP-10/MP-11: who an App Tab's calls run as comes from the controller's
+// own record of the input it dispatched there, never from the page.
+const bindingCall = (tabs, connection, call) => tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId: "s1",
+  params: { name: "__charioxAppCall", payload: JSON.stringify({ params: {}, ...call }) } });
+const takeActors = async (tabs) => (await tabs.takeCalls()).calls.map((call) => call.actor ?? null);
+const agentOf = (id) => ({ kind: "agent", id });
+
+test("a Tab no agent drove runs its calls as the person; one an agent drove, as that agent", async () => {
+  const { tabs, connection } = await opened();
+  await bindingCall(tabs, connection, { id: "c1", method: "poll" });
+  assert.deepEqual(await takeActors(tabs), [null]);
+  tabs.noteAgent("t1", "agent-7");
+  // Timers, browser-generated events and the person's own clicks look alike to
+  // the controller: after the agent, none of them is the person's.
+  await bindingCall(tabs, connection, { id: "c2", method: "poll" });
+  assert.deepEqual(await takeActors(tabs), [agentOf("agent-7")]);
+  tabs.noteAgent("unknown", "agent-7");
+});
+
+test("the page cannot name who a call runs as", async () => {
+  const { tabs, connection } = await opened();
+  tabs.noteAgent("t1", "agent-7");
+  for (const origin of ["", null, "agent-8", "*"]) await bindingCall(tabs, connection, { id: `c-${origin}`, method: "poll", origin, actor: null });
+  assert.deepEqual(await takeActors(tabs), Array(4).fill(agentOf("agent-7")));
+});
+
+test("a new document of the Tab keeps the agents that drove it", async () => {
+  const { tabs, connection } = await opened();
+  tabs.noteAgent("t1", "agent-7");
+  await navigated(connection, "doc-2");
+  await bindingCall(tabs, connection, { id: "c1", method: "startup" });
+  assert.deepEqual(await takeActors(tabs), [agentOf("agent-7")]);
+});
+
+test("a Tab two agents drove refuses every call with APP_ACTOR_UNKNOWN", async () => {
+  const { tabs, connection } = await opened();
+  const answers = [];
+  const send = connection.send.bind(connection);
+  connection.send = async (method, params, id) => {
+    if (method === "Runtime.evaluate") answers.push(params.expression);
+    return send(method, params, id);
+  };
+  tabs.noteAgent("t1", "agent-7");
+  tabs.noteAgent("t1", "agent-8");
+  await bindingCall(tabs, connection, { id: "c1", method: "poll" });
+  assert.deepEqual(await takeActors(tabs), []);
+  assert.match(answers.at(-1), /__charioxAppResolve\("c1", false, .*APP_ACTOR_UNKNOWN/);
+});
+
+// MP-08/MP-10/MP-11: a second App calls during navigation, before the kernel binds it.
+test("a held second open retains its load-time call until its binding is published", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { tabs, connection } = await opened();
+  const drain = tabs.takeCalls({ target_ids: ["t1"] });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(tabs.callWaiters.size, 1);
+  const send = connection.send.bind(connection);
+  let release, entered;
+  const held = new Promise(resolve => { release = resolve; });
+  const navigating = new Promise(resolve => { entered = resolve; });
+  connection.send = async (method, params, session) => {
+    const result = await send(method, params, session);
+    if (method === "Page.navigate" && session === "s-t2") { entered(); await held; }
+    return result;
+  };
+  const second = tabs.open({ origin_label: "second", installation_id: "inst-2", instance_id: "view-2", assets: [asset("index.html", "hi")] });
+  await navigating;
+  await navigated(connection, "doc-2", "s-t2");
+  await connection.emit({ method: "Runtime.bindingCalled", sessionId: "s-t2",
+    params: { name: "__charioxAppCall", payload: JSON.stringify({ id: "on-load", method: "usage" }) } });
+  assert.deepEqual((await drain).calls, [], "A's outstanding drain cannot consume unbound B");
+  release();
+  const openedB = await second;
+  const batch = await tabs.takeCalls({ target_ids: ["t1", openedB.target_id] });
+  assert.equal(batch.calls.length, 1);
+  assert.equal(batch.calls[0].call_id, "on-load");
+  assert.deepEqual(await tabs.respond({ target_id: openedB.target_id, call_id: "on-load", result: { ok: true } }), { delivered: true });
+  assert.deepEqual(await tabs.respond({ target_id: openedB.target_id, call_id: "on-load", result: { ok: true } }), { delivered: false });
+  const next = tabs.takeCalls({ target_ids: ["t1", openedB.target_id] });
+  await new Promise(resolve => setImmediate(resolve));
+  t.mock.timers.tick(250);
+  assert.deepEqual((await next).calls, [], "one invocation only");
+});
+
+test("retained unpublished calls are discarded after failed Open or document replacement", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const failOpen of [true, false]) {
+    const { tabs, connection } = await opened();
+    const send = connection.send.bind(connection);
+    connection.send = async (method, params, session) => {
+      const result = await send(method, params, session);
+      if (method === "Page.navigate" && session === "s-t2") {
+        await navigated(connection, "doc-old", session);
+        await connection.emit({ method: "Runtime.bindingCalled", sessionId: session,
+          params: { name: "__charioxAppCall", payload: JSON.stringify({ id: "discard", method: "usage" }) } });
+        if (failOpen) throw Error("navigation failed");
+      }
+      return result;
+    };
+    const open = tabs.open({ origin_label: "second", installation_id: "inst-2", instance_id: "view-2", assets: [asset("index.html", "hi")] });
+    if (failOpen) await assert.rejects(open, /navigation failed/);
+    else { await open; await navigated(connection, "doc-new", "s-t2"); }
+    const drain = tabs.takeCalls({ target_ids: ["t1"] });
+    await new Promise(resolve => setImmediate(resolve));
+    t.mock.timers.tick(250);
+    assert.deepEqual((await drain).calls, []);
+    assert.deepEqual(tabs.calls, [], "a failed opening or old document cannot regain authority");
+  }
+});
+
+// MP-08/MP-10/MP-11: App form drafts survive a new document, with no RPC replay.
+test('App bridge restores ordinary draft fields and clears a reset form', async () => {
+  const {browser,connection}=fakeBrowser();const tabs=new AppTabs(browser);
+  await tabs.open({origin_label:'todo-draft',installation_id:'inst-1',assets:[asset('index.html','hi')]});
+  const source=connection.sent.find(m=>m.method==='Page.addScriptToEvaluateOnNewDocument').params.source;
+  const storage=new Map();
+  const indexedDB={open(){const request={};queueMicrotask(()=>{request.result={createObjectStore(){},transaction(){const tx={objectStore:()=>({get(key){const read={};queueMicrotask(()=>{read.result=storage.get(key);read.onsuccess()});return read},put(value,key){storage.set(key,structuredClone(value));queueMicrotask(()=>tx.oncomplete())}})};return tx}};request.onsuccess()});return request}};
+  function document(value='') {
+    const listeners=new Map(),form={id:'new-todo',autocomplete:'on'};
+    const title={tagName:'INPUT',type:'text',id:'title',name:'title',value,defaultValue:'',form,disabled:false,readOnly:false,getAttribute:()=>null};
+    const password={...title,type:'password',id:'password',value:'private-password'};
+    const off={...title,id:'off',value:'private-opt-out',getAttribute:()=> 'off'};
+    const doc={readyState:'complete',querySelectorAll:()=>[title,password,off],addEventListener:(name,fn)=>listeners.set(name,fn)};
+    const context={indexedDB,document:doc,location:{pathname:'/'},crypto:{randomUUID:()=> 'doc'},__charioxAppCall:()=>assert.fail('draft restore must not call tools'),localStorage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},addEventListener(){},queueMicrotask,MutationObserver:class{observe(){}},setTimeout};
+    // Use the exact runtime binding name from the generated bridge.
+    const binding=source.match(/const call = globalThis\.([A-Za-z0-9_]+)/)[1];context[binding]=context.__charioxAppCall;
+    vm.runInNewContext(source,context);
+    return {title,listeners,form,context};
+  }
+  const first=document();await first.context.__charioxAppDraftFlushed();first.title.value='unsubmitted draft';first.listeners.get('input')?.({target:first.title});await first.context.__charioxAppDraftFlushed();
+  const recovered=document();await recovered.context.__charioxAppDraftFlushed();assert.equal(recovered.title.value,'unsubmitted draft');
+  assert(!JSON.stringify([...storage]).includes('private-'));
+  first.listeners.get('reset')?.({target:first.form});first.title.value='';await new Promise(r=>queueMicrotask(r));
+  await first.context.__charioxAppDraftFlushed();const cleared=document();await cleared.context.__charioxAppDraftFlushed();assert.equal(cleared.title.value,'');
+});
+
+// MP-08/MP-10/MP-11: native focus restoration waits until an App finished opening.
+test('App opening readiness is published after bridge installation and navigation', async () => {
+  const {browser,connection}=fakeBrowser(),tabs=new AppTabs(browser),entered=Promise.withResolvers(),gate=Promise.withResolvers();
+  const send=connection.send.bind(connection);
+  connection.send=async(method,params,session)=>{if(method==='Page.navigate'){entered.resolve();await gate.promise}return send(method,params,session)};
+  const opening=tabs.open({origin_label:'opening',installation_id:'inst-1',assets:[asset('index.html','hi')]});
+  try{await entered.promise;assert.equal([...tabs.apps.values()][0].ready,false)}finally{gate.resolve()}
+  await opening;assert.equal([...tabs.apps.values()][0].ready,true);
+});
+
+// MP-08/MP-10/MP-11: only App captures wait; failures cannot publish stale durability.
+test('App draft capture fence waits for its owned renderer and propagates failure', async () => {
+  const {browser,connection}=fakeBrowser(),tabs=new AppTabs(browser);
+  await tabs.open({origin_label:'draft-fence',installation_id:'inst-1',assets:[asset('index.html','hi')]});
+  const app=[...tabs.apps.values()][0],gate=Promise.withResolvers();
+  const send=connection.send.bind(connection);
+  let calls=0;connection.send=async(method,params,session)=>{if(method==='Runtime.evaluate'&&params.expression.includes('__charioxAppDraftFlushed')){calls++;await gate.promise;return {result:{value:true}}}return send(method,params,session)};
+  await tabs.flushDrafts('ordinary-browser-target');assert.equal(calls,0);
+  let done=false;const flush=tabs.flushDrafts(app.targetId).then(()=>{done=true});
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(done,false);gate.resolve();await flush;assert.equal(calls,1);
+  connection.send=async()=>({exceptionDetails:{text:'commit failed'}});
+  await assert.rejects(tabs.flushDrafts(app.targetId),/App draft commit unavailable/);
+});
+
+// MP-08/MP-10/MP-11: focusing the same verified App must preserve its editor document.
+test('opening an unchanged App focuses its existing document without navigating', async () => {
+ const {tabs,connection,result}=await opened();connection.sent.length=0;
+ const again=await tabs.open({origin_label:'todo-1',installation_id:'inst-1',assets:[asset('app.js','1','text/javascript'),asset('index.html','<p>hi</p>')]});
+ assert.deepEqual(again,result);assert(connection.sent.some(x=>x.method==='Target.activateTarget'));
+ assert(!connection.sent.some(x=>['Page.navigate','Page.reload'].includes(x.method)),'an unchanged focus must not invalidate current input references');
+ assert.equal([...tabs.apps.values()][0].ready,true);
+});

@@ -203,8 +203,6 @@ export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection):
       : []),
     formatRemoteRuntimeInvariantSummary(health),
     `workspace coordination: claims=${workspaceCoordination.active_worktree_claims.length} collisions=${workspaceCoordination.worktree_collisions.length} active_ops=${workspaceCoordination.active_operation_claims.length}`,
-    `workspace live sync: reservations=${liveSync.active_reservations} artifacts=${liveSync.active_reservation_artifacts} managed_write_fence=${liveSyncManagedMode.write_fence_supported ? "yes" : "no"} backend=${liveSyncManagedMode.write_fence_backend ?? "-"} tracked_runs=${workspaceIdentity.tracked_provider_runs} identity_changed=${workspaceIdentity.identity_changed_provider_runs} invalid_runs=${workspaceIdentity.invalid_provider_runs}`,
-    `workspace live sync scope: ${workspaceLiveSyncScopeDetail(liveSyncAffectedRoots)}`,
     `workspace watcher: tracked=${externalChanges.tracked_artifacts} external_changes=${externalChanges.externally_changed_artifacts} events=${externalChanges.external_change_events} scans=${externalChanges.live_watcher_scans} scan_errors=${externalChanges.live_watcher_scan_errors} started=${externalChanges.live_watcher_started ? "yes" : "no"}`,
   ]
 
@@ -256,8 +254,6 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
       : []),
     formatRemoteRuntimeInvariantSummary(health),
     `workspace coordination: claims=${workspaceCoordination.active_worktree_claims.length} collisions=${workspaceCoordination.worktree_collisions.length} active_ops=${workspaceCoordination.active_operation_claims.length}`,
-    `workspace live sync: reservations=${liveSync.active_reservations} artifacts=${liveSync.active_reservation_artifacts} managed_write_fence=${liveSyncManagedMode.write_fence_supported ? "yes" : "no"} backend=${liveSyncManagedMode.write_fence_backend ?? "-"} tracked_runs=${workspaceIdentity.tracked_provider_runs} identity_changed=${workspaceIdentity.identity_changed_provider_runs} invalid_runs=${workspaceIdentity.invalid_provider_runs}`,
-    `workspace live sync scope: ${workspaceLiveSyncScopeDetail(liveSyncAffectedRoots)}`,
     `workspace watcher: tracked=${externalChanges.tracked_artifacts} external_changes=${externalChanges.externally_changed_artifacts} events=${externalChanges.external_change_events} scans=${externalChanges.live_watcher_scans} scan_errors=${externalChanges.live_watcher_scan_errors} started=${externalChanges.live_watcher_started ? "yes" : "no"}`,
   ]
 
@@ -407,7 +403,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
 }
 
 function formatRemoteRuntimeAuthorityBoundary(): string {
-  return "remote runtime authority: home kernel owns sessions, prompts, grants, and live sync; workers execute leased provider runs and projected tools"
+  return "remote runtime authority: home kernel owns sessions, prompts, and grants; workers execute leased provider runs and projected tools"
 }
 
 function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjection): void {
@@ -577,11 +573,7 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
     }
     const pathTarget = firstPath ? `path ${firstPath}` : "the affected path"
     const runTarget = firstProviderRun ? ` for provider run ${firstProviderRun}` : ""
-    lines.push(`  next: inspect ${pathTarget}${runTarget}; rerun or reconcile the affected managed/tracked turn before retrying workspace live sync`)
-  }
-
-  if (!liveSyncManagedMode.write_fence_supported && liveSyncManagedMode.unavailable_reason) {
-    lines.push(`workspace live sync managed capability: unavailable (${liveSyncManagedMode.unavailable_reason}); tracked/off modes unaffected`)
+    lines.push(`  next: inspect ${pathTarget}${runTarget}; rerun or reconcile the affected managed/tracked turn before retrying`)
   }
 
   if (externalChanges.live_watcher_scan_errors > 0) {

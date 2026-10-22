@@ -1,0 +1,35 @@
+[
+  {
+    "Notes": {
+      "command": {
+        "op": "capture_selection",
+        "window": {
+          "kind": "panel",
+          "window_id": "message-42"
+        }
+      }
+    }
+  },
+  {
+    "Notes": {
+      "command": {
+        "op": "report_selection",
+        "anchor": {
+          "window": {
+            "kind": "panel",
+            "window_id": "message-42"
+          },
+          "url": null,
+          "document_id": null,
+          "hint": null,
+          "quote": {
+            "exact": "quote",
+            "prefix": "before",
+            "suffix": "after"
+          }
+        },
+        "box_css": null
+      }
+    }
+  }
+]

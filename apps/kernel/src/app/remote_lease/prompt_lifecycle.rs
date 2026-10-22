@@ -14,6 +14,10 @@ use crate::transport::relay_peer::{
 use super::provider_run::LeasedProviderRunMatch;
 use super::RemoteLeaseRuntime;
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing PreparedLeasedProviderRun typed actor payload layout"
+)]
 pub(crate) enum PreparedLeasedProviderRun {
     Ready(String),
     LaunchRequired(LaunchProviderRequest),
@@ -56,11 +60,17 @@ fn leased_prompt_admission_receipt_projection(
     };
     LeasedPromptReceipt {
         home_prompt_id: receipt.receipt.home_prompt_id.clone(),
-        worker_provider_run_id: receipt
-            .receipt
-            .worker_provider_run_id
-            .clone()
-            .unwrap_or_default(),
+        // An assigned process is not an admitted prompt. Preserve its durable
+        // binding, but a definitive rejection exposes no admitted run to home.
+        worker_provider_run_id: if receipt.receipt.phase == WorkerPromptReceiptPhase::Rejected {
+            String::new()
+        } else {
+            receipt
+                .receipt
+                .worker_provider_run_id
+                .clone()
+                .unwrap_or_default()
+        },
         phase,
         target_home_prompt_id: None,
         execution_lease_id: Some(receipt.receipt.execution_lease_id.clone()),
@@ -528,6 +538,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 
     #[cfg(test)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing submit_leased_prompt_with_workflow_context operation signature and explicit context arguments"
+    )]
     pub(crate) fn submit_leased_prompt_with_workflow_context(
         &mut self,
         leased_agent_id: &str,
@@ -649,6 +663,41 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )))
     }
 
+    /// The worker refuses a leased prompt whose account cannot start work here
+    /// definitively, before any launch or receipt fence, so the home fails the
+    /// prompt with the reason instead of reconciling an uncertain delivery.
+    pub(crate) fn require_leased_prompt_account(
+        &self,
+        leased_agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let leased_agent = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
+            DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            }
+        })?;
+        let backing_agent = self.app.agents.get_agent(&leased_agent.backing_agent_id)?;
+        if self
+            .app
+            .reusable_leased_claude_run_for_agent(&leased_agent.backing_session_id, &backing_agent)?
+            .is_some()
+        {
+            return Ok(());
+        }
+        self.app
+            .provider_account_profiles
+            .require_agent_authenticated(
+                &self
+                    .app
+                    .provider_account_authority_owner_for_agent(&backing_agent)?,
+                &backing_agent,
+                crate::transport::relay_peer::ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION,
+            )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing prepare_leased_prompt_submission operation signature and explicit context arguments"
+    )]
     pub(crate) fn prepare_leased_prompt_submission(
         &mut self,
         leased_agent_id: &str,
@@ -719,11 +768,30 @@ impl<'a> RemoteLeaseRuntime<'a> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn finish_prepared_leased_prompt_submission(
         &mut self,
         prepared: PreparedLeasedPromptSubmission,
         provider_run_id: String,
     ) -> Result<(String, PromptSubmissionOutcome), DaemonError> {
+        let (run, outcome, dispatch) = self
+            .finish_prepared_leased_prompt_submission_holding_dispatch(prepared, provider_run_id)?;
+        crate::app::KernelAgentService::new(self.app).finish_compat_prompt_dispatch(dispatch)?;
+        Ok((run, outcome))
+    }
+
+    pub(crate) fn finish_prepared_leased_prompt_submission_holding_dispatch(
+        &mut self,
+        prepared: PreparedLeasedPromptSubmission,
+        provider_run_id: String,
+    ) -> Result<
+        (
+            String,
+            PromptSubmissionOutcome,
+            Option<crate::app::KernelPromptDispatch>,
+        ),
+        DaemonError,
+    > {
         let PreparedLeasedPromptSubmission {
             leased_agent,
             prompt,
@@ -736,6 +804,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let home_prompt_id = git_context
             .as_ref()
             .map(|context| context.home_prompt_id.clone());
+        // MP-08 / MP-10 / MP-11: authenticated home origin is execution policy,
+        // not merely Git observation metadata. Preserve it before admission.
+        let prompt_origin = git_context
+            .as_ref()
+            .and_then(|context| context.prompt_origin)
+            .unwrap_or_default();
         let must_wait_for_capacity = self.leased_turn_must_wait_for_capacity();
         let (outcome, dispatch) = crate::app::KernelAgentService::new(self.app)
             .submit_prompt_holding_dispatch(
@@ -744,21 +818,22 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 Some(&leased_agent.backing_agent_id),
                 &prompt,
                 &hidden_system_context,
+                prompt_origin,
                 materialized_attachments,
             )?;
         let held_for_capacity = must_wait_for_capacity && dispatch.is_some();
-        match dispatch {
+        let dispatch = match dispatch {
             Some(dispatch) if held_for_capacity => {
-                self.hold_leased_turn_for_capacity(&leased_agent.id, dispatch, git_context)
+                self.hold_leased_turn_for_capacity(&leased_agent.id, dispatch, git_context);
+                None
             }
             dispatch => {
                 if let Some(git_context) = git_context {
                     self.observe_leased_git_before(&leased_agent, &provider_run_id, git_context);
                 }
-                crate::app::KernelAgentService::new(self.app)
-                    .finish_compat_prompt_dispatch(dispatch)?
+                dispatch
             }
-        }
+        };
         crate::app::KernelSessionReadService::new(self.app)
             .session_snapshot(&leased_agent.backing_session_id)?;
         let started = matches!(outcome, PromptSubmissionOutcome::Started { .. });
@@ -821,9 +896,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 },
             );
         }
-        Ok((provider_run_id, outcome))
+        Ok((provider_run_id, outcome, dispatch))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing prepare_leased_prompt_steer operation signature and explicit context arguments"
+    )]
     pub(crate) fn prepare_leased_prompt_steer(
         &mut self,
         leased_agent_id: &str,

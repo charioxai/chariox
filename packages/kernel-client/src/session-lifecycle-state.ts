@@ -47,6 +47,7 @@ export type SessionLifecycleListSession = {
 }
 
 export type SessionLifecycleLaunchAgent = Pick<AgentInstance, "id" | "provider" | "model" | "effort"> & {
+  readonly account_profile?: AgentInstance["account_profile"]
   readonly remote_execution?: AgentInstance["remote_execution"]
 }
 
@@ -231,21 +232,21 @@ export function resolveAttachTimeProviderLaunch<TAgent extends SessionLifecycleL
   fallback: SessionLifecycleLaunchSelection,
   createdSession: boolean,
 ): SessionLifecycleAttachProviderLaunchDecision<TAgent> {
+  const targetAgent = resolveLaunchTargetAgent(session)
+  const launch = resolveStoredAgentLaunch(session, fallback, createdSession)
+  if (targetAgent?.remote_execution) {
+    return { action: "skip_launch", reason: "remote_backed_agent", launch, targetAgent }
+  }
   const providerRunId = session.active_provider_run_id?.trim()
   if (providerRunId) {
     return { action: "load_provider_run", providerRunId }
   }
 
-  const targetAgent = resolveLaunchTargetAgent(session)
-  const launch = resolveStoredAgentLaunch(session, fallback, createdSession)
   if (session.agents.length === 0 && !createdSession) {
     return { action: "skip_launch", reason: "no_visible_agents", launch, targetAgent }
   }
   if (!targetAgent && !createdSession) {
     return { action: "skip_launch", reason: "missing_focused_agent", launch, targetAgent }
-  }
-  if (targetAgent?.remote_execution) {
-    return { action: "skip_launch", reason: "remote_backed_agent", launch, targetAgent }
   }
 
   return {
@@ -290,4 +291,12 @@ export function resolveSessionAgentDefaults(
     model: defaults?.model?.trim() || fallback.model,
     effort: defaults?.effort?.trim() || fallback.effort,
   }
+}
+
+// MP-08 / MP-10 / MP-11: reconnect uses the authoritative agent selection.
+export function resolveAgentLaunchAccountProfile(
+  agent: SessionLifecycleLaunchAgent | null,
+  fallback: string,
+): string {
+  return agent?.account_profile?.trim() || fallback
 }

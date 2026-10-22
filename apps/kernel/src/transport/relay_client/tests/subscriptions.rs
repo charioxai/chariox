@@ -2,6 +2,86 @@
 use super::support::*;
 use crate::transport::relay_client::subscriptions::run_relay_subscription_loop;
 
+// MP-08 / MP-10 A12-S02: encrypted relay delivery uses the same snapshot rule.
+#[tokio::test]
+async fn review971c_relay_subscription_keeps_mixed_task_changes() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let session_id = create_test_session(&mut app, "workspace", "worktree");
+    let attachment_id = attach_test_client(
+        &mut app,
+        &session_id,
+        "task-subscriber",
+        ClientCapabilityLevel::MessageTransport,
+    );
+    let app = Arc::new(Mutex::new(app));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(app.clone(), 4));
+    let (outgoing_tx, _priority_rx, mut event_rx) = RelayOutgoingSender::channel(64);
+    let private_key = relay_crypto::generate_private_key_base64();
+    let public_key = relay_crypto::public_key_from_private_key_base64(&private_key).unwrap();
+    let task = tokio::spawn(run_relay_subscription_loop(
+        router.clone(),
+        outgoing_tx,
+        "task-subscription".into(),
+        public_key,
+        session_id.clone(),
+        attachment_id.clone(),
+        None,
+        Arc::new(RelayEventRuntime::for_tests(64)),
+        false,
+        crate::transport::relay_client::subscriptions::RelaySubscriber {
+            user_id: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+            connection_class: crate::local::KernelConnectionClass::Terminal,
+            caller: crate::runtime::command::KernelCaller::for_relay_request(None),
+        },
+    ));
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        async fn next_snapshot(
+            rx: &mut mpsc::Receiver<RelayEnvelope>,
+            key: &str,
+        ) -> serde_json::Value {
+            loop {
+                let (_, event) = decrypt_relay_event_from_channel(rx, key).await;
+                if event["event"] == "session_snapshot" {
+                    return event;
+                }
+            }
+        }
+        next_snapshot(&mut event_rx, &private_key).await;
+        for case in 0..4 {
+            let updated = crate::test_support::mixed_task_subscription_updates(
+                &mut *app.lock().await,
+                &session_id,
+                &attachment_id,
+                case,
+            );
+            let delivered = next_snapshot(&mut event_rx, &private_key).await;
+            let expected = serde_json::to_value(updated).unwrap();
+            for field in ["agent_tasks", "alias", "agents", "prompt_runtime"] {
+                assert_eq!(
+                    delivered["session"][field], expected[field],
+                    "MP-08 / MP-10 relay {field}"
+                );
+            }
+            assert_eq!(
+                delivered["provider_run"]["id"],
+                expected["active_provider_run_id"]
+            );
+            if case == 2 {
+                assert_eq!(
+                    delivered["agent_activity"][expected["agents"][0]["id"].as_str().unwrap()]
+                        ["queued_prompt_count"],
+                    1
+                );
+            }
+        }
+    })
+    .await;
+    task.abort();
+    let _ = task.await;
+    router.runtime_state().shutdown_cleanup().await.unwrap();
+    result.expect("MP-08 / MP-10 relay subscriber lost a mixed task update");
+}
+
 struct RelayEventStoreTestRoot(std::path::PathBuf);
 
 impl RelayEventStoreTestRoot {
@@ -39,6 +119,8 @@ async fn relay_event_store_recovers_both_subscription_scopes_after_append_failur
         .expect("persistent relay event runtime should initialize");
     let session_stream = subscription_event_stream_id("session-a", "attachment-a");
 
+    runtime.event_log.close_persistent_file_for_tests().await;
+    std::fs::remove_file(&events_path).expect("startup event file should be replaceable");
     std::fs::create_dir_all(&events_path).expect("event store path should become unwritable");
     runtime
         .event_log
@@ -464,10 +546,9 @@ async fn proxied_session_subscriptions_share_one_attachment_without_replacement(
 
     // Protocol 403: a terminal's subscription starts with its passkey prompts.
     let prompts = expect_client_event(&mut client_socket, &subscription_private_key).await;
-    assert_eq!(
-        prompts,
-        serde_json::json!({"event": "passkey_prompts_changed", "prompts": []})
-    );
+    assert_empty_passkey_event(&prompts);
+    let catalog = expect_client_event(&mut client_socket, &subscription_private_key).await;
+    assert_client_catalog_event(&catalog);
     let event = expect_client_event(&mut client_socket, &subscription_private_key).await;
     assert_eq!(event["event"], serde_json::json!("session_snapshot"));
     assert_eq!(
@@ -523,10 +604,10 @@ async fn proxied_session_subscriptions_share_one_attachment_without_replacement(
     assert_eq!(second_subscribe_response["ok"], serde_json::json!(true));
     let second_prompts =
         expect_client_event(&mut second_client_socket, &second_subscription_private_key).await;
-    assert_eq!(
-        second_prompts,
-        serde_json::json!({"event": "passkey_prompts_changed", "prompts": []})
-    );
+    assert_empty_passkey_event(&second_prompts);
+    let catalog =
+        expect_client_event(&mut second_client_socket, &second_subscription_private_key).await;
+    assert_client_catalog_event(&catalog);
     let second_event =
         expect_client_event(&mut second_client_socket, &second_subscription_private_key).await;
     assert_eq!(second_event["event"], serde_json::json!("session_snapshot"));
@@ -667,10 +748,9 @@ async fn relay_subscription_replays_recent_events_after_resume_cursor() {
         expect_json_client_response(&mut client_socket, "sub-1", &subscription_private_key).await;
     // Protocol 403: the passkey prompts come first and are never replayed.
     let prompts = expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
-    assert_eq!(
-        prompts.1,
-        serde_json::json!({"event": "passkey_prompts_changed", "prompts": []})
-    );
+    assert_empty_passkey_event(&prompts.1);
+    let catalog = expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
+    assert_client_catalog_event(&catalog.1);
     let first_event =
         expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
     assert_eq!(
@@ -1013,10 +1093,14 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
     )
     .await
     .expect("the current passkey prompts should arrive first");
-    assert_eq!(
-        prompts.1,
-        serde_json::json!({"event": "passkey_prompts_changed", "prompts": []})
-    );
+    assert_empty_passkey_event(&prompts.1);
+    let catalog = tokio::time::timeout(
+        Duration::from_secs(5),
+        decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key),
+    )
+    .await
+    .expect("current client catalog revision should precede the snapshot");
+    assert_client_catalog_event(&catalog.1);
     let current_snapshot = tokio::time::timeout(
         Duration::from_secs(5),
         decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key),
@@ -1149,10 +1233,9 @@ async fn room_workflows_encrypted_relay_drill_inventory_updates_replay_and_last_
         expect_json_client_response(&mut client_socket, "sub-1", &subscription_private_key).await;
     // Protocol 403: the passkey prompts come first and are never replayed.
     let prompts = expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
-    assert_eq!(
-        prompts.1,
-        serde_json::json!({"event": "passkey_prompts_changed", "prompts": []})
-    );
+    assert_empty_passkey_event(&prompts.1);
+    let catalog = expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
+    assert_client_catalog_event(&catalog.1);
     let first_event =
         expect_client_event_envelope(&mut client_socket, &subscription_private_key).await;
     assert_eq!(
@@ -1274,4 +1357,25 @@ async fn room_workflows_encrypted_relay_drill_inventory_updates_replay_and_last_
     connector_task.await.expect("connector task should join");
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("server task should join");
+}
+
+fn assert_empty_passkey_event(event: &serde_json::Value) {
+    assert!(event["kernel_now_ms"].as_u64().is_some_and(|now| now > 0));
+    assert_eq!(
+        event,
+        &serde_json::json!({
+            "event": "passkey_prompts_changed", "prompts": [], "closed": [],
+            "kernel_now_ms": event["kernel_now_ms"],
+        })
+    );
+}
+
+fn assert_client_catalog_event(event: &serde_json::Value) {
+    assert!(event["revision"].as_u64().is_some());
+    assert_eq!(
+        event,
+        &serde_json::json!({
+            "event": "client_catalog_changed", "revision": event["revision"],
+        })
+    );
 }

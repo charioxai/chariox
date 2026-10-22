@@ -10,7 +10,7 @@ import {
   type WaitingRoomProjectSummary,
 } from "./waiting-room-projects.js"
 
-test("project selector offers Default, same-workspace named projects, then New", () => {
+test("MP-08 OWNER-19 selector offers Auto, all kernel projects, then New", () => {
   const projects = [
     project("default", "chariox", "default", "/repo", 100),
     project("other", "Other", "named", "/other", 500),
@@ -22,9 +22,11 @@ test("project selector offers Default, same-workspace named projects, then New",
   assert.deepEqual(
     waitingRoomProjectOptions(projects, "/repo").map(({ id, label }) => ({ id, label })),
     [
-      { id: "default", label: "Default" },
+      { id: "default", label: "Auto (chariox)" },
+      { id: "existing:other", label: "Other" },
       { id: "existing:newer", label: "Frontend" },
       { id: "existing:older", label: "Docs" },
+      { id: "existing:default", label: "chariox" },
       { id: "new", label: "New" },
     ],
   )
@@ -39,7 +41,7 @@ test("project selector offers a named Project from a supporting Workspace", () =
   assert.deepEqual(
     waitingRoomProjectOptions([multiRepo], "/chariox-cloud").map(({ id, label }) => ({ id, label })),
     [
-      { id: "default", label: "Default" },
+      { id: "default", label: "Auto (new project)" },
       { id: "existing:multi", label: "Chariox" },
       { id: "new", label: "New" },
     ],
@@ -57,6 +59,7 @@ test("project selector cycles and serializes all launch policies", () => {
   assert.deepEqual(projectSelectionFromId("default"), { kind: "default" })
   assert.deepEqual(projectSelectionFromId(existing), { kind: "existing", project_id: "named" })
   assert.deepEqual(projectSelectionFromId("new"), { kind: "new" })
+  assert.deepEqual(projectSelectionFromId("new", " Release "), { kind: "new", name: "Release" })
 })
 
 function project(
