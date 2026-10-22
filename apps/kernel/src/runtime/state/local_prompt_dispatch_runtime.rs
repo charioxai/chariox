@@ -1477,31 +1477,6 @@ impl KernelRuntimeState {
         });
     }
 
-    pub(crate) fn spawn_queued_prompt_steer_dispatch(
-        &self,
-        dispatch: crate::app::KernelPromptDispatch,
-        provider_runtime_lanes: ProviderRunOperationLanes,
-    ) {
-        let state = self.clone();
-        tokio::spawn(async move {
-            let _permit = provider_runtime_lanes
-                .acquire(&dispatch.provider_run_id)
-                .await;
-            if let Err(error) = state.enqueue_prompt_dispatch(&dispatch).await {
-                let recipients = state
-                    .owned
-                    .attachment_store
-                    .list_session_attachment_ids(&dispatch.session_id);
-                state.owned.record_notice(
-                    &dispatch.session_id,
-                    Some(&dispatch.provider_run_id),
-                    recipients,
-                    format!("Queued prompt steer dispatch failed: {error}"),
-                );
-            }
-        });
-    }
-
     // MP-08/MP-10/MP-11: the waiter holds the provider operation lane until this
     // exact cancelled invocation has settled, including settlement by another pump.
     pub(super) async fn wait_for_structured_prompt_abort_settlement(

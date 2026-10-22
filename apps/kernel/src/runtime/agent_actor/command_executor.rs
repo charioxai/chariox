@@ -330,10 +330,6 @@ impl AgentRuntimeCommandExecutor {
         let agent_activity = self
             .prompt_commands
             .agent_activity_for_session(&prepared.session);
-        if let Some(dispatch) = prepared.dispatch {
-            self.prompt_commands
-                .spawn_queued_prompt_steer_dispatch(dispatch);
-        }
 
         Ok(LocalDaemonResponse::QueuedPromptSteered {
             prompt: prepared.prompt,

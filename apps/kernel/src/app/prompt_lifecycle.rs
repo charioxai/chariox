@@ -402,10 +402,10 @@ pub(crate) struct KernelPromptCancellation {
     pub(crate) dispatch: Option<KernelPromptAbortDispatch>,
 }
 
+/// A queued steer reply is produced after provider acceptance.
 pub(crate) struct KernelQueuedPromptSteer {
     pub(crate) prompt: PromptQueueItem,
     pub(crate) session: crate::session::RuntimeSession,
-    pub(crate) dispatch: Option<KernelPromptDispatch>,
 }
 
 pub(crate) struct KernelQueuedPromptCancellation {
