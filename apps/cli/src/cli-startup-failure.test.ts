@@ -16,7 +16,7 @@ test("a missing hosted receiving-terminal login is a typed outcome", async () =>
 
 test("the startup view explains how to recover a missing or ended terminal login", () => {
   for (const code of ["login_required", "signed_out", "client_revoked", "refresh_reuse_detected"]) {
-    assert.match(cliStartupFailureText(new CloudClientAuthError(code)), /chariox cloud login.*retry/)
+    assert.match(cliStartupFailureText(new CloudClientAuthError(code)), /chariox cloud login.*--api-url.*retry/)
   }
   assert.match(cliStartupFailureText(new CloudClientAuthError("profile_conflict")), /separate CHARIOX_HOME/)
   assert.equal(cliStartupFailureText(new Error("private provider diagnostic")), "Unable to attach to this session.")
