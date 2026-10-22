@@ -191,6 +191,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (urlKeys.size >= RESOURCE_BUDGET) urlKeys.delete(urlKeys.keys().next().value);
       const key = `r${++keySerial}`; urlKeys.set(slot, { key, kind, url: url.href }); newResources.push({ key, url: url.href, kind }); return key;
     };
+    // A URL a stylesheet names is wanted whichever elements the page also shows it on (an <img> of the same file hidden
+    // off screen must not hold back the sprite a visible element paints through CSS).
+    const cssKeys = new Set();
+    const cssResource = (raw, base, kind) => { const key = resource(raw, base, kind); if (key) cssKeys.add(key); return key; };
     // With `clean`, each sheet's own rules are sanitized against that sheet's base
     // (an imported sheet's url() is relative to the imported sheet).
     const sheetText = (sheet, base, depth = 0, clean = null, keep = null) => {
@@ -260,19 +264,19 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       // Only the top document's own sheets: the kernel asks the top world for full sheets, and a shadow
       // root's :host rules cannot be checked by a query.
       if (text.length < FIRST_PAINT_SHEET || window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9) return text;
-      const used = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, resource), usedBy(root));
+      const used = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, cssResource), usedBy(root));
       return used.length < text.length && !LOSSY.test(used) ? used : text;
     };
     // Chrome serializes a var() shorthand that a later declaration partly overrides as empty longhands; such
     // a linked sheet is read as source text through the kernel instead of through the CSSOM.
     const LOSSY = /[;{]\s*(?!--)[a-z][a-z-]*:\s*(?:!important\s*)?(?:;|})/i;
     const css = (sheet, base) => {
-      const text = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, resource));
+      const text = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, cssResource));
       if (!LOSSY.test(text)) return text;
       if (sheet.href) throw new Error('lossy CSSOM serialization');
       // An inline <style>: its own source text is not lossy.
       const source = sheet.ownerNode?.localName === 'style' && !sheet.ownerNode.sheet?.media?.length ? sheet.ownerNode.textContent : null;
-      return source ? sanitizeMirrorCss(source, base, resource) : text;
+      return source ? sanitizeMirrorCss(source, base, cssResource) : text;
     };
     const inlineStyle = (element, base) => { const live = element.style.cssText; return sanitizeMirrorCss(LOSSY.test(live) ? element.getAttribute('style') ?? live : live, base, resource); };
     const box = node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
@@ -1170,7 +1174,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (changed()) return finish();
       waiters.push(finish); setTimeout(finish, Math.min(Math.max(ms, 1), 2000));
     });
-    const sanitize = (text, base) => sanitizeMirrorCss(String(text), String(base), resource);
+    const sanitize = (text, base) => sanitizeMirrorCss(String(text), String(base), cssResource);
     // A cross-origin sheet the kernel read (already sanitized): its rules in use now, as above.
     const usedCss = (id, text) => {
       const root = nodes.get(id)?.getRootNode?.();
@@ -1193,7 +1197,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const near = [], all = [];
       for (const [id, key] of resOf) {
         const node = nodes.get(id); if (!node?.isConnected) continue;
-        all.push(key);
+        if (!cssKeys.has(key)) all.push(key);
         const r = node.getBoundingClientRect(), view = node.ownerDocument.defaultView ?? window;
         if (r.width > 0 && r.height > 0 && r.bottom > -margin && r.top < view.innerHeight + margin && r.right > 0 && r.left < view.innerWidth) near.push([key, Math.ceil(r.width), Math.ceil(r.height)]);
       }

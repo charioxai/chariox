@@ -1943,6 +1943,15 @@ test("MP-10: a parsed short page completes its snapshot while a subresource is p
   }
 });
 
+// MIRROR-ROBUST-ADOPT (Amazon header sprite): a file a stylesheet paints on a visible element is also an <img> far below the
+// view. The <img> alone decides "near", so the sprite waited forever and the visible element stayed blank in the copy.
+test('MP-10: a stylesheet image also used by an off-screen <img> is still delivered', () => mirrored(
+  '<style>.logo{width:60px;height:30px;background:url(/sprite.svg)}</style><div class="logo"></div><div style="height:6000px"></div><img src="/sprite.svg" width="40" height="40">', async ({next}) => {
+    const until = Date.now() + 8000; let sprite = false;
+    for (let packet = await next(); !sprite && Date.now() < until; packet = await next(500)) sprite = Object.values(packet.resources ?? {}).some(r => r.mime_type === 'image/svg+xml');
+    assert(sprite, 'the CSS-referenced sprite reaches the viewer although its <img> twin is far off screen');
+  }, {'/sprite.svg':{type:'image/svg+xml',body:svg('#123456')}}));
+
 // MP-08/MP-10/MP-11: a deferred valid image may use a sized placeholder; an image the native page cannot decode keeps its native broken-image layout.
 test('MP-10: an already broken native image has no deferred resource placeholder', () => mirrored(
   '<img id="photo" width="728" height="90" alt="Unavailable" src="/broken.png">', async ({next,evaluate}) => {
