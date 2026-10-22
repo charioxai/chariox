@@ -4805,9 +4805,17 @@ controller) in every state read until the page has its answer, and the state sig
 (Stay for beforeunload, Cancel for confirm and prompt), an absent `prompt_text` lets the controller
 apply the page's own default. The answer is served beside the host's barrier lane, because the input
 that opened the dialog may still be waiting on it; it is refused for agents, for a stale generation and
-for a Tab with no open dialog. `browser-dialog-568.json` pins the shape (Rust hash test
-`mp08_mp10_browser_dialog_568_snapshot`). Older kernels refuse the command and never list a dialog;
-viewers feature-detect 568.
+for a Tab with no open dialog. The 569 fixture below pins the current shape. Older kernels refuse the
+command and never list a dialog; viewers feature-detect 568.
+
+MP-08 / MP-10: provisional 569/177 (renumbered at integration) numbers each dialog opening. The Tab's
+`dialog` state is `{type, message, opening}`, where `opening` is a positive integer the controller gives
+every new dialog, so a page that asks the same question twice in one document opens two different
+openings. The `dialog` command carries the `opening` it answers (required). The host refuses an answer
+whose opening is no longer the Tab's open one, and the controller checks it again right before the answer
+is dispatched and lets each opening take one answer, so two viewers' answers to one dialog never answer
+the dialog after it. `browser-dialog-569.json` pins the shape (Rust hash test
+`mp08_mp10_browser_dialog_569_snapshot`). Viewers below 569 send no opening and are refused.
 
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
 `layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.

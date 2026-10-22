@@ -127,7 +127,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: allocated 164 carries the local 556 `state_wait`.
 /// MP-08/MP-10/MP-11: allocated 175 carries the local 567 `fonts` op `absent`.
 /// Provisional 176 carries the local 568 `dialog` command.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 176;
+/// Provisional 177 carries the local 569 dialog `opening`.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 177;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

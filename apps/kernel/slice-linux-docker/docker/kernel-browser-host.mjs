@@ -491,7 +491,7 @@ export class KernelBrowserHost {
     const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
     return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
       tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => {
-        // Protocol 568: the page dialog this Tab has open, for the viewer to answer.
+        // Protocol 569: the page dialog opening this Tab has, for the viewer to answer.
         const dialog = this.browser?.openDialogs?.get(target_id);
         return dialog ? { ...tab, dialog } : tab;
       }), viewport:this.viewport(), chrome_window: this.chromeWindow(),
@@ -845,13 +845,14 @@ export class KernelBrowserHost {
     if(command.op==='mirror_subscribe') return this.mirror.subscribe(command,scope);
     if(command.op==='mirror_next') return this.mirror.next(command,scope,{signal});
     if(command.op==='mirror_close') {this.mirror.require(command.subscription_id,scope,command.generation);this.mirror.drop(command.subscription_id);return {closed:true};}
-    // Protocol 568: a person answers their Tab's page dialog. The page (and any input it blocks) waits for this, so
-    // it reads no renderer state: the dialog's own target and document answer it.
+    // Protocol 569: a person answers the page dialog opening they were shown. The page (and any input it blocks)
+    // waits for this, so it reads no renderer state: the dialog's own target, document and opening answer it.
     if(command.op==='dialog') {
       if(command.focused_agent||command._agent_input)throw new UserDomainRefusal('not_granted');
       const tab=this.tabs.get(command.tab_id);
-      if(command.generation!==this.generation||!tab||!this.browser.openDialogs.get(tab.target_id))throw new UserDomainRefusal('stale_reference','dialog_closed');
-      await this.browser.handleDialog({target_id:tab.target_id,document_id:tab.document_id,action:command.accept===true?'accept':'dismiss',...(typeof command.prompt_text==='string'?{prompt_text:command.prompt_text}:{})},{signal});
+      if(command.generation!==this.generation||!tab||this.browser.openDialogs.get(tab.target_id)?.opening!==command.opening)throw new UserDomainRefusal('stale_reference','dialog_closed');
+      try{await this.browser.handleDialog({target_id:tab.target_id,document_id:tab.document_id,opening:command.opening,action:command.accept===true?'accept':'dismiss',...(typeof command.prompt_text==='string'?{prompt_text:command.prompt_text}:{})},{signal});}
+      catch(error){if(error?.code==='stale_dialog_reference')throw new UserDomainRefusal('stale_reference','dialog_closed');throw error;}
       return this.observe(this.tabState(),tab,scope);
     }
     const encodedCapture = command.op === "screenshot" && typeof command.display_subscription_id === "string";

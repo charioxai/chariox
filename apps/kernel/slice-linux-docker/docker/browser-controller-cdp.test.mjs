@@ -867,7 +867,7 @@ test("an open page dialog is listed for its Tab, bounded, and gone when its life
   await browser.reconcile(viewport);
   const open = (params) => connection.emit({ method: "Page.javascriptDialogOpening", sessionId: "session-a", params });
   open({ type: "confirm", message: "Delete it?", defaultPrompt: "" });
-  assert.deepEqual(browser.openDialogs.get("target-a"), { type: "confirm", message: "Delete it?" });
+  assert.deepEqual(browser.openDialogs.get("target-a"), { type: "confirm", message: "Delete it?", opening: 1 });
   assert.equal(changes, 1);
   open({ type: "prompt", message: "é".repeat(2_000), defaultPrompt: "private default" });
   const listed = browser.openDialogs.get("target-a");
@@ -886,6 +886,34 @@ test("an open page dialog is listed for its Tab, bounded, and gone when its life
     connection.emit(event);
     assert.equal(browser.openDialogs.get("target-a"), null, event.method);
   }
+  await browser.close();
+});
+
+test("a dialog answer takes only the opening it names, once, right before dispatch (569)", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  await browser.reconcile(viewport);
+  const open = (message) => connection.emit({ method: "Page.javascriptDialogOpening", sessionId: "session-a", params: { type: "confirm", message } });
+  const answers = () => connection.calls.filter((call) => call.method === "Page.handleJavaScriptDialog").length;
+  const answer = (opening, action = "accept") => browser.handleDialog({ target_id: "target-a", document_id: "loader-a", action, opening });
+  open("Leave?");
+  const first = browser.openDialogs.get("target-a").opening;
+  await answer(first);
+  assert.equal(answers(), 1);
+  await assert.rejects(answer(first), (error) => error.code === "stale_dialog_reference", "an opening takes one answer");
+  connection.emit({ method: "Page.javascriptDialogClosed", sessionId: "session-a", params: { result: true } });
+  open("Leave?");
+  const second = browser.openDialogs.get("target-a").opening;
+  assert.notEqual(second, first, "the same question asked again is a new opening");
+  await assert.rejects(answer(first, "dismiss"), (error) => error.code === "stale_dialog_reference", "a delayed answer to the first never answers the second");
+  assert.equal(answers(), 1);
+  await assert.rejects(browser.handleDialog({ target_id: "target-a", document_id: "loader-a", action: "accept", opening: 0 }), { code: "browser_dialog_invalid" });
+  const send = connection.send.bind(connection);
+  connection.send = async (method, ...rest) => { if (method === "Page.handleJavaScriptDialog") throw new Error("dispatch failed"); return send(method, ...rest); };
+  await assert.rejects(answer(second), /dispatch failed/);
+  connection.send = send;
+  await answer(second);
+  assert.equal(answers(), 2, "an answer the page never took leaves the opening answerable");
   await browser.close();
 });
 

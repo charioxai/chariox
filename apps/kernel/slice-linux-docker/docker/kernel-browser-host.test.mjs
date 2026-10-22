@@ -70,9 +70,12 @@ function fixture(root) {
     clearViewport: async target => connection.send('Emulation.clearDeviceMetricsOverride', {}, `session-${target}`),
     inputCapture: { hold: async()=>async()=>{}, run: async (_connection, _session, operation) => operation() },
   });
-  // The page dialog seam of BrowserCdpClient (protocol 568).
+  // The page dialog seam of BrowserCdpClient (protocol 569).
   browser.openDialogs = new BrowserOpenDialogs(() => browser.onDialogChange?.());
-  browser.handleDialog = async ({ action }) => connection.send('Page.handleJavaScriptDialog', { accept: action === 'accept' });
+  browser.handleDialog = async ({ action, target_id, opening }) => {
+    if (!browser.openDialogs.claim(target_id, opening)) throw Object.assign(new Error('answered'), { code: 'stale_dialog_reference' });
+    return connection.send('Page.handleJavaScriptDialog', { accept: action === 'accept' });
+  };
   return browser; };
   return { host: new KernelBrowserHost(root, { chromium, browserFactory }), chromium, handlers, sent, pages, connection };
 }
@@ -2011,18 +2014,39 @@ test('MP-08/MP-10 a Tab lists its open page dialog and the person answers it thr
  const woken=host.stateSignal.count;
  host.browser.openDialogs.observe({method:'Page.javascriptDialogOpening',params:{type:'confirm',message:'Leave this page?'}},target);
  assert.equal(host.stateSignal.count>woken,true,'a dialog wakes parked state reads');
- assert.deepEqual(host.tabState().tabs[0].dialog,{type:'confirm',message:'Leave this page?'});
+ assert.deepEqual(host.tabState().tabs[0].dialog,{type:'confirm',message:'Leave this page?',opening:1});
  // The frozen renderer answers no reconcile: state reads come from the Tab list and pass the barrier lane.
  assert.equal(scheduleHostRequest({method:'host.browser',params:{op:'state'}},host.browser).kind,'bridge');
  { const reconcile=host.browser.reconcile; host.browser.reconcile=()=>new Promise(()=>{}); const read=await host.request({op:'state'}); host.browser.reconcile=reconcile; assert.equal(read.tabs[0].dialog.type,'confirm'); }
- await assert.rejects(host.request({op:'dialog',tab_id:tab.tab_id,generation:opened.generation,accept:true,_agent_input:true}),/not_granted|refused/i);
- await assert.rejects(host.request({op:'dialog',tab_id:tab.tab_id,generation:opened.generation+1,accept:true}),/stale|refused/i);
- const answered=await host.request({op:'dialog',tab_id:tab.tab_id,generation:opened.generation,accept:false});
+ await assert.rejects(host.request({op:'dialog',tab_id:tab.tab_id,generation:opened.generation,opening:1,accept:true,_agent_input:true}),/not_granted|refused/i);
+ await assert.rejects(host.request({op:'dialog',tab_id:tab.tab_id,generation:opened.generation+1,opening:1,accept:true}),/stale|refused/i);
+ const answered=await host.request({op:'dialog',tab_id:tab.tab_id,generation:opened.generation,opening:1,accept:false});
  assert.equal(answered.tabs[0].tab_id,tab.tab_id);
  assert.deepEqual(sent.filter(call=>call.method==='Page.handleJavaScriptDialog').map(call=>call.params),[{accept:false}]);
  host.browser.openDialogs.observe({method:'Page.javascriptDialogClosed',params:{result:false}},target);
  assert.equal(host.tabState().tabs[0].dialog,undefined);
- await assert.rejects(host.request({op:'dialog',tab_id:tab.tab_id,generation:opened.generation,accept:true}),/stale|refused/i);
+ await assert.rejects(host.request({op:'dialog',tab_id:tab.tab_id,generation:opened.generation,opening:1,accept:true}),/stale|refused/i);
+}));
+
+// Protocol 569: two viewers see the same confirm. One answers it and the page at once asks the same question again
+// in the same document; the other's delayed answer to the first never answers the second, which it never saw.
+test('MP-08/MP-10 a delayed answer from a second viewer never answers the next dialog opening',()=>using(async({host,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0],target=host.tabs.get(tab.tab_id).target_id;
+ const dispatched=()=>sent.filter(call=>call.method==='Page.handleJavaScriptDialog').length;
+ host.browser.openDialogs.observe({method:'Page.javascriptDialogOpening',params:{type:'confirm',message:'Delete it?'}},target);
+ const seenByA=(await host.request({op:'state'})).tabs[0].dialog,seenByB=(await host.request({op:'state'})).tabs[0].dialog;
+ assert.deepEqual(seenByA,seenByB);
+ await host.request({op:'dialog',tab_id:tab.tab_id,generation:opened.generation,opening:seenByA.opening,accept:true});
+ host.browser.openDialogs.observe({method:'Page.javascriptDialogClosed',params:{result:true}},target);
+ host.browser.openDialogs.observe({method:'Page.javascriptDialogOpening',params:{type:'confirm',message:'Delete it?'}},target);
+ await assert.rejects(host.request({op:'dialog',tab_id:tab.tab_id,generation:opened.generation,opening:seenByB.opening,accept:true}),/stale|refused/i);
+ assert.equal(dispatched(),1,'the second opening is still waiting for someone who saw it');
+ const next=host.tabState().tabs[0].dialog;
+ // Two answers to one opening that both pass the host check: the controller gives the opening to one of them.
+ const results=await Promise.allSettled([1,2].map(()=>host.request({op:'dialog',tab_id:tab.tab_id,generation:opened.generation,opening:next.opening,accept:false})));
+ assert.deepEqual(results.map(result=>result.status).sort(),['fulfilled','rejected']);
+ assert.match(String(results.find(result=>result.status==='rejected').reason?.message??results.find(result=>result.status==='rejected').reason),/stale|refused|dialog_closed/i);
+ assert.equal(dispatched(),2);
 }));
 
 // MP-08/MP-10 (BROWSER-UX-05): a Tab that just opened has a busy renderer; its own-Tab read (the subscribe

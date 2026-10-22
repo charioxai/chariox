@@ -481,20 +481,20 @@ fn mp08_mp10_mp11_browser_omnibox_warm_540_snapshot() {
     );
 }
 
-// MP-08/MP-10 (provisional 568/176): a person answers the page dialog their Tab has open; the Tab lists it as
-// `dialog` in the state until the page has its answer.
+// MP-08/MP-10 (provisional 569/177): a person answers the page dialog opening their Tab lists as `dialog`
+// in the state until the page has its answer; the answer names that opening.
 #[test]
-fn mp08_mp10_browser_dialog_568_snapshot() {
+fn mp08_mp10_browser_dialog_569_snapshot() {
     const {
-        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 568);
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 569);
     };
     const {
-        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 176);
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 177);
     };
-    let bytes = include_bytes!("browser-dialog-568.json");
+    let bytes = include_bytes!("browser-dialog-569.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "e2e99d8c183c5a88e4fcf4061b638df31c70081cc2aa269cf4c4f2a4c5ffec19"
+        "15ae92bcf4ba8b76cdef42e9d283cdc7ae098e924e71fdee826f4c5cd9d5630e"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     for key in ["accept", "answer_prompt", "dismiss"] {
@@ -509,14 +509,18 @@ fn mp08_mp10_browser_dialog_568_snapshot() {
         accept,
         crate::local::LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
             command: crate::local::KernelBrowserCommand::Dialog {
+                opening: 3,
                 accept: true,
                 prompt_text: None,
                 ..
             }
         })
     ));
-    // A dialog answer names the Tab, its generation and the decision, nothing else.
-    assert!(serde_json::from_value::<crate::local::LocalDaemonRequest>(serde_json::json!({"KernelBrowser":{"command":{"op":"dialog","tab_id":"t","generation":1,"accept":true,"url":"x"}}})).is_err());
+    assert_eq!(snapshot["state_tab_with_dialog"]["dialog"]["opening"], 3);
+    // A dialog answer names the Tab, its generation, the opening and the decision, nothing else.
+    assert!(serde_json::from_value::<crate::local::LocalDaemonRequest>(serde_json::json!({"KernelBrowser":{"command":{"op":"dialog","tab_id":"t","generation":1,"opening":1,"accept":true,"url":"x"}}})).is_err());
+    // An answer that does not say which opening it was given for is refused.
+    assert!(serde_json::from_value::<crate::local::LocalDaemonRequest>(serde_json::json!({"KernelBrowser":{"command":{"op":"dialog","tab_id":"t","generation":1,"accept":true}}})).is_err());
 }
 
 // MP-08/MP-10 (allocated 556/164): `state_wait` parks a Browser state read until the
@@ -595,7 +599,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "d6777f8ef1b76dc5ff003c937129d83d58c36383e44939113e7b0faf79f63857"
+        "e23d3cb641f38b8066cd8e162801bede2ea2bcdb36e23e2b21f1e942b2cbda02"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);

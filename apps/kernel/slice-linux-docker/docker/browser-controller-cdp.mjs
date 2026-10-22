@@ -949,6 +949,10 @@ export class BrowserCdpClient {
         "browser dialog action must be accept or dismiss",
       );
     }
+    const opening = rawRequest?.opening;
+    if (opening !== undefined && !(Number.isSafeInteger(opening) && opening > 0)) {
+      throw new BrowserControllerError("browser_dialog_invalid", "browser dialog opening must be a positive integer");
+    }
     const promptText = rawRequest?.prompt_text;
     if (
       promptText != null &&
@@ -988,14 +992,26 @@ export class BrowserCdpClient {
     }
     const answer = promptText ?? defaultPrompt;
     assertNotCancelled(signal);
-    await connection.send(
-      "Page.handleJavaScriptDialog",
-      {
-        accept: action === "accept",
-        ...(action === "accept" && answer != null ? { promptText: answer } : {}),
-      },
-      sessionId,
-    );
+    // The last check before dispatch: the answer names the opening it was given for, and is the only one it gets.
+    if (!this.openDialogs.claim(targetId, opening)) {
+      throw new BrowserControllerError(
+        "stale_dialog_reference",
+        "the page dialog this answer was for is no longer open or was already answered; answer the dialog the page shows now",
+      );
+    }
+    try {
+      await connection.send(
+        "Page.handleJavaScriptDialog",
+        {
+          accept: action === "accept",
+          ...(action === "accept" && answer != null ? { promptText: answer } : {}),
+        },
+        sessionId,
+      );
+    } catch (error) {
+      this.openDialogs.release(targetId, opening);
+      throw error;
+    }
     return {
       browser_generation: this.browserGeneration,
       target_id: targetId,

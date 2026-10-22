@@ -27,7 +27,7 @@ export type KernelBrowserCommand =
   | { op: "mirror_subscribe"; tab_id: string; generation: number; device_scale_factor: 1 | 2; wire?: 2; navigation_preview?: true; font_requirements?: true; font_absent?: true; layout_width?: number; layout_height?: number }
   | { op: "mirror_next"; subscription_id: string; generation: number; after_sequence: number; drift_nodes: string[]; known_sheets?: string[]; wait_ms?: number; resend?: true; flush?: true }
   | { op: "mirror_close"; subscription_id: string; generation: number }
-  | { op: "dialog"; tab_id: string; generation: number; accept: boolean; prompt_text?: string }
+  | { op: "dialog"; tab_id: string; generation: number; opening: number; accept: boolean; prompt_text?: string }
   | { op: "mirror_input"; tab_id: string; generation: number; document_id: string; subscription_id: string; sequence: number; action: KernelBrowserMirrorAction }
   | { op: "display_capture" | "display_takeover" | "display_release"; tab_id: string; generation: number }
   | { op: "display_actors" }
@@ -74,8 +74,9 @@ export function userDomainWindowBadge(access: UserDomainWindowAccess): string | 
 }
 export type KernelBrowserTabActor = { actor_id: string; kind: "agent" | "human"; display_label: string }
 export type KernelBrowserAgentActivity = { sequence: number; tab_id: string; actor: KernelBrowserTabActor }
-/** Protocol 568: the page dialog a Tab has open; the page waits until a person answers it. */
-export type KernelBrowserDialog = { type: "alert" | "confirm" | "prompt" | "beforeunload"; message: string }
+/** Protocol 568: the page dialog a Tab has open; the page waits until a person answers it.
+ * Protocol 569: `opening` numbers this dialog opening; the answer names it. */
+export type KernelBrowserDialog = { type: "alert" | "confirm" | "prompt" | "beforeunload"; message: string; opening: number }
 export type KernelBrowserTab = { tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null; dialog?: KernelBrowserDialog }
 export type KernelBrowserResult = {
   generation?: number; state?: "ready" | "stopped"; tabs?: KernelBrowserTab[]; agent_activity?: KernelBrowserAgentActivity | null;
