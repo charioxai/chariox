@@ -1246,17 +1246,14 @@ impl KernelRuntimeOwnedState {
         attachment_id: &str,
         prompt_id: &str,
     ) -> Result<Option<crate::app::KernelQueuedPromptSteer>, DaemonError> {
-        let context =
-            self.queued_prompt_steer_context(session_id, agent_id, attachment_id, prompt_id, None)?;
-        if context.agent.remote_execution().is_some() {
-            return Ok(None);
-        }
+        let prepared =
+            self.prepare_local_queued_prompt_steer(session_id, agent_id, attachment_id, prompt_id)?;
         self.commit_queued_prompt_steer(
             session_id,
             agent_id,
             attachment_id,
             prompt_id,
-            context,
+            prepared.context.clone(),
             true,
         )
         .map(Some)
