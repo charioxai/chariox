@@ -169,6 +169,7 @@ response_policies! {
         KernelAccessGrantsListed,
         KernelAccessRevoked,
         RoomBrowserArtifact,
+        RoomTerminal,
         AppPublisherEnrollmentStatus,
         AppInstallOperationStatus,
         AppPackageUploadStatus,

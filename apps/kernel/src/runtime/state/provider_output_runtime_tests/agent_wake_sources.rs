@@ -681,6 +681,7 @@ async fn event_tools_arm_wait_and_cancel_through_the_runtime_mcp_entry() {
             "yield",
             "timer",
             "process",
+            "terminal",
             "cancel_wake",
             "wakes",
             "blocked"
@@ -982,4 +983,101 @@ async fn a_stalled_sweep_does_not_wake_a_live_wait_early() {
         .filter(|e| e.kind == "deadline_reached")
         .count();
     assert_eq!(early, 0, "no deadline has passed");
+}
+
+async fn runtime_token(f: &Fixture) -> String {
+    let app = f.app.lock().await;
+    app.providers
+        .get_run(&f.run)
+        .unwrap()
+        .runtime_mcp_auth_token()
+        .expect("runtime MCP auth")
+        .to_string()
+}
+
+fn open_terminal(f: &Fixture, command: &str) -> String {
+    f.runtime
+        .owned
+        .room_terminals
+        .open(crate::room_terminal::OpenRoomTerminal {
+            session_id: f.room.clone(),
+            working_directory: f.runtime.room_project_directory(&f.room).unwrap(),
+            cols: 100,
+            rows: 30,
+            title: None,
+            opened_by: crate::room_terminal::TerminalActor::Agent(f.agent.clone()),
+            command: Some(vec!["sh".into(), "-c".into(), command.into()]),
+        })
+        .unwrap()
+        .terminal_id
+}
+
+/// TERM-AGENT-WAIT notify half: a command that finishes while the agent
+/// waits on the event reaches it once, with the exit code and the screen.
+/// Delivering the wake turn is the ledger's and is covered by the driver tests above.
+#[tokio::test]
+async fn terminal_finish_reports_once_to_the_waiting_agent_with_exit_code_and_screen() {
+    let f = fixture("terminal-wake-finish", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = runtime_token(&f).await;
+    let terminal = open_terminal(&f, "sleep 1; echo SCREEN-MARK; exit 4");
+    let armed = call(
+        &f,
+        &token,
+        "chariox.events.terminal",
+        &task,
+        serde_json::json!({"label":"build","terminal_id":terminal,"until":["finished"]}),
+    )
+    .await
+    .unwrap()
+    .payload;
+    let wake_id = armed["wake_id"].as_str().unwrap().to_string();
+    assert_eq!(f.wake_state(&wake_id), "running");
+    f.wait_on(&task, armed["registration_id"].as_str().unwrap());
+
+    let events = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let events = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
+            if !events.is_empty() {
+                return events;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the finished terminal reports to the waiting agent");
+    assert_eq!(events.len(), 1, "reported once");
+    let answer = &events[0].payload["public_answer"];
+    assert_eq!(answer["exit_code"], 4, "{answer}");
+    assert!(
+        answer["screen_text"]
+            .as_str()
+            .unwrap()
+            .contains("SCREEN-MARK"),
+        "{answer}"
+    );
+    assert_eq!(f.wake_state(&wake_id), "exited");
+}
+
+#[tokio::test]
+async fn terminal_wake_refuses_a_terminal_that_is_not_running_here() {
+    let f = fixture("terminal-wake-unknown", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = runtime_token(&f).await;
+    let error = call(
+        &f,
+        &token,
+        "chariox.events.terminal",
+        &task,
+        serde_json::json!({"label":"x","terminal_id":"term-nope","until":["finished"]}),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("no running terminal"), "{error}");
+    assert!(f
+        .store()
+        .agent_wakes(Some(&f.room), Some(&f.agent))
+        .unwrap()
+        .iter()
+        .all(|w| w.kind != "terminal" || w.state != "running"));
 }

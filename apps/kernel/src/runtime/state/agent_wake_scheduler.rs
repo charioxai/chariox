@@ -379,7 +379,7 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    fn report_lost_wake(
+    pub(super) fn report_lost_wake(
         &self,
         wake: &AgentWake,
         now: u64,
