@@ -39,8 +39,10 @@ impl Fixture {
         })).unwrap();
     }
     fn artifact(&self, name: &str, prompt: &str) -> PathBuf {
+        self.artifact_in(self.home().join("workflow-code"), name, prompt)
+    }
+    fn artifact_in(&self, root: PathBuf, name: &str, prompt: &str) -> PathBuf {
         use crate::workflow_code::*;
-        let root = self.home().join("workflow-code");
         let definition:WorkflowCodeDefinition=serde_json::from_value(json!({
             "workflow":{"alias":name,"prompt":prompt},
             "nodes":[{"handle":"reviewer","agent":{"kind":"create","provider":"claude"},
@@ -110,6 +112,26 @@ fn skills_v2_owned_startup_retires_packages_artifacts_and_arms_the_live_writer()
     store
         .append_event("skills.v2.test", None, json!({"upgraded":true}))
         .unwrap();
+}
+
+#[test]
+fn skills_v2_owned_startup_retires_room_scoped_workflow_artifacts() {
+    let f = Fixture::new();
+    let config = f.config("owner");
+    f.old_package();
+    f.seed_old(&config);
+    let room = f.artifact_in(
+        f.home().join("workflow-code/rooms/room-1"),
+        "room-workflow",
+        "Use $review then explain $total",
+    );
+    DurableKernelStateStore::open_kernel_owned(&config).unwrap();
+    let stored: Value = serde_json::from_slice(&fs::read(&room).unwrap()).unwrap();
+    assert_eq!(
+        stored["definition"]["workflow"]["prompt"],
+        "Use  then explain $total"
+    );
+    assert!(!stored["source"].as_str().unwrap().contains("$review"));
 }
 
 #[test]

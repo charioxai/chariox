@@ -78,12 +78,25 @@ fn roots(
     let private_artifacts = private.join("workflow-code");
     let mut artifacts = Vec::new();
     if global_owner || private_artifacts != global_artifacts {
-        artifacts.push(private_artifacts);
+        artifacts.extend(with_room_roots(private_artifacts));
     }
     if global_owner {
-        artifacts.push(global_artifacts);
+        artifacts.extend(with_room_roots(global_artifacts));
     }
     Ok((legacy, artifacts))
+}
+/// Room-scoped kernels keep their workflow artifacts one directory deeper, in `rooms/<session>`.
+fn with_room_roots(root: PathBuf) -> Vec<PathBuf> {
+    let mut roots = vec![root.clone()];
+    if let Ok(rooms) = std::fs::read_dir(root.join("rooms")) {
+        roots.extend(
+            rooms
+                .filter_map(Result::ok)
+                .filter(|room| room.file_type().is_ok_and(|kind| kind.is_dir()))
+                .map(|room| room.path()),
+        );
+    }
+    roots
 }
 
 pub(super) fn run(
