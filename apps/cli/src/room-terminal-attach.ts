@@ -106,6 +106,8 @@ export async function attachRoomTerminal(options: {
   let redrawNeeded = false
   const size = () => ({ cols: output.columns || 80, rows: output.rows || 24 })
   const state: { end: TerminalAttachEnd | null } = { end: null }
+  // Set once the outer terminal is restored: a reply that arrives later writes nothing to it.
+  let over = false
   let wake: () => void = () => {}
   let interrupt: () => void = () => {}
   // Resolves when the attach ends, so a request that never answers cannot hold it.
@@ -128,6 +130,7 @@ export async function attachRoomTerminal(options: {
 
   async function resync(): Promise<number> {
     const { snapshot } = expectRoomTerminalResult(await send(roomTerminalSnapshotRequest(hostedTarget, terminalId)), "snapshot")
+    if (state.end || over) return snapshot.output_offset
     redrawNeeded = false
     draw(Buffer.concat([Buffer.from(CLEAR_SCREEN), Buffer.from(snapshot.screen_ansi_base64, "base64")]))
     return snapshot.output_offset
@@ -160,7 +163,6 @@ export async function attachRoomTerminal(options: {
   // into a program that may already have received it. After the attach is over, chunks that
   // have not been sent yet are dropped and a late reply writes nothing to the outer terminal.
   let sending: Promise<unknown> = Promise.resolve()
-  let over = false
   const sendKeys = (bytes: Buffer) => {
     sending = sending.then(async () => {
       if (over) return
