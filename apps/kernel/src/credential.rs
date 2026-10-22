@@ -164,7 +164,7 @@ pub fn load_user_credentials() -> Result<Vec<UserCredentialConfig>, DaemonError>
     CharioxCredentialRegistry::user()?.list()
 }
 
-fn chariox_home() -> Option<PathBuf> {
+pub(crate) fn chariox_home() -> Option<PathBuf> {
     if let Some(root) = std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)

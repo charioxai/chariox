@@ -153,6 +153,7 @@ pub(crate) mod user_config_policy;
 pub(crate) mod user_domain_access;
 pub(crate) mod waiting_room_activity;
 pub(crate) mod waiting_room_control;
+mod waiting_room_launch_directory;
 pub(crate) mod waiting_room_public_projection;
 pub mod workflow_actor;
 pub(crate) mod workflow_projection;
