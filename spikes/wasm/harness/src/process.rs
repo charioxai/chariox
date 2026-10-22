@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 const GENERATION: &str = "7";
 const INSTALLATION: &str = "installation_1";
 const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const TOOLS: [&str; 8] = ["echo", "counter", "fetch", "transform", "compute", "spin", "hog", "shared"];
+const TOOLS: [&str; 9] = ["echo", "counter", "fetch", "transform", "compute", "spin", "hog", "shared", "stream"];
 
 const ASYNC: [&str; 3] = ["wasm-rust-async", "wasm-qjs", "wasm-py"];
 

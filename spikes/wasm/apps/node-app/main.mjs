@@ -33,7 +33,14 @@ export default function register(chariox) {
       shared.cache.set(n, Buffer.from(response.bodyBase64, 'base64').length);
       return { n, sequence, connection: connection.id, cached: shared.cache.size };
     },
+    // Streamed body through the SDK's Fetch adapter (same broker stream ops).
+    async stream({ url }) {
+      const response = await chariox.http.fetch(url);
+      let bytes = 0, chunks = 0;
+      for await (const chunk of response.body) { bytes += chunk.length; chunks++; }
+      return { status: response.status, bytes, chunks, hash: 0 };
+    },
   };
   const shared = { counter: 0, cache: new Map(), connection: null };
-  for (const name of [...TOOLS, 'shared']) chariox.tools.register(name, handlers[name]);
+  for (const name of [...TOOLS, 'shared', 'stream']) chariox.tools.register(name, handlers[name]);
 }

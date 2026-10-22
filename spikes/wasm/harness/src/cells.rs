@@ -168,11 +168,21 @@ pub async fn cancel(variant: &Variant, origin: &str) -> Value {
     }
     let at = Instant::now();
     let next = worker.call("echo", json!({ "after": "cancel" }), LONG).await.is_ok();
+    let next_ms = ms(at);
+    let open_after = worker.broker.open_streams();
+    // A guest that ignores the cancel leaves its broker stream open until its
+    // own work ends (the slow origin answers after 5 s).
+    let mut late_ms = Value::Null;
+    while cancelled_at.elapsed() < Duration::from_secs(9) {
+        if worker.broker.open_streams() == 0 { late_ms = json!(ms(cancelled_at)); break; }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
     let report = json!({
         "variant": variant.name, "sandbox": variant.sandbox, "mode": "cancel",
         "othersOk": ok, "othersTotal": 8, "statsBeforeCancel": mid, "statsAfter": last,
-        "allReleasedMs": released_ms, "brokerStreamsOpen": worker.broker.open_streams(),
-        "nextCallOk": next, "nextCallMs": ms(at), "memory": worker.spawned.memory(),
+        "allReleasedMs": released_ms, "brokerStreamsOpen": open_after, "releasedAfterMs": late_ms,
+        "statsEnd": stats(&worker).await,
+        "nextCallOk": next, "nextCallMs": next_ms, "memory": worker.spawned.memory(),
     });
     worker.peer.close();
     worker.spawned.stop();
