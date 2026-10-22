@@ -942,7 +942,7 @@ async fn dispatch_on_behalf_of(
         )),
         Settled::OutcomeUnknown => RelayDispatchOutcome::RelayError(relay_error(
             "kernel_outcome_unknown",
-            "This request may or may not have run on this machine. Check the state (for example list the sessions) before asking again; it is not run a second time.",
+            "This request may or may not have run on that kernel. Check its state (for example list the sessions there) before asking again; it is not run a second time.",
             false,
         )),
         Settled::Conflict => RelayDispatchOutcome::RelayError(relay_error(

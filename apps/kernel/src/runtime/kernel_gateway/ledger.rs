@@ -84,6 +84,11 @@ impl GatewayLedger {
                     armed: true,
                 };
                 let result = execute.await;
+                // Fault injection for the crash-after-effect drill (EA2-09 e): debug builds only.
+                #[cfg(debug_assertions)]
+                if std::env::var_os("CHARIOX_TEST_CRASH_BEFORE_RECEIPT").is_some() {
+                    std::process::abort();
+                }
                 guard.armed = false;
                 let stored = match &result {
                     Ok(value) => json!({"ok": value}),
