@@ -7,3 +7,5 @@ publish = false
 [dependencies]
 tokio = { workspace = true }
 wasmtime = "50.0.0"
+wasmtime-wasi = "50.0.0"
+futures = "0.3.31"
