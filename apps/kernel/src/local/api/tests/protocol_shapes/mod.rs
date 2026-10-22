@@ -73,6 +73,7 @@ mod provider_vault_login;
 mod publication;
 mod queued_agent_messages;
 mod recall_terminal_metaagent;
+mod relay_issuer;
 mod released_provider_run;
 mod remote_jobs;
 mod resource_protection;

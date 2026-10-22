@@ -347,6 +347,8 @@ pub(crate) fn restricted_request(request: &LocalDaemonRequest) -> bool {
                 | LocalDaemonRequest::JoinKernelLink(_)
                 | LocalDaemonRequest::ForgetGatewayKernel(_)
                 | LocalDaemonRequest::RecordPairedClient(_)
+                | LocalDaemonRequest::ConfigureRelayIssuer(_)
+                | LocalDaemonRequest::IssueRelayClientToken(_)
                 | LocalDaemonRequest::ApproveRemoteMachine(_)
                 | LocalDaemonRequest::JoinSessionInvite(_)
                 | LocalDaemonRequest::ConfigureRelay(_)

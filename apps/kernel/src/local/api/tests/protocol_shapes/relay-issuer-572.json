@@ -1,0 +1,19 @@
+{
+  "local_protocol": 572,
+  "relay_peer_protocol": 180,
+  "allocation": "provisional 572/180: self-hosted relay issuer requests",
+  "requests": [
+    { "RelayIssuerStatus": null },
+    { "ConfigureRelayIssuer": { "step": "enable" } },
+    { "ConfigureRelayIssuer": { "step": "stage_rotation" } },
+    { "ConfigureRelayIssuer": { "step": "activate_rotation" } },
+    { "ConfigureRelayIssuer": { "step": "disable" } },
+    { "IssueRelayClientToken": { "client_id": "cli-1", "public_key_thumbprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "scope": "attach" } },
+    { "IssueRelayClientToken": { "client_id": "cli-1", "public_key_thumbprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "scope": "metadata", "lifetime_ms": 600000 } }
+  ],
+  "responses": [
+    { "RelayIssuer": { "issuer": null } },
+    { "RelayIssuer": { "issuer": { "issuer_id": "chariox-kernel:home", "realm_id": "default", "active_key": { "key_id": "0011223344556677", "public_key": "PUBLIC-A" }, "next_key": { "key_id": "8899aabbccddeeff", "public_key": "PUBLIC-B" }, "relay_issuer_keys": "chariox-kernel:home=PUBLIC-A,chariox-kernel:home=PUBLIC-B" } } },
+    { "RelayClientTokenIssued": { "token": { "relay_url": "wss://relay.example", "relay_token": "header.claims.signature", "target_daemon_id": "home", "token_id": "t1", "expires_at_ms": 1800000000000 } } }
+  ]
+}
