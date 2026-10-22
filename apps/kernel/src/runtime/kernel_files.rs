@@ -408,6 +408,38 @@ fn names_the_open_file(path: &Path, file: &std::fs::File) -> bool {
     }
 }
 
+/// Installs the staged file over `path`. The file being replaced stays under another name until
+/// the install is verified, so a staging name swapped at the last moment costs nothing: the
+/// foreign file is removed and the original put back.
+fn replace(file: &std::fs::File, partial: &Path, path: &Path) -> Result<(), DaemonError> {
+    let mut previous = path.as_os_str().to_owned();
+    previous.push(format!(
+        ".chariox-previous-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let previous = PathBuf::from(previous);
+    let kept = std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
+        && std::fs::hard_link(path, &previous).is_ok();
+    if let Err(error) = std::fs::rename(partial, path) {
+        if kept {
+            let _ = std::fs::remove_file(&previous);
+        }
+        return Err(io_failure(path, &error));
+    }
+    if names_the_open_file(path, file) {
+        if kept {
+            let _ = std::fs::remove_file(&previous);
+        }
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(path);
+    if kept {
+        let _ = std::fs::rename(&previous, path);
+    }
+    Err(staging_replaced(partial))
+}
+
 /// Verifies, sets the permissions of and installs the staged upload through the descriptor that
 /// received it: another user of a shared directory can swap the staging name at any moment, so
 /// no step trusts the name, and a swap that wins the race is removed again and reported.
@@ -437,7 +469,7 @@ fn publish(
             file.set_permissions(existing.permissions())
                 .map_err(|e| io_failure(partial, &e))?;
         }
-        std::fs::rename(partial, path).map_err(|e| io_failure(path, &e))?;
+        replace(file, partial, path)?;
     } else {
         // A hard link fails when something appeared at `path` meanwhile; a rename would replace it.
         std::fs::hard_link(partial, path).map_err(|error| {
@@ -453,12 +485,10 @@ fn publish(
                 io_failure(path, &error)
             }
         })?;
-    }
-    if !names_the_open_file(path, file) {
-        let _ = std::fs::remove_file(path);
-        return Err(staging_replaced(partial));
-    }
-    if !overwrite {
+        if !names_the_open_file(path, file) {
+            let _ = std::fs::remove_file(path);
+            return Err(staging_replaced(partial));
+        }
         let _ = std::fs::remove_file(partial);
     }
     Ok(sha256)
@@ -731,6 +761,48 @@ mod tests {
                 assert_eq!(std::fs::read(&target).unwrap(), b"old");
             }
         }
+    }
+
+    // Review (r12 f12 G1): a swap that wins the race between the name check and the rename must
+    // not cost the file being replaced.
+    #[test]
+    fn a_swap_that_wins_the_race_to_replace_puts_the_original_back() {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch();
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, b"private").unwrap();
+        let target = dir.join("upload.bin");
+        std::fs::write(&target, b"old").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let partial = partial_of(&target);
+        let mut file = open_staging(&partial, &target, 0).unwrap();
+        file.write_all(b"fresh").unwrap();
+        std::fs::remove_file(&partial).unwrap();
+        std::os::unix::fs::symlink(&victim, &partial).unwrap();
+        let error = replace(&file, &partial, &target).unwrap_err();
+        assert_eq!(code(error), "file_staging_untrusted");
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+        assert!(!std::fs::symlink_metadata(&target).unwrap().is_symlink());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"private");
+        let leftovers = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .contains(".chariox-previous")
+            })
+            .count();
+        assert_eq!(leftovers, 0);
+        // The unraced path installs the new bytes and leaves no backup behind.
+        let partial = partial_of(&target);
+        std::fs::remove_file(&partial).ok();
+        let mut file = open_staging(&partial, &target, 0).unwrap();
+        file.write_all(b"fresh").unwrap();
+        replace(&file, &partial, &target).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"fresh");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
     }
 
     #[test]
