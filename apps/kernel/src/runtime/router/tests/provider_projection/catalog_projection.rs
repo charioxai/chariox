@@ -234,6 +234,52 @@ fn mp08_mp10_conditional_catalog_snapshot_retains_unchanged_sections() {
     });
 }
 
+// OpenCode lists every models.dev provider (235 providers, 9,173 models on a
+// real kernel: 3.2 MB per waiting room open); clients only use connected ones.
+#[test]
+fn client_catalog_snapshot_carries_only_connected_providers() {
+    run_provider_projection_large_stack_test("connected-catalog-snapshot", || async {
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let scope = GetProviderCatalogRequest::default();
+        let key = crate::runtime::provider_catalog_control::provider_catalog_cache_key(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            &scope,
+        );
+        let provider = |id: &str| -> crate::provider::OpenCodeProviderInfo {
+            serde_json::from_value(serde_json::json!({"id": id, "name": id, "models": {"m": {"id": "m", "name": "m"}}})).unwrap()
+        };
+        app.provider_catalog_projection_store().update_scoped(
+            &key,
+            OpenCodeProviderCatalog {
+                all: vec![provider("codex"), provider("groq"), provider("opencode")],
+                default: [("codex", "m"), ("groq", "m"), ("opencode", "m")]
+                    .map(|(provider, model)| (provider.to_string(), model.to_string()))
+                    .into(),
+                connected: vec!["codex".to_string(), "opencode".to_string()],
+            },
+        );
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+        let request = snapshot_request(None);
+        let command = KernelCommand::from_local_request("catalog-connected", None, None, &request);
+
+        let response = router.dispatch(command, request).await.unwrap();
+
+        let value = serde_json::to_value(response).unwrap();
+        let catalog = &value["ClientCatalogSnapshot"]["snapshot"]["provider_catalog"];
+        let ids: Vec<_> = catalog["all"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|provider| provider["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["codex", "opencode"]);
+        assert_eq!(
+            catalog["default"],
+            serde_json::json!({"codex": "m", "opencode": "m"})
+        );
+    });
+}
+
 async fn slow_discovery_router(delay_ms: u64) -> (Arc<Mutex<DaemonApp>>, CommandRouter) {
     let mut config = DaemonConfig::for_tests();
     config.provider_catalog_read_delay_ms = delay_ms;

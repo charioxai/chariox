@@ -5,6 +5,7 @@ use crate::local::{
     ClientCatalogRevisions, ClientCatalogSnapshot, GetClientCatalogSnapshotRequest,
     GetProviderCatalogRequest, LocalDaemonResponse,
 };
+use crate::provider::OpenCodeProviderCatalog;
 use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -90,7 +91,10 @@ async fn load(
     // A scope still being discovered keeps the caller's copy; the change event
     // that ends discovery makes it ask again.
     let (catalog_revision, catalog) = match (catalog, known) {
-        (CatalogRead::Loaded(catalog), _) => (revision(&catalog)?, Some(catalog)),
+        (CatalogRead::Loaded(catalog), _) => {
+            let catalog = connected_providers_only(catalog);
+            (revision(&catalog)?, Some(catalog))
+        }
         (CatalogRead::Revalidating, Some(known)) => (known.provider_catalog.clone(), None),
         (CatalogRead::Revalidating, None) => {
             unreachable!("only a caller holding a catalog may be answered while revalidating")
@@ -108,6 +112,19 @@ async fn load(
         provider_commands: Some(commands),
         terminal_commands: Some(terminal),
     })
+}
+
+/// Clients pick models only from connected providers. OpenCode lists every
+/// models.dev provider, which made the snapshot megabytes (235 providers and
+/// 9,173 models: 3.2 MB per waiting room open over the relay).
+fn connected_providers_only(mut catalog: OpenCodeProviderCatalog) -> OpenCodeProviderCatalog {
+    catalog
+        .all
+        .retain(|provider| catalog.connected.contains(&provider.id));
+    catalog
+        .default
+        .retain(|provider, _| catalog.connected.contains(provider));
+    catalog
 }
 
 fn revision(value: &impl Serialize) -> Result<String, DaemonError> {
