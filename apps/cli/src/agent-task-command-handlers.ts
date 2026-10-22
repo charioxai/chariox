@@ -5,6 +5,8 @@ import type {
 } from "./cli-types.js"
 import type { ResolvedAgentReference } from "@chariox/kernel-client/session-agent-resolver"
 
+import { formatAgentLabel } from "./agent-label.js"
+
 type FooterTone = "info" | "error"
 
 export type AgentTaskCommandHandlerDeps = {
@@ -219,10 +221,10 @@ function findMetaagentTask(session: RuntimeSession, metaagentId: string): Metaag
 
 function formatMetaagentTaskNotice(agent: AgentInstance, task: MetaagentTask | null): string {
   if (!task) {
-    return `Meta mode task for ${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}: none`
+    return `Meta mode task for ${formatAgentLabel(agent)}: none`
   }
   const lines = [
-    `Meta mode task for ${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`,
+    `Meta mode task for ${formatAgentLabel(agent)}`,
     `status: ${task.status}`,
     `revision: ${task.revision}`,
     "",
