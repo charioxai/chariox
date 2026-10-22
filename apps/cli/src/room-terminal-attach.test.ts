@@ -122,6 +122,21 @@ test("a lost connection keeps the screen and resumes from the same offset withou
   await done
 })
 
+test("Ctrl-] detaches while the first requests keep failing and restores the outer terminal", async () => {
+  const kernel = new FakeTerminalKernel()
+  const io = new FakeTerminalIo()
+  kernel.failNext = 1_000_000
+  const done = attach(kernel, io)
+  await until(() => io.written.some(chunk => chunk.includes("reconnecting")), "the attach is still connecting")
+  io.type(Buffer.from([TERMINAL_DETACH_BYTE]))
+  const end = await Promise.race([done, new Promise<string>(resolve => setTimeout(() => resolve("stuck"), 3000))])
+  assert.deepEqual(end, { reason: "detached" }, "Ctrl-] ends an attach that never connected")
+  assert.deepEqual(io.rawModes, [true, false])
+  assert.ok(io.paused)
+  assert.ok(io.text.endsWith("\x1b[?1049l") || io.text.includes("\x1b[?1049l"), "the outer alternate screen is left")
+  assert.equal(kernel.typed.length, 0, "nothing typed before the screen is in sync reaches the terminal")
+})
+
 test("output the kernel no longer retains triggers a fresh redraw instead of a hole", async () => {
   const kernel = new FakeTerminalKernel()
   const io = new FakeTerminalIo()
