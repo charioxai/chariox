@@ -217,6 +217,12 @@ pub(super) const CORRECTION_PROMPT_PREFIX: &str = "task-correction-";
 pub(crate) fn is_correction_prompt_id(prompt_id: &str) -> bool {
     prompt_id.starts_with(CORRECTION_PROMPT_PREFIX)
 }
+const GOAL_CONTINUE_PROMPT_PREFIX: &str = "goal-continue-";
+/// The kernel's goal continuation instruction is internal protocol text; the
+/// agent's work in that turn stays visible, the instruction itself does not.
+pub(crate) fn is_goal_continuation_prompt_id(prompt_id: &str) -> bool {
+    prompt_id.starts_with(GOAL_CONTINUE_PROMPT_PREFIX)
+}
 pub(super) const OWNER_RESUME_PROMPT_PREFIX: &str = "task-resume-";
 /// The owner's Resume is a UI action; the instruction the kernel sends the
 /// agent for it is internal protocol text and never a user prompt row.
@@ -394,7 +400,7 @@ fn continue_work(t: &mut AgentTaskExecution, reason: &str) -> bool {
     g.continuation_sequence += 1;
     g.next_check_in_ms = None;
     t.pending_prompt_id = Some(format!(
-        "goal-continue-{}-{}",
+        "{GOAL_CONTINUE_PROMPT_PREFIX}{}-{}",
         t.task_id, g.continuation_sequence
     ));
     true

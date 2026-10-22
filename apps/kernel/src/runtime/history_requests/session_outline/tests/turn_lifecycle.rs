@@ -2475,7 +2475,11 @@ async fn completion_check_turn_is_not_projected_into_the_outline() {
 // answer to it joins the visible turn it continues.
 #[tokio::test]
 async fn correction_prompt_is_not_projected_into_the_outline() {
-    for internal_prompt in ["task-correction-prompt-1", "agent-event-agent-1-42"] {
+    for internal_prompt in [
+        "task-correction-prompt-1",
+        "agent-event-agent-1-42",
+        "goal-continue-prompt-1-1",
+    ] {
         let context = |prompt: &str| HistoryEventTurnContext {
             session_id: Some("session-1".into()),
             agent_id: Some("agent-1".into()),
