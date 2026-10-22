@@ -370,6 +370,11 @@ impl KernelRuntimeOwnedState {
                     )
                     .concat();
                 }
+                // A retried check can still carry the interrupted check's late reply ahead of
+                // its own; the newest reply is the retry's.
+                if ledger::completion::evaluation(&task).is_some_and(|check| check.retried) {
+                    result = super::agent_task_projection::newest_json_reply(&result);
+                }
                 // What the owner already saw of the work turn; the receipt must not repeat it.
                 let work_output = ledger::completion::evaluation(&task)
                     .map(|check| {

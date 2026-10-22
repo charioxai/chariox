@@ -150,6 +150,16 @@ pub(super) fn task_answer_history_run(run: Option<&str>) -> Option<&str> {
     })
 }
 
+/// The last JSON value of a reply that holds several back to back; text that
+/// is not a JSON stream is returned unchanged.
+pub(super) fn newest_json_reply(reply: &str) -> String {
+    serde_json::Deserializer::from_str(reply)
+        .into_iter::<serde_json::Value>()
+        .map_while(Result::ok)
+        .last()
+        .map_or_else(|| reply.to_string(), |value| value.to_string())
+}
+
 pub(super) fn answer_tail(text: &str, limit: usize) -> String {
     let count = text.chars().count();
     if count <= limit {
@@ -240,6 +250,22 @@ pub(super) fn task_public_outputs<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // MP-08 / MP-10 / MP-11 A12-S02: a retried check's boundary can hold the interrupted check's late reply.
+    #[test]
+    fn newest_json_reply_keeps_the_last_of_back_to_back_replies() {
+        let two = r#"{"status":"continue","reason":"late"}{"status":"waiting","reason":"own"}"#;
+        assert_eq!(
+            newest_json_reply(two),
+            r#"{"reason":"own","status":"waiting"}"#
+        );
+        let one = r#"{"status":"continue","reason":"only"}"#;
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&newest_json_reply(one)).unwrap(),
+            serde_json::from_str::<serde_json::Value>(one).unwrap()
+        );
+        assert_eq!(newest_json_reply("not json"), "not json");
+        assert_eq!(newest_json_reply(""), "");
+    }
     fn correction_task(statuses: &[&str]) -> AgentTaskExecution {
         let obligations = statuses
             .iter()

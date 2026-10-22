@@ -384,7 +384,7 @@ export type AgentGoal = {
   active_elapsed_ms: number; waiting_elapsed_ms: number; state_since_ms: number
   check_in_minutes: number; next_check_in_ms: number | null; paused: boolean
   continuation_sequence: number; check_count: number
-  evaluation: { origin: "completion_check"; prompt_id: string; work_prompt_id: string; work_provider_run_id: string | null; objective_revision: number; ledger_revision: number; started_at_ms: number; deadline_ms: number; paused_at_ms?: number; result: Record<string, unknown> | null } | null
+  evaluation: { origin: "completion_check"; prompt_id: string; work_prompt_id: string; work_provider_run_id: string | null; objective_revision: number; ledger_revision: number; started_at_ms: number; deadline_ms: number; paused_at_ms?: number; lease?: { worker_kernel_id: string; worker_machine_id: string; execution_lease_id: string; leased_agent_id: string }; retried?: boolean; result: Record<string, unknown> | null } | null
   final_answer: string | null; evidence: string[]
 }
 export type AgentTaskExecution = {
