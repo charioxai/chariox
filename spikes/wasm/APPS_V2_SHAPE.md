@@ -733,22 +733,22 @@ reference Apps follow inside the same window.
 
 ### Your decisions (each with my recommendation)
 
-| # | Decision | Recommendation |
-|---|---|---|
-| 1 | Broker cap: queue instead of `BUSY`, 64 in flight per App | yes |
-| 2 | Debugger gap at launch (logs + stack traces, no step debugger) | accept |
-| 3 | Dev copy = `channel: "dev"` of the same App ID, signed by a kernel-generated dev identity without a prompt | yes to both |
-| 4 | Agents in the dev Room see the dev copy automatically | yes |
-| 5 | Approvals: no prompt when capabilities are unchanged (README rule), for both channels | yes |
-| 6 | Headless Tab in the kernel browser hosts the view when nobody has the App open | yes, measure cost in A3 |
-| 7 | Effect classes `read / write / approval`; `write` runs unprompted | yes (UX-first) |
-| 8 | Action manifest inside the signed package | yes |
-| 9 | Benchmark target: SaaS + MCP (headline) and Computer Use | both |
-| 10 | C at launch with the state-machine SDK; C++ right after | yes |
-| 11 | Python as a preview after launch; Go wait | yes |
-| 12 | Wrapped binaries: Linux GUI + CLI first, macOS second, after A-track lands | yes |
-| 13 | Reference Apps: Excalidraw first, Univer sheets second; permissive-licence rule for first-party Apps | yes |
-| 14 | Resume order: R-track and A-track in parallel, D1 first week | yes |
+| # | Decision | Recommendation | Miguel 10-22 |
+|---|---|---|---|
+| 1 | Broker cap: queue instead of `BUSY`, 64 in flight per App | yes | Accepted as recommended. |
+| 2 | Debugger gap at launch (logs + stack traces, no step debugger) | accept | Accepted as recommended. |
+| 3 | Dev copy = `channel: "dev"` of the same App ID, signed by a kernel-generated dev identity without a prompt | yes to both | Accepted. No prompt; reduced security in the dev environment accepted. |
+| 4 | Agents in the dev Room see the dev copy automatically | yes | Accepted as recommended. |
+| 5 | Approvals: no prompt when capabilities are unchanged (README rule), for both channels | yes | Follow the docs: no prompt when capabilities are unchanged. |
+| 6 | Headless Tab in the kernel browser hosts the view when nobody has the App open | yes, measure cost in A3 | Accepted as recommended. |
+| 7 | Effect classes `read / write / approval`; `write` runs unprompted | yes (UX-first) | Accepted as recommended. |
+| 8 | Action manifest inside the signed package | yes | Accepted as recommended. |
+| 9 | Benchmark target: SaaS + MCP (headline) and Computer Use | both | Accepted as recommended. |
+| 10 | C at launch with the state-machine SDK; C++ right after | yes | C at launch with the state-machine SDK; C++ right after. |
+| 11 | Python as a preview after launch; Go wait | yes | Accepted as recommended. |
+| 12 | Wrapped binaries: Linux GUI + CLI first, macOS second, after A-track lands | yes | Accepted as recommended. |
+| 13 | Reference Apps: Excalidraw first, Univer sheets second; permissive-licence rule for first-party Apps | yes | One or two example Apps. Keep the permissive rule. Overleaf-like LaTeX wanted if feasible; spike in `tex/TEX_APP.md`. Excalidraw and Univer remain candidates. |
+| 14 | Resume order: R-track and A-track in parallel, D1 first week | yes | Accepted as recommended. |
 
 What is **not** asked of you: the detailed WIT, the SDK function names,
 the queue sizes and the sandbox profiles are engineering choices inside
