@@ -526,7 +526,7 @@ impl SkillCatalogService {
                 pinned_revision,
             } => {
                 if pinned_revision.is_some() {
-                    return Err(failure("repository revisions require resolved repository import; a downloaded SKILL.md cannot attest a revision"));
+                    return Err(failure("a downloaded SKILL.md cannot attest a revision; import the whole repository instead (Skills > Import a public repository, or /skills repo <url>)"));
                 }
                 use std::io::Read;
                 let parsed = url::Url::parse(url).map_err(|_| failure("invalid skill URL"))?;

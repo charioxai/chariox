@@ -586,7 +586,6 @@ async fn worker_leased_turn(
 // reach the home through the lease even though the worker's run is a leased run.
 #[tokio::test]
 async fn worker_forwards_opencode_native_tool_receipt_for_its_leased_run() {
-    use crate::provider::skill_delivery::SkillPromptBridge;
     let (runtime, _session_id, _agent_id, _prompt_id, run) =
         worker_leased_turn(crate::DaemonConfig::for_tests(), "opencode").await;
     let batch = crate::provider::ProviderPromptSignalBatch {
@@ -1015,7 +1014,6 @@ async fn second_named_kernel_leased_turn_skips_inventory(text: &str, user_skill_
 // authenticated home's instructions: its delivery receipt still has to reach the home.
 #[tokio::test]
 async fn second_named_worker_forwards_prompt_delivery_receipts_to_the_home() {
-    use crate::provider::skill_delivery::SkillPromptBridge;
     let root = std::env::temp_dir().join(format!("skillsk-worker-{:032x}", rand::random::<u128>()));
     std::fs::create_dir(&root).unwrap();
     let config = |name: &str| {
