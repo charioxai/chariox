@@ -88,6 +88,7 @@ impl WakeDrivers {
 }
 
 /// The only way a driver wakes anyone.
+#[derive(Clone)]
 pub(crate) struct WakeOccurrence {
     pub wake_id: String,
     /// Unique per wake; a replay of the same id is one admission.
@@ -105,6 +106,9 @@ pub(crate) struct WakeOccurrence {
 pub(crate) struct WakeSink {
     state: KernelRuntimeState,
     kind: &'static str,
+    /// Occurrences to refuse, as a writer that rejects commits would.
+    #[cfg(test)]
+    reject_next: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl KernelRuntimeState {
@@ -114,6 +118,8 @@ impl KernelRuntimeState {
         WakeSink {
             state: self.clone(),
             kind,
+            #[cfg(test)]
+            reject_next: Arc::default(),
         }
     }
     pub(crate) fn register_wake_driver(&self, driver: Arc<dyn WakeDriver>) {
@@ -151,7 +157,47 @@ impl WakeSink {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn reject_next_occurrences(&self, count: u32) {
+        self.reject_next
+            .store(count, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether the wake still waits for an occurrence this kernel can commit:
+    /// it is not settled, and the writer takes writes (a fenced writer needs a
+    /// restart, which settles every wake it cannot recover).
+    pub(crate) fn awaits_occurrence(&self, wake_id: &str) -> bool {
+        match self.state.owned.durable_state_store.agent_wake(wake_id) {
+            Ok(Some(wake)) => {
+                wake.kind == self.kind
+                    && matches!(wake.state.as_str(), "starting" | "running")
+                    && self
+                        .state
+                        .owned
+                        .durable_state_store
+                        .require_writer_healthy()
+                        .is_ok()
+            }
+            Ok(None) => false,
+            Err(_) => true,
+        }
+    }
+
     pub(crate) fn occurred(&self, occurrence: WakeOccurrence) -> Result<(), DaemonError> {
+        #[cfg(test)]
+        if self
+            .reject_next
+            .fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |left| left.checked_sub(1),
+            )
+            .is_ok()
+        {
+            return Err(crate::durable_state::agent_lifecycle::error(
+                "durable writer rejected the occurrence",
+            ));
+        }
         let wake = self.own_wake(&occurrence.wake_id)?;
         let Outcome::Wakes(changed) =
             self.state

@@ -1059,6 +1059,48 @@ async fn terminal_finish_reports_once_to_the_waiting_agent_with_exit_code_and_sc
     assert_eq!(f.wake_state(&wake_id), "exited");
 }
 
+/// A fired watch is already removed from the terminal, so a rejected ledger
+/// write must not discard the occurrence: it is retried until it commits.
+#[tokio::test]
+async fn a_rejected_terminal_occurrence_is_retried_until_the_ledger_commits() {
+    let f = fixture("terminal-wake-retry", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = runtime_token(&f).await;
+    f.runtime
+        .terminal_wake_driver
+        .as_ref()
+        .expect("the runtime registers the terminal wake driver")
+        .sink()
+        .reject_next_occurrences(2);
+    let terminal = open_terminal(&f, "sleep 1; echo RETRY-MARK; exit 0");
+    let armed = call(
+        &f,
+        &token,
+        "chariox.events.terminal",
+        &task,
+        serde_json::json!({"label":"build","terminal_id":terminal,"until":["finished"]}),
+    )
+    .await
+    .unwrap()
+    .payload;
+    let wake_id = armed["wake_id"].as_str().unwrap().to_string();
+    f.wait_on(&task, armed["registration_id"].as_str().unwrap());
+
+    let events = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let events = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
+            if !events.is_empty() {
+                return events;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the rejected occurrence is delivered once the writer accepts it again");
+    assert_eq!(events.len(), 1, "exactly one occurrence");
+    assert_eq!(f.wake_state(&wake_id), "exited");
+}
+
 #[tokio::test]
 async fn terminal_wake_refuses_a_terminal_that_is_not_running_here() {
     let f = fixture("terminal-wake-unknown", true).await;

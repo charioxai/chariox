@@ -17,6 +17,7 @@ use crate::room_terminal::{
 pub(super) const KIND: &str = "terminal";
 /// The end of the screen an agent is woken with.
 const SCREEN_BYTES: usize = 16 * 1024;
+const COMMIT_RETRY_AFTER: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// What a terminal wake watches, kept in the wake's `detail`.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -24,6 +25,10 @@ pub(super) struct TerminalWakeDetail {
     pub terminal_id: String,
     pub until: Vec<RoomTerminalWatch>,
     pub after_offset: Option<u64>,
+    /// How much output the worker's terminal had when the wake was armed:
+    /// supervising waits never replay below it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub armed_at_offset: Option<u64>,
     /// The Room agent whose leased machine runs the terminal; `None` is this
     /// kernel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -38,6 +43,11 @@ pub(super) struct TerminalWakeDriver {
 }
 
 impl TerminalWakeDriver {
+    #[cfg(test)]
+    pub(super) fn sink(&self) -> &WakeSink {
+        &self.sink
+    }
+
     fn detail(wake: &AgentWake) -> Result<TerminalWakeDetail, DaemonError> {
         serde_json::from_value(wake.detail.clone())
             .map_err(|_| ledger::error("terminal wake detail is unreadable"))
@@ -140,11 +150,35 @@ fn report(sink: &WakeSink, event: RoomTerminalEvent) {
         summary: Some(summary),
         end: Some(WakeEnd::Succeeded),
     };
-    if let Err(error) = sink.occurred(occurrence) {
+    if let Err(error) = sink.occurred(occurrence.clone()) {
         crate::logging::error_with_fields(
             "room_terminal.event",
-            "a terminal event could not wake its agent",
+            "a terminal event could not wake its agent yet; retrying",
             serde_json::json!({ "terminal_id": event.terminal_id, "error": error.to_string() }),
+        );
+        retry_until_committed(sink.clone(), occurrence);
+    }
+}
+
+/// The fired watch is gone from the terminal, so this occurrence is the only
+/// copy of the completion: it is offered again, under the same occurrence id,
+/// until the ledger commits it or the wake no longer awaits it.
+fn retry_until_committed(sink: WakeSink, occurrence: WakeOccurrence) {
+    let spawned = std::thread::Builder::new()
+        .name("terminal-wake-retry".into())
+        .spawn(move || {
+            while sink.awaits_occurrence(&occurrence.wake_id) {
+                std::thread::sleep(COMMIT_RETRY_AFTER);
+                if sink.occurred(occurrence.clone()).is_ok() {
+                    return;
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        crate::logging::error_with_fields(
+            "room_terminal.event",
+            "a terminal event could not be retried",
+            serde_json::json!({ "error": error.to_string() }),
         );
     }
 }
@@ -156,7 +190,14 @@ impl TerminalWakeDriver {
         let state = self.state.clone();
         let sink = self.sink.clone();
         self.workers.spawn(wake.id.clone(), async move {
-            let settled = worker::supervise(detail.after_offset, |offset| {
+            let overlap = worker::Overlap::for_texts(
+                detail.after_offset.or(detail.armed_at_offset).unwrap_or(0),
+                detail.until.iter().filter_map(|watch| match watch {
+                    RoomTerminalWatch::OutputContains { text } => Some(text.as_str()),
+                    _ => None,
+                }),
+            );
+            let settled = worker::supervise(detail.after_offset, overlap, |offset| {
                 state.wait_on_worker_terminal(&wake, &detail, offset)
             })
             .await;
@@ -188,13 +229,14 @@ impl TerminalWakeDriver {
 }
 
 impl KernelRuntimeState {
-    /// Refuses at once, like a local arm, a terminal the worker does not run.
+    /// Refuses at once, like a local arm, a terminal the worker does not run;
+    /// otherwise returns how much output it has so far.
     async fn ensure_running_on_worker(
         &self,
         task: &AgentTaskExecution,
         host: &str,
         terminal_id: &str,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<u64, DaemonError> {
         let listed = self
             .route_room_terminal(
                 &task.room_id,
@@ -205,15 +247,20 @@ impl KernelRuntimeState {
             )
             .await
             .map_err(|error| ledger::error(error.to_string()))?;
-        let running = matches!(listed, RoomTerminalResult::Listed { terminals }
-            if terminals.iter().any(|t| t.terminal_id == terminal_id && t.status == RoomTerminalStatus::Running));
-        if running {
-            Ok(())
-        } else {
-            Err(ledger::error(
-                "no running terminal with that id on the agent's worker machine; list the terminals to find its id and host_agent",
-            ))
-        }
+        let RoomTerminalResult::Listed { terminals } = listed else {
+            return Err(ledger::error(
+                "the worker answered a terminal list with something else",
+            ));
+        };
+        terminals
+            .iter()
+            .find(|t| t.terminal_id == terminal_id && t.status == RoomTerminalStatus::Running)
+            .map(|t| t.output_offset)
+            .ok_or_else(|| {
+                ledger::error(
+                    "no running terminal with that id on the agent's worker machine; list the terminals to find its id and host_agent",
+                )
+            })
     }
 
     /// One capped wait on the worker that runs the terminal.
@@ -324,12 +371,14 @@ impl KernelRuntimeState {
         &self,
         task: &AgentTaskExecution,
         mut wake: AgentWake,
-        detail: TerminalWakeDetail,
+        mut detail: TerminalWakeDetail,
     ) -> Result<serde_json::Value, DaemonError> {
         self.ensure_room_agent(&task.room_id, &task.agent_id)?;
         if let Some(host) = &detail.host_agent {
-            self.ensure_running_on_worker(task, host, &detail.terminal_id)
-                .await?;
+            detail.armed_at_offset = Some(
+                self.ensure_running_on_worker(task, host, &detail.terminal_id)
+                    .await?,
+            );
         }
         wake.state = "starting".into();
         wake.detail = serde_json::to_value(&detail)
