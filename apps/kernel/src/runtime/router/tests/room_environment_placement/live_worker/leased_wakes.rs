@@ -1693,6 +1693,15 @@ fn mp10_a10_leased_process_settles_from_the_workers_receipt_after_it_lost_the_le
 // (an ordinary worker restart), the home still gets the worker's stored outcome
 // instead of waiting out the error bound or declaring the process lost.
 async fn leased_process_settles_from_the_workers_receipt_after_it_lost_the_lease() {
+    leased_process_after_lease_removal(false).await;
+}
+
+#[test]
+fn mp10_a10_leased_process_cancels_after_same_worker_lease_replacement() {
+    run_test(|| leased_process_after_lease_removal(true));
+}
+
+async fn leased_process_after_lease_removal(cancel: bool) {
     let _tools = with_room_tools();
     let mut fixture = LiveWorker::start().await;
     let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
@@ -1722,7 +1731,7 @@ async fn leased_process_settles_from_the_workers_receipt_after_it_lost_the_lease
         .dispatch_authenticated_runtime_tool_call(
             &token,
             "chariox.events.process",
-            json!({"task_id":task.task_id,"origin_prompt_id":task.prompt_id,"argv":["/bin/sleep","4"],"label":"A12-S02 R lost lease"}),
+            json!({"task_id":task.task_id,"origin_prompt_id":task.prompt_id,"argv":["/bin/sleep", if cancel {"900"} else {"4"}],"label":"A12-S02 R lost lease"}),
         )
         .await
         .expect("leased process is admitted");
@@ -1737,21 +1746,112 @@ async fn leased_process_settles_from_the_workers_receipt_after_it_lost_the_lease
             .destroy_execution_lease(&remote.execution_lease_id)
             .unwrap();
     }
-    let settled = eventually(
-        "the home settles the wake from the worker's receipt",
-        || {
-            store
+    if cancel {
+        // MP-08 / MP-10 / MP-11: replace the lease without restarting the worker
+        // or its supervised launch, then cancel through the home wake ledger.
+        let target = || ClientTarget {
+            daemon_id: Some(AGENT_WORKER.into()),
+            daemon_alias: None,
+        };
+        let RelayPeerResponse::ExecutionLeaseCreated { lease, .. } =
+            send_peer_request_via_temporary_connection(
+                &fixture.home_state.config,
+                target(),
+                RelayPeerRequest::CreateExecutionLease {
+                    home_kernel_id: fixture.home_state.config.daemon_id.clone(),
+                    home_session_id: room.clone(),
+                    home_agent_id: agent.clone(),
+                    home_agent_metaagent: false,
+                    owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("replacement lease is admitted");
+        };
+        let RelayPeerResponse::LeasedAgentSpawned { leased_agent } =
+            send_peer_request_via_temporary_connection(
+                &fixture.home_state.config,
+                target(),
+                RelayPeerRequest::SpawnLeasedAgent {
+                    lease_id: lease.id.clone(),
+                    provider: "managed-dev-stub".into(),
+                    account_profile: "default".into(),
+                    model: Some("controlled-cancel-idle".into()),
+                    effort: None,
+                    execution_mode: None,
+                    permission_level: None,
+                    workspace_live_sync_mode: None,
+                    worktree_id: None,
+                    worktree_placement: None,
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("replacement leased agent is admitted");
+        };
+        let mut replacement = remote.clone();
+        replacement.execution_lease_id = lease.id;
+        replacement.leased_agent_id = leased_agent.id;
+        replacement.active_worker_provider_run_id = None;
+        fixture
+            .home
+            .app
+            .lock()
+            .await
+            .agents()
+            .bind_remote_execution(&agent, replacement)
+            .unwrap();
+        let receipt = worker
+            .router
+            .app
+            .lock()
+            .await
+            .durable_state_store()
+            .leased_process_receipt(&id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            receipt.wake.state, "running",
+            "old launch is still live on the same worker"
+        );
+        store
+            .agent_lifecycle(Operation::CancelWake {
+                id: id.clone(),
+                task: task.task_id.clone(),
+                prompt: Some(task.prompt_id.clone()),
+                pending: true,
+            })
+            .unwrap();
+    }
+    let settled = timeout(Duration::from_secs(20), async {
+        loop {
+            if let Some(wake) = store
                 .agent_wakes(Some(&room), Some(&agent))
                 .unwrap()
                 .into_iter()
-                .find(|w| w.id == id && matches!(w.state.as_str(), "exited" | "lost"))
-        },
-    )
+                .find(|w| w.id == id && matches!(w.state.as_str(), "exited" | "lost" | "cancelled"))
+            {
+                break wake;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
     .await;
+    // Always stop the exact launch, including on the red baseline.
+    worker.router.shutdown_cleanup().await.unwrap();
     worker.stop().await;
     fixture.stop().await;
-    assert_eq!(settled.state, "exited");
-    assert_eq!(settled.exit_code, Some(0));
+    let settled =
+        settled.expect("home cancellation must settle the original launch within 20 seconds");
+    if cancel {
+        assert_eq!(settled.state, "cancelled");
+    } else {
+        assert_eq!(settled.state, "exited");
+        assert_eq!(settled.exit_code, Some(0));
+    }
 }
 
 #[test]

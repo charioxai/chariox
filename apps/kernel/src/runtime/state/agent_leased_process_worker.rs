@@ -107,16 +107,16 @@ impl KernelRuntimeState {
                 .await;
             match target {
                 Ok(_) => {}
-                // After a worker restart the home asks for the receipt of the launch it
-                // made under the lease the worker no longer holds. The caller was admitted
-                // for that leased agent and the receipt matches its exact binding, so the
-                // stored outcome answers a Query; it never lets Start or Cancel act.
+                // The authenticated home owns this exact stored binding. Lease loss
+                // does not revoke its ability to stop that launch, but cannot authorize Start.
                 Err(
                     DaemonError::LeasedAgentNotFound { .. }
                     | DaemonError::ExecutionLeaseNotFound { .. },
-                ) if matches!(action, LeasedWatchedProcessAction::Query { .. }) => {
-                    return Ok(Some(stored));
-                }
+                ) if matches!(
+                    action,
+                    LeasedWatchedProcessAction::Query { .. }
+                        | LeasedWatchedProcessAction::Cancel { .. }
+                ) => {}
                 Err(error) => return Err(error),
             }
             if matches!(action, LeasedWatchedProcessAction::Cancel { .. })

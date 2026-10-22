@@ -83,18 +83,13 @@ impl KernelRuntimeState {
                 "watched process execution lease was replaced",
             ));
         }
-        // A returned worker may answer for its old binding, never launch or cancel under it.
-        let action = match (relation, action) {
-            (LeaseRelation::ReplacedSameWorker, Action::Cancel { wake_id, binding }) => {
-                Action::Query { wake_id, binding }
-            }
-            (LeaseRelation::ReplacedSameWorker, Action::Start { .. }) => {
-                return Err(ledger::error(
-                    "watched process execution lease was replaced",
-                ));
-            }
-            (_, action) => action,
-        };
+        // The same authenticated worker retains the exact old launch receipt.
+        // Queries and cancellation may reconcile it; Start still needs a current lease.
+        if relation == LeaseRelation::ReplacedSameWorker && matches!(action, Action::Start { .. }) {
+            return Err(ledger::error(
+                "watched process execution lease was replaced",
+            ));
+        }
         let mut config = self.config_snapshot().await;
         if let (Some(url), Some(token)) = (remote.relay_url.clone(), remote.relay_token.clone()) {
             config.apply_remote_relay_override(url, token);
