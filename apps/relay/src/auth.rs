@@ -13,8 +13,9 @@ use tokio::sync::watch;
 mod kernel_issuer;
 
 pub use kernel_issuer::{
-    encode_kernel_issued_client_token, encode_kernel_issuer_public_key, kernel_issuer_key_id,
-    KernelIssuedClientClaims, KernelIssuerKeys, SelfHostedVerifier, KERNEL_ISSUER_KEYS_ENV,
+    encode_kernel_issued_client_token, encode_kernel_issuer_public_key, kernel_issuer_id,
+    kernel_issuer_key_id, KernelIssuedClientClaims, KernelIssuerKeys, SelfHostedVerifier,
+    KERNEL_ISSUER_KEYS_ENV,
 };
 
 pub type RelayRealmId = String;

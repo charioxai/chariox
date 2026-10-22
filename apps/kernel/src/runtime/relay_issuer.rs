@@ -7,8 +7,8 @@ use std::sync::Mutex;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use chariox_relay::auth::{
-    encode_kernel_issued_client_token, encode_kernel_issuer_public_key, kernel_issuer_key_id,
-    KernelIssuedClientClaims, RelayAction, DEFAULT_RELAY_REALM_ID,
+    encode_kernel_issued_client_token, encode_kernel_issuer_public_key, kernel_issuer_id,
+    kernel_issuer_key_id, KernelIssuedClientClaims, RelayAction, DEFAULT_RELAY_REALM_ID,
 };
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
@@ -305,7 +305,7 @@ fn key_record(seed: &str) -> Result<RelayIssuerKeyRecord, DaemonError> {
 }
 
 fn issuer_id(config: &DaemonConfig) -> String {
-    format!("chariox-kernel:{}", config.daemon_id)
+    kernel_issuer_id(&config.daemon_id)
 }
 
 fn new_seed() -> String {

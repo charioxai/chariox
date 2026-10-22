@@ -22,6 +22,9 @@ pub const KERNEL_ISSUER_KEYS_ENV: &str = "CHARIOX_RELAY_KERNEL_ISSUER_KEYS";
 
 const KERNEL_TOKEN_ALG: &str = "EdDSA";
 
+/// A kernel issuer is named after the one kernel it may grant access to.
+pub const KERNEL_ISSUER_PREFIX: &str = "chariox-kernel:";
+
 /// Stable short id of an issuer public key, carried as the token `kid`.
 pub fn kernel_issuer_key_id(public_key: &VerifyingKey) -> String {
     Sha256::digest(public_key.as_bytes())
@@ -53,9 +56,12 @@ impl KernelIssuerKeys {
                 format!("{KERNEL_ISSUER_KEYS_ENV} entries must be <issuer>=<public key>")
             })?;
             let issuer = issuer.trim();
-            if issuer.is_empty() {
+            if issuer
+                .strip_prefix(KERNEL_ISSUER_PREFIX)
+                .is_none_or(|daemon_id| daemon_id.trim().is_empty())
+            {
                 return Err(format!(
-                    "{KERNEL_ISSUER_KEYS_ENV} has an entry without an issuer"
+                    "{KERNEL_ISSUER_KEYS_ENV} issuers must be `{KERNEL_ISSUER_PREFIX}<daemon id>`; copy the line the kernel prints"
                 ));
             }
             let bytes: [u8; 32] = URL_SAFE_NO_PAD
@@ -124,6 +130,14 @@ impl SelfHostedVerifier {
         if claims.subject_kind != RelaySubjectKind::Client {
             return Err(RelayAuthError::ActionNotAllowed);
         }
+        // An issuer grants access to its own kernel only, even when one relay
+        // pins several kernels.
+        let own_kernel = claims.issuer.strip_prefix(KERNEL_ISSUER_PREFIX);
+        if own_kernel.is_none_or(|daemon_id| {
+            claims.allowed_targets.as_deref() != Some(&[daemon_id.to_string()][..])
+        }) {
+            return Err(RelayAuthError::TargetNotAllowed);
+        }
         validate_claims(
             &claims,
             request.action,
@@ -154,6 +168,10 @@ pub struct KernelIssuedClientClaims {
     pub expires_at_ms: u64,
     pub token_id: String,
     pub public_key_thumbprint: Option<String>,
+}
+
+pub fn kernel_issuer_id(daemon_id: &str) -> String {
+    format!("{KERNEL_ISSUER_PREFIX}{daemon_id}")
 }
 
 pub fn encode_kernel_issued_client_token(
