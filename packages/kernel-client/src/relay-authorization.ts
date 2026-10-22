@@ -111,20 +111,22 @@ export class RelayAuthorizationRenewal {
   }
 }
 
+export type RelayHandshakeFrame = RelayConnectedFrame | RelayCloseFrame
+
 // client_connect is already repeatable for the same bound target. Both lanes
 // acknowledge the new grant without replacing their sockets or subscriptions.
-export function reauthenticateRelaySocket(socket: WebSocket, token: string, target: RelayTarget, daemonKey: string, signal: AbortSignal): Promise<void> {
+// The relay frames its acknowledgement as chunks-v2 like every reply, so the
+// lane's own receiver decodes it and hands it to `frames` subscribers.
+export function reauthenticateRelaySocket(socket: WebSocket, token: string, target: RelayTarget, daemonKey: string, signal: AbortSignal, frames: (listener: (frame: RelayHandshakeFrame) => void) => () => void): Promise<void> {
   return new Promise((resolve, reject) => {
     const finish = (error?: Error) => {
       clearTimeout(timer)
-      socket.off("message", acknowledge)
+      unsubscribe()
       socket.off("close", closed)
       signal.removeEventListener("abort", cancelled)
       error ? reject(error) : resolve()
     }
-    const acknowledge = (data: WebSocket.RawData) => {
-      let frame: RelayConnectedFrame | RelayCloseFrame
-      try { frame = JSON.parse(String(data)) } catch { return }
+    const acknowledge = (frame: RelayHandshakeFrame) => {
       if (frame.kind === "close") finish(relayCloseError(frame.reason))
       if (frame.kind === "client_connected") {
         if ((frame.target?.daemon_id ?? null) !== (target.daemon_id ?? null) || (frame.target?.daemon_alias ?? null) !== (target.daemon_alias ?? null) || frame.daemon_public_key !== daemonKey) finish(new LocalIpcError("renew relay authorization", "Relay authorization renewal returned an invalid target or kernel key", "authorization_denied"))
@@ -134,7 +136,7 @@ export function reauthenticateRelaySocket(socket: WebSocket, token: string, targ
     const closed = () => finish(new LocalIpcError("renew relay authorization", "Relay renewal connection closed", "connection_closed", true))
     const cancelled = () => finish(new LocalIpcError("renew relay authorization", "Renewal was cancelled", "client_closed"))
     const timer = setTimeout(() => finish(new LocalIpcError("renew relay authorization", "Relay renewal acknowledgement timed out", "connection_closed", true)), 10_000)
-    socket.on("message", acknowledge)
+    const unsubscribe = frames(acknowledge)
     socket.once("close", closed)
     signal.addEventListener("abort", cancelled, {once:true})
     if (signal.aborted) { cancelled(); return }
