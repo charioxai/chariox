@@ -23,6 +23,17 @@ export default function register(chariox) {
     compute: ({ n }) => compute(n),
     spin: () => spin(),
     hog: ({ mb, kind }) => hog(mb, kind),
+    // Shared by every concurrent caller, as in the async wasm Apps.
+    async shared({ url }) {
+      const n = ++shared.counter;
+      shared.connection ??= { id: `conn-${n}`, requests: 0 };
+      const connection = shared.connection;
+      const sequence = ++connection.requests;
+      const response = await chariox.http.request({ url, method: 'GET', headers: [['accept', 'text/plain']] });
+      shared.cache.set(n, Buffer.from(response.bodyBase64, 'base64').length);
+      return { n, sequence, connection: connection.id, cached: shared.cache.size };
+    },
   };
-  for (const name of TOOLS) chariox.tools.register(name, handlers[name]);
+  const shared = { counter: 0, cache: new Map(), connection: null };
+  for (const name of [...TOOLS, 'shared']) chariox.tools.register(name, handlers[name]);
 }

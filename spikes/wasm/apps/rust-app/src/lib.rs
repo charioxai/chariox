@@ -1,5 +1,5 @@
 //! Spike Rust App: the same six tools as the JS and Node Apps.
-wit_bindgen::generate!({ world: "app", path: "../../wit" });
+wit_bindgen::generate!({ world: "app", path: "../../wit-sync" });
 
 use chariox::app::{http, log, registry, state};
 use chariox::app::types::{AppError, InvocationContext};

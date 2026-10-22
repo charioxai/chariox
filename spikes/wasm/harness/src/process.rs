@@ -13,7 +13,9 @@ use std::time::{Duration, Instant};
 const GENERATION: &str = "7";
 const INSTALLATION: &str = "installation_1";
 const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const TOOLS: [&str; 7] = ["echo", "counter", "fetch", "transform", "compute", "spin", "hog"];
+const TOOLS: [&str; 8] = ["echo", "counter", "fetch", "transform", "compute", "spin", "hog", "shared"];
+
+const ASYNC: [&str; 3] = ["wasm-rust-async", "wasm-qjs", "wasm-py"];
 
 pub struct Variant {
     pub name: String,
@@ -146,9 +148,13 @@ pub fn spawn(variant: &Variant) -> Spawned {
     let (program, mut arguments, binds) = if variant.wasm {
         environment.push(("CHARIOX_WASM_ENTRY".into(), std::env::var("SPIKE_WASM_ENTRY").unwrap_or("app.cwasm".into())));
         environment.push(("CHARIOX_WASM_MEMORY_MB".into(), memory_mb()));
-        environment.push(("CHARIOX_WASM_CALL_MS".into(), "1000".into()));
+        // r1 sync worker: 1 s per-call budget. Async worker: 1 s CPU slice,
+        // calls themselves may wait up to the kernel deadline.
+        environment.push(("CHARIOX_WASM_CALL_MS".into(), if ASYNC.contains(&variant.name.as_str()) { "30000" } else { "1000" }.into()));
         environment.push(("CHARIOX_WASM_POOL".into(), std::env::var("SPIKE_WASM_POOL").unwrap_or("1".into())));
-        let worker = env("SPIKE_WORKER");
+        environment.push(("CHARIOX_WASM_SLICE_MS".into(), "1000".into()));
+        // Async-world Apps run on the async worker.
+        let worker = if ASYNC.contains(&variant.name.as_str()) { env("SPIKE_WORKER_ASYNC") } else { env("SPIKE_WORKER") };
         let dir = std::path::Path::new(&worker).parent().unwrap().to_string_lossy().to_string();
         (worker, Vec::new(), vec![dir])
     } else {

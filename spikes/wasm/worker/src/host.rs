@@ -8,7 +8,7 @@ use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
 wasmtime::component::bindgen!({
     world: "app",
-    path: "../wit",
+    path: "../wit-sync",
     imports: { default: async },
     exports: { default: async },
 });

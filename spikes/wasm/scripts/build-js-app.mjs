@@ -6,7 +6,7 @@ const root = process.env.SPIKE_ROOT ?? fileURLToPath(new URL('../', import.meta.
 const started = performance.now();
 const { component } = await componentize({
   sourcePath: `${root}apps/js-app/app.js`,
-  witWorld: await readFile(`${root}wit/app.wit`, 'utf8'),
+  witWorld: await readFile(`${root}wit-sync/app.wit`, 'utf8'),
   worldName: 'app',
   // 'http' stays on: global fetch() is wasi:http, virtualized by the worker.
   disableFeatures: ['fetch-event'],

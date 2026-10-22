@@ -10,6 +10,10 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 
+/// One broker stream: a buffered origin answer or a synthetic large body
+/// (`big/<MiB>`), generated chunk by chunk so the stand-in stays small.
+struct Stream { status: u16, body: Vec<u8>, synthetic: u64, url: String }
+
 #[derive(Default)]
 struct State {
     records: BTreeMap<String, (Value, u64)>,
@@ -18,7 +22,8 @@ struct State {
 
 pub struct SpikeBroker {
     state: Mutex<State>,
-    streams: Mutex<HashMap<String, (u16, Vec<u8>, String)>>,
+    streams: Mutex<HashMap<String, Stream>>,
+    opened: std::sync::atomic::AtomicU64,
     pub ready: watch::Sender<Option<Value>>,
     pub logs: Mutex<Vec<Value>>,
     origin: String,
@@ -39,6 +44,7 @@ impl SpikeBroker {
             streams: Mutex::default(),
             ready: watch::channel(None).0,
             logs: Mutex::default(),
+            opened: Default::default(),
             origin,
         })
     }
@@ -70,6 +76,11 @@ impl SpikeBroker {
         let Some(path) = url.strip_prefix(ALLOWED) else {
             return Err(failure("APP_HTTP_DENIED", "Destination is not allowed"));
         };
+        let id = format!("00000000-0000-4000-8000-{:012x}", self.opened.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1);
+        if let Some(mb) = path.strip_prefix("big/").and_then(|mb| mb.parse::<u64>().ok()) {
+            self.streams.lock().unwrap().insert(id.clone(), Stream { status: 200, body: Vec::new(), synthetic: mb << 20, url: url.into() });
+            return Ok(json!({ "streamId": id }));
+        }
         let mut socket = std::net::TcpStream::connect(self.origin.as_str()).map_err(|_| failure("APP_HTTP_FAILED", "connect"))?;
         let request = format!("GET /{path} HTTP/1.0\r\nhost: origin\r\n\r\n");
         socket.write_all(request.as_bytes()).map_err(|_| failure("APP_HTTP_FAILED", "write"))?;
@@ -78,8 +89,7 @@ impl SpikeBroker {
         let split = raw.windows(4).position(|w| w == b"\r\n\r\n").ok_or_else(|| failure("APP_HTTP_FAILED", "head"))?;
         let head = String::from_utf8_lossy(&raw[..split]).to_string();
         let status = head.split(' ').nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-        let id = format!("00000000-0000-4000-8000-{:012x}", self.streams.lock().unwrap().len() + 1);
-        self.streams.lock().unwrap().insert(id.clone(), (status, raw[split + 4..].to_vec(), url.into()));
+        self.streams.lock().unwrap().insert(id.clone(), Stream { status, body: raw[split + 4..].to_vec(), synthetic: 0, url: url.into() });
         Ok(json!({ "streamId": id }))
     }
 
@@ -100,12 +110,18 @@ impl SpikeBroker {
             }
             "http.headers" => {
                 let streams = self.streams.lock().unwrap();
-                let (status, _, url) = streams.get(&stream()).ok_or_else(|| failure("NOT_FOUND", "stream"))?;
-                Ok(json!({ "pending": false, "status": status, "headers": [["content-type", "text/plain"]], "url": url }))
+                let open = streams.get(&stream()).ok_or_else(|| failure("NOT_FOUND", "stream"))?;
+                Ok(json!({ "pending": false, "status": open.status, "headers": [["content-type", "text/plain"]], "url": open.url }))
             }
             "http.read" => {
                 let mut streams = self.streams.lock().unwrap();
-                let (_, body, _) = streams.get_mut(&stream()).ok_or_else(|| failure("NOT_FOUND", "stream"))?;
+                let open = streams.get_mut(&stream()).ok_or_else(|| failure("NOT_FOUND", "stream"))?;
+                if open.synthetic > 0 {
+                    let size = open.synthetic.min(64 * 1024);
+                    open.synthetic -= size;
+                    return Ok(json!({ "pending": false, "done": false, "chunkBase64": B64.encode(vec![b'x'; size as usize]) }));
+                }
+                let body = &mut open.body;
                 if body.is_empty() {
                     return Ok(json!({ "pending": false, "done": true, "chunkBase64": "" }));
                 }
@@ -125,14 +141,27 @@ impl SpikeBroker {
     }
 }
 
+impl SpikeBroker {
+    /// Broker streams still open (not cancelled by the worker).
+    pub fn open_streams(&self) -> usize {
+        self.streams.lock().unwrap().len()
+    }
+
+    fn slow(&self, request: &BrokerRequest) -> bool {
+        let id = request.params["streamId"].as_str().unwrap_or_default();
+        self.streams.lock().unwrap().get(id).is_some_and(|open| open.url.contains("/slow"))
+    }
+}
+
 pub struct Shared(pub Arc<SpikeBroker>);
 
 impl Broker for Shared {
     fn handle(&self, request: BrokerRequest) -> BrokerFuture {
         // SPIKE_ORIGIN_DELAY_MS stands in for a slow remote origin.
-        let delay = (request.method == "http.headers")
-            .then(|| std::env::var("SPIKE_ORIGIN_DELAY_MS").ok()?.parse::<u64>().ok())
-            .flatten();
+        // A `/slow` URL answers its headers after 5 s (cancellation tests).
+        let delay = if request.method != "http.headers" { None }
+            else if self.0.slow(&request) { Some(5000) }
+            else { std::env::var("SPIKE_ORIGIN_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok()) };
         let outcome = self.0.handle_sync(&request);
         Box::pin(async move {
             if let Some(ms) = delay {

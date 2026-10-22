@@ -231,6 +231,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "chariox-wasm-worker-async"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "chariox-app-runtime",
+ "futures",
+ "serde_json",
+ "tokio",
+ "wasmtime",
+ "wasmtime-wasi",
+]
+
+[[package]]
 name = "cobs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

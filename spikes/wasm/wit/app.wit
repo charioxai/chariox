@@ -1,7 +1,7 @@
-// Spike subset of the Chariox App world (full surface: DESIGN.md).
-// JSON values stay JSON text: the kernel validates them against the signed
-// package schemas, so the guest and the wire see the same bytes.
-package chariox:app@0.1.0;
+// Spike subset of the async Chariox App world (full surface: wit-full/app.wit).
+// One instance serves many calls at once; JSON values stay JSON text that the
+// kernel validates against the signed package schemas.
+package chariox:app@0.2.0;
 
 interface types {
   /// JSON text. The host checks it with the wire rules before sending.
@@ -27,9 +27,12 @@ interface types {
     turn-id: option<string>,
     actor: option<actor>,
   }
+
+  /// An App event delivered by the kernel.
+  record event { name: string, data: json }
 }
 
-/// Registration: called only from `lifecycle.register`; sealed by worker.ready.
+/// Registration: called only from `handlers.register`; sealed by worker.ready.
 interface registry {
   tool: func(name: string);
   event: func(name: string);
@@ -48,8 +51,8 @@ interface state {
   }
   record committed { revision: u64 }
 
-  get: func(key: string) -> result<option<state-record>, app-error>;
-  transact: func(tx: transaction) -> result<committed, app-error>;
+  get: async func(key: string) -> result<option<state-record>, app-error>;
+  transact: async func(tx: transaction) -> result<committed, app-error>;
 }
 
 interface http {
@@ -62,14 +65,28 @@ interface http {
     connection-id: option<string>,
     operation-id: option<string>,
   }
-  record response {
+  record response-head {
     status: u16,
     headers: list<tuple<string, string>>,
     url: string,
+  }
+  record response {
+    head: response-head,
     body: list<u8>,
   }
   /// Buffered request through the kernel HTTP broker (512 KiB response cap).
-  send: func(req: request) -> result<response, app-error>;
+  send: async func(req: request) -> result<response, app-error>;
+  /// Streaming response: the body flows with backpressure, no size cap.
+  /// Dropping the stream cancels the broker stream.
+  fetch: async func(req: request) -> result<tuple<response-head, stream<u8>>, app-error>;
+}
+
+interface events {
+  use types.{event, app-error};
+  /// Long-lived subscription to kernel-delivered App events. The kernel's
+  /// dispatch is acknowledged only once the event is in the stream buffer, so
+  /// a slow reader slows the sender instead of growing memory.
+  subscribe: async func(name: string) -> result<stream<event>, app-error>;
 }
 
 interface log {
@@ -82,13 +99,17 @@ interface handlers {
   use types.{json, app-error, invocation-context};
   /// Registers tools/events/lifecycle names through `registry`.
   register: func() -> result<_, app-error>;
-  call-tool: func(name: string, input: json, context: invocation-context) -> result<json, app-error>;
+  /// Many calls run at once on one instance. `cancel` resolves with a reason
+  /// when the kernel cancels the call or its deadline passes; the call should
+  /// stop and return. It never resolves for a call that ends normally.
+  call-tool: async func(name: string, input: json, context: invocation-context, cancel: future<string>) -> result<json, app-error>;
 }
 
 world app {
   import registry;
   import state;
   import http;
+  import events;
   import log;
   export handlers;
 }

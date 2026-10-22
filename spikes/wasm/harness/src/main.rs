@@ -2,6 +2,7 @@
 //! own IPC code (chariox-app-runtime wire::Channel + WorkerPeer) and measures
 //! the four runtime variants with identical calls.
 mod broker;
+mod cells;
 mod process;
 
 use broker::{Shared, SpikeBroker};
@@ -24,7 +25,14 @@ async fn start(variant: &Variant, origin: &str) -> Worker {
     let spawned = process::spawn(variant);
     let broker = SpikeBroker::new(origin.into());
     let channel = spawned.channel();
-    let (peer, _events, _task) = WorkerPeer::start(channel, Arc::new(Shared(broker.clone())), PeerLimits::default()).unwrap();
+    // The kernel's defaults; SPIKE_BROKER_HANDLERS raises the concurrent
+    // broker-call cap for the 64-caller cell.
+    let mut limits = PeerLimits::default();
+    if let Some(handlers) = std::env::var("SPIKE_BROKER_HANDLERS").ok().and_then(|v| v.parse().ok()) {
+        limits.broker_handlers = handlers;
+        limits.pending_calls = limits.pending_calls.max(handlers + 8);
+    }
+    let (peer, _events, _task) = WorkerPeer::start(channel, Arc::new(Shared(broker.clone())), limits).unwrap();
     let mut ready = broker.ready.subscribe();
     tokio::time::timeout(Duration::from_secs(30), ready.wait_for(|r| r.is_some())).await.expect("worker never became ready").unwrap();
     Worker { spawned, peer, broker, ready_ms: started.elapsed().as_secs_f64() * 1e3 }
@@ -185,6 +193,25 @@ async fn fetch_standard(variant: &Variant, origin: &str) -> Value {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // Async-world cells: <variant> <bwrap|none> <mode> [n] [work]
+    if let Some(mode) = args.get(3).filter(|m| ["shared", "stream", "subscribe", "cancel", "blast", "hol"].contains(&m.as_str())) {
+        let variant = Variant::from_args(&args[1], args.get(2).map(String::as_str) == Some("bwrap"));
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let origin = broker::origin();
+        let n = |index: usize, default: u64| args.get(index).and_then(|v| v.parse().ok()).unwrap_or(default);
+        let report = runtime.block_on(async {
+            match mode.as_str() {
+                "shared" => cells::shared(&variant, &origin, n(4, 16) as usize).await,
+                "stream" => cells::stream(&variant, &origin, n(4, 50), n(5, 0)).await,
+                "subscribe" => cells::subscribe(&variant, &origin, n(4, 1000), n(5, 0)).await,
+                "cancel" => cells::cancel(&variant, &origin).await,
+                "blast" => cells::blast(&variant, &origin, args.get(4).map(String::as_str).unwrap_or("spin")).await,
+                _ => cells::head_of_line(&variant, &origin).await,
+            }
+        });
+        println!("{report}");
+        return;
+    }
     if args.get(3).map(String::as_str) == Some("fetchstd") {
         let variant = Variant::from_args(&args[1], args.get(2).map(String::as_str) == Some("bwrap"));
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
