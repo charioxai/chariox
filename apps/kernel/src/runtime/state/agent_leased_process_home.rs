@@ -77,7 +77,7 @@ impl KernelRuntimeState {
         let remote = agent
             .remote_execution()
             .ok_or_else(|| ledger::error("watched process execution lease was lost"))?;
-        let relation = LeaseRelation::of(&remote, binding);
+        let relation = LeaseRelation::of(remote, binding);
         if agent.session_id() != wake.room_id || relation == LeaseRelation::OtherWorker {
             return Err(ledger::error(
                 "watched process execution lease was replaced",
@@ -331,7 +331,7 @@ impl KernelRuntimeState {
                 Err(error) => {
                     let agent = self.owned.agent_store.get_agent(&wake.agent_id)?;
                     let current = agent.remote_execution().is_some_and(|r| {
-                        LeaseRelation::of(&r, &binding) != LeaseRelation::OtherWorker
+                        LeaseRelation::of(r, &binding) != LeaseRelation::OtherWorker
                     });
                     if !current || last_fresh.elapsed() >= Duration::from_secs(120) {
                         self.lost_leased_process(
