@@ -131,6 +131,7 @@ test("/skills repo reviews one source-backed package of every skill at the resol
     collision: { action: "reject" }, package_id: packageId,
   })))
   assert.match(notices.join("\n"), /skipped skills\/bad: SKILL.md must start with YAML frontmatter/)
+  assert.match(notices.join("\n"), /Review Skills changes .*: create_package skills, install ×2 from https:\/\/github.com\/acme\/skills.git @ c{40}/)
 })
 
 test("/skills repo --only installs just the named directories and refuses an unknown one", async () => {

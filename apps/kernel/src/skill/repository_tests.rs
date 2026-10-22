@@ -250,3 +250,32 @@ fn a_repository_package_refuses_members_from_another_commit_or_a_custom_package(
     let error = service.prepare(&later).unwrap_err().to_string();
     assert!(error.contains("same repository commit"), "{error}");
 }
+
+#[test]
+fn importing_an_installed_repository_again_says_how_to_proceed() {
+    let f = StorageFixture::new();
+    let repo = Repo::new();
+    let service = SkillCatalogService::new(f.storage.clone());
+    let first = install_all(&repo, &repo.head(), &["skills/alpha"]);
+    let prepared = service.prepare(&first).unwrap();
+    service.publish_authorized(&first, &prepared).unwrap();
+    let mut again = install_all(&repo, &repo.head(), &["skills/alpha"]);
+    again.expected_revision = 1;
+    again.actions[0] = SkillCatalogAction::CreatePackage {
+        package_id: "package-again".into(),
+        name: "again".into(),
+    };
+    again.actions[1] = SkillCatalogAction::Install {
+        source: SkillInstallSource::Repository {
+            url: repo.url(),
+            revision: repo.head(),
+            path: "skills/alpha".into(),
+        },
+        collision: SkillCollisionAction::Reject,
+        package_id: Some("package-again".into()),
+    };
+    let error = service.prepare(&again).unwrap_err().to_string();
+    assert!(error.contains("`alpha` is occupied"), "{error}");
+    assert!(!error.contains("choose Rename or Replace"), "{error}");
+    assert!(error.contains("leave that directory out"), "{error}");
+}

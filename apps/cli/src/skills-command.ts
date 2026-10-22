@@ -406,7 +406,7 @@ export function createSkillsCommand(deps: SkillsCommandDeps): (args: readonly st
 
 function formatReview(mutation: SkillCatalogMutation, preview: Preview): string {
   const lines = [
-    `Review Skills changes (${mutation.scope.kind === "chariox" ? "Chariox" : "Project"}, expected revision ${mutation.expected_revision}): ${mutation.actions.map(action => action.action).join(", ")}`,
+    `Review Skills changes (${mutation.scope.kind === "chariox" ? "Chariox" : "Project"}, expected revision ${mutation.expected_revision}): ${describeActions(mutation.actions)}`,
   ]
   for (const skill of preview.affected) {
     lines.push(`  $${skill.name} · ${skill.digest.slice(0, 12)} · ${skill.provenance.locator || skill.provenance.kind} ${skill.provenance.source_revision ?? ""}`.trimEnd())
@@ -415,4 +415,16 @@ function formatReview(mutation: SkillCatalogMutation, preview: Preview): string 
   if (preview.collisions.length) lines.push(`  name collisions: ${preview.collisions.join(", ")}`)
   lines.push(`Review expires ${new Date(preview.review_receipt.expires_at_ms).toISOString()}. /skills confirm publishes all of it together; /skills cancel discards it.`)
   return lines.join("\n")
+}
+
+// A repository import is one package plus N installs: name them rather than repeating "install".
+function describeActions(actions: readonly SkillCatalogAction[]): string {
+  const repositoryInstalls = actions.filter(action => action.action === "install" && action.source.kind === "repository")
+  const others = actions.filter(action => !repositoryInstalls.includes(action))
+  const parts = others.map(action => (action.action === "create_package" ? `create_package ${action.name}` : action.action))
+  const first = repositoryInstalls[0]
+  if (first?.action === "install" && first.source.kind === "repository") {
+    parts.push(`install ×${repositoryInstalls.length} from ${first.source.url} @ ${first.source.revision}`)
+  }
+  return parts.join(", ")
 }
