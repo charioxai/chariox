@@ -4,6 +4,145 @@ use super::*;
 use crate::session::{NativeInteractionOrigin, RuntimeInteractionKind, RuntimeInteractionLevel};
 
 #[tokio::test]
+async fn sudo_operations_forwarded_permissions_use_projected_home_run() {
+    let f = fixture();
+    let mut turn = running(&f);
+    let binding = crate::agent::RemoteAgentBinding {
+        worker_kernel_id: "worker-kernel".into(),
+        worker_machine_id: "worker-machine".into(),
+        execution_lease_id: "worker-lease".into(),
+        leased_agent_id: "leased-agent".into(),
+        active_worker_provider_run_id: Some("worker-run".into()),
+        relay_url: None,
+        relay_token: None,
+        relay_peer_protocol_version: Some(
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        ),
+    };
+    f.app
+        .lock()
+        .await
+        .agents_mut()
+        .bind_remote_execution(&turn.agent_id, binding.clone())
+        .unwrap();
+    turn.placement = Some(binding.execution_lease_id.clone());
+    f.state
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .insert(turn.entry_id.clone(), turn.clone());
+    for prefix in [
+        "claude-native-permission",
+        "watched-process",
+        "codex-command-approval",
+    ] {
+        let interaction = RuntimeInteraction::new(
+            format!("{prefix}-forwarded"),
+            &turn.agent_id,
+            RuntimeInteractionKind::Permission,
+            RuntimeInteractionLevel::Warning,
+            Some("Covered worker tool".into()),
+            "same task",
+            vec![
+                RuntimeInteractionChoice::new("allow_once", "Allow once", "allow", None),
+                RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
+            ],
+            None,
+            Some(1),
+            Some("deny".into()),
+        )
+        .with_native_origin(Some(NativeInteractionOrigin::Prompt {
+            provider_run_id: "worker-run".into(),
+            prompt_id: "worker-prompt".into(),
+        }));
+        let context = crate::transport::relay_peer::RemoteNativeInteractionContext {
+            home_session_id: turn.session_id.clone(),
+            home_agent_id: turn.agent_id.clone(),
+            leased_agent_id: binding.leased_agent_id.clone(),
+            worker_provider_run_id: "worker-run".into(),
+            home_prompt_id: turn.prompt_id.clone(),
+        };
+        let answer = tokio::time::timeout(
+            Duration::from_secs(2),
+            crate::runtime::native_interaction_bridge::forward_relay_native_interaction(
+                &f.state,
+                context,
+                interaction,
+            ),
+        )
+        .await
+        .expect("covered worker permission waited for a person")
+        .unwrap();
+        assert_eq!(answer.choice_id.as_deref(), Some("allow_once"), "{prefix}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn sudo_operations_watched_commands_keep_plan_and_write_fences() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
+    for (mode, write_access) in [
+        (
+            AgentExecutionMode::Plan,
+            crate::provider::ProviderWriteAccessMode::Unrestricted,
+        ),
+        (
+            AgentExecutionMode::Build,
+            crate::provider::ProviderWriteAccessMode::WorkspaceLiveSyncManaged,
+        ),
+        (
+            AgentExecutionMode::Build,
+            crate::provider::ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+        ),
+    ] {
+        let f = fixture_with_options(None, true);
+        let turn = running(&f);
+        let mut snapshot = serde_json::to_value(&f.run).unwrap();
+        snapshot["write_access_mode"] = serde_json::to_value(write_access).unwrap();
+        let run: crate::provider::RuntimeProviderRun = serde_json::from_value(snapshot).unwrap();
+        f.app.lock().await.providers_mut().insert_run_for_test(run);
+        f.state
+            .owned
+            .provider_store
+            .update_run_execution_config(f.run.id(), mode, AgentPermissionLevel::Required)
+            .unwrap();
+        let Outcome::Task(task) = f
+            .state
+            .owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Begin {
+                owner: turn.owner_user_id.clone(),
+                room: turn.session_id.clone(),
+                agent: turn.agent_id.clone(),
+                prompt: turn.prompt_id.clone().unwrap(),
+                run: Some(f.run.id().into()),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap()
+        else {
+            panic!("task missing")
+        };
+        let result = f
+            .router
+            .dispatch_authenticated_runtime_tool_call(
+                "sudo-fixture-bearer",
+                "chariox.events.process",
+                serde_json::json!({"task_id":task.task_id, "origin_prompt_id":turn.prompt_id,
+                "label":"restricted run must not execute", "argv":["/bin/echo","must-not-run"],
+                "match_text":"must-not-run"}),
+            )
+            .await;
+        f.state.owned.agent_wakes.processes.shutdown();
+        assert!(
+            result.is_err(),
+            "sudo must retain {mode:?}/{write_access:?}: {result:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn sudo_operations_projected_worker_uses_home_task() {
     let f = fixture();
     let mut turn = running(&f);

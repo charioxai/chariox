@@ -660,6 +660,68 @@ mod tests {
     }
 
     #[test]
+    fn claude_launch_records_only_the_selected_workspace_trust() {
+        crate::test_support::isolated_env_test!();
+        let _guard = env_guard();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-claude-workspace-trust-{}",
+            std::process::id()
+        ));
+        let selected = root.join("selected");
+        let ambient = root.join("ambient");
+        let workspace = root.join("workspace");
+        for path in [&selected, &ambient, &workspace] {
+            fs::create_dir_all(path).unwrap();
+        }
+        let executable = root.join("claude");
+        write_executable_fixture(&executable, "#!/bin/sh\nexit 0\n");
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &executable);
+        std::env::set_var("CLAUDE_CONFIG_DIR", &ambient);
+        let state_path = selected.join(".claude.json");
+        let previous = serde_json::json!({"hasCompletedOnboarding":true,
+            "existing":"preserved", "projects":{"/another-workspace":{"hasTrustDialogAccepted":false}}});
+        for (provider, interface) in [
+            (
+                "claude",
+                crate::provider::ProviderClientInterface::NativeTui,
+            ),
+            (
+                "claude-headless",
+                crate::provider::ProviderClientInterface::Chariox,
+            ),
+        ] {
+            fs::write(&state_path, serde_json::to_vec(&previous).unwrap()).unwrap();
+            let request =
+                LaunchProviderRequest::new("session", "claude", provider, "selected", "default")
+                    .with_client_interface(interface)
+                    .with_working_directory(workspace.clone())
+                    .with_provider_account_env(std::collections::BTreeMap::from([(
+                        "CLAUDE_CONFIG_DIR".into(),
+                        selected.display().to_string(),
+                    )]));
+            plan_claude_launch(Some(&request)).unwrap();
+            let contents = fs::read(&state_path).unwrap();
+            let state: serde_json::Value = serde_json::from_slice(&contents).unwrap();
+            assert_eq!(
+                state["projects"][workspace.canonicalize().unwrap().to_str().unwrap()]
+                    ["hasTrustDialogAccepted"],
+                true,
+                "{provider} must record the kernel-selected folder before starting Claude"
+            );
+            assert_eq!(
+                state["projects"]["/another-workspace"],
+                previous["projects"]["/another-workspace"]
+            );
+            assert_eq!(state["projects"].as_object().unwrap().len(), 2);
+            assert_eq!(state["existing"], "preserved");
+            assert!(!ambient.join(".claude.json").exists());
+            plan_claude_launch(Some(&request)).unwrap();
+            assert_eq!(fs::read(&state_path).unwrap(), contents);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn resolves_override_path_for_tests() {
         crate::test_support::isolated_env_test!();
         let _guard = env_guard();
