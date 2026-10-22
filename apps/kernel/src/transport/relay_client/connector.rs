@@ -83,6 +83,10 @@ struct StaticRelayConfig {
 }
 
 const CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
+const _: () = assert!(
+    crate::runtime::cloud_api_client::CLOUD_RELAY_TOKEN_REQUEST_TIMEOUT.as_millis()
+        < CLOUD_RELAY_TOKEN_REFRESH_TIMEOUT.as_millis()
+);
 const CLOUD_RELAY_PRESENCE_JITTER_SPREAD_MS: u64 = 5_000;
 const RELAY_RECEIPT_STALL_LIMIT: Duration = Duration::from_secs(30);
 const RELAY_RECONNECT_BASE_DELAY_MS: u64 = 500;

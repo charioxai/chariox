@@ -371,8 +371,9 @@ impl HistoryArchiveClient {
 
 impl ExternalHistoryArchiveClient {
     fn capabilities(&self) -> Result<HistoryArchiveCapabilities, DaemonError> {
-        let request =
-            self.authorized_request(ureq::get(&self.endpoint("/chariox/history/capabilities")))?;
+        let request = self.authorized_request(
+            crate::outbound_dial::agent().get(&self.endpoint("/chariox/history/capabilities")),
+        )?;
         let response = request
             .call()
             .map_err(|error| archive_http_error("capabilities", error))?;
@@ -394,7 +395,9 @@ impl ExternalHistoryArchiveClient {
             }
         })?;
         let request = self
-            .authorized_request(ureq::post(&self.endpoint("/chariox/history/events")))?
+            .authorized_request(
+                crate::outbound_dial::agent().post(&self.endpoint("/chariox/history/events")),
+            )?
             .set("content-type", "application/json");
         let response = request
             .send_string(&payload)
@@ -422,7 +425,9 @@ impl ExternalHistoryArchiveClient {
             }
         })?;
         let request = self
-            .authorized_request(ureq::post(&self.endpoint("/chariox/history/search")))?
+            .authorized_request(
+                crate::outbound_dial::agent().post(&self.endpoint("/chariox/history/search")),
+            )?
             .set("content-type", "application/json");
         let response = request
             .send_string(&payload)
@@ -444,9 +449,10 @@ impl ExternalHistoryArchiveClient {
             }
         })?;
         let request = self
-            .authorized_request(ureq::post(
-                &self.endpoint("/chariox/history/semantic-search"),
-            ))?
+            .authorized_request(
+                crate::outbound_dial::agent()
+                    .post(&self.endpoint("/chariox/history/semantic-search")),
+            )?
             .set("content-type", "application/json");
         let response = request
             .send_string(&payload)
@@ -479,7 +485,9 @@ impl ExternalHistoryArchiveClient {
             }
         })?;
         let request = self
-            .authorized_request(ureq::post(&self.endpoint("/chariox/artifacts/manifest")))?
+            .authorized_request(
+                crate::outbound_dial::agent().post(&self.endpoint("/chariox/artifacts/manifest")),
+            )?
             .set("content-type", "application/json");
         let response = request
             .send_string(&payload)
