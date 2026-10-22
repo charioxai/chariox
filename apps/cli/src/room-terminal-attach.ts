@@ -157,16 +157,19 @@ export async function attachRoomTerminal(options: {
   }
 
   // Input keeps its order; a chunk lost with the connection is dropped, never replayed
-  // into a program that may already have received it.
+  // into a program that may already have received it. After the attach is over, chunks that
+  // have not been sent yet are dropped and a late reply writes nothing to the outer terminal.
   let sending: Promise<unknown> = Promise.resolve()
+  let over = false
   const sendKeys = (bytes: Buffer) => {
     sending = sending.then(async () => {
+      if (over) return
       try {
         const reply = expectRoomTerminalResult(await send(roomTerminalInputRequest(hostedTarget, terminalId, bytes)), "input")
-        if (!reply.input.accepted) title(`chariox terminal — ${reply.input.refusal ?? "input refused"}`)
+        if (!reply.input.accepted && !over) title(`chariox terminal — ${reply.input.refusal ?? "input refused"}`)
       } catch (error) {
         if (error instanceof RoomTerminalRefusedError) finish({ reason: "ended", description: error.message })
-        else title("chariox terminal — input lost while reconnecting")
+        else if (!over) title("chariox terminal — input lost while reconnecting")
       }
     })
   }
@@ -223,7 +226,8 @@ export async function attachRoomTerminal(options: {
     input.off("data", onData)
     output.off("resize", onResize)
     options.signal?.removeEventListener("abort", onAbort)
-    await sending
+    // Not awaiting `sending`: an unanswered input request must not keep the user in the attach.
+    over = true
     output.write(MODE_RESET)
     output.write("\x1b[?1049l")
     if (titled) output.write("\x1b]2;\x07")

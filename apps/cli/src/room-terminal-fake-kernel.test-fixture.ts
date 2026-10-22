@@ -7,11 +7,14 @@ type Operation = { operation: string; [key: string]: unknown }
 export class FakeTerminalKernel {
   readonly requests: Operation[] = []
   readonly typed: Buffer[] = []
+  readonly stalled: Buffer[] = []
   output = Buffer.alloc(0)
   retainedFrom = 0
   ended: string | null = null
   failNext = 0
   refuse: string | null = null
+  /** Input requests are received but never answered. */
+  stallInput = false
   screen = "PROMPT$ "
   size = { cols: 80, rows: 24 }
   private waiters: (() => void)[] = []
@@ -61,6 +64,10 @@ export class FakeTerminalKernel {
           screen_ansi_base64: Buffer.from(this.screen).toString("base64"), output_offset: this.retainedFrom + this.output.length,
         } })
       case "input":
+        if (this.stallInput) {
+          this.stalled.push(Buffer.from(operation.data_base64 as string, "base64"))
+          return new Promise<never>(() => {})
+        }
         this.typed.push(Buffer.from(operation.data_base64 as string, "base64"))
         return wrap({ result: "input", input: { accepted: true, driver: { state: "free" } } })
       case "read_output": {

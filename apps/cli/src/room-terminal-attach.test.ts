@@ -137,6 +137,27 @@ test("Ctrl-] detaches while the first requests keep failing and restores the out
   assert.equal(kernel.typed.length, 0, "nothing typed before the screen is in sync reaches the terminal")
 })
 
+test("Ctrl-] restores the outer terminal while an input request is unanswered and drops the keys queued behind it", async () => {
+  const kernel = new FakeTerminalKernel()
+  const io = new FakeTerminalIo()
+  const done = attach(kernel, io)
+  await until(() => io.text.includes("PROMPT$ "), "the redrawn screen")
+  kernel.stallInput = true
+  io.type("a")
+  await until(() => kernel.stalled.length === 1, "the first key is in flight and unanswered")
+  io.type("b")
+  io.type(Buffer.from([TERMINAL_DETACH_BYTE]))
+  const end = await Promise.race([done, new Promise<string>(resolve => setTimeout(() => resolve("stuck"), 3000))])
+  assert.deepEqual(end, { reason: "detached" }, "a stalled input request does not hold the detach")
+  assert.deepEqual(io.rawModes, [true, false])
+  assert.ok(io.paused)
+  assert.ok(io.text.includes("\x1b[?1049l"), "the outer alternate screen is left")
+  kernel.stallInput = false
+  await new Promise(resolve => setTimeout(resolve, 50))
+  assert.equal(kernel.stalled.length, 1, "the key queued behind the stalled one is never sent after the detach")
+  assert.equal(kernel.typed.length, 0)
+})
+
 test("output the kernel no longer retains triggers a fresh redraw instead of a hole", async () => {
   const kernel = new FakeTerminalKernel()
   const io = new FakeTerminalIo()
