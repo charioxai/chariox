@@ -34,6 +34,23 @@ export function managedBrowserScale(environment = process.env, debuggerEndpoint 
   return (viewport) => applyBrowserScale(viewport, { ...environment, DISPLAY: environment.CHARIOX_SLICE_DISPLAY ?? ":99" }, debuggerEndpoint);
 }
 
+// Whether applying this viewport would retire the running browser: the scale
+// is a launch flag, so a changed scale costs every open page its live state.
+export function managedBrowserScaleChange(environment = process.env) {
+  if (!managedHeadedSlice(environment)) return undefined;
+  return (viewport) => browserScaleChange(viewport, { ...environment, DISPLAY: environment.CHARIOX_SLICE_DISPLAY ?? ":99" });
+}
+
+export async function browserScaleChange(viewport, environment, { run = execute } = {}) {
+  try {
+    const { stdout } = await run("/bin/bash", [sliceScreen, "browser-scale", String(viewport.device_scale_factor), "check"],
+      { timeout: 35_000, maxBuffer: 1024, env: environment });
+    return stdout.trim() === "relaunch";
+  } catch {
+    throw new BrowserControllerError("viewport_apply_failed", "browser scale check failed; the Room browser scale could not be read");
+  }
+}
+
 export async function applyBrowserScale(viewport, environment, debuggerEndpoint, { run = execute, fetchImpl = fetch, wait = delay, timeoutMs = BROWSER_RELAUNCH_TIMEOUT_MS } = {}) {
   let outcome;
   try {

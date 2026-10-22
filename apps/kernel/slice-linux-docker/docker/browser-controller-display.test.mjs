@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyBrowserScale, managedBrowserScale, managedCanonicalDisplay } from "./browser-controller-display.mjs";
+import { applyBrowserScale, browserScaleChange, managedBrowserScale, managedCanonicalDisplay } from "./browser-controller-display.mjs";
 
 test("generic local CDP and headless controllers do not require Linux display tooling", () => {
   assert.equal(managedCanonicalDisplay({}), undefined);
@@ -44,4 +44,13 @@ test("a browser that does not come back after a scale change is a clear failure"
   await assert.rejects(
     applyBrowserScale(scaleViewport, {}, "http://127.0.0.1:9222", { run: async () => { throw new Error("exit 1"); } }),
     { code: "viewport_apply_failed" });
+});
+
+test("the scale check only asks whether the running browser would be retired", async () => {
+  const calls = [];
+  const run = outcome => async (command, args) => { calls.push([command, ...args.slice(1)]); return { stdout: `${outcome}\n` }; };
+  assert.equal(await browserScaleChange(scaleViewport, {}, { run: run("relaunch") }), true);
+  assert.equal(await browserScaleChange(scaleViewport, {}, { run: run("unchanged") }), false);
+  assert.deepEqual(calls[0], ["/bin/bash", "browser-scale", "2", "check"]);
+  await assert.rejects(browserScaleChange(scaleViewport, {}, { run: async () => { throw new Error("exit 2"); } }), { code: "viewport_apply_failed" });
 });

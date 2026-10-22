@@ -49,6 +49,7 @@ import {retireNativeStates} from './kernel-browser-native-worker.mjs';
 
 const DEFAULT_DEBUGGER_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
+const BLANK_PAGE_URLS = new Set(["about:blank", "chrome://newtab/", "chrome://new-tab-page/"]);
 const PERSISTENT_COOKIE_WRITER_TARGET_TYPES = new Set(["worker", "shared_worker"]);
 // Focus is read in a controller-owned isolated world: a page can redefine
 // document.visibilityState in its own world, but not in this one.
@@ -97,10 +98,12 @@ export class BrowserCdpClient {
     eventJournal = new BrowserEventJournal(),
     applyCanonicalDisplay,
     applyBrowserScale,
+    browserScaleChange,
     focusWorldSource,
   } = {}) {
     this.applyCanonicalDisplay = applyCanonicalDisplay;
     this.applyBrowserScale = applyBrowserScale;
+    this.browserScaleChange = browserScaleChange;
     this.appliedBrowserScale = null;
     this.focusWorldSource = focusWorldSource;
     this.debuggerEndpoint = new URL(debuggerEndpoint);
@@ -175,6 +178,17 @@ export class BrowserCdpClient {
     } catch { return false; }
   }
 
+  // The native scale is a launch flag: changing it retires the browser and
+  // every page's in-memory state with it. That is only acceptable while all
+  // pages are blank, and is refused before the display is touched otherwise.
+  async refuseScaleChangeOverLivePages(viewport) {
+    if (this.appliedBrowserScale === viewport.device_scale_factor || !await this.browserScaleChange?.(viewport)) return;
+    const { targetInfos = [] } = await (await this.ensureConnection()).send("Target.getTargets");
+    if (targetInfos.every((target) => target?.type !== "page" || BLANK_PAGE_URLS.has(target.url))) return;
+    throw new BrowserControllerError("viewport_apply_failed",
+      "the Room browser is open on pages and a different display scale would close them and lose their unsaved state; close the pages, or keep the viewer at the current scale");
+  }
+
   async reconcile(rawViewport, { browserBarVisible, appPanelCssWidth, visibleTargetId } = {}) {
     const viewport = canonicalViewport(rawViewport);
     this.canonical = viewport;
@@ -183,6 +197,7 @@ export class BrowserCdpClient {
       this.appliedViewport = null;
     }
     try {
+      await this.refuseScaleChangeOverLivePages(viewport);
       await this.applyCanonicalDisplay?.(viewport);
       // The relaunched Chromium has retired the old connection; ensureConnection opens a new one.
       if (this.appliedBrowserScale !== viewport.device_scale_factor) {

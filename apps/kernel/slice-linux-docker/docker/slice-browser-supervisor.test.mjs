@@ -83,6 +83,11 @@ test("browser-scale relaunches the browser at the Room scale at once and leaves 
     const same = slice("browser-scale", "1");
     assert.equal(same.status, 0, same.stderr);
     assert.equal(same.stdout.trim(), "unchanged");
+    const probed = slice("browser-scale", "2", "check");
+    assert.equal(probed.stdout.trim(), "relaunch", probed.stderr);
+    await delay(500);
+    assert.equal((await launches()).length, 1, "a check never retires the running browser");
+    assert.equal(slice("browser-scale", "1", "check").stdout.trim(), "unchanged");
     const begin = Date.now();
     const changed = slice("browser-scale", "2");
     assert.equal(changed.status, 0, changed.stderr);

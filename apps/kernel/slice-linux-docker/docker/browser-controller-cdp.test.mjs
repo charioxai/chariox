@@ -1729,6 +1729,50 @@ test("a scale change relaunches the browser after the display apply and reconcil
   await browser.close();
 });
 
+test("a scale change over open pages is refused before the display or the browser is touched", async () => {
+  const steps = [];
+  const browser = new BrowserCdpClient({
+    applyCanonicalDisplay: async () => { steps.push("display"); },
+    applyBrowserScale: async () => { steps.push("relaunch"); },
+    browserScaleChange: async () => true,
+    connectionFactory: async () => new FakeConnection(),
+  });
+  await assert.rejects(browser.reconcile(viewport), (error) => error.code === "viewport_apply_failed" && /close the pages/.test(error.message));
+  assert.deepEqual(steps, [], "the pages at a.test and b.test are never retired");
+  await browser.close();
+});
+
+test("a scale change over blank pages only, or one the browser already has, relaunches as before", async () => {
+  const steps = [];
+  const blank = new FakeConnection();
+  blank.closedTargetIds.add("target-b");
+  blank.extraTargets = [];
+  const original = blank.send.bind(blank);
+  blank.send = async (method, params) => {
+    if (method === "Target.getTargets") return { targetInfos: [{ targetId: "target-a", type: "page", url: "about:blank", title: "" }] };
+    return original(method, params);
+  };
+  const browser = new BrowserCdpClient({
+    applyCanonicalDisplay: async () => { steps.push("display"); },
+    applyBrowserScale: async () => { steps.push("relaunch"); },
+    browserScaleChange: async () => true,
+    connectionFactory: async () => blank,
+  });
+  await browser.reconcile(viewport);
+  assert.deepEqual(steps, ["display", "relaunch"]);
+  await browser.close();
+
+  const same = new BrowserCdpClient({
+    applyCanonicalDisplay: async () => { steps.push("display2"); },
+    applyBrowserScale: async () => { steps.push("same"); },
+    browserScaleChange: async () => false,
+    connectionFactory: async () => new FakeConnection(),
+  });
+  await same.reconcile(viewport);
+  assert.deepEqual(steps.slice(2), ["display2", "same"], "a browser already at this scale keeps its open pages");
+  await same.close();
+});
+
 test("a failed browser relaunch withdraws concurrent reconciliation admission", async () => {
   let refuse = false;
   const browser = new BrowserCdpClient({

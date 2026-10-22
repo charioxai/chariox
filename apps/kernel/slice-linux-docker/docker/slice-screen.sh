@@ -236,12 +236,17 @@ chromium_scale() {
 }
 
 # Prints "unchanged", or "relaunching" once the running browser is retired and
-# the supervisor starts the next one without its crash backoff.
+# the supervisor starts the next one without its crash backoff. With "check" it
+# only reports "unchanged" or "relaunch" and touches nothing.
 set_browser_scale() {
   local wanted="${1:-}"
   [[ "$wanted" =~ ^[12]$ ]] || { log "browser scale must be 1 or 2"; return 2; }
   if [[ "$(chromium_scale)" == "$wanted" ]]; then
     printf 'unchanged\n'
+    return 0
+  fi
+  if [[ "${2:-}" == check ]]; then
+    printf 'relaunch\n'
     return 0
   fi
   printf '%s\n' "$wanted" >"$LOGS/chromium-scale.next"

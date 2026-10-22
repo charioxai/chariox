@@ -15,7 +15,7 @@ import {
   validateBrowserResourceInventory,
 } from "./browser-controller-resources.mjs";
 
-import { managedBrowserScale, managedCanonicalDisplay } from "./browser-controller-display.mjs";
+import { managedBrowserScale, managedBrowserScaleChange, managedCanonicalDisplay } from "./browser-controller-display.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 
 import {hostErrorLabel} from './kernel-browser-error-label.mjs';
@@ -496,6 +496,7 @@ async function runCli() {
   const browser = new BrowserCdpClient({
     applyCanonicalDisplay: managedCanonicalDisplay(),
     applyBrowserScale: managedBrowserScale(process.env, debuggerEndpoint),
+    browserScaleChange: managedBrowserScaleChange(),
     ...(debuggerEndpoint ? { debuggerEndpoint } : {}),
     downloadDirectory: process.env.CHARIOX_BROWSER_DOWNLOAD_DIR,
     minimumDownloadFreeBytes,
