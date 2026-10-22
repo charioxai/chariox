@@ -4,8 +4,9 @@
 //! the slower answer. When a network lists a dead IPv6 nameserver first, every
 //! lookup then takes the resolver's 5 s timeout even though the A answer came
 //! back at once. Here each family is looked up on its own thread; a call
-//! returns as soon as one family has answered and gives the other only a short
-//! stagger. Answers are cached per host, so only the first call after a
+//! returns soon after one family has answered: an A answer gives AAAA a short
+//! stagger, a lone AAAA answer waits up to one address attempt for A, the way
+//! around a broken IPv6 path. Answers are cached per host, so only the first call after a
 //! lookup went stale can wait at all, and slow lookups finish in the
 //! background for later calls.
 
@@ -17,8 +18,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// How long the second family may take after the first one has answered.
+/// How long an AAAA lookup may take after the A answer.
 const SECOND_FAMILY_STAGGER: Duration = Duration::from_millis(50);
+/// How long an A lookup may take after a lone AAAA answer. A broken IPv6 path
+/// is the common failure and the A answer is the way around it, so it gets the
+/// time a dial would spend on the first address anyway.
+const A_AFTER_AAAA_WAIT: Duration = super::ADDRESS_ATTEMPT_TIMEOUT;
 /// How long an answer is used.
 const ANSWER_TTL: Duration = Duration::from_secs(60);
 /// Age at which a used answer is refreshed in the background.
@@ -81,6 +86,19 @@ impl HostState {
 
     fn lookups_in_flight(&self) -> bool {
         self.v4.in_flight || self.v6.in_flight
+    }
+
+    /// How long a call that has an answer may wait for a family still being
+    /// looked up for the first time (or after it failed).
+    fn wait_for_pending_family(&self, answered_before_call: bool) -> Duration {
+        let pending = |state: &FamilyState| state.in_flight && !state.has_fresh_answer();
+        if pending(&self.v4) {
+            A_AFTER_AAAA_WAIT
+        } else if pending(&self.v6) && !answered_before_call {
+            SECOND_FAMILY_STAGGER
+        } else {
+            Duration::ZERO
+        }
     }
 
     /// Fresh addresses, with the family the system lists first (IPv6) first.
@@ -148,18 +166,17 @@ impl Resolver {
                 self.start_lookup(state.family(family), netloc, host, port, family);
             }
         }
-        let mut stagger_ends_at = None;
+        let mut wait_ends_at = None;
         loop {
             let state = hosts.entry(netloc.to_string()).or_default();
             if state.has_fresh_answer() {
-                if answered_before_call || !state.lookups_in_flight() {
+                let ends_at = *wait_ends_at.get_or_insert_with(|| {
+                    Instant::now() + state.wait_for_pending_family(answered_before_call)
+                });
+                let remaining = ends_at.saturating_duration_since(Instant::now());
+                if remaining.is_zero() || !state.lookups_in_flight() {
                     return Ok(state.addresses());
                 }
-                let ends_at =
-                    *stagger_ends_at.get_or_insert_with(|| Instant::now() + SECOND_FAMILY_STAGGER);
-                let Some(remaining) = ends_at.checked_duration_since(Instant::now()) else {
-                    return Ok(state.addresses());
-                };
                 hosts = self
                     .shared
                     .answered
@@ -282,9 +299,14 @@ fn system_lookup(host: &str, port: u16, family: Family) -> io::Result<Vec<Socket
                     addresses.push(SocketAddr::new(ip.into(), port));
                 }
                 libc::AF_INET6 => {
+                    // Kept as `std` keeps them: a link-local address needs its scope.
                     let sockaddr = &*(info.ai_addr as *const libc::sockaddr_in6);
-                    let ip = std::net::Ipv6Addr::from(sockaddr.sin6_addr.s6_addr);
-                    addresses.push(SocketAddr::new(ip.into(), port));
+                    addresses.push(SocketAddr::V6(std::net::SocketAddrV6::new(
+                        sockaddr.sin6_addr.s6_addr.into(),
+                        port,
+                        sockaddr.sin6_flowinfo,
+                        sockaddr.sin6_scope_id,
+                    )));
                 }
                 _ => {}
             }

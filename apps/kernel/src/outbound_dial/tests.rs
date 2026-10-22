@@ -225,3 +225,31 @@ fn http_call_does_not_wait_for_an_unanswered_aaaa_lookup() {
         "answered after {elapsed:?}"
     );
 }
+
+// The reviewer's case: AAAA answers at once with a path that drops SYNs and the
+// working A answer arrives 100 ms later. The call must still reach the A host.
+#[test]
+fn http_call_reaches_a_late_a_answer_when_the_aaaa_path_is_dead() {
+    let dead = unanswered_address();
+    let dead_address = dead.address;
+    let working = answering_server();
+    let resolver = dns::Resolver::new(move |_, _, family| match family {
+        dns::Family::V6 => Ok(vec![dead_address]),
+        dns::Family::V4 => {
+            std::thread::sleep(Duration::from_millis(100));
+            Ok(vec![working])
+        }
+    });
+    let agent = agent_builder_with_resolver(move |netloc| resolver.resolve(netloc))
+        .timeout(Duration::from_secs(20))
+        .build();
+
+    let body = agent
+        .get("http://late-a.invalid/relay/token")
+        .call()
+        .unwrap()
+        .into_string()
+        .unwrap();
+
+    assert_eq!(body, "ok");
+}

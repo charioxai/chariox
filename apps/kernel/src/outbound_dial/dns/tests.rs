@@ -37,14 +37,35 @@ fn a_dead_aaaa_lookup_does_not_delay_the_a_answer() {
 }
 
 #[test]
-fn a_dead_a_lookup_does_not_delay_the_aaaa_answer() {
+fn a_dead_a_lookup_delays_a_lone_aaaa_answer_by_one_address_attempt_at_most() {
     let resolver = Resolver::new(answers(DEAD_FAMILY_DELAY, Duration::ZERO));
     let started = Instant::now();
 
     let addresses = resolver.resolve("cloud.example:443").unwrap();
 
-    assert!(started.elapsed() < Duration::from_millis(200));
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= A_AFTER_AAAA_WAIT && elapsed < A_AFTER_AAAA_WAIT + Duration::from_millis(200),
+        "returned after {elapsed:?}"
+    );
     assert_eq!(addresses, vec![SocketAddr::new(V6.into(), 443)]);
+}
+
+// An AAAA answer can name an unreachable path while the A answer that works
+// is still on its way; the dial must get both.
+#[test]
+fn a_lone_aaaa_answer_waits_for_an_a_answer_on_its_way() {
+    let resolver = Resolver::new(answers(Duration::from_millis(150), Duration::ZERO));
+
+    let addresses = resolver.resolve("cloud.example:443").unwrap();
+
+    assert_eq!(
+        addresses,
+        vec![
+            SocketAddr::new(V6.into(), 443),
+            SocketAddr::new(V4.into(), 443)
+        ]
+    );
 }
 
 #[test]
@@ -155,4 +176,18 @@ fn the_system_lookup_resolves_localhost_per_family() {
         .unwrap_or_default()
         .iter()
         .all(SocketAddr::is_ipv6));
+}
+
+#[test]
+fn the_system_lookup_keeps_the_scope_of_a_link_local_address() {
+    let scope = unsafe { libc::if_nametoindex(c"lo".as_ptr()) };
+    assert_ne!(scope, 0);
+
+    let addresses = system_lookup("fe80::1%lo", 443, Family::V6).unwrap();
+
+    let [SocketAddr::V6(address)] = addresses.as_slice() else {
+        panic!("expected one IPv6 address, got {addresses:?}");
+    };
+    assert_eq!(address.scope_id(), scope);
+    assert_eq!(address.port(), 443);
 }
