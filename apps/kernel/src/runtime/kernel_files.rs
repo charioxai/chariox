@@ -114,15 +114,25 @@ fn modified_ms(metadata: &std::fs::Metadata) -> Option<u64> {
 }
 
 fn sha256_of(path: &Path) -> Result<String, DaemonError> {
-    let mut file = std::fs::File::open(path).map_err(|e| io_failure(path, &e))?;
+    let file = std::fs::File::open(path).map_err(|e| io_failure(path, &e))?;
+    sha256_of_open(&file, path)
+}
+
+/// Hashes the open file from its first byte, whatever its descriptor offset.
+fn sha256_of_open(file: &std::fs::File, path: &Path) -> Result<String, DaemonError> {
+    use std::os::unix::fs::FileExt;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 256 * 1024];
+    let mut offset = 0_u64;
     loop {
-        let read = file.read(&mut buffer).map_err(|e| io_failure(path, &e))?;
+        let read = file
+            .read_at(&mut buffer, offset)
+            .map_err(|e| io_failure(path, &e))?;
         if read == 0 {
             return Ok(format!("{:x}", hasher.finalize()));
         }
         hasher.update(&buffer[..read]);
+        offset += read as u64;
     }
 }
 
@@ -263,6 +273,7 @@ fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::Fil
         // Private from the first byte: the unfinished upload may become a credentials file.
         // A new file stays private; replacing one takes the replaced file's permissions on finish.
         return std::fs::OpenOptions::new()
+            .read(true)
             .write(true)
             .create_new(true)
             .mode(0o600)
@@ -271,6 +282,7 @@ fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::Fil
             .map_err(|e| io_failure(partial, &e));
     }
     let file = match std::fs::OpenOptions::new()
+        .read(true)
         .append(true)
         .custom_flags(libc::O_NOFOLLOW)
         .open(partial)
@@ -355,7 +367,6 @@ pub(crate) fn write(request: &WriteKernelFileRequest) -> Result<LocalDaemonRespo
     file.write_all(&data)
         .map_err(|e| io_failure(&partial, &e))?;
     file.flush().map_err(|e| io_failure(&partial, &e))?;
-    drop(file);
     if end < request.total_size {
         return Ok(LocalDaemonResponse::KernelFileWritten {
             path: path.display().to_string(),
@@ -364,26 +375,72 @@ pub(crate) fn write(request: &WriteKernelFileRequest) -> Result<LocalDaemonRespo
             sha256: None,
         });
     }
-    let sha256 = sha256_of(&partial)?;
-    if let Some(expected) = request.sha256.as_deref() {
+    let sha256 = publish(
+        &file,
+        &partial,
+        &path,
+        request.overwrite,
+        request.sha256.as_deref(),
+    )?;
+    Ok(LocalDaemonResponse::KernelFileWritten {
+        path: path.display().to_string(),
+        received: end,
+        complete: true,
+        sha256: Some(sha256),
+    })
+}
+
+fn staging_replaced(partial: &Path) -> DaemonError {
+    fail(
+        "file_staging_untrusted",
+        format!(
+            "{} was replaced while the upload finished; nothing was kept. Remove it, then upload again.",
+            partial.display()
+        ),
+    )
+}
+
+fn names_the_open_file(path: &Path, file: &std::fs::File) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::symlink_metadata(path), file.metadata()) {
+        (Ok(named), Ok(open)) => named.dev() == open.dev() && named.ino() == open.ino(),
+        _ => false,
+    }
+}
+
+/// Verifies, sets the permissions of and installs the staged upload through the descriptor that
+/// received it: another user of a shared directory can swap the staging name at any moment, so
+/// no step trusts the name, and a swap that wins the race is removed again and reported.
+fn publish(
+    file: &std::fs::File,
+    partial: &Path,
+    path: &Path,
+    overwrite: bool,
+    expected_sha256: Option<&str>,
+) -> Result<String, DaemonError> {
+    let sha256 = sha256_of_open(file, partial)?;
+    if let Some(expected) = expected_sha256 {
         if !expected.eq_ignore_ascii_case(&sha256) {
-            let _ = std::fs::remove_file(&partial);
+            let _ = std::fs::remove_file(partial);
             return Err(fail(
                 "file_hash_mismatch",
                 format!("The received file hashes to {sha256}, not {expected}; nothing was kept. Upload it again."),
             ));
         }
     }
-    if request.overwrite {
+    if !names_the_open_file(partial, file) {
+        return Err(staging_replaced(partial));
+    }
+    if overwrite {
         // Replacing a file keeps its permissions (a 0600 credentials file stays private).
-        if let Ok(existing) = std::fs::metadata(&path) {
-            std::fs::set_permissions(&partial, existing.permissions())
-                .map_err(|e| io_failure(&partial, &e))?;
+        if let Ok(existing) = std::fs::metadata(path) {
+            file.set_permissions(existing.permissions())
+                .map_err(|e| io_failure(partial, &e))?;
         }
-        std::fs::rename(&partial, &path).map_err(|e| io_failure(&path, &e))?;
+        std::fs::rename(partial, path).map_err(|e| io_failure(path, &e))?;
     } else {
         // A hard link fails when something appeared at `path` meanwhile; a rename would replace it.
-        std::fs::hard_link(&partial, &path).map_err(|error| {
+        std::fs::hard_link(partial, path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::AlreadyExists {
                 fail(
                     "file_exists",
@@ -393,17 +450,18 @@ pub(crate) fn write(request: &WriteKernelFileRequest) -> Result<LocalDaemonRespo
                     ),
                 )
             } else {
-                io_failure(&path, &error)
+                io_failure(path, &error)
             }
         })?;
-        std::fs::remove_file(&partial).map_err(|e| io_failure(&partial, &e))?;
     }
-    Ok(LocalDaemonResponse::KernelFileWritten {
-        path: path.display().to_string(),
-        received: end,
-        complete: true,
-        sha256: Some(sha256),
-    })
+    if !names_the_open_file(path, file) {
+        let _ = std::fs::remove_file(path);
+        return Err(staging_replaced(partial));
+    }
+    if !overwrite {
+        let _ = std::fs::remove_file(partial);
+    }
+    Ok(sha256)
 }
 
 #[cfg(test)]
@@ -640,6 +698,39 @@ mod tests {
         write(&chunk(&target, 0, bytes, bytes.len() as u64, Some(&sha))).unwrap();
         assert_eq!(std::fs::read(&victim).unwrap(), b"private");
         assert_eq!(std::fs::read(&target).unwrap(), bytes);
+    }
+
+    // EA2-45 review: another user can replace the staging name after the last chunk was written
+    // and before it is hashed, permissioned and installed.
+    #[test]
+    fn a_staging_name_swapped_after_the_last_write_changes_nothing() {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        for overwrite in [true, false] {
+            let dir = scratch();
+            let victim = dir.join("victim.txt");
+            std::fs::write(&victim, b"private").unwrap();
+            std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let target = dir.join("upload.bin");
+            if overwrite {
+                std::fs::write(&target, b"old").unwrap();
+                std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+            }
+            let partial = partial_of(&target);
+            let mut file = open_staging(&partial, &target, 0).unwrap();
+            file.write_all(b"fresh").unwrap();
+            std::fs::remove_file(&partial).unwrap();
+            std::os::unix::fs::symlink(&victim, &partial).unwrap();
+            let error = publish(&file, &partial, &target, overwrite, None).unwrap_err();
+            assert_eq!(code(error), "file_staging_untrusted");
+            assert_eq!(mode(&victim), 0o600);
+            assert_eq!(std::fs::read(&victim).unwrap(), b"private");
+            assert_eq!(target.exists(), overwrite);
+            if overwrite {
+                assert_eq!(std::fs::read(&target).unwrap(), b"old");
+            }
+        }
     }
 
     #[test]
