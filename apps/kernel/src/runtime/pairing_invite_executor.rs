@@ -190,7 +190,7 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
                 .to_string(),
         })?;
     let issued_at_ms = current_unix_ms();
-    let expires_at_ms =
+    let mut expires_at_ms =
         issued_at_ms.saturating_add(request.expires_in_ms.unwrap_or(15 * 60 * 1000));
     let invite_id = random_hex_id();
     let pairing_code = random_pairing_code();
@@ -238,7 +238,12 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
         // With the kernel issuer on, the link carries a pairing-only client
         // token, never the operator's registration token.
         match super::relay_issuer::pairing_link_token(&config, &terminal_id, expires_at_ms)? {
-            Some(token) => token,
+            Some(token) => {
+                // Advertise only the lifetime the relay will actually admit,
+                // including the token cap and JWT whole-second precision.
+                expires_at_ms = token.expires_at_ms;
+                token.relay_token
+            }
             None => super::self_host_terminal_grants::pairing_transport_token(relay_token),
         }
     } else {
@@ -588,7 +593,7 @@ mod self_host_invite_tests {
     #[tokio::test]
     async fn issuer_on_links_carry_a_kernel_token_and_joins_return_a_key_bound_one() {
         use chariox_relay::auth::{
-            KernelIssuerKeys, RelayAction, RelayAuthRequest, RelayAuthVerifier,
+            KernelIssuerKeys, RelayAction, RelayAuthRequest, RelayAuthVerifier, SelfHostedVerifier,
         };
         let root = std::env::temp_dir().join(format!(
             "chariox-pairing-issuer-{}-{}",
@@ -627,7 +632,7 @@ mod self_host_invite_tests {
                 CreateTerminalPairingLinkRequest {
                     terminal_type: None,
                     alias: None,
-                    expires_in_ms: None,
+                    expires_in_ms: Some(2 * 60 * 60 * 1000),
                 },
             )
             .await
@@ -645,6 +650,44 @@ mod self_host_invite_tests {
             })
             .unwrap();
         assert_eq!(admitted.public_key_thumbprint, None);
+        // The link, pending registration and UI must agree with relay admission,
+        // including the JWT's whole-second expiry and maximum token lifetime.
+        assert_eq!(pairing.expires_at_ms, admitted.expires_at_ms);
+        assert_eq!(link.expires_at_ms, admitted.expires_at_ms);
+        assert!(pairing.expires_at_ms <= current_unix_ms() + 60 * 60 * 1000);
+        let pending: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(
+                config
+                    .private_runtime_state_root()
+                    .join("terminal-grants.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            pending["pending"][0]["expires_at_ms"],
+            pairing.expires_at_ms
+        );
+        for (now_ms, accepted) in [
+            (pairing.expires_at_ms - 1, true),
+            (pairing.expires_at_ms, false),
+        ] {
+            let verifier = SelfHostedVerifier::new(
+                "operator-test-token".into(),
+                KernelIssuerKeys::parse(&issuer.relay_issuer_keys).unwrap(),
+                Some(now_ms),
+            );
+            assert_eq!(
+                verifier
+                    .verify(RelayAuthRequest {
+                        token: &link.relay_token,
+                        action: RelayAction::ClientConnect,
+                        target: Some(&config.daemon_id),
+                    })
+                    .is_ok(),
+                accepted
+            );
+        }
         let thumbprint = public_key_thumbprint("terminal-key");
         let LocalDaemonResponse::TerminalPairingLinkJoined { relay_token, .. } =
             execute_join_terminal_pairing_link_request(

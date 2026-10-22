@@ -71,7 +71,7 @@ pub(crate) fn pairing_link_token(
     config: &DaemonConfig,
     terminal_id: &str,
     expires_at_ms: u64,
-) -> Result<Option<String>, DaemonError> {
+) -> Result<Option<RelayClientToken>, DaemonError> {
     let Some(store) = read(config)? else {
         return Ok(None);
     };
@@ -84,7 +84,7 @@ pub(crate) fn pairing_link_token(
         RelayClientTokenScope::Attach,
         expires_at_ms,
     )
-    .map(|token| Some(token.relay_token))
+    .map(Some)
 }
 
 /// The key-bound token returned when a terminal redeems its pairing link.
