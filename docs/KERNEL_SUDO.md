@@ -63,7 +63,10 @@ workspace for this launch. No other folder or tool permission is added. Outside
 yolo, a folder that ships its own Claude hooks (project `.claude/settings.json`
 or `.claude/settings.local.json`) is trusted only after the owner approves one
 card listing those commands; Cancel stops the start, and a launch that did not
-show the card leaves the folder untrusted. Screen-based trust handling remains a
+show the card leaves the folder untrusted. A live `/sudo` window for that
+agent, in its session and placement, already covers the card and it is not
+shown. For a leased worker the card is forwarded to the home session, where
+the owner sees it before any worker run exists. Screen-based trust handling remains a
 fallback for an already approved exact-workspace launch; it does not make a
 pending task live for tools. Forwarded approvals retain their worker-local
 origin for lifetime checks and translate only the consent lookup to the current
