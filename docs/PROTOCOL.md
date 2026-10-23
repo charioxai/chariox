@@ -4814,6 +4814,14 @@ schedule triggers in the old shape), and `CreateAgentPromptSchedule` / `CancelAg
 still create and delete schedule triggers. The shape is pinned by
 `local_daemon_protocol_agent_trigger_shape_is_versioned`.
 
+Allocated 579/187 adds the HTTP trigger source `{"kind": "http", "ingress_id", "port"}` (the
+create request sends `{"kind": "http"}` and the kernel picks both), `InvokeAgentTrigger
+{session_id, trigger_id, payload}` answering `AgentTriggerInvoked {invocation}` and
+`ReadAgentTriggerTranscript {session_id, trigger_id, cursor?}` answering `AgentTriggerTranscript`.
+A 576 kernel cannot decode them and a 576 client cannot decode a session that holds an HTTP
+trigger, so clients that create or list HTTP triggers require 579; the other client minimums are
+unchanged. `local_daemon_protocol_http_agent_trigger_shape_is_versioned` pins the shapes.
+
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
 `layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.
 A viewer narrower than the canonical desktop (a phone) sends its page area; the kernel lays that

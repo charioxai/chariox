@@ -339,4 +339,5 @@ pub use workspace::*;
 /// replacing the viewer's 250 ms poll.
 /// MP-08/MP-10/MP-11: allocated 567 adds the mirror v2 `fonts` op's `absent` (stack families the native machine lacks).
 /// Provisional 576 adds agent triggers; `/wait-in` and `/wait-every` become schedule triggers.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 576;
+/// Allocated 579 adds the HTTP trigger source and `InvokeAgentTrigger`/`ReadAgentTriggerTranscript`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 579;
