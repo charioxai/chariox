@@ -39,6 +39,7 @@ type WaitingRoomInventoryRefreshControllerOptions = {
   setInventoryStatus: (status: WaitingRoomInventoryStatus) => void
   getWaitingRoomState: () => WaitingRoomState
   getInventory: () => Promise<WaitingRoomInventory>
+  getSessionPage?: (cursor: string | null) => Promise<{ sessions: WaitingRoomPublicSessionSummary[]; next_cursor: string | null }>
   isKernelHidden: (kernelId: string) => boolean
   getAvailableSessions: () => SessionListEntry[]
   setAvailableSessions: (sessions: SessionListEntry[]) => void
@@ -75,6 +76,7 @@ export type WaitingRoomInventoryRefreshController = {
   applyRowsChanged(patch: WaitingRoomRowsChangedPatch): void
   applyRelayStatusChanged(status: RelayStatusView): void
   applyRemoteMachinesChanged(machines: RemoteMachineView[]): void
+  loadSessionHistory(): Promise<void>
   refreshNow(): Promise<void>
   refresh(): Promise<void>
   invalidate(): void
@@ -127,6 +129,10 @@ export function createWaitingRoomInventoryRefreshController(
   if ((options.cachedInventories?.length ?? 0) > 0) restoreCachedInventory()
 
   const rememberInventory = (inventory: WaitingRoomInventory) => {
+    const previous = inventoriesByKernel.get(inventory.kernelId)
+    if (previous?.structuralVersion === inventory.structuralVersion && previous.sessions.length > inventory.sessions.length) {
+      inventory = { ...inventory, sessions: [...new Map([...previous.sessions, ...inventory.sessions].map(row => [row.id, row])).values()] }
+    }
     inventoriesByKernel.delete(inventory.kernelId)
     inventoriesByKernel.set(inventory.kernelId, inventory)
     while (inventoriesByKernel.size > maximumTrackedKernelInventories) {
@@ -301,6 +307,32 @@ export function createWaitingRoomInventoryRefreshController(
   }
 
   return {
+    async loadSessionHistory() {
+      await refreshNow()
+      if (!options.isKernelConnected() || !activeKernelId) throw new Error("Reconnect the kernel before opening older sessions.")
+      const kernelId = activeKernelId
+      const generation = transportGeneration
+      const initial = inventoriesByKernel.get(kernelId)
+      if (!initial || (initial.sessionsTotal ?? initial.sessions.length) <= initial.sessions.length) return
+      if (!options.getSessionPage) throw new Error("This client cannot load older sessions. Update Chariox and reopen the session list.")
+      let cursor: string | null = null
+      const seen = new Set<string>()
+      do {
+        const page = await options.getSessionPage(cursor)
+        refreshProjectionScope()
+        const inventory = inventoriesByKernel.get(kernelId)
+        if (generation !== transportGeneration || kernelId !== activeKernelId || inventory?.structuralVersion !== initial.structuralVersion) {
+          throw new Error("The session catalog changed. Reopen the session list to load older sessions.")
+        }
+        const owned = page.sessions.map(row => ({ ...row, kernel_id: inventory.kernelId, kernel_alias: inventory.kernelAlias ?? null, machine_id: inventory.machineId, machine_alias: inventory.machineAlias ?? null }))
+        rememberInventory({ ...inventory, sessions: [...new Map([...inventory.sessions, ...owned].map(row => [row.id, row])).values()] })
+        options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
+        options.reconcileWaitingRoom(options.getWaitingRoomState())
+        cursor = page.next_cursor
+        if (cursor !== null && seen.has(cursor)) throw new Error("The kernel repeated a session page. Reopen the session list.")
+        if (cursor !== null) seen.add(cursor)
+      } while (cursor !== null)
+    },
     applyTransportClosed() {
       transportGeneration += 1
       rowsBaselinePending = true

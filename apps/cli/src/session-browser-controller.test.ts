@@ -187,3 +187,11 @@ async function flushMicrotasks() {
   await Promise.resolve()
   await Promise.resolve()
 }
+
+test("TUI picker can join an older Room loaded beyond the recent hundred", async () => {
+  const harness = createHarness({ selectedIndex: 150 })
+  harness.setSessions(Array.from({ length: 151 }, (_, index) => session(`room-${index}`, { created_at_ms: 200 - index })))
+  createSessionBrowserController(harness.deps).handleKey({ name: "enter" })
+  await flushMicrotasks()
+  assert.equal(harness.attachedSessions().at(0)?.session.id, "room-150")
+})

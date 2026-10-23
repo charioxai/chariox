@@ -449,7 +449,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     restoreWaitingRoomProject, renameWaitingRoomProject,
     currentProviderSelection, currentVariantId, promptMetaParts, promptUsageMeta,
     reconcileWaitingRoom, reconcileWaitingRoomProjection, refreshWaitingRoomData,
-    refreshWaitingRoomDataNow, reimageManagedEnvironment, startSessionFromWaitingRoomDefaults,
+    loadWaitingRoomSessionHistory, refreshWaitingRoomDataNow, reimageManagedEnvironment, startSessionFromWaitingRoomDefaults,
     waitingRoomTargets, editWaitingRoomWorkspace,
   } = createCliWaitingRoomComposition({
     onLaunchRefused: (message, retry) => providerAccountRecovery.showLaunchRefusal(message, retry),
@@ -591,6 +591,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     client, renderer, dimensions, appLogger,
     formatError,
     debugLogsEnabled: DEBUG_LOGS_ENABLED,
+    loadSessions: loadWaitingRoomSessionHistory,
     isAttached, availableSessions, waitingRoomProjects, sessionBrowserIndex, setSessionBrowserIndex,
     currentFocusedRenderable, promptInputRefController, describeRenderableDebug,
     scheduleTimer: startTimeout,

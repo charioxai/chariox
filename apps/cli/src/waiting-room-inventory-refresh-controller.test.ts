@@ -713,6 +713,7 @@ function createHarness(options: {
   nowMs?: () => number
   hiddenKernelIds?: Set<string>
   snapshots?: WaitingRoomInventory[]
+  getSessionPage?: (cursor: string | null) => Promise<{ sessions: WaitingRoomPublicSessionSummary[]; next_cursor: string | null }>
   getInventory?: () => Promise<WaitingRoomInventory>
   localKernelPresences?: readonly LocalKernelPresence[]
   cachedInventories?: readonly WaitingRoomInventory[]
@@ -744,6 +745,7 @@ function createHarness(options: {
   const controller = createWaitingRoomInventoryRefreshController({
     isKernelConnected: () => options.connected ?? true,
     ...(options.nowMs ? { nowMs: options.nowMs } : {}),
+    ...(options.getSessionPage ? { getSessionPage: options.getSessionPage } : {}),
     getInventoryStatus: () => inventoryStatus,
     setInventoryStatus: (status) => {
       inventoryStatus = status
@@ -930,4 +932,24 @@ test("MP-08/MP-11 grace expiry reprojects sessions with an unchanged live versio
   assert.deepEqual(harness.availableSessions().map(s => s.id), ["session-a"])
   await harness.controller.refreshNow()
   assert.deepEqual(harness.availableSessions().map(s => s.id), ["session-a"])
+})
+
+test("opening the TUI session picker loads older project Rooms beyond the recent prefix", async () => {
+  const all = Array.from({ length: 151 }, (_, i) => session(`room-${i}`))
+  const recent = inventory("v1", { sessions: all.slice(0, 100), sessionsTotal: 151, sessionsNextCursor: "p2" })
+  const calls: Array<string | null> = []
+  const harness = createHarness({ getInventory: async () => recent, getSessionPage: async cursor => {
+    calls.push(cursor)
+    return cursor === null ? { sessions: all.slice(0, 100), next_cursor: "p2" } : { sessions: all.slice(100), next_cursor: null }
+  } })
+  await harness.controller.refreshNow()
+  assert.equal(harness.availableSessions().length, 100)
+  await harness.controller.loadSessionHistory()
+  assert.deepEqual(calls, [null, "p2"])
+  assert.equal(harness.availableSessions().length, 151)
+  assert.equal(harness.availableSessions().find(s => s.id === "room-150")?.id, "room-150")
+  await harness.controller.refreshNow()
+  assert.equal(harness.availableSessions().length, 151, "an unchanged bounded refresh retains the loaded Rooms")
+  harness.controller.applyRowsChanged({ inventoryVersion: "v2", structuralVersion: "v2", activityRevision: "v2", sessions: [], removedSessionIds: ["room-150"] })
+  assert.equal(harness.availableSessions().some(s => s.id === "room-150"), false)
 })
