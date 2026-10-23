@@ -1,6 +1,7 @@
 import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
+import {NavigationDisplays} from './kernel-browser-navigation-display.mjs';
 import {captureVisiblePage,pngFallbackCommand,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeInputDocumentTarget} from './kernel-browser-page-display.mjs';
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
 import { appRestoreOrigin } from "./browser-app-restore.mjs";
@@ -113,6 +114,7 @@ export class KernelBrowserHost {
     this.streams = new Map();
     this.displays = new Map();
     this.displaySessions = new DisplaySessions(this);
+    this.navigationDisplays = new NavigationDisplays(this);
     this.scales = new Map();
     this.layouts = new Map();
     this.layoutRevisions = new Map();
@@ -230,7 +232,7 @@ export class KernelBrowserHost {
     this.browser = null;
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
     this.streams.clear();
-    this.tabs.clear();this.layouts.clear();this.layoutRevisions.clear();this.windowLayout=null;this.resizeSettled=null;
+    this.tabs.clear();this.layouts.clear();this.layoutRevisions.clear();this.windowLayout=null;this.resizeSettled=null;this.navigationDisplays.clear();
     this.popupEvidence.clear();
     this.observed = ++this.observations;
     this.observedDocuments.clear();
@@ -824,7 +826,9 @@ export class KernelBrowserHost {
     }
     // MP-08/MP-10/MP-11: allocated536 default fallback never resizes the owned desktop.
     if(command.op==='display_subscribe'&&!command.target&&this.chromium.desktop?.binding?.()){
-      try{return this.initialPush(command,await subscribeVisiblePage(this,command,scope,signal));}
+      // A navigation the observer's mirror just reported already started this display (see NavigationDisplays).
+      this.navigationDisplays.remember(command,scope);
+      try{return this.initialPush(command,await this.navigationDisplays.adopt(command,scope)??await subscribeVisiblePage(this,command,scope,signal));}
       catch(error){const png=pngFallbackCommand(error,command);if(!png)throw error;this.timing('native_visible_page_png_fallback',timestamp());command=png;}
     }
     if(command.op==='display_subscribe'&&command.target) {
