@@ -70,7 +70,10 @@ pub struct InvokeAgentTriggerRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum AgentTriggerInvocation {
-    Accepted { prompt_id: String, outcome: crate::session::AgentTriggerOutcome },
+    Accepted {
+        prompt_id: String,
+        outcome: crate::session::AgentTriggerOutcome,
+    },
     Offline,
     Disabled,
     Busy,

@@ -348,7 +348,9 @@ impl SessionRuntimeCommandExecutor {
                     .await
             }),
             LocalDaemonRequest::InvokeAgentTrigger(request) => Box::pin(async move {
-                self.store.invoke_agent_trigger(request, &caller_user_id).await
+                self.store
+                    .invoke_agent_trigger(request, &caller_user_id)
+                    .await
             }),
             LocalDaemonRequest::DeleteAgentTrigger(request) => Box::pin(async move {
                 self.store

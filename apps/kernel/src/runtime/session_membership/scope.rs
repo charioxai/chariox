@@ -151,9 +151,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::InvokeAgentTrigger(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
-        LocalDaemonRequest::ReadAgentTriggerTranscript(request) => Some(SessionMembershipScope::SessionId(
-            request.session_id.clone(),
-        )),
+        LocalDaemonRequest::ReadAgentTriggerTranscript(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::CompletePrompt(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),

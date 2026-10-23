@@ -421,9 +421,7 @@ mod tests {
             },
         );
         assert!(
-            !crate::runtime::session_actor::SessionActor::is_session_interactive_command(
-                &request
-            )
+            !crate::runtime::session_actor::SessionActor::is_session_interactive_command(&request)
         );
     }
 }

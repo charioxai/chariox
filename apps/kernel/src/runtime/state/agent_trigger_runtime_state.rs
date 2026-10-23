@@ -22,8 +22,15 @@ impl KernelRuntimeState {
         caller_user_id: &str,
     ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
         let (interval_seconds, repeat) = match &request.source {
-            crate::local::AgentTriggerSourceRequest::Http => return self.create_http_agent_trigger(request, caller_user_id).await,
-            crate::local::AgentTriggerSourceRequest::Schedule { interval_seconds, repeat } => (*interval_seconds, *repeat),
+            crate::local::AgentTriggerSourceRequest::Http => {
+                return self
+                    .create_http_agent_trigger(request, caller_user_id)
+                    .await
+            }
+            crate::local::AgentTriggerSourceRequest::Schedule {
+                interval_seconds,
+                repeat,
+            } => (*interval_seconds, *repeat),
         };
         let (trigger, session) = self.create_agent_schedule_trigger(
             &request.session_id,
@@ -325,10 +332,11 @@ impl KernelRuntimeState {
         // A schedule represents one outstanding request, whether queued or
         // already running. The dispatch claim prevents overlapping ticks from
         // admitting another occurrence before this submission settles.
-        if dispatch.payload.is_none() && active
-            .iter()
-            .chain(queued.iter())
-            .any(|prompt| prompt.agent_trigger_id() == Some(dispatch.trigger_id.as_str()))
+        if dispatch.payload.is_none()
+            && active
+                .iter()
+                .chain(queued.iter())
+                .any(|prompt| prompt.agent_trigger_id() == Some(dispatch.trigger_id.as_str()))
         {
             return Ok(AgentTriggerFiring::Coalesced);
         }
@@ -336,13 +344,23 @@ impl KernelRuntimeState {
             .owned
             .ensure_agent_trigger_attachment(&dispatch.session_id)?;
         let prompt_id = self.owned.session_store.reserve_prompt_id();
-        let template_id = if dispatch.payload.is_some() { "runtime/agent-trigger" } else { "runtime/scheduled-prompt" };
+        let template_id = if dispatch.payload.is_some() {
+            "runtime/agent-trigger"
+        } else {
+            "runtime/scheduled-prompt"
+        };
         let prompt_text = match &dispatch.payload {
             None => dispatch.prompt.clone(),
             Some(payload) => {
                 // JSON escaping prevents external text from closing the data block.
-                let payload = payload.to_string().replace('<', "\\u003c").replace('>', "\\u003e");
-                format!("{}\n\n<chariox-trigger-input kind=\"http\">\n{}\n</chariox-trigger-input>", dispatch.prompt, payload)
+                let payload = payload
+                    .to_string()
+                    .replace('<', "\\u003c")
+                    .replace('>', "\\u003e");
+                format!(
+                    "{}\n\n<chariox-trigger-input kind=\"http\">\n{}\n</chariox-trigger-input>",
+                    dispatch.prompt, payload
+                )
             }
         };
         let (scheduled_context, scheduled_manifest_entry) =

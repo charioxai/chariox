@@ -122,11 +122,24 @@ impl AgentTrigger {
         now_ms: u64,
     ) -> Self {
         Self {
-            id, agent_id: agent_id.into(), created_by_user_id: Some(owner.into()),
-            source: AgentTriggerSource::Http { ingress_id: uuid::Uuid::new_v4().simple().to_string(), port },
-            busy_policy: policy, prompt, enabled: true, created_at_ms: now_ms,
-            fired: 0, coalesced: 0, last_fired_at_ms: None, last_outcome: None, last_error: None,
-            dispatch_in_flight: false, dispatch_generation: 0,
+            id,
+            agent_id: agent_id.into(),
+            created_by_user_id: Some(owner.into()),
+            source: AgentTriggerSource::Http {
+                ingress_id: uuid::Uuid::new_v4().simple().to_string(),
+                port,
+            },
+            busy_policy: policy,
+            prompt,
+            enabled: true,
+            created_at_ms: now_ms,
+            fired: 0,
+            coalesced: 0,
+            last_fired_at_ms: None,
+            last_outcome: None,
+            last_error: None,
+            dispatch_in_flight: false,
+            dispatch_generation: 0,
         }
     }
 
