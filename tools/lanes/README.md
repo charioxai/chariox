@@ -60,3 +60,11 @@ cleanup moves receipts to `stopped` and clears `processes`.
 Run regression checks with `NODE_OPTIONS=--max-old-space-size=4096 node --test
 tools/lanes/*.test.mjs`. These checks supplement real two-kernel/provider drills;
 they do not establish live acceptance.
+
+`stop` is unconditional unless `expectedPromptId` is supplied. If a restart
+removed its attachment, it records `cancelRefusal:attachment_not_found`, then
+uses the kernel's agent destruction/cancellation path and verifies absence.
+An expected-prompt guard is preserved: a missing attachment then refuses the
+operation instead of destroying a potentially different turn. Already-removed
+agents still permit exact owned PID cleanup. Other cancellation errors remain
+refusals.

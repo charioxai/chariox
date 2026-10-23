@@ -215,3 +215,34 @@ test('stop refuses an unsafe ledger before sending any product command', async (
     assert.equal(calls, 0);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test('stop destroys by identity when a restart removed the attachment', async () => {
+  const calls = [];
+  const result = await run('stop', { kernel: 'b', taskId: 'lane', sessionId: 's', agentId: 'a', attachmentId: 'old' }, { execute: async (_, body) => {
+    const name = Object.keys(JSON.parse(body))[0]; calls.push(name);
+    if (name === 'CancelActivePrompt') throw new LaneError('attachment_not_found');
+    return name === 'ListAgents' ? { AgentsListed: { agents: [] } } : { AgentDestroyed: {} };
+  } });
+  assert.deepEqual(calls, ['CancelActivePrompt', 'DestroyAgent', 'ListAgents']);
+  assert.equal(result.stopped, true);
+  assert.equal(result.cancelRefusal, 'attachment_not_found');
+});
+
+test('stop preserves an expected-prompt guard if its attachment vanished', async () => {
+  const calls = [];
+  await assert.rejects(run('stop', { kernel: 'b', taskId: 'lane', sessionId: 's', agentId: 'a', attachmentId: 'old', expectedPromptId: 'expected' }, { execute: async (_, body) => {
+    calls.push(Object.keys(JSON.parse(body))[0]); throw new LaneError('attachment_not_found');
+  } }), { code: 'attachment_not_found' });
+  assert.deepEqual(calls, ['CancelActivePrompt']);
+});
+
+test('stop remains idempotent after the agent was already removed', async () => {
+  const calls = [];
+  const result = await run('stop', { kernel: 'b', taskId: 'lane', sessionId: 's', agentId: 'gone', attachmentId: 'old' }, { execute: async (_, body) => {
+    const name = Object.keys(JSON.parse(body))[0]; calls.push(name);
+    if (name !== 'ListAgents') throw new LaneError('agent_not_found');
+    return { AgentsListed: { agents: [] } };
+  } });
+  assert.equal(result.stopped, true);
+  assert.deepEqual(calls, ['CancelActivePrompt', 'DestroyAgent', 'ListAgents']);
+});

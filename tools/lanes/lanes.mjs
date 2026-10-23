@@ -228,9 +228,14 @@ export async function run(operation, input, dependencies = {}) {
     if (ledger.owner !== taskId || !Array.isArray(ledger.processes)) fail('pid_ownership_refused');
     const owned = [];
     for (const entry of ledger.processes) if (await verifyOwnedPid(entry, taskId)) owned.push(entry);
+    let cancelRefusal;
     try {
       await request('CancelActivePrompt', { session_id: session(), attachment_id: attachment(), target_agent_id: agent(), ...(input.expectedPromptId ? { expected_prompt_id: input.expectedPromptId } : {}) }, 'cancel');
-    } catch (error) { if (error.code !== 'no_active_prompt') throw error; }
+    } catch (error) {
+      if (!['no_active_prompt', 'agent_not_found'].includes(error.code) && !(error.code === 'attachment_not_found' && !input.expectedPromptId)) throw error;
+      // DestroyAgent owns cancellation too; ephemeral attachments vanish on restart.
+      cancelRefusal = error.code;
+    }
     try { await request('DestroyAgent', { session_id: session(), agent_id: agent() }, 'destroy'); }
     catch (error) { if (error.code !== 'agent_not_found') throw error; }
     const roster = variant(await request('ListAgents', { session_id: session() }, 'stopped-roster', false), 'AgentsListed').agents;
@@ -249,7 +254,7 @@ export async function run(operation, input, dependencies = {}) {
       }
     }
     if (input.pidLedger) await save(input.pidLedger, { ...ledger, processes: [], stopped: ledger.processes, stoppedAt: new Date().toISOString() });
-    return { stopped: true, agentId: agent(), signalled: owned.map(value => value.pid) };
+    return { stopped: true, agentId: agent(), cancelRefusal, signalled: owned.map(value => value.pid) };
   }
   fail('invalid_operation');
 }
