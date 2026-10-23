@@ -1617,6 +1617,127 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
+    async fn recurring_resend_recovery_preserves_schedule_after_restart() {
+        recurring_resend_recovery_preserves_schedule(true).await;
+    }
+
+    #[tokio::test]
+    async fn recurring_resend_recovery_preserves_schedule_after_append_failure() {
+        recurring_resend_recovery_preserves_schedule(false).await;
+    }
+
+    // MP-08/MP-10/MP-11: a resend is another delivery, not another scheduled occurrence.
+    async fn recurring_resend_recovery_preserves_schedule(restart: bool) {
+        let config = durable_state_config("recurring-resend-recovery");
+        let (_worktree, runtime, session_id, agent_id, _, _, run_id) =
+            super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt_and_config(
+                config, &[],
+            ).await;
+        install_slow_structured_run(&runtime, &session_id, &agent_id, &run_id, "ack-lost");
+        let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Every).await;
+        runtime
+            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .await;
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        let original = session.trigger_deliveries()[0].clone();
+        let expected = session
+            .agent_triggers()
+            .iter()
+            .find(|t| t.id() == trigger.id())
+            .unwrap()
+            .clone();
+        assert_eq!(expected.fired(), 1);
+        let connection = reject_trigger_settlement(&runtime);
+        let owner = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+        assert!(
+            runtime
+                .resend_trigger_delivery(
+                    crate::local::ResendTriggerDeliveryRequest {
+                        session_id: session_id.clone(),
+                        prompt_id: original.prompt_id().into(),
+                    },
+                    owner.owner_user_id()
+                )
+                .await
+                .is_err(),
+            "the resend settlement must fail"
+        );
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        let (_, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        let held = queued
+            .iter()
+            .find(|prompt| prompt.local_steer_submitted())
+            .unwrap();
+        let replacement_id = held.id().to_string();
+        assert_eq!(held.trigger_resend_of(), Some(original.prompt_id()));
+        let recovered = if restart {
+            let events = runtime
+                .owned
+                .durable_state_store
+                .load_events_after(0)
+                .unwrap();
+            restart_from_log_cut(&events, events.len(), "recurring-resend-restarted")
+                .await
+                .0
+        } else {
+            connection
+                .execute_batch("DROP TRIGGER reject_trigger_settlement;")
+                .unwrap();
+            runtime.clone()
+        };
+        recovered
+            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .await;
+        let session = recovered.owned.session_snapshot(&session_id).unwrap();
+        let actual = session
+            .agent_triggers()
+            .iter()
+            .find(|t| t.id() == trigger.id())
+            .unwrap();
+        assert_eq!(
+            actual.fired(),
+            expected.fired(),
+            "resend recovery must not count a new occurrence"
+        );
+        assert_eq!(
+            actual.next_run_at_ms(),
+            expected.next_run_at_ms(),
+            "resend recovery must preserve the original schedule"
+        );
+        assert_eq!(
+            session
+                .trigger_deliveries()
+                .iter()
+                .find(|d| d.prompt_id() == original.prompt_id())
+                .unwrap()
+                .state(),
+            crate::session::TriggerDeliveryState::Resent
+        );
+        let replacement = session
+            .trigger_deliveries()
+            .iter()
+            .find(|d| d.prompt_id() == replacement_id)
+            .unwrap();
+        assert_eq!(
+            replacement.state(),
+            crate::session::TriggerDeliveryState::NotConfirmed
+        );
+        let (_, queued) = recovered
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        assert!(!queued.iter().any(|p| p.id() == replacement_id));
+        assert!(recovered
+            .owned
+            .durable_state_store
+            .trigger_firing_settled(&session_id, &replacement_id)
+            .unwrap());
+    }
+
+    #[tokio::test]
     async fn recurring_steer_settlement_is_idempotent_after_restart() {
         recurring_steer_settlement_is_idempotent(false).await;
     }

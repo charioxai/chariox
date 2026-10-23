@@ -1396,7 +1396,7 @@ impl KernelRuntimeOwnedState {
                         let busy_policy = crate::session::AgentTriggerBusyPolicy::Steer;
                         if let Err(error) = self.settle_steered_firing(
                             session.id(),
-                            Some(trigger_id),
+                            prompt.trigger_resend_of().is_none().then_some(trigger_id),
                             prompt.id(),
                             Some(crate::session::TriggerDelivery::not_confirmed(
                                 prompt.id(),
