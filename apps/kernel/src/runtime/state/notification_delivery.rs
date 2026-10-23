@@ -102,6 +102,7 @@ impl KernelRuntimeState {
                 &dispatch.prompt_id,
                 &dispatch.prompt,
                 &dispatch.attachments,
+                crate::session::PromptOrigin::Notification,
             ) {
                 Err(error)
             } else {
@@ -477,6 +478,7 @@ impl KernelRuntimeOwnedState {
                 id,
                 item.prompt().unwrap_or_default(),
                 &[],
+                crate::session::PromptOrigin::Notification,
             )?;
         }
         settle_injection(

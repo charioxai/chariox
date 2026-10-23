@@ -41,6 +41,85 @@ pub enum AgentTriggerOutcome {
     Coalesced,
 }
 
+/// What the pane shows next to a trigger firing it could not confirm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerDeliveryState {
+    /// The provider may or may not hold the message; it is never sent again by itself.
+    NotConfirmed,
+    /// A person sent the firing once more.
+    Resent,
+}
+
+/// A firing whose delivery could not be confirmed, kept so the person can
+/// resend it. Every firing is already in the transcript as a labelled prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TriggerDelivery {
+    prompt_id: String,
+    trigger_id: String,
+    agent_id: String,
+    origin: super::PromptOrigin,
+    prompt: String,
+    busy_policy: AgentTriggerBusyPolicy,
+    state: TriggerDeliveryState,
+    recorded_at_ms: u64,
+}
+
+impl TriggerDelivery {
+    pub(crate) fn not_confirmed(
+        prompt_id: &str,
+        trigger_id: &str,
+        agent_id: &str,
+        origin: super::PromptOrigin,
+        prompt: &str,
+        busy_policy: AgentTriggerBusyPolicy,
+        recorded_at_ms: u64,
+    ) -> Self {
+        Self {
+            prompt_id: prompt_id.to_string(),
+            trigger_id: trigger_id.to_string(),
+            agent_id: agent_id.to_string(),
+            origin,
+            prompt: prompt.to_string(),
+            busy_policy,
+            state: TriggerDeliveryState::NotConfirmed,
+            recorded_at_ms,
+        }
+    }
+
+    pub fn prompt_id(&self) -> &str {
+        &self.prompt_id
+    }
+
+    pub fn trigger_id(&self) -> &str {
+        &self.trigger_id
+    }
+
+    pub fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+
+    pub fn origin(&self) -> super::PromptOrigin {
+        self.origin
+    }
+
+    pub fn prompt(&self) -> &str {
+        &self.prompt
+    }
+
+    pub fn busy_policy(&self) -> AgentTriggerBusyPolicy {
+        self.busy_policy
+    }
+
+    pub fn state(&self) -> TriggerDeliveryState {
+        self.state
+    }
+
+    pub(crate) fn set_state(&mut self, state: TriggerDeliveryState) {
+        self.state = state;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTrigger {
     id: String,

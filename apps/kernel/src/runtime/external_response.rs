@@ -381,6 +381,7 @@ response_policies! {
         AgentTriggerCreated,
         AgentTriggerUpdated,
         AgentTriggerDeleted,
+        TriggerDeliveryResent,
         RecallEvents,
         SemanticRecallEvents,
         RuntimeNotices,

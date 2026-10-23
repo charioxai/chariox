@@ -4814,6 +4814,19 @@ schedule triggers in the old shape), and `CreateAgentPromptSchedule` / `CancelAg
 still create and delete schedule triggers. The shape is pinned by
 `local_daemon_protocol_agent_trigger_shape_is_versioned`.
 
+Provisional 582 (relay peer unchanged) makes every trigger firing a labelled prompt and lets a person
+resend one the provider did not confirm. A firing's transcript prompt carries `prompt_origin`
+`schedule` (a schedule trigger) or `notification` (a workflow notification) and is recorded before
+the provider write, so it exists even if the kernel stops first. A steered firing that the provider
+did not confirm, whether a receipt was lost or the kernel restarted mid-delivery, is never sent
+again by itself: the session lists it in `trigger_deliveries` as `{prompt_id, trigger_id,
+agent_id, origin, prompt, busy_policy, state: "not_confirmed"|"resent", recorded_at_ms}` (newest
+last, 32 kept). `ResendTriggerDelivery {session_id, prompt_id}` answers `TriggerDeliveryResent
+{session}`: it moves the entry to `resent`, delivers the prompt once more as a new labelled prompt
+under the entry's `busy_policy` (queue or steer) and refuses a second resend. A delivery that
+fails puts the entry back to `not_confirmed`. Whoever may prompt the agent may resend. The shape is
+pinned by `local_daemon_protocol_trigger_delivery_shape_is_versioned`.
+
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
 `layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.
 A viewer narrower than the canonical desktop (a phone) sends its page area; the kernel lays that

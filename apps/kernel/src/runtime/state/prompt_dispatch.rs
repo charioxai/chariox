@@ -8,6 +8,7 @@ use super::*;
 
 /// Whether the provider confirmed a trigger's steer. `Unconfirmed` firings are
 /// consumed, never replayed, because the provider may already hold them.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum TriggerSteerDelivery {
     Confirmed,
     Unconfirmed,
@@ -618,6 +619,7 @@ impl KernelRuntimeState {
                 prompt.id(),
                 prompt.prompt(),
                 prompt.attachments(),
+                prompt.prompt_origin(),
             )?;
             owned.echo_steering_prompt_to_other_attachments(
                 session_id,
@@ -665,9 +667,9 @@ impl KernelRuntimeState {
     pub(super) async fn submit_prepared_agent_trigger_prompt(
         &self,
         prepared: crate::app::KernelPreparedPromptSubmission,
-        claim: &crate::session::AgentTriggerDispatch,
+        claim: Option<&crate::session::AgentTriggerDispatch>,
     ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
-        self.submit_prepared_prompt_authorized(prepared, true, None, Some(claim))
+        self.submit_prepared_prompt_authorized(prepared, true, None, claim)
             .await
     }
 
@@ -965,7 +967,7 @@ impl KernelRuntimeState {
         target_agent_id: &str,
         attachment_id: &str,
         prompt_id: &str,
-        settle_firing: impl FnOnce(),
+        settle_firing: impl FnOnce(TriggerSteerDelivery),
     ) -> Result<TriggerSteerDelivery, DaemonError> {
         let owned = &self.owned;
         if owned
@@ -996,6 +998,7 @@ impl KernelRuntimeState {
                 .provider_runtime_lanes
                 .acquire(&prepared.dispatch.provider_run_id)
                 .await;
+            let recorded_sequence = owned.record_local_queued_prompt_steer(&prepared)?;
             owned.hold_local_queued_prompt_steer(&prepared, true)?;
             let delivery = match self
                 .enqueue_prompt_dispatch_with_acceptance(&prepared.dispatch)
@@ -1023,8 +1026,8 @@ impl KernelRuntimeState {
             };
             // The trigger is settled while the hold still stands, so a stop
             // before the queue removal cannot leave it due without a firing.
-            settle_firing();
-            owned.finish_local_queued_prompt_steer(&prepared)?;
+            settle_firing(delivery);
+            owned.finish_local_queued_prompt_steer(&prepared, recorded_sequence)?;
             Ok(delivery)
         }
         .await;

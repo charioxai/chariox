@@ -100,6 +100,89 @@ impl KernelRuntimeState {
         Ok(crate::local::LocalDaemonResponse::AgentTriggerDeleted { trigger, session })
     }
 
+    /// Sends an unconfirmed firing once more, following its trigger's busy
+    /// policy. The delivery is marked resent first, so a second click cannot
+    /// send it twice; a failed delivery puts it back for another try.
+    pub(crate) async fn resend_trigger_delivery(
+        &self,
+        request: crate::local::ResendTriggerDeliveryRequest,
+        caller_user_id: &str,
+    ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
+        use crate::session::TriggerDeliveryState::{NotConfirmed, Resent};
+        let delivery = self
+            .owned
+            .session_store
+            .get_session(&request.session_id)?
+            .trigger_deliveries()
+            .iter()
+            .find(|delivery| delivery.prompt_id() == request.prompt_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "resend trigger delivery",
+                message: format!(
+                    "no unconfirmed trigger firing `{}` in session `{}`",
+                    request.prompt_id, request.session_id
+                ),
+            })?;
+        self.owned.ensure_agent_prompt_access(
+            delivery.agent_id(),
+            caller_user_id,
+            "resend trigger delivery",
+        )?;
+        self.move_trigger_delivery(
+            &request.session_id,
+            &request.prompt_id,
+            NotConfirmed,
+            Resent,
+        )?
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "resend trigger delivery",
+            message: format!(
+                "trigger firing `{}` was already sent again",
+                request.prompt_id
+            ),
+        })?;
+        let dispatch = AgentTriggerDispatch {
+            claim_generation: 0,
+            session_id: request.session_id.clone(),
+            trigger_id: delivery.trigger_id().to_string(),
+            agent_id: delivery.agent_id().to_string(),
+            prompt: delivery.prompt().to_string(),
+            busy_policy: delivery.busy_policy(),
+        };
+        if let Err(error) = self
+            .deliver_agent_trigger_prompt(&dispatch, None, delivery.origin())
+            .await
+        {
+            self.move_trigger_delivery(
+                &request.session_id,
+                &request.prompt_id,
+                Resent,
+                NotConfirmed,
+            )?;
+            return Err(error);
+        }
+        let session = self.owned.session_snapshot(&request.session_id)?;
+        Ok(crate::local::LocalDaemonResponse::TriggerDeliveryResent { session })
+    }
+
+    fn move_trigger_delivery(
+        &self,
+        session_id: &str,
+        prompt_id: &str,
+        from: crate::session::TriggerDeliveryState,
+        to: crate::session::TriggerDeliveryState,
+    ) -> Result<Option<crate::session::TriggerDelivery>, DaemonError> {
+        let moved = self
+            .owned
+            .session_store
+            .write()
+            .move_trigger_delivery(session_id, prompt_id, from, to)?;
+        self.owned
+            .persist_agent_trigger_session(session_id, "trigger_delivery_moved")?;
+        Ok(moved)
+    }
+
     pub(crate) async fn cancel_agent_prompt_schedule(
         &self,
         request: crate::local::CancelAgentPromptScheduleRequest,
@@ -333,6 +416,22 @@ impl KernelRuntimeState {
         {
             return Ok(AgentTriggerFiring::Coalesced);
         }
+        self.deliver_agent_trigger_prompt(
+            dispatch,
+            Some(dispatch),
+            crate::session::PromptOrigin::Schedule,
+        )
+        .await
+    }
+
+    /// Admits the trigger's message as a labelled prompt of its agent. A
+    /// resend has no claim: its trigger may be gone or not due.
+    async fn deliver_agent_trigger_prompt(
+        &self,
+        dispatch: &AgentTriggerDispatch,
+        claim: Option<&AgentTriggerDispatch>,
+        origin: crate::session::PromptOrigin,
+    ) -> Result<AgentTriggerFiring, DaemonError> {
         let source_attachment_id = self
             .owned
             .ensure_agent_trigger_attachment(&dispatch.session_id)?;
@@ -352,6 +451,7 @@ impl KernelRuntimeState {
             crate::session::PromptStatus::Queued,
         )
         .with_agent_trigger(&dispatch.trigger_id)
+        .with_prompt_origin(origin)
         .with_hidden_system_context(crate::prompt_assembly::attach_prompt_manifest_entry(
             scheduled_context,
             &scheduled_manifest_entry,
@@ -364,7 +464,7 @@ impl KernelRuntimeState {
                     force_queue: false,
                     refresh_projection: true,
                 },
-                dispatch,
+                claim,
             )
             .await;
         let mut submission = match submission {
@@ -418,9 +518,23 @@ impl KernelRuntimeState {
                 &dispatch.agent_id,
                 &source_attachment_id,
                 &queued_prompt_id,
-                || {
-                    self.owned
-                        .settle_steered_trigger(&dispatch.session_id, &dispatch.trigger_id);
+                |delivery| {
+                    let unconfirmed = (delivery == TriggerSteerDelivery::Unconfirmed).then(|| {
+                        crate::session::TriggerDelivery::not_confirmed(
+                            &queued_prompt_id,
+                            &dispatch.trigger_id,
+                            &dispatch.agent_id,
+                            origin,
+                            &dispatch.prompt,
+                            dispatch.busy_policy,
+                            crate::session::unix_epoch_ms(),
+                        )
+                    });
+                    self.owned.settle_steered_firing(
+                        &dispatch.session_id,
+                        claim.map(|_| dispatch.trigger_id.as_str()),
+                        unconfirmed,
+                    );
                     settled.store(true, std::sync::atomic::Ordering::SeqCst);
                 },
             )
@@ -439,7 +553,7 @@ impl KernelRuntimeState {
                 self.record_agent_trigger_notice(
                     dispatch,
                     format!(
-                        "Trigger `{}`: the provider did not confirm the steer, so it is not sent again.",
+                        "Trigger `{}`: the provider did not confirm the steer. It is not sent again by itself; resend it from the prompt if it did not arrive.",
                         dispatch.trigger_id
                     ),
                 );
@@ -835,6 +949,7 @@ mod tests {
         session_id: &str,
         agent_id: &str,
         run_id: &str,
+        process_label: &str,
     ) {
         let request = crate::provider::LaunchProviderRequest::new(
             session_id,
@@ -849,7 +964,7 @@ mod tests {
             &request,
             crate::provider::ProviderLaunchResult {
                 endpoint_mode: crate::provider::AgentEndpointMode::Managed,
-                process_label: "slow-ack".into(),
+                process_label: process_label.into(),
                 pty_target: None,
                 pty_program: None,
                 pty_args: vec![],
@@ -955,7 +1070,7 @@ mod tests {
                 config, &[],
             )
             .await;
-        install_slow_structured_run(&runtime, &session_id, &agent_id, &run_id);
+        install_slow_structured_run(&runtime, &session_id, &agent_id, &run_id, "slow-ack");
         let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
         let state = runtime.clone();
         let due = trigger.next_run_at_ms();
@@ -1003,7 +1118,7 @@ mod tests {
                 config, &[],
             )
             .await;
-        install_slow_structured_run(&runtime, &session_id, &agent_id, &run_id);
+        install_slow_structured_run(&runtime, &session_id, &agent_id, &run_id, "slow-ack");
         let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
         let state = runtime.clone();
         let due = trigger.next_run_at_ms();
@@ -1039,6 +1154,149 @@ mod tests {
             let (second, _) = restart_from_log_cut(&recovery, cut, "trigger-steer-held-2").await;
             assert_restart_cannot_refire(&second, &agent_id, &format!("recovery log cut at {cut}"));
         }
+    }
+
+    fn trigger_prompt_history(
+        runtime: &KernelRuntimeState,
+        session_id: &str,
+    ) -> Vec<crate::history::HistoryEvent> {
+        runtime
+            .owned
+            .operational_history_store
+            .query_events(crate::history::HistoryEventQuery {
+                session_id: Some(session_id.to_string()),
+                kind: Some("user_prompt".to_string()),
+                ..Default::default()
+            })
+            .unwrap()
+            .into_iter()
+            .filter(|event| {
+                event.metadata.get("prompt_origin") == Some(&serde_json::json!("schedule"))
+            })
+            .collect()
+    }
+
+    // The firing is in the transcript, labelled with its origin, before the
+    // provider has the message, so it exists even if the kernel stops first.
+    #[tokio::test]
+    async fn trigger_steer_is_in_the_transcript_before_the_provider_write() {
+        let (_worktree, runtime, session_id, agent_id, _, _, run_id) =
+            runtime_with_active_prompt().await;
+        install_slow_structured_run(&runtime, &session_id, &agent_id, &run_id, "slow-ack");
+        let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
+        let state = runtime.clone();
+        let due = trigger.next_run_at_ms();
+        let firing = tokio::spawn(async move { state.dispatch_due_agent_triggers(due).await });
+        wait_for_queued_firing(&runtime, &session_id, &agent_id).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !runtime
+                .owned
+                .provider_store
+                .structured_prompt_io_in_flight(&run_id)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the Submit command must reach the mailbox");
+        assert_eq!(
+            trigger_prompt_history(&runtime, &session_id).len(),
+            1,
+            "the labelled firing must be recorded while the provider still holds the write"
+        );
+        firing.abort();
+    }
+
+    async fn unconfirmed_trigger_steer() -> (
+        crate::test_support::TestWorktree,
+        KernelRuntimeState,
+        String,
+        String,
+        crate::session::TriggerDelivery,
+    ) {
+        let (worktree, runtime, session_id, agent_id, _, _, run_id) =
+            runtime_with_active_prompt().await;
+        install_slow_structured_run(&runtime, &session_id, &agent_id, &run_id, "ack-lost");
+        let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            runtime.dispatch_due_agent_triggers(trigger.next_run_at_ms()),
+        )
+        .await
+        .expect("the firing must settle");
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        let delivery = session
+            .trigger_deliveries()
+            .first()
+            .cloned()
+            .expect("an unconfirmed steer must be remembered for the person to resend");
+        (worktree, runtime, session_id, agent_id, delivery)
+    }
+
+    // An unconfirmed firing says so and can be resent exactly once, as one
+    // more turn that follows the trigger's busy policy.
+    #[tokio::test]
+    async fn unconfirmed_trigger_steer_is_resent_exactly_once() {
+        let (_worktree, runtime, session_id, agent_id, delivery) =
+            unconfirmed_trigger_steer().await;
+        assert_eq!(
+            delivery.state(),
+            crate::session::TriggerDeliveryState::NotConfirmed
+        );
+        assert_eq!(delivery.origin(), crate::session::PromptOrigin::Schedule);
+        assert_eq!(delivery.busy_policy(), AgentTriggerBusyPolicy::Steer);
+        let owner = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+        let resend = |runtime: &KernelRuntimeState| {
+            let request = crate::local::ResendTriggerDeliveryRequest {
+                session_id: session_id.clone(),
+                prompt_id: delivery.prompt_id().to_string(),
+            };
+            let runtime = runtime.clone();
+            let owner_user_id = owner.owner_user_id().to_string();
+            async move {
+                runtime
+                    .resend_trigger_delivery(request, &owner_user_id)
+                    .await
+            }
+        };
+        let submits = || {
+            runtime
+                .owned
+                .provider_store
+                .drain_finished_structured_prompt_submit_jobs()
+                .len()
+        };
+        submits();
+        resend(&runtime).await.expect("the first resend succeeds");
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        assert_eq!(
+            session.trigger_deliveries()[0].state(),
+            crate::session::TriggerDeliveryState::Resent
+        );
+        assert!(
+            resend(&runtime).await.is_err(),
+            "a second resend must not send it again"
+        );
+        let (active, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        let resent_firings = active
+            .iter()
+            .chain(queued.iter())
+            .filter(|prompt| prompt.prompt() == delivery.prompt())
+            .count()
+            + session
+                .trigger_deliveries()
+                .iter()
+                .filter(|known| known.prompt_id() != delivery.prompt_id())
+                .count();
+        assert_eq!(resent_firings, 1, "exactly one more delivery");
+        assert_eq!(
+            trigger_prompt_history(&runtime, &session_id).len(),
+            2,
+            "the resend shows as one more labelled prompt"
+        );
     }
 
     // MP-08/MP-09/MP-10: a steer whose acknowledgement is lost may already be
