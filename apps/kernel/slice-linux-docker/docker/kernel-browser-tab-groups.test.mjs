@@ -195,3 +195,13 @@ test('MP-08/MP-10/MP-11 protocol577 favicons are bounded Chromium-cache PNGs',as
   }
  }finally{await rm(root,{recursive:true,force:true})}
 });
+
+test('MP-08/MP-10/MP-11 favicon cache failure never retires native input',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'chariox-icon-failure-'));
+ try{
+  const source=await readFile(path.join(await writeTabGroupsExtension(root),'sw.js'),'utf8'),state={};
+  const chrome={runtime:{getPlatformInfo(){},getURL:p=>'chrome-extension://'+TAB_GROUPS_EXTENSION_ID+p},debugger:{getTargets:async()=>[{id:'target',tabId:1}]},windows:{},tabs:{get:async()=>({id:1,url:'https://example.com',favIconUrl:'https://example.com/icon'}),onCreated:{addListener(){}},onAttached:{addListener(){}}}};
+  new Function('chrome','setInterval','setTimeout','globalThis','fetch',source)(chrome,()=>{},queueMicrotask,state,async()=>{throw Error('cache temporarily unavailable')});
+  assert.equal(await state.charioxTabs.favicon('target'),null);
+ }finally{await rm(root,{recursive:true,force:true})}
+});

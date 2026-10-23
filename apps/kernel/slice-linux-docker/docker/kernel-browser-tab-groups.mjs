@@ -59,26 +59,31 @@ const activeViewport = async () => {
 };
 const icons = new Map();
 const favicon = async target => {
-  const id = (await targetTabs()).get(target);
-  if (id === undefined) return null;
-  const tab = await chrome.tabs.get(id);
-  if (!tab.favIconUrl || !/^https?:/.test(tab.url ?? '')) return null;
-  const key = JSON.stringify([tab.url, tab.favIconUrl]);
-  if (icons.get(id)?.key === key) return icons.get(id).value;
-  // Chrome supplies a raster from its own cache; no client fetch of a site URL.
-  const url = new URL(chrome.runtime.getURL('/_favicon/'));
-  url.searchParams.set('pageUrl', tab.url); url.searchParams.set('size', '32');
-  const response = await fetch(url, {signal: AbortSignal.timeout(2000)});
-  if (!response.ok || !response.headers.get('content-type')?.startsWith('image/png')) return null;
-  const reader = response.body.getReader(), chunks = []; let size = 0;
-  for (;;) { const part = await reader.read(); if (part.done) break; size += part.value.length; if (size > 16384) { await reader.cancel(); return null; } chunks.push(part.value); }
-  const bytes = new Uint8Array(size); let at = 0; for (const chunk of chunks) { bytes.set(chunk, at); at += chunk.length; }
-  if (size < 33 || ![137,80,78,71,13,10,26,10].every((v,i) => bytes[i] === v)) return null;
-  const view = new DataView(bytes.buffer), width = view.getUint32(16), height = view.getUint32(20);
-  if (!width || !height || width > 32 || height > 32) return null;
-  const value = btoa(String.fromCharCode(...bytes));
-  icons.set(id, {key, value}); while (icons.size > 32) icons.delete(icons.keys().next().value);
-  return value;
+  try {
+    const id = (await targetTabs()).get(target);
+    if (id === undefined) return null;
+    const tab = await chrome.tabs.get(id);
+    if (!tab.favIconUrl || !/^https?:/.test(tab.url ?? '')) return null;
+    const key = JSON.stringify([tab.url, tab.favIconUrl]);
+    if (icons.get(id)?.key === key) return icons.get(id).value;
+    // Chrome supplies a raster from its own cache; no client fetch of a site URL.
+    const url = new URL(chrome.runtime.getURL('/_favicon/'));
+    url.searchParams.set('pageUrl', tab.url); url.searchParams.set('size', '32');
+    const response = await fetch(url, {signal: AbortSignal.timeout(2000)});
+    if (!response.ok || !response.headers.get('content-type')?.startsWith('image/png')) return null;
+    const reader = response.body.getReader(), chunks = []; let size = 0;
+    for (;;) { const part = await reader.read(); if (part.done) break; size += part.value.length; if (size > 16384) { await reader.cancel(); return null; } chunks.push(part.value); }
+    const bytes = new Uint8Array(size); let at = 0; for (const chunk of chunks) { bytes.set(chunk, at); at += chunk.length; }
+    if (size < 33 || ![137,80,78,71,13,10,26,10].every((v,i) => bytes[i] === v)) return null;
+    const view = new DataView(bytes.buffer), width = view.getUint32(16), height = view.getUint32(20);
+    if (!width || !height || width > 32 || height > 32) return null;
+    const value = btoa(String.fromCharCode(...bytes));
+    icons.set(id, {key, value}); while (icons.size > 32) icons.delete(icons.keys().next().value);
+    return value;
+  } catch {
+    // Favicon failures do not retire native input: this is optional presentation.
+    return null;
+  }
 };
 globalThis.charioxTabs = {
   revision: 4,
