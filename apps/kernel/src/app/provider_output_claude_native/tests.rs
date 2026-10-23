@@ -3770,7 +3770,7 @@ fn claude_native_injection_uses_shared_skill_admission_before_pty_write() {
         }
         fn acknowledge_typed_leased(
             &self,
-            run: &RuntimeProviderRun,
+            _: &RuntimeProviderRun,
             _: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
             _: &str,
             _: &[crate::provider::skill_delivery::TypedSkillLoad],

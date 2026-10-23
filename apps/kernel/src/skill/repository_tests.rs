@@ -398,8 +398,7 @@ fn repository_update_refuses_a_batch_that_leaves_one_member_at_an_old_commit() {
     update.actions.truncate(1);
     let error = service
         .prepare(&update)
-        .err()
-        .expect("preview must refuse a partially advanced repository package")
+        .expect_err("preview must refuse a partially advanced repository package")
         .to_string();
     assert!(error.contains("every remaining member"), "{error}");
     assert_eq!(service.storage.snapshot().unwrap(), catalog);
