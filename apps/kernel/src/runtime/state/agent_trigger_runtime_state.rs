@@ -5,6 +5,114 @@ use crate::session::{
     AgentTriggerRepeat,
 };
 
+type TriggerResendKey = (String, String);
+pub(super) type TriggerResendClaims = Arc<std::sync::Mutex<BTreeSet<TriggerResendKey>>>;
+
+struct TriggerResendClaim {
+    key: TriggerResendKey,
+    claims: TriggerResendClaims,
+}
+
+impl Drop for TriggerResendClaim {
+    fn drop(&mut self) {
+        self.claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.key);
+    }
+}
+
+/// Keep a queued replacement from racing promotion until its admission is
+/// durable. Cancellation and failed writes discard only this uncommitted copy.
+struct TriggerResendAdmissionHold {
+    owned: KernelRuntimeOwnedState,
+    session_id: String,
+    agent_id: String,
+    original_prompt_id: String,
+    prompt: crate::session::PromptQueueItem,
+    reservation: u64,
+}
+
+impl Drop for TriggerResendAdmissionHold {
+    fn drop(&mut self) {
+        let rollback = match self
+            .owned
+            .durable_state_store
+            .trigger_resend_admitted(&self.session_id, &self.original_prompt_id)
+        {
+            Ok(true) => self
+                .owned
+                .session_store
+                .write()
+                .move_trigger_delivery(
+                    &self.session_id,
+                    &self.original_prompt_id,
+                    crate::session::TriggerDeliveryState::NotConfirmed,
+                    crate::session::TriggerDeliveryState::Resent,
+                )
+                .map(|_| ()),
+            Ok(false) => (|| {
+                self.owned.discard_unadmitted_trigger_resend(
+                    &self.session_id,
+                    &self.agent_id,
+                    &self.original_prompt_id,
+                )?;
+                let tasks = self
+                    .owned
+                    .durable_state_store
+                    .agent_tasks(Some(&self.session_id), Some(&self.agent_id))?;
+                if tasks.iter().any(|task| {
+                    task.task_id == self.prompt.id() && task.prompt_id == self.prompt.id()
+                }) {
+                    self.owned.withdraw_agent_task(self.prompt.id())?;
+                }
+                Ok(())
+            })(),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = rollback {
+            crate::logging::error_with_fields(
+                "daemon.agent_trigger",
+                "failed to discard an unadmitted resend",
+                serde_json::json!({"session_id": self.session_id, "error": error.to_string()}),
+            );
+        }
+        self.prompt.release_remote_steer(self.reservation);
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    fn discard_unadmitted_trigger_resend(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        original_prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let (active, queued) = self.prompt_state_owner.state_parts(&session, agent_id);
+        if let Some(prompt) =
+            active.filter(|prompt| prompt.trigger_resend_of() == Some(original_prompt_id))
+        {
+            self.prompt_state_owner.complete_active_prompt_if_matches(
+                &session,
+                agent_id,
+                Some(prompt.id()),
+            );
+        }
+        for prompt in queued
+            .iter()
+            .filter(|prompt| prompt.trigger_resend_of() == Some(original_prompt_id))
+        {
+            self.prompt_state_owner
+                .remove_queued_prompt(&session, agent_id, prompt.id());
+        }
+        let (active, queued) = self.prompt_state_owner.state_parts(&session, agent_id);
+        self.session_store
+            .mirror_agent_prompt_state(session_id, agent_id, active, queued)?;
+        Ok(())
+    }
+}
+
 enum AgentTriggerFiring {
     Fired {
         outcome: AgentTriggerOutcome,
@@ -101,14 +209,14 @@ impl KernelRuntimeState {
     }
 
     /// Sends an unconfirmed firing once more, following its trigger's busy
-    /// policy. The delivery is marked resent first, so a second click cannot
-    /// send it twice; a failed delivery puts it back for another try.
+    /// policy. A transient claim excludes concurrent clicks; the replacement's
+    /// durable admission consumes the resend, including after a restart.
     pub(crate) async fn resend_trigger_delivery(
         &self,
         request: crate::local::ResendTriggerDeliveryRequest,
         caller_user_id: &str,
     ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
-        use crate::session::TriggerDeliveryState::{NotConfirmed, Resent};
+        use crate::session::TriggerDeliveryState::NotConfirmed;
         let delivery = self
             .owned
             .session_store
@@ -129,19 +237,50 @@ impl KernelRuntimeState {
             caller_user_id,
             "resend trigger delivery",
         )?;
-        self.move_trigger_delivery(
-            &request.session_id,
-            &request.prompt_id,
-            NotConfirmed,
-            Resent,
-        )?
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "resend trigger delivery",
-            message: format!(
-                "trigger firing `{}` was already sent again",
-                request.prompt_id
-            ),
-        })?;
+        let key = (request.session_id.clone(), request.prompt_id.clone());
+        let claims = Arc::clone(&self.owned.trigger_resend_claims);
+        let reserved = claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key.clone());
+        if !reserved {
+            return Err(DaemonError::LocalTransport {
+                operation: "resend trigger delivery",
+                message: format!(
+                    "trigger firing `{}` is already being sent again",
+                    request.prompt_id
+                ),
+            });
+        }
+        let _claim = TriggerResendClaim { key, claims };
+        // Re-read after reserving: another request may have admitted its
+        // replacement between the first snapshot and acquiring this claim.
+        if self
+            .owned
+            .durable_state_store
+            .trigger_resend_admitted(&request.session_id, &request.prompt_id)?
+        {
+            self.owned.session_store.write().move_trigger_delivery(
+                &request.session_id,
+                &request.prompt_id,
+                crate::session::TriggerDeliveryState::NotConfirmed,
+                crate::session::TriggerDeliveryState::Resent,
+            )?;
+        }
+        let current = self.owned.session_store.get_session(&request.session_id)?;
+        if !current
+            .trigger_deliveries()
+            .iter()
+            .any(|known| known.prompt_id() == request.prompt_id && known.state() == NotConfirmed)
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "resend trigger delivery",
+                message: format!(
+                    "trigger firing `{}` was already sent again",
+                    request.prompt_id
+                ),
+            });
+        }
         let dispatch = AgentTriggerDispatch {
             claim_generation: 0,
             session_id: request.session_id.clone(),
@@ -150,37 +289,15 @@ impl KernelRuntimeState {
             prompt: delivery.prompt().to_string(),
             busy_policy: delivery.busy_policy(),
         };
-        if let Err(error) = self
-            .deliver_agent_trigger_prompt(&dispatch, None, delivery.origin())
-            .await
-        {
-            self.move_trigger_delivery(
-                &request.session_id,
-                &request.prompt_id,
-                Resent,
-                NotConfirmed,
-            )?;
-            return Err(error);
-        }
+        self.deliver_agent_trigger_prompt(
+            &dispatch,
+            None,
+            delivery.origin(),
+            Some(&request.prompt_id),
+        )
+        .await?;
         let session = self.owned.session_snapshot(&request.session_id)?;
         Ok(crate::local::LocalDaemonResponse::TriggerDeliveryResent { session })
-    }
-
-    fn move_trigger_delivery(
-        &self,
-        session_id: &str,
-        prompt_id: &str,
-        from: crate::session::TriggerDeliveryState,
-        to: crate::session::TriggerDeliveryState,
-    ) -> Result<Option<crate::session::TriggerDelivery>, DaemonError> {
-        let moved = self
-            .owned
-            .session_store
-            .write()
-            .move_trigger_delivery(session_id, prompt_id, from, to)?;
-        self.owned
-            .persist_agent_trigger_session(session_id, "trigger_delivery_moved")?;
-        Ok(moved)
     }
 
     pub(crate) async fn cancel_agent_prompt_schedule(
@@ -420,6 +537,7 @@ impl KernelRuntimeState {
             dispatch,
             Some(dispatch),
             crate::session::PromptOrigin::Schedule,
+            None,
         )
         .await
     }
@@ -431,6 +549,7 @@ impl KernelRuntimeState {
         dispatch: &AgentTriggerDispatch,
         claim: Option<&AgentTriggerDispatch>,
         origin: crate::session::PromptOrigin,
+        resend_of: Option<&str>,
     ) -> Result<AgentTriggerFiring, DaemonError> {
         let source_attachment_id = self
             .owned
@@ -456,6 +575,30 @@ impl KernelRuntimeState {
             scheduled_context,
             &scheduled_manifest_entry,
         ));
+        let prompt = if let Some(original_prompt_id) = resend_of {
+            prompt.with_trigger_resend(original_prompt_id)
+        } else {
+            prompt
+        };
+        let admission_hold = if let Some(original_prompt_id) = resend_of {
+            let reservation =
+                prompt
+                    .reserve_remote_steer()
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "resend trigger delivery",
+                        message: "replacement prompt admission is already reserved".into(),
+                    })?;
+            Some(TriggerResendAdmissionHold {
+                owned: self.owned.clone(),
+                session_id: dispatch.session_id.clone(),
+                agent_id: dispatch.agent_id.clone(),
+                original_prompt_id: original_prompt_id.to_string(),
+                prompt: prompt.clone(),
+                reservation,
+            })
+        } else {
+            None
+        };
         let submission = self
             .submit_prepared_agent_trigger_prompt(
                 crate::app::KernelPreparedPromptSubmission {
@@ -467,6 +610,7 @@ impl KernelRuntimeState {
                 claim,
             )
             .await;
+        drop(admission_hold);
         let mut submission = match submission {
             Err(DaemonError::LocalTransport {
                 operation: "agent trigger claim",
@@ -502,6 +646,9 @@ impl KernelRuntimeState {
             }
             crate::session::PromptSubmissionOutcome::Queued { prompt } => prompt.id().to_string(),
         };
+        if resend_of.is_some() {
+            self.resume_idle_trigger_resend_queue(&dispatch.session_id, &dispatch.agent_id)?;
+        }
         if dispatch.busy_policy == AgentTriggerBusyPolicy::Queue {
             return Ok(AgentTriggerFiring::Fired {
                 outcome: AgentTriggerOutcome::Queued,
@@ -577,6 +724,46 @@ impl KernelRuntimeState {
         }
     }
 
+    fn resume_idle_trigger_resend_queue(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        let (active, queued) = self
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, agent_id);
+        if active.is_some() || queued.is_empty() {
+            return Ok(());
+        }
+        if self
+            .owned
+            .agent_store
+            .get_agent(agent_id)?
+            .remote_execution()
+            .is_none()
+        {
+            return self.spawn_idle_local_prompt_queue_promotion(session_id, agent_id);
+        }
+        let runtime = self.clone();
+        let session_id = session_id.to_string();
+        let agent_id = agent_id.to_string();
+        tokio::spawn(async move {
+            if let Err(error) = runtime
+                .spawn_next_queued_remote_prompt(&session_id, &agent_id)
+                .await
+            {
+                crate::logging::error_with_fields(
+                    "daemon.agent_trigger",
+                    "failed to promote an admitted remote resend",
+                    serde_json::json!({"session_id":session_id,"agent_id":agent_id,"error":error.to_string()}),
+                );
+            }
+        });
+        Ok(())
+    }
+
     fn record_agent_trigger_notice(&self, dispatch: &AgentTriggerDispatch, message: String) {
         self.owned.record_notice_for_agent(
             &dispatch.session_id,
@@ -649,7 +836,7 @@ impl KernelRuntimeOwnedState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt;
     use super::*;
 
@@ -987,7 +1174,9 @@ mod tests {
         runtime.owned.provider_run_projection.update(run);
     }
 
-    fn durable_state_config(tag: &str) -> crate::config::DaemonConfig {
+    pub(in crate::runtime::state) fn durable_state_config(
+        tag: &str,
+    ) -> crate::config::DaemonConfig {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.user_config.state.path = Some(
             std::env::temp_dir()
@@ -1300,6 +1489,364 @@ mod tests {
                 event.metadata.get("prompt_origin") == Some(&serde_json::json!("schedule"))
             })
             .collect()
+    }
+
+    pub(in crate::runtime::state) async fn durable_unconfirmed_trigger_delivery(
+        tag: &str,
+    ) -> (
+        crate::test_support::TestWorktree,
+        KernelRuntimeState,
+        crate::config::DaemonConfig,
+        String,
+        String,
+        String,
+    ) {
+        durable_unconfirmed_trigger_delivery_with_config(durable_state_config(tag)).await
+    }
+
+    pub(in crate::runtime::state) async fn durable_unconfirmed_trigger_delivery_with_config(
+        config: crate::config::DaemonConfig,
+    ) -> (
+        crate::test_support::TestWorktree,
+        KernelRuntimeState,
+        crate::config::DaemonConfig,
+        String,
+        String,
+        String,
+    ) {
+        use crate::session::TriggerDelivery;
+        let (_worktree, runtime, session_id, agent_id, _, _, run_id) =
+            super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt_and_config(
+                config.clone(), &[],
+            ).await;
+        let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
+        runtime
+            .owned
+            .session_store
+            .write()
+            .settle_steered_firing(
+                &session_id,
+                Some(trigger.id()),
+                crate::session::unix_epoch_ms(),
+                Some(TriggerDelivery::not_confirmed(
+                    "original-firing",
+                    trigger.id(),
+                    &agent_id,
+                    crate::session::PromptOrigin::Schedule,
+                    "Resend this firing",
+                    AgentTriggerBusyPolicy::Queue,
+                    crate::session::unix_epoch_ms(),
+                )),
+            )
+            .unwrap();
+        runtime
+            .owned
+            .persist_agent_trigger_session(&session_id, "test_unconfirmed_firing")
+            .unwrap();
+        (_worktree, runtime, config, session_id, agent_id, run_id)
+    }
+
+    // MP-08/MP-10/MP-11: each log prefix must distinguish a reserved resend
+    // from a replacement prompt that has actually been durably admitted.
+    #[tokio::test]
+    async fn resend_log_cut_keeps_unadmitted_firings_resendable() {
+        use crate::session::TriggerDeliveryState;
+        let (_worktree, runtime, _, session_id, agent_id, _) =
+            durable_unconfirmed_trigger_delivery("trigger-resend-cut").await;
+        let before = runtime
+            .owned
+            .durable_state_store
+            .load_events_after(0)
+            .unwrap()
+            .len();
+        let owner = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+        runtime
+            .resend_trigger_delivery(
+                crate::local::ResendTriggerDeliveryRequest {
+                    session_id: session_id.clone(),
+                    prompt_id: "original-firing".into(),
+                },
+                owner.owner_user_id(),
+            )
+            .await
+            .unwrap();
+        let events = runtime
+            .owned
+            .durable_state_store
+            .load_events_after(0)
+            .unwrap();
+        let admission = events
+            .iter()
+            .enumerate()
+            .skip(before)
+            .find(|(_, event)| {
+                event.kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND
+            })
+            .map(|(index, _)| index)
+            .expect("resend must admit a replacement prompt");
+        for cut in before..=events.len() {
+            let (restarted, _) = restart_from_log_cut(&events, cut, "resend-cut-restart").await;
+            let session = restarted.owned.session_snapshot(&session_id).unwrap();
+            let expected = if cut > admission {
+                TriggerDeliveryState::Resent
+            } else {
+                TriggerDeliveryState::NotConfirmed
+            };
+            assert_eq!(
+                session.trigger_deliveries()[0].state(),
+                expected,
+                "log cut at {cut}: only durable prompt admission may consume a resend"
+            );
+            let result = restarted
+                .resend_trigger_delivery(
+                    crate::local::ResendTriggerDeliveryRequest {
+                        session_id: session_id.clone(),
+                        prompt_id: "original-firing".into(),
+                    },
+                    owner.owner_user_id(),
+                )
+                .await;
+            assert_eq!(
+                result.is_ok(),
+                cut <= admission,
+                "log cut at {cut}: only unadmitted firings may be resent"
+            );
+            let session = restarted.owned.session_snapshot(&session_id).unwrap();
+            let (_, queued) = restarted
+                .owned
+                .prompt_state_owner
+                .state_parts(&session, &agent_id);
+            assert_eq!(
+                queued.len(),
+                1,
+                "each prefix admits exactly one replacement"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn resend_admission_survives_stale_sessions_completed_prompts_and_snapshots() {
+        use crate::session::TriggerDeliveryState::{NotConfirmed, Resent};
+        for (stale_event, snapshot) in [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let (_worktree, runtime, config, session_id, agent_id, _) =
+                durable_unconfirmed_trigger_delivery("resend-stale-state").await;
+            let owner = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+            let request = crate::local::ResendTriggerDeliveryRequest {
+                session_id: session_id.clone(),
+                prompt_id: "original-firing".into(),
+            };
+            runtime
+                .resend_trigger_delivery(request.clone(), owner.owner_user_id())
+                .await
+                .unwrap();
+            let session = runtime.owned.session_snapshot(&session_id).unwrap();
+            let (_, queued) = runtime
+                .owned
+                .prompt_state_owner
+                .state_parts(&session, &agent_id);
+            runtime
+                .owned
+                .prompt_state_owner
+                .remove_queued_prompt(&session, &agent_id, queued.front().unwrap().id())
+                .unwrap();
+            let (active, queued) = runtime
+                .owned
+                .prompt_state_owner
+                .state_parts(&session, &agent_id);
+            runtime
+                .owned
+                .mirror_prompt_owner_agent_state(&session_id, &agent_id, active, queued)
+                .unwrap();
+            // A projection captured before the admission update must not
+            // override the durable receipt, even without a queued replacement.
+            runtime
+                .owned
+                .session_store
+                .write()
+                .move_trigger_delivery(&session_id, "original-firing", Resent, NotConfirmed)
+                .unwrap();
+            if stale_event {
+                runtime
+                    .owned
+                    .persist_agent_trigger_session(&session_id, "stale_resend_projection")
+                    .unwrap();
+            }
+            if snapshot {
+                runtime
+                    .with_app_side_effect(|app| app.save_durable_state_snapshot())
+                    .await
+                    .unwrap();
+            }
+            // Copy the committed SQLite state (including its checkpoint) to
+            // simulate a restart without the original fixture's live lease.
+            let mut restart_config = config.clone();
+            let restart_path = durable_state_config("resend-snapshot-copy")
+                .user_config
+                .state
+                .path
+                .unwrap();
+            rusqlite::Connection::open(runtime.owned.durable_state_store.path())
+                .unwrap()
+                .execute("VACUUM INTO ?1", rusqlite::params![restart_path])
+                .unwrap();
+            restart_config.user_config.state.path = Some(restart_path);
+            let app = crate::app::DaemonApp::bootstrap(restart_config).unwrap();
+            let restarted =
+                super::super::local_prompt_dispatch_runtime::tests::owned_runtime_state(&Arc::new(
+                    tokio::sync::Mutex::new(app),
+                ))
+                .await;
+            assert_eq!(
+                restarted
+                    .owned
+                    .session_snapshot(&session_id)
+                    .unwrap()
+                    .trigger_deliveries()[0]
+                    .state(),
+                Resent
+            );
+            assert!(restarted.resend_trigger_delivery(request, owner.owner_user_id()).await.is_err(),
+                "completed admission must remain consumed (stale={stale_event}, snapshot={snapshot})");
+        }
+    }
+
+    #[tokio::test]
+    async fn resend_admission_failure_rolls_back_receipt_and_allows_one_retry() {
+        use crate::session::TriggerDeliveryState::{NotConfirmed, Resent};
+        for idle in [false, true] {
+            let (_worktree, runtime, _, session_id, agent_id, run_id) =
+                durable_unconfirmed_trigger_delivery("resend-admission-failure").await;
+            let owner = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+            if idle {
+                let session = runtime.owned.session_snapshot(&session_id).unwrap();
+                runtime
+                    .owned
+                    .prompt_state_owner
+                    .complete_active_prompt_only(&session, &agent_id)
+                    .unwrap();
+                let (active, queued) = runtime
+                    .owned
+                    .prompt_state_owner
+                    .state_parts(&session, &agent_id);
+                runtime
+                    .owned
+                    .mirror_prompt_owner_agent_state(&session_id, &agent_id, active, queued)
+                    .unwrap();
+                install_slow_structured_run(&runtime, &session_id, &agent_id, &run_id, "slow-ack");
+            }
+
+            let request = crate::local::ResendTriggerDeliveryRequest {
+                session_id: session_id.clone(),
+                prompt_id: "original-firing".into(),
+            };
+            let before = runtime
+                .owned
+                .durable_state_store
+                .load_events_after(0)
+                .unwrap()
+                .len();
+            let connection =
+                rusqlite::Connection::open(runtime.owned.durable_state_store.path()).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TRIGGER reject_resend_receipt BEFORE INSERT ON durable_trigger_resends
+            BEGIN SELECT RAISE(FAIL, 'injected resend admission failure'); END;",
+                )
+                .unwrap();
+            let error = runtime
+                .resend_trigger_delivery(request.clone(), owner.owner_user_id())
+                .await
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("injected resend admission failure"));
+            assert!(!runtime
+                .owned
+                .durable_state_store
+                .trigger_resend_admitted(&session_id, "original-firing")
+                .unwrap());
+            assert_eq!(
+                runtime
+                    .owned
+                    .session_snapshot(&session_id)
+                    .unwrap()
+                    .trigger_deliveries()[0]
+                    .state(),
+                NotConfirmed
+            );
+            let events = runtime
+                .owned
+                .durable_state_store
+                .load_events_after(0)
+                .unwrap();
+            assert!(
+                !events.iter().skip(before).any(|event| event.kind
+                    == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND),
+                "failed receipt must roll back its prompt admission event too"
+            );
+            let session = runtime.owned.session_snapshot(&session_id).unwrap();
+            let (active, queued) = runtime
+                .owned
+                .prompt_state_owner
+                .state_parts(&session, &agent_id);
+            assert!(
+                queued.is_empty(),
+                "failed admission must discard the phantom queue entry"
+            );
+            assert_eq!(
+                active.is_none(),
+                idle,
+                "idle admission must roll back its phantom active prompt"
+            );
+            connection
+                .execute_batch("DROP TRIGGER reject_resend_receipt;")
+                .unwrap();
+            runtime
+                .resend_trigger_delivery(request.clone(), owner.owner_user_id())
+                .await
+                .unwrap();
+            assert!(runtime
+                .owned
+                .durable_state_store
+                .trigger_resend_admitted(&session_id, "original-firing")
+                .unwrap());
+            let session = runtime.owned.session_snapshot(&session_id).unwrap();
+            assert_eq!(session.trigger_deliveries()[0].state(), Resent);
+            let (active, queued) = runtime
+                .owned
+                .prompt_state_owner
+                .state_parts(&session, &agent_id);
+            if idle {
+                assert!(
+                    active.is_some(),
+                    "idle retry must start through normal admission"
+                );
+                assert!(queued.is_empty());
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        let finished = runtime
+                            .owned
+                            .provider_store
+                            .drain_finished_structured_prompt_submit_jobs();
+                        if !finished.is_empty() {
+                            assert_eq!(finished.len(), 1, "retry must dispatch exactly once");
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                assert_eq!(trigger_prompt_history(&runtime, &session_id).len(), 1);
+            } else {
+                assert_eq!(queued.len(), 1, "retry must admit one queued replacement");
+            }
+            assert!(runtime
+                .resend_trigger_delivery(request, owner.owner_user_id())
+                .await
+                .is_err());
+        }
     }
 
     // The firing is in the transcript, labelled with its origin, before the

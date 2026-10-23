@@ -510,6 +510,26 @@ impl PromptQueueItem {
         self
     }
 
+    pub(crate) const TRIGGER_RESEND_OPERATION_PREFIX: &str = "agent-trigger-resend:";
+
+    /// The operation identity is kept in the admission event, so recovery can
+    /// consume the original resend only when its replacement was admitted.
+    pub(crate) fn with_trigger_resend(self, original_prompt_id: &str) -> Self {
+        self.with_durable_operation(
+            format!(
+                "{}{original_prompt_id}",
+                Self::TRIGGER_RESEND_OPERATION_PREFIX
+            ),
+            original_prompt_id,
+        )
+    }
+
+    pub(crate) fn trigger_resend_of(&self) -> Option<&str> {
+        self.agent_trigger_id()?;
+        self.durable_operation_id()?
+            .strip_prefix(Self::TRIGGER_RESEND_OPERATION_PREFIX)
+    }
+
     pub fn with_workflow_context(
         mut self,
         workflow_run_id: impl Into<String>,

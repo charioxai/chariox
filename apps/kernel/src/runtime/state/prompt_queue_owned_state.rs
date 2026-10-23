@@ -257,6 +257,21 @@ impl KernelRuntimeOwnedState {
             queued_prompts,
         )?;
         self.persist_prompt_session_state(&session, agent_id)?;
+        for prompt in session.active_prompt_for_agent(agent_id).into_iter().chain(
+            session
+                .queued_prompts_for_agent(agent_id)
+                .into_iter()
+                .flatten(),
+        ) {
+            if let Some(original_prompt_id) = prompt.trigger_resend_of() {
+                self.session_store.write().move_trigger_delivery(
+                    session_id,
+                    original_prompt_id,
+                    crate::session::TriggerDeliveryState::NotConfirmed,
+                    crate::session::TriggerDeliveryState::Resent,
+                )?;
+            }
+        }
         activity_mutation.record();
         self.withdraw_stale_agent_interactions();
         self.provider_process_projection.invalidate();

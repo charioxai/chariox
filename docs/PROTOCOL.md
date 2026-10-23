@@ -4822,9 +4822,11 @@ did not confirm, whether a receipt was lost or the kernel restarted mid-delivery
 again by itself: the session lists it in `trigger_deliveries` as `{prompt_id, trigger_id,
 agent_id, origin, prompt, busy_policy, state: "not_confirmed"|"resent", recorded_at_ms}` (newest
 last, 32 kept). `ResendTriggerDelivery {session_id, prompt_id}` answers `TriggerDeliveryResent
-{session}`: it moves the entry to `resent`, delivers the prompt once more as a new labelled prompt
-under the entry's `busy_policy` (queue or steer) and refuses a second resend. A delivery that
-fails puts the entry back to `not_confirmed`. Whoever may prompt the agent may resend. The shape is
+{session}`: it admits one more labelled prompt under the entry's `busy_policy` (queue or steer)
+and refuses a second resend. A transient claim excludes concurrent clicks. The replacement's
+durable admission atomically consumes the resend; a failed admission leaves it `not_confirmed`.
+Once admitted, it stays `resent` even after the replacement finishes, a later processing error,
+or a restart from a stale session event or snapshot. Whoever may prompt the agent may resend. The shape is
 pinned by `local_daemon_protocol_trigger_delivery_shape_is_versioned`.
 
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
