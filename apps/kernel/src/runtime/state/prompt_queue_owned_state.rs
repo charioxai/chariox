@@ -1315,27 +1315,28 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         trigger_id: Option<&str>,
         unconfirmed: Option<crate::session::TriggerDelivery>,
-    ) {
-        // The store guard must be gone before persisting, which reads the store.
-        let marked = self.session_store.write().settle_steered_firing(
-            session_id,
-            trigger_id,
-            crate::session::unix_epoch_ms(),
-            unconfirmed,
-        );
-        let settled = marked
-            .and_then(|_| self.persist_agent_trigger_session(session_id, "agent_trigger_fired"));
-        if let Err(error) = settled {
-            crate::logging::error_with_fields(
-                "durable_state.recovery",
-                "failed to settle the trigger of a steered firing",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "trigger_id": trigger_id,
-                    "error": error.to_string(),
-                }),
-            );
+    ) -> Result<(), DaemonError> {
+        let mut sessions = self.session_store.write();
+        let before = sessions.get_session(session_id)?;
+        let settled = (|| {
+            sessions.settle_steered_firing(
+                session_id,
+                trigger_id,
+                crate::session::unix_epoch_ms(),
+                unconfirmed,
+            )?;
+            let session = sessions.get_session(session_id)?.durable_runtime_snapshot();
+            self.durable_state_store.append_event(
+                "session.updated",
+                Some(session_id.to_string()),
+                serde_json::json!({"session": session, "reason": "agent_trigger_fired"}),
+            )?;
+            Ok(())
+        })();
+        if settled.is_err() {
+            sessions.restore_session(before);
         }
+        settled
     }
 
     /// A held firing found after a restart may already sit in the provider's
@@ -1356,7 +1357,7 @@ impl KernelRuntimeOwnedState {
                             .map_or(crate::session::AgentTriggerBusyPolicy::Queue, |trigger| {
                                 trigger.busy_policy()
                             });
-                        self.settle_steered_firing(
+                        if let Err(error) = self.settle_steered_firing(
                             session.id(),
                             Some(trigger_id),
                             Some(crate::session::TriggerDelivery::not_confirmed(
@@ -1368,7 +1369,18 @@ impl KernelRuntimeOwnedState {
                                 busy_policy,
                                 crate::session::unix_epoch_ms(),
                             )),
-                        );
+                        ) {
+                            crate::logging::error_with_fields(
+                                "durable_state.recovery",
+                                "failed to settle a restart-held steer; retaining its delivery hold",
+                                serde_json::json!({
+                                    "session_id": session.id(),
+                                    "prompt_id": prompt.id(),
+                                    "error": error.to_string(),
+                                }),
+                            );
+                            continue;
+                        }
                     }
                     let Some(removed) = self.prompt_state_owner.remove_queued_prompt(
                         &session,

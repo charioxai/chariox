@@ -511,7 +511,7 @@ impl KernelRuntimeState {
         // Steer the queued firing exactly as a person steers a queued prompt,
         // so local and leased agents share one path and its receipts. A
         // refused steer leaves the firing queued and says why.
-        let settled = std::sync::atomic::AtomicBool::new(false);
+        let settlement_started = std::sync::atomic::AtomicBool::new(false);
         let steer = self
             .steer_agent_trigger_prompt(
                 &dispatch.session_id,
@@ -530,18 +530,19 @@ impl KernelRuntimeState {
                             crate::session::unix_epoch_ms(),
                         )
                     });
+                    settlement_started.store(true, std::sync::atomic::Ordering::SeqCst);
                     self.owned.settle_steered_firing(
                         &dispatch.session_id,
                         claim.map(|_| dispatch.trigger_id.as_str()),
                         unconfirmed,
-                    );
-                    settled.store(true, std::sync::atomic::Ordering::SeqCst);
+                    )?;
+                    Ok(())
                 },
             )
             .await;
         match steer {
             Ok(TriggerSteerDelivery::Confirmed)
-                if settled.load(std::sync::atomic::Ordering::SeqCst) =>
+                if settlement_started.load(std::sync::atomic::Ordering::SeqCst) =>
             {
                 Ok(AgentTriggerFiring::Settled)
             }
@@ -558,6 +559,9 @@ impl KernelRuntimeState {
                     ),
                 );
                 Ok(AgentTriggerFiring::Settled)
+            }
+            Err(error) if settlement_started.load(std::sync::atomic::Ordering::SeqCst) => {
+                Err(error)
             }
             Err(error) => {
                 let refusal = format!("steer refused, the firing stays queued: {error}");
@@ -1018,6 +1022,110 @@ mod tests {
         )
         .await;
         (runtime, config)
+    }
+
+    fn reject_trigger_settlement(runtime: &KernelRuntimeState) -> rusqlite::Connection {
+        let connection =
+            rusqlite::Connection::open(runtime.owned.durable_state_store.path()).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_trigger_settlement BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'session.updated'
+               AND json_extract(NEW.payload_json, '$.reason') = 'agent_trigger_fired'
+             BEGIN SELECT RAISE(FAIL, 'injected trigger settlement failure'); END;",
+            )
+            .unwrap();
+        connection
+    }
+
+    async fn settlement_failure_retains_held_firing(restart_recovery: bool) {
+        let config = durable_state_config("trigger-settlement-failure");
+        let (_worktree, runtime, session_id, agent_id, _, _, run_id) =
+            super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt_and_config(
+                config, &[],
+            ).await;
+        install_slow_structured_run(&runtime, &session_id, &agent_id, &run_id, "slow-ack");
+        let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
+        let state = runtime.clone();
+        let due = trigger.next_run_at_ms();
+        let connection = (!restart_recovery).then(|| reject_trigger_settlement(&runtime));
+        let firing = tokio::spawn(async move { state.dispatch_due_agent_triggers(due).await });
+        wait_for_queued_firing(&runtime, &session_id, &agent_id).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !runtime
+                .owned
+                .provider_store
+                .structured_prompt_io_in_flight(&run_id)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let runtime = if restart_recovery {
+            let events = runtime
+                .owned
+                .durable_state_store
+                .load_events_after(0)
+                .unwrap();
+            firing.abort();
+            let (restarted, _) =
+                restart_from_log_cut(&events, events.len(), "settlement-failure-restart").await;
+            let _connection = reject_trigger_settlement(&restarted);
+            assert!(
+                restarted.owned.drop_restart_held_local_steers().is_empty(),
+                "failed settlement must not remove the held firing"
+            );
+            restarted
+        } else {
+            tokio::time::timeout(std::time::Duration::from_secs(5), firing)
+                .await
+                .unwrap()
+                .unwrap();
+            drop(connection);
+            runtime
+        };
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        let (_, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        assert!(
+            queued.iter().any(|prompt| prompt.local_steer_submitted()),
+            "failed settlement must retain the hold in memory"
+        );
+        let events = runtime
+            .owned
+            .durable_state_store
+            .load_events_after(0)
+            .unwrap();
+        let (restarted, _) =
+            restart_from_log_cut(&events, events.len(), "settlement-failure-restored").await;
+        let session = restarted.owned.session_snapshot(&session_id).unwrap();
+        let (_, queued) = restarted
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        assert!(
+            queued.iter().any(|prompt| prompt.local_steer_submitted()),
+            "failed settlement must retain the durable hold across restart"
+        );
+        assert_restart_cannot_refire(
+            &restarted,
+            &agent_id,
+            "settlement append failed then recovered",
+        );
+    }
+
+    // MP-08/MP-10/MP-11: failed appends must preserve the replay barrier.
+    #[tokio::test]
+    async fn live_settlement_failure_retains_held_firing() {
+        settlement_failure_retains_held_firing(false).await;
+    }
+
+    #[tokio::test]
+    async fn restart_settlement_failure_retains_held_firing() {
+        settlement_failure_retains_held_firing(true).await;
     }
 
     fn assert_restart_cannot_refire(runtime: &KernelRuntimeState, agent_id: &str, at: &str) {

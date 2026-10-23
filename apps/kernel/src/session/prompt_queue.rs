@@ -604,7 +604,10 @@ impl PromptQueueItem {
     }
 
     pub(crate) fn remote_steer_reserved(&self) -> bool {
-        self.remote_steer_reservation.id.load(Ordering::Acquire) != 0
+        // Local trigger steers share the queue reservation. Their durable
+        // delivery hold outlives the mailbox claim if settlement cannot commit.
+        self.local_steer_submitted()
+            || self.remote_steer_reservation.id.load(Ordering::Acquire) != 0
             || self.remote_steer_outcome_uncertainty().is_some()
     }
 
