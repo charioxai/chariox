@@ -35,7 +35,7 @@ async fn enrolled_owner_existing_run(check_read: bool) {
     }))
     .unwrap();
     let cloud_worktree = crate::test_support::TestWorktree::new("enrolled-cloud-owner");
-    let (cloud_session, cloud_agent) = crate::app::KernelSessionService::new(&mut app)
+    let (_cloud_session, _cloud_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(
             cloud_worktree
                 .session_request()
