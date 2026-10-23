@@ -12,8 +12,10 @@ import {
   createAgentScheduleTriggerRequest,
   deleteAgentTriggerRequest,
   updateAgentTriggerRequest,
+  resendTriggerDeliveryRequest,
+  triggerDeliveryMinimumProtocolVersion,
 } from "@chariox/kernel-client/ipc-requests"
-import { agentTriggersForAgent } from "@chariox/kernel-client/agent-trigger-state"
+import { agentTriggersForAgent, triggerPromptOriginLabel, unconfirmedTriggerDeliveriesForAgent } from "@chariox/kernel-client/agent-trigger-state"
 import { TRIGGER_USAGE, type ParsedSlashCommand } from "./commands.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import {
@@ -147,6 +149,7 @@ type CommandActionDeps =
   submitGoalPrompt?: (text: string, targetAgentId: string) => Promise<void>
   focusedAgentId: () => string | null
   supportsAgentTriggers?: () => Promise<boolean>
+  supportsTriggerDeliveryResend?: () => Promise<boolean>
   /** Sends a trigger change or a legacy CreateAgentPromptSchedule. */
   sendAgentTriggerRequest?: (request: Record<string, unknown>) => Promise<{ session: RuntimeSession }>
   runWorkflowRegistryEntry?: (
@@ -511,16 +514,25 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter(`kernel too old for agent triggers (requires protocol ${agentTriggersMinimumProtocolVersion}); upgrade the kernel`, "error")
       return
     }
+    if (action.type === "resend" && !(await deps.supportsTriggerDeliveryResend?.() ?? false)) {
+      deps.flashFooter(`kernel too old for trigger resend (requires protocol ${triggerDeliveryMinimumProtocolVersion}); upgrade the kernel`, "error")
+      return
+    }
     if (action.type === "list") {
+      const deliveries = unconfirmedTriggerDeliveriesForAgent(deps.sessionState(), agentId)
       const triggers = agentTriggersForAgent(deps.sessionState(), agentId)
-      deps.appendNotice(triggers.length === 0
+      deps.appendNotice(triggers.length === 0 && deliveries.length === 0
         ? "No triggers on this agent. Add one with /trigger every <minutes> [--steer] <prompt>."
         : ["Triggers", ...triggers.map((trigger) => [
           `${trigger.id}  ${trigger.label} · ${trigger.busyPolicy}`,
           trigger.enabled ? `next ${new Date(trigger.nextRunAtMs ?? 0).toLocaleTimeString()}` : "off",
           `${trigger.fired} fired`,
           trigger.lastError ? `last error: ${trigger.lastError}` : "",
-        ].filter(Boolean).join(" · "))].join("\n"))
+        ].filter(Boolean).join(" · ")), ...deliveries.map(delivery => [
+          triggerPromptOriginLabel(delivery.origin) ?? delivery.origin,
+          "Not confirmed", delivery.busy_policy, `/trigger resend ${delivery.prompt_id}`,
+          delivery.prompt.replace(/\s+/g, " ").slice(0, 120),
+        ].join(" · "))].join("\n"))
       return
     }
     if (!deps.sendAgentTriggerRequest) {
@@ -548,6 +560,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         ? updateAgentTriggerRequest(sessionId, action.triggerId, action.change === "on" || action.change === "off"
           ? { enabled: action.change === "on" }
           : { busyPolicy: action.change })
+        : action.type === "resend" ? resendTriggerDeliveryRequest(sessionId, action.promptId)
         : deleteAgentTriggerRequest(sessionId, action.triggerId)
     const result = await deps.sendAgentTriggerRequest(request)
     deps.applySessionState(result.session)
@@ -555,7 +568,8 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     deps.flashFooter(
       action.type === "create"
         ? `trigger ${action.repeat === "every" ? "every" : "in"} ${action.minutes} ${action.minutes === 1 ? "minute" : "minutes"} · ${action.busyPolicy}`
-        : action.type === "update" ? `trigger ${action.triggerId} ${action.change}` : `trigger ${action.triggerId} removed`,
+        : action.type === "update" ? `trigger ${action.triggerId} ${action.change}`
+        : action.type === "resend" ? `trigger firing ${action.promptId} sent again` : `trigger ${action.triggerId} removed`,
       "info",
     )
   }

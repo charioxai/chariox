@@ -1,3 +1,4 @@
+import type { TriggerDelivery } from "@chariox/kernel-client/kernel-types"
 import {
   BoxRenderable,
   MouseButton,
@@ -21,7 +22,7 @@ import {
   queuedPromptMetaLabel,
   queuedPromptTitleLabel,
 } from "@chariox/kernel-client/queued-prompt-controls"
-import type { AgentTriggerStripItem } from "@chariox/kernel-client/agent-trigger-state"
+import { triggerPromptOriginLabel, type AgentTriggerStripItem } from "@chariox/kernel-client/agent-trigger-state"
 import type { QueuedPromptStripItem } from "@chariox/kernel-client/queued-prompt-strip-state"
 import { theme } from "./theme.js"
 
@@ -41,6 +42,7 @@ type InteractionStripRenderOptions = {
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
   agentTriggerStripItemsForAgent: (agentId: string | null | undefined) => readonly AgentTriggerStripItem[]
+  unconfirmedTriggerDeliveriesForAgent?: (agentId: string | null | undefined) => readonly TriggerDelivery[]
   providerLoginState?: (interaction: RuntimeInteraction) => ProviderLoginStripState | null
   /** Focuses a login's code field the first time it is shown. */
   focusCustomChoiceOnce?: (interactionId: string, index: number, requestedAtMs: number) => void
@@ -73,7 +75,8 @@ function renderInteractionStrip(
   const interaction = options.activeInteractionForAgent(agent?.id ?? null)
   const queuedPrompts = options.queuedPromptStripItemsForAgent(agent?.id ?? null)
   const triggers = options.agentTriggerStripItemsForAgent(agent?.id ?? null)
-  const visible = Boolean(interaction) || queuedPrompts.length > 0 || triggers.length > 0
+  const deliveries = options.unconfirmedTriggerDeliveriesForAgent?.(agent?.id ?? null) ?? []
+  const visible = Boolean(interaction) || queuedPrompts.length > 0 || triggers.length > 0 || deliveries.length > 0
   box.visible = visible
   box.flexDirection = "column"
   box.gap = 0
@@ -136,6 +139,13 @@ function renderInteractionStrip(
   }
   renderQueuedPromptStrip(options, box, queuedPrompts, focused, selectedQueuedPromptIndex)
   renderAgentTriggerStrip(options, box, triggers)
+  for (const delivery of deliveries) {
+    box.add(new TextRenderable(options.renderer, {
+      content: [triggerPromptOriginLabel(delivery.origin) ?? delivery.origin, "Not confirmed", delivery.busy_policy, `/trigger resend ${delivery.prompt_id}`].join(" · "),
+      fg: theme.warning,
+      wrapMode: "word",
+    }))
+  }
   box.requestRender?.()
 }
 

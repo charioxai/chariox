@@ -1,3 +1,4 @@
+import type { TriggerDelivery } from "@chariox/kernel-client/kernel-types"
 import type { RuntimeInteraction } from "./cli-types.js"
 import type { ProviderLoginStripState } from "./provider-login-interaction-controller.js"
 import type { AgentTriggerStripItem } from "@chariox/kernel-client/agent-trigger-state"
@@ -19,6 +20,7 @@ type AgentInteractionStripRenderOptions<TRenderer, TBox, TAgent extends { id: st
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
   agentTriggerStripItemsForAgent: (agentId: string | null | undefined) => readonly AgentTriggerStripItem[]
+  unconfirmedTriggerDeliveriesForAgent?: (agentId: string | null | undefined) => readonly TriggerDelivery[]
   providerLoginState?: (interaction: RuntimeInteraction) => ProviderLoginStripState | null
   focusCustomChoiceOnce?: (interactionId: string, index: number, requestedAtMs: number) => void
   onProviderLoginLinkClick?: (interaction: RuntimeInteraction) => void
@@ -44,6 +46,7 @@ export type AgentInteractionStripControllerDeps<
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
   agentTriggerStripItemsForAgent: (agentId: string | null | undefined) => readonly AgentTriggerStripItem[]
+  unconfirmedTriggerDeliveriesForAgent?: (agentId: string | null | undefined) => readonly TriggerDelivery[]
   providerLoginState?: (interaction: RuntimeInteraction) => ProviderLoginStripState | null
   focusCustomChoiceOnce?: (interactionId: string, index: number, requestedAtMs: number) => void
   onProviderLoginLinkClick?: (interaction: RuntimeInteraction) => void
@@ -75,6 +78,7 @@ export function createAgentInteractionStripController<
         selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
         onQueuedPromptAction: deps.onQueuedPromptAction,
         agentTriggerStripItemsForAgent: deps.agentTriggerStripItemsForAgent,
+        ...(deps.unconfirmedTriggerDeliveriesForAgent ? { unconfirmedTriggerDeliveriesForAgent: deps.unconfirmedTriggerDeliveriesForAgent } : {}),
         ...(deps.providerLoginState ? { providerLoginState: deps.providerLoginState } : {}),
         ...(deps.focusCustomChoiceOnce ? { focusCustomChoiceOnce: deps.focusCustomChoiceOnce } : {}),
         ...(deps.onProviderLoginLinkClick ? { onProviderLoginLinkClick: deps.onProviderLoginLinkClick } : {}),

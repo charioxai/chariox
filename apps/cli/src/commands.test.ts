@@ -124,6 +124,18 @@ test("prompt settings slash commands use the shared kernel shell path", () => {
   )
 })
 
+test("/trigger resend requires exactly one prompt id", () => {
+  assert.deepEqual(parseSlashCommand("/trigger resend prompt-1"), {
+    kind: "trigger", raw: "/trigger resend prompt-1",
+    action: { type: "resend", promptId: "prompt-1" }, error: null,
+  })
+  for (const raw of ["/trigger resend", "/trigger resend prompt-1 extra"]) {
+    const command = parseSlashCommand(raw)
+    assert.equal(command?.kind, "trigger")
+    assert.ok(command?.kind === "trigger" && command.error)
+  }
+})
+
 test("parseSlashCommand parses /trigger and its /wait aliases", () => {
   const create = (repeat: "once" | "every", minutes: number, busyPolicy: "queue" | "steer", prompt: string) =>
     ({ type: "create", repeat, minutes, busyPolicy, prompt })

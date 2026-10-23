@@ -73,7 +73,7 @@
   {
     "id": "trigger",
     "label": "/trigger",
-    "description": "Usage: /trigger [list] | every|in <minutes> [--steer|--queue] <prompt> | on|off|queue|steer <id> | remove <id> · prompts that fire into this agent",
+    "description": "Usage: /trigger [list] | every|in <minutes> [--steer|--queue] <prompt> | on|off|queue|steer <id> | remove <id> | resend <prompt-id> · prompts that fire into this agent",
     "value": "/trigger ",
     "examples": [
       "/trigger every 30 --steer Check the build",
