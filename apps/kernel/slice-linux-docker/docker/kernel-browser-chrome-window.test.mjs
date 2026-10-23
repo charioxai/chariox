@@ -1141,3 +1141,9 @@ test('MP-08/MP-10 owner omnibox keys survive a home-document commit after admiss
  await arbiter.input({stream,command:command({kind:'key',key:'Enter'})});
  assert.equal(String.fromCharCode(...sent.slice(0,-1)),'https://www.wikipedia.org/');assert.equal(sent.at(-1),0xff0d);
 });
+
+test('MP-08/MP-10 resized odd native bands crop inward for the codec',()=>{
+ const windows=new ChromeWindows({}),binding={xid:42,bounds:{width:1151,height:637},content_top:87,isCurrent:()=>true};
+ const args=windows.band(binding);assert.deepEqual(args.rect,{left:0,top:0,width:1150,height:86});
+ assert.equal(args.contentHeight,550);assert.equal(args.window.width,1151,'never expand the native window to make an even frame');
+});
