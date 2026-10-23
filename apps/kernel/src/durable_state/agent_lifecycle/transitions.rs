@@ -507,6 +507,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 } else {
                     false
                 };
+                let delivery_pending = open && completion_delivery_pending(tx, &t)?;
                 if is_plain(tx, &t)? || (!open && has_answer && t.wait.is_none()) {
                     t.state = ExecutionState::Done;
                     t.reason.clear();
@@ -514,7 +515,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     t.state = ExecutionState::Blocked;
                     t.blocked_revision = t.revision + 1;
                     t.reason="Three consecutive wakes without handled progress; owner must resume or cancel".into();
-                } else if valid_wait {
+                } else if valid_wait || delivery_pending {
                     t.state = ExecutionState::Waiting;
                 } else if !t.correction_used {
                     t.correction_used = true;
@@ -559,6 +560,35 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::WakeAlerted { .. }
         | Operation::RetireWakes { .. }) => super::wakes::apply(tx, op),
     }
+}
+
+/// Every unresolved obligation is a source that already finished and whose
+/// completion event is waiting for delivery. Ending the turn then is not an
+/// invalid end: handling that event is the task's next turn.
+fn completion_delivery_pending(
+    tx: &Transaction<'_>,
+    task: &AgentTaskExecution,
+) -> Result<bool, DaemonError> {
+    for obligation in task
+        .obligations
+        .iter()
+        .filter(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
+    {
+        let pending = match (obligation.status.as_str(), obligation.completion_source()) {
+            ("settling", Some(source)) => tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind')='source_completed')",
+                    params![task.room_id, task.agent_id, source],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(sql)?,
+            _ => false,
+        };
+        if !pending {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 pub(super) fn recover_source(

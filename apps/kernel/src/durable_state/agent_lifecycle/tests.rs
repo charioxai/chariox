@@ -134,6 +134,31 @@ fn a02_queue_dispatch_revalidates_blocked_cancelled_and_done_tasks() {
     }
 }
 
+// MP-08 / MP-10 / MP-11 S09: the watched work finished and only its completion
+// event is waiting for delivery; ending the turn then is not an invalid end.
+#[test]
+fn a02_turn_end_with_finished_source_awaits_its_completion_event() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.apply(Operation::SourceOutcome {
+        now: 2,
+        public_answer: None,
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "result".into(),
+        success: true,
+    });
+    assert_eq!(f.task().obligations[0].status, "settling");
+    let Outcome::Settled { task, correction } = f.settle("p", true) else {
+        panic!()
+    };
+    assert!(!correction, "a finished source asked for a correction turn");
+    assert_eq!(task.state, ExecutionState::Waiting);
+    assert!(task.pending_prompt_id.is_none());
+}
+
 #[test]
 fn a02_done_with_obligation_corrects_once_across_restart() {
     let f = Fixture::new();
