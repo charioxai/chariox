@@ -9,6 +9,23 @@ use super::{
 };
 
 impl ProviderProcessService {
+    pub(crate) fn enroll_local_run_owner(
+        &mut self,
+        session_id: &str,
+        owner: &str,
+    ) -> Vec<RuntimeProviderRun> {
+        let mut updated = Vec::new();
+        for run in self.runs.values_mut() {
+            if run.session_id() == session_id
+                && run.owner_user_id() == crate::session::DEFAULT_LOCAL_USER_ID
+            {
+                run.set_owner_user_id(owner);
+                updated.push(run.clone());
+            }
+        }
+        updated
+    }
+
     pub(crate) fn start_run_provider_only(
         &mut self,
         request: LaunchProviderRequest,

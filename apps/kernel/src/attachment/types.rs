@@ -88,6 +88,12 @@ impl RuntimeAttachment {
         self.capability_level
     }
 
+    pub(crate) fn enroll_local_owner(&mut self, owner: &str) {
+        if self.owner_user_id == crate::session::DEFAULT_LOCAL_USER_ID {
+            self.owner_user_id = owner.into();
+        }
+    }
+
     pub fn owner_user_id(&self) -> &str {
         &self.owner_user_id
     }

@@ -293,6 +293,10 @@ impl RuntimeProviderRun {
     pub fn agent_instance_id(&self) -> Option<&str> {
         self.agent_instance_id.as_deref()
     }
+    pub(crate) fn set_owner_user_id(&mut self, owner: &str) {
+        self.owner_user_id = owner.into();
+    }
+
     pub fn owner_user_id(&self) -> &str {
         &self.owner_user_id
     }
