@@ -361,11 +361,12 @@ pub enum LocalDaemonResponse {
     PromptSettingsReset { settings: Vec<crate::prompt_assembly::PromptSettingRecord>, },
     AgentPromptScheduleCreated { schedule: crate::session::AgentPromptSchedule, session: RuntimeSession, },
     AgentPromptScheduleCancelled { schedule: crate::session::AgentPromptSchedule, session: RuntimeSession, },
-    AgentTriggerTranscript { trigger: crate::session::AgentTrigger, agent_alias: String, online: bool, busy: bool, history: Box<LocalDaemonResponse>, },
+    AgentTriggerTranscript { trigger: crate::session::AgentTrigger, agent_alias: String, online: bool, busy: bool, history: Box<LocalDaemonResponse>, deliveries: Vec<crate::session::TriggerDelivery>, },
     AgentTriggerInvoked { invocation: AgentTriggerInvocation, },
     AgentTriggerCreated { trigger: crate::session::AgentTrigger, session: RuntimeSession, },
     AgentTriggerUpdated { trigger: crate::session::AgentTrigger, session: RuntimeSession, },
     AgentTriggerDeleted { trigger: crate::session::AgentTrigger, session: RuntimeSession, },
+    TriggerDeliveryResent { session: RuntimeSession, },
     RecallEvents { events: Vec<HistoryEvent>, next_sequence: Option<u64>, },
     SemanticRecallEvents {
         results: Vec<SemanticRecallMatch>,

@@ -72,6 +72,7 @@ export type RuntimeSession = {
   metaagent_tasks?: MetaagentTask[]
   queued_metaagent_tasks?: QueuedMetaagentTask[]
   agent_triggers?: AgentTrigger[]
+  trigger_deliveries?: TriggerDelivery[]
   agent_prompt_schedules?: AgentPromptSchedule[]
   focused_agent_id: string | null
   max_agents: number
@@ -142,6 +143,18 @@ export type AgentTrigger = {
   last_fired_at_ms?: number | null
   last_outcome?: "started" | "queued" | "steered" | "coalesced" | null
   last_error?: string | null
+}
+
+/** Protocol 582: a trigger firing the provider did not confirm; the person can resend it once. */
+export type TriggerDelivery = {
+  prompt_id: string
+  trigger_id: string
+  agent_id: string
+  origin: string
+  prompt: string
+  busy_policy: AgentTriggerBusyPolicy
+  state: "not_confirmed" | "resent"
+  recorded_at_ms: number
 }
 
 /** The protocol < 576 view of an enabled schedule trigger. */

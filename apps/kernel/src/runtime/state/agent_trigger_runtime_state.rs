@@ -11,6 +11,10 @@ pub(super) enum AgentTriggerFiring {
         outcome: AgentTriggerOutcome,
         steer_refusal: Option<String>,
     },
+    /// The steer path already settled the trigger ahead of the queue removal.
+    Settled {
+        prompt_id: String,
+    },
     Coalesced,
     AgentGone,
     Skipped,
@@ -104,6 +108,90 @@ impl KernelRuntimeState {
             caller_user_id,
         )?;
         Ok(crate::local::LocalDaemonResponse::AgentTriggerDeleted { trigger, session })
+    }
+
+    /// Sends an unconfirmed firing once more, following its trigger's busy
+    /// policy. The delivery is marked resent first, so a second click cannot
+    /// send it twice; a failed delivery puts it back for another try.
+    pub(crate) async fn resend_trigger_delivery(
+        &self,
+        request: crate::local::ResendTriggerDeliveryRequest,
+        caller_user_id: &str,
+    ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
+        use crate::session::TriggerDeliveryState::{NotConfirmed, Resent};
+        let delivery = self
+            .owned
+            .session_store
+            .get_session(&request.session_id)?
+            .trigger_deliveries()
+            .iter()
+            .find(|delivery| delivery.prompt_id() == request.prompt_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "resend trigger delivery",
+                message: format!(
+                    "no unconfirmed trigger firing `{}` in session `{}`",
+                    request.prompt_id, request.session_id
+                ),
+            })?;
+        self.owned.ensure_agent_prompt_access(
+            delivery.agent_id(),
+            caller_user_id,
+            "resend trigger delivery",
+        )?;
+        self.move_trigger_delivery(
+            &request.session_id,
+            &request.prompt_id,
+            NotConfirmed,
+            Resent,
+        )?
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "resend trigger delivery",
+            message: format!(
+                "trigger firing `{}` was already sent again",
+                request.prompt_id
+            ),
+        })?;
+        let dispatch = AgentTriggerDispatch {
+            payload: None,
+            claim_generation: 0,
+            session_id: request.session_id.clone(),
+            trigger_id: delivery.trigger_id().to_string(),
+            agent_id: delivery.agent_id().to_string(),
+            prompt: delivery.prompt().to_string(),
+            busy_policy: delivery.busy_policy(),
+        };
+        if let Err(error) = self
+            .deliver_agent_trigger_prompt(&dispatch, None, delivery.origin())
+            .await
+        {
+            self.move_trigger_delivery(
+                &request.session_id,
+                &request.prompt_id,
+                Resent,
+                NotConfirmed,
+            )?;
+            return Err(error);
+        }
+        let session = self.owned.session_snapshot(&request.session_id)?;
+        Ok(crate::local::LocalDaemonResponse::TriggerDeliveryResent { session })
+    }
+
+    fn move_trigger_delivery(
+        &self,
+        session_id: &str,
+        prompt_id: &str,
+        from: crate::session::TriggerDeliveryState,
+        to: crate::session::TriggerDeliveryState,
+    ) -> Result<Option<crate::session::TriggerDelivery>, DaemonError> {
+        let moved = self
+            .owned
+            .session_store
+            .write()
+            .move_trigger_delivery(session_id, prompt_id, from, to)?;
+        self.owned
+            .persist_agent_trigger_session(session_id, "trigger_delivery_moved")?;
+        Ok(moved)
     }
 
     pub(crate) async fn cancel_agent_prompt_schedule(
@@ -262,7 +350,7 @@ impl KernelRuntimeState {
                         &dispatch.trigger_id,
                         now_ms,
                     ),
-                Ok(AgentTriggerFiring::Skipped) => continue,
+                Ok(AgentTriggerFiring::Skipped | AgentTriggerFiring::Settled { .. }) => continue,
                 Ok(AgentTriggerFiring::AgentGone) => {
                     self.record_agent_trigger_notice(
                         &dispatch,
@@ -341,15 +429,34 @@ impl KernelRuntimeState {
         {
             return Ok(AgentTriggerFiring::Coalesced);
         }
+        let origin = if dispatch.payload.is_some() {
+            crate::session::PromptOrigin::Http
+        } else {
+            crate::session::PromptOrigin::Schedule
+        };
+        self.deliver_agent_trigger_prompt(dispatch, Some(dispatch), origin)
+            .await
+    }
+
+    /// Admits the trigger's message as a labelled prompt of its agent. A
+    /// resend has no claim: its trigger may be gone or not due.
+    async fn deliver_agent_trigger_prompt(
+        &self,
+        dispatch: &AgentTriggerDispatch,
+        claim: Option<&AgentTriggerDispatch>,
+        origin: crate::session::PromptOrigin,
+    ) -> Result<AgentTriggerFiring, DaemonError> {
         let source_attachment_id = self
             .owned
             .ensure_agent_trigger_attachment(&dispatch.session_id)?;
         let prompt_id = self.owned.session_store.reserve_prompt_id();
-        let template_id = if dispatch.payload.is_some() {
-            "runtime/agent-trigger"
-        } else {
-            "runtime/scheduled-prompt"
-        };
+        // A resent HTTP firing already carries its quoted input in the text.
+        let template_id =
+            if dispatch.payload.is_some() || origin == crate::session::PromptOrigin::Http {
+                "runtime/agent-trigger"
+            } else {
+                "runtime/scheduled-prompt"
+            };
         let prompt_text = match &dispatch.payload {
             None => dispatch.prompt.clone(),
             Some(payload) => {
@@ -379,6 +486,7 @@ impl KernelRuntimeState {
             crate::session::PromptStatus::Queued,
         )
         .with_agent_trigger(&dispatch.trigger_id)
+        .with_prompt_origin(origin)
         .with_hidden_system_context(crate::prompt_assembly::attach_prompt_manifest_entry(
             scheduled_context,
             &scheduled_manifest_entry,
@@ -391,7 +499,7 @@ impl KernelRuntimeState {
                     force_queue: false,
                     refresh_projection: true,
                 },
-                dispatch,
+                claim,
             )
             .await;
         let mut submission = match submission {
@@ -440,15 +548,42 @@ impl KernelRuntimeState {
         // Steer the queued firing exactly as a person steers a queued prompt,
         // so local and leased agents share one path and its receipts. A
         // refused steer leaves the firing queued and says why.
-        match self
+        let settled = std::sync::atomic::AtomicBool::new(false);
+        let steer = self
             .steer_agent_trigger_prompt(
                 &dispatch.session_id,
                 &dispatch.agent_id,
                 &source_attachment_id,
                 &queued_prompt_id,
+                |delivery| {
+                    let unconfirmed = (delivery == TriggerSteerDelivery::Unconfirmed).then(|| {
+                        crate::session::TriggerDelivery::not_confirmed(
+                            &queued_prompt_id,
+                            &dispatch.trigger_id,
+                            &dispatch.agent_id,
+                            origin,
+                            &prompt_text,
+                            dispatch.busy_policy,
+                            crate::session::unix_epoch_ms(),
+                        )
+                    });
+                    self.owned.settle_steered_firing(
+                        &dispatch.session_id,
+                        claim.map(|_| dispatch.trigger_id.as_str()),
+                        unconfirmed,
+                    );
+                    settled.store(true, std::sync::atomic::Ordering::SeqCst);
+                },
             )
-            .await
-        {
+            .await;
+        match steer {
+            Ok(TriggerSteerDelivery::Confirmed)
+                if settled.load(std::sync::atomic::Ordering::SeqCst) =>
+            {
+                Ok(AgentTriggerFiring::Settled {
+                    prompt_id: queued_prompt_id.clone(),
+                })
+            }
             Ok(TriggerSteerDelivery::Confirmed) => Ok(AgentTriggerFiring::Fired {
                 prompt_id: queued_prompt_id.clone(),
                 outcome: AgentTriggerOutcome::Steered,
@@ -458,14 +593,12 @@ impl KernelRuntimeState {
                 self.record_agent_trigger_notice(
                     dispatch,
                     format!(
-                        "Trigger `{}`: the provider did not confirm the steer, so it is not sent again.",
+                        "Trigger `{}`: the provider did not confirm the steer. It is not sent again by itself; resend it from the prompt if it did not arrive.",
                         dispatch.trigger_id
                     ),
                 );
-                Ok(AgentTriggerFiring::Fired {
+                Ok(AgentTriggerFiring::Settled {
                     prompt_id: queued_prompt_id.clone(),
-                    outcome: AgentTriggerOutcome::Steered,
-                    steer_refusal: None,
                 })
             }
             Err(error) => {
@@ -852,6 +985,361 @@ mod tests {
             .queued_prompts_for_agent(&agent_id)
             .is_none_or(|prompts| prompts.is_empty()));
         firing.abort();
+    }
+
+    fn install_slow_structured_run(
+        runtime: &KernelRuntimeState,
+        session_id: &str,
+        agent_id: &str,
+        run_id: &str,
+        process_label: &str,
+    ) {
+        let request = crate::provider::LaunchProviderRequest::new(
+            session_id,
+            "dev-stub",
+            "slow-structured",
+            "default",
+            "model",
+        )
+        .with_agent_id(agent_id);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            run_id,
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: process_label.into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: Some("test".into()),
+            },
+        );
+        run.mark_running();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        runtime.owned.provider_run_projection.update(run);
+    }
+
+    fn durable_state_config(tag: &str) -> crate::config::DaemonConfig {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.state.path = Some(
+            std::env::temp_dir()
+                .join("chariox-tests")
+                .join(format!("{tag}-{}.db", crate::session::unix_epoch_ms()))
+                .display()
+                .to_string(),
+        );
+        config
+    }
+
+    /// Starts a kernel from a durable log that stops right before `events[cut]`,
+    /// which is what a stop between two durable writes leaves on disk.
+    async fn restart_from_log_cut(
+        events: &[crate::durable_state::DurableStateEvent],
+        cut: usize,
+        tag: &str,
+    ) -> (KernelRuntimeState, crate::config::DaemonConfig) {
+        let config = durable_state_config(tag);
+        let path = std::path::PathBuf::from(config.user_config.state.path.clone().unwrap());
+        {
+            let store = crate::durable_state::DurableKernelStateStore::open(path).unwrap();
+            for event in &events[..cut] {
+                store
+                    .append_event(&event.kind, event.subject_id.clone(), event.payload.clone())
+                    .unwrap();
+            }
+        }
+        let app = crate::app::DaemonApp::bootstrap(config.clone()).expect("restart boots");
+        let runtime = super::super::local_prompt_dispatch_runtime::tests::owned_runtime_state(
+            &std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+        )
+        .await;
+        (runtime, config)
+    }
+
+    fn assert_restart_cannot_refire(runtime: &KernelRuntimeState, agent_id: &str, at: &str) {
+        runtime.owned.drop_restart_held_local_steers();
+        assert!(
+            runtime
+                .owned
+                .session_store
+                .write()
+                .claim_due_agent_triggers(u64::MAX)
+                .is_empty(),
+            "{at}: an overdue trigger would fire the steered message again"
+        );
+        for session in runtime.owned.session_store.list_all_sessions() {
+            let (_, queued) = runtime
+                .owned
+                .prompt_state_owner
+                .state_parts(&session, agent_id);
+            assert!(queued.is_empty(), "{at}: a held steer must not stay queued");
+        }
+    }
+
+    fn final_trigger_steer_writes(
+        events: &[crate::durable_state::DurableStateEvent],
+    ) -> [usize; 2] {
+        let removal = events
+            .iter()
+            .rposition(|event| {
+                event.kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND
+            })
+            .expect("the queue removal must be durable");
+        let settlement = events
+            .iter()
+            .rposition(|event| {
+                event.kind == "session.updated" && event.payload["reason"] == "agent_trigger_fired"
+            })
+            .expect("the trigger settlement must be durable");
+        let mut cuts = [removal, settlement];
+        cuts.sort_unstable();
+        cuts
+    }
+
+    // MP-08/MP-09/MP-10: a stop between the two durable writes of a steered
+    // firing (queue removal, trigger settlement) must not fire it again.
+    #[tokio::test]
+    async fn trigger_steer_stop_between_removal_and_settlement_does_not_refire() {
+        let config = durable_state_config("trigger-steer-cut");
+        let (_worktree, runtime, session_id, agent_id, _, _, run_id) =
+            super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt_and_config(
+                config, &[],
+            )
+            .await;
+        install_slow_structured_run(&runtime, &session_id, &agent_id, &run_id, "slow-ack");
+        let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
+        let state = runtime.clone();
+        let due = trigger.next_run_at_ms();
+        let firing = tokio::spawn(async move { state.dispatch_due_agent_triggers(due).await });
+        wait_for_queued_firing(&runtime, &session_id, &agent_id).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !runtime
+                .owned
+                .provider_store
+                .structured_prompt_io_in_flight(&run_id)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the Submit command must reach the mailbox");
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        runtime
+            .owned
+            .prompt_state_owner
+            .complete_active_prompt_only(&session, &agent_id)
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), firing)
+            .await
+            .unwrap()
+            .unwrap();
+        let events = runtime
+            .owned
+            .durable_state_store
+            .load_events_after(0)
+            .unwrap();
+        for cut in final_trigger_steer_writes(&events) {
+            let (restarted, _) = restart_from_log_cut(&events, cut, "trigger-steer-restart").await;
+            assert_restart_cannot_refire(&restarted, &agent_id, &format!("log cut at {cut}"));
+        }
+    }
+
+    // MP-08/MP-09/MP-10: the same stop while restart recovery drops a held
+    // steer; recovery must be safe to run again after every partial write.
+    #[tokio::test]
+    async fn restart_recovery_of_a_held_steer_survives_a_stop_between_its_writes() {
+        let config = durable_state_config("trigger-steer-held");
+        let (_worktree, runtime, session_id, agent_id, _, _, run_id) =
+            super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt_and_config(
+                config, &[],
+            )
+            .await;
+        install_slow_structured_run(&runtime, &session_id, &agent_id, &run_id, "slow-ack");
+        let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
+        let state = runtime.clone();
+        let due = trigger.next_run_at_ms();
+        let firing = tokio::spawn(async move { state.dispatch_due_agent_triggers(due).await });
+        wait_for_queued_firing(&runtime, &session_id, &agent_id).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !runtime
+                .owned
+                .provider_store
+                .structured_prompt_io_in_flight(&run_id)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the Submit command must reach the mailbox");
+        // The kernel stops here, with the steer handed over and unacknowledged.
+        let crashed = runtime
+            .owned
+            .durable_state_store
+            .load_events_after(0)
+            .unwrap();
+        firing.abort();
+        let (first_restart, _) =
+            restart_from_log_cut(&crashed, crashed.len(), "trigger-steer-held-1").await;
+        first_restart.owned.drop_restart_held_local_steers();
+        let recovery = first_restart
+            .owned
+            .durable_state_store
+            .load_events_after(0)
+            .unwrap();
+        for cut in final_trigger_steer_writes(&recovery) {
+            let (second, _) = restart_from_log_cut(&recovery, cut, "trigger-steer-held-2").await;
+            assert_restart_cannot_refire(&second, &agent_id, &format!("recovery log cut at {cut}"));
+        }
+    }
+
+    fn trigger_prompt_history(
+        runtime: &KernelRuntimeState,
+        session_id: &str,
+    ) -> Vec<crate::history::HistoryEvent> {
+        runtime
+            .owned
+            .operational_history_store
+            .query_events(crate::history::HistoryEventQuery {
+                session_id: Some(session_id.to_string()),
+                kind: Some("user_prompt".to_string()),
+                ..Default::default()
+            })
+            .unwrap()
+            .into_iter()
+            .filter(|event| {
+                event.metadata.get("prompt_origin") == Some(&serde_json::json!("schedule"))
+            })
+            .collect()
+    }
+
+    // The firing is in the transcript, labelled with its origin, before the
+    // provider has the message, so it exists even if the kernel stops first.
+    #[tokio::test]
+    async fn trigger_steer_is_in_the_transcript_before_the_provider_write() {
+        let (_worktree, runtime, session_id, agent_id, _, _, run_id) =
+            runtime_with_active_prompt().await;
+        install_slow_structured_run(&runtime, &session_id, &agent_id, &run_id, "slow-ack");
+        let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
+        let state = runtime.clone();
+        let due = trigger.next_run_at_ms();
+        let firing = tokio::spawn(async move { state.dispatch_due_agent_triggers(due).await });
+        wait_for_queued_firing(&runtime, &session_id, &agent_id).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !runtime
+                .owned
+                .provider_store
+                .structured_prompt_io_in_flight(&run_id)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the Submit command must reach the mailbox");
+        assert_eq!(
+            trigger_prompt_history(&runtime, &session_id).len(),
+            1,
+            "the labelled firing must be recorded while the provider still holds the write"
+        );
+        firing.abort();
+    }
+
+    async fn unconfirmed_trigger_steer() -> (
+        crate::test_support::TestWorktree,
+        KernelRuntimeState,
+        String,
+        String,
+        crate::session::TriggerDelivery,
+    ) {
+        let (worktree, runtime, session_id, agent_id, _, _, run_id) =
+            runtime_with_active_prompt().await;
+        install_slow_structured_run(&runtime, &session_id, &agent_id, &run_id, "ack-lost");
+        let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            runtime.dispatch_due_agent_triggers(trigger.next_run_at_ms()),
+        )
+        .await
+        .expect("the firing must settle");
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        let delivery = session
+            .trigger_deliveries()
+            .first()
+            .cloned()
+            .expect("an unconfirmed steer must be remembered for the person to resend");
+        (worktree, runtime, session_id, agent_id, delivery)
+    }
+
+    // An unconfirmed firing says so and can be resent exactly once, as one
+    // more turn that follows the trigger's busy policy.
+    #[tokio::test]
+    async fn unconfirmed_trigger_steer_is_resent_exactly_once() {
+        let (_worktree, runtime, session_id, agent_id, delivery) =
+            unconfirmed_trigger_steer().await;
+        assert_eq!(
+            delivery.state(),
+            crate::session::TriggerDeliveryState::NotConfirmed
+        );
+        assert_eq!(delivery.origin(), crate::session::PromptOrigin::Schedule);
+        assert_eq!(delivery.busy_policy(), AgentTriggerBusyPolicy::Steer);
+        let owner = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+        let resend = |runtime: &KernelRuntimeState| {
+            let request = crate::local::ResendTriggerDeliveryRequest {
+                session_id: session_id.clone(),
+                prompt_id: delivery.prompt_id().to_string(),
+            };
+            let runtime = runtime.clone();
+            let owner_user_id = owner.owner_user_id().to_string();
+            async move {
+                runtime
+                    .resend_trigger_delivery(request, &owner_user_id)
+                    .await
+            }
+        };
+        let submits = || {
+            runtime
+                .owned
+                .provider_store
+                .drain_finished_structured_prompt_submit_jobs()
+                .len()
+        };
+        submits();
+        resend(&runtime).await.expect("the first resend succeeds");
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        assert_eq!(
+            session.trigger_deliveries()[0].state(),
+            crate::session::TriggerDeliveryState::Resent
+        );
+        assert!(
+            resend(&runtime).await.is_err(),
+            "a second resend must not send it again"
+        );
+        let (active, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        let resent_firings = active
+            .iter()
+            .chain(queued.iter())
+            .filter(|prompt| prompt.prompt() == delivery.prompt())
+            .count()
+            + session
+                .trigger_deliveries()
+                .iter()
+                .filter(|known| known.prompt_id() != delivery.prompt_id())
+                .count();
+        assert_eq!(resent_firings, 1, "exactly one more delivery");
+        assert_eq!(
+            trigger_prompt_history(&runtime, &session_id).len(),
+            2,
+            "the resend shows as one more labelled prompt"
+        );
     }
 
     // MP-08/MP-09/MP-10: a steer whose acknowledgement is lost may already be

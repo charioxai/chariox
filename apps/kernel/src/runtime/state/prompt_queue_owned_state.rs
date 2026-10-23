@@ -1171,22 +1171,27 @@ impl KernelRuntimeOwnedState {
         prompt_id: &str,
         context: QueuedPromptSteerContext,
         dispatch_locally: bool,
+        recorded_sequence: Option<u64>,
     ) -> Result<crate::app::KernelQueuedPromptSteer, DaemonError> {
         let target_active_prompt_id = context.active_prompt.id().to_string();
         let source_attachment_id = self.promoted_prompt_source_attachment_id(
             session_id,
             context.queued_prompt.source_attachment_id(),
         )?;
-        let sequence = self.append_steering_prompt_history(
-            session_id,
-            &context.provider_run_id,
-            &target_active_prompt_id,
-            &source_attachment_id,
-            agent_id,
-            context.queued_prompt.id(),
-            context.queued_prompt.prompt(),
-            context.queued_prompt.attachments(),
-        )?;
+        let sequence = match recorded_sequence {
+            Some(sequence) => sequence,
+            None => self.append_steering_prompt_history(
+                session_id,
+                &context.provider_run_id,
+                &target_active_prompt_id,
+                &source_attachment_id,
+                agent_id,
+                context.queued_prompt.id(),
+                context.queued_prompt.prompt(),
+                context.queued_prompt.attachments(),
+                context.queued_prompt.prompt_origin(),
+            )?,
+        };
         let prompt = self
             .prompt_state_owner
             .remove_queued_prompt(&context.session, agent_id, prompt_id)
@@ -1255,6 +1260,7 @@ impl KernelRuntimeOwnedState {
             prompt_id,
             prepared.context.clone(),
             true,
+            None,
         )
         .map(Some)
     }
@@ -1292,23 +1298,29 @@ impl KernelRuntimeOwnedState {
         self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)
     }
 
-    /// The firing counts as sent: the trigger must not fire it a second time
-    /// now that its queued copy is gone.
-    fn settle_restart_held_trigger(&self, session_id: &str, trigger_id: &str) {
+    /// The firing counts as sent, and an unconfirmed delivery is remembered
+    /// for the person to resend. This must be durable before the queued copy
+    /// leaves the queue: a stop in between would otherwise leave an overdue
+    /// trigger without its firing, and it would fire a second time.
+    pub(super) fn settle_steered_firing(
+        &self,
+        session_id: &str,
+        trigger_id: Option<&str>,
+        unconfirmed: Option<crate::session::TriggerDelivery>,
+    ) {
         // The store guard must be gone before persisting, which reads the store.
-        let marked = self.session_store.write().mark_agent_trigger_fired(
+        let marked = self.session_store.write().settle_steered_firing(
             session_id,
             trigger_id,
             crate::session::unix_epoch_ms(),
-            crate::session::AgentTriggerOutcome::Steered,
-            None,
+            unconfirmed,
         );
         let settled = marked
             .and_then(|_| self.persist_agent_trigger_session(session_id, "agent_trigger_fired"));
         if let Err(error) = settled {
             crate::logging::error_with_fields(
                 "durable_state.recovery",
-                "failed to settle the trigger of a restart-held queued steer",
+                "failed to settle the trigger of a steered firing",
                 serde_json::json!({
                     "session_id": session_id,
                     "trigger_id": trigger_id,
@@ -1327,6 +1339,28 @@ impl KernelRuntimeOwnedState {
                 for prompt in prompt_state.queued_prompts() {
                     if !prompt.local_steer_submitted() {
                         continue;
+                    }
+                    if let Some(trigger_id) = prompt.agent_trigger_id() {
+                        let busy_policy = session
+                            .agent_triggers()
+                            .iter()
+                            .find(|trigger| trigger.id() == trigger_id)
+                            .map_or(crate::session::AgentTriggerBusyPolicy::Queue, |trigger| {
+                                trigger.busy_policy()
+                            });
+                        self.settle_steered_firing(
+                            session.id(),
+                            Some(trigger_id),
+                            Some(crate::session::TriggerDelivery::not_confirmed(
+                                prompt.id(),
+                                trigger_id,
+                                agent_id,
+                                prompt.prompt_origin(),
+                                prompt.prompt(),
+                                busy_policy,
+                                crate::session::unix_epoch_ms(),
+                            )),
+                        );
                     }
                     let Some(removed) = self.prompt_state_owner.remove_queued_prompt(
                         &session,
@@ -1353,9 +1387,6 @@ impl KernelRuntimeOwnedState {
                                     "prompt_id": removed.id(),
                                 }),
                             );
-                            if let Some(trigger_id) = removed.agent_trigger_id() {
-                                self.settle_restart_held_trigger(session.id(), trigger_id);
-                            }
                             dropped.push((
                                 session.id().to_string(),
                                 agent_id.to_string(),
@@ -1379,9 +1410,30 @@ impl KernelRuntimeOwnedState {
         dropped
     }
 
+    /// Shows the firing in the transcript before the provider write, so it
+    /// exists even when the kernel stops before the steer is recorded.
+    pub(super) fn record_local_queued_prompt_steer(
+        &self,
+        prepared: &LocalQueuedPromptSteerPreparation,
+    ) -> Result<u64, DaemonError> {
+        let context = &prepared.context;
+        self.append_steering_prompt_history(
+            &prepared.dispatch.session_id,
+            &context.provider_run_id,
+            context.active_prompt.id(),
+            &prepared.dispatch.source_attachment_id,
+            &prepared.dispatch.agent_id,
+            context.queued_prompt.id(),
+            context.queued_prompt.prompt(),
+            context.queued_prompt.attachments(),
+            context.queued_prompt.prompt_origin(),
+        )
+    }
+
     pub(super) fn finish_local_queued_prompt_steer(
         &self,
         prepared: &LocalQueuedPromptSteerPreparation,
+        recorded_sequence: u64,
     ) -> Result<crate::app::KernelQueuedPromptSteer, DaemonError> {
         self.commit_queued_prompt_steer(
             &prepared.dispatch.session_id,
@@ -1390,6 +1442,7 @@ impl KernelRuntimeOwnedState {
             &prepared.dispatch.prompt_id,
             prepared.context.clone(),
             false,
+            Some(recorded_sequence),
         )
     }
 
@@ -1537,6 +1590,7 @@ impl KernelRuntimeOwnedState {
             prepared.prompt.id(),
             prepared.prompt.prompt(),
             prepared.prompt.attachments(),
+            prepared.prompt.prompt_origin(),
         )?;
         let prompt = self
             .prompt_state_owner
@@ -1694,6 +1748,7 @@ impl KernelRuntimeOwnedState {
                     queued_prompt_id,
                     queued_prompt.prompt(),
                     queued_prompt.attachments(),
+                    queued_prompt.prompt_origin(),
                 )?;
                 self.prompt_state_owner
                     .remove_queued_prompt(&session, agent_id, queued_prompt_id)

@@ -42,6 +42,14 @@ pub struct DeleteAgentTriggerRequest {
     pub trigger_id: String,
 }
 
+/// Protocol 582: sends a trigger firing the provider did not confirm once
+/// more, following the trigger's busy policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResendTriggerDeliveryRequest {
+    pub session_id: String,
+    pub prompt_id: String,
+}
+
 /// Protocol < 576 `/wait-in` and `/wait-every`: creates a queue-policy schedule trigger.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateAgentPromptScheduleRequest {

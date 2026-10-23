@@ -111,12 +111,22 @@ impl KernelRuntimeState {
             ),
         ))
         .await?;
+        let deliveries = session
+            .trigger_deliveries()
+            .iter()
+            .filter(|delivery| {
+                delivery.trigger_id() == trigger.id()
+                    && delivery.state() == crate::session::TriggerDeliveryState::NotConfirmed
+            })
+            .cloned()
+            .collect();
         Ok(LocalDaemonResponse::AgentTriggerTranscript {
             trigger,
             agent_alias: agent.alias().unwrap_or(agent.id()).into(),
             online,
             busy,
             history: Box::new(history),
+            deliveries,
         })
     }
 
@@ -202,6 +212,10 @@ impl KernelRuntimeState {
                 )?;
                 AgentTriggerInvocation::Accepted { prompt_id, outcome }
             }
+            Ok(AgentTriggerFiring::Settled { prompt_id }) => AgentTriggerInvocation::Accepted {
+                prompt_id,
+                outcome: crate::session::AgentTriggerOutcome::Steered,
+            },
             Ok(
                 AgentTriggerFiring::Skipped
                 | AgentTriggerFiring::Coalesced

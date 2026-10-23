@@ -148,6 +148,7 @@ export function submitPromptRequest(
 
 export const agentTriggersMinimumProtocolVersion = 576
 export const agentTriggersCapability = "agent_triggers_v1"
+export const triggerDeliveryMinimumProtocolVersion = 582
 
 export function createAgentScheduleTriggerRequest(options: {
   sessionId: string
@@ -186,6 +187,10 @@ export function updateAgentTriggerRequest(
 
 export function deleteAgentTriggerRequest(sessionId: string, triggerId: string) {
   return { DeleteAgentTrigger: { session_id: sessionId, trigger_id: triggerId } }
+}
+
+export function resendTriggerDeliveryRequest(sessionId: string, promptId: string) {
+  return { ResendTriggerDelivery: { session_id: sessionId, prompt_id: promptId } }
 }
 
 export type SubmitPromptBatchItem = {

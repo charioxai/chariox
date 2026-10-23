@@ -22,6 +22,12 @@ pub enum PromptOrigin {
     Chariox,
     CompletionCheck,
     External,
+    /// A schedule trigger fired this prompt.
+    Schedule,
+    /// A local HTTP trigger fired this prompt.
+    Http,
+    /// A workflow notification was delivered as this prompt.
+    Notification,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
