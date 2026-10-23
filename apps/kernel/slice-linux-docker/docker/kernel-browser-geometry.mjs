@@ -4,6 +4,8 @@ if(selected && !['1280x800','1920x1080'].includes(selected))throw Error('MD-DISP
 // Chrome's own tab strip + toolbar above the page (DIP).
 export const chromeBandHeight=87;
 export const displayGeometry=Object.freeze(selected==='1920x1080'?{width:1920,height:1080,dpr:1}:{width:1280,height:800,dpr:2});
+// The largest page a live resize admits (CSS px). Page rasters of a resized Tab are bounded by it at the Tab's density.
+export const pageLimit=Object.freeze({width:1920,height:1080});
 
 // MP-08/MP-10: CDP deviceScaleFactor selects screenshot density. The separate
 // view-image scale is a page transform on the native window; keep it at unity

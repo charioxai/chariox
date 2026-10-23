@@ -60,7 +60,7 @@ export async function displayCredit(host, stream, command, signal) {
   if (!stream.capture || stream.capture.document !== tab.document_id)
     stream.capture = new DisplayCapture((clip) => {
       return host.displayScreenshot(tab,clip);
-    }, stream.device_scale_factor, host.timing);
+    }, stream.device_scale_factor, () => ({ width:stream.css_width, height:stream.css_height }), host.timing);
   const { connection, sessionId } = region ? stream.regionSource : native ? host.displayDocuments.connection(tab) : await host.browser.resolvePageTarget(tab.target_id);
   const layoutAt = timestamp();
   // MP-08/MP-10: an attested window supplies the complete viewport. Layout
@@ -151,7 +151,7 @@ export async function displayCredit(host, stream, command, signal) {
     else return {generation:host.generation,frame_sent:false,display_frame:null};
   }else{
     source=await stream.capture.next({...tab,input_epoch:epoch},host.protection,stream.previous&&stream.acceptsCredit(command.after_sequence),!stream.exact||!nativeCropSafe,
-      stream.codec!=='png'&&host.protection.values.length===0&&viewport?.scale===1&&Number.isFinite(viewport.pageX)&&Number.isFinite(viewport.pageY)?{x:viewport.pageX,y:viewport.pageY,width:geometry.width,height:geometry.height,scale:1/stream.device_scale_factor,display_motion:true}:null,
+      stream.codec!=='png'&&host.protection.values.length===0&&viewport?.scale===1&&Number.isFinite(viewport.pageX)&&Number.isFinite(viewport.pageY)?{x:viewport.pageX,y:viewport.pageY,width:stream.css_width,height:stream.css_height,scale:1/stream.device_scale_factor,display_motion:true}:null,
       host.scrolling.get(tab.tab_id)?.document_id===tab.document_id&&host.scrolling.get(tab.tab_id).until>performance.now());
   }
   // MP-10: only a post-dispatch native capture can claim the input burst.
