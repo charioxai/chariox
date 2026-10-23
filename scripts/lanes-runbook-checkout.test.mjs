@@ -15,7 +15,9 @@ test('runbook inventory check needs no unrelated Git objects', async () => {
     await copyFile(new URL('../docs/LANES_THROUGH_CHARIOX.md', import.meta.url), join(directory, 'docs/LANES_THROUGH_CHARIOX.md'));
     try { await cp(new URL('./fixtures/lanes-request-api-1144cfc5.rs', import.meta.url), join(directory, 'scripts/fixtures/lanes-request-api-1144cfc5.rs'), { recursive: true }); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
-    const checked = spawnSync(process.execPath, ['--test', 'scripts/lanes-runbook.test.mjs'], { cwd: directory, encoding: 'utf8', env: { ...process.env, GIT_CEILING_DIRECTORIES: directory } });
+    const env = { ...process.env, GIT_CEILING_DIRECTORIES: directory };
+    delete env.NODE_TEST_CONTEXT;
+    const checked = spawnSync(process.execPath, ['--test', 'scripts/lanes-runbook.test.mjs'], { cwd: directory, encoding: 'utf8', env });
     assert.equal(checked.status, 0, checked.stdout + checked.stderr);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
