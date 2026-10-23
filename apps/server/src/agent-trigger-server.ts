@@ -76,9 +76,9 @@ export async function buildAgentTriggerServer(client: Pick<AgentTriggerClient, "
     tokens--
     return true
   }
-  const failure = (request: FastifyRequest, reply: FastifyReply, status: number, error: string) => {
+  const failure = (request: FastifyRequest, reply: FastifyReply, status: number, error: string, hint?: string) => {
     reply.code(status).header("Cache-Control", "no-store")
-    if (String(request.headers.accept).includes("text/html")) return reply.type("text/html; charset=utf-8").send(agentTriggerErrorPage(error, base))
+    if (String(request.headers.accept).includes("text/html")) return reply.type("text/html; charset=utf-8").send(agentTriggerErrorPage(error, base, hint))
     return { error }
   }
   const invoke = async (request: FastifyRequest, reply: FastifyReply) => {
@@ -102,7 +102,7 @@ export async function buildAgentTriggerServer(client: Pick<AgentTriggerClient, "
   app.addHook("onRequest", async (request, reply) => {
     const reason = foreignRequestReason(request, base)
     if (!reason) return
-    const refusal = failure(request, reply, 403, reason)
+    const refusal = failure(request, reply, 403, reason, "Another website sent this request. Open this address in your browser on this computer.")
     return refusal === reply ? reply : reply.send(refusal)
   })
   app.get(base + "health", async () => ({ ingress_id: ingress }))

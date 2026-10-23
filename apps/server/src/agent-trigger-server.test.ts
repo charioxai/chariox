@@ -88,6 +88,9 @@ test("MP-08/MP-10/MP-11: other websites cannot read or invoke the local page, th
       { method: "POST", url: "/local-test/", payload: { prompt: "image" }, headers: { ...local, "sec-fetch-site": "same-site" } },
     ]), [403, 403, 403, 403, 403, 403, 403])
     assert.equal(f.invocations.length, 0)
+    const refused = await f.app.inject({ method: "GET", url: "/local-test/", headers: { host: "attacker.example", accept: "text/html" } })
+    assert.match(refused.body, /Another website sent this request/)
+    assert.doesNotMatch(refused.body, /id="initial-conversation"/)
     assert.deepEqual(await statuses([
       { method: "GET", url: "/local-test/", headers: { ...local, "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", accept: "text/html" } },
       { method: "GET", url: "/local-test/history", headers: { ...local, origin: "http://127.0.0.1:41000", "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors" } },
