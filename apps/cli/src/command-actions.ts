@@ -6,6 +6,7 @@ import type {
   RuntimeProviderRun,
   RuntimeSession,
   SessionConfigState,
+  TranscriptEntry,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
@@ -159,7 +160,7 @@ type CommandActionDeps =
   multiAgentResponseLayout: () => MultiAgentResponseLayout
   maxAgentsPerScreen: () => number
   flashFooter: (message: string, tone: FooterTone) => void
-  appendNotice: (message: string) => void
+  appendNotice: (message: string, emphasis?: TranscriptEntry["emphasis"], mergeKey?: string) => void
   sendRoomEnvironmentRequest?: RoomCommandHandlerDeps["send"]
   reconnectRoomEventStream?: RoomCommandHandlerDeps["reconnectEventStream"]
   openRoomViewer?: RoomCommandHandlerDeps["openViewer"]

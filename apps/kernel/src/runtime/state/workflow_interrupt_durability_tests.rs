@@ -167,6 +167,50 @@ async fn a01_workflow_node_turn_settles_without_a_plain_completion_check() {
     assert!(settled.pending_prompt_id.is_none(), "{settled:?}");
 }
 
+// A12-S06: a workflow node turn dispatched before an upgrade has no task on the
+// new kernel; the task its settlement creates keeps the node, so the run stays
+// supervised and a continuation of that turn stays inside the invocation.
+#[tokio::test]
+async fn a12_legacy_workflow_turn_settled_without_a_task_keeps_its_node() {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("a12-legacy-node-settle"),
+        config,
+        false,
+    );
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let prompt = owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .unwrap();
+    assert_eq!(
+        prompt.workflow_run_id(),
+        Some(fixture.workflow_run_id.as_str())
+    );
+    let (task, _) = owned
+        .settle_agent_task(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            &prompt,
+            "legacy-provider-run",
+            false,
+        )
+        .unwrap()
+        .expect("legacy turn settlement");
+    assert_eq!(
+        owned
+            .durable_state_store
+            .agent_task_workflow(&task.task_id)
+            .unwrap(),
+        Some((fixture.workflow_run_id.clone(), fixture.node_run_id.clone()))
+    );
+}
+
 // A plain turn only gets a task row: ending after a tool call with no answer is
 // settled Done, never corrected, held to a wait or blocked for the owner.
 #[tokio::test]
@@ -282,6 +326,8 @@ async fn workflow_wait_cancellation(cancel_creator: bool) {
         matched_at_ms: None,
         pid: None,
         exit_code: None,
+        summary: String::new(),
+        detail: serde_json::Value::Null,
         fire_count: 0,
         missed_fires: 0,
         last_fired_at_ms: None,
@@ -1988,35 +2034,41 @@ async fn mp08_workflow_resume_running_run_keeps_current_prompt() {
 // the parent's workflow receipt was already acknowledged before it blocked.
 #[tokio::test]
 async fn a01_failed_workflow_settles_unstarted_delegate_on_blocked_parent() {
-    failed_workflow_delegate_settlement(false, false, false).await;
+    failed_workflow_delegate_settlement(false, SharedDelegate::No).await;
 }
 
-// MP-08 / MP-10 / MP-11: a second accepted invocation of the same parent still
-// needs the delegate when the first invocation fails before admitting a task.
+// MP-08 / MP-10 / MP-11: one parent task may accept two invocations that share
+// an unbound delegate; the first failure must not cancel the second's delegate.
 #[tokio::test]
-async fn a01_failed_workflow_keeps_delegate_shared_with_live_invocation() {
-    failed_workflow_delegate_settlement(false, true, false).await;
+async fn a01_failed_workflow_preserves_delegate_shared_with_live_invocation() {
+    failed_workflow_delegate_settlement(false, SharedDelegate::StartedNode).await;
 }
 
-// The surviving invocation is still on an upstream node: the shared delegate
-// has no node-run record there yet, only its runtime agent mapping.
+// MP-08 / MP-10 / MP-11: the second invocation is still on its upstream node;
+// the shared delegate is a downstream node that has no node run yet.
 #[tokio::test]
-async fn a01_failed_workflow_keeps_delegate_a_live_invocation_has_not_reached() {
-    failed_workflow_delegate_settlement(false, true, true).await;
+async fn a01_failed_workflow_preserves_delegate_needed_by_downstream_node() {
+    failed_workflow_delegate_settlement(false, SharedDelegate::DownstreamNode).await;
 }
 
 // MP-08 / MP-10 / MP-11: successful task receipts survive a later startup
 // failure in the same invocation, including repeated lifecycle sweeps.
 #[tokio::test]
 async fn a01_failed_workflow_preserves_fully_settled_successful_task() {
-    failed_workflow_delegate_settlement(true, false, false).await;
+    failed_workflow_delegate_settlement(true, SharedDelegate::No).await;
 }
 
-async fn failed_workflow_delegate_settlement(
-    settled_upstream: bool,
-    shared_live_invocation: bool,
-    downstream_unreached: bool,
-) {
+const SECOND_INVOCATION: &str = "second-invocation-run";
+
+#[derive(Clone, Copy, PartialEq)]
+enum SharedDelegate {
+    No,
+    StartedNode,
+    DownstreamNode,
+}
+
+async fn failed_workflow_delegate_settlement(settled_upstream: bool, shared: SharedDelegate) {
+    let shared_delegate = shared != SharedDelegate::No;
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Outcome};
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
@@ -2104,27 +2156,35 @@ async fn failed_workflow_delegate_settlement(
     } else {
         None
     };
-    if shared_live_invocation {
-        let mut restored = serde_json::to_value(&session).unwrap();
-        let mut run = restored["workflow_runs"][0].clone();
-        run["id"] = serde_json::json!("second-invocation");
-        run["status"] = serde_json::json!("Running");
-        run["node_runs"][0]["id"] = serde_json::json!("second-invocation-node");
-        run["active_node_run_id"] = serde_json::json!("second-invocation-node");
-        if downstream_unreached {
-            run["node_runs"][0]["agent_id"] = serde_json::json!(fixture.second_target_agent_id);
-            run["runtime_agent_ids_by_node"] = serde_json::json!({
-                "upstream-definition": fixture.second_target_agent_id,
-                "delegate-definition": fixture.target_agent_id,
-            });
+    if shared_delegate {
+        // A second accepted invocation by the same parent that still needs the delegate.
+        let mut restored = serde_json::to_value(
+            owned
+                .session_store
+                .get_session(&fixture.session_id)
+                .unwrap(),
+        )
+        .unwrap();
+        let mut second = restored["workflow_runs"][0].clone();
+        second["id"] = serde_json::json!(SECOND_INVOCATION);
+        second["active_node_run_id"] = serde_json::Value::Null;
+        second["node_runs"][0]["id"] = serde_json::json!("second-invocation-node");
+        second["node_runs"][0]["status"] = serde_json::json!("Created");
+        if shared == SharedDelegate::DownstreamNode {
+            second["node_runs"][0]["agent_id"] = serde_json::json!(fixture.second_target_agent_id);
+            second["runtime_agent_ids_by_node"]["downstream-definition"] =
+                serde_json::json!(fixture.target_agent_id);
         }
-        restored["workflow_runs"].as_array_mut().unwrap().push(run);
+        restored["workflow_runs"]
+            .as_array_mut()
+            .unwrap()
+            .push(second);
         owned
             .session_store
             .write()
             .restore_session(serde_json::from_value(restored).unwrap());
         owned
-            .persist_workflow_runtime_session(session.id(), "second_invocation_fixture")
+            .persist_workflow_runtime_session(session.id(), "shared_delegate_fixture")
             .unwrap();
     }
     for (parent, agent) in [
@@ -2169,26 +2229,29 @@ async fn failed_workflow_delegate_settlement(
                 .unwrap();
         }
     }
-    if shared_live_invocation {
-        for op in [
-            Operation::RegisterObligation {
-                owner: session.owner_user_id().into(),
-                room: fixture.session_id.clone(),
-                agent: fixture.unrelated_agent_id.clone(),
-                prompt: "failed-parent".into(),
-                run: None,
-                id: "failed-parent-workflow-2".into(),
-                kind: "workflow_run".into(),
-                resource: Some("second-invocation".into()),
-                now,
-            },
-            Operation::DispatchReceipt {
-                id: "failed-parent-workflow-2".into(),
-                accepted: true,
-                resource: Some("second-invocation".into()),
-            },
-        ] {
-            store.agent_lifecycle(op).unwrap();
+    if shared_delegate {
+        {
+            let (id, kind) = ("failed-parent-second-workflow", "workflow_run");
+            store
+                .agent_lifecycle(Operation::RegisterObligation {
+                    owner: session.owner_user_id().into(),
+                    room: fixture.session_id.clone(),
+                    agent: fixture.unrelated_agent_id.clone(),
+                    prompt: "failed-parent".into(),
+                    run: None,
+                    id: id.into(),
+                    kind: kind.into(),
+                    resource: Some(SECOND_INVOCATION.into()),
+                    now,
+                })
+                .unwrap();
+            store
+                .agent_lifecycle(Operation::DispatchReceipt {
+                    id: id.into(),
+                    accepted: true,
+                    resource: Some(SECOND_INVOCATION.into()),
+                })
+                .unwrap();
         }
     }
     store
@@ -2266,14 +2329,14 @@ async fn failed_workflow_delegate_settlement(
     }
     let parent = tasks.iter().find(|t| t.task_id == "failed-parent").unwrap();
     assert_eq!(parent.state, ExecutionState::Blocked);
-    if shared_live_invocation {
+    if shared_delegate {
         assert_eq!(
             parent.obligations[0].status, "open",
-            "a delegate still used by another accepted invocation must stay bound"
+            "MP-08 / MP-10 / MP-11: a live second invocation keeps the shared delegate"
         );
-    } else {
-        assert_eq!(parent.obligations[0].status, "cancelled", "MP-08 / MP-10 / MP-11: failed workflow must settle the unstarted delegate without owner Cancel");
+        return;
     }
+    assert_eq!(parent.obligations[0].status, "cancelled", "MP-08 / MP-10 / MP-11: failed workflow must settle the unstarted delegate without owner Cancel");
     let independent = tasks
         .iter()
         .find(|t| t.task_id == "independent-parent")
@@ -2286,12 +2349,11 @@ async fn failed_workflow_delegate_settlement(
         .agent_inbox(&fixture.session_id, &fixture.unrelated_agent_id, 0)
         .unwrap();
     assert!(
-        shared_live_invocation
-            || events.iter().any(
-                |e| e.payload.get("workflow_run_id").and_then(|v| v.as_str())
-                    == Some(fixture.workflow_run_id.as_str())
-                    && e.payload.get("recovery").is_some()
-            ),
+        events.iter().any(
+            |e| e.payload.get("workflow_run_id").and_then(|v| v.as_str())
+                == Some(fixture.workflow_run_id.as_str())
+                && e.payload.get("recovery").is_some()
+        ),
         "failure settlement needs a reason and recovery receipt"
     );
 }
@@ -2409,4 +2471,82 @@ async fn amfix_r11_adopted_goal_observes_archived_workflow_completion() {
         .find(|t| t.task_id == goal.task_id)
         .unwrap();
     assert!(current.obligations.iter().all(|o| o.status == "settling"));
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A01-S01 (accam r6): an inbox delivery queued as
+// a workflow prompt never reached a provider when the run is cancelled. It
+// returns to the inbox instead of staying `submitting` until the sweep turns it
+// into an "Unconfirmed delivery" owner task.
+#[tokio::test]
+async fn a01_cancelled_workflow_run_releases_its_queued_inbox_delivery() {
+    use crate::durable_state::agent_lifecycle::{occurrence, Operation, Outcome};
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("a01-cancel-queued-delivery"),
+        config,
+        false,
+    );
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let (_, queued) = owned
+        .prompt_state_owner
+        .state_parts(&session, &fixture.target_agent_id);
+    let queued = queued
+        .iter()
+        .find(|prompt| prompt.workflow_run_id() == Some(fixture.workflow_run_id.as_str()))
+        .expect("the fixture queues a workflow prompt for the target")
+        .id()
+        .to_string();
+    let store = &owned.durable_state_store;
+    let Outcome::Event(event) = store
+        .agent_lifecycle(Operation::Occur(occurrence(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            "peer",
+            "queued-workflow-message",
+            "message",
+            serde_json::json!({"message":"Review the build"}),
+        )))
+        .unwrap()
+    else {
+        panic!("event")
+    };
+    store
+        .agent_lifecycle(Operation::Attempt {
+            room: fixture.session_id.clone(),
+            agent: fixture.target_agent_id.clone(),
+            sequence: event.sequence,
+            prompt: queued.clone(),
+            target: None,
+            run: None,
+            now: crate::session::unix_epoch_ms(),
+            work: None,
+        })
+        .unwrap();
+    let (cancelled, _) = fixture
+        .runtime
+        .execute_workflow_cancel_run_request(crate::local::CancelWorkflowRunRequest {
+            session_id: fixture.session_id.clone(),
+            workflow_run_ref: fixture.workflow_run_id.clone(),
+        })
+        .await;
+    assert!(matches!(
+        cancelled.unwrap(),
+        LocalDaemonResponse::WorkflowRunCancelled { .. }
+    ));
+    let event = store
+        .agent_inbox(&fixture.session_id, &fixture.target_agent_id, 0)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.sequence == event.sequence)
+        .unwrap();
+    assert_ne!(
+        event.state, "submitting",
+        "the removed queued prompt never reached the provider: {event:?}"
+    );
+    assert!(event.prompt_id.is_none(), "{event:?}");
 }

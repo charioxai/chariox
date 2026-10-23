@@ -9,7 +9,7 @@ import {
   sessionActiveInteractionForAgent,
   sessionFocusedInteraction,
 } from "@chariox/kernel-client/session-runtime-lookup"
-import { sessionFocusedStatusBadge, sessionAgentTaskStatus } from "@chariox/kernel-client/session-runtime-status"
+import { sessionFocusedStatusBadge, sessionAgentLedgerStatus } from "@chariox/kernel-client/session-runtime-status"
 import { sessionFocusedAgentId } from "@chariox/kernel-client/session-runtime-transition"
 import { createTranscriptEntryProjectionController } from "./transcript-entry-projection-controller.js"
 import {
@@ -121,7 +121,7 @@ export function createCliRuntimeProjectionComposition(
     activeStatusLabel: agentRuntimeProjectionController.focusedActivityLabel(),
     focusedBusy: agentRuntimeProjectionController.focusedAgentBusy(),
     agents: agentRuntimeProjectionController.allAgentsBusyState(),
-    taskStatus: focusedAgentId() ? sessionAgentTaskStatus(deps.sessionState(), focusedAgentId()!) : null,
+    taskStatus: focusedAgentId() ? sessionAgentLedgerStatus(deps.sessionState(), focusedAgentId()!) : null,
   })
   const runtimeDebugLogger = createCliRuntimeDebugLogger({
     logger: deps.appLogger,

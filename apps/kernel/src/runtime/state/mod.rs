@@ -183,6 +183,10 @@ pub(crate) struct KernelRuntimeState {
     provider_history_appends: provider_history_runtime::ProviderHistoryAppends,
     leased_agent_operations: leased_agent_operations::LeasedAgentOperations,
     detached_workflow_provider_launches: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    /// The only strong handle on the terminal wake driver. The driver holds a runtime copy made
+    /// before this field was set, and the Room terminal service and wake registry hold it weakly,
+    /// so dropping the runtime frees the kernel instead of leaving a cycle.
+    terminal_wake_driver: Option<Arc<terminal_wake::TerminalWakeDriver>>,
     owned: KernelRuntimeOwnedState,
 }
 
@@ -419,6 +423,7 @@ mod attachment_owned_state;
 mod browser_controller_action_cancellation_runtime_state;
 mod browser_controller_action_execution_runtime_state;
 mod browser_controller_compatibility_runtime_state;
+mod wake_driver;
 pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
 mod browser_configuration_runtime_state;
 mod browser_controller_runtime_state;
@@ -902,7 +907,7 @@ impl KernelRuntimeState {
                 std::thread::sleep(Duration::from_millis(2));
             }
         };
-        let runtime = Self {
+        let mut runtime = Self {
             external_command_authority: None,
             room_provider_origin: None,
             room_request_origin: None,
@@ -918,6 +923,7 @@ impl KernelRuntimeState {
             provider_history_appends: Default::default(),
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+            terminal_wake_driver: None,
             owned: KernelRuntimeOwnedState {
                 app_control,
                 critical_approval_passkeys:
@@ -1065,6 +1071,7 @@ impl KernelRuntimeState {
             },
         };
         runtime.link_room_terminals_to_managed_kernel();
+        runtime.register_terminal_wake_driver();
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
         // Access grants are process-bound and never survive a kernel restart.
@@ -1372,6 +1379,7 @@ mod agent_process_group;
 mod agent_process_output;
 mod agent_process_watch;
 mod agent_task_cancellation;
+mod agent_task_failure;
 mod agent_task_human_control_wait;
 mod agent_task_owner_interactions;
 mod agent_task_owner_resolution;
@@ -1380,5 +1388,7 @@ mod agent_wake_cancellation;
 mod agent_wake_scheduler;
 mod agent_workflow_tasks;
 mod room_dispatch_obligation;
+mod terminal_wake;
+mod terminal_wake_worker;
 // MD-3: typed internal seam for display integration; public protocol remains coordinator-owned.
 pub(crate) use kernel_browser_runtime::{KernelBrowserDisplayRequest, KernelBrowserPushCredit};

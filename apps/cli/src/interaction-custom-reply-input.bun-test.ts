@@ -21,6 +21,7 @@ for (const kittyKeyboard of [false, true]) {
       getFocusedInteraction: () => passphraseInteraction,
       isAttached: () => true,
       getSessionId: () => "session-1",
+      getActiveInteractions: () => [],
       getSelectedIndex: () => 1,
       setSelectedIndex: () => {},
       getCustomReply: (id) => replies.get(id) ?? "",

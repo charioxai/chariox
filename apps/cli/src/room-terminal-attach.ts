@@ -16,6 +16,7 @@ export const TERMINAL_DETACH_BYTE = 0x1d
 const TERMINAL_DETACH_KITTY = "\x1b[93;5u"
 const OUTPUT_POLL_MS = 4000
 const RETRY_DELAYS_MS = [200, 500, 1000, 2000]
+const INTERRUPTED = Symbol("interrupted")
 
 export type TerminalSend = (request: unknown) => Promise<unknown>
 
@@ -110,10 +111,14 @@ export async function attachRoomTerminal(options: {
   const ended = new Promise<void>(resolve => { resolveEnd = resolve })
   let ready = false
   let wake: () => void = () => {}
+  let interrupt: () => void = () => {}
+  // Resolves when the attach ends, so a request that never answers cannot hold it.
+  const interrupted = new Promise<typeof INTERRUPTED>(resolve => { interrupt = () => resolve(INTERRUPTED) })
   const finish = (result: TerminalAttachEnd) => {
     state.end ??= result
     resolveEnd()
     wake()
+    interrupt()
   }
   const draw = (bytes: Uint8Array) => {
     const { out, left } = hosted.push(bytes)
@@ -159,10 +164,12 @@ export async function attachRoomTerminal(options: {
   }
 
   // Input keeps its order; a chunk lost with the connection is dropped, never replayed
-  // into a program that may already have received it.
+  // into a program that may already have received it. After the attach is over, chunks that
+  // have not been sent yet are dropped and a late reply writes nothing to the outer terminal.
   let sending: Promise<unknown> = Promise.resolve()
   const sendKeys = (bytes: Buffer) => {
     sending = sending.then(async () => {
+      if (over) return
       try {
         const reply = expectRoomTerminalResult(await send(roomTerminalInputRequest(hostedTarget, terminalId, bytes)), "input")
         if (state.end) return
@@ -175,6 +182,8 @@ export async function attachRoomTerminal(options: {
     })
   }
 
+  // Ctrl-] works from the first moment; other keys wait until the screen is in sync.
+  let synced = false
   const onData = (chunk: Buffer) => {
     if (state.end) return
     const text = chunk.toString("latin1")
@@ -194,6 +203,7 @@ export async function attachRoomTerminal(options: {
     if (raw) input.setRawMode?.(true)
     input.resume()
     options.signal?.addEventListener("abort", onAbort)
+    input.on("data", onData)
     output.write("\x1b[?1049h")
     if (options.signal?.aborted) return { reason: "detached" }
     await untilDelivered(() => send(resizeRoomTerminalRequest(hostedTarget, terminalId, size())))

@@ -75,6 +75,11 @@ impl KernelRuntimeState {
             .into_iter()
             .find(|t| t.task_id == task_id && t.prompt_id == prompt.id())
             .ok_or_else(|| ledger::error("task unavailable in this room and turn"))?;
+        // MP-08/MP-09/MP-10/MP-11 F03: polling cannot keep an accepted wait
+        // inside a native turn or mutate its sources/deadline before settlement.
+        if task.wait.is_some() {
+            return Err(ledger::error("Wait already accepted. End this provider turn immediately without further tools, including inbox, wakes or subscriptions. The kernel will deliver a new turn for the source or deadline."));
+        }
         let now = crate::session::unix_epoch_ms();
         let payload = match name {
             "chariox.events.inbox" => {
@@ -178,6 +183,12 @@ impl KernelRuntimeState {
             "chariox.events.yield" => {
                 let ids: Vec<String> = serde_json::from_value(args["registration_ids"].clone())
                     .map_err(|_| ledger::error("registration_ids required"))?;
+                let deadline = args["deadline_ms"]
+                    .as_u64()
+                    .ok_or_else(|| ledger::error("finite deadline_ms required"))?;
+                if deadline <= now {
+                    return Err(ledger::error(format!("deadline_ms {deadline} is not in the future: it is an absolute Unix time in milliseconds, not a duration; now_ms is {now}, so a wait of N seconds is now_ms + N*1000")));
+                }
                 self.owned
                     .durable_state_store
                     .agent_lifecycle(Operation::Yield {
@@ -187,13 +198,11 @@ impl KernelRuntimeState {
                         cursor: args["inbox_cursor"]
                             .as_u64()
                             .ok_or_else(|| ledger::error("inbox_cursor required"))?,
-                        deadline: args["deadline_ms"]
-                            .as_u64()
-                            .ok_or_else(|| ledger::error("finite deadline_ms required"))?,
+                        deadline,
                         reason: args["reason"].as_str().unwrap_or_default().into(),
                         now,
                     })?;
-                serde_json::json!({"yield_requested":true,"waiting_commits_at_native_settlement":true})
+                serde_json::json!({"yield_requested":true,"waiting_commits_at_native_settlement":true,"next_action":"End this provider turn immediately without further tools. Do not check inbox, wakes or subscriptions: the kernel delivers a new turn for the source or deadline."})
             }
             "chariox.events.blocked" => {
                 let result = self
@@ -211,6 +220,7 @@ impl KernelRuntimeState {
             }
             "chariox.events.timer"
             | "chariox.events.process"
+            | "chariox.events.terminal"
             | "chariox.events.cancel_wake"
             | "chariox.events.wakes" => {
                 self.dispatch_agent_wake_tool(run, name, &args, &task)

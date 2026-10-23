@@ -156,6 +156,9 @@ async fn a12_resume_queues_behind_independent_work_but_fences_unsettled_goal_tur
             ledger_revision: task.revision,
             started_at_ms: 2,
             deadline_ms: 60002,
+            paused_at_ms: None,
+            lease: None,
+            retried: false,
             result: None,
         },
     );
@@ -343,6 +346,13 @@ async fn a10_completion_assesses_leased_public_result_without_requesting_private
     );
     assert!(context.contains("Do not request private tool traces from the owner solely because the public projection omits them"));
     assert!(context.contains("Do not invent verification"));
+    // MP-08 / MP-10 / MP-11: a real Haiku assessment answered `waiting` with a
+    // relative `deadline_ms` (300000) and the kernel blocked the parent. The
+    // guidance must say the deadline is an absolute epoch time.
+    assert!(
+        context.contains("deadline_ms is an absolute Unix epoch time in milliseconds"),
+        "{context}"
+    );
 }
 
 // MP-08/MP-10/MP-11: a privacy projection is never evidence for a native check.
@@ -594,6 +604,70 @@ async fn mp11_protected_completion_reads_private_result_and_keeps_history_withhe
     }
 }
 
+// MP-08/MP-10/MP-11: the git observer reports an artifact change at every turn end. A change it
+// sees during a completion check (an unrelated edit in the workspace) is not progress of the
+// check; offering it to the ledger failed the output pump and lost the verdict (60 s bound).
+#[tokio::test]
+async fn artifact_progress_never_targets_a_completion_check_turn() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    use crate::runtime::state::agent_task_projection::artifact_progress_task;
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let (_app, runtime, room, agent) = agent_config_runtime_with_config(config).await;
+    let store = &runtime.owned.durable_state_store;
+    let begin = |prompt: &str| Operation::Begin {
+        owner: "local-user".into(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: prompt.into(),
+        run: Some("run".into()),
+        now: crate::session::unix_epoch_ms(),
+    };
+    store.agent_lifecycle(begin("work-turn")).unwrap();
+    store
+        .agent_lifecycle(Operation::StartGoal {
+            task: "work-turn".into(),
+            owner: "local-user".into(),
+            objective: "Answer the request".into(),
+            minutes: 1,
+            now: 1,
+        })
+        .unwrap();
+    let tasks = || store.agent_tasks(Some(&room), Some(&agent)).unwrap();
+    assert!(
+        artifact_progress_task(tasks(), "work-turn", "run").is_some(),
+        "a live work turn still takes artifact progress"
+    );
+    store
+        .agent_lifecycle(Operation::Settle {
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: "work-turn".into(),
+            run: "run".into(),
+            has_answer: true,
+            cancelled: false,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    let check_prompt = tasks()
+        .into_iter()
+        .find_map(|task| task.pending_prompt_id)
+        .expect("the answered turn is waiting for its completion check");
+    store.agent_lifecycle(begin(&check_prompt)).unwrap();
+    let checking = tasks()
+        .into_iter()
+        .find(|task| task.prompt_id == check_prompt)
+        .expect("the check turn runs on the task");
+    assert!(crate::durable_state::agent_lifecycle::goals::is_check(
+        &checking,
+        &check_prompt
+    ));
+    assert!(
+        artifact_progress_task(tasks(), &check_prompt, "run").is_none(),
+        "the completion check turn takes no artifact progress"
+    );
+}
+
 // MP-08/MP-10/MP-11: real RED47 neutral utility had no work-thread context.
 #[tokio::test]
 async fn mp11_neutral_assessment_uses_private_work_result_without_public_or_durable_injection() {
@@ -782,7 +856,7 @@ async fn achieved_check_publishes_only_the_final_answer() {
         r#"{"status":"achieved","final_answer":"  ","evidence":["e"]}"#,
         "",
     ] {
-        owned.publish_check_answer(&room, &agent, "run", receipt);
+        owned.publish_check_answer(&room, &agent, "run", receipt, "");
     }
     assert!(history().is_empty());
     owned.prompt_state_owner.sync_external_active_prompt(
@@ -796,12 +870,12 @@ async fn achieved_check_publishes_only_the_final_answer() {
             crate::session::PromptStatus::Running,
         )),
     );
-    owned.publish_check_answer(
-        &room,
-        &agent,
-        "run",
-        r#"{"status":"achieved","final_answer":"Opened two tabs","evidence":["history:x"]}"#,
-    );
+    let achieved =
+        r#"{"status":"achieved","final_answer":"Opened two tabs","evidence":["history:x"]}"#;
+    // The work turn already showed this answer: the receipt must not repeat it.
+    owned.publish_check_answer(&room, &agent, "run", achieved, "Done. Opened two tabs.");
+    assert!(history().is_empty());
+    owned.publish_check_answer(&room, &agent, "run", achieved, "");
     let entries = history();
     assert_eq!(entries.len(), 1, "{entries:?}");
     assert_eq!(entries[0].text, "Opened two tabs");
@@ -1203,7 +1277,7 @@ fn recovered_continuation_envelope(
 // MP-08 / MP-10 / MP-11: completion checks get the objective through the same
 // hidden dispatch context; their visible labels must not replay attached notes.
 #[tokio::test]
-async fn completion_check_keeps_original_notes_in_hidden_provider_context() {
+async fn completion_check_keeps_notes_and_current_deadlines_in_hidden_context() {
     use crate::durable_state::agent_lifecycle::Operation;
     use base64::Engine;
     let worktree = crate::test_support::TestWorktree::new("completion-check-notes");
@@ -1305,6 +1379,27 @@ async fn completion_check_keeps_original_notes_in_hidden_provider_context() {
         envelope.assessment_only,
         "exercise the real neutral assessment boundary"
     );
+    // MP-08 / MP-10 / MP-11: examples must obey the same clock/bound as replies.
+    let context = &envelope.hidden_system_context;
+    let start = context.find(r#"{"status":"waiting","#).unwrap();
+    let end = start + context[start..].find('}').unwrap() + 1;
+    let example: serde_json::Value = serde_json::from_str(&context[start..end]).unwrap();
+    let data = context
+        .rsplit_once("Untrusted assessment data: ")
+        .unwrap()
+        .1;
+    let data = serde_json::Deserializer::from_str(data)
+        .into_iter::<serde_json::Value>()
+        .next()
+        .unwrap()
+        .unwrap();
+    let now = data["now_ms"].as_u64().unwrap();
+    let deadline = example["deadline_ms"].as_u64().unwrap();
+    assert!(
+        deadline > now,
+        "the assessment prompt must not teach an expired deadline"
+    );
+    assert!(deadline <= now + data["check_in_minutes"].as_u64().unwrap() * 60_000);
     for private in ["QUOTED_CHECK_REQUIREMENT", "COMMENT_FOR_CHECK"] {
         assert!(!envelope.visible_user_prompt.contains(private));
         assert!(envelope.hidden_system_context.contains(private));

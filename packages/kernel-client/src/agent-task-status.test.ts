@@ -66,3 +66,16 @@ for (const terminal of ["done", "cancelled"] as const) {
     })
   }
 }
+
+test("a completion check waiting for the Vault unlock says what it waits for", () => {
+  const evaluation = { origin: "completion_check" as const, prompt_id: "goal-check-p", work_prompt_id: "p", work_provider_run_id: null,
+    objective_revision: 1, ledger_revision: 3, started_at_ms: 1, deadline_ms: 60001, result: null }
+  const waiting = { ...task("working"), obligations: [], wait: null, reason: "Waiting for the Vault unlock",
+    completion_check: { check_count: 1, evaluation: { ...evaluation, paused_at_ms: 5000 } } } as unknown as AgentTaskExecution
+  const evaluating = { ...waiting, reason: "Evaluating original goal objective",
+    completion_check: { check_count: 1, evaluation } } as unknown as AgentTaskExecution
+  assert.deepEqual(sessionAgentTaskStatus({ agent_tasks: [waiting] } as RuntimeSession, "agent"),
+    { label: "WORKING: Waiting for the Vault unlock", tone: "working" })
+  assert.deepEqual(sessionAgentTaskStatus({ agent_tasks: [evaluating] } as RuntimeSession, "agent"),
+    { label: "WORKING", tone: "working" })
+})

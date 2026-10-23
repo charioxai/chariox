@@ -325,7 +325,18 @@ impl CommandRouter {
         if crate::transport::runtime_tools::canonical_meta_tool_name(&tool_name)
             == Some(crate::transport::runtime_tools::META_RUN_COMMAND_TOOL)
         {
-            return self
+            // A10: a leased caller's commands act with its lease-verified
+            // origin, as a local provider turn's do, so delegated prompts
+            // bind to the submitting task.
+            let run = crate::provider::projected_leased_provider_run_id(
+                &context.leased_agent_id,
+                &context.worker_provider_run_id,
+            );
+            let mut router = self.clone();
+            router.runtime_state = self
+                .runtime_state
+                .with_room_provider_origin(Some(&context.home_agent_id), Some(&run));
+            return router
                 .dispatch_forwarded_meta_run_command(context, arguments)
                 .await;
         }

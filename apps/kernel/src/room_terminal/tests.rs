@@ -64,7 +64,10 @@ fn service(root: &Path) -> RoomTerminalService {
 }
 
 fn service_with_events(root: &Path, events: Arc<FakeEvents>) -> RoomTerminalService {
-    RoomTerminalService::new(root.join("terminals"), events)
+    let service = RoomTerminalService::new(root.join("terminals"));
+    let weak = Arc::downgrade(&events);
+    service.bind_events(weak);
+    service
 }
 
 fn owner(wake_id: &str, agent_id: &str) -> WatchOwner {
@@ -589,9 +592,9 @@ async fn notifications_fire_for_text_waiting_and_finish() {
             "room-1",
             &id,
             owner("w-text", "agent-a"),
-            RoomTerminalWatch::OutputContains {
+            vec![RoomTerminalWatch::OutputContains {
                 text: "NEEDLE-7".into(),
-            },
+            }],
             None,
         )
         .unwrap();
@@ -600,7 +603,7 @@ async fn notifications_fire_for_text_waiting_and_finish() {
             "room-1",
             &id,
             owner("w-wait", "agent-a"),
-            RoomTerminalWatch::WaitingForInput,
+            vec![RoomTerminalWatch::WaitingForInput],
             None,
         )
         .unwrap();
@@ -631,7 +634,7 @@ async fn notifications_fire_for_text_waiting_and_finish() {
             "room-1",
             &id,
             owner("w-program", "agent-a"),
-            RoomTerminalWatch::Finished,
+            vec![RoomTerminalWatch::Finished],
             None,
         )
         .unwrap();
@@ -655,7 +658,7 @@ async fn notifications_fire_for_text_waiting_and_finish() {
             "room-1",
             &id,
             owner("w-shell", "agent-a"),
-            RoomTerminalWatch::Finished,
+            vec![RoomTerminalWatch::Finished],
             None,
         )
         .unwrap();
@@ -751,7 +754,7 @@ async fn a_wait_that_times_out_loses_nothing() {
             "room-1",
             &id,
             owner("later", "a"),
-            RoomTerminalWatch::Finished,
+            vec![RoomTerminalWatch::Finished],
             Some(offset),
         )
         .unwrap();
@@ -1293,6 +1296,14 @@ async fn a_shell_started_inside_the_terminal_does_not_repeat_the_marks() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     });
+    // Input typed while the shell is still starting is refused as busy (or lands
+    // before the marks are on). Wait for the first prompt.
+    until("the shell's first prompt", || async {
+        service.pump_once();
+        let state = service.lock();
+        state.terminals[&id].mark_tracking && !state.terminals[&id].command_in_flight
+    })
+    .await;
     // The nested shell prints no marks of its own, so the outer command is
     // reported finished only when the nested shell exits.
     let fired = finish_of(&service, &id, "bash -c 'echo $PROMPT_COMMAND-[$PS0]'\r").await;

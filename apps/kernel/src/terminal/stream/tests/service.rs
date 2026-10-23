@@ -90,6 +90,104 @@ fn zero_recipient_outputs_and_completions_are_not_retained() {
     assert_eq!(terminal.health_snapshot().pending_completion_records, 0);
 }
 
+// MP-08 / MP-10 / MP-11: the kernel's own completion assessment turn is
+// internal. No client receives its prompt echo or answer; ordinary turns still do.
+#[test]
+fn completion_check_turn_is_not_delivered_to_clients() {
+    let mut terminal = TerminalStreamService::new();
+    let recipients = || vec!["attachment-1".to_string()];
+    let check = Some(crate::session::PromptOrigin::CompletionCheck);
+    terminal.fan_out_prompt_output(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        "goal-check-1",
+        check,
+        "attachment-1",
+        recipients(),
+        b"internal assessment instruction",
+    );
+    terminal.fan_out_output_with_prompt_origin(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        check,
+        recipients(),
+        b"{\"status\":\"achieved\"}",
+    );
+    terminal.fan_out_outputs(vec![TerminalOutputAppend {
+        session_id: "session-1".to_string(),
+        provider_run_id: "run-1".to_string(),
+        agent_id: Some("agent-1".to_string()),
+        prompt_id: None,
+        prompt_origin: check,
+        source_attachment_id: Some("attachment-1".to_string()),
+        kind: TerminalOutputKind::ProviderOutput,
+        merge_key: None,
+        sequence: None,
+        recipient_attachment_ids: Arc::from(recipients()),
+        bytes: b"{\"status\":\"continue\"}".to_vec(),
+    }]);
+    assert!(terminal
+        .drain_output_records("session-1", "attachment-1")
+        .is_empty());
+
+    terminal.fan_out_output_with_prompt_origin(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        Some(crate::session::PromptOrigin::Chariox),
+        recipients(),
+        b"ordinary answer",
+    );
+    let delivered = terminal.drain_output_records("session-1", "attachment-1");
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(delivered[0].bytes, b"ordinary answer");
+}
+
+// The kernel's correction instruction is internal too; the agent's answer is not.
+#[test]
+fn correction_prompt_echo_is_hidden_but_its_answer_is_delivered() {
+    for prompt_id in [
+        "task-correction-prompt-1",
+        "agent-event-agent-1-42",
+        "goal-continue-prompt-1-1",
+    ] {
+        let mut terminal = TerminalStreamService::new();
+        let recipients = || vec!["attachment-1".to_string()];
+        terminal.fan_out_prompt_output(
+            "session-1",
+            "run-1",
+            Some("agent-1"),
+            prompt_id,
+            Some(crate::session::PromptOrigin::Chariox),
+            "attachment-1",
+            recipients(),
+            b"The prior answer is progress, not completion.",
+        );
+        assert!(terminal
+            .drain_output_records("session-1", "attachment-1")
+            .is_empty());
+        terminal.fan_out_output_with_prompt_origin(
+            "session-1",
+            "run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            None,
+            Some(crate::session::PromptOrigin::Chariox),
+            recipients(),
+            b"final answer",
+        );
+        let delivered = terminal.drain_output_records("session-1", "attachment-1");
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].bytes, b"final answer");
+    }
+}
+
 #[test]
 fn output_polling_is_per_recipient() {
     let mut terminal = TerminalStreamService::new();
@@ -1420,4 +1518,133 @@ fn output_records_preserve_distinct_history_sequences() {
     );
     assert_eq!(records[0].sequence_end, Some(12));
     assert_eq!(records[0].sequence_byte_lengths, vec![6, 4, 5]);
+}
+
+// MP-08/MP-10/MP-11: a delayed leased assessment echo can outlive the
+// active-prompt lookup. Its kernel-owned ID still makes it agent-only.
+#[test]
+fn completion_check_prompt_echo_without_origin_is_not_delivered_to_clients() {
+    for origin in [
+        None,
+        Some(crate::session::PromptOrigin::Chariox),
+        Some(crate::session::PromptOrigin::External),
+    ] {
+        let mut terminal = TerminalStreamService::new();
+        terminal.fan_out_prompt_output(
+            "session-1",
+            "leased:run-1",
+            Some("agent-1"),
+            "goal-check-prompt-1-1-1",
+            origin,
+            "attachment-1",
+            vec!["attachment-1".into()],
+            b"internal completion assessment",
+        );
+        assert!(
+            terminal
+                .drain_output_records("session-1", "attachment-1")
+                .is_empty(),
+            "origin={origin:?}"
+        );
+        terminal.fan_out_prompt_output(
+            "session-1",
+            "leased:run-1",
+            Some("agent-1"),
+            "prompt-owner-1",
+            origin,
+            "attachment-1",
+            vec!["attachment-1".into()],
+            b"ordinary owner prompt",
+        );
+        let delivered = terminal.drain_output_records("session-1", "attachment-1");
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].bytes, b"ordinary owner prompt");
+    }
+}
+
+#[test]
+fn public_history_legacy_tool_records_are_not_client_output() {
+    // MP-08 / MP-10 / MP-11: old tool-result blobs can contain assessment turns.
+    // Keep those traces agent-only on both live and historical client paths.
+    for (tool, version, visible) in [
+        ("chariox.history.turn", Some(4), false),
+        ("mcp__chariox__chariox_history_turn", Some(4), false),
+        ("chariox_chariox_history_turn", Some(5), false),
+        ("chariox.meta.turn_overview", Some(5), false),
+        ("chariox.history.turn", None, false),
+        ("chariox.history.turn", Some(6), true),
+        ("chariox.history.turn", Some(7), false),
+        ("chariox.history.search", Some(5), false),
+        ("mcp__chariox__chariox_history_search", Some(5), false),
+        ("chariox_chariox_history_search", None, false),
+        ("chariox.meta.history_search", Some(5), false),
+        ("chariox.history.search", Some(6), true),
+        ("chariox.history.search", Some(7), false),
+        ("chariox.history.read", Some(5), false),
+        ("mcp__chariox__chariox_history_read", None, false),
+        ("chariox_chariox_history_read", Some(5), false),
+        ("chariox.meta.turn_blob", Some(5), false),
+        ("chariox.history.read", Some(6), true),
+        ("bash", Some(5), true),
+    ] {
+        let result = if tool.contains("search") {
+            serde_json::json!({"coverage":{"redaction_version":version},"hits":[{"snippet":"legacy internal assessment"}]})
+        } else {
+            serde_json::json!({"redaction_version":version,"events":[{"text":"retained public or legacy internal text"}]})
+        };
+        let text = serde_json::json!({
+            "tool": tool, "status":"completed",
+            "output": serde_json::json!({"structuredContent": result}).to_string()
+        })
+        .to_string();
+        let entry = crate::history::SessionHistoryEntry::provider_output(
+            "session-1",
+            "run",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderTool,
+            Some("history-call".into()),
+            text.clone(),
+        );
+        let event = crate::history::HistoryEvent::transcript(1, &entry, Default::default());
+        assert_eq!(
+            event.to_session_history_entry().is_some(),
+            visible,
+            "historical {tool} version {version:?}"
+        );
+        let mut terminal = TerminalStreamService::new();
+        terminal.fan_out_output(
+            "session-1",
+            "run",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderTool,
+            Some("history-call".into()),
+            vec!["attachment-1".into()],
+            text.as_bytes(),
+        );
+        assert_eq!(
+            !terminal.output_records().is_empty(),
+            visible,
+            "live {tool} version {version:?}"
+        );
+    }
+}
+
+// MP-08/MP-10/MP-11: the owner-resume instruction is agent-only like the
+// assessment and correction instructions; the agent's reply stays visible.
+#[test]
+fn owner_resume_prompt_echo_is_not_delivered_to_clients() {
+    let mut terminal = TerminalStreamService::new();
+    terminal.fan_out_prompt_output(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        "task-resume-prompt-1-5",
+        Some(crate::session::PromptOrigin::Chariox),
+        "attachment-1",
+        vec!["attachment-1".into()],
+        b"Owner explicitly resumed this task.",
+    );
+    assert!(terminal
+        .drain_output_records("session-1", "attachment-1")
+        .is_empty());
 }

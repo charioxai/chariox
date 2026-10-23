@@ -8,11 +8,17 @@ type Operation = { operation: string; [key: string]: unknown }
 export class FakeTerminalKernel {
   readonly requests: Operation[] = []
   readonly typed: Buffer[] = []
+  readonly stalled: Buffer[] = []
   output = Buffer.alloc(0)
   retainedFrom = 0
   ended: string | null = null
   failNext = 0
   refuse: string | null = null
+  /** Input requests are received but never answered. */
+  stallInput = false
+  /** Snapshot requests wait until `releaseSnapshots` runs. */
+  holdSnapshots = false
+  private heldSnapshots: (() => void)[] = []
   screen = "PROMPT$ "
   size = { cols: 80, rows: 24 }
   private waiters: (() => void)[] = []
@@ -32,6 +38,11 @@ export class FakeTerminalKernel {
   emit(text: string | Buffer) {
     this.output = Buffer.concat([this.output, Buffer.from(text)])
     this.waiters.splice(0).forEach(wake => wake())
+  }
+
+  releaseSnapshots() {
+    this.holdSnapshots = false
+    this.heldSnapshots.splice(0).forEach(release => release())
   }
 
   end(description: string) {
@@ -57,11 +68,16 @@ export class FakeTerminalKernel {
         this.size = { cols: operation.cols as number, rows: operation.rows as number }
         return wrap({ result: "resized", terminal: this.summary() })
       case "snapshot":
+        if (this.holdSnapshots) await new Promise<void>(resolve => this.heldSnapshots.push(resolve))
         return wrap({ result: "snapshot", snapshot: {
           terminal: this.summary(), cursor_row: 0, cursor_col: 0, screen_text: this.screen, scrollback_text: "",
           screen_ansi_base64: Buffer.from(this.screen).toString("base64"), output_offset: this.retainedFrom + this.output.length,
         } })
       case "input":
+        if (this.stallInput) {
+          this.stalled.push(Buffer.from(operation.data_base64 as string, "base64"))
+          return new Promise<never>(() => {})
+        }
         this.typed.push(Buffer.from(operation.data_base64 as string, "base64"))
         return wrap({ result: "input", input: { accepted: true, driver: { state: "free" } } })
       case "read_output": {

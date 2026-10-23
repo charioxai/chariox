@@ -16,6 +16,40 @@ impl KernelRuntimeState {
         saw_settlement_blocking_activity: bool,
         force: bool,
     ) -> Result<crate::app::ProviderRunExitSessionSummary, DaemonError> {
+        let completed = prompt_completed
+            || self
+                .owned
+                .prompt_completion_settlement_pending(provider_run_id);
+        let settled = self
+            .settle_owned_provider_prompt_once(
+                session_id,
+                provider_run_id,
+                prompt_completed,
+                saw_settlement_blocking_activity,
+                force,
+            )
+            .await;
+        let refused_write = matches!(
+            &settled,
+            Err(DaemonError::LocalTransport { operation, .. }) if operation.starts_with("agent.lifecycle")
+        );
+        if refused_write && completed {
+            // G18: the provider's completion signal is consumed; retry this
+            // settlement so a refused durable write does not leave the agent
+            // busy after the writer recovers.
+            self.owned.retry_failed_prompt_settlement(provider_run_id);
+        }
+        settled
+    }
+
+    async fn settle_owned_provider_prompt_once(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        prompt_completed: bool,
+        saw_settlement_blocking_activity: bool,
+        force: bool,
+    ) -> Result<crate::app::ProviderRunExitSessionSummary, DaemonError> {
         if force
             || prompt_completed
             || self

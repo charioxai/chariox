@@ -785,16 +785,13 @@ export class LocalIpcClient {
         if (admittedSocket || !this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
           throw error
         }
-        // MD-3: a reconnected terminal has another caller-bound receipt scope.
-        // Safe browser reads are new observations; uncertain mutations never replay.
-        if (isBrowserObservation(request)) requestId = randomUUID()
+        // A fresh caller binding needs a fresh observation receipt; a responsive
+        // carrier keeps the same request and cannot retire a newer lane.
         const current = this.getWebSocket(lane)
         const responsiveTimeout = error instanceof LocalIpcError && error.code === "request_timeout"
           && current === socket && socket.readyState === WebSocket.OPEN
           && this.socketResponsiveness.isResponsive(socket, this.kernelPingIntervalMs * this.kernelMaxMissedPongs)
-        // MP-10: replay the same command on a responsive carrier. A slow
-        // handler is not a transport failure, and a stale attempt cannot retire
-        // a newer lane. Dead/unproven carriers retain the existing recovery.
+        if (!responsiveTimeout && isBrowserObservation(request)) requestId = randomUUID()
         if (current === socket && !responsiveTimeout) {
           this.destroyWebSocket(lane, "kernel websocket reset", "request_replay", {
             code: error instanceof LocalIpcError ? error.code : null,

@@ -514,3 +514,79 @@ fn public_history_worker_provider_provenance_survives_local_run_collision() {
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn public_history_excludes_internal_assessments_and_instruction_echoes() {
+    // MP-08 / MP-10 / MP-11: internal turns never become searchable tool output.
+    let root = std::env::temp_dir().join(format!(
+        "chariox-am9-internal-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let protection =
+        room_secret_observation::RoomSecretObservations::new(root.clone(), Default::default());
+    let event = |kind, prompt: &str, origin: Option<&str>| {
+        let mut event = HistoryEvent::operational(
+            0,
+            kind,
+            None,
+            Some("internal-or-public".into()),
+            Default::default(),
+            HistoryEventTurnContext {
+                session_id: Some("room".into()),
+                agent_id: Some("peer".into()),
+                prompt_id: Some(prompt.into()),
+                ..Default::default()
+            },
+        );
+        if let Some(origin) = origin {
+            event.metadata.insert("prompt_origin".into(), origin.into());
+        }
+        event
+    };
+    assert!(protection
+        .public_history_document(
+            &event(HistoryEventKind::UserPrompt, "owner-task", None),
+            "owner"
+        )
+        .is_some());
+    for kind in [
+        HistoryEventKind::UserPrompt,
+        HistoryEventKind::ProviderOutput,
+        HistoryEventKind::ProviderError,
+    ] {
+        for (prompt, origin) in [
+            ("goal-check-task-1", None),
+            ("native-assessment", Some("completion_check")),
+        ] {
+            assert!(
+                protection
+                    .public_history_document(&event(kind, prompt, origin), "owner")
+                    .is_none(),
+                "assessment {kind:?} must stay private"
+            );
+        }
+    }
+    for prompt in ["task-correction-task-1", "agent-event-peer-1"] {
+        assert!(protection
+            .public_history_document(&event(HistoryEventKind::UserPrompt, prompt, None), "owner")
+            .is_none());
+        assert!(
+            protection
+                .public_history_document(
+                    &event(HistoryEventKind::ProviderOutput, prompt, None),
+                    "owner"
+                )
+                .is_some(),
+            "ordinary continuation answers stay public"
+        );
+    }
+    assert!(protection
+        .public_history_document(
+            &event(HistoryEventKind::UserPrompt, "owner-task", None),
+            "owner"
+        )
+        .is_some());
+    drop(protection);
+    let _ = std::fs::remove_dir_all(root);
+}

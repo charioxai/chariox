@@ -9,7 +9,7 @@ import type {
 import {
   createRoomEnvironmentActivityController,
 } from "./room-environment-activity-controller.js"
-import { retainRoomActivityNotices } from "./room-activity-notice-state.js"
+import { retainKernelProjectionNotices } from "./kernel-projection-notice-state.js"
 import type { TranscriptEntry } from "./cli-types.js"
 
 test("a reset/current-state summary cannot replace a retained action at the same cursor", async () => {
@@ -32,7 +32,7 @@ test("a reset/current-state summary cannot replace a retained action at the same
   harness.controller.reset()
   await harness.controller.synchronize()
   await harness.controller.synchronize()
-  const retained = retainRoomActivityNotices([], harness.entries, "session-1")
+  const retained = retainKernelProjectionNotices([], harness.entries, "session-1")
   assert.ok(retained.some(entry => entry.text === "Room action #1: Mara · computer pointer_click · desktop · completed"))
   assert.equal(new Set(harness.entries.map(e => e.mergeKey)).size, 4)
 })

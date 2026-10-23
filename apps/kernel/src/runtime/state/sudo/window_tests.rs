@@ -588,10 +588,9 @@ async fn sudo_extend_needs_a_fresh_passkey_and_settles_once() {
     let state = f.state.clone();
     let extend = tokio::spawn(async move { state.extend_sudo_window(guest, "local").await });
     let prompt = popup(&f.state).await;
-    assert_eq!(
-        prompt.interaction_id,
-        format!("{}:extend:1", window.entry_id)
-    );
+    assert!(prompt
+        .interaction_id
+        .starts_with(&format!("{}:extend:1:", window.entry_id)));
     // A wrong passkey or a remembered presence leaves the deadline unchanged.
     let wrong = f
         .state
@@ -1527,6 +1526,61 @@ async fn sudo_deferred_app_queue_child() {
     );
     drop(app);
     assert_eq!(f.state.list_sudo_turns("local").len(), 1);
+    f.state
+        .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
+        .unwrap();
+}
+
+// MP-08 / MP-10 / MP-11: a refused extension cannot hide its replacement in an answering client.
+#[tokio::test]
+async fn sudo_extension_retry_has_a_fresh_interaction_without_changing_the_window() {
+    let f = fixture_with_options(None, true);
+    let window = open(&f, None).await;
+    let request = ExtendKernelSudoRequest {
+        session_id: window.session_id.clone(),
+        attachment_id: f.request.attachment_id.clone(),
+        entry_id: window.entry_id.clone(),
+        revision: window.revision,
+    };
+    let begin = |request| {
+        let state = f.state.clone();
+        tokio::spawn(async move { state.extend_sudo_window(request, "local").await })
+    };
+    let first = begin(request.clone());
+    let refused = popup(&f.state).await;
+    f.state
+        .answer_terminal_runtime_interaction(
+            &refused.session_id,
+            &refused.interaction_id,
+            "refuse",
+            None,
+            Some("local"),
+            None,
+            None,
+            Some(KernelConnectionClass::Terminal),
+        )
+        .await
+        .unwrap();
+    assert!(first.await.unwrap().is_err());
+    let unchanged = f.state.list_sudo_turns("local").pop().unwrap();
+    assert_eq!(unchanged.revision, window.revision);
+    assert_eq!(unchanged.expires_at_ms, window.expires_at_ms);
+    let second = begin(request);
+    let retry = popup(&f.state).await;
+    assert_ne!(
+        retry.interaction_id, refused.interaction_id,
+        "a retry must not reuse an interaction already answered by a client"
+    );
+    assert!(
+        approve(&f, &refused, Some("120")).await.is_err(),
+        "stale approval cannot answer a retry"
+    );
+    approve(&f, &retry, Some("120")).await.unwrap();
+    let LocalDaemonResponse::KernelSudoExtended { turn } = second.await.unwrap().unwrap() else {
+        panic!("extension")
+    };
+    assert_eq!(turn.revision, window.revision + 1);
+    assert_eq!(turn.duration_minutes, 120);
     f.state
         .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
         .unwrap();

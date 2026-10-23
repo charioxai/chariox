@@ -1415,12 +1415,13 @@ impl PromptStateOwner {
         }
     }
 
+    /// Returns the removed prompts: none of them reached a provider.
     pub(crate) fn remove_queued_prompts_by_workflow_run(
         &self,
         session: &RuntimeSession,
         workflow_run_id: &str,
-    ) -> usize {
-        self.remove_queued_prompts_matching(session, |prompt| {
+    ) -> Vec<PromptQueueItem> {
+        self.take_queued_prompts_matching(session, |prompt| {
             prompt.workflow_run_id() == Some(workflow_run_id)
         })
     }
@@ -1606,8 +1607,17 @@ impl PromptStateOwner {
     fn remove_queued_prompts_matching(
         &self,
         session: &RuntimeSession,
-        mut should_remove: impl FnMut(&PromptQueueItem) -> bool,
+        should_remove: impl FnMut(&PromptQueueItem) -> bool,
     ) -> usize {
+        self.take_queued_prompts_matching(session, should_remove)
+            .len()
+    }
+
+    fn take_queued_prompts_matching(
+        &self,
+        session: &RuntimeSession,
+        mut should_remove: impl FnMut(&PromptQueueItem) -> bool,
+    ) -> Vec<PromptQueueItem> {
         let mut owner = self
             .state
             .lock()
@@ -1621,12 +1631,16 @@ impl PromptStateOwner {
         agent_ids.sort();
         agent_ids.dedup();
 
-        let mut removed = 0;
+        let mut removed = Vec::new();
         for agent_id in agent_ids {
             let state = owner.ensure_agent_state(session, &agent_id);
-            let original_len = state.queued_prompts.len();
-            state.queued_prompts.retain(|prompt| !should_remove(prompt));
-            removed += original_len - state.queued_prompts.len();
+            for prompt in std::mem::take(&mut state.queued_prompts) {
+                if should_remove(&prompt) {
+                    removed.push(prompt);
+                } else {
+                    state.queued_prompts.push_back(prompt);
+                }
+            }
         }
         removed
     }

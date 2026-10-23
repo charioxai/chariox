@@ -166,7 +166,11 @@ fn load_blob_content_page(
     )?;
     let events = events
         .into_iter()
-        .filter(|event| !event_is_internal_prompt_turn(event))
+        .filter(|event| {
+            !event.is_completion_check_turn()
+                && !event.is_internal_prompt_echo()
+                && !event.is_internal_dispatch_diagnostic()
+        })
         .collect();
     let entries = outline_blob_content_events(events)
         .into_iter()
@@ -221,24 +225,13 @@ fn load_scoped_agent_outline(
     before_sequence: Option<u64>,
     agent_import: Option<&ExternalProviderImportMetadata>,
 ) -> Result<SessionHistoryOutlineAgent, DaemonError> {
-    let mut prompts = load_latest_scoped_user_prompt_events(
+    let mut prompts = load_visible_outline_prompt_events(
         operational_history,
         session_id,
         agent_id,
+        latest_prompt_count,
         before_sequence,
-        outline_prompt_candidate_limit(latest_prompt_count, agent_import),
         agent_import,
-    )?;
-    prompts.retain(|prompt| {
-        !external_observed_tool_call_prompt(prompt)
-            && !external_recovery_envelope_prompt(prompt)
-            && !event_is_internal_prompt_turn(prompt)
-    });
-    suppress_chariox_owned_external_prompt_echoes(
-        &mut prompts,
-        operational_history,
-        session_id,
-        agent_id,
     )?;
     let has_more = prompts.len() > latest_prompt_count;
     if has_more {
@@ -282,7 +275,11 @@ fn load_scoped_agent_outline(
             }
         }
         // A hidden check turn's reply sits between two visible prompts.
-        events.retain(|event| !event_is_internal_prompt_turn(event));
+        events.retain(|event| {
+            !event.is_completion_check_turn()
+                && !event.is_internal_prompt_echo()
+                && !event.is_internal_dispatch_diagnostic()
+        });
         let lifecycle_events = scoped_history_events(events, agent_import);
         let events = if outline_turn_prompt_origin(prompt) == PromptOrigin::Chariox {
             suppress_external_observed_events_from_chariox_turn(lifecycle_events.clone())
@@ -312,6 +309,55 @@ fn load_scoped_agent_outline(
         turns,
         next_cursor,
     })
+}
+
+fn load_visible_outline_prompt_events(
+    operational_history: &OperationalHistoryStore,
+    session_id: &str,
+    agent_id: &str,
+    latest_prompt_count: usize,
+    before_sequence: Option<u64>,
+    agent_import: Option<&ExternalProviderImportMetadata>,
+) -> Result<Vec<HistoryEvent>, DaemonError> {
+    let limit = outline_prompt_candidate_limit(latest_prompt_count, agent_import);
+    let mut next_before_sequence = before_sequence;
+    let mut prompts = Vec::new();
+    loop {
+        let mut candidates = load_latest_scoped_user_prompt_events(
+            operational_history,
+            session_id,
+            agent_id,
+            next_before_sequence,
+            limit,
+            agent_import,
+        )?;
+        let exhausted = candidates.len() < limit;
+        let oldest_sequence = candidates.first().map(|event| event.sequence);
+        candidates.retain(|prompt| {
+            !prompt.is_completion_check_turn()
+                && (!prompt.is_internal_prompt_echo()
+                    || prompt
+                        .prompt_id
+                        .as_deref()
+                        .is_some_and(crate::session::is_agent_inbox_prompt_id))
+                && !external_observed_tool_call_prompt(prompt)
+                && !external_recovery_envelope_prompt(prompt)
+        });
+        suppress_chariox_owned_external_prompt_echoes(
+            &mut candidates,
+            operational_history,
+            session_id,
+            agent_id,
+        )?;
+        // Hidden prompts consume SQL candidates, never the visible page or
+        // its lookahead. Keep scanning until an older visible anchor exists.
+        candidates.append(&mut prompts);
+        prompts = candidates;
+        if prompts.len() > latest_prompt_count || exhausted {
+            return Ok(prompts);
+        }
+        next_before_sequence = oldest_sequence;
+    }
 }
 
 fn outline_prompt_candidate_limit(
@@ -675,7 +721,26 @@ fn outline_turn_from_events_with_lifecycle(
     let external_identity = outline_turn_external_identity(&events);
     let prompt_origin = outline_turn_prompt_origin(prompt);
     let mut user_prompt = outline_page_entry_from_event(prompt.clone())?;
+    if prompt
+        .prompt_id
+        .as_deref()
+        .is_some_and(crate::session::is_internal_prompt_echo_id)
+    {
+        // Retain the turn and reply attribution without presenting kernel
+        // instructions as user input after a reconnect.
+        user_prompt.entry.text.clear();
+        user_prompt.fragment_start = 0;
+        user_prompt.fragment_end = 0;
+        user_prompt.total_chars = 0;
+    }
     project_workflow_user_prompt(&mut user_prompt, prompt_origin);
+    if prompt.is_internal_prompt_echo() {
+        // Preserve the agent's reply and turn identity without a user instruction row.
+        user_prompt.entry.text.clear();
+        user_prompt.fragment_start = 0;
+        user_prompt.fragment_end = 0;
+        user_prompt.total_chars = 0;
+    }
     let completed_at_ms =
         outline_turn_completed_at_ms(prompt, lifecycle_events, prompt_origin, has_newer_prompt);
     let lifecycle = outline_turn_lifecycle(completed_at_ms, lifecycle_events);
@@ -962,13 +1027,6 @@ fn persisted_prompt_settlement_at_ms(event: &HistoryEvent) -> Option<u64> {
         .metadata
         .get(crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY)
         .and_then(serde_json::Value::as_u64)
-}
-
-fn event_is_internal_prompt_turn(event: &HistoryEvent) -> bool {
-    let origin = event
-        .to_session_history_entry()
-        .and_then(|entry| entry.prompt_origin);
-    crate::session::is_internal_prompt_turn(origin, event.prompt_id.as_deref())
 }
 
 fn outline_turn_prompt_origin(prompt: &HistoryEvent) -> PromptOrigin {

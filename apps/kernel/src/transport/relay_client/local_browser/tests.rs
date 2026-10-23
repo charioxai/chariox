@@ -1,6 +1,6 @@
 //! MP-08/MP-11: direct loopback admission over real sockets and real dispatch.
 
-use super::super::daemon_requests::RelayRequestOutcome;
+use super::super::daemon_requests::{handle_daemon_request, RelayRequestOutcome};
 use super::*;
 use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
 use crate::local::{ListSessionsRequest, LocalDaemonRequest};

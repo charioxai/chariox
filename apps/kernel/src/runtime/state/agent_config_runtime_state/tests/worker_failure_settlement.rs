@@ -8,6 +8,7 @@ async fn leased_worker_failure_settles_and_retains_completion_while_home_is_offl
         false,
         "You've hit your session limit",
         crate::provider::ProviderRunTermination::process_exit(17, 42),
+        true,
     )
     .await;
 }
@@ -18,6 +19,7 @@ async fn leased_worker_launch_failure_settles_without_contacting_home() {
         true,
         "You've hit your session limit",
         crate::provider::ProviderRunTermination::process_exit(17, 42),
+        true,
     )
     .await;
 }
@@ -28,6 +30,19 @@ async fn leased_worker_signal_termination_survives_failed_turn_reconnect() {
         false,
         "provider process was interrupted",
         crate::provider::ProviderRunTermination::signal("SIGTERM", 43),
+        true,
+    )
+    .await;
+}
+
+// MP-08 / MP-10 / MP-11: ordinary home and worker prompt IDs are different too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn leased_ordinary_worker_signal_termination_survives_projection_and_replay() {
+    assert_offline_worker_failure_settlement(
+        false,
+        "provider process was interrupted",
+        crate::provider::ProviderRunTermination::signal("SIGKILL", 44),
+        false,
     )
     .await;
 }
@@ -36,6 +51,7 @@ async fn assert_offline_worker_failure_settlement(
     launch_failure: bool,
     diagnostic: &str,
     provider_termination: crate::provider::ProviderRunTermination,
+    workflow: bool,
 ) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::AsyncWriteExt;
@@ -104,12 +120,15 @@ async fn assert_offline_worker_failure_settlement(
             external_provider_turn_id: None,
             prompt_summary: "failed review".into(),
         };
+        RemoteLeaseRuntime::new(&mut app)
+            .begin_leased_prompt_receipt(&leased.id, "home-prompt-1")
+            .unwrap();
         let (run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
             .submit_leased_prompt_with_workflow_context(
                 &leased.id,
                 "failed review",
                 Vec::new(),
-                Some(context),
+                workflow.then_some(context),
                 Some(git_context),
                 Vec::new(),
                 None,
@@ -120,9 +139,12 @@ async fn assert_offline_worker_failure_settlement(
             outcome,
             crate::session::PromptSubmissionOutcome::Started { .. }
         ));
-        assert!(RemoteLeaseRuntime::new(&mut app)
-            .leased_workflow_turn_context_for_provider_run(&run_id)
-            .is_some());
+        assert_eq!(
+            RemoteLeaseRuntime::new(&mut app)
+                .leased_workflow_turn_context_for_provider_run(&run_id)
+                .is_some(),
+            workflow
+        );
         app.providers_mut()
             .record_terminal_diagnostic(&run_id, diagnostic.to_string())
             .unwrap();

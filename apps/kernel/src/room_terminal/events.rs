@@ -3,6 +3,7 @@
 //! receives its event through `CompletionEvents`; nothing else in this
 //! module knows about wakes.
 
+use std::sync::{RwLock, Weak};
 use std::time::Duration;
 
 use super::plain_text::PlainText;
@@ -17,17 +18,33 @@ pub trait CompletionEvents: Send + Sync {
     fn deliver(&self, event: RoomTerminalEvent);
 }
 
-/// The sink until the event core is wired: no notification can be armed
-/// through the protocol, so reaching it is a bug and says so.
-pub struct EventCoreNotWired;
+/// The event core's sink, bound when the runtime exists. A terminal event
+/// before that has nobody to wake, so it is logged as lost. A router built
+/// again on the same app (tests do) takes over the binding: the newest
+/// runtime owns terminal wakes.
+#[derive(Default)]
+pub(super) struct BoundEvents(RwLock<Option<Weak<dyn CompletionEvents>>>);
 
-impl CompletionEvents for EventCoreNotWired {
-    fn deliver(&self, event: RoomTerminalEvent) {
-        crate::logging::error_with_fields(
-            "room_terminal.event",
-            "terminal event dropped: no event core is wired to Room terminals",
-            serde_json::json!({ "terminal_id": event.terminal_id, "wake_id": event.wake_id }),
-        );
+impl BoundEvents {
+    pub(super) fn bind(&self, events: Weak<dyn CompletionEvents>) {
+        *self.0.write().unwrap_or_else(|e| e.into_inner()) = Some(events);
+    }
+
+    pub(super) fn deliver(&self, event: RoomTerminalEvent) {
+        let bound = self
+            .0
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(Weak::upgrade);
+        match bound {
+            Some(events) => events.deliver(event),
+            None => crate::logging::error_with_fields(
+                "room_terminal.event",
+                "terminal event dropped: the event core is not bound to Room terminals",
+                serde_json::json!({ "terminal_id": event.terminal_id, "wake_id": event.wake_id }),
+            ),
+        }
     }
 }
 

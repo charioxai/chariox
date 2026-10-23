@@ -35,6 +35,13 @@ pub struct AgentTaskExecution {
     pub correction_used: bool,
     pub pending_prompt_id: Option<String>,
 }
+impl AgentTaskExecution {
+    /// The owner stopped this turn; the agent stays stopped until prompted again.
+    pub(crate) fn stopped_by_owner(&self) -> bool {
+        self.state == ExecutionState::Cancelled
+            && self.reason == super::supervision::OWNER_CANCELLED_REASON
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentObligation {
     pub id: String,
@@ -93,9 +100,12 @@ pub(crate) struct InboxEvent {
     pub attempted_at_ms: Option<u64>,
     pub submit_epoch: Option<u64>,
 }
-/// MP-08 / MP-09 / MP-10 / MP-11 A03: one kernel-owned timer or watched
-/// process. It is a task obligation plus a live registration; its receipts
-/// record when the last occurrence fired, was delivered and acknowledged.
+/// MP-08 / MP-09 / MP-10 / MP-11 A03: one kernel-owned wake source: the
+/// kernel timer, a watched process, or a source owned by a wake driver. It is
+/// a task obligation plus a live registration; its receipts record when the
+/// last occurrence fired, was delivered and acknowledged. The ledger does not
+/// know what a driver `kind` does: its driver renders `summary` and owns
+/// `detail`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentWake {
     pub id: String,
@@ -103,13 +113,14 @@ pub struct AgentWake {
     pub room_id: String,
     pub agent_id: String,
     pub registration_id: String,
-    /// `timer` or `process`.
+    /// `timer`, `process`, or the kind of the driver that owns the source.
     pub kind: String,
     pub label: String,
-    /// `scheduled`, `starting`, `running`, `fired`, `exited`, `lost` or `cancelled`.
+    /// `scheduled`, `starting`, `running`, `cancelling`, `fired`, `exited`, `lost` or `cancelled`.
     pub state: String,
     pub created_at_ms: u64,
-    /// Proof of life: the scheduler (timer) or supervisor (process) armed it.
+    /// Proof of life: the scheduler (timer), supervisor (process) or driver
+    /// confirmed the source is live.
     pub verified_at_ms: Option<u64>,
     pub next_due_ms: Option<u64>,
     pub interval_ms: Option<u64>,
@@ -118,6 +129,12 @@ pub struct AgentWake {
     pub matched_at_ms: Option<u64>,
     pub pid: Option<u32>,
     pub exit_code: Option<i32>,
+    /// One redacted line for clients, rendered by the driver.
+    #[serde(default)]
+    pub summary: String,
+    /// Driver-owned, redacted before storage; the ledger never interprets it.
+    #[serde(default)]
+    pub detail: serde_json::Value,
     pub fire_count: u64,
     pub missed_fires: u64,
     pub last_fired_at_ms: Option<u64>,
@@ -126,6 +143,15 @@ pub struct AgentWake {
     pub last_delivered_at_ms: Option<u64>,
     pub last_acknowledged_at_ms: Option<u64>,
     pub alerted_sequence: Option<u64>,
+}
+/// How a driver reports the end of its source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WakeEnd {
+    Succeeded,
+    #[allow(dead_code, reason = "reported by the terminal driver")]
+    Failed,
+    /// The source can no longer be observed; it is never relaunched.
+    Lost,
 }
 #[derive(Clone)]
 pub(crate) enum Operation {
@@ -164,6 +190,28 @@ pub(crate) enum Operation {
     TimeoutGoal {
         task: String,
         prompt: String,
+        now: u64,
+    },
+    BindGoalCheckLease {
+        task: String,
+        prompt: String,
+        lease: super::goals::CheckLease,
+    },
+    RetryGoalCheck {
+        task: String,
+        prompt: String,
+        lease: super::goals::CheckLease,
+        now: u64,
+    },
+    BeginOwnerWait {
+        task: String,
+        prompt: String,
+        now: u64,
+    },
+    EndOwnerWait {
+        task: String,
+        prompt: String,
+        refusal: Option<String>,
         now: u64,
     },
     StartGoal {
@@ -360,15 +408,43 @@ pub(crate) enum Operation {
         resume: bool,
         now: u64,
     },
+    /// A kernel timer or watched process: the ledger sets its first state.
     CreateWake {
         task: String,
         prompt: String,
         wake: AgentWake,
     },
+    /// Obligation, live registration and wake record in one transaction. The
+    /// driver sets the first state: `scheduled` (time-driven) or `starting`
+    /// (confirmed by a driver receipt).
+    ArmWake {
+        task: String,
+        prompt: String,
+        wake: Box<AgentWake>,
+    },
+    /// Timer driver: proof of life for every scheduled timer.
     VerifyWakes {
         now: u64,
     },
+    /// Timer driver: fires every due timer.
     FireWakes {
+        now: u64,
+    },
+    /// A driver confirms its `starting` source is live.
+    WakeVerified {
+        id: String,
+        now: u64,
+    },
+    /// A driver reports an occurrence of its source, de-duplicated on
+    /// (wake, occurrence). `end` also settles the wake's obligation.
+    WakeOccurred {
+        id: String,
+        occurrence: String,
+        kind: String,
+        payload: serde_json::Value,
+        /// The driver's one-line rendering of the source after this occurrence.
+        summary: Option<String>,
+        end: Option<WakeEnd>,
         now: u64,
     },
     ProcessStarted {
@@ -388,19 +464,23 @@ pub(crate) enum Operation {
         tail: String,
         now: u64,
     },
-    /// `prompt: Some` is the owning agent's turn; `None` settles a cancelled task.
+    /// `prompt: Some` is the owning agent's turn; `None` settles a cancelled
+    /// task. `pending` means the driver must still stop the source physically
+    /// and will report the end; a watched process always settles on its exit.
     CancelWake {
         id: String,
         task: String,
         prompt: Option<String>,
+        pending: bool,
     },
     WakeAlerted {
         id: String,
         sequence: u64,
     },
     /// Kernel teardown of a Room (`agent: None`) or agent, without owner
-    /// authority: cancels its unfinished tasks, settles its armed wakes
-    /// (processes on physical exit) and expires its unresolved deliveries.
+    /// authority: cancels its unfinished tasks, settles its scheduled wakes
+    /// (processes and other driver sources on their reported end) and expires
+    /// its unresolved deliveries.
     RetireWakes {
         room: String,
         agent: Option<String>,
