@@ -28,6 +28,8 @@ type WaitingRoomRowsChangedPatch = {
   activityRevision: string
   sessions: WaitingRoomPublicSessionSummary[]
   removedSessionIds: string[]
+  sessionsTotal?: number
+  sessionsNextCursor?: string | null
   projects?: WaitingRoomProjectSummary[]
   removedProjectIds?: string[]
 }
@@ -369,7 +371,11 @@ export function createWaitingRoomInventoryRefreshController(
       inventoryVersion = patch.inventoryVersion
       options.setInventoryStatus("ready")
       const recentIds = new Set(activeInventory.recentSessionIds ?? activeInventory.sessions.map(row => row.id))
-      const previousSessions = patch.structuralVersion !== activeInventory.structuralVersion
+      const knownIds = new Set(activeInventory.sessions.map(row => row.id))
+      const beforeTotal = activeInventory.sessionsTotal ?? activeInventory.sessions.length
+      const afterTotal = patch.sessionsTotal ?? beforeTotal
+      const historyInvalid = afterTotal < beforeTotal || (afterTotal <= beforeTotal && patch.sessions.some(row => !knownIds.has(row.id)))
+      const previousSessions = historyInvalid
         ? activeInventory.sessions.filter(row => recentIds.has(row.id))
         : activeInventory.sessions
       const sessions = mergeWaitingRoomSessionRows(
@@ -390,6 +396,8 @@ export function createWaitingRoomInventoryRefreshController(
         structuralVersion: patch.structuralVersion,
         activityRevision: patch.activityRevision,
         recentSessionIds: sessions.filter(row => nextRecentIds.has(row.id)).map(row => row.id),
+        sessionsTotal: afterTotal,
+        ...(patch.sessionsNextCursor !== undefined ? { sessionsNextCursor: patch.sessionsNextCursor } : {}),
         sessions,
         projects: patch.projects
           ? mergeWaitingRoomProjectRows(
