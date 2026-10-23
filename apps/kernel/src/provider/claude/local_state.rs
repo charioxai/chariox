@@ -105,7 +105,16 @@ impl ProfileLock {
                         .and_then(|modified| modified.elapsed().ok())
                         .is_some_and(|age| age > LOCK_STALE_AFTER);
                     if stale {
-                        let _ = fs::remove_dir(&lock_path);
+                        match fs::remove_dir(&lock_path) {
+                            Ok(()) => {}
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(error) => {
+                                return Err(state_error(&format!(
+                                    "Claude's stale profile lock {} cannot be removed ({error}); delete it and retry the launch",
+                                    lock_path.display()
+                                )))
+                            }
+                        }
                         continue;
                     }
                     if std::time::Instant::now() >= deadline {
@@ -432,6 +441,47 @@ mod tests {
         update_claude_state_at(&state_path, StateUpdate::TrustWorkspace("/work/a")).unwrap();
         releaser.join().unwrap();
         assert!(!lock_path.exists());
+        fs::remove_dir_all(state_path.parent().unwrap()).unwrap();
+    }
+
+    fn age_lock(lock_path: &Path) {
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        fs::File::open(lock_path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+
+    #[test]
+    fn trust_reports_a_stale_lock_that_is_a_regular_file() {
+        let state_path = temp_state("lockfile");
+        let mut lock_path = state_path.as_os_str().to_owned();
+        lock_path.push(".lock");
+        let lock_path = std::path::PathBuf::from(lock_path);
+        fs::write(&lock_path, b"x").unwrap();
+        age_lock(&lock_path);
+        let started = std::time::Instant::now();
+        let error = update_claude_state_at(&state_path, StateUpdate::TrustWorkspace("/work/a"))
+            .unwrap_err();
+        assert!(started.elapsed() < LOCK_WAIT);
+        assert!(error.to_string().contains("cannot be removed"));
+        fs::remove_dir_all(state_path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn trust_reports_a_stale_lock_directory_that_is_not_empty() {
+        let state_path = temp_state("lockfull");
+        let mut lock_path = state_path.as_os_str().to_owned();
+        lock_path.push(".lock");
+        let lock_path = std::path::PathBuf::from(lock_path);
+        fs::create_dir(&lock_path).unwrap();
+        fs::write(lock_path.join("owner"), b"x").unwrap();
+        age_lock(&lock_path);
+        let started = std::time::Instant::now();
+        let error = update_claude_state_at(&state_path, StateUpdate::TrustWorkspace("/work/a"))
+            .unwrap_err();
+        assert!(started.elapsed() < LOCK_WAIT);
+        assert!(error.to_string().contains("cannot be removed"));
         fs::remove_dir_all(state_path.parent().unwrap()).unwrap();
     }
 }
