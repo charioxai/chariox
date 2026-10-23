@@ -759,6 +759,35 @@ async fn sudo_operations_cold_claude_launch_with_hooks_reuses_the_live_window() 
 }
 
 #[tokio::test]
+async fn sudo_operations_cold_claude_launch_in_the_agents_own_worktree_reuses_the_live_window() {
+    let f = fixture();
+    let profile = crate::test_support::TestWorktree::new("sudo-hooks-profile");
+    let agent_tree = crate::test_support::TestWorktree::new("sudo-agent-tree");
+    std::fs::create_dir_all(agent_tree.path().join(".claude")).unwrap();
+    std::fs::write(agent_tree.path().join(".claude/settings.json"), HOOKS).unwrap();
+    let turn = running(&f);
+    f.state
+        .owned
+        .agent_store
+        .update_agent_config(
+            &turn.agent_id,
+            None,
+            None,
+            None,
+            Some(Some(agent_tree.path().display().to_string())),
+        )
+        .unwrap();
+    let request = hooks_launch(&f, profile.path()).with_working_directory(agent_tree.path().to_path_buf());
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        f.state.admit_claude_workspace_trust(&request),
+    )
+    .await
+    .expect("a launch in the agent's own worktree covered by /sudo asked about project hooks")
+    .unwrap();
+}
+
+#[tokio::test]
 async fn sudo_operations_forwarded_hooks_card_of_a_cold_launch_reuses_the_live_window() {
     let f = fixture();
     let turn = running(&f);

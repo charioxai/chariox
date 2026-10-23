@@ -284,8 +284,9 @@ impl KernelRuntimeState {
         })
     }
 
-    /// A launch inside the session's own folder is covered by the agent's live
-    /// /sudo window, so the hooks card has nothing left to ask.
+    /// A launch inside the folder the agent starts in (its own worktree, else
+    /// the session's) is covered by the agent's live /sudo window, so the
+    /// hooks card has nothing left to ask.
     pub(crate) fn sudo_covers_claude_launch(
         &self,
         request: &crate::provider::LaunchProviderRequest,
@@ -296,12 +297,16 @@ impl KernelRuntimeState {
         let Ok(session) = self.owned.session_store.get_session(&request.session_id) else {
             return false;
         };
+        let Ok(agent) = self.owned.agent_store.get_agent(agent_id) else {
+            return false;
+        };
+        let launch_folder = agent.worktree_id().unwrap_or_else(|| session.worktree_id());
         let canonical = |path: &Path| path.canonicalize().ok();
         request
             .working_directory
             .as_deref()
             .and_then(canonical)
-            .is_some_and(|folder| canonical(Path::new(session.worktree_id())) == Some(folder))
+            .is_some_and(|folder| canonical(Path::new(launch_folder)) == Some(folder))
             && self.sudo_window_covers_agent(&request.session_id, agent_id)
     }
 
