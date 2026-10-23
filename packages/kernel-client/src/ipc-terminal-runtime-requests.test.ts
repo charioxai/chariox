@@ -48,6 +48,8 @@ test("MP-08/MP-10/MP-11: HTTP trigger client contracts preserve payload and hist
   assert.deepEqual(r.invokeAgentTriggerRequest("s", "t", payload), { InvokeAgentTrigger: { session_id: "s", trigger_id: "t", payload } })
   assert.deepEqual(r.readAgentTriggerTranscriptRequest("s", "t", { before_sequence: 100 }), {
     ReadAgentTriggerTranscript: { session_id: "s", trigger_id: "t", cursor: { before_sequence: 100 } },
+  })
+})
 
 test("protocol 582 resends a trigger firing the provider did not confirm", async () => {
   const r = await import("./ipc-terminal-runtime-requests.js")
