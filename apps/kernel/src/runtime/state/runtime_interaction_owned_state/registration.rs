@@ -144,7 +144,14 @@ impl KernelRuntimeOwnedState {
                 .map(|existing| existing.id().to_owned())
                 .collect::<Vec<_>>();
             for id in abandoned {
-                session.remove_active_interaction(&id);
+                if let Some(previous) = session.remove_active_interaction(&id) {
+                    self.publish_outside_interaction(
+                        session_id,
+                        &previous,
+                        crate::local::EventInteractionState::Resolved,
+                        None,
+                    )?;
+                }
                 if pending
                     .get(&id)
                     .is_some_and(|entry| entry.belongs_to(&self.session_store))
@@ -175,7 +182,14 @@ impl KernelRuntimeOwnedState {
                 .map(|existing| existing.id().to_owned())
                 .collect::<Vec<_>>();
             for id in superseded {
-                session.remove_active_interaction(&id);
+                if let Some(previous) = session.remove_active_interaction(&id) {
+                    self.publish_outside_interaction(
+                        session_id,
+                        &previous,
+                        crate::local::EventInteractionState::Resolved,
+                        None,
+                    )?;
+                }
                 pending.remove(&id);
             }
             drop(pending);
@@ -324,6 +338,12 @@ impl KernelRuntimeOwnedState {
             }
             return Ok(());
         }
+        self.publish_outside_interaction(
+            session_id,
+            &interaction,
+            crate::local::EventInteractionState::Pending,
+            passkey_prompt.as_deref(),
+        )?;
         session.add_active_interaction(interaction.clone());
         let identity = pending.responder.clone();
         if passkey_prompt.is_some() {
@@ -359,6 +379,21 @@ impl KernelRuntimeOwnedState {
                     .any(|current| current == &interaction)
                 {
                     session.remove_active_interaction(interaction.id());
+                    if self
+                        .publish_outside_interaction(
+                            session_id,
+                            &interaction,
+                            crate::local::EventInteractionState::Resolved,
+                            None,
+                        )
+                        .is_err()
+                    {
+                        crate::logging::error_with_fields(
+                            "kernel.events",
+                            "failed interaction registration could not publish its withdrawal",
+                            serde_json::json!({}),
+                        );
+                    }
                     sessions.restore_session(session);
                 }
             }

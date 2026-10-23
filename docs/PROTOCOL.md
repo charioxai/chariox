@@ -5239,3 +5239,40 @@ A third refusal, `kernel_sudo_room_owner_local`, tells the caller that the Room
 was created before the kernel was enrolled (its owner is `local`), so sudo cannot
 be authorized for it; the fix is to re-create the Room after enrollment. It carries
 no other detail.
+
+### Outside event inbox (MP-08 / MP-09 / MP-10 / MP-11)
+
+The external-agent / agent-model union uses provisional local protocol 574;
+relay peer 181 retains the merged peer contracts. Coordinator allocation is
+required before landing. The event requests are available to external Unix
+access grants and their kernel gateway only. They are absent from session-agent
+tools and sudo's allowed request vocabulary.
+
+`SubscribeEvents { targets }` follows `{ kernel, session_id, agent_id? }` targets;
+omitting the agent follows every agent in the session, including later additions.
+`UnsubscribeEvents { targets | all }`, `GetEventSubscription`, `ListEvents
+{ since?, limit }`, `WaitEvents { since?, timeout_ms, limit }` and `AckEvents
+{ cursor }` share one grant-owned inbox. A wait returns pending records immediately
+or an empty timed-out batch, with a maximum wait of fifteen minutes. Batches are
+oldest first, limited to 1,000 records and the existing relay envelope budget.
+Omitting `since` starts after the acknowledged cursor. Cursor expiry returns
+`EventsCursorExpired { oldest_cursor }` rather than skipping missing records.
+
+Records contain a home cursor, source kernel and machine, session and optional
+agent, a typed state change, one-line summary, timestamp and resource references.
+Only agent/task states, interaction state, terminal job exits and session changes
+are collected. Passkey interactions carry the section 8 approval pointer, without
+the prompt body. Session agents retain their existing session-scoped event tools.
+
+Every source kernel filters its own durable part. The gateway commits imported
+records and each source cursor together before acknowledging that source. Target
+restart and relay loss preserve parts and cursors. Pending inboxes retain at most
+100,000 records, replacing removed ranges with explicit per-kernel gaps. Source
+acknowledgements update bounded forwarding counters in the subscription metadata;
+those counters contain subject identifiers and counts only.
+
+Grant expiry, revoke, holder exit, home-kernel restart and explicit cancellation
+end the subscription. The final control record is the only reply an admitted wait
+may send after its grant ends. Remote cleanup remains durable through reconnect.
+Sessions and agents created under an external grant are followed automatically;
+`no_subscribe: true` on CreateSession, SpawnAgent or SpawnAgents opts out.

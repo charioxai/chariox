@@ -16,12 +16,14 @@ use super::{
 #[derive(Debug, Clone)]
 pub struct AgentService {
     store: AgentStore,
+    pub(super) outside_events: Option<crate::durable_state::DurableKernelStateStore>,
 }
 
 impl AgentService {
     pub fn new() -> Self {
         Self {
             store: AgentStore::new(),
+            outside_events: None,
         }
     }
 
@@ -164,6 +166,9 @@ impl AgentService {
         );
         sessions.set_focused_agent(session.id(), focused_agent_id)?;
 
+        for agent in &created_agents {
+            self.publish_outside_membership(agent, crate::local::EventSessionState::AgentAdded)?;
+        }
         Ok(created_agents)
     }
 
@@ -241,11 +246,13 @@ impl AgentService {
 
         self.store
             .apply_session_layout_and_focus(&session_id, Some(&agent_id));
-        Ok(self
+        let agent = self
             .store
             .get(&agent_id)
             .cloned()
-            .expect("new agent should be stored"))
+            .expect("new agent should be stored");
+        self.publish_outside_membership(&agent, crate::local::EventSessionState::AgentAdded)?;
+        Ok(agent)
     }
 
     pub(crate) fn restore_agent(&mut self, agent: AgentInstance) -> AgentInstance {
@@ -393,6 +400,7 @@ impl AgentService {
         let was_focused = agent.state() == AgentState::Focused
             || session_focused_agent_id.as_deref() == Some(agent_id);
 
+        self.publish_outside_membership(&agent, crate::local::EventSessionState::AgentRemoved)?;
         // Remove the agent
         self.store.remove(agent_id);
 
@@ -584,8 +592,17 @@ impl AgentService {
                 agent_id: agent_id.to_string(),
             })?;
 
+        let previous = agent.state();
         agent.set_state(state);
-        Ok(agent.clone())
+        let agent = agent.clone();
+        let logical = |state| match state {
+            AgentState::Idle | AgentState::Focused => AgentState::Idle,
+            other => other,
+        };
+        if logical(previous) != logical(state) {
+            self.publish_outside_state(&agent)?;
+        }
+        Ok(agent)
     }
 
     /// Set agent processing state

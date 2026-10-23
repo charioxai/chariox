@@ -83,6 +83,8 @@ mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod critical_approval_passkey;
 mod kernel_access;
+mod outside_events;
+pub(crate) use outside_events::is_outside_event_request;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_browser;
@@ -767,6 +769,22 @@ impl KernelRuntimeState {
                 std::thread::sleep(Duration::from_millis(2));
             }
         };
+        let event_config = config_projection.snapshot();
+        durable_state_store
+            .outside_mutate(
+                crate::durable_state::agent_lifecycle::outside::Mutation::Identity {
+                    kernel: event_config.daemon_id.clone(),
+                    machine: event_config.host_machine_id.clone(),
+                },
+            )
+            .expect("outside event identity must be durable before runtime admission");
+        durable_state_store
+            .outside_mutate(crate::durable_state::agent_lifecycle::outside::Mutation::Restart)
+            .expect("outside subscriptions must end when their home kernel restarts");
+        agent_store
+            .write()
+            .bind_outside_events(durable_state_store.clone());
+        room_terminals.bind_outside_events(durable_state_store.clone());
         let workspace_live_sync_journal =
             match crate::git_observer::WorkspaceLiveSyncJournal::restore_from_durable_state(
                 &durable_state_store,

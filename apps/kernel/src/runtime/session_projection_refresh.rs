@@ -407,6 +407,7 @@ mod tests {
         );
         assert_eq!(
             focus_projection_refresh(&LocalDaemonRequest::SpawnAgents(SpawnAgentsRequest {
+                no_subscribe: false,
                 session_id: "session-1".to_string(),
                 agents: Vec::new(),
             })),
@@ -441,6 +442,7 @@ mod tests {
         );
         assert_eq!(
             session_projection_refresh(&LocalDaemonRequest::SpawnAgents(SpawnAgentsRequest {
+                no_subscribe: false,
                 session_id: "session-1".to_string(),
                 agents: Vec::new(),
             })),
@@ -543,6 +545,7 @@ mod tests {
 
     fn spawn_request() -> SpawnAgentRequest {
         SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: "session-1".to_string(),
             alias: None,

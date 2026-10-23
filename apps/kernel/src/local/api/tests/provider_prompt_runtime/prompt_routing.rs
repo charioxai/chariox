@@ -188,6 +188,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
 
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("reviewer".to_string()),
@@ -376,6 +377,7 @@ fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
         .expect("prompt should start");
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("observer".to_string()),

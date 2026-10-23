@@ -32,6 +32,7 @@ mod managed_context;
 mod managed_environment;
 mod metaagent;
 mod notes;
+mod outside_events;
 mod project_environment_aggregate;
 mod project_environment_manifest;
 mod project_environment_setup;
@@ -78,6 +79,7 @@ pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
 pub use notes::*;
+pub use outside_events::*;
 pub use project_environment_aggregate::*;
 pub use project_environment_manifest::*;
 pub use project_environment_setup::*;
@@ -351,4 +353,5 @@ pub use workspace::*;
 /// The event-core line (561, relay peer 169) is merged too: task/wake driver sources (`AgentWake.summary`/`detail`) and the
 /// `agent_task_updated` delta event (MP-08/MP-10/MP-11).
 /// MP-08/MP-10/MP-11: allocated 573/181 binds leased assessment wire identities to the home check.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 573;
+/// Provisional 574 adds outside event subscriptions on the merged external/agent-model line.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 574;

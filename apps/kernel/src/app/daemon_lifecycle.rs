@@ -223,10 +223,10 @@ impl DaemonApp {
         // Attached external provider transcript observation intentionally does not run.
         // Discovery may list/import external sessions, but provider transcript history
         // must not mutate kernel-owned active prompt state.
-        let _ = runtime_state;
 
         let shutdown = async {
             wait_for_shutdown_signal().await;
+            runtime_state.finish_outside_waits_on_shutdown().await;
             let _ = shutdown_tx.send(true);
         };
         let result = match listener {

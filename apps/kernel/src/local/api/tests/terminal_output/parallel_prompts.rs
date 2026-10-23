@@ -28,6 +28,7 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
     };
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("parallel".to_string()),

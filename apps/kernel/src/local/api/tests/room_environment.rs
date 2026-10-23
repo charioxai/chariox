@@ -1822,6 +1822,7 @@ fn room_environment_reconciles_human_and_agent_presence() {
 
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("Navigator".to_string()),

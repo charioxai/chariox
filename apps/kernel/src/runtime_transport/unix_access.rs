@@ -620,6 +620,7 @@ pub(super) fn serve_gateway(
             _ => None,
         };
         let outcome = match route {
+            GatewayRoute::Forward { kernel, request } if crate::runtime::state::is_outside_event_request(&request)=>Err(crate::runtime::kernel_gateway::GatewayError::Remote { name:kernel,code:"events_local_only".into(),message:"event requests run on your local kernel; use chariox events subscribe --kernel NAME to follow another kernel".into(),retryable:false }),
             GatewayRoute::Forward { kernel, request } => {
                 let gateway = router.kernel_gateway();
                 if matches!(
@@ -646,8 +647,17 @@ pub(super) fn serve_gateway(
                 };
                 if let Ok(response) = &answered {
                     gateway.note_forwarded(&kernel, &origin, &request, response);
+                    if let Err(error) = gateway
+                        .follow_forwarded(&origin, &kernel, &request, response)
+                        .await
+                    {
+                        Err(error)
+                    } else {
+                        answered
+                    }
+                } else {
+                    answered
                 }
-                answered
             }
             GatewayRoute::List => router.kernel_gateway().kernels().await.map(|kernels| {
                 serde_json::to_value(crate::local::LocalDaemonResponse::GatewayKernelsListed {

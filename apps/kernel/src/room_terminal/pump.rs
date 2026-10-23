@@ -49,7 +49,7 @@ impl Terminal {
                 sweep.stop();
             }
             let _ = pty.remove_process(&run_id);
-            self.last_program_end = Some(ProgramEnd {
+            self.record_program_end(ProgramEnd {
                 output_offset: self.log.end_offset(),
                 command: None,
                 at: now,
@@ -75,7 +75,7 @@ impl Terminal {
             if self.program_running && !program_running {
                 self.command_in_flight = false;
                 ended_command = Some(self.commands_started);
-                self.last_program_end = Some(ProgramEnd {
+                self.record_program_end(ProgramEnd {
                     output_offset: self.log.end_offset(),
                     command: ended_command,
                     at: now,

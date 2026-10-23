@@ -157,6 +157,7 @@ fn local_request_api_rejects_workflow_run_when_agent_lacks_required_control_capa
     };
     let unsupported_agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("unsupported-node".to_string()),

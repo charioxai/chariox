@@ -1013,6 +1013,15 @@ impl KernelRuntimeState {
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let owned = &self.owned;
         let durable_session = owned.session_end_snapshot(session_id)?;
+        self.owned.durable_state_store.outside_publish(
+            session_id,
+            None,
+            crate::local::OutsideEventValue::Session {
+                state: crate::local::EventSessionState::Ended,
+            },
+            "session ended",
+            crate::local::EventRefs::default(),
+        )?;
         self.append_session_durable_event("session.ended", &durable_session, "runtime_end_session")
             .await?;
         self.stop_managed_environment_for_session_lifecycle(session_id)

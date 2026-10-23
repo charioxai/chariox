@@ -155,6 +155,7 @@ pub(crate) enum WakeEnd {
 }
 #[derive(Clone)]
 pub(crate) enum Operation {
+    Outside(super::outside::Mutation),
     LeasedProcess(super::LeasedProcessMutation),
     CreateLeasedWake {
         task: String,

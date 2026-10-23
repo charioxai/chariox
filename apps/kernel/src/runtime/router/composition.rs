@@ -351,6 +351,7 @@ pub(super) fn compose_command_router(
         config_projection.clone(),
         remote_relay_inventory_projection.clone(),
     ));
+    kernel_gateway.resume_event_parts();
     CommandRouter {
         _native_interaction_bridge: native_interaction_bridge,
         app,

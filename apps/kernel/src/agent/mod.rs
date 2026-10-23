@@ -16,3 +16,5 @@ pub use types::{
     AgentOperatingMode, AgentRole, AgentState, AgentSubstituteProfile, CreateAgentRequest,
     GitWorktreePlacement, GridPosition, RemoteAgentBinding,
 };
+
+mod outside_events;

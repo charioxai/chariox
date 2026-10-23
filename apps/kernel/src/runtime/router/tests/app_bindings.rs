@@ -644,6 +644,7 @@ async fn a_persons_spawn_gets_the_foreground_app_and_a_meta_agents_spawn_does_no
         Some(first.clone())
     );
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        no_subscribe: false,
         account_profile: None,
         session_id: session.clone(),
         alias: Some("person-worker".into()),

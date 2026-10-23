@@ -17,6 +17,9 @@ pub(crate) mod faults;
 mod goal_tests;
 pub(crate) mod goals;
 mod migration;
+pub(crate) mod outside;
+#[cfg(test)]
+mod outside_tests;
 #[cfg(test)]
 mod plain_tests;
 mod quarantine;
@@ -91,6 +94,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
         db.execute_batch("ALTER TABLE agent_source_occurrences ADD COLUMN public_answer TEXT")
             .map_err(sql)?;
     }
+    outside::initialize(db)?;
     wakes::initialize(db)?;
     leased_processes::initialize(db)?;
     workflow_tasks::initialize(db)?;
@@ -384,7 +388,18 @@ fn decode_task(
     Ok(t)
 }
 fn save(tx: &Transaction<'_>, task: &AgentTaskExecution) -> Result<(), DaemonError> {
+    let previous = tx
+        .query_row(
+            "SELECT payload FROM agent_tasks WHERE task_id=?1",
+            [&task.task_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(sql)?
+        .map(|s| decode::<AgentTaskExecution>(&s))
+        .transpose()?;
     tx.execute("INSERT INTO agent_tasks VALUES(?1,?2,?3,?4,?5) ON CONFLICT(task_id) DO UPDATE SET prompt_id=excluded.prompt_id,payload=excluded.payload",params![task.task_id,task.room_id,task.agent_id,task.prompt_id,encode(task)?]).map_err(sql)?;
+    outside::publish_task(tx, task, previous.as_ref())?;
     if matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled) {
         tx.execute("UPDATE agent_registrations SET payload=json_set(payload,'$.live',json('false')) WHERE task_id=?1 AND json_valid(payload)", [&task.task_id]).map_err(sql)?;
     }
@@ -513,7 +528,12 @@ fn new_task(
 }
 fn event(tx: &Transaction<'_>, mut e: InboxEvent) -> Result<InboxEvent, DaemonError> {
     crate::secret_redaction::redact_json_secrets(&mut e.payload);
-    let previous:Option<String>=tx.query_row("SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND occurrence_id=?4",params![e.room_id,e.agent_id,e.source_id,e.occurrence_id],|r|r.get(0)).optional().map_err(sql)?;
+    let recipient = outside::Recipient::SessionAgent {
+        session_id: e.room_id.clone(),
+        agent_id: e.agent_id.clone(),
+    };
+    let (room, agent) = recipient.address();
+    let previous:Option<String>=tx.query_row("SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND occurrence_id=?4",params![room,agent,e.source_id,e.occurrence_id],|r|r.get(0)).optional().map_err(sql)?;
     if let Some(previous) = previous {
         let mut p: InboxEvent = decode(&previous)?;
         if matches!(e.kind.as_str(), "source_completed" | "source_lost") && p.kind == e.kind {

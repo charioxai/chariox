@@ -300,7 +300,14 @@ impl KernelRuntimeOwnedState {
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         if let Ok(mut session) = sessions.get_session(&pending.session_id) {
-            session.remove_active_interaction(id);
+            if let Some(interaction) = session.remove_active_interaction(id) {
+                self.publish_outside_interaction(
+                    &pending.session_id,
+                    &interaction,
+                    crate::local::EventInteractionState::Resolved,
+                    None,
+                )?;
+            }
             sessions.restore_session(session);
         }
         activity_mutation.record();

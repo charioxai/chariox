@@ -351,6 +351,7 @@ fn session_attach_clears_a_missing_active_provider_run() {
         .expect("initial attachment should succeed");
     harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("remote-worker".to_string()),
@@ -425,6 +426,7 @@ fn session_attach_clears_a_projected_leased_run_for_an_unfocused_agent() {
         .expect("initial attachment should succeed");
     let remote_agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("remote-worker".to_string()),
@@ -775,6 +777,7 @@ fn local_request_api_spawns_and_focuses_agents() {
 
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("  reviewer  ".to_string()),

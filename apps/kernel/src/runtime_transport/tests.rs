@@ -298,6 +298,7 @@ async fn connection_closing_for_backpressure_admits_no_more_requests() {
                 browser_terminal_contexts: Default::default(),
                 subscription: None,
                 watch_task: None,
+                outside_wait_requests: Default::default(),
             })),
             inbound_request_admission: &InboundRequestAdmission::new(
                 MIN_PROCESS_INBOUND_REQUEST_LIMIT,
@@ -2223,6 +2224,7 @@ async fn dispatch_transport_test_request(
             browser_terminal_contexts: Default::default(),
             subscription: None,
             watch_task: None,
+            outside_wait_requests: Default::default(),
         })),
     )
     .await
@@ -2747,6 +2749,7 @@ async fn md3_transport_disconnect_fences_input_queued_behind_vault_barrier() {
         browser_terminal_contexts: Default::default(),
         subscription: None,
         watch_task: None,
+        outside_wait_requests: Default::default(),
     }));
     let queued_router = router.clone();
     let queued_connection = connection.clone();

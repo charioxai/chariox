@@ -304,6 +304,7 @@ fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
         };
         let second_agent = match harness
             .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                no_subscribe: false,
                 account_profile: None,
                 session_id: session.id().to_string(),
                 alias: Some("second".to_string()),
@@ -458,6 +459,7 @@ fn waiting_room_public_snapshot_includes_public_session_activity_counts() {
             };
             let idle_agent = match harness
                 .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                    no_subscribe: false,
                     account_profile: None,
                     session_id: session.id().to_string(),
                     alias: Some("idle".to_string()),

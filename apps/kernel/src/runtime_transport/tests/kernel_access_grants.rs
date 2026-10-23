@@ -1520,3 +1520,55 @@ async fn an_unknown_terminal_is_explained_to_the_grant_holder() {
     );
     assert_eq!(refused["error"]["code"], "terminal_refused", "{refused}");
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: revocation may deliver only its final control record.
+#[tokio::test]
+async fn outside_unix_wait_delivers_subscription_ended_after_revoke() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    let grant_id = grant(&mut kernel, &mut holder).await;
+    let subscribed=holder.request(serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":SESSION}]}}));
+    assert!(
+        subscribed["error"].is_null(),
+        "subscription failed: {subscribed}"
+    );
+    holder.send(serde_json::json!({"WaitEvents":{"timeout_ms":30000}}));
+    sleep(Duration::from_millis(200)).await;
+    let revoked = kernel
+        .request(serde_json::json!({"RevokeKernelAccessGrant":{"grant_id":grant_id}}))
+        .await;
+    assert!(revoked["error"].is_null());
+    let response = timeout(
+        Duration::from_secs(2),
+        tokio::task::spawn_blocking(move || holder.result()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        response["response"]["EventsListed"]["events"][0]["type"], "subscription_ended",
+        "{response}"
+    );
+    assert_eq!(
+        response["response"]["EventsListed"]["events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn outside_events_use_their_own_ledger_instead_of_transport_cache() {
+    for value in [
+        serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":SESSION}]}}),
+        serde_json::json!({"UnsubscribeEvents":{"all":true}}),
+        serde_json::json!({"GetEventSubscription":{}}),
+        serde_json::json!({"ListEvents":{}}),
+        serde_json::json!({"WaitEvents":{"timeout_ms":100}}),
+        serde_json::json!({"AckEvents":{"cursor":0}}),
+    ] {
+        let request: LocalDaemonRequest = serde_json::from_value(value).unwrap();
+        assert!(!request_is_cacheable(&request));
+    }
+}

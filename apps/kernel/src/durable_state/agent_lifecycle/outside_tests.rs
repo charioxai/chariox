@@ -1,0 +1,304 @@
+//! MP-08 / MP-09 / MP-10 / MP-11: durable outside delivery, not provider acceptance.
+use super::*;
+use crate::local::*;
+use outside::Mutation;
+use tests::Fixture;
+
+fn target(session: &str, agent: Option<&str>) -> EventTarget {
+    EventTarget {
+        kernel: "kernel-a".into(),
+        session_id: session.into(),
+        agent_id: agent.map(Into::into),
+    }
+}
+fn subscribe(f: &Fixture, id: &str, home: bool, targets: Vec<EventTarget>) {
+    f.store
+        .outside_mutate(Mutation::Subscribe {
+            id: id.into(),
+            home,
+            targets,
+        })
+        .unwrap();
+}
+fn event(session: &str, agent: &str) -> OutsideEvent {
+    OutsideEvent {
+        cursor: 0,
+        kernel: "kernel-a".into(),
+        machine: "machine-a".into(),
+        session_id: session.into(),
+        agent_id: Some(agent.into()),
+        value: OutsideEventValue::Agent {
+            run_state: Some(EventRunState::Idle),
+            task_state: None,
+            reason: None,
+        },
+        summary: "idle".into(),
+        at_ms: 1,
+        refs: Default::default(),
+    }
+}
+fn publish(f: &Fixture, occurrence: &str, event: OutsideEvent) {
+    f.store
+        .outside_mutate(Mutation::Publish {
+            occurrence: occurrence.into(),
+            event: Box::new(event),
+        })
+        .unwrap();
+}
+fn list(f: &Fixture, id: &str) -> EventsBatch {
+    f.store.outside_list(id, None, 1000).unwrap().unwrap()
+}
+
+#[test]
+fn outside_parts_filter_at_the_producer_and_do_not_enter_session_delivery() {
+    let f = Fixture::new();
+    subscribe(
+        &f,
+        "grant",
+        true,
+        vec![target("x", None), target("y", Some("y2"))],
+    );
+    publish(&f, "1", event("x", "x1"));
+    publish(&f, "2", event("x", "new-agent"));
+    publish(&f, "3", event("y", "y1"));
+    publish(&f, "4", event("y", "y2"));
+    publish(&f, "4", event("y", "y2"));
+    publish(&f, "5", event("unfollowed", "x1"));
+    let batch = list(&f, "grant");
+    assert_eq!(
+        batch
+            .events
+            .iter()
+            .map(|e| e.agent_id.as_deref().unwrap())
+            .collect::<Vec<_>>(),
+        ["x1", "new-agent", "y2"]
+    );
+    assert!(batch.events.windows(2).all(|p| p[0].cursor < p[1].cursor));
+    assert!(f.store.agent_pending_inbox_recipients().unwrap().is_empty());
+    assert!(f.store.agent_inbox("x", "x1", 0).unwrap().is_empty());
+}
+
+#[test]
+fn outside_ack_and_merged_high_water_are_durable() {
+    let f = Fixture::new();
+    subscribe(&f, "grant", true, vec![target("x", None)]);
+    let mut first = event("x", "x1");
+    first.cursor = 10;
+    let mut second = event("x", "x1");
+    second.cursor = 20;
+    let import = Mutation::Import {
+        id: "grant".into(),
+        kernel: "kernel-a".into(),
+        events: vec![first, second],
+    };
+    f.store.outside_mutate(import.clone()).unwrap();
+    let batch = list(&f, "grant");
+    assert_eq!(batch.events.len(), 2);
+    f.store
+        .outside_mutate(Mutation::Ack {
+            id: "grant".into(),
+            cursor: batch.next_cursor,
+        })
+        .unwrap();
+    f.store.outside_mutate(import.clone()).unwrap();
+    assert!(list(&f, "grant").events.is_empty());
+    let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
+    assert_eq!(
+        reopened
+            .outside_part("grant")
+            .unwrap()
+            .unwrap()
+            .remote_cursors["kernel-a"],
+        20
+    );
+    reopened.outside_mutate(import).unwrap();
+    assert!(reopened
+        .outside_list("grant", None, 1000)
+        .unwrap()
+        .unwrap()
+        .events
+        .is_empty());
+    assert!(reopened
+        .outside_mutate(Mutation::Ack {
+            id: "grant".into(),
+            cursor: batch.next_cursor + 1
+        })
+        .is_err());
+}
+
+#[test]
+fn outside_restart_ends_home_only_and_session_end_removes_only_its_targets() {
+    let f = Fixture::new();
+    subscribe(
+        &f,
+        "home",
+        true,
+        vec![target("x", None), target("y", Some("y2"))],
+    );
+    subscribe(&f, "part", false, vec![target("x", None)]);
+    let mut ended = event("x", "x1");
+    ended.agent_id = None;
+    ended.value = OutsideEventValue::Session {
+        state: EventSessionState::Ended,
+    };
+    publish(&f, "session-end", ended);
+    assert_eq!(
+        f.store.outside_part("home").unwrap().unwrap().targets,
+        vec![target("y", Some("y2"))]
+    );
+    assert!(f
+        .store
+        .outside_part("part")
+        .unwrap()
+        .unwrap()
+        .ended
+        .is_none());
+    f.store.outside_mutate(Mutation::Restart).unwrap();
+    publish(&f, "after", event("y", "y2"));
+    let home = list(&f, "home");
+    assert_eq!(home.events.len(), 2);
+    assert!(
+        matches!(&home.events.last().unwrap().value,OutsideEventValue::SubscriptionEnded { reason } if reason=="kernel_restarted")
+    );
+    assert!(f
+        .store
+        .outside_part("part")
+        .unwrap()
+        .unwrap()
+        .ended
+        .is_none());
+    assert!(f
+        .store
+        .outside_mutate(Mutation::Subscribe {
+            id: "home".into(),
+            home: true,
+            targets: vec![target("y", None)]
+        })
+        .is_err());
+}
+
+#[test]
+fn outside_retention_returns_an_expired_cursor_and_an_ordered_gap() {
+    let f = Fixture::new();
+    subscribe(&f, "grant", true, vec![target("x", None)]);
+    for n in 0..8 {
+        publish(&f, &n.to_string(), event("x", "x1"));
+    }
+    f.store
+        .outside_mutate(Mutation::Bound {
+            id: "grant".into(),
+            limit: 4,
+        })
+        .unwrap();
+    let oldest = f
+        .store
+        .outside_list("grant", Some(0), 1000)
+        .unwrap()
+        .unwrap_err();
+    let batch = f
+        .store
+        .outside_list("grant", Some(oldest - 1), 1000)
+        .unwrap()
+        .unwrap();
+    assert_eq!(batch.events.len(), 4);
+    assert!(matches!(
+        batch.events[0].value,
+        OutsideEventValue::Gap {
+            dropped: 5,
+            from: 1,
+            to: 5,
+            ..
+        }
+    ));
+    assert!(batch.events.windows(2).all(|p| p[0].cursor < p[1].cursor));
+}
+
+#[test]
+fn outside_retention_identifies_each_kernel_and_preserves_the_cap() {
+    let f = Fixture::new();
+    subscribe(&f, "grant", true, vec![target("x", None)]);
+    let mut events = Vec::new();
+    for n in 1..=4 {
+        let mut e = event("x", "x1");
+        e.cursor = n;
+        events.push(e);
+    }
+    f.store
+        .outside_mutate(Mutation::Import {
+            id: "grant".into(),
+            kernel: "kernel-a".into(),
+            events,
+        })
+        .unwrap();
+    let events_b = (1..=4)
+        .map(|n| {
+            let mut event = event("x", "x1");
+            event.kernel = "kernel-b".into();
+            event.cursor = n;
+            event
+        })
+        .collect();
+    f.store
+        .outside_mutate(Mutation::Import {
+            id: "grant".into(),
+            kernel: "kernel-b".into(),
+            events: events_b,
+        })
+        .unwrap();
+    f.store
+        .outside_mutate(Mutation::Bound {
+            id: "grant".into(),
+            limit: 4,
+        })
+        .unwrap();
+    let oldest = f
+        .store
+        .outside_list("grant", Some(0), 100)
+        .unwrap()
+        .unwrap_err();
+    let batch = f
+        .store
+        .outside_list("grant", Some(oldest - 1), 100)
+        .unwrap()
+        .unwrap();
+    assert_eq!(batch.events.len(), 4);
+    assert_eq!(
+        batch
+            .events
+            .iter()
+            .filter(|event| matches!(event.value, OutsideEventValue::Gap { .. }))
+            .count(),
+        2
+    );
+    assert!(batch
+        .events
+        .iter()
+        .filter(|e| matches!(e.value, OutsideEventValue::Gap { .. }))
+        .all(|e| matches!(&e.value,OutsideEventValue::Gap { kernel,.. } if kernel==&e.kernel)));
+}
+#[test]
+fn outside_import_rejects_unordered_or_misattributed_batches_atomically() {
+    let f = Fixture::new();
+    subscribe(&f, "grant", true, vec![target("x", None)]);
+    let mut one = event("x", "x1");
+    one.cursor = 1;
+    let mut two = one.clone();
+    two.cursor = 2;
+    assert!(f
+        .store
+        .outside_mutate(Mutation::Import {
+            id: "grant".into(),
+            kernel: "kernel-a".into(),
+            events: vec![two, one.clone()]
+        })
+        .is_err());
+    assert!(f
+        .store
+        .outside_mutate(Mutation::Import {
+            id: "grant".into(),
+            kernel: "wrong-kernel".into(),
+            events: vec![one]
+        })
+        .is_err());
+    assert!(list(&f, "grant").events.is_empty());
+}

@@ -15,6 +15,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
 
     let agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("reviewer".to_string()),
@@ -121,6 +122,7 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
 
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("reviewer-2".to_string()),
@@ -347,6 +349,7 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
     };
     let source_agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             account_profile: None,
             session_id: source_session.id().to_string(),
             alias: Some("published_worker".to_string()),

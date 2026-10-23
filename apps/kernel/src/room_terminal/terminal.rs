@@ -52,6 +52,7 @@ pub(super) struct Terminal {
     pub unsaved_since: Option<Instant>,
     /// The last time a program returned to the prompt (or the shell exited).
     pub last_program_end: Option<ProgramEnd>,
+    pub outside_ends: Vec<ProgramEnd>,
     /// Commands that began, in order: the n-th command answers the n-th line.
     pub commands_started: u64,
 }
@@ -124,6 +125,7 @@ impl Terminal {
             dropped_input_bytes: 0,
             unsaved_since: None,
             last_program_end: None,
+            outside_ends: Vec::new(),
             commands_started: 0,
         }
     }
@@ -152,6 +154,11 @@ impl Terminal {
         fired
     }
 
+    pub(super) fn record_program_end(&mut self, end: ProgramEnd) {
+        self.outside_ends.push(end.clone());
+        self.last_program_end = Some(end);
+    }
+
     fn on_mark(&mut self, mark: ShellMark) -> Fired {
         match mark {
             ShellMark::CommandStarted => {
@@ -172,7 +179,7 @@ impl Terminal {
                 }
                 self.command_in_flight = false;
                 let command = Some(self.commands_started);
-                self.last_program_end = Some(ProgramEnd {
+                self.record_program_end(ProgramEnd {
                     output_offset: self.log.end_offset(),
                     command,
                     at: Instant::now(),

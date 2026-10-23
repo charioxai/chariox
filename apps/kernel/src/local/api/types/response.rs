@@ -3,6 +3,10 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    EventSubscription { subscription: EventSubscription },
+    EventsListed { events: Vec<OutsideEvent>, next_cursor: u64, oldest_cursor: u64, timed_out: bool },
+    EventsAcknowledged { cursor: u64 },
+    EventsCursorExpired { oldest_cursor: u64 },
     SshMachine { machine: SshMachineResult },
     EnvironmentUnsupportedFeature { feature: crate::project_environment::EnvironmentCapability, supported_schema: u32 },
     ProjectEnvironmentDiff { diff: crate::project_environment::EnvironmentRevisionDiff },

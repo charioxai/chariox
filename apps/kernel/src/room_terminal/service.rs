@@ -32,6 +32,8 @@ use crate::pty::{PtyManager, PtySpawnRequest};
 use crate::runtime::state::ManagedKernelQuiescenceGate;
 use crate::session::unix_epoch_ms;
 
+mod outside_events;
+
 const MAX_TERMINALS_PER_ROOM: usize = 16;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_PAGE_BYTES: usize = 256 * 1024;
@@ -77,6 +79,7 @@ struct Inner {
     state: Mutex<State>,
     store: TerminalStore,
     events: BoundEvents,
+    outside_events: std::sync::RwLock<Option<crate::durable_state::DurableKernelStateStore>>,
     shell_integration: ShellIntegration,
     managed: ManagedWork,
     output_changed: Notify,
@@ -126,6 +129,7 @@ impl RoomTerminalService {
                 }),
                 store,
                 events: BoundEvents::default(),
+                outside_events: std::sync::RwLock::new(None),
                 shell_integration,
                 managed: ManagedWork::default(),
                 output_changed: Notify::new(),
@@ -735,6 +739,7 @@ impl RoomTerminalService {
                         }
                     }
                 }
+                self.publish_outside_jobs(terminal);
                 self.persist_if_due(terminal, now);
             }
         }

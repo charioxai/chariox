@@ -17,6 +17,25 @@ impl KernelRuntimeState {
         outcome: &str,
         reason: Option<&str>,
     ) -> Result<(), DaemonError> {
+        if outcome == "granted" {
+            self.owned.durable_state_store.outside_mutate(
+                crate::durable_state::agent_lifecycle::outside::Mutation::Subscribe {
+                    id: grant.grant_id.clone(),
+                    home: true,
+                    targets: Vec::new(),
+                },
+            )?;
+        }
+        if matches!(outcome, "revoked" | "expired") {
+            self.owned.durable_state_store.outside_mutate(
+                crate::durable_state::agent_lifecycle::outside::Mutation::Unsubscribe {
+                    id: grant.grant_id.clone(),
+                    targets: Vec::new(),
+                    all: true,
+                    reason: reason.unwrap_or(outcome).to_string(),
+                },
+            )?;
+        }
         self.owned.durable_state_store.append_event(
             "kernel_access.grant",
             Some(grant.grant_id.clone()),

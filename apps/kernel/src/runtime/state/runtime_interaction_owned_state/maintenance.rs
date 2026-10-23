@@ -83,7 +83,23 @@ impl KernelRuntimeOwnedState {
                 continue;
             };
             let mut session = session.clone();
-            if session.remove_active_interaction(&interaction_id).is_none() {
+            let Some(interaction) = session.remove_active_interaction(&interaction_id) else {
+                continue;
+            };
+            if self
+                .publish_outside_interaction(
+                    &session_id,
+                    &interaction,
+                    crate::local::EventInteractionState::Resolved,
+                    None,
+                )
+                .is_err()
+            {
+                crate::logging::error_with_fields(
+                    "kernel.events",
+                    "orphaned interaction withdrawal will be retried",
+                    serde_json::json!({}),
+                );
                 continue;
             }
             sessions.restore_session(session);

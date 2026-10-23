@@ -512,6 +512,12 @@ impl KernelRuntimeOwnedState {
                 .record_answered(session_id, interaction_id);
         }
         if let Some(mut session) = session.take() {
+            self.publish_outside_interaction(
+                session_id,
+                &interaction,
+                crate::local::EventInteractionState::Resolved,
+                None,
+            )?;
             session.remove_active_interaction(interaction_id);
             sessions.restore_session(session);
         }
@@ -643,6 +649,12 @@ impl KernelRuntimeOwnedState {
         self.session_snapshot(session_id)?;
         self.terminal_stream
             .notify_terminal_projection_change(session_id);
+        self.publish_outside_interaction(
+            session_id,
+            &interaction,
+            crate::local::EventInteractionState::Resolved,
+            None,
+        )?;
         let resolution = timeout_runtime_interaction_resolution(&interaction);
         if let Some(sender) = pending
             .responder

@@ -640,6 +640,7 @@ impl CommandRouter {
             .as_deref()
             .is_none_or(|p| p == metaagent.provider());
         let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
             session_id: session.id().to_string(),
             alias: spawn.alias,
             provider: spawn

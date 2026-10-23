@@ -120,3 +120,56 @@ fn kernel_gateway_protocol_568_shapes_and_hash() {
         "3392afcfcfdb6b3ad9ef9e89adc30abee92ee909715109eb6d926426ccb61d44"
     );
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: outside events use short grant-bound requests.
+#[test]
+fn outside_event_requests_are_typed() {
+    for value in [
+        serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":"room","agent_id":"agent"}]}}),
+        serde_json::json!({"UnsubscribeEvents":{"all":true}}),
+        serde_json::json!({"GetEventSubscription":{}}),
+        serde_json::json!({"ListEvents":{"since":4,"limit":100}}),
+        serde_json::json!({"WaitEvents":{"since":4,"timeout_ms":540000,"limit":100}}),
+        serde_json::json!({"AckEvents":{"cursor":4}}),
+    ] {
+        let request: super::super::super::LocalDaemonRequest =
+            serde_json::from_value(value.clone())
+                .unwrap_or_else(|error| panic!("outside event request {value}: {error}"));
+        assert_eq!(serde_json::to_value(request).unwrap(), value);
+    }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: every outside event variant is a stable wire shape.
+#[test]
+fn outside_events_snapshot_and_hash() {
+    let snapshot: serde_json::Value =
+        serde_json::from_str(include_str!("outside-events.json")).unwrap();
+    assert_eq!(snapshot["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        snapshot["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    for value in snapshot["requests"].as_array().unwrap() {
+        let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), *value);
+    }
+    for value in snapshot["responses"].as_array().unwrap() {
+        let response: LocalDaemonResponse = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(response).unwrap(), *value);
+    }
+    for (variant,body) in [
+        ("CreateSession",serde_json::json!({"workspace_id":"workspace","worktree_id":"worktree","no_subscribe":true})),
+        ("SpawnAgent",serde_json::json!({"session_id":"room","no_subscribe":true})),
+        ("SpawnAgents",serde_json::json!({"session_id":"room","agents":[],"no_subscribe":true})),
+    ] {
+        let request:LocalDaemonRequest=serde_json::from_value(serde_json::json!({variant:body})).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap()[variant]["no_subscribe"],snapshot["no_subscribe_requests"][variant]);
+    }
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "dbc9ee50b65ddbe995d3d9b982b6220e6493f7939721d1a704801af688e09c62"
+    );
+}
