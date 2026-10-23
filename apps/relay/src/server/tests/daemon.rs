@@ -386,6 +386,23 @@ async fn reregistering_daemon_fails_requests_sent_to_its_stale_socket() {
         other => panic!("unexpected daemon request frame: {other:?}"),
     }
 
+    // Keep a full old display queue alive without ever polling its receiver.
+    let (display_tx, _stalled_display_rx) = tokio::sync::mpsc::channel(1);
+    display_tx
+        .try_send(crate::registry::DisplayStreamEvent::Chunk {
+            data: "pending".to_string(),
+            message_kind: None,
+        })
+        .unwrap();
+    registry.write().await.insert_pending_display_stream(
+        "stalled-old-display".to_string(),
+        crate::registry::DaemonKey {
+            realm_id: crate::auth::DEFAULT_RELAY_REALM_ID.to_string(),
+            daemon_id: "daemon-1".to_string(),
+        },
+        display_tx,
+    );
+
     let (mut fresh_socket, _) = connect_async_with_retry(&url)
         .await
         .expect("second daemon socket should connect");
@@ -413,6 +430,35 @@ async fn reregistering_daemon_fails_requests_sent_to_its_stale_socket() {
     }
     assert_eq!(registry.read().await.pending_request_count(), 0);
     assert!(registry.read().await.daemon("daemon-1").is_some());
+
+    // This must be read by the replacement socket's reader even with the old
+    // display receiver still alive and its queue full.
+    fresh_socket
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::DaemonHeartbeat {
+                daemon_id: "daemon-1".to_string(),
+                registration: Some(test_registration("daemon-1", "machine-1", "recovered", 10)),
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    timeout(Duration::from_millis(500), async {
+        loop {
+            if registry
+                .read()
+                .await
+                .daemon("daemon-1")
+                .is_some_and(|daemon| daemon.os_name.as_deref() == Some("recovered"))
+            {
+                break;
+            }
+            sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("new daemon reader waited on the old display queue");
 
     let _ = client_socket.close(None).await;
     let _ = fresh_socket.close(None).await;

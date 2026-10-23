@@ -1,7 +1,7 @@
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
-    os::fd::{FromRawFd, OwnedFd},
+    os::fd::AsRawFd,
     time::{Duration, Instant},
 };
 
@@ -11,39 +11,20 @@ use super::*;
 /// like packets sent into a dead IPv6 path.
 struct UnansweredAddress {
     address: SocketAddr,
-    _listener: OwnedFd,
+    _listener: TcpListener,
     _queued: Vec<TcpStream>,
 }
 
 fn unanswered_address() -> UnansweredAddress {
-    // SAFETY: plain libc socket calls on a descriptor owned by the returned value.
-    let (listener, address) = unsafe {
-        let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
-        assert!(fd >= 0, "socket");
-        let mut sockaddr: libc::sockaddr_in = std::mem::zeroed();
-        sockaddr.sin_family = libc::AF_INET as libc::sa_family_t;
-        sockaddr.sin_addr.s_addr = u32::from_be_bytes([127, 0, 0, 1]).to_be();
-        let size = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
-        assert_eq!(
-            libc::bind(fd, (&sockaddr as *const libc::sockaddr_in).cast(), size),
-            0
-        );
-        assert_eq!(libc::listen(fd, 0), 0);
-        let mut bound = size;
-        assert_eq!(
-            libc::getsockname(
-                fd,
-                (&mut sockaddr as *mut libc::sockaddr_in).cast(),
-                &mut bound
-            ),
-            0
-        );
-        let address = SocketAddr::from((
-            std::net::Ipv4Addr::LOCALHOST,
-            u16::from_be(sockaddr.sin_port),
-        ));
-        (OwnedFd::from_raw_fd(fd), address)
-    };
+    unanswered_address_on(false)
+}
+
+fn unanswered_address_on(ipv6: bool) -> UnansweredAddress {
+    let listener = TcpListener::bind(if ipv6 { "[::1]:0" } else { "127.0.0.1:0" }).unwrap();
+    let address = listener.local_addr().unwrap();
+    // SAFETY: the descriptor remains owned by listener; reset its empty accept
+    // queue to the smallest backlog so subsequent connections stop answering.
+    assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 0) }, 0);
     let queued = (0..3)
         .filter_map(|_| TcpStream::connect_timeout(&address, Duration::from_millis(200)).ok())
         .collect();
@@ -55,7 +36,11 @@ fn unanswered_address() -> UnansweredAddress {
 }
 
 fn answering_server() -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    answering_server_on(false)
+}
+
+fn answering_server_on(ipv6: bool) -> SocketAddr {
+    let listener = TcpListener::bind(if ipv6 { "[::1]:0" } else { "127.0.0.1:0" }).unwrap();
     let address = listener.local_addr().unwrap();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -92,7 +77,7 @@ fn http_call_reaches_the_working_address_behind_an_unanswered_one() {
     let stalled = unanswered_address();
     let working = answering_server();
     let addresses = vec![stalled.address, working];
-    let agent = agent_builder_with_resolver(move |_| Ok(addresses.clone()))
+    let agent = agent_builder_with_resolver(move |_: &str| Ok(addresses.clone()))
         .timeout(Duration::from_secs(20))
         .build();
     let started = Instant::now();
@@ -116,7 +101,7 @@ fn later_http_calls_skip_the_family_that_did_not_answer() {
     let stalled = unanswered_address();
     let working = answering_server();
     let addresses = vec![stalled.address, working];
-    let agent = agent_builder_with_resolver(move |_| Ok(addresses.clone())).build();
+    let agent = agent_builder_with_resolver(move |_: &str| Ok(addresses.clone())).build();
     for call in 0..2 {
         let started = Instant::now();
         agent
@@ -208,7 +193,7 @@ fn http_call_does_not_wait_for_an_unanswered_aaaa_lookup() {
             Ok(Vec::new())
         }
     });
-    let agent = agent_builder_with_resolver(move |netloc| resolver.resolve(netloc))
+    let agent = agent_builder_with_resolver(resolver)
         .timeout(Duration::from_secs(20))
         .build();
     let started = Instant::now();
@@ -240,7 +225,7 @@ fn http_call_reaches_a_late_a_answer_when_the_aaaa_path_is_dead() {
             Ok(vec![working])
         }
     });
-    let agent = agent_builder_with_resolver(move |netloc| resolver.resolve(netloc))
+    let agent = agent_builder_with_resolver(resolver)
         .timeout(Duration::from_secs(20))
         .build();
 
@@ -252,4 +237,170 @@ fn http_call_reaches_a_late_a_answer_when_the_aaaa_path_is_dead() {
         .unwrap();
 
     assert_eq!(body, "ok");
+}
+
+#[test]
+fn http_connect_keeps_a_shorter_agent_deadline() {
+    assert_short_deadline(false);
+}
+
+#[test]
+fn http_connect_keeps_a_shorter_request_deadline() {
+    assert_short_deadline(true);
+}
+
+fn assert_short_deadline(request_timeout: bool) {
+    let dead = unanswered_address();
+    {
+        let builder = agent_builder();
+        let agent = if request_timeout {
+            builder
+        } else {
+            builder.timeout(Duration::from_millis(100))
+        }
+        .build();
+        let request = agent.get(&format!("http://{}/", dead.address));
+        let request = if request_timeout {
+            request.timeout(Duration::from_millis(100))
+        } else {
+            request
+        };
+        let started = Instant::now();
+        assert!(request.call().is_err());
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "short request held for {:?}",
+            started.elapsed()
+        );
+    }
+}
+
+#[test]
+fn http_call_reaches_a_late_aaaa_answer_after_the_stagger() {
+    assert_http_reaches_late_family(dns::Family::V6, 150);
+}
+
+#[test]
+fn http_call_reaches_an_a_answer_after_the_previous_wait() {
+    assert_http_reaches_late_family(dns::Family::V4, 1200);
+}
+
+fn assert_http_reaches_late_family(late_family: dns::Family, delay_ms: u64) {
+    let dead = unanswered_address_on(late_family == dns::Family::V4);
+    let dead_address = dead.address;
+    let working = answering_server_on(late_family == dns::Family::V6);
+    let resolver = dns::Resolver::new(move |_, _, family| {
+        if family == late_family {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+            Ok(vec![working])
+        } else {
+            Ok(vec![dead_address])
+        }
+    });
+    let agent = agent_builder_with_resolver(resolver)
+        .timeout(Duration::from_secs(4))
+        .build();
+    let started = Instant::now();
+    let result = agent
+        .get(&format!("http://late-{late_family:?}.invalid/relay/token"))
+        .call();
+    assert!(
+        result.is_ok(),
+        "late {late_family:?} answer lost after {:?}: {result:?}",
+        started.elapsed()
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+#[tokio::test]
+async fn websocket_reaches_a_late_aaaa_answer_after_the_stagger() {
+    assert_websocket_reaches_late_family(dns::Family::V6, 150).await;
+}
+
+#[tokio::test]
+async fn websocket_reaches_an_a_answer_after_the_previous_wait() {
+    assert_websocket_reaches_late_family(dns::Family::V4, 1200).await;
+}
+
+async fn assert_websocket_reaches_late_family(late_family: dns::Family, delay_ms: u64) {
+    let dead = unanswered_address_on(late_family == dns::Family::V4);
+    let dead_address = dead.address;
+    let listener = tokio::net::TcpListener::bind(if late_family == dns::Family::V6 {
+        "[::1]:0"
+    } else {
+        "127.0.0.1:0"
+    })
+    .await
+    .unwrap();
+    let working = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        tokio_tungstenite::accept_async(stream).await.unwrap()
+    });
+    let resolver = dns::Resolver::new(move |_, _, family| {
+        if family == late_family {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+            Ok(vec![working])
+        } else {
+            Ok(vec![dead_address])
+        }
+    });
+    let started = Instant::now();
+    let result =
+        connect_websocket_with_resolver(format!("ws://late-ws-{late_family:?}.invalid/"), resolver)
+            .await;
+    assert!(
+        result.is_ok(),
+        "late {late_family:?} answer lost after {:?}: {result:?}",
+        started.elapsed()
+    );
+    assert!(started.elapsed() < Duration::from_secs(3));
+    drop(result);
+    drop(server.await.unwrap());
+}
+
+#[test]
+fn http_connect_keeps_the_deadline_after_resolution() {
+    let dead = unanswered_address();
+    let address = dead.address;
+    let agent = agent_builder_with_resolver(move |_: &str| {
+        std::thread::sleep(Duration::from_millis(80));
+        Ok(vec![address])
+    })
+    .timeout(Duration::from_millis(100))
+    .build();
+    let started = Instant::now();
+    assert!(agent.get("http://slow-resolution.invalid/").call().is_err());
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "resolution reset the connect deadline: {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn websocket_keeps_connecting_while_a_syn_is_retried() {
+    let delayed = unanswered_address();
+    let queued = delayed._queued.len();
+    let listener = delayed._listener.try_clone().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+    let server = tokio::spawn(async move {
+        sleep(Duration::from_millis(1200)).await;
+        for _ in 0..queued {
+            drop(listener.accept().await.unwrap());
+        }
+        let (stream, _) = listener.accept().await.unwrap();
+        tokio_tungstenite::accept_async(stream).await.unwrap()
+    });
+    let started = Instant::now();
+    let result = connect_websocket(format!("ws://{}/", delayed.address)).await;
+    assert!(
+        result.is_ok(),
+        "a single reachable path lost its TCP retry: {result:?}"
+    );
+    assert!(started.elapsed() >= Duration::from_secs(1));
+    assert!(started.elapsed() < SOCKET_CONNECT_TIMEOUT);
+    drop(result);
+    drop(server.await.unwrap());
 }
