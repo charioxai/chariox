@@ -9,7 +9,7 @@ import { directLease, egressBytes, exactPatchLimit } from './kernel-browser-disp
 import { nativeDamageTiles } from './kernel-browser-tiles.mjs';
 import { MotionEncoder } from './kernel-browser-motion.mjs';
 import { NativeRefiner } from './kernel-browser-refiner.mjs';
-import { identicalToDelivered, nativeCreditEmpty, nativeRegionBaseCurrent, nativeRegionPending } from './kernel-browser-native-credit.mjs';
+import { identicalToDelivered, nativeCreditEmpty, nativeRegionBaseCurrent, nativeRegionPending, nativeRevisionCurrent } from './kernel-browser-native-credit.mjs';
 import { DisplayCapture } from './kernel-browser-display-capture.mjs';
 import { DisplayDocumentPending } from './kernel-browser-display-document.mjs';
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
@@ -171,8 +171,8 @@ export async function displayCredit(host, stream, command, signal) {
     }else if(native){
       if(!await host.displayDocuments.validate(tab)){compositor?.rejected?.('stale_document');return false;}
     }else await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
-    return !compositor?.closed&&compositor?.regionRevision===regionRevision&&(source.motion || ((host.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision))));
-  },()=>(region?region.isAlive()&&stream.regionWindow.isCurrent():!native||host.displayDocuments.current(tab))&&!compositor?.closed&&compositor?.regionRevision===regionRevision&&host.protection===capturePolicy&&(source.motion||((host.inputEpochs.get(tab.tab_id)??0)===epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&(source.native_revision===undefined||source.native_revision===stream.encoder.nativeRevision)))));
+    return !compositor?.closed&&compositor?.regionRevision===regionRevision&&(source.motion || ((host.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&nativeRevisionCurrent(source,stream.encoder))));
+  },()=>(region?region.isAlive()&&stream.regionWindow.isCurrent():!native||host.displayDocuments.current(tab))&&!compositor?.closed&&compositor?.regionRevision===regionRevision&&host.protection===capturePolicy&&(source.motion||((host.inputEpochs.get(tab.tab_id)??0)===epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&nativeRevisionCurrent(source,stream.encoder)))));
   if(frame)host.timing.event?.('frame_out',{at:source.captured_ms,source_kind:{browser_chrome:1,region:2,browser_auxiliary:3,visible_page:4,browser_window:5}[stream.regionTarget?.kind]??0,width:stream.css_width*stream.device_scale_factor,height:stream.css_height*stream.device_scale_factor,sequence:frame.sequence,kind:frameKinds[frame.kind]??0,input_triggered:source.input_triggered?1:0,input_epoch:epoch,
     damage_ready_ms:source.raw?.damage_ready_ms,input_wake_ms:source.raw?.input_wake_ms,published_ms:source.published_ms,encode_offered_ms:Number.isFinite(source.offeredAt)?performance.timeOrigin+source.offeredAt:undefined,encode_started_ms:source.encode_started_ms,encoded_ms:source.encoded_ms,native_serial:source.raw?.serial,get payload_bytes(){return egressBytes(frame,stream.relay_binary)}});
   if(frame){stream.compositorMasks=JSON.stringify(source.raw?.[displayMaskRegions]??[]);stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;if(stream.exact&&source.raw?.nativeCommit){source.raw.nativeCommit(stream.encoder.nativeSession,!source.moves);stream.compositorCommittedSerial=stream.compositorSerial;}}
