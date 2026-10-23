@@ -32,3 +32,13 @@ test("MP-08/MP-09: provider output for an unknown prompt still opens a live turn
   assert.deepEqual([...state.turns.keys()], ["turn-1"])
   assert.deepEqual([...state.entries.values()].map(entry => entry.text), ["steer me"])
 })
+test("MP-08/MP-09: a status record without a prompt opens no turn, so a steering echo still joins the running one", () => {
+  const state = empty()
+  applyOutputRecords(state, [{ kind: "provider_status", agent_id: "agent", timestamp_ms: 9, bytes: bytes("external:codex") }])
+  assert.equal(state.turns.size, 0)
+  reconcileSnapshot(state, snapshot({}, false))
+  applyOutputRecords(state, [{ kind: "provider_status", agent_id: "agent", timestamp_ms: 9, bytes: bytes("external:codex") },
+    { kind: "prompt_echo", agent_id: "agent", prompt_id: "steer-1", merge_key: "steering-prompt:steer-1", timestamp_ms: 10, bytes: bytes("steer me\n") }])
+  assert.deepEqual([...state.turns.keys()], ["turn-1"])
+  assert.deepEqual([...state.entries.values()].map(entry => entry.turnId), ["turn-1"])
+})

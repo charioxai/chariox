@@ -32,10 +32,11 @@ function steeredTurn(turns: Map<string, TerminalTurnState>, agentId: string): Te
 export function applyOutputRecords(state: LiveState, records: Array<Record<string, unknown>>) {
   for (const record of records) {
     const role = roles[record.kind as keyof typeof roles]
-    if (!role || !Array.isArray(record.bytes) || typeof record.agent_id !== "string") continue
+    // Session-level records such as provider status carry no prompt, so they belong to no turn.
+    if (!role || !Array.isArray(record.bytes) || typeof record.agent_id !== "string" || typeof record.prompt_id !== "string") continue
     const mergeKey = typeof record.merge_key === "string" ? record.merge_key : undefined
     const steering = mergeKey?.startsWith(STEERING_PROMPT_MERGE_KEY_PREFIX) === true
-    const echoedPromptId = typeof record.prompt_id === "string" ? record.prompt_id : "untracked"
+    const echoedPromptId = record.prompt_id
     const steered = steering ? steeredTurn(state.turns, record.agent_id) : undefined
     const promptId = steered?.kernelPromptId ?? echoedPromptId
     const turn = steered ?? [...state.turns.values()].find(turn => turn.kernelPromptId === promptId) ?? {
