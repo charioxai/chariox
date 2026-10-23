@@ -948,3 +948,16 @@ test('MP-08/MP-10/MP-11: a reset preserves native-focus typing without relaxing 
   stream.fallback = false; tab.document_id = 'next';
   await assert.rejects(resolve(2, { kind: 'key', key: 'a' }), /stale mirror input document/);
 });
+
+// browserperf r2: a live resize that lands while a packet is observed answers that credit with a reset at the new
+// size; an error there retired the viewer's mirror and showed "Loading page…" for the whole drag.
+test('MP-08/MP-10 a layout change during an observation answers the same credit with a reset', async () => {
+  const mirror = new Mirror2({ host: { pageSize, scales: new Map() } });
+  let builds = 0;
+  mirror.packet = async () => { builds++; if (builds === 1) throw new Error('MP-11: mirror layout changed during observation'); return 'reset at the new size'; };
+  const stream = { chain: Promise.resolve(), hurry: 0 };
+  assert.equal(await mirror.next(stream, { subscription_id: 's', after_sequence: 4, wait_ms: 0 }, 'scope'), 'reset at the new size');
+  assert.equal(builds, 2);
+  mirror.packet = async () => { throw new Error('MP-11: stale mirror protection policy or subscription'); };
+  await assert.rejects(mirror.next(stream, { subscription_id: 's', after_sequence: 5, wait_ms: 0 }, 'scope'), /stale mirror protection/);
+});
