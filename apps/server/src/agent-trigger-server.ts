@@ -7,6 +7,7 @@ import type { ServerResponse } from "node:http"
 import { AgentTriggerClient } from "./agent-trigger-client.js"
 import { installRawBodyParsers } from "./publication-raw-body-parsers.js"
 import { agentTriggerPage, agentTriggerErrorPage } from "./agent-trigger-page.js"
+import { foreignRequestReason } from "./agent-trigger-origin-guard.js"
 
 export function loopbackHost(value: string): string {
   if (value !== "127.0.0.1" && value !== "::1") throw Error("agent HTTP triggers bind to loopback only")
@@ -98,6 +99,12 @@ export async function buildAgentTriggerServer(client: Pick<AgentTriggerClient, "
     if (String(request.headers.accept).includes("text/html")) return reply.code(303).header("Location", `${base}#firing-${encodeURIComponent(result.prompt_id)}`).send()
     return reply.code(202).send({ firing_id: result.prompt_id, prompt_id: result.prompt_id, outcome: result.outcome, status_url: base })
   }
+  app.addHook("onRequest", async (request, reply) => {
+    const reason = foreignRequestReason(request, base)
+    if (!reason) return
+    const refusal = failure(request, reply, 403, reason)
+    return refusal === reply ? reply : reply.send(refusal)
+  })
   app.get(base + "health", async () => ({ ingress_id: ingress }))
   app.get(base + "assets/*", async (request, reply) => {
     const name = (request.params as { "*": string })["*"]

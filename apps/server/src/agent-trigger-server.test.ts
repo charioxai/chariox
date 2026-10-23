@@ -72,3 +72,29 @@ test("MP-08/MP-10/MP-11: offline, disabled, payload and rate limits never enqueu
     assert.equal(active.invocations.length, 3)
   } finally { await active.app.close() }
 })
+test("MP-08/MP-10/MP-11: other websites cannot read or invoke the local page, the page itself still works", async () => {
+  const f = await fixture()
+  const local = { host: "127.0.0.1:41000" }
+  const statuses = async (requests: { method: "GET" | "POST"; url: string; payload?: { prompt: string }; headers: Record<string, string> }[]) =>
+    Promise.all(requests.map(async request => (await f.app.inject(request)).statusCode))
+  try {
+    assert.deepEqual(await statuses([
+      { method: "POST", url: "/local-test/", payload: { prompt: "rebound" }, headers: { host: "attacker.example:41000" } },
+      { method: "GET", url: "/local-test/history", headers: { host: "attacker.example" } },
+      { method: "POST", url: "/local-test/", payload: { prompt: "form" }, headers: { ...local, origin: "https://attacker.example" } },
+      { method: "POST", url: "/local-test/", payload: { prompt: "sandboxed" }, headers: { ...local, origin: "null" } },
+      { method: "GET", url: "/local-test/history", headers: { ...local, origin: "https://attacker.example", "sec-fetch-site": "cross-site", "sec-fetch-mode": "cors" } },
+      { method: "GET", url: "/local-test/?prompt=link", headers: { ...local, "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate" } },
+      { method: "POST", url: "/local-test/", payload: { prompt: "image" }, headers: { ...local, "sec-fetch-site": "same-site" } },
+    ]), [403, 403, 403, 403, 403, 403, 403])
+    assert.equal(f.invocations.length, 0)
+    assert.deepEqual(await statuses([
+      { method: "GET", url: "/local-test/", headers: { ...local, "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", accept: "text/html" } },
+      { method: "GET", url: "/local-test/history", headers: { ...local, origin: "http://127.0.0.1:41000", "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors" } },
+      { method: "POST", url: "/local-test/", payload: { prompt: "page" }, headers: { ...local, origin: "http://127.0.0.1:41000", "sec-fetch-site": "same-origin" } },
+      { method: "GET", url: "/local-test/?prompt=typed", headers: { ...local, "sec-fetch-site": "none", "sec-fetch-mode": "navigate", accept: "application/json" } },
+      { method: "POST", url: "/local-test/", payload: { prompt: "curl" }, headers: { host: "[::1]:41000" } },
+    ]), [200, 200, 202, 202, 202])
+    assert.equal(f.invocations.length, 3)
+  } finally { await f.app.close() }
+})
