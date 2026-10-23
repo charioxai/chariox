@@ -1,6 +1,6 @@
 //! One terminal's state: its PTY handle, screen, output and driver.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 
@@ -21,6 +21,9 @@ use super::types::{
 use super::types::{RoomTerminalEventKind, RoomTerminalWatch};
 use crate::pty::PtyManager;
 
+/// Longest a shell may take to reach its first prompt and still count as starting.
+const FIRST_PROMPT_LIMIT: Duration = Duration::from_secs(30);
+
 pub(super) struct Terminal {
     pub record: TerminalRecord,
     /// The PTY key while the shell runs.
@@ -38,6 +41,9 @@ pub(super) struct Terminal {
     /// The shell reports finish marks (including its first prompt): sampling
     /// must not race commands that keep the shell in the foreground.
     pub mark_tracking: bool,
+    /// Until this instant a shell that reports marks is still running its login
+    /// files, which are not anyone's command; its first prompt mark clears it.
+    pub first_prompt_deadline: Option<Instant>,
     /// A command line the shell reported started and not yet finished.
     pub command_in_flight: bool,
     pub waiting_reported: bool,
@@ -65,9 +71,16 @@ pub(super) struct ProgramEnd {
 }
 
 impl Terminal {
-    pub(super) fn running(record: TerminalRecord, run_id: String, shell_pid: Option<i32>) -> Self {
+    pub(super) fn running(
+        record: TerminalRecord,
+        run_id: String,
+        shell_pid: Option<i32>,
+        reports_first_prompt: bool,
+    ) -> Self {
         let screen = Screen::new(record.rows, record.cols);
         let mut terminal = Self::new(record, Some(run_id), shell_pid, screen);
+        terminal.first_prompt_deadline =
+            reports_first_prompt.then(|| Instant::now() + FIRST_PROMPT_LIMIT);
         if terminal.runs_a_command() {
             terminal.driver = DriverTracker::owned_by(terminal.record.opened_by.clone());
         }
@@ -105,6 +118,7 @@ impl Terminal {
             program_running: false,
             marks: MarkScanner::default(),
             mark_tracking: false,
+            first_prompt_deadline: None,
             command_in_flight: false,
             waiting_reported: false,
             dropped_input_bytes: 0,
@@ -147,6 +161,7 @@ impl Terminal {
             }
             ShellMark::CommandFinished { exit_code } => {
                 self.mark_tracking = true;
+                self.first_prompt_deadline = None;
                 // The first prompt reports before any command has run.
                 if !self.command_in_flight && !self.program_running {
                     return Fired::new();
@@ -201,8 +216,15 @@ impl Terminal {
         }
     }
 
+    /// The shell is still running its login files. Input typed now waits in the
+    /// terminal for the first prompt, and nobody drives the files themselves.
+    pub(super) fn starting(&self, now: Instant) -> bool {
+        self.first_prompt_deadline
+            .is_some_and(|deadline| now < deadline)
+    }
+
     pub(super) fn current_driver(&mut self, pty: &PtyManager) -> RoomTerminalDriver {
-        let at_prompt = !self.is_busy(pty);
+        let at_prompt = !self.is_busy(pty) || self.starting(Instant::now());
         self.driver.observe(at_prompt)
     }
 

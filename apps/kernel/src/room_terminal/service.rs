@@ -192,8 +192,11 @@ impl RoomTerminalService {
             .filter(|title| !title.trim().is_empty())
             .unwrap_or_else(|| next_title(&in_room));
         let mut env = BTreeMap::from([("TERM".to_string(), "xterm-256color".to_string())]);
+        let mut reports_first_prompt = false;
         if spec.command.is_none() {
-            env.extend(self.inner.shell_integration.environment(&program));
+            let marks = self.inner.shell_integration.environment(&program);
+            reports_first_prompt = !marks.is_empty();
+            env.extend(marks);
         }
         state.pty.spawn_interactive(PtySpawnRequest {
             process_key: run_id.clone(),
@@ -235,7 +238,7 @@ impl RoomTerminalService {
             let _ = state.pty.remove_process(&run_id);
             return Err(error);
         }
-        let terminal = Terminal::running(record, run_id, shell_pid);
+        let terminal = Terminal::running(record, run_id, shell_pid, reports_first_prompt);
         let summary = terminal.summary(RoomTerminalDriver::Free);
         state.terminals.insert(terminal_id, terminal);
         drop(state);
@@ -297,8 +300,8 @@ impl RoomTerminalService {
                 let Some(run_id) = terminal.run_id.clone() else {
                     return Err(ended_error(terminal));
                 };
-                let shell_foreground = !terminal.is_busy(pty);
                 let now = Instant::now();
+                let shell_foreground = !terminal.is_busy(pty) || terminal.starting(now);
                 match terminal.driver.admit(actor, shell_foreground, now) {
                     Admission::Admit => {
                         // Only a line submitted at the prompt starts a command.

@@ -138,6 +138,62 @@ async fn opens_the_login_shell_in_the_project_folder() {
     service.end_session("room-1");
 }
 
+/// Restores `HOME` when the test ends, whichever way it ends.
+struct RestoreHome(Option<std::ffi::OsString>);
+
+impl Drop for RestoreHome {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+}
+
+#[test]
+fn an_agent_may_type_while_the_login_files_still_run() {
+    let _environment = crate::env_lock::lock();
+    let root = TempDir::new();
+    let home = root.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let running = home.join("profile-running");
+    std::fs::write(
+        home.join(".bash_profile"),
+        format!("sleep 0.3\ntouch '{}'\nsleep 2\n", running.display()),
+    )
+    .unwrap();
+    let _home = RestoreHome(std::env::var_os("HOME"));
+    std::env::set_var("HOME", &home);
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let service = service(root.path());
+            let id = open(&service, root.path()).terminal_id;
+            until("a login file to hold the foreground", || async {
+                running.exists()
+            })
+            .await;
+            // The `touch` has returned and `sleep 2` is starting: a program the
+            // login files started holds the foreground, and nobody ran it.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(service.list("room-1")[0].driver, RoomTerminalDriver::Free);
+            let sent = type_as(&service, &id, &agent("a"), "echo STARTED-$((6*7))\r").await;
+            assert!(sent.accepted, "input refused: {:?}", sent.refusal);
+            until("the line to run once the prompt appears", || async {
+                screen_has(&service, &id, "STARTED-42").await
+            })
+            .await;
+            until("the terminal to be free again", || async {
+                service.pump_once();
+                service.list("room-1")[0].driver == RoomTerminalDriver::Free
+            })
+            .await;
+            service.end_session("room-1");
+        });
+}
+
 #[tokio::test]
 async fn one_driver_rule_protects_a_foreground_program() {
     let root = TempDir::new();
@@ -549,7 +605,8 @@ async fn a_wait_that_times_out_loses_nothing() {
     let events = Arc::new(FakeEvents::default());
     let service = service_with_events(root.path(), events.clone());
     let id = open(&service, root.path()).terminal_id;
-    type_as(&service, &id, &agent("a"), "sleep 4\r").await;
+    let sent = type_as(&service, &id, &agent("a"), "sleep 4\r").await;
+    assert!(sent.accepted, "input refused: {:?}", sent.refusal);
     until("sleep in the foreground", || async {
         service.pump_once();
         service.list("room-1")[0].driver
