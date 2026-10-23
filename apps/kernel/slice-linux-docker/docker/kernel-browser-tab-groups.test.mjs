@@ -32,7 +32,7 @@ test("MP-08 one native group per agent label; unchanged groups are not re-sent",
   await groups.load("/k/tab-groups-extension");
   assert.equal(await groups.sync([{ label: "Mara", target_ids: ["t2", "t1"] }]), true);
   assert.equal(await groups.sync([{ label: "Mara", target_ids: ["t1", "t2"] }]), false, "same groups, no evaluate");
-  const evaluated = sent.filter(call => call.method === "Runtime.evaluate"&&call.params.expression!=='chrome.runtime.reload()'&&call.params.expression!=='charioxTabs.revision === 4').map(call => call.params.expression);
+  const evaluated = sent.filter(call => call.method === "Runtime.evaluate"&&call.params.expression!=='chrome.runtime.reload()'&&call.params.expression!=='charioxTabs.revision === 5').map(call => call.params.expression);
   assert.equal(evaluated.length, 1);
   assert.match(evaluated[0], /^charioxTabs\.sync\(\[\{"target_ids":\["t1","t2"\],"title":"Mara","color":"[a-z]+"\}\]\)$/);
   await assert.rejects(new ChromeTabGroups({ send: async () => ({ id: "other" }) }).load("/k"), /unexpected kernel tab-groups extension id/);
@@ -46,7 +46,7 @@ test("MP-08/MP-11 a removed tab-groups extension is loaded again; until then it 
     if (method === "Target.getTargets") return { targetInfos: installed ? [{ type: "service_worker", targetId: "sw-"+worker, url: `chrome-extension://${TAB_GROUPS_EXTENSION_ID}/sw.js` }] : [] };
     if (method === "Target.attachToTarget") return { sessionId: "s" };
     if (method === "Extensions.uninstall") { uninstalls++; if (!installed) throw new Error("not installed"); installed = false; return {}; }
-    if (method === "Runtime.evaluate") {if(params.expression==='charioxTabs.revision === 4')return{result:{value:true}};if(params.expression==='chrome.runtime.reload()')worker++; if (!installed) throw new Error("No session with given id"); return { result: { value: "target-b" } }; }
+    if (method === "Runtime.evaluate") {if(params.expression==='charioxTabs.revision === 5')return{result:{value:true}};if(params.expression==='chrome.runtime.reload()')worker++; if (!installed) throw new Error("No session with given id"); return { result: { value: "target-b" } }; }
     return {};
   } };
   const groups = new ChromeTabGroups(connection);
@@ -159,7 +159,7 @@ test('loading the component replaces a cached older worker',async()=>{
   if(method==='Extensions.loadUnpacked'){if(!installed)current='new-target';installed=true;return{id:TAB_GROUPS_EXTENSION_ID}}
   if(method==='Target.getTargets')return{targetInfos:[{type:'service_worker',targetId:'worker-'+worker,url:`chrome-extension://${TAB_GROUPS_EXTENSION_ID}/sw.js`}]};
   if(method==='Target.attachToTarget')return{sessionId:'session'};
-  if(method==='Runtime.evaluate'){if(params.expression==='charioxTabs.revision === 4')return{result:{value:current==='new-target'}};if(params.expression==='chrome.runtime.reload()'){current='new-target';worker++}return{result:{value:current}};}return{};
+  if(method==='Runtime.evaluate'){if(params.expression==='charioxTabs.revision === 5')return{result:{value:current==='new-target'}};if(params.expression==='chrome.runtime.reload()'){current='new-target';worker++}return{result:{value:current}};}return{};
  }};
  const groups=new ChromeTabGroups(connection);await groups.load('/owned/component');assert.equal(await groups.active(),'new-target');
 });
@@ -203,5 +203,14 @@ test('MP-08/MP-10/MP-11 favicon cache failure never retires native input',async(
   const chrome={runtime:{getPlatformInfo(){},getURL:p=>'chrome-extension://'+TAB_GROUPS_EXTENSION_ID+p},debugger:{getTargets:async()=>[{id:'target',tabId:1}]},windows:{},tabs:{get:async()=>({id:1,url:'https://example.com',favIconUrl:'https://example.com/icon'}),onCreated:{addListener(){}},onAttached:{addListener(){}}}};
   new Function('chrome','setInterval','setTimeout','globalThis','fetch',source)(chrome,()=>{},queueMicrotask,state,async()=>{throw Error('cache temporarily unavailable')});
   assert.equal(await state.charioxTabs.favicon('target'),null);
+ }finally{await rm(root,{recursive:true,force:true})}
+});
+
+// MP-08/MP-10: Chrome headless omits favIconUrl and the cache response MIME header.
+test('MP-08/MP-10 real headless favicon cache does not require metadata headers',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'chariox-headless-icon-'));
+ try{const source=await readFile(path.join(await writeTabGroupsExtension(root),'sw.js'),'utf8'),state={};const {encodePng}=await import('./kernel-browser-pixels.mjs');const bytes=Buffer.from(encodePng(32,32,Buffer.alloc(32*32*4,255)),'base64');
+ const chrome={runtime:{getPlatformInfo(){},getURL:p=>'chrome-extension://'+TAB_GROUPS_EXTENSION_ID+p},debugger:{getTargets:async()=>[{id:'target',tabId:1}]},windows:{},tabs:{get:async()=>({id:1,url:'https://www.wikipedia.org/'}),onCreated:{addListener(){}},onAttached:{addListener(){}}}};
+ new Function('chrome','setInterval','setTimeout','globalThis','fetch',source)(chrome,()=>{},queueMicrotask,state,async()=>new Response(bytes));assert.equal(await state.charioxTabs.favicon('target'),bytes.toString('base64'));
  }finally{await rm(root,{recursive:true,force:true})}
 });

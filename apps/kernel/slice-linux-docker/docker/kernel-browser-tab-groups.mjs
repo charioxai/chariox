@@ -63,14 +63,14 @@ const favicon = async target => {
     const id = (await targetTabs()).get(target);
     if (id === undefined) return null;
     const tab = await chrome.tabs.get(id);
-    if (!tab.favIconUrl || !/^https?:/.test(tab.url ?? '')) return null;
+    if (!/^https?:/.test(tab.url ?? '')) return null;
     const key = JSON.stringify([tab.url, tab.favIconUrl]);
-    if (icons.get(id)?.key === key) return icons.get(id).value;
+    if (icons.get(id)?.key === key && performance.now() - icons.get(id).checked < 5000) return icons.get(id).value;
     // Chrome supplies a raster from its own cache; no client fetch of a site URL.
     const url = new URL(chrome.runtime.getURL('/_favicon/'));
     url.searchParams.set('pageUrl', tab.url); url.searchParams.set('size', '32');
     const response = await fetch(url, {signal: AbortSignal.timeout(2000)});
-    if (!response.ok || !response.headers.get('content-type')?.startsWith('image/png')) return null;
+    if (!response.ok) return null;
     const reader = response.body.getReader(), chunks = []; let size = 0;
     for (;;) { const part = await reader.read(); if (part.done) break; size += part.value.length; if (size > 16384) { await reader.cancel(); return null; } chunks.push(part.value); }
     const bytes = new Uint8Array(size); let at = 0; for (const chunk of chunks) { bytes.set(chunk, at); at += chunk.length; }
@@ -78,7 +78,7 @@ const favicon = async target => {
     const view = new DataView(bytes.buffer), width = view.getUint32(16), height = view.getUint32(20);
     if (!width || !height || width > 32 || height > 32) return null;
     const value = btoa(String.fromCharCode(...bytes));
-    icons.set(id, {key, value}); while (icons.size > 32) icons.delete(icons.keys().next().value);
+    icons.set(id, {key, value, checked: performance.now()}); while (icons.size > 32) icons.delete(icons.keys().next().value);
     return value;
   } catch {
     // Favicon failures do not retire native input: this is optional presentation.
@@ -86,7 +86,7 @@ const favicon = async target => {
   }
 };
 globalThis.charioxTabs = {
-  revision: 4,
+  revision: 5,
   favicon,
   async keepalive(target) { keepaliveTab = (await targetTabs()).get(target) ?? null; },
   async viewport(target) {
@@ -160,7 +160,7 @@ export class ChromeTabGroups {
       for(let attempt=0;attempt<2;attempt++){
         const {sessionId}=await this.connection.send("Target.attachToTarget",{targetId:worker.targetId,flatten:true});
         await this.nativeState.attach(sessionId);
-        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 4",returnByValue:true},sessionId);
+        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 5",returnByValue:true},sessionId);
         if(result?.value===true){
           if(this.keepaliveTarget)await this.connection.send("Runtime.evaluate",{expression:`charioxTabs.keepalive(${JSON.stringify(this.keepaliveTarget)})`,awaitPromise:true},sessionId);
           this.session=sessionId;return sessionId;
