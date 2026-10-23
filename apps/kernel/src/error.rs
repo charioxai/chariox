@@ -1,5 +1,9 @@
 use thiserror::Error;
+mod actionable_refusals;
+mod provider_profile_refusal;
 mod user_domain_refusal;
+pub(crate) use actionable_refusals::message as actionable_refusal_message;
+pub use provider_profile_refusal::ProviderProfileRefusal;
 pub(crate) use user_domain_refusal::HostFailure;
 pub use user_domain_refusal::UserDomainRefusalReason;
 
@@ -9,6 +13,9 @@ use crate::session::SessionStatus;
 // MP-08 / MP-11: code-based explanations contain no provider/parser values.
 // Keep executor, MCP and final socket/cache projections consistent.
 pub(crate) fn external_request_failure_message(code: &str) -> &'static str {
+    if let Some(message) = actionable_refusal_message(code) {
+        return message;
+    }
     match code {
         "session_not_found" => "session not found; check its name or list available sessions",
         _ => "external request failed; details are available only in the host terminal",
@@ -25,6 +32,8 @@ pub(crate) fn is_session_alias_refusal(code: &str, message: &str) -> bool {
 
 #[derive(Debug, Error)]
 pub enum DaemonError {
+    #[error("{}", external_request_failure_message(.reason.code()))]
+    ProviderProfileRefused { reason: ProviderProfileRefusal },
     #[error("User-domain request refused")]
     UserDomainRefused { reason: UserDomainRefusalReason },
     #[error("invalid daemon configuration for `{field}`: {message}")]
