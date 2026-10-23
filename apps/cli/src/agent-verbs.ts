@@ -6,7 +6,7 @@ import { runKernelsCommand } from "./kernels-command.js"
  * draw the TUI, so they run before the rendering stack loads (its module graph was most of
  * their start-up time).
  */
-export const AGENT_VERB_NAMES = ["access", "kernels", "request", "watch", "files", "guide", "terminal"]
+export const AGENT_VERB_NAMES = ["access", "kernels", "request", "watch", "files", "events", "guide", "terminal"]
 
 export async function runAgentVerb(argv: readonly string[]): Promise<boolean> {
   return (await runAccessCommand([...argv])) || (await runKernelsCommand([...argv]))
