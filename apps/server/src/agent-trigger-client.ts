@@ -72,19 +72,31 @@ export class AgentTriggerClient {
   }
 }
 
-/** The canonical history entry index is shared by prompts, summaries and blob rows. */
+/**
+ * The canonical history entry index is shared by prompts, summaries and blob rows.
+ * The outline summary is the turn's final assistant message, cut at the inline
+ * limit; its events are the provider output at or after the summary's index,
+ * so their blob rows rebuild the full text and earlier output stays as it is.
+ */
 export function agentTriggerHistoryEntries(agentId: string, turns: WireTurn[], blobs: ReadonlyMap<string, Entry[]>): TerminalOutputEntry[] {
   const entries: TerminalOutputEntry[] = []
-    for (const turn of turns) {
-      const rows = new Map<number, Entry>()
-      for (const row of [turn.user_prompt, ...turn.entries, ...turn.blobs.flatMap(b => blobs.get(b.blob_id) ?? []), ...(turn.summary ? [turn.summary] : [])]) rows.set(row.entry_index, row)
-      for (const row of [...rows.values()].sort((a,b) => a.entry_index - b.entry_index)) {
-        if (turn.summary && row.entry.kind === "provider_output" && row.entry_index !== turn.summary.entry_index) continue
-        entries.push({ key: `${row.entry_index}`, role: roles[row.entry.kind] ?? "status", agentId: agentId,
-          turnId: turn.turn_id, createdAtMs: row.entry.timestamp_ms ?? turn.started_at_ms, text: row.entry.text, promptId: turn.prompt_id ?? null,
-          ...(turn.summary?.entry_index === row.entry_index ? { historyTurnSummary: true } : {}) })
-      }
+  for (const turn of turns) {
+    const rows = new Map<number, Entry>()
+    for (const row of [turn.user_prompt, ...turn.entries, ...turn.blobs.flatMap(b => blobs.get(b.blob_id) ?? [])]) rows.set(row.entry_index, row)
+    if (turn.summary) {
+      const first = turn.summary.entry_index
+      const finalOutput = [...rows.values()].filter(row => row.entry.kind === "provider_output" && row.entry_index >= first).sort((a, b) => a.entry_index - b.entry_index)
+      const full = finalOutput.map(row => row.entry.text).join("")
+      for (const row of finalOutput) rows.delete(row.entry_index)
+      const complete = [...full].length === turn.summary.total_chars
+      rows.set(first, complete ? { ...turn.summary, entry: { ...turn.summary.entry, text: full }, fragment_end: turn.summary.total_chars } : turn.summary)
     }
+    for (const row of [...rows.values()].sort((a, b) => a.entry_index - b.entry_index)) {
+      entries.push({ key: `${row.entry_index}`, role: roles[row.entry.kind] ?? "status", agentId: agentId,
+        turnId: turn.turn_id, createdAtMs: row.entry.timestamp_ms ?? turn.started_at_ms, text: row.entry.text, promptId: turn.prompt_id ?? null,
+        ...(turn.summary?.entry_index === row.entry_index ? { historyTurnSummary: true } : {}) })
+    }
+  }
   return entries
 }
 

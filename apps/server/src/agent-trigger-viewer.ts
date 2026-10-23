@@ -17,7 +17,7 @@ function render() {
   const atBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 60
   const scrollTop = output.scrollTop
   output.innerHTML = renderTerminalEntriesByTurn([...entries.values()].sort((a,b) => (a.createdAtMs ?? 0) - (b.createdAtMs ?? 0) || Number(a.key) - Number(b.key)), {
-    turns, expandedEntryKeys: expanded, escapeHtml, renderEntry: entry => renderFreeformTranscriptEntry(entry, { expandedEntryKeys: expanded }),
+    turns, expandedEntryKeys: expanded, turnActions: false, escapeHtml, renderEntry: entry => renderFreeformTranscriptEntry(entry, { expandedEntryKeys: expanded }),
     renderTranscriptHtml,
   })
   output.scrollTop = atBottom ? output.scrollHeight : scrollTop

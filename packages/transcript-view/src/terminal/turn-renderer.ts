@@ -49,6 +49,8 @@ export type TerminalTurnRenderOptions = {
   readonly turns: ReadonlyMap<string, TerminalTurnState>
   readonly expandedEntryKeys?: ReadonlySet<string>
   readonly completedTurnForAgent?: (agentId: string) => TerminalTurnCompletedAction | null
+  /** False on pages that cannot undo or fork a turn: the buttons are omitted. */
+  readonly turnActions?: boolean
   readonly renderEntry: (entry: TerminalOutputEntry) => string
   readonly renderTranscriptHtml: (text: string) => string
   readonly escapeHtml: (value: string) => string
@@ -550,7 +552,7 @@ export function latestAssistantSummaryEntry(entries: TerminalOutputEntry[]): Ter
 export function renderFreeformTurnMeta(
   turn: TerminalTurnState,
   prompt: TerminalOutputEntry | null,
-  options: Pick<TerminalTurnRenderOptions, "completedTurnForAgent" | "escapeHtml" | "formatDateTime" | "turns">,
+  options: Pick<TerminalTurnRenderOptions, "completedTurnForAgent" | "escapeHtml" | "formatDateTime" | "turnActions" | "turns">,
   segmentKey = turn.id,
   expandedOverride?: boolean,
   activitySummary = "",
@@ -573,7 +575,7 @@ export function renderFreeformTurnMeta(
         ${externalMarker ? renderExternalTurnMarker(externalMarker, options.escapeHtml) : ""}
         ${completed ? `<span class="freeform-turn-meta-text">${options.escapeHtml(formatTurnCompletionMetaText(turn))}</span>` : ""}
         ${activitySummary ? `<span class="freeform-turn-meta-text freeform-turn-activity" data-turn-activity>${options.escapeHtml(activitySummary)}</span>` : ""}
-        ${completed ? renderFreeformTurnActions(turn, prompt, options) : ""}
+        ${completed && options.turnActions !== false ? renderFreeformTurnActions(turn, prompt, options) : ""}
       </div>
       ${completed ? renderFreeformTurnChevron(true, expanded ? "Collapse turn" : "Expand turn", options.escapeHtml, expanded) : ""}
     </div>
