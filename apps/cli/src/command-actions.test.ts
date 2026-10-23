@@ -70,6 +70,24 @@ test("/trigger creates, changes, removes and lists the focused agent's triggers"
   assert.match(calls[10] ?? "", /^notice:Triggers\ntrigger-1  every 3s · steer · next .* · 2 fired$/)
 })
 
+test("/trigger list retains unconfirmed firings after their once trigger retired", async () => {
+  const notices: string[] = []
+  const delivery = { prompt_id: "firing-1", trigger_id: "retired-trigger", agent_id: "agent-1", origin: "schedule", prompt: "Review the restart invariant", busy_policy: "steer" as const, state: "not_confirmed" as const, recorded_at_ms: 1 }
+  const session = makeSession({ agent_triggers: [], trigger_deliveries: [
+    delivery, { ...delivery, prompt_id: "already-resent", state: "resent" },
+    { ...delivery, prompt_id: "other-agent", agent_id: "agent-2" },
+  ] })
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    sessionState: () => session, supportsAgentTriggers: async () => true,
+    appendNotice: (message: string) => notices.push(message),
+  }))
+  const command = parseSlashCommand("/trigger list")!
+  assert.equal(command.kind, "trigger")
+  await handlers.handleTriggerCommand(command as Extract<typeof command, { kind: "trigger" }>)
+  assert.match(notices.join("\n"), /Schedule.*Not confirmed.*steer.*\/trigger resend firing-1/)
+  assert.doesNotMatch(notices.join("\n"), /already-resent|other-agent|No triggers/)
+})
+
 test("protocol-567 kernels retain /wait aliases and reject trigger-only commands", async () => {
   const calls: Record<string, unknown>[] = []
   const errors: string[] = []

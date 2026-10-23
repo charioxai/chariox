@@ -293,4 +293,5 @@ pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
     "owner_managed_context_transfer_v1",
     "agent_triggers_v1",
     "agent_trigger_http_v1",
+    "agent_trigger_resend_v1",
 ];

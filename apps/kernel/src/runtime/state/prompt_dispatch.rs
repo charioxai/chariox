@@ -14,13 +14,13 @@ pub(super) enum TriggerSteerDelivery {
     Unconfirmed,
 }
 
-struct RemoteQueuedPromptSteerReservation {
+pub(super) struct RemoteQueuedPromptSteerReservation {
     prompt: crate::session::PromptQueueItem,
     id: u64,
 }
 
 impl RemoteQueuedPromptSteerReservation {
-    fn new(prompt: crate::session::PromptQueueItem, id: u64) -> Self {
+    pub(super) fn new(prompt: crate::session::PromptQueueItem, id: u64) -> Self {
         Self { prompt, id }
     }
 
@@ -967,7 +967,7 @@ impl KernelRuntimeState {
         target_agent_id: &str,
         attachment_id: &str,
         prompt_id: &str,
-        settle_firing: impl FnOnce(TriggerSteerDelivery),
+        settle_firing: impl FnOnce(TriggerSteerDelivery) -> Result<(), DaemonError>,
     ) -> Result<TriggerSteerDelivery, DaemonError> {
         let owned = &self.owned;
         if owned
@@ -1026,7 +1026,7 @@ impl KernelRuntimeState {
             };
             // The trigger is settled while the hold still stands, so a stop
             // before the queue removal cannot leave it due without a firing.
-            settle_firing(delivery);
+            settle_firing(delivery)?;
             owned.finish_local_queued_prompt_steer(&prepared, recorded_sequence)?;
             Ok(delivery)
         }

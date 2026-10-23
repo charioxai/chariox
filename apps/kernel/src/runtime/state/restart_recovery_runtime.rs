@@ -68,7 +68,7 @@ impl KernelRuntimeState {
     pub(crate) fn spawn_durable_restart_recovery(&self) -> DurableRestartRecoveryTask {
         // A steer that was being handed to the provider when the kernel stopped
         // may already be in its turn: drop it before recovery can promote it.
-        self.owned.drop_restart_held_local_steers();
+        self.owned.reconcile_inactive_local_steers();
         // Recovery belongs only to work that survived this kernel restart.
         // Keep that identity set fixed across the retry window so prompts
         // accepted after startup can never be mistaken for orphaned work.

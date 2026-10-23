@@ -14,6 +14,7 @@ export type TriggerCommandAction =
     }
   | { type: "update"; triggerId: string; change: "on" | "off" | "queue" | "steer" }
   | { type: "remove"; triggerId: string }
+  | { type: "resend"; promptId: string }
 
 export type ParsedSlashCommand =
   | { kind: "exit"; raw: string }
@@ -428,7 +429,7 @@ export function sharedShellCommandForSlashCommand(input: string): string | null 
 }
 
 export const TRIGGER_USAGE =
-  "usage: /trigger [list] | every|in <minutes> [--steer|--queue] <prompt> | on|off|queue|steer <id> | remove <id>"
+  "usage: /trigger [list] | every|in <minutes> [--steer|--queue] <prompt> | on|off|queue|steer <id> | remove <id> | resend <prompt-id>"
 
 function parseTriggerCommand(command: string): Extract<ParsedSlashCommand, { kind: "trigger" }> {
   const [verb = "list", ...rest] = command.slice("/trigger".length).trim().split(/\s+/).filter(Boolean)
@@ -440,6 +441,9 @@ function parseTriggerCommand(command: string): Extract<ParsedSlashCommand, { kin
   }
   const triggerId = rest[0]
   if (triggerId && rest.length === 1) {
+    if (verb === "resend") {
+      return { kind: "trigger", raw: command, action: { type: "resend", promptId: triggerId }, error: null }
+    }
     if (verb === "on" || verb === "off" || verb === "queue" || verb === "steer") {
       return { kind: "trigger", raw: command, action: { type: "update", triggerId, change: verb }, error: null }
     }

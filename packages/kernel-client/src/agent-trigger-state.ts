@@ -1,4 +1,4 @@
-import type { AgentTrigger, AgentTriggerBusyPolicy, RuntimeSession } from "./kernel-types-session.js"
+import type { AgentTrigger, AgentTriggerBusyPolicy, RuntimeSession, TriggerDelivery } from "./kernel-types-session.js"
 
 /** One active-trigger row for an agent pane stripe (TUI footer, web pane). */
 export type AgentTriggerStripItem = {
@@ -51,4 +51,23 @@ function formatInterval(seconds: number): string {
 
 export function agentTriggerLocalUrl(trigger: Pick<AgentTrigger, "source">): string | null {
   return trigger.source.kind === "http" ? `http://127.0.0.1:${trigger.source.port}/${encodeURIComponent(trigger.source.ingress_id)}/` : null
+}
+
+/** Unconfirmed firings outlive their one-shot trigger and remain actionable. */
+export function unconfirmedTriggerDeliveriesForAgent(
+  session: Pick<RuntimeSession, "trigger_deliveries"> | null | undefined,
+  agentId: string | null | undefined,
+): TriggerDelivery[] {
+  if (!agentId) return []
+  return (session?.trigger_deliveries ?? []).filter(delivery => delivery.agent_id === agentId && delivery.state === "not_confirmed")
+}
+
+export function triggerPromptOriginLabel(origin: string | null | undefined): string | null {
+  switch (origin) {
+    case "schedule": return "Schedule"
+    case "http": return "HTTP"
+    case "notification": return "Notification"
+    case "app_event": return "App event"
+    default: return null
+  }
 }

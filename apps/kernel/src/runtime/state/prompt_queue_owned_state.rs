@@ -257,6 +257,21 @@ impl KernelRuntimeOwnedState {
             queued_prompts,
         )?;
         self.persist_prompt_session_state(&session, agent_id)?;
+        for prompt in session.active_prompt_for_agent(agent_id).into_iter().chain(
+            session
+                .queued_prompts_for_agent(agent_id)
+                .into_iter()
+                .flatten(),
+        ) {
+            if let Some(original_prompt_id) = prompt.trigger_resend_of() {
+                self.session_store.write().move_trigger_delivery(
+                    session_id,
+                    original_prompt_id,
+                    crate::session::TriggerDeliveryState::NotConfirmed,
+                    crate::session::TriggerDeliveryState::Resent,
+                )?;
+            }
+        }
         activity_mutation.record();
         self.withdraw_stale_agent_interactions();
         self.provider_process_projection.invalidate();
@@ -1315,32 +1330,33 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         trigger_id: Option<&str>,
         unconfirmed: Option<crate::session::TriggerDelivery>,
-    ) {
-        // The store guard must be gone before persisting, which reads the store.
-        let marked = self.session_store.write().settle_steered_firing(
-            session_id,
-            trigger_id,
-            crate::session::unix_epoch_ms(),
-            unconfirmed,
-        );
-        let settled = marked
-            .and_then(|_| self.persist_agent_trigger_session(session_id, "agent_trigger_fired"));
-        if let Err(error) = settled {
-            crate::logging::error_with_fields(
-                "durable_state.recovery",
-                "failed to settle the trigger of a steered firing",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "trigger_id": trigger_id,
-                    "error": error.to_string(),
-                }),
-            );
+    ) -> Result<(), DaemonError> {
+        let mut sessions = self.session_store.write();
+        let before = sessions.get_session(session_id)?;
+        let settled = (|| {
+            sessions.settle_steered_firing(
+                session_id,
+                trigger_id,
+                crate::session::unix_epoch_ms(),
+                unconfirmed,
+            )?;
+            let session = sessions.get_session(session_id)?.durable_runtime_snapshot();
+            self.durable_state_store.append_event(
+                "session.updated",
+                Some(session_id.to_string()),
+                serde_json::json!({"session": session, "reason": "agent_trigger_fired"}),
+            )?;
+            Ok(())
+        })();
+        if settled.is_err() {
+            sessions.restore_session(before);
         }
+        settled
     }
 
-    /// A held firing found after a restart may already sit in the provider's
-    /// turn, so it leaves the queue without a replay.
-    pub(super) fn drop_restart_held_local_steers(&self) -> Vec<(String, String, String)> {
+    /// Once its transient operation ends, a submitted steer may already sit
+    /// in the provider's turn. Reconcile its durable hold without replaying it.
+    pub(super) fn reconcile_inactive_local_steers(&self) -> Vec<(String, String, String)> {
         let mut dropped = Vec::new();
         for session in self.session_store.list_all_sessions() {
             for (agent_id, prompt_state) in session.prompt_states() {
@@ -1348,15 +1364,29 @@ impl KernelRuntimeOwnedState {
                     if !prompt.local_steer_submitted() {
                         continue;
                     }
+                    let Some(reservation) = prompt.reserve_remote_steer() else {
+                        continue;
+                    };
+                    let _claim = super::prompt_dispatch::RemoteQueuedPromptSteerReservation::new(
+                        prompt.clone(),
+                        reservation,
+                    );
+                    // The original operation could have finished between the
+                    // session snapshot and this claim. Never revive its row.
+                    let (_, current_queue) =
+                        self.prompt_state_owner.state_parts(&session, agent_id);
+                    let Some(prompt) = current_queue.iter().find(|current| {
+                        current.id() == prompt.id()
+                            && current.local_steer_submitted()
+                            && current.remote_steer_reservation_matches(reservation)
+                    }) else {
+                        continue;
+                    };
                     if let Some(trigger_id) = prompt.agent_trigger_id() {
-                        let busy_policy = session
-                            .agent_triggers()
-                            .iter()
-                            .find(|trigger| trigger.id() == trigger_id)
-                            .map_or(crate::session::AgentTriggerBusyPolicy::Queue, |trigger| {
-                                trigger.busy_policy()
-                            });
-                        self.settle_steered_firing(
+                        // This hold was created by Steer, even if its trigger
+                        // has since retired or its policy has been changed.
+                        let busy_policy = crate::session::AgentTriggerBusyPolicy::Steer;
+                        if let Err(error) = self.settle_steered_firing(
                             session.id(),
                             Some(trigger_id),
                             Some(crate::session::TriggerDelivery::not_confirmed(
@@ -1368,7 +1398,18 @@ impl KernelRuntimeOwnedState {
                                 busy_policy,
                                 crate::session::unix_epoch_ms(),
                             )),
-                        );
+                        ) {
+                            crate::logging::error_with_fields(
+                                "durable_state.recovery",
+                                "failed to settle a submitted steer; retaining its delivery hold",
+                                serde_json::json!({
+                                    "session_id": session.id(),
+                                    "prompt_id": prompt.id(),
+                                    "error": error.to_string(),
+                                }),
+                            );
+                            continue;
+                        }
                     }
                     let Some(removed) = self.prompt_state_owner.remove_queued_prompt(
                         &session,
@@ -1388,7 +1429,7 @@ impl KernelRuntimeOwnedState {
                         Ok(()) => {
                             crate::logging::warn_with_fields(
                                 "durable_state.recovery",
-                                "dropped a queued steer whose delivery was interrupted by a restart; it may already have reached the agent",
+                                "settled a held steer without replaying it; it may already have reached the agent",
                                 serde_json::json!({
                                     "session_id": session.id(),
                                     "agent_id": agent_id,
@@ -1403,7 +1444,7 @@ impl KernelRuntimeOwnedState {
                         }
                         Err(error) => crate::logging::error_with_fields(
                             "durable_state.recovery",
-                            "failed to persist the removal of a restart-held queued steer",
+                            "failed to persist the removal of a held queued steer",
                             serde_json::json!({
                                 "session_id": session.id(),
                                 "agent_id": agent_id,
