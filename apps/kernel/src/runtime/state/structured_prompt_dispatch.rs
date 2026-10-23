@@ -176,11 +176,12 @@ impl KernelRuntimeState {
             match receipt.await {
                 Ok(crate::provider::ProviderPromptSubmitReceipt::Accepted) => {}
                 Ok(crate::provider::ProviderPromptSubmitReceipt::Rejected) => {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "steer queued prompt",
-                        message:
-                            "provider rejected the queued prompt steer; the message remains queued"
+                    return Err(DaemonError::ProviderPromptSteerRejected {
+                        source: Box::new(DaemonError::LocalTransport {
+                            operation: "steer queued prompt",
+                            message: "provider rejected the queued prompt steer; the message remains queued"
                                 .into(),
+                        }),
                     });
                 }
                 Ok(crate::provider::ProviderPromptSubmitReceipt::Uncertain) | Err(_) => {
