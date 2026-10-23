@@ -157,6 +157,9 @@ fn a02_turn_end_with_finished_source_awaits_its_completion_event() {
     assert!(!correction, "a finished source asked for a correction turn");
     assert_eq!(task.state, ExecutionState::Waiting);
     assert!(task.pending_prompt_id.is_none());
+    // The stored task must pass the ledger's integrity check, not be quarantined.
+    assert_eq!(f.task().state, ExecutionState::Waiting);
+    assert_eq!(f.task().wait.unwrap().registration_ids, vec!["reg"]);
 }
 
 #[test]

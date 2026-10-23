@@ -507,7 +507,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 } else {
                     false
                 };
-                let delivery_pending = open && completion_delivery_pending(tx, &t)?;
+                let delivery_wait = if open && t.wait.is_none() {
+                    completion_delivery_wait(tx, &t, now)?
+                } else {
+                    None
+                };
                 if is_plain(tx, &t)? || (!open && has_answer && t.wait.is_none()) {
                     t.state = ExecutionState::Done;
                     t.reason.clear();
@@ -515,7 +519,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     t.state = ExecutionState::Blocked;
                     t.blocked_revision = t.revision + 1;
                     t.reason="Three consecutive wakes without handled progress; owner must resume or cancel".into();
-                } else if valid_wait || delivery_pending {
+                } else if valid_wait {
+                    t.state = ExecutionState::Waiting;
+                } else if let Some(wait) = delivery_wait {
+                    t.wait = Some(wait);
                     t.state = ExecutionState::Waiting;
                 } else if !t.correction_used {
                     t.correction_used = true;
@@ -562,33 +569,55 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
     }
 }
 
-/// Every unresolved obligation is a source that already finished and whose
-/// completion event is waiting for delivery. Ending the turn then is not an
-/// invalid end: handling that event is the task's next turn.
-fn completion_delivery_pending(
+/// When every unresolved obligation is a source that already finished and
+/// whose completion event is waiting for delivery, ending the turn is not an
+/// invalid end: handling that event is the task's next turn. The wait this
+/// returns names exactly those sources.
+fn completion_delivery_wait(
     tx: &Transaction<'_>,
     task: &AgentTaskExecution,
-) -> Result<bool, DaemonError> {
+    now: u64,
+) -> Result<Option<AgentWait>, DaemonError> {
+    let regs = registrations(tx, &task.task_id)?;
+    let mut ids = Vec::new();
     for obligation in task
         .obligations
         .iter()
         .filter(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
     {
-        let pending = match (obligation.status.as_str(), obligation.completion_source()) {
-            ("settling", Some(source)) => tx
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind')='source_completed')",
-                    params![task.room_id, task.agent_id, source],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(sql)?,
-            _ => false,
+        let Some(source) = obligation
+            .completion_source()
+            .filter(|_| obligation.status == "settling")
+        else {
+            return Ok(None);
         };
-        if !pending {
-            return Ok(false);
+        let pending: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind')='source_completed')",
+                params![task.room_id, task.agent_id, source],
+                |row| row.get(0),
+            )
+            .map_err(sql)?;
+        let registration = regs.iter().find(|r| {
+            r.source_id == source && r.obligation_id.as_deref() == Some(obligation.id.as_str())
+        });
+        match (pending, registration) {
+            (true, Some(r)) => ids.push(r.id.clone()),
+            _ => return Ok(None),
         }
     }
-    Ok(true)
+    if ids.is_empty() {
+        return Ok(None);
+    }
+    let check_in_ms = task.goal.as_ref().map_or(60, |g| g.check_in_minutes) as u64 * 60_000;
+    Ok(Some(AgentWait {
+        registration_ids: ids,
+        deadline_ms: now.saturating_add(check_in_ms),
+        started_at_ms: now,
+        inbox_cursor: 0,
+        long_wait_notified: false,
+        last_checked_at_ms: now,
+    }))
 }
 
 pub(super) fn recover_source(
