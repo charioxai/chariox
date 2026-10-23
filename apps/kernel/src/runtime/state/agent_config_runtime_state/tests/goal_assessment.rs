@@ -949,12 +949,14 @@ async fn goal_continuation_keeps_the_original_notes_in_hidden_context_not_visibl
 async fn catalog_continuation_merges_original_notes_with_supplied_hidden_context() {
     use crate::durable_state::agent_lifecycle::Operation;
     use base64::Engine;
+    let worktree = crate::test_support::TestWorktree::new("catalog-continuation-notes");
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
     let (_app, runtime, room, agent) = agent_config_runtime_in_worktree(
         config,
         crate::session::DEFAULT_LOCAL_USER_ID,
-        crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")
+        worktree
+            .session_request()
             .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
     )
     .await;
@@ -1052,12 +1054,14 @@ async fn catalog_continuation_merges_original_notes_with_supplied_hidden_context
 async fn inbox_wake_recovers_original_notes_in_hidden_provider_context() {
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation, Registration};
     use base64::Engine;
+    let worktree = crate::test_support::TestWorktree::new("inbox-wake-notes");
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
     let (_app, runtime, room, agent) = agent_config_runtime_in_worktree(
         config,
         crate::session::DEFAULT_LOCAL_USER_ID,
-        crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")
+        worktree
+            .session_request()
             .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
     )
     .await;
@@ -1202,12 +1206,14 @@ fn recovered_continuation_envelope(
 async fn completion_check_keeps_original_notes_in_hidden_provider_context() {
     use crate::durable_state::agent_lifecycle::Operation;
     use base64::Engine;
+    let worktree = crate::test_support::TestWorktree::new("completion-check-notes");
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
     let (_app, runtime, room, agent) = agent_config_runtime_in_worktree(
         config,
         crate::session::DEFAULT_LOCAL_USER_ID,
-        crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")
+        worktree
+            .session_request()
             .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
     )
     .await;
