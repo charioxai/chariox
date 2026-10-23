@@ -1702,6 +1702,23 @@ test("GATE-bytes: a first paint sends only the used rules of large sheets; their
     assert(later.includes("a-unused-1999") && later.includes("b-unused-1999"), "both full sheets follow");
   }, { "/a.css": { type: "text/css", body: bulkCss("a") }, "/b.css": { type: "text/css", body: bulkCss("b") } }));
 
+// browserperf r6 (CPU): pruning a large sheet checks a selector against the few elements its rightmost compound names,
+// not with a whole-document query per selector (most of the in-page sheet cost of every navigation's first paint).
+const narrowCss = "p.used{color:rgb(1, 2, 3)}" + Array.from({ length: 1500 }, (_, i) => `.absent-${i % 7} .c${i % 300}{padding:${i}px}`).join("");
+test("MP-08/MP-10 CPU: a first paint prunes a large sheet without a document query per selector", () => mirrored(
+  '<link rel="stylesheet" href="/n.css"><p class="used">text</p>' + Array.from({ length: 300 }, (_, i) => `<span class="c${i}">${i}</span>`).join(""), async ({ next, evaluate, host, subscription_id }) => {
+    await next();
+    const world = host.mirror.streams.get(subscription_id).world;
+    await host.mirror.v2.evaluate(world, "(()=>{const query=Document.prototype.querySelector;globalThis.queries=0;Document.prototype.querySelector=function(...args){globalThis.queries++;return query.apply(this,args)};return true})()");
+    // A mutation retires the pruning index of the first packet, so the reset prunes afresh.
+    await evaluate("document.body.append(document.createElement('i'));true"); await next(300);
+    const first = JSON.stringify(await next(0, true));
+    assert(first.includes("rgb(1, 2, 3)"), "the used rule reaches the first paint");
+    assert(!first.includes(".absent-0 .c0"), "rules whose ancestor the document lacks wait");
+    const queries = await host.mirror.v2.evaluate(world, "globalThis.queries");
+    assert(queries < 50, `${queries} document queries for 1500 rules`);
+  }, { "/n.css": { type: "text/css", body: narrowCss } }));
+
 // Review #1016 @c5dfd2e31 item 3: a published node moved into a parent the continuation has not reached yet.
 test('MP-10/MP-11 M2: a published subtree moved into an unvisited parent during a continuation stays mirrored', () => mirrored(
   '<main id="m"><p id="moved">Move me</p>' + '<p>middle</p>'.repeat(10000) + '<section id="destination"></section></main>', async ({ next, evaluate }) => {

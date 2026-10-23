@@ -195,30 +195,42 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // Top-level pieces of a selector, split where `at` says (commas, or combinators for the rightmost compound).
     const split = (text, at) => { const out = []; let depth = 0, start = 0; for (let i = 0; i < text.length; i++) { const c = text[i]; if (c === '\\') i++; else if (c === '(' || c === '[') depth++; else if (c === ')' || c === ']') depth--; else if (!depth && at(c)) { out.push(text.slice(start, i)); start = i + 1; } } out.push(text.slice(start)); return out; };
     // The document's classes, ids and tags (per root, until the next mutation) reject most unused selectors
-    // without a query: a member whose rightmost compound names one the document lacks cannot match.
+    // without a query: a member whose rightmost compound names one the document lacks cannot match. The index also
+    // lists the elements per class, id and tag, so a member is checked against the few elements its rightmost compound
+    // names instead of a whole-document query per selector (most of a large sheet's pruning time).
     let usedIndex = null;
     const usedBy = root => {
       if (usedIndex?.root !== root || usedIndex.revision !== revision) {
-        const classes = new Set(), ids = new Set(), tags = new Set();
-        for (const element of root.querySelectorAll('*')) { tags.add(element.localName.toLowerCase()); if (element.id) ids.add(element.id); for (const name of element.classList) classes.add(name); }
+        const classes = new Map(), ids = new Map(), tags = new Map();
+        const add = (map, key, element) => { const list = map.get(key); if (list) list.push(element); else map.set(key, [element]); };
+        for (const element of root.querySelectorAll('*')) { add(tags, element.localName.toLowerCase(), element); if (element.id) add(ids, element.id, element); for (const name of element.classList) add(classes, name, element); }
         usedIndex = { root, revision, classes, ids, tags, cache: new Map() };
       }
       const { classes, ids, tags, cache } = usedIndex;
-      const possible = member => {
-        const last = split(member.trim(), c => c === ' ' || c === '>' || c === '+' || c === '~').at(-1);
-        if (/\\[0-9a-fA-F]|\|/.test(last) || document.compatMode === 'BackCompat') return true;
+      // The shortest element list the member's rightmost compound names, [] when the document lacks one of its names,
+      // or null when only a query can tell (escaped or namespaced names, quirks mode, no tag, class or id).
+      const candidates = member => {
+        const last = split(member, c => c === ' ' || c === '>' || c === '+' || c === '~').at(-1);
+        if (/\\[0-9a-fA-F]|\|/.test(last) || document.compatMode === 'BackCompat') return null;
         let flat = '', depth = 0; for (const c of last) { if (c === '(' || c === '[') depth++; else if (c === ')' || c === ']') { depth--; continue; } if (!depth) flat += c; }
         const name = token => token.replace(/\\(.)/g, '$1'), tag = /^[a-zA-Z][\w-]*/.exec(flat)?.[0];
-        if (tag && !tags.has(tag.toLowerCase())) return false;
-        for (const [, token] of flat.matchAll(/\.((?:[\w-]|\\.)+)/g)) if (!classes.has(name(token))) return false;
-        for (const [, token] of flat.matchAll(/#((?:[\w-]|\\.)+)/g)) if (!ids.has(name(token))) return false;
-        return true;
+        let best = null;
+        const narrow = list => { if (!list) return false; if (!best || list.length < best.length) best = list; return true; };
+        if (tag && !narrow(tags.get(tag.toLowerCase()))) return [];
+        for (const [, token] of flat.matchAll(/\.((?:[\w-]|\\.)+)/g)) if (!narrow(classes.get(name(token)))) return [];
+        for (const [, token] of flat.matchAll(/#((?:[\w-]|\\.)+)/g)) if (!narrow(ids.get(name(token)))) return [];
+        return best;
+      };
+      // `:scope` and pseudo-elements mean something else to Element.matches than to a document query. A long list
+      // (a common tag or class) is cheaper to check in one native query than element by element.
+      const used = member => {
+        const list = /:scope|::/.test(member) ? null : candidates(member);
+        return list === null || list.length > 64 ? root.querySelector(member) !== null : list.some(element => element.isConnected && element.matches(member));
       };
       const matches = selector => {
         const plain = selector.replace(DYNAMIC, '');
         if (!plain.trim() || /(^|,)\s*(,|$)/.test(plain)) return true;
-        if (!split(plain, c => c === ',').some(possible)) return false;
-        try { return root.querySelector(plain) !== null; } catch { return true; }
+        try { return split(plain, c => c === ',').some(member => used(member.trim())); } catch { return true; }
       };
       return selector => { let used = cache.get(selector); if (used === undefined) cache.set(selector, used = matches(selector)); return used; };
     };
