@@ -182,7 +182,7 @@ test('launch resumes after deadline refusal without creating another agent or up
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('stop cleans a real owned child using its boot and start identity', async () => {
+test('stop cleans a real owned child using its boot and start identity', { skip: process.platform !== 'linux' && 'Linux /proc process identity is unavailable on this host' }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dogfood-pid-'));
   const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
   const ended = once(child, 'exit');
