@@ -25,7 +25,7 @@ impl KernelRuntimeState {
             return Ok(());
         };
         let key = format!("{session_id}:{}", trigger.id());
-        let mut gateways = self.agent_trigger_gateways.0.lock().await;
+        let mut gateways = self.owned.agent_trigger_gateways.0.lock().await;
         if let Some(child) = gateways.children.get_mut(&key) {
             if child
                 .try_wait()
@@ -75,7 +75,7 @@ impl KernelRuntimeState {
             })
             .collect();
         {
-            let mut gateways = self.agent_trigger_gateways.0.lock().await;
+            let mut gateways = self.owned.agent_trigger_gateways.0.lock().await;
             gateways.children.retain(|key, child| {
                 if desired.contains_key(key) {
                     return true;
@@ -89,6 +89,7 @@ impl KernelRuntimeState {
         }
         for (key, (session_id, trigger)) in desired {
             let retry_at = self
+                .owned
                 .agent_trigger_gateways
                 .0
                 .lock()

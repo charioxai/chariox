@@ -122,11 +122,11 @@ impl AgentTrigger {
         now_ms: u64,
     ) -> Self {
         Self {
-            id,
+            id: id.clone(),
             agent_id: agent_id.into(),
             created_by_user_id: Some(owner.into()),
             source: AgentTriggerSource::Http {
-                ingress_id: uuid::Uuid::new_v4().simple().to_string(),
+                ingress_id: id,
                 port,
             },
             busy_policy: policy,
