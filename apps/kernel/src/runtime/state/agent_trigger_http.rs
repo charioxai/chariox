@@ -423,5 +423,16 @@ mod tests {
         assert!(
             !crate::runtime::session_actor::SessionActor::is_session_interactive_command(&request)
         );
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "http-read",
+            None,
+            None,
+            &request,
+        );
+        assert_eq!(
+            command.priority,
+            crate::runtime::command::KernelCommandPriority::Background,
+            "gateway metadata must reach the history router while the create lane is held"
+        );
     }
 }
