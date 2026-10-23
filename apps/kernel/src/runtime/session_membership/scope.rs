@@ -166,6 +166,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::UpdateAgentProfile(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::SetAgentDeadline(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::GetAgentDeadline(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::AliasAgent(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),

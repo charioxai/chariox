@@ -11,6 +11,7 @@ impl KernelRuntimeOwnedState {
         &self,
         prepared: &crate::app::KernelPreparedPromptSubmission,
     ) -> Result<bool, DaemonError> {
+        self.ensure_agent_before_deadline(&prepared.session_id, prepared.prompt.target_agent_id())?;
         if !self.config_projection.snapshot().room_agent_tools {
             return Ok(false);
         }

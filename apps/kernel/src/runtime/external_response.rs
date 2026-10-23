@@ -453,6 +453,7 @@ response_policies! {
         SessionAliased,
         AgentAliased,
         AgentProfileUpdated,
+        AgentDeadline,
         AgentSpawned,
         AgentsSpawned,
         TurnUndone,

@@ -102,6 +102,12 @@ impl KernelRuntimeOwnedState {
         agent: &crate::agent::AgentInstance,
         operation: &'static str,
     ) -> bool {
+        if self
+            .ensure_agent_before_deadline(session_id, agent.id())
+            .is_err()
+        {
+            return false;
+        }
         let error = self.require_agent_account_authenticated(agent, None, operation);
         let Err(error) = error else {
             return true;
