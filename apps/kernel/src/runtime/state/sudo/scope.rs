@@ -184,6 +184,16 @@ impl KernelRuntimeState {
         if self.require_sudo_scope(&turn.entry_id, request).is_ok() {
             return Ok(());
         }
+        // No session has an empty id, so there is nothing for the owner to approve.
+        if matches!(
+            crate::runtime::session_membership::scope::request_session_scope(request),
+            Some(crate::runtime::session_membership::scope::SessionMembershipScope::SessionId(id))
+                if id.trim().is_empty()
+        ) {
+            return Err(error(
+                "this kernel request names an empty session_id; pass a session id from chariox.room.overview or ListSessions",
+            ));
+        }
         let encoded = serde_json::to_string_pretty(request)
             .map_err(|_| error("cannot describe sudo operation"))?;
         if encoded.len() > 16_384 {
