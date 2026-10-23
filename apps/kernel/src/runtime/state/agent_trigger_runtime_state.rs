@@ -428,7 +428,21 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn dispatch_due_agent_triggers(&self, now_ms: u64) {
-        self.owned.reconcile_inactive_local_steers();
+        let recovered_agents = self
+            .owned
+            .reconcile_inactive_local_steers()
+            .into_iter()
+            .map(|(session_id, agent_id, _)| (session_id, agent_id))
+            .collect::<BTreeSet<_>>();
+        for (session_id, agent_id) in recovered_agents {
+            if let Err(error) = self.resume_idle_agent_trigger_queue(&session_id, &agent_id) {
+                crate::logging::error_with_fields(
+                    "daemon.agent_trigger",
+                    "failed to resume the queue after settling a held steer",
+                    serde_json::json!({"session_id":session_id,"agent_id":agent_id,"error":error.to_string()}),
+                );
+            }
+        }
         let dispatches = self
             .owned
             .session_store
@@ -648,7 +662,7 @@ impl KernelRuntimeState {
             crate::session::PromptSubmissionOutcome::Queued { prompt } => prompt.id().to_string(),
         };
         if resend_of.is_some() {
-            self.resume_idle_trigger_resend_queue(&dispatch.session_id, &dispatch.agent_id)?;
+            self.resume_idle_agent_trigger_queue(&dispatch.session_id, &dispatch.agent_id)?;
         }
         if dispatch.busy_policy == AgentTriggerBusyPolicy::Queue {
             return Ok(AgentTriggerFiring::Fired {
@@ -726,7 +740,7 @@ impl KernelRuntimeState {
         }
     }
 
-    fn resume_idle_trigger_resend_queue(
+    fn resume_idle_agent_trigger_queue(
         &self,
         session_id: &str,
         agent_id: &str,
@@ -758,7 +772,7 @@ impl KernelRuntimeState {
             {
                 crate::logging::error_with_fields(
                     "daemon.agent_trigger",
-                    "failed to promote an admitted remote resend",
+                    "failed to promote queued work after trigger delivery",
                     serde_json::json!({"session_id":session_id,"agent_id":agent_id,"error":error.to_string()}),
                 );
             }
@@ -1395,6 +1409,101 @@ pub(super) mod tests {
             0,
             "recovery must never send the provider another message"
         );
+    }
+
+    // MP-08/MP-10/MP-11: clearing a hold must wake ordinary queued work.
+    #[tokio::test]
+    async fn live_hold_recovery_dispatches_remaining_user_prompt_once() {
+        let mut config = durable_state_config("trigger-live-queue-recovery");
+        config.room_agent_tools = false;
+        let (_worktree, runtime, session_id, agent_id, attachment_id, _, run_id) =
+            super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt_and_config(
+                config, &[],
+            ).await;
+        install_slow_structured_run(&runtime, &session_id, &agent_id, &run_id, "slow-ack");
+        let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
+        let connection = reject_trigger_settlement(&runtime);
+        runtime
+            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .await;
+        runtime
+            .owned
+            .provider_store
+            .drain_finished_structured_prompt_submit_jobs();
+        let prompt = crate::session::PromptQueueItem::new(
+            "user-behind-hold",
+            &attachment_id,
+            &agent_id,
+            "Run the accepted user work",
+            crate::session::PromptStatus::Queued,
+        );
+        let submission = runtime
+            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt,
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            submission.outcome,
+            crate::session::PromptSubmissionOutcome::Queued { .. }
+        ));
+        runtime
+            .complete_agent_prompt_with_external_authority(&session_id, &agent_id, None, None)
+            .await
+            .unwrap();
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        let (active, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        assert!(active.is_none());
+        assert_eq!(
+            queued.len(),
+            2,
+            "completion cannot cross the held queue head"
+        );
+        connection
+            .execute_batch("DROP TRIGGER reject_trigger_settlement;")
+            .unwrap();
+        runtime
+            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .await;
+        let jobs = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let jobs = runtime
+                    .owned
+                    .provider_store
+                    .drain_finished_structured_prompt_submit_jobs();
+                if !jobs.is_empty() {
+                    break jobs;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("maintenance must deliver the user prompt to the provider");
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].prompt_id, "user-behind-hold");
+        assert_eq!(jobs[0].provider_run_id, run_id);
+        assert!(jobs[0].result.is_ok());
+        runtime
+            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .await;
+        assert!(runtime
+            .owned
+            .provider_store
+            .drain_finished_structured_prompt_submit_jobs()
+            .is_empty());
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        let (active, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        assert_eq!(active.unwrap().id(), "user-behind-hold");
+        assert!(queued.is_empty());
     }
 
     // MP-08/MP-10/MP-11: failed appends must preserve the replay barrier.
