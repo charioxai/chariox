@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { readFile, writeFile, rename, mkdir, lstat, readlink } from 'node:fs/promises';
 import { dirname, resolve, join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 export class LaneError extends Error {
   constructor(code, message = code) { super(message); this.code = code; }
@@ -95,6 +96,22 @@ export async function verifyOwnedPid(entry, owner) {
   return fields[0] !== 'Z';
 }
 
+async function startCoordinatorTimer(stateFile) {
+  const child = spawn(process.execPath, [fileURLToPath(new URL('./coordinator-deadline.mjs', import.meta.url)), resolve(stateFile)], {
+    stdio: 'ignore', env: { ...process.env, NODE_OPTIONS: process.env.NODE_OPTIONS || '--max-old-space-size=4096' },
+  });
+  await new Promise((ok, bad) => { child.once('spawn', ok); child.once('error', () => bad(new LaneError('coordinator_timer_unavailable'))); });
+  if (!Number.isSafeInteger(child.pid) || child.pid <= 1) fail('pid_ownership_refused');
+  child.unref();
+  return { pid: child.pid, receipt: `${resolve(stateFile)}.deadline.json` };
+}
+
+const coordinatorDeadline = deadlineMs => ({
+  mode: 'coordinator', deadline_ms: deadlineMs ?? null,
+  state: deadlineMs == null ? 'unknown' : Date.now() >= deadlineMs ? 'overdue' : 'armed',
+  message: 'This lane has no kernel deadline. A coordinator-side timer requires its process, network and access grant to remain available; it is not a durable kernel hard stop.',
+});
+
 export async function run(operation, input, dependencies = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('invalid_input');
   input = structuredClone(input);
@@ -173,7 +190,15 @@ export async function run(operation, input, dependencies = {}) {
       return text(agent.id, 'agent id');
     });
     await remember('briefUploaded', async () => { await call(['files', 'put', ...common, '--overwrite', input.brief, input.remoteBrief]); return true; });
-    await remember('deadlineArmed', async () => { await request('SetAgentDeadline', { session_id: session(), agent_id: agent(), deadline_ms: input.deadlineMs }, 'deadline'); return true; });
+    const capabilities = variant(await request('RelayStatus', null, 'deadline-capability', false), 'RelayStatus').status.capabilities;
+    if (Array.isArray(capabilities) && capabilities.includes('agent_deadline_v1')) {
+      await remember('deadlineArmed', async () => { await request('SetAgentDeadline', { session_id: session(), agent_id: agent(), deadline_ms: input.deadlineMs }, 'deadline'); return true; });
+      const receipt = variant(await request('GetAgentDeadline', { session_id: session(), agent_id: agent() }, 'deadline-read', false), 'AgentDeadline').deadline;
+      state.deadline = { ...receipt, mode: 'kernel' };
+    } else {
+      state.deadline = coordinatorDeadline(input.deadlineMs);
+    }
+    await save(input.stateFile, state);
     await remember('promptId', async () => {
       const submit = async () => {
         if (!state.pendingPrompt) {
@@ -195,6 +220,11 @@ export async function run(operation, input, dependencies = {}) {
       const prompt = submitted.outcome?.Started?.prompt || submitted.outcome?.Queued?.prompt;
       return text(prompt?.id, 'submitted prompt id');
     });
+    if (state.deadline.mode === 'coordinator' && !state.coordinatorTimer) {
+      // The same task/stop command ids make an interrupted timer start safe to retry.
+      state.coordinatorTimer = await (dependencies.startTimer || startCoordinatorTimer)(input.stateFile);
+      await save(input.stateFile, state);
+    }
     return state;
   }
   if (operation === 'steer') return request('SteerActivePrompt', { session_id: session(), attachment_id: attachment(), target_agent_id: agent(), expected_active_prompt_id: text(input.expectedPromptId, 'expectedPromptId'), prompt: text(input.prompt, 'prompt'), attachments: [] }, text(input.steerId, 'steerId'));
@@ -210,9 +240,21 @@ export async function run(operation, input, dependencies = {}) {
     const selected = state.agents?.find(value => value.id === agent()) || state.session?.agents?.find(value => value.id === agent());
     if (!selected) fail('agent_not_in_session', 'use ListAgents in the lane Room');
     const activity = state.agent_activity?.[agent()] || state.session?.agent_activity?.[agent()];
-    const deadline = await request('GetAgentDeadline', { session_id: session(), agent_id: agent() }, 'deadline-status', false);
+    const capabilities = variant(await request('RelayStatus', null, 'deadline-capability', false), 'RelayStatus').status.capabilities;
+    let deadline;
+    if (Array.isArray(capabilities) && capabilities.includes('agent_deadline_v1')) {
+      deadline = { ...variant(await request('GetAgentDeadline', { session_id: session(), agent_id: agent() }, 'deadline-status', false), 'AgentDeadline').deadline, mode: 'kernel' };
+    } else {
+      let deadlineMs = input.deadlineMs;
+      if (input.stateFile) {
+        const saved = JSON.parse(await readFile(input.stateFile, 'utf8'));
+        if (saved.kernel !== kernel || saved.taskId !== taskId || saved.sessionId !== session() || saved.agentId !== agent()) fail('launch_conflict');
+        deadlineMs = saved.deadlineMs;
+      }
+      deadline = coordinatorDeadline(deadlineMs);
+    }
     const active = state.session.active_prompt;
-    return { agentId: agent(), state: activity?.status || (selected.is_processing ? 'working' : 'idle'), currentPrompt: activity?.active_turn?.prompt_id || (active?.target_agent_id === agent() ? active.id : null), lastActivityMs: selected.last_activity_at_ms, deadline: variant(deadline, 'AgentDeadline').deadline };
+    return { agentId: agent(), state: activity?.status || (selected.is_processing ? 'working' : 'idle'), currentPrompt: activity?.active_turn?.prompt_id || (active?.target_agent_id === agent() ? active.id : null), lastActivityMs: selected.last_activity_at_ms, deadline };
   }
   if (operation === 'fetch') {
     const directory = resolve(text(input.directory, 'directory')); await mkdir(directory, { recursive: true });

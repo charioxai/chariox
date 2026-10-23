@@ -24,12 +24,25 @@ Keep inputs, state and transferred artifacts in your own directory outside git.
 
 `launch` accepts optional `operationsAlias` to create an operations Room too. It creates a lane Room and attachment, refreshes the selected profile through
 `RefreshProviderAccountProfile`, spawns the agent, uploads the brief with
-`files put`, arms its kernel deadline and submits its first prompt. Reuse its
-exact input and state file to resume an interrupted launch. Use a fresh task id
-and state file for different work. The deadline request is required: there is
-no client timer fallback. The executing kernel needs `SetAgentDeadline` and
-`GetAgentDeadline` (provisional local 574 on the amint union; final allocation
-belongs to the coordinator). A deadline can shorten but cannot extend.
+`files put`, checks `RelayStatus.status.capabilities` for `agent_deadline_v1`,
+then submits its first prompt. With that capability, launch sets and reads the
+kernel deadline before submission; status reads it too. Reuse the exact input
+and state file to resume an interrupted launch; a lapsed attachment is renewed.
+An uncertain submission first replays the original command bytes and identity.
+
+Without the capability, neither adapter sends the unknown deadline requests.
+Both report `deadline.mode:"coordinator"` and plainly say the lane has no kernel
+deadline. Launch starts a background coordinator timer and records its exact PID
+and result path in `coordinatorTimer`; it uses the normal public CLI to stop the
+lane at `deadlineMs`. This is best-effort coordinator policy, requiring that
+process, network and access grant to remain available, and cannot replace a
+kernel hard stop after coordinator/access loss. Results (including typed cleanup
+failures) go to `<stateFile>.deadline.json`. Stop/clean that timer only by its
+verified owned PID when ending a run early. Pass `stateFile` to status to include
+the saved coordinator deadline; without it the deadline time is unknown. Timer
+failures require restoring access and an explicit unconditional `stop`.
+The durable deadline branch uses allocated local584 and advertises
+`agent_deadline_v1`; it is optional, not a dependency of these adapters.
 
 `status` also accepts `waitForIdle:true`, `attachmentId`, `expectedPromptId`
 and `timeout` (1–1800 seconds). It watches real CLI session events, requires
