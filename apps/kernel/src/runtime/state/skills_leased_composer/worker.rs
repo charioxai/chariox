@@ -134,7 +134,7 @@ fn materialize_composer_context(
     turn.context.metadata = metadata.text;
     turn.context.metadata_budget_tokens = metadata.budget_tokens;
     turn.context.metadata_tokens_upper_bound = metadata.tokens_upper_bound;
-    turn.context.omitted_auto_count = metadata.omitted_count;
+    turn.context.omitted_auto_count = metadata.omitted_count as u32;
     for body in &mut turn.context.loaded {
         if matches!(body.delivery, SkillDelivery::ProvidedBy { .. }) {
             continue;
