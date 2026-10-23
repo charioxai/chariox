@@ -49,7 +49,7 @@ impl DaemonApp {
             for run in self
                 .providers
                 .write()
-                .enroll_local_run_owner(session.id(), owner)
+                .enroll_local_run_owner(session.id(), owner)?
             {
                 self.update_provider_run_projection(run);
             }
