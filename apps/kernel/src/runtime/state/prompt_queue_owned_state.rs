@@ -30,6 +30,16 @@ pub(super) struct RemoteQueuedPromptSteerReceiptQuery {
     pub(super) leased_agent_id: String,
 }
 
+/// How a queued steer is committed to the queue and the transcript.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QueuedSteerCommit {
+    /// The kernel records the steer now and dispatches it itself.
+    Dispatch,
+    /// A trigger firing was recorded before the provider write: only the queue
+    /// removal and the echoes remain.
+    Recorded { sequence: u64 },
+}
+
 pub(super) struct LocalQueuedPromptSteerPreparation {
     context: QueuedPromptSteerContext,
     attachment_id: String,
@@ -1170,17 +1180,16 @@ impl KernelRuntimeOwnedState {
         attachment_id: &str,
         prompt_id: &str,
         context: QueuedPromptSteerContext,
-        dispatch_locally: bool,
-        recorded_sequence: Option<u64>,
+        commit: QueuedSteerCommit,
     ) -> Result<crate::app::KernelQueuedPromptSteer, DaemonError> {
         let target_active_prompt_id = context.active_prompt.id().to_string();
         let source_attachment_id = self.promoted_prompt_source_attachment_id(
             session_id,
             context.queued_prompt.source_attachment_id(),
         )?;
-        let sequence = match recorded_sequence {
-            Some(sequence) => sequence,
-            None => self.append_steering_prompt_history(
+        let sequence = match commit {
+            QueuedSteerCommit::Recorded { sequence } => sequence,
+            QueuedSteerCommit::Dispatch => self.append_steering_prompt_history(
                 session_id,
                 &context.provider_run_id,
                 &target_active_prompt_id,
@@ -1229,7 +1238,7 @@ impl KernelRuntimeOwnedState {
             ),
         );
         let session = self.session_snapshot(session_id)?;
-        let dispatch = dispatch_locally.then(|| {
+        let dispatch = (commit == QueuedSteerCommit::Dispatch).then(|| {
             Self::queued_prompt_steer_dispatch(
                 session_id,
                 agent_id,
@@ -1259,8 +1268,7 @@ impl KernelRuntimeOwnedState {
             attachment_id,
             prompt_id,
             prepared.context.clone(),
-            true,
-            None,
+            QueuedSteerCommit::Dispatch,
         )
         .map(Some)
     }
@@ -1441,8 +1449,9 @@ impl KernelRuntimeOwnedState {
             &prepared.attachment_id,
             &prepared.dispatch.prompt_id,
             prepared.context.clone(),
-            false,
-            Some(recorded_sequence),
+            QueuedSteerCommit::Recorded {
+                sequence: recorded_sequence,
+            },
         )
     }
 
