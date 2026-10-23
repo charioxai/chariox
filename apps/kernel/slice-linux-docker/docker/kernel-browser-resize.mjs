@@ -26,10 +26,12 @@ export async function resizeBrowserPage(host,tab,command,signal){
  // Measure the owned window's real inset. A guessed87-DIP toolbar can leave
  // an odd native band, which the video producer correctly refuses.
  host.chromeWindows?.retire('viewport_resize');
- await host.closeCompositors(tab.tab_id);current();
+ await host.closeCompositors();current();
  await connection.send('Browser.setWindowBounds',{windowId,bounds:outer});current();
- await host.setLayout(tab,'resize',{width,height});current();
- for(const stream of host.displays.values())if(stream.tab_id===tab.tab_id&&!stream.regionTarget){stream.css_width=width;stream.css_height=height;stream.invalidate();}
+ // Every Tab shares the one window: all of them, and Tabs opened later, are laid out at its size.
+ host.windowLayout={width,height};
+ for(const other of [...host.tabs.values()]){await host.setLayout(other,'resize',{width,height});current();}
+ for(const stream of host.displays.values())if(!stream.regionTarget){stream.css_width=width;stream.css_height=height;stream.invalidate();}
  host.stateSignal.notify();
  await host.rebindWindows();current();
  return {width,height};

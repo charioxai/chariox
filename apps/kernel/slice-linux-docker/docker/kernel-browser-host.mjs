@@ -116,6 +116,8 @@ export class KernelBrowserHost {
     this.scales = new Map();
     this.layouts = new Map();
     this.layoutRevisions = new Map();
+    // The size the person's view gave the one Chrome window (protocol 578); null keeps the canonical page.
+    this.windowLayout = null;
     this.inputEpochs = new Map();this.inputChangedAt=new Map();
     this.scrolling = new Map();
     this.sampleLanes = new Map();
@@ -226,7 +228,7 @@ export class KernelBrowserHost {
     this.browser = null;
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
     this.streams.clear();
-    this.tabs.clear();this.layouts.clear();this.layoutRevisions.clear();
+    this.tabs.clear();this.layouts.clear();this.layoutRevisions.clear();this.windowLayout=null;
     this.popupEvidence.clear();
     this.observed = ++this.observations;
     this.observedDocuments.clear();
@@ -552,6 +554,8 @@ export class KernelBrowserHost {
     for (const [id, tab] of this.tabs) tab.tab_id = id;
     // A surviving Tab keeps its committed page size; only retired Tabs drop theirs.
     for (const map of [this.layouts, this.layoutRevisions]) for (const id of [...map.keys()]) if (!this.tabs.has(id)) map.delete(id);
+    // A Tab that opened in the resized window is laid out at the window's size, not the canonical one.
+    if (this.windowLayout) for (const tab of [...this.tabs.values()]) if (this.layouts.get(tab.tab_id)?.subscriptionId !== 'resize') await this.setLayout(tab, 'resize', this.windowLayout);
     const previous = this.activeTarget;
     const intent = this.pendingActive;
     const boundOrigins = new Set([...(this.browser.appTabs?.apps?.values() ?? [])].filter(app => app.ready === true).map(app => app.origin));
