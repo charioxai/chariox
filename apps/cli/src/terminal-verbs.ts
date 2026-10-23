@@ -53,11 +53,22 @@ function watchOf(spec: string): { kind: string; text?: string } {
 const CUT_ESCAPE = /\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*\x1b?)?$/
 
 function plainPage(output: { data_base64: string; next_offset: number }): { text: string; next_offset: number } {
-  const raw = Buffer.from(output.data_base64, "base64").toString("utf8")
+  const bytes = Buffer.from(output.data_base64, "base64")
+  let end = bytes.length
+  let lead = end - 1
+  while (lead >= Math.max(0, end - 3) && (bytes[lead]! & 0xc0) === 0x80) lead -= 1
+  if (lead >= 0) {
+    const byte = bytes[lead]!
+    const width = byte >= 0xc2 && byte <= 0xdf ? 2 : byte >= 0xe0 && byte <= 0xef ? 3 : byte >= 0xf0 && byte <= 0xf4 ? 4 : 1
+    if (end - lead < width) end = lead
+  }
+  // PTY pages are byte ranges. Re-read an incomplete character rather than
+  // replacing it and advancing past bytes the next page needs.
+  const raw = bytes.subarray(0, end).toString("utf8")
   const cut = CUT_ESCAPE.exec(raw)
   return {
     text: (cut ? raw.slice(0, cut.index) : raw).replace(ESCAPES, ""),
-    next_offset: output.next_offset - (cut ? Buffer.byteLength(cut[0]) : 0),
+    next_offset: output.next_offset - (bytes.length - end) - (cut ? Buffer.byteLength(cut[0]) : 0),
   }
 }
 

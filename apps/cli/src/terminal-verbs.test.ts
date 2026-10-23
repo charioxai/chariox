@@ -148,3 +148,19 @@ test("plain text strips numeric ESC/BEL bytes and preserves printable caret nota
   const rest = await runTerminalVerb("read", [], flags({ since: "2" }), recorder([page(completed, 2 + Buffer.byteLength(completed))]).send) as any
   assert.equal(rest.text, "done")
 })
+
+for (const verb of ["read", "send"] as const) {
+  test(`${verb} retains incomplete UTF-8 bytes for the next output page`, async () => {
+    const page = (bytes: Buffer, next: number) => ({ RoomTerminal: { result: { result: "output", output: { terminal: summary(), data_base64: bytes.toString("base64"), next_offset: next, gap: false } } } })
+    const bytes = Buffer.from("€😀", "utf8")
+    for (const split of [1, 2, 4, 5, 6]) {
+      const prefix = Buffer.concat([Buffer.from("ok"), bytes.subarray(0, split)])
+      const replies = verb === "send" ? [{ RoomTerminal: { result: { result: "input", input: { accepted: true, driver: {} } } } }, page(prefix, prefix.length)] : [page(prefix, prefix.length)]
+      const first = await runTerminalVerb(verb, ["echo"], flags({ since: "0", waitMs: "100" }), recorder(replies).send) as any
+      assert.equal(first.text.includes("�"), false)
+      const rest = await runTerminalVerb("read", [], flags({ since: String(first.next_offset) }), recorder([page(Buffer.concat([Buffer.from("ok"), bytes]).subarray(first.next_offset), 9)]).send) as any
+      assert.equal(first.text + rest.text, "ok€😀")
+      assert.equal(rest.next_offset, 9)
+    }
+  })
+}
