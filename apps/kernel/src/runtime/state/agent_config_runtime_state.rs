@@ -877,20 +877,19 @@ impl KernelRuntimeState {
             caller_user_id,
             "home extension audit",
         )?;
-        let events = self
-            .owned
+        self.owned
             .durable_state_store
-            .load_subject_events(agent.id(), limit)?;
-        Ok(events
-            .into_iter()
-            .filter(|event| {
-                event.kind.starts_with("home_extension.")
-                    || event.kind.starts_with("agent.extension")
-                    || event.kind.starts_with("agent.mcp_")
-                    || event.kind.starts_with("agent.skill_")
-                    || event.kind.starts_with("extension.registration.")
-            })
-            .collect())
+            .load_subject_events_by_kind_prefixes(
+                agent.id(),
+                &[
+                    "home_extension.",
+                    "agent.extension",
+                    "agent.mcp_",
+                    "agent.skill_",
+                    "extension.registration.",
+                ],
+                limit,
+            )
     }
 
     pub(crate) async fn update_session_config(

@@ -217,9 +217,17 @@ fn serve_one_mcp_reply(result: serde_json::Value) -> (String, std::thread::JoinH
     (url, server)
 }
 
-#[tokio::test]
-async fn local_agent_mcp_tool_calls_are_audited_without_arguments_or_output() {
-    let env = TestCapabilityEnv::new("local-mcp-call-audit");
+/// A router with one local agent that was granted the MCP server `docs`, which answers one tool call.
+fn router_with_granted_docs_server(
+    env_name: &str,
+    reply: serde_json::Value,
+) -> (
+    TestCapabilityEnv,
+    CommandRouter,
+    String,
+    std::thread::JoinHandle<()>,
+) {
+    let env = TestCapabilityEnv::new(env_name);
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
@@ -229,9 +237,7 @@ async fn local_agent_mcp_tool_calls_are_audited_without_arguments_or_output() {
             workspace.to_string_lossy(),
         ))
         .expect("session should be created");
-    let (url, server) = serve_one_mcp_reply(
-        serde_json::json!({"content": [{"type": "text", "text": "SECRET-OUTPUT"}]}),
-    );
+    let (url, server) = serve_one_mcp_reply(reply);
     let provider_run = app
         .providers()
         .start_run_provider_only(
@@ -255,6 +261,15 @@ async fn local_agent_mcp_tool_calls_are_audited_without_arguments_or_output() {
         .into_run();
     app.update_provider_run_projection(provider_run);
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    (env, router, agent.id().to_string(), server)
+}
+
+#[tokio::test]
+async fn local_agent_mcp_tool_calls_are_audited_without_arguments_or_output() {
+    let (_env, router, agent_id, server) = router_with_granted_docs_server(
+        "local-mcp-call-audit",
+        serde_json::json!({"content": [{"type": "text", "text": "SECRET-OUTPUT"}]}),
+    );
 
     let call = |name: &'static str, tool: &'static str| {
         router.dispatch_authenticated_mcp_proxy_call(
@@ -284,7 +299,7 @@ async fn local_agent_mcp_tool_calls_are_audited_without_arguments_or_output() {
 
     let events = router
         .runtime_state
-        .list_home_extension_audit_events(agent.id(), DEFAULT_LOCAL_USER_ID, 20)
+        .list_home_extension_audit_events(&agent_id, DEFAULT_LOCAL_USER_ID, 20)
         .expect("audit events should load");
     let calls: Vec<_> = events
         .iter()
@@ -314,6 +329,55 @@ async fn local_agent_mcp_tool_calls_are_audited_without_arguments_or_output() {
     assert!(
         !recorded.contains("SECRET-ARGUMENT") && !recorded.contains("SECRET-OUTPUT"),
         "the audit never holds arguments or output: {recorded}"
+    );
+}
+
+#[tokio::test]
+async fn extension_audit_keeps_old_events_behind_newer_unrelated_ones() {
+    let (_env, router, agent_id, server) = router_with_granted_docs_server(
+        "extension-audit-behind-noise",
+        serde_json::json!({"content": [{"type": "text", "text": "ok"}]}),
+    );
+    router
+        .dispatch_authenticated_mcp_proxy_call(
+            "audit-token",
+            "docs",
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "search", "arguments": {}}
+            }),
+        )
+        .await
+        .expect("granted server should answer");
+    server.join().expect("test server should finish");
+    // Far more than the 200 events a read loads: the agent's own traffic after the call.
+    for index in 0..250 {
+        router
+            .runtime_state
+            .durable_state_store()
+            .append_event(
+                "agent.activity",
+                Some(agent_id.clone()),
+                serde_json::json!({ "index": index }),
+            )
+            .expect("unrelated event should append");
+    }
+
+    let events = router
+        .runtime_state
+        .list_home_extension_audit_events(&agent_id, DEFAULT_LOCAL_USER_ID, 20)
+        .expect("audit events should load");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == "agent.mcp_tool_call")
+            .count(),
+        1,
+        "the tool call is still listed: {events:?}"
+    );
+    assert!(
+        events.iter().all(|event| event.kind != "agent.activity"),
+        "only extension events are listed"
     );
 }
 
