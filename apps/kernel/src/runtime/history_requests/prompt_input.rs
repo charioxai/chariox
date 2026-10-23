@@ -142,15 +142,7 @@ fn user_prompt_event_counts_as_prompt_input_history(event: &HistoryEvent) -> boo
         return false;
     }
     match entry.prompt_origin {
-        Some(
-            crate::session::PromptOrigin::Chariox
-            | crate::session::PromptOrigin::Schedule
-            | crate::session::PromptOrigin::Http
-            | crate::session::PromptOrigin::Notification,
-        ) => true,
-        Some(
-            crate::session::PromptOrigin::External | crate::session::PromptOrigin::CompletionCheck,
-        ) => false,
+        Some(origin) => origin.is_chariox_prompt(),
         None => !entry.is_external_provider_observed(),
     }
 }
