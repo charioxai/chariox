@@ -261,6 +261,8 @@ impl KernelRuntimeState {
         };
         self.retire_owned_provider_run_after_terminal_failure(&dispatch.session_id, run.id())
             .await;
+        self.admit_cold_claude_launch(&dispatch.session_id, &dispatch.agent_id)
+            .await?;
         let provider_run_id = self
             .with_app_side_effect(|app| {
                 if prompt.workflow_run_id().is_some() {
@@ -1028,6 +1030,8 @@ impl KernelRuntimeState {
         if restart_provider_for_queued_prompt {
             let session_id = dispatch.session_id.clone();
             let agent_id = dispatch.agent_id.clone();
+            self.admit_cold_claude_launch(&session_id, &agent_id)
+                .await?;
             let replacement_provider_run_id = self
                 .with_app_side_effect(move |app| {
                     app.ensure_prompt_provider_run_for_agent(&session_id, &agent_id)
@@ -4856,6 +4860,51 @@ pub(in crate::runtime::state) mod tests {
             .owner_provider_run_ids
             .iter()
             .any(|id| id == provider_run.id())));
+    }
+
+    #[tokio::test]
+    async fn claude_headless_replacement_for_a_queued_prompt_waits_for_the_hooks_card() {
+        use super::super::claude_cold_launch_fixture as cold;
+        crate::test_support::isolated_env_test!();
+        if cfg!(not(unix)) && crate::provider::resolve_claude_executable().is_err() {
+            eprintln!("SKIP claude_headless_replacement_for_a_queued_prompt_waits_for_the_hooks_card: claude binary is absent");
+            return;
+        }
+        let (worktree, runtime, session_id, agent_id, source_id, _provider_run, dispatch) =
+            runtime_with_claude_headless_active_prompt().await;
+        cold::write_hooks(worktree.path());
+        cold::require_hook_approval(&runtime, &agent_id);
+        runtime
+            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt: PromptQueueItem::new(
+                    "queued-after-poisoned-provider",
+                    &source_id,
+                    &agent_id,
+                    "continue review on a fresh provider",
+                    PromptStatus::Queued,
+                ),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .await
+            .expect("replacement prompt should queue");
+
+        let result = cold::start_waits_for_hooks_card(
+            &runtime,
+            &session_id,
+            &agent_id,
+            runtime.fail_prompt_dispatch(
+                dispatch,
+                DaemonError::LocalTransport {
+                    operation: CLAUDE_HEADLESS_PROMPT_ACK_OPERATION,
+                    message: "provider did not acknowledge prompt after PTY injection".to_string(),
+                },
+            ),
+        )
+        .await;
+
+        assert!(result.unwrap_err().to_string().contains("was not trusted"));
     }
 
     #[tokio::test]
