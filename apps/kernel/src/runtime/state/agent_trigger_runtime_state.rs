@@ -637,6 +637,200 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn trigger_steer_consumes_only_after_ack_even_if_the_original_turn_finishes() {
+        let (_worktree, runtime, session_id, agent_id, _, _, run_id) =
+            runtime_with_active_prompt().await;
+        let request = crate::provider::LaunchProviderRequest::new(
+            &session_id,
+            "dev-stub",
+            "slow-structured",
+            "default",
+            "model",
+        )
+        .with_agent_id(&agent_id);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            &run_id,
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "slow-ack".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: Some("test".into()),
+            },
+        );
+        run.mark_running();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        runtime.owned.provider_run_projection.update(run);
+        let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
+        let state = runtime.clone();
+        let due = trigger.next_run_at_ms();
+        let firing = tokio::spawn(async move { state.dispatch_due_agent_triggers(due).await });
+        wait_for_queued_firing(&runtime, &session_id, &agent_id).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !runtime
+                .owned
+                .provider_store
+                .structured_prompt_io_in_flight(&run_id)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the Submit command must reach the mailbox before completion");
+        assert!(
+            !firing.is_finished(),
+            "a mailbox enqueue is not yet an acknowledgement"
+        );
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        runtime
+            .owned
+            .prompt_state_owner
+            .complete_active_prompt_only(&session, &agent_id)
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), firing)
+            .await
+            .unwrap()
+            .unwrap();
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        let (active, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        assert!(active.is_none());
+        assert!(
+            queued.is_empty(),
+            "accepted steering must not run again after completion"
+        );
+        assert!(session.agent_triggers().is_empty());
+    }
+
+    // MP-08/MP-09/MP-10: mailbox admission is not provider acceptance.
+    #[tokio::test]
+    async fn trigger_steer_rejected_after_mailbox_admission_runs_on_next_turn() {
+        let (_worktree, runtime, session_id, agent_id, _, _, run_id) =
+            runtime_with_active_prompt().await;
+        let original_run = runtime.owned.provider_store.get_run(&run_id).unwrap();
+        let request = crate::provider::LaunchProviderRequest::new(
+            &session_id,
+            "codex",
+            "codex",
+            "default",
+            "gpt-6-luna",
+        )
+        .with_agent_id(&agent_id);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            &run_id,
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "rejected-after-mailbox".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: Some("test".into()),
+            },
+        );
+        run.mark_running();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        runtime.owned.provider_run_projection.update(run);
+        let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
+        runtime
+            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .await;
+        // The actor accepts Submit in its mailbox, then its Codex adapter
+        // rejects it because there is no live native turn/runtime.
+        let finished = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let mut jobs = runtime
+                    .owned
+                    .provider_store
+                    .drain_finished_structured_prompt_submit_jobs();
+                if let Some(job) = jobs.pop() {
+                    break job;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            finished.result.is_err(),
+            "the actor must reject after enqueue succeeds"
+        );
+        runtime
+            .owned
+            .provider_store
+            .schedule_finished_structured_prompt_submit_retry(finished);
+        runtime.reap_structured_prompt_jobs_and_dispatch();
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        let (_, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        assert_eq!(
+            queued.len(),
+            1,
+            "the rejected one-shot firing must remain pending"
+        );
+        assert_eq!(queued[0].agent_trigger_id(), Some(trigger.id()));
+        assert_eq!(
+            session
+                .durable_runtime_snapshot()
+                .queued_prompts_for_agent(&agent_id)
+                .unwrap()
+                .len(),
+            1
+        );
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(original_run.clone());
+        runtime.owned.provider_run_projection.update(original_run);
+        runtime
+            .owned
+            .prompt_state_owner
+            .complete_active_prompt_only(&session, &agent_id)
+            .unwrap();
+        runtime
+            .spawn_idle_local_prompt_queue_promotion(&session_id, &agent_id)
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let session = runtime.owned.session_snapshot(&session_id).unwrap();
+                let (active, queued) = runtime
+                    .owned
+                    .prompt_state_owner
+                    .state_parts(&session, &agent_id);
+                if let Some(active) = active {
+                    assert_eq!(active.agent_trigger_id(), Some(trigger.id()));
+                    assert!(queued.is_empty());
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("retained firing must start on the next turn");
+    }
+
+    #[tokio::test]
     async fn trigger_disabled_while_an_earlier_claim_is_blocked_is_not_admitted() {
         for reenable in [false, true] {
             let (_worktree, runtime, session_id, agent_id, _, _, run_id) =

@@ -167,7 +167,21 @@ impl KernelRuntimeState {
             private_assessment_evidence,
             dispatch.steering,
         );
-        result.map(|()| true)
+        let receipt = result?;
+        // MP-08/MP-09/MP-10: a queued steer is recoverable until the
+        // structured provider accepts it, even after mailbox admission.
+        if dispatch.steering {
+            drop(_room_guard);
+            if !receipt.await.unwrap_or(false) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "steer queued prompt",
+                    message:
+                        "provider rejected the queued prompt steer; the message remains queued"
+                            .into(),
+                });
+            }
+        }
+        Ok(true)
     }
 }
 
