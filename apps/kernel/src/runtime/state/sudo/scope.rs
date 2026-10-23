@@ -62,7 +62,10 @@ impl KernelRuntimeState {
                 && request.worktree_id == session.worktree_id()
                 && request.kernel_ref.is_none()
                 && request.slice_ref.is_none()
-                && request.agent_defaults.is_none()
+                // The session actor re-checks the request after the kernel
+                // filled its own configured defaults in; that is no account choice.
+                && (request.agent_defaults.is_none()
+                    || request.agent_defaults == self.owned.configured_session_agent_defaults())
                 && request.worktree_placement.is_none()
                 && request.workspace_live_sync_mode.is_none()
                 && matches!(

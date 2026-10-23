@@ -260,3 +260,73 @@ async fn sudo_task_creates_a_same_workspace_session_without_another_passkey() {
     assert!(denied.to_string().contains("sudo"));
     assert!(f.state.passkey_prompts_for("local").is_empty());
 }
+
+// MP-08 / MP-10 / MP-11 G06: with the kernel's default agent settings configured, as on any
+// signed-in kernel, the session lane re-checks the create after filling those defaults in.
+// An enrolled (non-local) owner's sudo task must still create its same-workspace session.
+#[tokio::test]
+async fn sudo_task_creates_a_same_workspace_session_with_kernel_default_agent_settings() {
+    const OWNER: &str = "enrolled-owner";
+    let f = super::tests::fixture_for_owner(None, true, "dev-stub", "dev-stub", None, OWNER);
+    let state = f.state.clone();
+    let request = f.request.clone();
+    let starting = tokio::spawn(async move {
+        state
+            .submit_sudo_prompt(request, OWNER, "sudo-terminal")
+            .await
+    });
+    let mut starting = starting;
+    let consent = tokio::select! {
+        consent = super::tests::popup_for(&f.state, OWNER) => consent,
+        ended = &mut starting => panic!("sudo start ended before its popup: {ended:?}"),
+    };
+    f.state
+        .answer_terminal_runtime_interaction(
+            &consent.session_id,
+            &consent.interaction_id,
+            "approve",
+            None,
+            Some(OWNER),
+            Some(&ApprovalPasskey::new(PASSKEY)),
+            None,
+            Some(KernelConnectionClass::Terminal),
+        )
+        .await
+        .unwrap();
+    starting.await.unwrap().unwrap();
+    for (key, value) in [
+        ("providers.default", "codex"),
+        ("providers.model", "gpt-test"),
+    ] {
+        f.state
+            .set_user_config_value(key.to_string(), value.to_string())
+            .await
+            .unwrap();
+    }
+    let window = f.state.list_sudo_turns(OWNER).pop().unwrap();
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&window.session_id)
+        .unwrap();
+    let request =
+        crate::session::CreateSessionRequest::new(session.workspace_id(), session.worktree_id())
+            .with_alias("enrolled-task-session");
+    let reply = tokio::time::timeout(
+        Duration::from_secs(5),
+        f.router.dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            "chariox_kernel_request",
+            serde_json::json!({"request":{"CreateSession": request}}),
+        ),
+    )
+    .await
+    .expect("same-workspace session creation asked for a second passkey");
+    let reply = reply.unwrap_or_else(|error| panic!("create failed: {error:?}"));
+    let new_id = reply.payload["SessionCreated"]["session"]["id"]
+        .as_str()
+        .expect("created session");
+    let created = f.state.owned.session_store.get_session(new_id).unwrap();
+    assert_eq!(created.owner_user_id(), OWNER);
+}
