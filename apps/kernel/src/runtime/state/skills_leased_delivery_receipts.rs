@@ -25,7 +25,16 @@ pub(super) enum LeasedSkillAcknowledgement {
         prompt_id: String,
         skill_id: String,
         digest: String,
+        #[serde(default = "explicit_reason")]
+        reason: SkillLoadReason,
     },
+    TypedNative {
+        prompt_id: String,
+        entry: Box<NativeSkillEntry>,
+    },
+}
+fn explicit_reason() -> SkillLoadReason {
+    SkillLoadReason::Explicit
 }
 impl LeasedSkillAcknowledgement {
     fn admits(&self, authority: &SkillTurnAuthority, record: &SkillLoadRecord) -> bool {
@@ -39,7 +48,7 @@ impl LeasedSkillAcknowledgement {
             Self::NativeTool { name } => {
                 authority.native_tool_loads.get(name) == Some(&record.skill_id)
             }
-            Self::Typed { .. } => false,
+            Self::Typed { .. } | Self::TypedNative { .. } => false,
         }
     }
 }
@@ -59,9 +68,14 @@ pub(in crate::runtime::state) fn acknowledge_leased_delivery(
             prompt_id,
             skill_id,
             digest,
+            reason,
         } = &acknowledgement
         {
-            service(state).record_typed_load(context, prompt_id, skill_id, digest)?;
+            service(state).record_typed_load(context, prompt_id, skill_id, digest, reason)?;
+            return Ok(acknowledged());
+        }
+        if let LeasedSkillAcknowledgement::TypedNative { prompt_id, entry } = &acknowledgement {
+            service(state).record_typed_native_load(context, prompt_id, entry)?;
             return Ok(acknowledged());
         }
         let prompt_id = context
@@ -99,6 +113,7 @@ impl SkillDispatchService {
         prompt_id: &str,
         skill_id: &str,
         digest: &str,
+        reason: &SkillLoadReason,
     ) -> Result<(), DaemonError> {
         let service = self.catalog()?;
         let catalog = service.storage.snapshot()?;
@@ -130,7 +145,7 @@ impl SkillDispatchService {
                     &context.worker_provider_run_id,
                 ),
                 prompt_id: prompt_id.into(),
-                reason: SkillLoadReason::Explicit,
+                reason: reason.clone(),
                 context_generation: format!("{prompt_id}:typed"),
                 delivered_at_ms: crate::session::unix_epoch_ms().max(1),
             },
@@ -148,15 +163,85 @@ impl SkillDispatchService {
         skills: &[crate::provider::skill_delivery::TypedSkillLoad],
     ) -> Result<(), DaemonError> {
         skills.iter().try_for_each(|skill| {
-            self.send_leased_acknowledgement(
-                context.clone(),
-                LeasedSkillAcknowledgement::Typed {
+            use crate::provider::skill_delivery::TypedSkillLoad;
+            let acknowledgement = match skill {
+                TypedSkillLoad::Chariox {
+                    skill_id,
+                    digest,
+                    reason,
+                } => LeasedSkillAcknowledgement::Typed {
                     prompt_id: prompt_id.into(),
-                    skill_id: skill.skill_id.clone(),
-                    digest: skill.digest.clone(),
+                    skill_id: skill_id.clone(),
+                    digest: digest.clone(),
+                    reason: reason.clone(),
                 },
-            )
+                TypedSkillLoad::Native { entry } => LeasedSkillAcknowledgement::TypedNative {
+                    prompt_id: prompt_id.into(),
+                    entry: entry.clone(),
+                },
+            };
+            self.send_leased_acknowledgement(context.clone(), acknowledgement)
         })
+    }
+
+    fn record_typed_native_load(
+        &self,
+        context: &RemoteWorkspaceLiveSyncContext,
+        prompt_id: &str,
+        entry: &NativeSkillEntry,
+    ) -> Result<(), DaemonError> {
+        let agent = self.agents.get_agent(&context.home_agent_id)?;
+        let SkillSelection::Native {
+            entry_id,
+            provider,
+            execution_id,
+            ..
+        } = &entry.selection
+        else {
+            return Err(failure("expected a native skill receipt"));
+        };
+        let native_execution = format!(
+            "{}:{}",
+            context.worker_kernel_id, context.worker_provider_run_id
+        );
+        if execution_id != &native_execution
+            || entry.exposure != NativeSkillExposure::Confirmed
+            || !entry.complete_manifest
+            || crate::provider::canonical_provider_family(agent.provider())
+                != Some(provider.as_str())
+        {
+            return Err(failure(
+                "native skill receipt is unverified or belongs to another provider or execution",
+            ));
+        }
+        let digest = entry
+            .digest
+            .as_ref()
+            .filter(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
+            .ok_or_else(|| failure("native skill receipt has no verified content digest"))?;
+        let service = self.catalog()?;
+        let revision = service.storage.snapshot()?.revision;
+        let session = self.sessions.get_session(&context.home_session_id)?;
+        service.storage.record_load_at_revision(
+            &SkillLoadRecord {
+                skill_id: entry_id.clone(),
+                digest: digest.clone(),
+                session_id: session.id().into(),
+                agent_id: agent.id().into(),
+                run_id: crate::provider::projected_leased_provider_run_id(
+                    &context.leased_agent_id,
+                    &context.worker_provider_run_id,
+                ),
+                prompt_id: prompt_id.into(),
+                reason: SkillLoadReason::ConfirmedNative,
+                context_generation: format!("{prompt_id}:typed"),
+                delivered_at_ms: crate::session::unix_epoch_ms().max(1),
+            },
+            Some(session.project_id()),
+            revision,
+        )?;
+        self.changes.record_change();
+        Ok(())
     }
 
     pub(super) fn forward_leased_delivery(
@@ -196,15 +281,33 @@ impl SkillDispatchService {
         context: RemoteWorkspaceLiveSyncContext,
         acknowledgement: LeasedSkillAcknowledgement,
     ) -> Result<(), DaemonError> {
+        let result = self.send_home_skill_tool(
+            context,
+            LEASED_SKILL_DELIVERY_ACK,
+            serde_json::to_value(acknowledgement)
+                .map_err(|_| failure("cannot encode skill delivery"))?,
+        )?;
+        if result.ok {
+            Ok(())
+        } else {
+            Err(failure("home kernel did not acknowledge skill delivery"))
+        }
+    }
+
+    pub(super) fn send_home_skill_tool(
+        &self,
+        context: RemoteWorkspaceLiveSyncContext,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let config = self.config.snapshot();
         let request = RelayPeerRequest::ForwardCapabilityRuntimeTool {
             context: context.clone(),
-            tool_name: LEASED_SKILL_DELIVERY_ACK.into(),
-            arguments: serde_json::to_value(acknowledgement)
-                .map_err(|_| failure("cannot encode skill delivery"))?,
+            tool_name: tool_name.into(),
+            arguments,
         };
-        // ACK settlement is synchronous and retryable in the existing provider
-        // completion queue. The home handler never calls this worker back.
+        // The home returns packages in its preparation reply rather than calling
+        // this worker back while the native hook holds its app mutation lane.
         let handle = tokio::runtime::Handle::try_current()
             .map_err(|_| failure("skill delivery runtime unavailable"))?;
         let response = std::thread::scope(|scope| {
@@ -222,7 +325,9 @@ impl SkillDispatchService {
         })
         .map_err(|_| failure("skill delivery acknowledgement interrupted"))??;
         match response {
-            RelayPeerResponse::CapabilityRuntimeToolHandled { result, .. } if result.ok => Ok(()),
+            RelayPeerResponse::CapabilityRuntimeToolHandled { result, .. } if result.ok => {
+                Ok(result)
+            }
             _ => Err(failure("home kernel did not acknowledge skill delivery")),
         }
     }

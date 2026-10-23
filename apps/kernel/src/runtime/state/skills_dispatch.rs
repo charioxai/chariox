@@ -1,5 +1,7 @@
 //! MP-08 / MP-10 / MP-11: one instruction preparation service for every structured submission.
 use super::*;
+#[path = "skills_leased_composer.rs"]
+mod composer;
 #[path = "skills_leased_delivery_receipts.rs"]
 mod leased_receipts;
 #[path = "skills_delivery_receipts.rs"]
@@ -15,6 +17,7 @@ use crate::{
         turn_authority::SkillTurnAuthority, v2::*,
     },
 };
+pub(super) use composer::prepare_composer_turn;
 pub(super) use leased_receipts::{acknowledge_leased_delivery, LEASED_SKILL_DELIVERY_ACK};
 
 /// Store handles only: this bridge deliberately holds no ProviderProcessServiceStore
@@ -585,6 +588,8 @@ impl SkillDispatchService {
                     hidden_context: String::new(),
                     codex_input: vec![],
                     requires_native_load_ack: vec![],
+                    typed_leased_loads: vec![],
+                    leased_names: None,
                 }));
             }
             return Ok(None);
@@ -689,6 +694,16 @@ impl SkillPromptBridge for SkillDispatchService {
         batch: &crate::provider::ProviderPromptSignalBatch,
     ) -> Result<(), DaemonError> {
         self.record_tool_receipts(run, batch)
+    }
+    fn prepare_typed_leased(
+        &self,
+        run: &RuntimeProviderRun,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        prompt: &crate::session::PromptQueueItem,
+        lease_id: &str,
+        names: Option<&crate::skill::leased_names::LeasedSkillNames>,
+    ) -> Result<ProviderSkillDelivery, DaemonError> {
+        self.prepare_worker_composer(run, context, prompt, lease_id, names)
     }
     fn acknowledge_typed_leased(
         &self,
@@ -855,6 +870,8 @@ impl SkillPromptBridge for SkillDispatchService {
                 hidden_context: context.metadata.clone(),
                 codex_input: vec![],
                 requires_native_load_ack: vec![],
+                typed_leased_loads: vec![],
+                leased_names: None,
             },
         };
         let extra_visible = delivery

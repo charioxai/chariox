@@ -67,16 +67,31 @@ impl KernelRuntimeState {
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         if tool_name == super::skills_dispatch::LEASED_SKILL_DELIVERY_ACK {
             self.authorize_forwarded_delivery_receipt_context(context)
+        } else if tool_name == crate::skill::leased_composer::PREPARE_LEASED_SKILL_TURN {
+            self.authorize_forwarded_native_composer_context(context)
         } else {
             self.authorize_forwarded_workspace_context(context)
         }
+    }
+
+    pub(crate) fn authorize_forwarded_native_composer_context(
+        &self,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        if context.home_prompt_id.is_some() {
+            return Err(DaemonError::LocalTransport {
+                operation: "authorize native composer skills",
+                message: "native composer preparation cannot replace a dispatched home turn".into(),
+            });
+        }
+        self.authorize_forwarded_context_for_prompt_states(context, &[], true)
     }
 
     fn authorize_forwarded_context_for_prompt_states(
         &self,
         context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
         admitted_prompt_states: &[crate::session::PromptStatus],
-        native_delivery_receipt: bool,
+        allow_unbound_native_run: bool,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         self.authorize_current_forwarded_binding()?;
         let agent = self.owned.agent_store.get_agent(&context.home_agent_id)?;
@@ -107,7 +122,7 @@ impl KernelRuntimeState {
         // still require the exact admitted turn. Ordinary tools get no exception.
         let run_matches = remote.active_worker_provider_run_id.as_deref()
             == Some(context.worker_provider_run_id.as_str())
-            || (native_delivery_receipt
+            || (allow_unbound_native_run
                 && remote.active_worker_provider_run_id.is_none()
                 && self
                     .owned
@@ -200,11 +215,11 @@ impl KernelRuntimeState {
             // Both admission and its retained binding witness share the mutation lock.
             self.authorize_forwarded_peer_request_locked(request)?;
             if matches!(request, RelayPeerRequest::ForwardCapabilityRuntimeTool { context, tool_name, .. }
-                if tool_name == super::skills_dispatch::LEASED_SKILL_DELIVERY_ACK && context.home_prompt_id.is_none()) {
-                // Typed receipts have no home prompt to pin. The receipt handler
-                // rechecks the authenticated lease/run under this same mutation
-                // lane immediately before recording; projection of the new native
-                // turn between admission and recording must not revoke delivery.
+                if context.home_prompt_id.is_none() && (tool_name == super::skills_dispatch::LEASED_SKILL_DELIVERY_ACK
+                    || tool_name == crate::skill::leased_composer::PREPARE_LEASED_SKILL_TURN)) {
+                // Native composer preparation and receipts have no home prompt to
+                // pin. Their handlers recheck the exact authenticated lease/run;
+                // a new native turn projection must not revoke that same process.
                 let mut state = self.clone();
                 state.forwarded_peer_binding = None;
                 return Ok(state);

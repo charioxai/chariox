@@ -725,6 +725,26 @@ impl ProviderProcessServiceStore {
         Ok(())
     }
 
+    pub(crate) fn prepare_typed_leased_skills(
+        &self,
+        run: &RuntimeProviderRun,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        prompt: &crate::session::PromptQueueItem,
+        lease_id: &str,
+        names: Option<&crate::skill::leased_names::LeasedSkillNames>,
+    ) -> Result<crate::provider::skill_delivery::ProviderSkillDelivery, DaemonError> {
+        let bridge = self
+            .skill_prompt_bridge
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "prepare native worker skills",
+                message: "Skills startup is incomplete; reattach the native provider".into(),
+            })?;
+        bridge.prepare_typed_leased(run, context, prompt, lease_id, names)
+    }
+
     pub(crate) fn acknowledge_typed_leased_skills(
         &self,
         provider_run_id: &str,

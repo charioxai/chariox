@@ -496,6 +496,8 @@ mod prompt_tests {
                     },
                     codex_input: vec![],
                     requires_native_load_ack: vec![],
+                    typed_leased_loads: vec![],
+                    leased_names: None,
                 },
             );
         }

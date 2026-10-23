@@ -109,16 +109,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 }
 
-/// A skill the user typed in a leased agent's native composer, read back from the
-/// lease's verified cache.
-pub(crate) struct TypedLeasedSkill {
-    pub skill_id: String,
-    pub name: String,
-    pub digest: String,
-    pub root: std::path::PathBuf,
-    pub body: String,
-}
-
 impl<'a> RemoteLeaseRuntime<'a> {
     /// The leased agent whose provider runs in this backing session, if any.
     pub(crate) fn leased_agent_id_for_backing(
@@ -134,59 +124,5 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     && agent.backing_agent_id == backing_agent_id
             })
             .map(|agent| agent.id.clone())
-    }
-
-    /// Resolves the typed `$name`s of a native prompt against the home's view of this
-    /// lease. A lease with no view, or a name outside it, selects nothing.
-    pub(crate) fn typed_leased_skills(
-        &self,
-        leased_agent_id: &str,
-        prompt: &str,
-    ) -> Result<Vec<TypedLeasedSkill>, DaemonError> {
-        let agent = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
-            DaemonError::LeasedAgentNotFound {
-                leased_agent_id: leased_agent_id.to_string(),
-            }
-        })?;
-        let Some(names) = &agent.skill_names else {
-            return Ok(vec![]);
-        };
-        let typed = names.resolve(prompt);
-        if typed.is_empty() {
-            return Ok(vec![]);
-        }
-        let lease = self
-            .app
-            .execution_leases
-            .get(&agent.lease_id)
-            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
-                lease_id: agent.lease_id.clone(),
-            })?;
-        let context = RemoteSkillSyncContext {
-            home_kernel_id: lease.home_kernel_id.clone(),
-            home_session_id: lease.home_session_id.clone(),
-            home_agent_id: lease.home_agent_id.clone(),
-            leased_agent_id: leased_agent_id.to_string(),
-        };
-        let home = skill_home()?;
-        typed
-            .into_iter()
-            .map(|skill| {
-                let cached = crate::skill::transfer::read_cached_skill(
-                    &home,
-                    &context,
-                    &agent.lease_id,
-                    &skill.skill_id,
-                    &skill.digest,
-                )?;
-                Ok(TypedLeasedSkill {
-                    skill_id: skill.skill_id.clone(),
-                    name: skill.name.clone(),
-                    digest: skill.digest.clone(),
-                    root: cached.root,
-                    body: cached.body,
-                })
-            })
-            .collect()
     }
 }

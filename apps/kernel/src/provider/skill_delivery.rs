@@ -42,6 +42,19 @@ pub(crate) trait SkillPromptBridge: Send + Sync {
         prompt_id: &str,
         skills: &[TypedSkillLoad],
     ) -> Result<(), DaemonError>;
+    /// Native composer turns ask the owning home for the current catalog and active loads.
+    fn prepare_typed_leased(
+        &self,
+        _run: &crate::provider::RuntimeProviderRun,
+        _context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        _prompt: &crate::session::PromptQueueItem,
+        _lease_id: &str,
+        _names: Option<&crate::skill::leased_names::LeasedSkillNames>,
+    ) -> Result<ProviderSkillDelivery, DaemonError> {
+        Err(failure(
+            "the home skill preparation bridge is unavailable; reattach the native provider",
+        ))
+    }
     fn prepare(
         &self,
         run: &crate::provider::RuntimeProviderRun,
@@ -53,11 +66,18 @@ pub(crate) trait SkillPromptBridge: Send + Sync {
     ) -> Result<Option<ProviderSkillDelivery>, DaemonError>;
 }
 
-/// One skill a user typed and the worker delivered, by full identity.
+/// One home-pinned body or confirmed native invocation the worker delivered.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct TypedSkillLoad {
-    pub skill_id: String,
-    pub digest: String,
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TypedSkillLoad {
+    Chariox {
+        skill_id: String,
+        digest: String,
+        reason: SkillLoadReason,
+    },
+    Native {
+        entry: Box<NativeSkillEntry>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +89,8 @@ pub struct ProviderSkillDelivery {
     pub codex_input: Vec<serde_json::Value>,
     /// Availability is never a receipt. Record loads after actual harness ACK.
     pub requires_native_load_ack: Vec<SkillSelection>,
+    pub typed_leased_loads: Vec<TypedSkillLoad>,
+    pub leased_names: Option<crate::skill::leased_names::LeasedSkillNames>,
 }
 fn failure(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
@@ -195,6 +217,8 @@ pub fn prepare_skill_delivery(
         hidden_context,
         codex_input,
         requires_native_load_ack: context.native_selections.clone(),
+        typed_leased_loads: Vec::new(),
+        leased_names: None,
     })
 }
 

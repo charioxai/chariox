@@ -166,9 +166,8 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         })
     }
 
-    /// The worker owns no catalog: the home's name view for this lease selects the
-    /// packages already verified in the lease's cache, and the home records the load
-    /// once the hook confirms delivery.
+    /// The home resolves current and active selections; the worker materializes
+    /// only its lease-bound packages and records loads after hook delivery.
     fn leased_typed_skill_context(
         &mut self,
         leased_agent_id: &str,
@@ -176,36 +175,55 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         prompt: &crate::session::PromptQueueItem,
         context: String,
     ) -> Result<TypedSkillContext, DaemonError> {
-        let skills = crate::app::RemoteLeaseRuntime::new(self.app)
-            .typed_leased_skills(leased_agent_id, prompt.prompt())?;
-        if skills.is_empty() {
-            return Ok(TypedSkillContext::plain(context));
+        let worktree = self
+            .app
+            .sessions
+            .get_session(provider_run.session_id())?
+            .worktree_id()
+            .to_string();
+        let lease = crate::app::RemoteLeaseRuntime::new(self.app);
+        let mut authority = lease
+            .leased_workspace_live_sync_context_for_provider_run(
+                provider_run.id(),
+                crate::io::WorkspaceIdentity::local(&worktree),
+            )
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "prepare native worker skills",
+                message: "the native execution lease ended; reattach the provider".into(),
+            })?;
+        authority.home_prompt_id = None;
+        let agent = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
+            DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.into(),
+            }
+        })?;
+        let lease_id = agent.lease_id.clone();
+        let names = agent.skill_names.clone();
+        let delivery = self.app.providers.prepare_typed_leased_skills(
+            provider_run,
+            &authority,
+            prompt,
+            &lease_id,
+            names.as_ref(),
+        )?;
+        if let Some(names) = delivery.leased_names {
+            if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
+                if names.catalog_revision >= agent.skill_view_revision {
+                    agent.skill_view_revision = names.catalog_revision;
+                    agent.skill_names = Some(names);
+                }
+            }
         }
-        let bodies: String = skills
-            .iter()
-            .map(|skill| {
-                format!(
-                    "\nSkill {} ({}) at {}:\n{}\n",
-                    skill.name,
-                    skill.digest,
-                    skill.root.display(),
-                    skill.body
-                )
-            })
-            .collect();
+        let native_command = (!delivery.requires_native_load_ack.is_empty()
+            && delivery.visible_prompt.starts_with('/'))
+        .then_some(delivery.visible_prompt);
         Ok(TypedSkillContext {
             context: crate::provider::fit_claude_native_hidden_context(
                 provider_run.id(),
-                join_claude_context([context, bodies]),
+                join_claude_context([context, delivery.hidden_context]),
             )?,
-            loads: skills
-                .into_iter()
-                .map(|skill| TypedSkillLoad {
-                    skill_id: skill.skill_id,
-                    digest: skill.digest,
-                })
-                .collect(),
-            native_command: None,
+            loads: delivery.typed_leased_loads,
+            native_command,
         })
     }
 

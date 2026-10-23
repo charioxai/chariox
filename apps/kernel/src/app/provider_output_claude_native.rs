@@ -681,7 +681,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                                     dispatch_prompt_id,
                                     active.id(),
                                     true,
-                                    Vec::new(),
+                                    typed_prompt::typed_native_loads(
+                                        context_file,
+                                        dispatch_prompt_id,
+                                    )?,
                                 )?;
                                 write_claude_hook_context_response(
                                     context_file,
@@ -801,6 +804,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                                 started,
                                 command,
                                 &typed.context,
+                                &typed.loads,
                             )?;
                             continue;
                         }

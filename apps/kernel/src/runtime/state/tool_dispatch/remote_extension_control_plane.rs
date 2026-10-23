@@ -419,6 +419,11 @@ impl KernelRuntimeState {
                 )
             })
             .await?
+        } else if tool_name == crate::skill::leased_composer::PREPARE_LEASED_SKILL_TURN {
+            self.with_app_side_effect(|_| {
+                super::super::skills_dispatch::prepare_composer_turn(self, &context, arguments)
+            })
+            .await?
         } else {
             // A10: a leased sender acts with its lease-verified origin, as a local
             // provider turn does.

@@ -9,6 +9,8 @@ struct NativeCommandRetry {
     command: String,
     context: String,
     stage: NativeCommandRetryStage,
+    #[serde(default)]
+    loads: Vec<crate::provider::skill_delivery::TypedSkillLoad>,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -52,6 +54,7 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         prompt: &crate::session::PromptQueueItem,
         command: &str,
         context: &str,
+        loads: &[crate::provider::skill_delivery::TypedSkillLoad],
     ) -> Result<(), DaemonError> {
         write_retry(
             context_file,
@@ -61,6 +64,7 @@ impl ProviderOutputClaudeNativeBridge<'_> {
                 command: command.into(),
                 context: context.into(),
                 stage: NativeCommandRetryStage::AwaitingRedirect,
+                loads: loads.to_vec(),
             },
         )?;
         permission::write_claude_hook_context_rejection(
@@ -201,6 +205,12 @@ impl ProviderOutputClaudeNativeBridge<'_> {
             },
             &retry.context,
         )?;
+        fs::write(
+            format!("{context_file}.typed-native-loads"),
+            serde_json::to_vec(&(prompt.id(), &retry.loads))
+                .expect("native receipt pins are serializable"),
+        )
+        .map_err(|error| retry_error(error.to_string()))?;
         fs::write(context_file, &retry.context).map_err(|error| retry_error(error.to_string()))?;
         fs::write(format!("{context_file}.approval-origin"), prompt.id())
             .map_err(|error| retry_error(error.to_string()))?;
@@ -221,4 +231,24 @@ impl ProviderOutputClaudeNativeBridge<'_> {
             .record_after(run.id(), CLAUDE_SUBMIT_DELAY_MS);
         Ok(())
     }
+}
+
+/// A native retry's receipt belongs to its original turn, never a later managed prompt.
+pub(super) fn typed_native_loads(
+    context_file: &str,
+    prompt_id: &str,
+) -> Result<Vec<crate::provider::skill_delivery::TypedSkillLoad>, DaemonError> {
+    let bytes = match fs::read(format!("{context_file}.typed-native-loads")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(retry_error(error.to_string())),
+    };
+    let (owner, loads): (String, Vec<crate::provider::skill_delivery::TypedSkillLoad>) =
+        serde_json::from_slice(&bytes)
+            .map_err(|_| retry_error("invalid typed native receipt pins"))?;
+    Ok(if owner == prompt_id {
+        loads
+    } else {
+        Vec::new()
+    })
 }

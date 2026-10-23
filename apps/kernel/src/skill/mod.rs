@@ -7,6 +7,7 @@ pub mod catalog;
 mod catalog_tests;
 pub mod frontmatter;
 mod home_journal;
+pub(crate) mod leased_composer;
 pub mod leased_names;
 mod load_history;
 pub(crate) mod model_metadata;

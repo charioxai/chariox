@@ -5044,16 +5044,36 @@ skills of the same manifest and revision, or the request is refused. Turn hidden
 context still advertises Auto skills only. The worker keeps the newest view on
 its leased agent (it is no catalog and grants nothing). The home sends it with
 every leased turn and when a leased native provider launches, so a native
-composer works before any dispatched turn. The worker's Claude hook resolves
-the typed prompt against it with the home's `$name` token rules, reads the
-verified package from the lease's execution cache and returns the body in the
-hook context like a home-resolved skill; unresolved dollar text is not an
-invocation. After the hook confirms delivery the worker forwards
-`_chariox_skill_delivery_ack` with `delivery: "typed"`, `prompt_id`, `skill_id`
-and `digest` for each delivered skill (no home prompt binding: the home has no
-dispatched turn). The home records Explicit Loaded only when that ID and
-complete digest are an effective row of its current catalog; a stale, foreign
-or Off claim is refused and recorded nowhere.
+composer works before any dispatched turn.
+
+MP-08 / MP-10 / MP-11: every typed Claude composer turn asks the owning home for
+its current context through the private `_chariox_prepare_native_skill_turn`
+operation on `ForwardCapabilityRuntimeTool`. It uses the authenticated lease and
+live native run, without claiming an unrelated dispatched home prompt. The
+request carries the prompt, execution-bound native inventory, verified cached
+digests and whether the worker still holds its pre-compaction context. The home
+uses its normal resolver, active-load history, metadata budget and native dedupe
+rules; an ordinary `continue` therefore restores an updated active Manual body
+and receives Auto discovery metadata. The reply carries only required package
+bytes, the current name view and pinned body identities. The worker verifies and
+materializes them in this lease's cache, reads the body there, and renders
+metadata with worker paths. It never opens a worker catalog or calls back to the
+worker while handling this preparation request.
+
+Confirmed worker-native selections, including folded equal-content Chariox
+rows, use the existing `/name task` adapter and its original turn identity. The
+retry retains its delivery receipts until the real native invocation's hook
+confirms consumption. After that acknowledgement the worker sends
+`_chariox_skill_delivery_ack`: `typed` carries the prompt, Chariox ID, full digest
+and load reason; `typed_native` carries the prompt and the confirmed native
+entry. The home rechecks lease/run admission and current Chariox state/digest,
+or the native entry's provider, execution and complete digest, before recording
+Loaded. Native entries carry no execution-local paths or credential settings.
+Unknown dollar prose remains ordinary text; a resolved delivery failure blocks
+the hook visibly. The private preparation and receipt operations do not grant
+ordinary forwarded-tool authority, which still needs the exact running home
+turn. These unreleased operations use the reserved local 571 / peer 179 pair;
+public client request/response shapes are unchanged.
 Environment snapshots carry Project records, package membership, overrides and
 only their required Chariox dependencies separately from Extension grants.
 

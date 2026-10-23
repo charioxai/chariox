@@ -3992,11 +3992,84 @@ mod skill_hook_fakes {
                 .extend(skills.iter().map(|skill| TypedReceipt {
                     provider_run_id: run.id().to_string(),
                     prompt_id: prompt_id.to_string(),
-                    skill_id: skill.skill_id.clone(),
-                    digest: skill.digest.clone(),
+                    skill_id: match skill {
+                        crate::provider::skill_delivery::TypedSkillLoad::Chariox {
+                            skill_id,
+                            ..
+                        } => skill_id.clone(),
+                        crate::provider::skill_delivery::TypedSkillLoad::Native { entry } => {
+                            match &entry.selection {
+                                crate::skill::v2::SkillSelection::Native { entry_id, .. } => {
+                                    entry_id.clone()
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                    },
+                    digest: match skill {
+                        crate::provider::skill_delivery::TypedSkillLoad::Chariox {
+                            digest, ..
+                        } => digest.clone(),
+                        crate::provider::skill_delivery::TypedSkillLoad::Native { entry } => {
+                            entry.digest.clone().unwrap()
+                        }
+                    },
                     home_prompt_id: context.home_prompt_id.clone(),
                 }));
             Ok(())
+        }
+        fn prepare_typed_leased(
+            &self,
+            _run: &RuntimeProviderRun,
+            authority: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+            prompt: &crate::session::PromptQueueItem,
+            lease_id: &str,
+            names: Option<&crate::skill::leased_names::LeasedSkillNames>,
+        ) -> Result<crate::provider::skill_delivery::ProviderSkillDelivery, DaemonError> {
+            use crate::provider::skill_delivery::{ProviderSkillDelivery, TypedSkillLoad};
+            let sync = crate::transport::relay_peer::RemoteSkillSyncContext {
+                home_kernel_id: authority.home_kernel_id.clone(),
+                home_session_id: authority.home_session_id.clone(),
+                home_agent_id: authority.home_agent_id.clone(),
+                leased_agent_id: authority.leased_agent_id.clone(),
+            };
+            let home = crate::config::DaemonConfig::default_user_config_path()
+                .parent()
+                .unwrap()
+                .to_path_buf();
+            let mut hidden_context = String::new();
+            let mut loads = Vec::new();
+            if let Some(names) = names {
+                for skill in names.resolve(prompt.prompt()) {
+                    let cached = crate::skill::transfer::read_cached_skill(
+                        &home,
+                        &sync,
+                        lease_id,
+                        &skill.skill_id,
+                        &skill.digest,
+                    )?;
+                    hidden_context.push_str(&format!(
+                        "\nSkill {} ({}) at {}:\n{}\n",
+                        skill.name,
+                        skill.digest,
+                        cached.root.display(),
+                        cached.body
+                    ));
+                    loads.push(TypedSkillLoad::Chariox {
+                        skill_id: skill.skill_id.clone(),
+                        digest: skill.digest.clone(),
+                        reason: crate::skill::v2::SkillLoadReason::Explicit,
+                    });
+                }
+            }
+            Ok(ProviderSkillDelivery {
+                visible_prompt: prompt.prompt().into(),
+                hidden_context,
+                codex_input: vec![],
+                requires_native_load_ack: vec![],
+                typed_leased_loads: loads,
+                leased_names: None,
+            })
         }
         fn prepare(
             &self,
@@ -4014,6 +4087,8 @@ mod skill_hook_fakes {
                     hidden_context: "SKILL-BODY-MARKER-77".into(),
                     codex_input: Vec::new(),
                     requires_native_load_ack: Vec::new(),
+                    typed_leased_loads: Vec::new(),
+                    leased_names: None,
                 },
             ))
         }
