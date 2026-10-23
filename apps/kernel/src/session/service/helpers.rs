@@ -452,7 +452,7 @@ impl SessionService {
         self.next_workflow_endpoint_number = self.next_workflow_endpoint_number.wrapping_add(1);
         format!(
             "{:016x}",
-            unix_epoch_ms() ^ self.next_workflow_endpoint_number.rotate_left(9)
+            ordered_entity_id(unix_epoch_ms(), self.next_workflow_endpoint_number)
         )
     }
 
@@ -460,7 +460,7 @@ impl SessionService {
         self.next_workflow_schema_number = self.next_workflow_schema_number.wrapping_add(1);
         format!(
             "{:016x}",
-            unix_epoch_ms() ^ self.next_workflow_schema_number.rotate_left(21)
+            ordered_entity_id(unix_epoch_ms(), self.next_workflow_schema_number)
         )
     }
 
@@ -468,7 +468,7 @@ impl SessionService {
         self.next_workflow_node_number = self.next_workflow_node_number.wrapping_add(1);
         format!(
             "{:016x}",
-            unix_epoch_ms() ^ self.next_workflow_node_number.rotate_left(7)
+            ordered_entity_id(unix_epoch_ms(), self.next_workflow_node_number)
         )
     }
 
@@ -476,7 +476,7 @@ impl SessionService {
         self.next_workflow_edge_number = self.next_workflow_edge_number.wrapping_add(1);
         format!(
             "{:016x}",
-            unix_epoch_ms() ^ self.next_workflow_edge_number.rotate_left(5)
+            ordered_entity_id(unix_epoch_ms(), self.next_workflow_edge_number)
         )
     }
 
@@ -488,7 +488,7 @@ impl SessionService {
         self.next_workflow_node_run_number = self.next_workflow_node_run_number.wrapping_add(1);
         format!(
             "{:016x}",
-            unix_epoch_ms() ^ self.next_workflow_node_run_number.rotate_left(13)
+            ordered_entity_id(unix_epoch_ms(), self.next_workflow_node_run_number)
         )
     }
 
@@ -496,7 +496,7 @@ impl SessionService {
         self.next_workflow_message_number = self.next_workflow_message_number.wrapping_add(1);
         format!(
             "{:016x}",
-            unix_epoch_ms() ^ self.next_workflow_message_number.rotate_left(15)
+            ordered_entity_id(unix_epoch_ms(), self.next_workflow_message_number)
         )
     }
 
@@ -504,7 +504,7 @@ impl SessionService {
         self.next_workflow_watchdog_number = self.next_workflow_watchdog_number.wrapping_add(1);
         format!(
             "{:016x}",
-            unix_epoch_ms() ^ self.next_workflow_watchdog_number.rotate_left(1)
+            ordered_entity_id(unix_epoch_ms(), self.next_workflow_watchdog_number)
         )
     }
 
@@ -513,7 +513,7 @@ impl SessionService {
             self.next_workflow_publication_number.wrapping_add(1);
         format!(
             "{:016x}",
-            unix_epoch_ms() ^ self.next_workflow_publication_number.rotate_left(19)
+            ordered_entity_id(unix_epoch_ms(), self.next_workflow_publication_number)
         )
     }
 
@@ -522,7 +522,7 @@ impl SessionService {
             self.next_workflow_prompt_queue_number.wrapping_add(1);
         format!(
             "{:016x}",
-            unix_epoch_ms() ^ self.next_workflow_prompt_queue_number.rotate_left(17)
+            ordered_entity_id(unix_epoch_ms(), self.next_workflow_prompt_queue_number)
         )
     }
 
@@ -531,7 +531,7 @@ impl SessionService {
             self.next_workflow_queued_prompt_number.wrapping_add(1);
         format!(
             "{:016x}",
-            unix_epoch_ms() ^ self.next_workflow_queued_prompt_number.rotate_left(19)
+            ordered_entity_id(unix_epoch_ms(), self.next_workflow_queued_prompt_number)
         )
     }
 
@@ -540,7 +540,7 @@ impl SessionService {
             self.next_agent_prompt_schedule_number.wrapping_add(1);
         format!(
             "wait-{:016x}",
-            unix_epoch_ms() ^ self.next_agent_prompt_schedule_number.rotate_left(23)
+            ordered_entity_id(unix_epoch_ms(), self.next_agent_prompt_schedule_number)
         )
     }
 }
@@ -549,5 +549,38 @@ pub(super) fn describe_session_match(session: &RuntimeSession) -> String {
     match session.alias() {
         Some(alias) => format!("{} ({alias})", session.id()),
         None => session.id().to_string(),
+    }
+}
+
+/// A workflow entity id: the creation millisecond over a per-kind counter. Two ids of one kind
+/// never collide, whatever the gap between their creations (an XOR of the two can).
+fn ordered_entity_id(epoch_ms: u64, number: u64) -> u64 {
+    (epoch_ms << 16) | (number & 0xffff)
+}
+
+#[cfg(test)]
+mod ordered_entity_id_tests {
+    use super::ordered_entity_id;
+
+    #[test]
+    fn ids_of_one_kind_never_collide_across_milliseconds_and_counters() {
+        // The old scheme was `epoch_ms ^ number.rotate_left(7)`: counter 1 at ms T and counter 2
+        // at ms T ^ 384 gave the same id, which a loaded test run reached.
+        let t = 0x1a1_6725_e721_u64;
+        assert_eq!(
+            t ^ 1_u64.rotate_left(7),
+            (t ^ 384) ^ 2_u64.rotate_left(7),
+            "the old scheme collided here"
+        );
+        assert_ne!(ordered_entity_id(t, 1), ordered_entity_id(t ^ 384, 2));
+        let mut seen = std::collections::BTreeSet::new();
+        for ms in t..t + 512 {
+            for number in 1..=64 {
+                assert!(
+                    seen.insert(ordered_entity_id(ms, number)),
+                    "ms {ms} number {number}"
+                );
+            }
+        }
     }
 }
