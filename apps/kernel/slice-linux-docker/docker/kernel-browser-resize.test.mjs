@@ -43,3 +43,29 @@ test('MP-08/MP-10 resize lays out every Tab of the shared window',async()=>{
  await resizeBrowserPage(host,tab,command);
  assert.deepEqual(calls.filter(c=>Array.isArray(c)&&c[0]==='layout').map(c=>c[2]),[{width:900,height:600},{width:900,height:600}]);
 });
+
+// #1073 P2: Tab layouts commit one by one; a failure after the first must not let a retry of the same size take the
+// same-size shortcut while the other Tab, the streams and the window bindings are still at the old size.
+test('MP-08/MP-10 a retried resize completes a partially applied one across every Tab, stream and binding',async()=>{
+ const proto=KernelBrowserHost.prototype,calls=[],bounds={width:1280,height:888,windowState:'normal'};
+ const tabs=new Map([['t',{tab_id:'t',target_id:'T'}],['u',{tab_id:'u',target_id:'U'}]]);
+ const streams=[{tab_id:'t',invalidate(){calls.push('reset t')}},{tab_id:'u',invalidate(){calls.push('reset u')}}];
+ let failU=1;
+ const host={generation:1,tabs,displays:new Map(streams.map((s,i)=>[String(i),s])),layouts:new Map(),layoutRevisions:new Map(),windowLayout:null,
+  pageSize:proto.pageSize,noteLayout:proto.noteLayout,layoutRevision:proto.layoutRevision,setLayout:proto.setLayout,
+  browser:{setLayout:async target=>{if(target==='U'&&failU-->0)throw Error('layout unavailable');calls.push('layout '+target)},
+   resolvePageTarget:async()=>({sessionId:'s',connection:{send:async(m,p)=>{if(m==='Browser.setWindowBounds')Object.assign(bounds,p.bounds);return {windowId:7,bounds:{...bounds}};}}})},
+  chromium:{desktop:{binding:()=>({})}},chromeWindows:{current:()=>({tabbed:{scale:1,page_rect:{width:bounds.width,height:bounds.height-88}}}),retire:()=>{}},
+  closeCompositors:async()=>{},stateSignal:{notify(){}},rebindWindows:async()=>calls.push('rebind')};
+ host.browser.resolvePageTarget=host.browser.resolvePageTarget.bind(host.browser);
+ await assert.rejects(resizeBrowserPage(host,tabs.get('t'),command),/layout unavailable/);
+ assert.deepEqual(host.pageSize('t'),{width:900,height:600},'the first Tab already committed');
+ assert.deepEqual(host.pageSize('u'),{width:1280,height:800});assert(!calls.includes('rebind'));
+ calls.length=0;
+ assert.deepEqual(await resizeBrowserPage(host,tabs.get('t'),command),{width:900,height:600});
+ for(const id of ['t','u'])assert.deepEqual(host.pageSize(id),{width:900,height:600},`Tab ${id} at the window size`);
+ for(const s of streams)assert.deepEqual([s.css_width,s.css_height],[900,600],`stream of ${s.tab_id} at the window size`);
+ assert(calls.includes('reset t')&&calls.includes('reset u')&&calls.includes('rebind'),'streams invalidated and windows re-bound: '+calls);
+ // Once complete, the same size is a no-op again.
+ calls.length=0;await resizeBrowserPage(host,tabs.get('t'),command);assert.deepEqual(calls,[]);
+});
