@@ -1091,7 +1091,9 @@ pub(super) mod tests {
     async fn trigger_steer_intent_is_durable_before_acknowledgement_and_not_replayed_after_restart()
     {
         let (_worktree, runtime, session_id, agent_id, _, _, run_id) =
-            runtime_with_active_prompt().await;
+            super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt_and_config(
+                durable_state_config("trigger-intent-restore"), &[],
+            ).await;
         let request = crate::provider::LaunchProviderRequest::new(
             &session_id,
             "dev-stub",
@@ -1159,6 +1161,15 @@ pub(super) mod tests {
             "the durable queue must remember the steer was handed to the provider"
         );
 
+        let events = runtime
+            .owned
+            .durable_state_store
+            .load_events_after(0)
+            .unwrap();
+        firing.abort();
+        let _ = firing.await;
+        let (runtime, _) =
+            restart_from_log_cut(&events, events.len(), "trigger-intent-restored").await;
         let dropped = runtime.owned.reconcile_inactive_local_steers();
         assert_eq!(dropped.len(), 1, "the held firing must leave the queue");
         let session = runtime.owned.session_snapshot(&session_id).unwrap();
@@ -1175,7 +1186,6 @@ pub(super) mod tests {
             .durable_runtime_snapshot()
             .queued_prompts_for_agent(&agent_id)
             .is_none_or(|prompts| prompts.is_empty()));
-        firing.abort();
     }
 
     fn install_slow_structured_run(
