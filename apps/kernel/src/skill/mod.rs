@@ -19,6 +19,7 @@ mod provider_import;
 mod repository;
 #[cfg(test)]
 mod repository_tests;
+mod repository_update;
 pub mod resolver;
 pub mod review;
 pub mod selection;

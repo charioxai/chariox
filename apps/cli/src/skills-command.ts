@@ -44,7 +44,7 @@ const USAGE = "usage: /skills list | chariox | project | environment | from | sh
   + "install <folder|url> [--project] [--revision <rev>] [--rename <name> | --replace <skill>] [--package <package>] | "
   + "import <name> [--project] [--rename <name> | --replace <skill>] | repo <https-url> [--project] [--name <package>] [--only <path,path>] | update <skill> [<folder|url>] | remove <skill> | "
   + "state <skill> auto|manual|off|reset [--project] | create-package <name> [--project] | move-to-package <skill> <package> | "
-  + "ungroup <skill> | package-state <package> auto|manual|off|reset [--project] | update-package <package> | "
+  + "ungroup <skill> | package-state <package> auto|manual|off|reset [--project] | update-package <package> | repo-update <package> | "
   + "remove-package <package> | ungroup-package <package> | confirm | cancel"
 
 const PROVIDER_LABELS: Record<string, string> = { codex: "Codex", claude: "Claude", opencode: "OpenCode" }
@@ -375,8 +375,25 @@ export function createSkillsCommand(deps: SkillsCommandDeps): (args: readonly st
         const scope = flags.project || record.scope.kind === "project" ? requireProject() : { kind: "chariox" as const }
         return stage(result, scope, [{ action: "set_package_state", package_id: record.id, state: parseState(second) }])
       }
-      case "update-package": {
+      case "repo-update": case "update-package": {
         const record = findPackage(result, first)
+        if (!record.custom && record.source_locator) {
+          deps.flashFooter("Checking the repository's current commit", "info")
+          const update = await request(skillsV2Request({ action: "resolve_repository_update", package_id: record.id }), "repository_update")
+          const lines = [`Repository ${record.name}: ${update.from_revision} → ${update.revision}`]
+          for (const changed of update.changed) lines.push(`  changed $${changed.member.name} · ${changed.member.path} · ${changed.member.digest.slice(0, 12)} → ${changed.digest.slice(0, 12)}`)
+          for (const added of update.added) lines.push(`  new $${added.name} · ${added.path}`)
+          for (const removed of update.removed) lines.push(`  remove $${removed.name} · ${removed.path}`)
+          for (const unchanged of update.unchanged) lines.push(`  unchanged $${unchanged.name} · ${unchanged.path}`)
+          for (const skipped of update.skipped) lines.push(`  skipped ${skipped.path}: ${skipped.reason}`)
+          deps.appendNotice(lines.join("\n"))
+          if (!update.mutation.actions.length) {
+            deps.flashFooter(update.revision === update.from_revision ? "Repository package is up to date" : "No eligible package members to update", "info")
+            return
+          }
+          return stage({ ...result, revision: update.mutation.expected_revision }, update.mutation.scope, update.mutation.actions)
+        }
+        if (action === "repo-update") throw new SkillsCommandError("this is a custom package; use /skills update-package or update its members individually")
         const members = result.skills.filter(row => row.skill.package_id === record.id)
         const missing = members.filter(row => !recordedSource(row))
         if (!members.length) throw new SkillsCommandError(`package ${record.name} has no skills`)

@@ -104,14 +104,9 @@ impl SkillCatalogService {
                 path,
             } = source
             {
-                if !matches!(action, SkillCatalogAction::Install { .. }) {
-                    return Err(failure(
-                        "updating from a repository revision is not supported; install the repository again",
-                    ));
-                }
                 if !matches!(access, SkillSourceAccess::Owner) {
                     return Err(failure(
-                        "repository import is owner-initiated; ask the owner to import it from Skills",
+                        "repository changes are owner-initiated; ask the owner to review them from Skills",
                     ));
                 }
                 let checkout = checkouts.get(&self.storage, url, revision)?;

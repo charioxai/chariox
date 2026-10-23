@@ -346,6 +346,9 @@ pub enum SkillsV2Request {
     ResolveRepository {
         url: String,
     },
+    ResolveRepositoryUpdate {
+        package_id: String,
+    },
     List {
         session_id: String,
         agent_id: String,
@@ -405,6 +408,18 @@ pub enum SkillsV2Response {
         /// SKILL.md directories that cannot be installed, with the reason.
         skipped: Vec<RepositorySkillSkip>,
     },
+    RepositoryUpdate {
+        package_id: String,
+        locator: String,
+        from_revision: String,
+        revision: String,
+        changed: Vec<RepositorySkillUpdate>,
+        added: Vec<RepositorySkill>,
+        removed: Vec<RepositorySkillMember>,
+        unchanged: Vec<RepositorySkillMember>,
+        skipped: Vec<RepositorySkillSkip>,
+        mutation: SkillCatalogMutation,
+    },
     Published {
         revision: u64,
         changed_skill_ids: Vec<String>,
@@ -440,6 +455,22 @@ pub struct RepositorySkill {
 pub struct RepositorySkillSkip {
     pub path: String,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepositorySkillMember {
+    pub path: String,
+    pub skill_id: String,
+    pub name: String,
+    pub digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepositorySkillUpdate {
+    pub member: RepositorySkillMember,
+    pub digest: String,
 }
 
 /// MP-08 / MP-10 / MP-11: shared event payload for catalog and load invalidation.

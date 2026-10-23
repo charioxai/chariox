@@ -24,7 +24,7 @@ fn skills_v2_protocol_allocation_and_contract_hash() {
             "{:x}",
             Sha256::digest(include_str!("../../../../skill/v2.rs"))
         ),
-        "27b86896ba225deedf3d43c5f9fba46d68c5a2b5233ac178fba09e675fa41bde"
+        "6137dd64e765459d9fcebbccea0f9f556ddb121d1129bae597c1bb4d86457b88"
     );
 }
 
@@ -327,4 +327,21 @@ fn skills_v2_ensure_remote_skill_packages_name_view_is_an_additive_peer_179_fiel
     );
     wire["skill_names"]["skills"][0]["path"] = serde_json::json!("/worker/skill");
     assert!(serde_json::from_value::<RelayPeerRequest>(wire).is_err());
+}
+
+// MP-08 / MP-10 / MP-11: the optional update shape uses the unreleased 571/179 pair.
+#[test]
+fn skills_v2_repository_update_wire_roundtrips() {
+    let wire =
+        serde_json::json!({"SkillsV2":{"action":"resolve_repository_update","package_id":"repo"}});
+    let request: LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    let wire = serde_json::json!({"SkillsV2":{"result":{
+        "kind":"repository_update", "package_id":"repo", "locator":"https://github.com/owner/skills", "from_revision":"old", "revision":"new",
+        "changed":[{"member":{"path":"skills/review","skill_id":"s1","name":"review","digest":"old-digest"},"digest":"new-digest"}],
+        "added":[],"removed":[],"unchanged":[],"skipped":[],
+        "mutation":{"scope":{"kind":"chariox"},"expected_revision":3,"actions":[]}
+    }}});
+    let response: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(response).unwrap(), wire);
 }
