@@ -39,6 +39,7 @@ function apply(value: Conversation, older = false) {
   render()
 }
 apply(JSON.parse(document.querySelector("#initial-conversation")!.textContent!) as Conversation)
+output.scrollTop = output.scrollHeight
 output.addEventListener("click", event => {
   const target = (event.target as Element).closest<HTMLElement>("[data-freeform-turn-toggle], [data-freeform-blob-toggle]")
   if (!target) return

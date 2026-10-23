@@ -1,14 +1,12 @@
 import { LocalIpcClient } from "@chariox/kernel-client/ipc"
 import { readAgentTriggerTranscriptRequest, invokeAgentTriggerRequest } from "@chariox/kernel-client/ipc-requests"
-import type { AgentTrigger } from "@chariox/kernel-client/kernel-types"
+import type { AgentTrigger, SessionHistoryPageEntry, SessionHistoryOutlineTurn } from "@chariox/kernel-client/kernel-types"
 import type { TerminalOutputEntry, TerminalOutputRole, TerminalTurnState } from "@chariox/transcript-view"
 
 export type Invocation = { status: "accepted"; prompt_id: string; outcome: "started" | "queued" | "steered" }
   | { status: "offline" | "disabled" | "busy" | "payload_too_large" }
-type Entry = { sequence: number; entry: { kind: string; text: string; timestamp_ms: number; agent_id?: string | null; merge_key?: string | null } }
-type Blob = { blob_id: string }
-type WireTurn = { turn_id: string; prompt_id?: string | null; started_at_ms: number; completed_at_ms?: number | null;
-  lifecycle: "open" | "completed" | "cancelled" | "failed"; user_prompt: Entry; summary?: Entry | null; entries: Entry[]; blobs: Blob[] }
+type Entry = SessionHistoryPageEntry
+type WireTurn = SessionHistoryOutlineTurn
 type Outline = { agents: Array<{ agent_id: string; turns: WireTurn[]; next_cursor?: { before_sequence: number } | null }> }
 type ReadPayload = { trigger: AgentTrigger; agent_alias: string; online: boolean; busy: boolean; history: { SessionHistoryOutline: Outline } }
 export type Conversation = { alias: string; online: boolean; busy: boolean; enabled: boolean;
@@ -53,23 +51,13 @@ export class AgentTriggerClient {
       })
       for (const blob of response.SessionHistoryBlobContents.blobs) blobs.set(blob.blob_id, blob.entries)
     }
-    const entries: TerminalOutputEntry[] = []
-    for (const turn of turns) {
-      const rows = new Map<number, Entry>()
-      for (const row of [turn.user_prompt, ...turn.entries, ...turn.blobs.flatMap(b => blobs.get(b.blob_id) ?? []), ...(turn.summary ? [turn.summary] : [])]) rows.set(row.sequence, row)
-      for (const row of [...rows.values()].sort((a,b) => a.sequence - b.sequence)) {
-        if (turn.summary && row.entry.kind === "provider_output" && row.sequence !== turn.summary.sequence) continue
-        entries.push({ key: `${row.sequence}`, role: roles[row.entry.kind] ?? "status", agentId: meta.trigger.agent_id,
-          turnId: turn.turn_id, createdAtMs: row.entry.timestamp_ms, text: row.entry.text, promptId: turn.prompt_id ?? null,
-          ...(turn.summary?.sequence === row.sequence ? { historyTurnSummary: true } : {}) })
-      }
-    }
+    const entries = agentTriggerHistoryEntries(meta.trigger.agent_id, turns, blobs)
     return { alias: meta.agent_alias, online: meta.online, busy: meta.busy, enabled: meta.trigger.enabled, entries,
       turns: turns.map(turn => ({ id: turn.turn_id, agentId: meta.trigger.agent_id, startedAtMs: turn.started_at_ms,
         lastEntryAtMs: turn.completed_at_ms ?? turn.started_at_ms, kernelObservedActive: turn.lifecycle === "open", historyObserved: true,
         ...(turn.prompt_id ? { kernelPromptId: turn.prompt_id } : {}),
         ...(turn.completed_at_ms != null ? { completedAtMs: turn.completed_at_ms } : {}),
-        ...(turn.lifecycle !== "open" ? { kernelSettled: true, kernelSettlementStatus: turn.lifecycle } : {}), expanded: false })),
+        ...(turn.lifecycle !== "open" ? { kernelSettled: true, kernelSettlementStatus: historySettlement(turn.lifecycle) } : {}), expanded: false })),
       nextCursor: outline?.next_cursor ?? null }
   }
   onChange(callback: (records?: Array<Record<string, unknown>>) => void): () => void {
@@ -82,4 +70,25 @@ export class AgentTriggerClient {
     if (this.attachmentId) await this.kernel.send({ DetachFromSession: { attachment_id: this.attachmentId } }).catch(() => {})
     await this.kernel.close()
   }
+}
+
+/** The canonical history entry index is shared by prompts, summaries and blob rows. */
+export function agentTriggerHistoryEntries(agentId: string, turns: WireTurn[], blobs: ReadonlyMap<string, Entry[]>): TerminalOutputEntry[] {
+  const entries: TerminalOutputEntry[] = []
+    for (const turn of turns) {
+      const rows = new Map<number, Entry>()
+      for (const row of [turn.user_prompt, ...turn.entries, ...turn.blobs.flatMap(b => blobs.get(b.blob_id) ?? []), ...(turn.summary ? [turn.summary] : [])]) rows.set(row.entry_index, row)
+      for (const row of [...rows.values()].sort((a,b) => a.entry_index - b.entry_index)) {
+        if (turn.summary && row.entry.kind === "provider_output" && row.entry_index !== turn.summary.entry_index) continue
+        entries.push({ key: `${row.entry_index}`, role: roles[row.entry.kind] ?? "status", agentId: agentId,
+          turnId: turn.turn_id, createdAtMs: row.entry.timestamp_ms ?? turn.started_at_ms, text: row.entry.text, promptId: turn.prompt_id ?? null,
+          ...(turn.summary?.entry_index === row.entry_index ? { historyTurnSummary: true } : {}) })
+      }
+    }
+  return entries
+}
+
+function historySettlement(lifecycle: string): "completed" | "cancelled" | "failed" {
+  if (lifecycle === "completed" || lifecycle === "cancelled" || lifecycle === "failed") return lifecycle
+  throw Error(`Unsupported settled history lifecycle: ${lifecycle}`)
 }
