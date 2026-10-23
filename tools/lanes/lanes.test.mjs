@@ -246,3 +246,25 @@ test('stop remains idempotent after the agent was already removed', async () => 
   assert.equal(result.stopped, true);
   assert.deepEqual(calls, ['CancelActivePrompt', 'DestroyAgent', 'ListAgents']);
 });
+
+test('guarded stop never destroys or cleans processes after a newer prompt starts', async () => {
+  for (const refusal of [null, 'no_active_prompt']) {
+    const calls = [];
+    let current = 'expected';
+    const result = await run('stop', {kernel:'b',taskId:'lane',sessionId:'s',agentId:'a',attachmentId:'t',expectedPromptId:'expected'}, {execute: async (_, body) => {
+      const request = JSON.parse(body); const name = Object.keys(request)[0]; calls.push(name);
+      if (name === 'CancelActivePrompt') {
+        assert.equal(request[name].expected_prompt_id, current);
+        current = 'newer';
+        if (refusal) throw new LaneError(refusal);
+        return {PromptCancelled:{}};
+      }
+      assert.fail(`must preserve ${current}: ${name} is not prompt-fenced`);
+    }});
+    assert.equal(current, 'newer');
+    assert.equal(result.stopped, false);
+    assert.equal(result.agentRetained, true);
+    assert.deepEqual(result.signalled, []);
+    assert.deepEqual(calls, ['CancelActivePrompt']);
+  }
+});

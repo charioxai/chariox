@@ -236,6 +236,13 @@ export async function run(operation, input, dependencies = {}) {
       // DestroyAgent owns cancellation too; ephemeral attachments vanish on restart.
       cancelRefusal = error.code;
     }
+    // DestroyAgent and PID cleanup cannot compare an expected prompt atomically.
+    // Retain both after a guarded cancellation; a new turn may already be active.
+    if (input.expectedPromptId) return {
+      stopped: false, agentRetained: true, agentId: agent(),
+      promptCancelled: !cancelRefusal, cancelRefusal, signalled: [],
+      message: 'Only the expected prompt was cancelled. Agent and owned processes retained; unconditional cleanup requires a separate stop without expectedPromptId.',
+    };
     try { await request('DestroyAgent', { session_id: session(), agent_id: agent() }, 'destroy'); }
     catch (error) { if (error.code !== 'agent_not_found') throw error; }
     const roster = variant(await request('ListAgents', { session_id: session() }, 'stopped-roster', false), 'AgentsListed').agents;

@@ -68,3 +68,9 @@ An expected-prompt guard is preserved: a missing attachment then refuses the
 operation instead of destroying a potentially different turn. Already-removed
 agents still permit exact owned PID cleanup. Other cancellation errors remain
 refusals.
+
+With `expectedPromptId`, `stop` only asks the kernel to cancel that exact turn.
+It returns `stopped:false, agentRetained:true` and leaves the agent and PID ledger
+alone, even if the worker already settled. Destruction and process cleanup have
+no atomic prompt fence; request an unconditional stop separately only when all
+work on that lane is meant to end.
