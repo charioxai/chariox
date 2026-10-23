@@ -194,6 +194,123 @@ fn an_agent_may_type_while_the_login_files_still_run() {
         });
 }
 
+/// zsh installs its finish hook while the first prompt's hooks run, so the
+/// first mark it reports is the start of the first command.
+#[test]
+fn the_first_command_ends_the_startup_window_without_a_prompt_mark() {
+    use super::store::TerminalRecord;
+    use super::terminal::Terminal;
+    let record = TerminalRecord {
+        terminal_id: "t".to_string(),
+        session_id: "room-1".to_string(),
+        title: "zsh".to_string(),
+        program: "/bin/zsh".to_string(),
+        working_directory: "/".to_string(),
+        cols: 100,
+        rows: 30,
+        opened_by: TerminalActor::User,
+        command: None,
+        user_interacted: false,
+        created_at_ms: 0,
+        ended: None,
+        scrollback_text: String::new(),
+        screen_text: String::new(),
+    };
+    let mut terminal = Terminal::running(record, "run".to_string(), None, true);
+    let now = Instant::now();
+    assert!(terminal.starting(now));
+    terminal.apply_output(b"\x1b]133;C\x07", now);
+    assert!(
+        !terminal.starting(now),
+        "a started command is not a login file"
+    );
+    assert!(terminal.is_busy(&crate::pty::PtyManager::new()));
+}
+
+#[tokio::test]
+async fn a_program_started_right_after_login_refuses_other_agents() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    let sent = type_as(&service, &id, &agent("a"), "sleep 3\r").await;
+    assert!(sent.accepted, "input refused: {:?}", sent.refusal);
+    until("the first program to hold the terminal", || async {
+        service.pump_once();
+        service.list("room-1")[0].driver
+            == RoomTerminalDriver::Busy {
+                driven_by: agent("a"),
+            }
+    })
+    .await;
+    let other = type_as(&service, &id, &agent("b"), "echo INTRUDER\r").await;
+    assert!(
+        !other.accepted,
+        "a running program took input from another agent"
+    );
+    service.end_session("room-1");
+}
+
+#[test]
+fn a_queued_line_is_not_finished_by_the_login_files_helpers() {
+    let _environment = crate::env_lock::lock();
+    let root = TempDir::new();
+    let home = root.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let running = home.join("profile-running");
+    std::fs::write(
+        home.join(".bash_profile"),
+        format!("sleep 0.3\ntouch '{}'\nsleep 2\n", running.display()),
+    )
+    .unwrap();
+    let _home = RestoreHome(std::env::var_os("HOME"));
+    std::env::set_var("HOME", &home);
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let service = service(root.path());
+            let id = open(&service, root.path()).terminal_id;
+            until("a login file to hold the foreground", || async {
+                running.exists()
+            })
+            .await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let sent = type_as(&service, &id, &agent("a"), "sleep 5; echo DONE-$((6*7))\r").await;
+            assert!(sent.accepted, "input refused: {:?}", sent.refusal);
+            let offset = service.snapshot("room-1", &id).unwrap().output_offset;
+            let pump = service.clone();
+            let pumping = tokio::spawn(async move {
+                loop {
+                    pump.pump_once();
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            });
+            let waited = service
+                .wait(
+                    "room-1",
+                    &id,
+                    "a",
+                    vec![RoomTerminalWatch::Finished],
+                    Some(offset),
+                    Duration::from_secs(25),
+                )
+                .await
+                .unwrap();
+            pumping.abort();
+            assert!(matches!(
+                waited.fired,
+                Some(RoomTerminalEventKind::Finished { .. })
+            ));
+            assert!(
+                waited.screen_text.contains("DONE-42"),
+                "the wait ended before the queued command: {}",
+                waited.screen_text
+            );
+            service.end_session("room-1");
+        });
+}
+
 #[tokio::test]
 async fn one_driver_rule_protects_a_foreground_program() {
     let root = TempDir::new();

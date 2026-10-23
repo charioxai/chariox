@@ -301,7 +301,7 @@ impl RoomTerminalService {
                     return Err(ended_error(terminal));
                 };
                 let now = Instant::now();
-                let shell_foreground = !terminal.is_busy(pty) || terminal.starting(now);
+                let shell_foreground = terminal.at_prompt(pty, now);
                 match terminal.driver.admit(actor, shell_foreground, now) {
                     Admission::Admit => {
                         // Only a line submitted at the prompt starts a command.
@@ -471,15 +471,10 @@ impl RoomTerminalService {
             if !terminal.is_running() {
                 return Err(ended_error(terminal));
             }
-            let program_running = terminal.is_busy(pty);
+            let now = Instant::now();
+            let program_running = !terminal.at_prompt(pty, now);
             terminal
-                .arm_watch(
-                    owner.clone(),
-                    watch,
-                    after_offset,
-                    Instant::now(),
-                    program_running,
-                )
+                .arm_watch(owner.clone(), watch, after_offset, now, program_running)
                 .map(|kind| event(terminal, owner, kind, terminal.screen.visible_text()))
         };
         if let Some(event) = immediate {
@@ -528,8 +523,8 @@ impl RoomTerminalService {
                 wake_id: format!("wait:{next_wait}"),
                 agent_id: agent_id.to_string(),
             };
-            let program_running = terminal.is_busy(pty);
             let now = Instant::now();
+            let program_running = !terminal.at_prompt(pty, now);
             for watch in watches {
                 if let Some(kind) =
                     terminal.arm_watch(owner.clone(), watch, after_offset, now, program_running)

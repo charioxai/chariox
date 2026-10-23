@@ -155,6 +155,10 @@ impl Terminal {
     fn on_mark(&mut self, mark: ShellMark) -> Fired {
         match mark {
             ShellMark::CommandStarted => {
+                // Login files never report a start: this is a real command,
+                // even when the shell has not reported a prompt yet (zsh
+                // installs its finish hook during the first prompt).
+                self.first_prompt_deadline = None;
                 self.command_in_flight = true;
                 self.commands_started += 1;
                 Fired::new()
@@ -223,8 +227,14 @@ impl Terminal {
             .is_some_and(|deadline| now < deadline)
     }
 
+    /// The shell takes a line now or soon: it is at its prompt, or still on
+    /// its way there. Programs the login files run do not hold the terminal.
+    pub(super) fn at_prompt(&self, pty: &PtyManager, now: Instant) -> bool {
+        !self.is_busy(pty) || self.starting(now)
+    }
+
     pub(super) fn current_driver(&mut self, pty: &PtyManager) -> RoomTerminalDriver {
-        let at_prompt = !self.is_busy(pty) || self.starting(Instant::now());
+        let at_prompt = self.at_prompt(pty, Instant::now());
         self.driver.observe(at_prompt)
     }
 

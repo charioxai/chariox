@@ -63,7 +63,9 @@ impl Terminal {
             pumped.output_changed = true;
             return pumped;
         }
-        let program_running = !self.shell_is_foreground(pty);
+        // The login files' programs are nobody's commands: they get no number
+        // and end no wait.
+        let program_running = !self.shell_is_foreground(pty) && !self.starting(now);
         // Once the shell reports its commands, sampling would only race it.
         if !self.mark_tracking {
             let mut ended_command = None;
@@ -91,7 +93,7 @@ impl Terminal {
         }
         self.program_running = program_running;
         pumped.fired.extend(self.settle_unrun_lines(pty, now));
-        if self.is_busy(pty)
+        if !self.at_prompt(pty, now)
             && !self.waiting_reported
             && now.duration_since(self.last_output_at) >= QUIET_BEFORE_WAITING
             && self.watches.is_waiting_for_input()
@@ -106,7 +108,11 @@ impl Terminal {
     /// count ahead of the commands. Once it has been quiet for a while no
     /// queued command is left to start, so waits stop expecting one.
     fn settle_unrun_lines(&mut self, pty: &PtyManager, now: Instant) -> Fired {
-        if self.is_busy(pty) || self.driver.lines_written() <= self.commands_started {
+        // A line typed during the login files waits for the first prompt.
+        if self.is_busy(pty)
+            || self.starting(now)
+            || self.driver.lines_written() <= self.commands_started
+        {
             return Fired::new();
         }
         let quiet_since = [
