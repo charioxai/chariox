@@ -12,7 +12,7 @@ impl KernelRuntimeState {
         caller: &KernelCommand,
         command: KernelBrowserCommand,
     ) -> Result<Value, DaemonError> {
-        if std::env::var("CHARIOX_KERNEL_BROWSER_MIRROR").as_deref() != Ok("1") {
+        if !crate::runtime::kernel_browser_features::mirror_enabled() {
             return Err(host_error("MP-08: DOM mirroring disabled".into()));
         }
         let (user, actor) = self.kernel_browser_terminal_context(caller)?;

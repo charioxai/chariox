@@ -10,9 +10,13 @@ export const displayGeometry=Object.freeze(selected==='1920x1080'?{width:1920,he
 // while screenshot density remains a separate value.
 export const displayDeviceMetrics=(width,height,scale)=>({width,height,deviceScaleFactor:scale,scale:1,mobile:false});
 
+// The Room browser mirror and display are on unless the kill switch is "0"; the
+// kernel passes its resolved values, so these gates agree with the Rust helper.
+export const featureOn=(name,environment=process.env)=>environment[name]!=='0';
+
 // MP-08/MP-10/MP-11: the kernel selects native page density before any
 // observation/input. Viewer DPR never changes the shared browser viewport.
-export function hostViewport(native = process.env.CHARIOX_KERNEL_BROWSER_MIRROR === '1' || process.env.CHARIOX_KERNEL_BROWSER_DISPLAY === '1') {
+export function hostViewport(native = featureOn('CHARIOX_KERNEL_BROWSER_MIRROR') || featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY')) {
  const g=displayGeometry,scale=native?g.dpr:1;
  return {css_width:g.width,css_height:g.height,device_scale_factor:scale,
   desktop_pixel_width:g.width*scale,desktop_pixel_height:g.height*scale};

@@ -328,8 +328,6 @@ impl BrowserControllerProcessStdioBackend {
                 "TMPDIR",
                 "CHARIOX_KERNEL_BROWSER_EXECUTABLE",
                 "CHARIOX_KERNEL_BROWSER_HEADLESS",
-                "CHARIOX_KERNEL_BROWSER_DISPLAY",
-                "CHARIOX_KERNEL_BROWSER_MIRROR",
                 "CHARIOX_KERNEL_BROWSER_HOME_URL",
                 "CHARIOX_BROWSER_DISPLAY_PYTHON",
                 "CHARIOX_BROWSER_DISPLAY_TIMING",
@@ -346,6 +344,7 @@ impl BrowserControllerProcessStdioBackend {
                     command.env(key, value);
                 }
             }
+            command.envs(super::kernel_browser_features::host_environment());
         }
         #[cfg(all(feature = "native-display", target_os = "linux"))]
         {

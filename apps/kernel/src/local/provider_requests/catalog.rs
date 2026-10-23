@@ -825,7 +825,7 @@ fn opencode_go_usage(
     let Some(key) = opencode_provider_api_key(environment, "opencode-go") else {
         return OpenCodeGoUsage::Unavailable;
     };
-    let response = ureq::AgentBuilder::new()
+    let response = crate::outbound_dial::agent_builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .get("https://opencode.ai/zen/go/v1/usage")

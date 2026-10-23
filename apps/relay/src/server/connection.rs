@@ -376,6 +376,10 @@ pub(crate) async fn handle_connection(
                                 }
                                 !replace
                             });
+                            // The replaced socket is gone even if its TCP connection never said so:
+                            // requests and streams routed to it would otherwise wait for timeouts.
+                            let released = (!replaced_senders.is_empty())
+                                .then(|| release_daemon(&mut guard, &routes, &daemon_key));
                             guard.peers.insert(
                                 peer_addr,
                                 PeerHandle {
@@ -395,6 +399,9 @@ pub(crate) async fn handle_connection(
                             drop(guard);
                             for sender in replaced_senders {
                                 send_close(&sender, "daemon reconnected".to_string());
+                            }
+                            if let Some(released) = released {
+                                announce_released_daemon(released);
                             }
                         }
                         RelayEnvelope::DaemonHeartbeat {
@@ -1009,14 +1016,7 @@ pub(crate) async fn handle_connection(
         }
     }
 
-    let (
-        disconnect_errors,
-        disconnect_peer_errors,
-        disconnect_subscription_senders,
-        disconnect_display_stream_senders,
-        daemon_subscription_cleanups,
-        dropped_client_pending_requests,
-    ) = remove_peer(
+    let (released, daemon_subscription_cleanups, dropped_client_pending_requests) = remove_peer(
         &registry,
         &routes,
         peer_addr,
@@ -1030,10 +1030,7 @@ pub(crate) async fn handle_connection(
             "peer_closed" | "peer_stream_ended" | "message_handling"
         )
         || registered_daemon_key.is_some()
-        || !disconnect_errors.is_empty()
-        || !disconnect_peer_errors.is_empty()
-        || !disconnect_subscription_senders.is_empty()
-        || !disconnect_display_stream_senders.is_empty()
+        || !released.is_empty()
         || daemon_subscription_cleanups > 0
         || dropped_client_pending_requests > 0
     {
@@ -1047,10 +1044,10 @@ pub(crate) async fn handle_connection(
             json!({
                 "peer_addr": peer_addr.to_string(),
                 "daemon_key": registered_daemon_key.as_ref().map(daemon_key_log_value),
-                "client_request_errors": disconnect_errors.len(),
-                "daemon_peer_request_errors": disconnect_peer_errors.len(),
-                "subscription_closes": disconnect_subscription_senders.len(),
-                "display_stream_closes": disconnect_display_stream_senders.len(),
+                "client_request_errors": released.client_errors.len(),
+                "daemon_peer_request_errors": released.peer_errors.len(),
+                "subscription_closes": released.subscription_senders.len(),
+                "display_stream_closes": released.display_stream_senders.len(),
                 "daemon_subscription_cleanups": daemon_subscription_cleanups,
                 "client_pending_request_drops": dropped_client_pending_requests,
                 "error": connection_result.as_ref().err().map(|error| error.to_string()),
@@ -1059,50 +1056,7 @@ pub(crate) async fn handle_connection(
             }),
         );
     }
-    for (sender, request_id) in disconnect_errors {
-        let _ = send_envelope(
-            &sender,
-            &RelayEnvelope::ClientResponse {
-                request_id,
-                encrypted_response: None,
-                error: Some(relay_error(
-                    "target_disconnected",
-                    "target daemon disconnected from relay",
-                    true,
-                )),
-            },
-        );
-    }
-    for (sender, request_id, target_daemon_id) in disconnect_peer_errors {
-        let _ = send_envelope(
-            &sender,
-            &RelayEnvelope::DaemonPeerResponse {
-                request_id,
-                from_daemon_id: target_daemon_id,
-                encrypted_response: None,
-                error: Some(relay_error(
-                    "target_disconnected",
-                    "target daemon disconnected from relay",
-                    true,
-                )),
-            },
-        );
-    }
-    for sender in disconnect_subscription_senders {
-        send_close(&sender, "target daemon disconnected from relay".to_string());
-        let _ = sender.try_send(Message::Close(None));
-    }
-    for sender in disconnect_display_stream_senders {
-        let _ = sender
-            .send(DisplayStreamEvent::Close {
-                error: Some(relay_error(
-                    "target_disconnected",
-                    "target daemon disconnected from relay",
-                    true,
-                )),
-            })
-            .await;
-    }
+    announce_released_daemon(released);
     drop(control_tx);
     drop(outgoing_tx);
     if let Some(mut writer_task) = writer_task {
