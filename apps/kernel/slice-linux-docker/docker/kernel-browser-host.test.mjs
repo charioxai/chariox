@@ -2565,6 +2565,24 @@ test('MP-08/MP-10 a Tab opened by the clicked page keeps the foreground over the
  assert.equal(host.pendingActive,null);
 }));
 
+// Review #1072 P2: a state read that adopts the popup while the input acknowledgement is pending must not let the ack rebuild the opener intent.
+test('MP-08/MP-10 a popup adopted before the input acknowledgement keeps the foreground', () => using(async ({host,connection}) => {
+ const opener=await host.request({op:'open',url:'https://example.com/opener'});
+ const target=id=>host.tabs.get(id).target_id;let active=target(opener.tab_id),activations=0,popup;
+ host.tabGroups={active:async()=>active};host.activeTarget=target(opener.tab_id);
+ const send=connection.send.bind(connection);
+ connection.send=async(method,params,session)=>{
+  if(method==='Target.activateTarget'){active=params.targetId;activations++}
+  if(method.startsWith('Input.')&&!popup){popup=(await send('Target.createTarget',{url:'https://example.com/popup'})).targetId;active=popup;await host.reconcile()}
+  return send(method,params,session)};
+ await host.request({op:'input',tab_id:opener.tab_id,generation:opener.generation,document_id:host.tabs.get(opener.tab_id).document_id,input:{kind:'text',text:'x'}});
+ assert(popup,'the click opened a Tab');
+ assert.equal(host.pendingActive,null,'the acknowledgement must not rebuild the opener selection');
+ await host.reconcile();
+ assert.equal(activations,0,'the opener selection must not re-activate over the new Tab');
+ assert.equal(host.activeTarget,popup,'the new Tab is the active Tab');
+}));
+
 // MP-08/MP-10/MP-11: an input can publish before its focus reconciliation settles.
 test('pending human selection preserves every verified App restore barrier', () => using(async ({host},root) => {
  const todo=await host.request({op:'open',url:'https://app.todo.invalid/'});

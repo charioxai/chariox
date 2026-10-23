@@ -122,6 +122,7 @@ export class KernelBrowserHost {
     this.compositors = new Map();
     this.foreground = new WindowForeground();
     this.restoring = false;
+    this.adoptedByInput = new WeakSet();
     this.keepaliveTarget = null;
     this.observedDocuments = new Map();
     this.displayDocuments = new DisplayDocuments((stage, started, ended) => this.timing?.(stage, started, ended));
@@ -560,7 +561,7 @@ export class KernelBrowserHost {
     // MP-08/MP-10: a Tab the page opened after the human input (window.open, target=_blank) is what Chromium now shows;
     // the opener's input selection must not pull the foreground back over it.
     const openedByInput = intent?.known && nativeActive && !intent.known.has(nativeActive) && [...this.tabs.values()].some(tab => tab.target_id === nativeActive);
-    if (openedByInput && this.pendingActive === intent) this.pendingActive = null;
+    if (openedByInput && this.pendingActive === intent) { this.pendingActive = null; this.adoptedByInput.add(intent); }
     const restored = !openedByInput && !this.restoring && restoreReady && [...this.tabs.values()].find(tab => intent.app_origin
       ? [...(this.browser.appTabs?.apps?.values() ?? [])].some(app => app.ready === true && app.targetId === tab.target_id && app.origin === intent.app_origin)
       : tab.tab_id === intent.tab_id);
@@ -946,16 +947,21 @@ export class KernelBrowserHost {
       // Retiring an encoded row on each key forces an IDR and can delay echo
       // behind its byte budget. Epochs still retire exact work; policy/document
       // retirement still closes the source/producer and resets every row.
+      // Review #1072 P2: the Tab inventory is taken once, at dispatch. Reading it again after the
+      // acknowledgement would count a popup adopted meanwhile as known and give the opener its focus back.
+      let selection = null;
       const rememberSelection = () => {
         // MP-08/MP-10/MP-11: CDP can type into a background window. Its
         // admitted human selection supersedes older native restore intent.
+        if (agent || command._agent_input || command.focused_agent) return;
+        // A newer observation that adopted a popup retired this intent for good.
+        if (selection && (this.pendingActive === selection || this.adoptedByInput.has(selection))) return;
         const intent = this.pendingActive, origin = appRestoreOrigin(tab.url);
         // The cached target can still match while a late native window fold
         // changed Chrome's selection. Reconcile checks the live native target
         // before activating, so ordinary keys do not refocus an active tab.
-        if (!agent && !command._agent_input && !command.focused_agent) {
-          this.pendingActive = {tab_id:tab.tab_id,app_origin:origin,apps:intent?.apps ?? [],until:intent?.until ?? Date.now(),known:new Set([...this.tabs.values()].map(known => known.target_id))};
-        }
+        selection = {tab_id:tab.tab_id,app_origin:origin,apps:intent?.apps ?? [],until:intent?.until ?? Date.now(),known:selection?.known ?? new Set([...this.tabs.values()].map(known => known.target_id))};
+        this.pendingActive = selection;
       };
       const onDispatch = () => {
         if (dispatched) return;
