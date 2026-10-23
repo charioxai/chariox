@@ -718,6 +718,7 @@ impl KernelRuntimeState {
                     self.owned.settle_steered_firing(
                         &dispatch.session_id,
                         claim.map(|_| dispatch.trigger_id.as_str()),
+                        &queued_prompt_id,
                         unconfirmed,
                     )?;
                     Ok(())
@@ -1546,6 +1547,89 @@ pub(super) mod tests {
                 "restart must preserve steering after the once trigger retired"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn recurring_steer_settlement_is_idempotent_after_restart() {
+        recurring_steer_settlement_is_idempotent(false).await;
+    }
+
+    #[tokio::test]
+    async fn confirmed_recurring_steer_settlement_is_idempotent_after_restart() {
+        recurring_steer_settlement_is_idempotent(true).await;
+    }
+
+    async fn recurring_steer_settlement_is_idempotent(confirmed: bool) {
+        let config = durable_state_config("recurring-trigger-steer-cut");
+        let (_worktree, runtime, session_id, agent_id, _, _, run_id) =
+            super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt_and_config(
+                config, &[],
+            )
+            .await;
+        install_slow_structured_run(&runtime, &session_id, &agent_id, &run_id, "slow-ack");
+        let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Every).await;
+        let state = runtime.clone();
+        let due = trigger.next_run_at_ms();
+        let firing = tokio::spawn(async move { state.dispatch_due_agent_triggers(due).await });
+        wait_for_queued_firing(&runtime, &session_id, &agent_id).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !runtime
+                .owned
+                .provider_store
+                .structured_prompt_io_in_flight(&run_id)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the Submit command must reach the mailbox");
+        if !confirmed {
+            let session = runtime.owned.session_snapshot(&session_id).unwrap();
+            runtime
+                .owned
+                .prompt_state_owner
+                .complete_active_prompt_only(&session, &agent_id)
+                .unwrap();
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), firing)
+            .await
+            .unwrap()
+            .unwrap();
+        let events = runtime
+            .owned
+            .durable_state_store
+            .load_events_after(0)
+            .unwrap();
+        let settled = runtime.owned.session_snapshot(&session_id).unwrap();
+        let expected = settled
+            .agent_triggers()
+            .iter()
+            .find(|known| known.id() == trigger.id())
+            .unwrap()
+            .clone();
+        assert_eq!(expected.fired(), 1);
+        let cut = events
+            .iter()
+            .rposition(|event| {
+                event.kind == "session.updated" && event.payload["reason"] == "agent_trigger_fired"
+            })
+            .unwrap()
+            + 1;
+        let (restarted, _) =
+            restart_from_log_cut(&events, cut, "recurring-trigger-steer-restart").await;
+        restarted.owned.reconcile_inactive_local_steers();
+        let recovered = restarted.owned.session_snapshot(&session_id).unwrap();
+        let actual = recovered
+            .agent_triggers()
+            .iter()
+            .find(|known| known.id() == trigger.id())
+            .unwrap();
+        assert_eq!(
+            actual.fired(),
+            expected.fired(),
+            "a settled recurring firing must not count twice"
+        );
+        assert_eq!(actual.next_run_at_ms(), expected.next_run_at_ms());
     }
 
     // MP-08/MP-09/MP-10: the same stop while restart recovery drops a held

@@ -1329,14 +1329,22 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         trigger_id: Option<&str>,
+        prompt_id: &str,
         unconfirmed: Option<crate::session::TriggerDelivery>,
     ) -> Result<(), DaemonError> {
         let mut sessions = self.session_store.write();
         let before = sessions.get_session(session_id)?;
         let settled = (|| {
+            let already_settled = self
+                .durable_state_store
+                .trigger_firing_settled(session_id, prompt_id)?
+                || before
+                    .trigger_deliveries()
+                    .iter()
+                    .any(|delivery| delivery.prompt_id() == prompt_id);
             sessions.settle_steered_firing(
                 session_id,
-                trigger_id,
+                if already_settled { None } else { trigger_id },
                 crate::session::unix_epoch_ms(),
                 unconfirmed,
             )?;
@@ -1344,7 +1352,7 @@ impl KernelRuntimeOwnedState {
             self.durable_state_store.append_event(
                 "session.updated",
                 Some(session_id.to_string()),
-                serde_json::json!({"session": session, "reason": "agent_trigger_fired"}),
+                serde_json::json!({"session": session, "reason": "agent_trigger_fired", "settled_trigger_prompt_id": prompt_id}),
             )?;
             Ok(())
         })();
@@ -1389,6 +1397,7 @@ impl KernelRuntimeOwnedState {
                         if let Err(error) = self.settle_steered_firing(
                             session.id(),
                             Some(trigger_id),
+                            prompt.id(),
                             Some(crate::session::TriggerDelivery::not_confirmed(
                                 prompt.id(),
                                 trigger_id,

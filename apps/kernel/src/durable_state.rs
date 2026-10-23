@@ -63,6 +63,7 @@ mod writer_fence;
 mod writer_latency_tests;
 use writer_fence::fenced_writer_error;
 pub(crate) mod notification_target;
+mod trigger_firings;
 pub(crate) mod trigger_resends;
 pub(crate) mod workflow_dispatch_intents;
 pub(crate) mod workflow_notifications;
@@ -435,6 +436,10 @@ impl DurableKernelStateStore {
         })?;
         trigger_resends::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.trigger_resends",
+            message: error.to_string(),
+        })?;
+        trigger_firings::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.trigger_firings",
             message: error.to_string(),
         })?;
         let writer = DurableStateWriter::start(&path)?;
@@ -1770,6 +1775,15 @@ fn commit_durable_write_batch(
                             payload_json,
                         )?;
                         trigger_resends::record_prompt_state_in(&transaction, payload_json)?;
+                    }
+                    if kind == "session.updated"
+                        && payload_json.contains("\"settled_trigger_prompt_id\"")
+                    {
+                        trigger_firings::record_settlement_in(
+                            &transaction,
+                            subject_id.as_deref(),
+                            payload_json,
+                        )?;
                     }
                     Ok(sequence)
                 }),
