@@ -28,6 +28,7 @@ import {nativeWindowInventory} from './kernel-browser-native-windows.mjs';
 import { ChromeWindows, InputArbiter } from "./kernel-browser-chrome-window.mjs";
 import { StateSignal, stateChangingEvent } from "./kernel-browser-state-signal.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
+import {resizeBrowserPage} from './kernel-browser-resize.mjs';
 import { inputHostTab } from "./kernel-browser-input.mjs";
 import { BusyInputQueue, lateInputAck, markDispatched } from "./kernel-browser-input-queue.mjs";
 import { BrowserPopupEvidence, popupActionId } from "./kernel-browser-popup-evidence.mjs";
@@ -225,7 +226,7 @@ export class KernelBrowserHost {
     this.browser = null;
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
     this.streams.clear();
-    this.tabs.clear();
+    this.tabs.clear();this.layouts.clear();this.layoutRevisions.clear();
     this.popupEvidence.clear();
     this.observed = ++this.observations;
     this.observedDocuments.clear();
@@ -354,15 +355,17 @@ export class KernelBrowserHost {
   viewport() { return hostViewport(!this.chromium.desktop && (featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY') || featureOn('CHARIOX_KERNEL_BROWSER_MIRROR'))); }
   // Protocol 560/168: a viewer narrower than the canonical desktop gets the Tab laid out at its own size.
   // The newest subscription owns the layout; null restores the canonical page.
-  pageSize(tabId) { const l = this.layouts.get(tabId); return l ? { width: l.width, height: l.height } : { width: 1280, height: 800 }; }
+  pageSize(tabId) { const l = this.layouts.get(tabId); return l ? { width: l.width, height: l.height } : { width: geometry.width, height: geometry.height }; }
   noteLayout(tabId, before) { const now = this.pageSize(tabId); if (now.width !== before.width || now.height !== before.height) this.layoutRevisions.set(tabId, this.layoutRevision(tabId) + 1); }
   layoutRevision(tabId) { return this.layoutRevisions.get(tabId) ?? 0; }
   async setLayout(tab, subscriptionId, layout) {
+    if(subscriptionId!=='resize'&&this.layouts.get(tab.tab_id)?.subscriptionId==='resize')return;
     const before = this.pageSize(tab.tab_id);
+    await this.browser.setLayout?.(tab.target_id, layout);
     if (layout) this.layouts.set(tab.tab_id, { ...layout, subscriptionId }); else this.layouts.delete(tab.tab_id);
     this.noteLayout(tab.tab_id, before);
-    await this.browser.setLayout?.(tab.target_id, layout);
   }
+
   releaseLayout(tabId, subscriptionId) {
     if (this.layouts.get(tabId)?.subscriptionId !== subscriptionId) return;
     const before = this.pageSize(tabId);
@@ -419,7 +422,7 @@ export class KernelBrowserHost {
         for(const id of [...this.compositors.keys()])if(id!==tab.tab_id&&this.compositors.get(id)?.source instanceof LinuxCapture)await this.closeCompositors(id);
         const claim=this.foreground.claim(tab.tab_id);
         this.nativeScope(null);
-        const source=new LinuxCapture({display:this.chromium.display,pid:this.chromium.browserPid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,browser:this.browser,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.foreground.holds(tab.tab_id,claim)&&this.protection===p&&!p.unknown&&this.generation===generation,timing:this.timing});
+        const source=new LinuxCapture({size:this.pageSize(tab.tab_id),display:this.chromium.display,pid:this.chromium.browserPid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,browser:this.browser,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.foreground.holds(tab.tab_id,claim)&&this.protection===p&&!p.unknown&&this.generation===generation,timing:this.timing});
         // Review #1016 P1: Tab switches outside the browser's own paths (the Computer surface's
         // Ctrl+Tab) do not reconcile. Every readback is re-admitted against the live active Tab.
         source.validateCurrent=()=>this.nativeFront(tab);
@@ -432,7 +435,7 @@ export class KernelBrowserHost {
         // retires on that resize, so no live band may be left to notice it: rebind from the owner's inventory.
         finally{this.chromeWindows.resolve().catch(()=>{});}
       }});
-      source??=new CompositorSource({connection,sessionId,tab,scale:stream.device_scale_factor,policy,timing:this.timing,width:geometry.width*stream.device_scale_factor,height:geometry.height*stream.device_scale_factor,format:'jpeg',acquire:()=>this.sampleLane(tab).run('input',()=>this.browser.inputCapture.hold(connection,sessionId)),
+      source??=new CompositorSource({connection,sessionId,tab,scale:stream.device_scale_factor,policy,timing:this.timing,width:this.pageSize(tab.tab_id).width*stream.device_scale_factor,height:this.pageSize(tab.tab_id).height*stream.device_scale_factor,format:'jpeg',acquire:()=>this.sampleLane(tab).run('input',()=>this.browser.inputCapture.hold(connection,sessionId)),
         screenshot:clip=>this.displayScreenshot(tab,clip),protect:()=>this.displayScreenshot(tab),allowed:p=>this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation});
       const created={source,document:tab.document_id,policy};
       created.ready=source instanceof LinuxCapture?Promise.resolve(source):source.start().catch(()=>{created.refusals=refusals+1;created.retryAt=performance.now()+Math.min(30_000,1000*2**refusals);return null;});
@@ -531,7 +534,7 @@ export class KernelBrowserHost {
       })).targetId;
     }
     const byTarget = new Map([...this.tabs.values()].map(tab => [tab.target_id, tab]));
-    this.tabs.clear();
+    this.tabs.clear();this.layouts.clear();this.layoutRevisions.clear();
     const discovered = state.tabs.filter(tab => tab.target_id !== this.keepaliveTarget);
     // Preserve already-adopted identities before accepting native/popup tabs, in their existing order:
     // Chrome lists targets most recently active first, and a Tab strip must not reorder (MP-08/MP-10).
@@ -773,7 +776,7 @@ export class KernelBrowserHost {
     if (command.op.startsWith("display_") && !featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY")) throw new Error("MD-DISPLAY: display disabled");
     if (command.op === "stop") return this.stop();
     // MP-11: observation never launches/relaunches the browser.
-    await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_input_target", "note_selection", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
+    await this.start({ signal, allowStart: !["state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_input_target", "resize", "note_selection", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
     assertNotCancelled(signal);
     const browserAtStart = this.browser;
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
@@ -854,15 +857,16 @@ export class KernelBrowserHost {
     // Per-dispatch document/cancellation and secret-focus checks remain below.
     // MP-08/MP-10: a navigation or a selection note reads only its own Tab's live document: a full
     // all-tab reconcile waits for busy (loading) pages and held the mutation lane.
-    let tab = command.op === 'input' && typeof command.document_id === 'string' || ['navigate', 'note_selection'].includes(command.op)
+    let tab = command.op === 'input' && typeof command.document_id === 'string' || ['navigate', 'resize', 'note_selection'].includes(command.op)
       ? await slowMark(this.timing, 'input_wait display_target', this.displayTarget(command,nativeInputDocumentTarget(this,command,scope,nativeDisplay),INPUT_DOCUMENT_WAIT_MS)) : await this.target(command);
     assertNotCancelled(signal);
     if (agentRequest && ["input", "navigate"].includes(command.op) && extensionManagementUrl(tab.url)) throw new Error(EXTENSIONS_REFUSED);
-    const { app, agent } = this.appAgent(tab, command, ["input", "navigate", "close"].includes(command.op));
+    const { app, agent } = this.appAgent(tab, command, ["input", "navigate", "close", "resize"].includes(command.op));
     // The page stays on its origin.
     if (app && command.op === "navigate" && new URL(navigationUrl(command.url)).origin !== app.origin) {
       throw new UserDomainRefusal("not_granted");
     }
+    if(command.op==='resize')return resizeBrowserPage(this,tab,command,signal);
     const binding = { target_id: tab.target_id, document_id: tab.document_id };
     if (command.op === "display_subscribe") return this.initialPush(command, await reserveDisplay(this,async()=>{
       if (!featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY")) throw new Error("MD-DISPLAY: display disabled");
@@ -876,7 +880,7 @@ export class KernelBrowserHost {
       const codec=process.env.CHARIOX_BROWSER_DISPLAY_NATIVE_WORKER&&command.codecs.includes('avc1.420033')?'avc1.420033':command.codecs.find(c=>['vp8','vp09.00.50.08','vp09.00.40.08','vp09.00.10.08','avc1.420033'].includes(c))??'png';
       const {DisplayStream} = await import('./kernel-browser-display.mjs');
       const {BrowserEncoder} = await import('./kernel-browser-webcodecs.mjs');
-      const stream = new DisplayStream({ relay_binary:command.codecs.includes('chariox-relay-binary-v96'), subscription_id: id, tab_id: tab.tab_id, observed_by: scope, bitrate: command.bitrate, device_scale_factor: scale, codec, css_width:geometry.width, css_height:geometry.height, dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:command.codecs.includes('chariox-stripes-v1')&&['avc1.420033','vp8'].includes(codec) }, { timing:this.timing,encoder:new BrowserEncoder(this.browser,tab.target_id) });
+      const stream = new DisplayStream({ relay_binary:command.codecs.includes('chariox-relay-binary-v96'), subscription_id: id, tab_id: tab.tab_id, observed_by: scope, bitrate: command.bitrate, device_scale_factor: scale, codec, css_width:this.pageSize(tab.tab_id).width, css_height:this.pageSize(tab.tab_id).height, dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:command.codecs.includes('chariox-stripes-v1')&&['avc1.420033','vp8'].includes(codec) }, { timing:this.timing,encoder:new BrowserEncoder(this.browser,tab.target_id) });
       this.displays.set(id, stream);
       this.armDisplayExpiry(stream);
       return { generation: this.generation, subscription_id: id, codec, bitrate: command.bitrate, device_scale_factor: scale };
@@ -885,7 +889,7 @@ export class KernelBrowserHost {
       // The closed Tab can no longer be restored as the selection (MP-08/MP-10).
       const intent = this.pendingActive, origin = appRestoreOrigin(tab.url);
       if (intent && (intent.tab_id === tab.tab_id || (origin && intent.app_origin === origin))) this.pendingActive = null;
-      this.mirror.removeTab(tab.tab_id);
+      this.mirror.removeTab(tab.tab_id);this.layouts.delete(tab.tab_id);this.layoutRevisions.delete(tab.tab_id);
       for (const [id, stream] of this.displays) if (stream.tab_id === tab.tab_id && !['browser_chrome', 'browser_auxiliary', 'browser_window'].includes(stream.regionTarget?.kind)) { await stream.close(); this.displays.delete(id); }
       await this.closeCompositors(tab.tab_id);if(this.foreground.tab===tab.tab_id)this.foreground.reset();
       this.sampleLanes.delete(tab.tab_id);
@@ -973,7 +977,7 @@ export class KernelBrowserHost {
         const laneAt=timestamp();
         const deferred=await this.sampleLane(tab).run("input", async () => {
           if(timestamp()-laneAt>250)this.timing('input_wait sample_lane',laneAt);
-          const result=await this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, inputGuard, documentCurrent, chromeFocused: () => Boolean(this.arbiter?.chromeFocus), slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+          const result=await this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { signal, inputGuard, documentCurrent, chromeFocused: () => Boolean(this.arbiter?.chromeFocus), slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, viewport:{css_width:this.pageSize(tab.tab_id).width,css_height:this.pageSize(tab.tab_id).height}, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
           rememberSelection();
           return result;
         });
@@ -1132,7 +1136,7 @@ export class KernelBrowserHost {
         return { id: request.id, ok: true, result: { signal: parked } };
       }
       if (request.method === "host.browser") {
-        if(this.nativeComputer.held.size && ['input','open','close','navigate'].includes(request.params.op))throw new Error('MP-11: native keys held; release desktop input first');
+        if(this.nativeComputer.held.size && ['input','open','close','navigate','resize'].includes(request.params.op))throw new Error('MP-11: native keys held; release desktop input first');
         const at = timestamp();
         // MP-08/MP-11: the kernel's opener ledger names the agent Tabs ([{tab_id, label}]).
         const { _tab_groups: groups, ...params } = request.params ?? {};

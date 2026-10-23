@@ -168,6 +168,13 @@ pub enum KernelBrowserCommand {
         tab_id: String,
         generation: u64,
     },
+    /// MP-08/MP-10: protocol578 live layout mutation, preserving mirror attachments.
+    Resize {
+        tab_id: String,
+        generation: u64,
+        width: u32,
+        height: u32,
+    },
     Navigate {
         tab_id: String,
         generation: u64,

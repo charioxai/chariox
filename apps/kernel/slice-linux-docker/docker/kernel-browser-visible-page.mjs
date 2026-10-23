@@ -20,7 +20,7 @@ export class VisiblePageCapture extends LinuxCapture{
   const region=visiblePageGeometry(window,viewport);
   if(options.scale!==window.scale)throw Error('MP-11: visible page density differed');
   const screenshot=options.screenshot;
-  super({...options,screenshot:async()=>{
+  super({...options,size:{width:region.css_width,height:region.css_height},screenshot:async()=>{
    const shot=await screenshot();
    const clip={x:0,y:0,width:region.css_width,height:region.css_height};
    const masks=(shot[displayMaskRegions]??[]).map(({x,y,width,height})=>{
