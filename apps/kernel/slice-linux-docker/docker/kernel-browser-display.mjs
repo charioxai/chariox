@@ -212,6 +212,9 @@ export class PortableEncoder {
 export { losslessRegion } from './kernel-browser-pixels.mjs';
 
 export const exactPatchLimit=bitrate=>Math.floor(Math.min(192_000,Math.max(24_000,bitrate/8*.5*.75-4096)));
+// MP-08/MP-10: an exact repair goes out in batches of about 50 ms of the link, top band first: in one batch, a
+// whole-page repair at 1920 (~150 KB) kept the top of the page (where the person reads) soft until its bottom arrived.
+export const repairBatchLimit=bitrate=>Math.min(exactPatchLimit(bitrate),Math.floor(Math.max(24_000,bitrate/8*.05)));
 
 const LEASE_GAP_MS = 60, LEASE_STREAK = 30;
 export class DisplayStream {
@@ -359,7 +362,7 @@ export class DisplayStream {
         const batch = []; let size = 128;
         for (const tile of remaining) {
           const cost = JSON.stringify(tile).length + 1;
-          if (batch.length && size + cost > patchLimit) break;
+          if (batch.length && size + cost > repairBatchLimit(this.bitrate)) break;
           batch.push(tile); size += cost;
         }
         payload = { kind:'tiles', base_sequence:this.sequence, tiles:batch };

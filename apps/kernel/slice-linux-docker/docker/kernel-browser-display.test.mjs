@@ -277,6 +277,24 @@ test('MD-DISPLAY verified prepared repair selection does no full-raster encoding
  }finally{await stream.close()}
 });
 
+// MP-08/MP-10: a whole-page repair at 1920 is ~150 KB; sent as one batch, its top band (the heading) waits for the
+// bottom one on an 8 Mbit/s link. Batches of ~50 ms of the link go out top-first.
+test('MP-08/MP-10 an exact repair goes out top band first, in batches of about 50 ms of the link',async()=>{
+ const band=y=>({x:0,y,width:1616,height:128,format:'webp',data_base64:'A'.repeat(36000)});
+ const repair_tiles=[band(0),band(128),band(256),band(384)];
+ const stream=new DisplayStream({...binding,bitrate:8_000_000},{encoder:{close:async()=>{}},now:()=>0,wait:async()=>{}});
+ stream.document_id='d';stream.sequence=1;stream.previous={signature:'lossy-base'};
+ const source={generation:1,width:1616,height:774,native_exact:true,native_repair:true,data_base64:'serial',settled_verified:true,refinement_serial:4,repair_tiles,push_delivery:true};
+ try{
+  const first=await stream.frame(source,'d',1);
+  assert.equal(first.kind,'tiles');
+  assert.deepEqual(first.tiles.map(t=>t.y),[0],'the first batch carries the top band alone');
+  assert.equal(stream.repair?.length,3);assert.equal(stream.exact,false);
+  const ys=[];for(let after=2;stream.repair;after++){const next=await stream.frame(source,'d',after);ys.push(...next.tiles.map(t=>t.y))}
+  assert.deepEqual(ys,[128,256,384],'the rest follows in order');assert.equal(stream.exact,true);
+ }finally{await stream.close()}
+});
+
 // MD-DISPLAY-04: source selection precedes recovery admission on the host.
 test('MD-DISPLAY lost viewer base discards a selected delta before independent recovery',async()=>{
  const stream=new DisplayStream(binding,{encoder:{close:async()=>{}},now:()=>0,wait:async()=>{}});
