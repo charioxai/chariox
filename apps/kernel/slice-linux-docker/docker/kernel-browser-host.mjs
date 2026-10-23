@@ -534,7 +534,7 @@ export class KernelBrowserHost {
       })).targetId;
     }
     const byTarget = new Map([...this.tabs.values()].map(tab => [tab.target_id, tab]));
-    this.tabs.clear();this.layouts.clear();this.layoutRevisions.clear();
+    this.tabs.clear();
     const discovered = state.tabs.filter(tab => tab.target_id !== this.keepaliveTarget);
     // Preserve already-adopted identities before accepting native/popup tabs, in their existing order:
     // Chrome lists targets most recently active first, and a Tab strip must not reorder (MP-08/MP-10).
@@ -550,6 +550,8 @@ export class KernelBrowserHost {
       this.tabs.set(old?.tab_id ?? `host-tab-${randomUUID()}`, { ...tab, tab_id: old?.tab_id ?? null });
     }
     for (const [id, tab] of this.tabs) tab.tab_id = id;
+    // A surviving Tab keeps its committed page size; only retired Tabs drop theirs.
+    for (const map of [this.layouts, this.layoutRevisions]) for (const id of [...map.keys()]) if (!this.tabs.has(id)) map.delete(id);
     const previous = this.activeTarget;
     const intent = this.pendingActive;
     const boundOrigins = new Set([...(this.browser.appTabs?.apps?.values() ?? [])].filter(app => app.ready === true).map(app => app.origin));

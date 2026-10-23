@@ -2576,3 +2576,17 @@ test('native selection stays unknown while the saved App selection is pending', 
   assert.equal(host.chromeWindow().active_tab_id,docs.tab_id,'later native changes remain visible');
  } finally {host.chromeWindows={retire(){}};if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous}
 }));
+
+// Review #1073 P1: an ordinary state read reconciles every Tab; a surviving Tab keeps its committed resize.
+test('MP-08/MP-10 tab reconciliation keeps a surviving Tab layout and drops a retired one', () => using(async ({host}) => {
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=opened.tabs[0];
+ host.browser.setLayout=async()=>{};
+ await host.setLayout(host.tabs.get(tab.tab_id),'resize',{width:900,height:600});
+ const revision=host.layoutRevision(tab.tab_id);
+ await host.request({op:'state'});
+ assert.deepEqual(host.pageSize(tab.tab_id),{width:900,height:600},'a state read must not restore the canonical size under a resized page');
+ assert.equal(host.layoutRevision(tab.tab_id),revision);
+ host.layouts.set('host-tab-retired',{width:700,height:500,subscriptionId:'resize'});host.layoutRevisions.set('host-tab-retired',3);
+ await host.request({op:'state'});
+ assert.equal(host.layouts.has('host-tab-retired'),false);assert.equal(host.layoutRevisions.has('host-tab-retired'),false);
+}));
