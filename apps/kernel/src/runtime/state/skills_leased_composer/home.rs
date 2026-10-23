@@ -23,7 +23,7 @@ impl SkillDispatchService {
     fn home_composer_context(
         &self,
         authority: &RemoteWorkspaceLiveSyncContext,
-        request: ComposerSkillPrompt,
+        mut request: ComposerSkillPrompt,
     ) -> Result<Option<ComposerSkillContext>, DaemonError> {
         if !self.catalog_available() {
             return Ok(None);
@@ -40,6 +40,13 @@ impl SkillDispatchService {
         if request.native.iter().any(|entry| !matches!(&entry.selection,
             SkillSelection::Native {provider: actual, execution_id, ..} if Some(actual.as_str()) == provider && execution_id == &native_execution)) {
             return Err(failure("native inventory belongs to a different provider or execution; refresh Skills"));
+        }
+        // This operation is the native composer's hook/receipt path. A verified
+        // directory entry can use that acknowledgement even though discovery alone cannot.
+        for entry in &mut request.native {
+            if entry.exposure == NativeSkillExposure::Confirmed && entry.complete_manifest {
+                entry.supports_load_ack = true;
+            }
         }
         let budget_percent = self
             .config
