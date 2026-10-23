@@ -431,3 +431,62 @@ fn only_an_effect_sent_and_unanswered_is_uncertain() {
         );
     }
 }
+
+// Run in an isolated namespace with 93.184.216.34/32 on loopback. A public
+// address keeps the real DNS validation and connected-peer policy in the path.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore = "requires an isolated network namespace with 93.184.216.34/32 on lo"]
+async fn single_address_keeps_connecting_while_a_syn_is_retried() {
+    use std::os::fd::AsRawFd;
+
+    tokio::time::timeout(Duration::from_secs(8), async {
+        let listener = std::net::TcpListener::bind("93.184.216.34:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        // SAFETY: listener owns this valid socket throughout the call. A full
+        // accept queue drops SYNs until the server starts draining it.
+        assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 0) }, 0);
+        let queued: Vec<_> = (0..3)
+            .filter_map(|_| {
+                std::net::TcpStream::connect_timeout(&address, Duration::from_millis(200)).ok()
+            })
+            .collect();
+        assert!(!queued.is_empty());
+        listener.set_nonblocking(true).unwrap();
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        let server = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            for _ in 0..queued.len() {
+                drop(listener.accept().await.unwrap());
+            }
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let head = request_head(&mut stream).await;
+            assert!(head.starts_with("GET /retry HTTP/1.1\r\n"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .unwrap();
+        });
+        let limits = HttpLimits::default();
+        let (_upload, mut receive, exchange) = channels(false);
+        let (_stop, stopped) = watch::channel(false);
+        let started = Instant::now();
+        let result = HttpTransport::system()
+            .unwrap()
+            .run(
+                fixture_get(&format!("http://{address}/retry")),
+                exchange,
+                stopped,
+                limits.acquire("alice", "app").unwrap(),
+                started,
+            )
+            .await;
+        assert_eq!(result, Ok(()), "single-address request lost its TCP retry");
+        assert!(started.elapsed() >= Duration::from_millis(1200));
+        assert_eq!(receive.headers.await.unwrap().unwrap().status, 200);
+        assert_eq!(receive.chunks.recv().await.unwrap().unwrap(), "ok");
+        server.await.unwrap();
+    })
+    .await
+    .unwrap();
+}

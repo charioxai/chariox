@@ -196,12 +196,17 @@ impl HttpTransport {
                 .await?,
         );
         let mut connected = None;
-        for selected in addresses {
+        for (index, selected) in addresses.iter().copied().enumerate() {
             if super::stopped(stopped) {
                 return Err(HttpError::Cancelled);
             }
-            let attempt = initial_deadline
-                .min(Instant::now() + crate::outbound_dial::ADDRESS_ATTEMPT_TIMEOUT);
+            // Stagger fallback addresses, but let the final path retry its SYN
+            // within the remaining request budget when no fallback remains.
+            let attempt = if index + 1 == addresses.len() {
+                initial_deadline
+            } else {
+                initial_deadline.min(Instant::now() + crate::outbound_dial::ADDRESS_ATTEMPT_TIMEOUT)
+            };
             let socket = tokio::select! {
                 biased;
                 _ = super::cancelled(stopped) => return Err(HttpError::Cancelled),
