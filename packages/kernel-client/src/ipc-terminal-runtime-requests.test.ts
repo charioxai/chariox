@@ -38,3 +38,15 @@ test("MP-08 MP-10 exact cancellation forwards the home prompt with protocol499",
     CancelActivePrompt: { session_id: "s", attachment_id: "a", target_agent_id: "agent" },
   })
 })
+
+test("MP-08/MP-10/MP-11: HTTP trigger client contracts preserve payload and history cursor", async () => {
+  const r = await import("./ipc-terminal-runtime-requests.js")
+  assert.deepEqual(r.createAgentHttpTriggerRequest({ sessionId: "s", agentId: "a", busyPolicy: "steer", prompt: " Input " }), {
+    CreateAgentTrigger: { session_id: "s", agent_id: "a", source: { kind: "http" }, busy_policy: "steer", prompt: "Input" },
+  })
+  const payload = { prompt: "λ </script>", query: { repeated: ["one", "two"] } }
+  assert.deepEqual(r.invokeAgentTriggerRequest("s", "t", payload), { InvokeAgentTrigger: { session_id: "s", trigger_id: "t", payload } })
+  assert.deepEqual(r.readAgentTriggerTranscriptRequest("s", "t", { before_sequence: 100 }), {
+    ReadAgentTriggerTranscript: { session_id: "s", trigger_id: "t", cursor: { before_sequence: 100 } },
+  })
+})
