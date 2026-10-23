@@ -410,11 +410,26 @@ fn claude_state_path(request: Option<&LaunchProviderRequest>) -> Result<PathBuf,
     Ok(state_path)
 }
 
+/// A kernel started from inside a Claude Code session carries that session's
+/// identity. A launched Claude that inherits `CLAUDE_CODE_CHILD_SESSION` never
+/// writes its transcript, so its turns would have no answer.
+const CLAUDE_PARENT_SESSION_ENV: [&str; 6] = [
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+];
+
 fn claude_provider_env_remove(request: Option<&LaunchProviderRequest>) -> Vec<String> {
     let mut names = request
         .map(|request| request.provider_env_remove.clone())
         .unwrap_or_default();
-    for name in crate::account_profile::provider_auth_env_vars("claude") {
+    for name in crate::account_profile::provider_auth_env_vars("claude")
+        .iter()
+        .chain(CLAUDE_PARENT_SESSION_ENV.iter())
+    {
         if !names.iter().any(|existing| existing == name) {
             names.push((*name).to_string());
         }
@@ -825,6 +840,17 @@ mod tests {
             .pty_env_remove
             .iter()
             .any(|name| name == "CLAUDE_CONFIG_DIR"));
+        for name in [
+            "CLAUDECODE",
+            "CLAUDE_CODE_CHILD_SESSION",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_SESSION_ATTENDED",
+        ] {
+            assert!(
+                launch.pty_env_remove.iter().any(|removed| removed == name),
+                "a launched Claude must not inherit the starting session's {name}"
+            );
+        }
         assert_eq!(
             launch
                 .pty_env
