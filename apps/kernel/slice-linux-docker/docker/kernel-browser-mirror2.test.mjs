@@ -958,6 +958,10 @@ test('MP-08/MP-10 a layout change during an observation answers the same credit 
   const stream = { chain: Promise.resolve(), hurry: 0 };
   assert.equal(await mirror.next(stream, { subscription_id: 's', after_sequence: 4, wait_ms: 0 }, 'scope'), 'reset at the new size');
   assert.equal(builds, 2);
+  // A resend answered from history is a plain packet, not a promise.
+  let looked = 0; mirror.lost = () => looked++ === 0 ? null : 'issued packet from history';
+  assert.equal(await mirror.next(stream, { subscription_id: 's', after_sequence: 3, wait_ms: 0, resend: true }, 'scope'), 'issued packet from history');
+  mirror.lost = () => null;
   mirror.packet = async () => { throw new Error('MP-11: stale mirror protection policy or subscription'); };
   await assert.rejects(mirror.next(stream, { subscription_id: 's', after_sequence: 5, wait_ms: 0 }, 'scope'), /stale mirror protection/);
 });
