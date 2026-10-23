@@ -14,13 +14,13 @@ pub(super) enum TriggerSteerDelivery {
     Unconfirmed,
 }
 
-struct RemoteQueuedPromptSteerReservation {
+pub(super) struct RemoteQueuedPromptSteerReservation {
     prompt: crate::session::PromptQueueItem,
     id: u64,
 }
 
 impl RemoteQueuedPromptSteerReservation {
-    fn new(prompt: crate::session::PromptQueueItem, id: u64) -> Self {
+    pub(super) fn new(prompt: crate::session::PromptQueueItem, id: u64) -> Self {
         Self { prompt, id }
     }
 

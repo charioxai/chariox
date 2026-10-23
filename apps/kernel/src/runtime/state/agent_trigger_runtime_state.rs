@@ -428,6 +428,7 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn dispatch_due_agent_triggers(&self, now_ms: u64) {
+        self.owned.reconcile_inactive_local_steers();
         let dispatches = self
             .owned
             .session_store
@@ -1116,7 +1117,7 @@ pub(super) mod tests {
             "the durable queue must remember the steer was handed to the provider"
         );
 
-        let dropped = runtime.owned.drop_restart_held_local_steers();
+        let dropped = runtime.owned.reconcile_inactive_local_steers();
         assert_eq!(dropped.len(), 1, "the held firing must leave the queue");
         let session = runtime.owned.session_snapshot(&session_id).unwrap();
         let (_, queued) = runtime
@@ -1262,7 +1263,7 @@ pub(super) mod tests {
                 restart_from_log_cut(&events, events.len(), "settlement-failure-restart").await;
             let _connection = reject_trigger_settlement(&restarted);
             assert!(
-                restarted.owned.drop_restart_held_local_steers().is_empty(),
+                restarted.owned.reconcile_inactive_local_steers().is_empty(),
                 "failed settlement must not remove the held firing"
             );
             restarted
@@ -1306,6 +1307,85 @@ pub(super) mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn trigger_steer_settlement_recovers_on_live_maintenance_without_replay() {
+        let config = durable_state_config("trigger-live-settlement-retry");
+        let (_worktree, runtime, session_id, agent_id, _, _, run_id) =
+            super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt_and_config(
+                config, &[],
+            ).await;
+        install_slow_structured_run(&runtime, &session_id, &agent_id, &run_id, "slow-ack");
+        let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
+        let connection = reject_trigger_settlement(&runtime);
+        let due = trigger.next_run_at_ms();
+        runtime.dispatch_due_agent_triggers(due).await;
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        let (_, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        let held = queued
+            .iter()
+            .find(|prompt| prompt.local_steer_submitted())
+            .expect("failed settlement must retain the delivery hold")
+            .id()
+            .to_string();
+        let completed = runtime
+            .owned
+            .provider_store
+            .drain_finished_structured_prompt_submit_jobs();
+        assert_eq!(
+            completed
+                .iter()
+                .filter(|job| job.provider_run_id == run_id && job.prompt_id == held)
+                .count(),
+            1
+        );
+        connection
+            .execute_batch("DROP TRIGGER reject_trigger_settlement;")
+            .unwrap();
+        for tick in 0..3 {
+            runtime
+                .dispatch_due_agent_triggers(due + tick * 1_000)
+                .await;
+        }
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        let (_, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        assert!(
+            !queued.iter().any(|prompt| prompt.id() == held),
+            "ordinary live maintenance must clear a settled hold without restarting"
+        );
+        let delivery = session
+            .trigger_deliveries()
+            .iter()
+            .find(|delivery| delivery.prompt_id() == held)
+            .expect("uncertain settlement must expose the person's resend action");
+        assert_eq!(
+            delivery.state(),
+            crate::session::TriggerDeliveryState::NotConfirmed
+        );
+        assert_eq!(delivery.busy_policy(), AgentTriggerBusyPolicy::Steer);
+        assert!(session
+            .agent_triggers()
+            .iter()
+            .all(|known| known.id() != trigger.id()));
+        let completed = runtime
+            .owned
+            .provider_store
+            .drain_finished_structured_prompt_submit_jobs();
+        assert_eq!(
+            completed
+                .iter()
+                .filter(|job| job.provider_run_id == run_id && job.prompt_id == held)
+                .count(),
+            0,
+            "recovery must never send the provider another message"
+        );
+    }
+
     // MP-08/MP-10/MP-11: failed appends must preserve the replay barrier.
     #[tokio::test]
     async fn live_settlement_failure_retains_held_firing() {
@@ -1318,7 +1398,7 @@ pub(super) mod tests {
     }
 
     fn assert_restart_cannot_refire(runtime: &KernelRuntimeState, agent_id: &str, at: &str) {
-        runtime.owned.drop_restart_held_local_steers();
+        runtime.owned.reconcile_inactive_local_steers();
         assert!(
             runtime
                 .owned
@@ -1452,7 +1532,7 @@ pub(super) mod tests {
         firing.abort();
         let (first_restart, _) =
             restart_from_log_cut(&crashed, crashed.len(), "trigger-steer-held-1").await;
-        first_restart.owned.drop_restart_held_local_steers();
+        first_restart.owned.reconcile_inactive_local_steers();
         let remembered = first_restart
             .owned
             .session_store
