@@ -557,7 +557,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "3939a91bb1c926b8ed610a5aaff3f914414fb5a7f1a6988d2b90afb0aa0faf42"
+        "a3f0236feefab78a7c17eb3c9144ad9d96aae016c582948dbc4c3c88c2ce9d15"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
