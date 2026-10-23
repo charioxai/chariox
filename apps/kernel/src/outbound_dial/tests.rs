@@ -404,3 +404,93 @@ async fn websocket_keeps_connecting_while_a_syn_is_retried() {
     drop(result);
     drop(server.await.unwrap());
 }
+
+const PUBLIC_V4: &str = "93.184.216.34";
+const PUBLIC_V6: &str = "2606:4700:4700::1111";
+
+fn only_public(_netloc: &str, addresses: &[SocketAddr]) -> io::Result<()> {
+    match addresses.iter().find(|address| address.ip().is_loopback()) {
+        Some(address) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("non-public {}", address.ip()),
+        )),
+        None => Ok(()),
+    }
+}
+
+/// A answers at once, AAAA after `v6_delay`.
+fn staggered_answers(
+    v6: &'static str,
+    v6_delay: Duration,
+) -> impl Fn(&str, u16, dns::Family) -> io::Result<Vec<SocketAddr>> + Send + Sync + 'static {
+    move |_, port, family| match family {
+        dns::Family::V4 => Ok(vec![SocketAddr::new(PUBLIC_V4.parse().unwrap(), port)]),
+        dns::Family::V6 => {
+            std::thread::sleep(v6_delay);
+            Ok(vec![SocketAddr::new(v6.parse().unwrap(), port)])
+        }
+    }
+}
+
+// Registry-issued targets must stay public, yet an AAAA answer that arrives
+// after the stagger is still the working path: the dial asks for it again.
+#[test]
+fn a_validating_resolver_keeps_a_late_answer_available_and_vets_it() {
+    use ureq::Resolver;
+    let resolver = ValidatingResolver::over(
+        staggered_answers(PUBLIC_V6, Duration::from_millis(150)),
+        only_public,
+    );
+
+    let first = resolver.resolve("aegs.example:443").unwrap();
+    assert_eq!(
+        first,
+        vec![SocketAddr::new(PUBLIC_V4.parse().unwrap(), 443)]
+    );
+    assert!(resolver.has_pending("aegs.example:443", &first));
+    let later = resolver
+        .resolve_next(
+            "aegs.example:443",
+            &first,
+            Instant::now() + Duration::from_secs(3),
+        )
+        .unwrap();
+    assert_eq!(
+        later,
+        vec![SocketAddr::new(PUBLIC_V6.parse().unwrap(), 443)]
+    );
+}
+
+#[test]
+fn a_validating_resolver_rejects_a_late_answer_that_is_not_allowed() {
+    use ureq::Resolver;
+    let resolver = ValidatingResolver::over(
+        staggered_answers("::1", Duration::from_millis(150)),
+        only_public,
+    );
+
+    let first = resolver.resolve("aegs.example:443").unwrap();
+    let error = resolver
+        .resolve_next(
+            "aegs.example:443",
+            &first,
+            Instant::now() + Duration::from_secs(3),
+        )
+        .expect_err("a loopback AAAA answer must never be dialled");
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+}
+
+#[test]
+fn a_validating_resolver_rejects_a_first_answer_that_is_not_allowed() {
+    use ureq::Resolver;
+    let resolver = ValidatingResolver::over(
+        |_: &str, port: u16, family: dns::Family| match family {
+            dns::Family::V4 => Ok(vec![SocketAddr::new("127.0.0.1".parse().unwrap(), port)]),
+            dns::Family::V6 => Ok(Vec::new()),
+        },
+        only_public,
+    );
+
+    let error = resolver.resolve("aegs.example:443").unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+}

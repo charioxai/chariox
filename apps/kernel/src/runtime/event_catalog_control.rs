@@ -1365,7 +1365,22 @@ pub(crate) fn event_connection_owner_id(daemon_id: &str, caller_user_id: &str) -
 pub(crate) fn aegs_management_agent_builder(
     target: &crate::config::EventGeneratorManagementTarget,
 ) -> ureq::AgentBuilder {
-    aegs_management_agent_builder_with_resolver(target, resolve_public_aegs_addresses)
+    aegs_management_agent_builder_with_resolver(target, public_aegs_resolver())
+}
+
+/// Vets every address the dial may use, including a family that answers late.
+fn public_aegs_resolver() -> impl ureq::Resolver {
+    crate::outbound_dial::validating_resolver(require_public_aegs_addresses)
+}
+
+#[cfg(test)]
+pub(crate) fn public_aegs_resolver_over(
+    lookup: impl Fn(&str, u16, crate::outbound_dial::Family) -> io::Result<Vec<SocketAddr>>
+        + Send
+        + Sync
+        + 'static,
+) -> impl ureq::Resolver {
+    crate::outbound_dial::ValidatingResolver::over(lookup, require_public_aegs_addresses)
 }
 
 pub(crate) fn aegs_management_agent_builder_with_resolver<R>(
@@ -1389,34 +1404,20 @@ fn is_registry_issued_management_target(
     target.expires_at_ms.is_some() && target.owner_ids.is_some()
 }
 
-fn resolve_public_aegs_addresses(netloc: &str) -> io::Result<Vec<SocketAddr>> {
-    let addresses = crate::outbound_dial::resolve_addresses(netloc)?;
-    validate_public_aegs_addresses(netloc, addresses).map(crate::outbound_dial::interleave_families)
-}
-
-fn validate_public_aegs_addresses(
-    netloc: &str,
-    addresses: Vec<SocketAddr>,
-) -> io::Result<Vec<SocketAddr>> {
-    if addresses.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("AEGS management target `{netloc}` did not resolve"),
-        ));
-    }
-    if let Some(address) = addresses
+fn require_public_aegs_addresses(netloc: &str, addresses: &[SocketAddr]) -> io::Result<()> {
+    match addresses
         .iter()
         .find(|address| !is_globally_reachable_aegs_destination(address.ip()))
     {
-        return Err(io::Error::new(
+        Some(address) => Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
                 "registry-issued AEGS management target `{netloc}` resolved to non-public address {}",
                 address.ip()
             ),
-        ));
+        )),
+        None => Ok(()),
     }
-    Ok(addresses)
 }
 
 fn connection_error(message: impl Into<String>) -> DaemonError {
@@ -1899,7 +1900,7 @@ mod tests {
             "[fc00::1]:443",
             "[fe80::1]:443",
         ] {
-            let error = resolve_public_aegs_addresses(destination)
+            let error = ureq::Resolver::resolve(&public_aegs_resolver(), destination)
                 .expect_err("non-public management destination must be rejected");
             assert_eq!(
                 error.kind(),
@@ -1912,11 +1913,12 @@ mod tests {
     #[test]
     fn registry_issued_aegs_resolver_accepts_public_destinations() {
         assert_eq!(
-            resolve_public_aegs_addresses("8.8.8.8:443").expect("public IPv4 destination"),
+            ureq::Resolver::resolve(&public_aegs_resolver(), "8.8.8.8:443")
+                .expect("public IPv4 destination"),
             vec!["8.8.8.8:443".parse::<SocketAddr>().expect("socket address")]
         );
         assert_eq!(
-            resolve_public_aegs_addresses("[2606:4700:4700::1111]:443")
+            ureq::Resolver::resolve(&public_aegs_resolver(), "[2606:4700:4700::1111]:443")
                 .expect("public IPv6 destination"),
             vec!["[2606:4700:4700::1111]:443"
                 .parse::<SocketAddr>()
@@ -1926,9 +1928,9 @@ mod tests {
 
     #[test]
     fn registry_issued_aegs_resolver_rejects_mixed_dns_answers() {
-        let error = validate_public_aegs_addresses(
+        let error = require_public_aegs_addresses(
             "aegs.example.test:443",
-            vec![
+            &[
                 "8.8.8.8:443".parse().expect("public socket address"),
                 "127.0.0.1:443".parse().expect("private socket address"),
             ],

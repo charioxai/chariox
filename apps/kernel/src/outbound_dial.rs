@@ -22,6 +22,8 @@ use tokio_tungstenite::{
 };
 
 mod dns;
+#[cfg(test)]
+pub(crate) use dns::Family;
 
 /// Budget for the connect phase of one blocking HTTP call. With several
 /// addresses ureq gives the first one half of it.
@@ -164,14 +166,68 @@ impl ureq::Resolver for dns::Resolver {
     }
 }
 
-fn system_addresses(netloc: &str) -> io::Result<Vec<SocketAddr>> {
-    dns::system().resolve(netloc)
+/// The system resolver for callers that must vet every address they may dial.
+/// `validate` sees the first answers and every later one `resolve_next`
+/// delivers, so a family that answers after the stagger is vetted and still
+/// reached by the dial.
+pub(crate) fn validating_resolver<V>(validate: V) -> ValidatingResolver<V>
+where
+    V: Fn(&str, &[SocketAddr]) -> io::Result<()> + Send + Sync + 'static,
+{
+    ValidatingResolver {
+        inner: dns::system().clone(),
+        validate,
+    }
 }
 
-/// Resolves `host:port` with both families looked up independently, for
-/// callers that validate the addresses themselves.
-pub(crate) fn resolve_addresses(netloc: &str) -> io::Result<Vec<SocketAddr>> {
-    system_addresses(netloc)
+pub(crate) struct ValidatingResolver<V> {
+    inner: dns::Resolver,
+    validate: V,
+}
+
+#[cfg(test)]
+impl<V> ValidatingResolver<V> {
+    pub(crate) fn over(
+        lookup: impl Fn(&str, u16, dns::Family) -> io::Result<Vec<SocketAddr>> + Send + Sync + 'static,
+        validate: V,
+    ) -> Self {
+        Self {
+            inner: dns::Resolver::new(lookup),
+            validate,
+        }
+    }
+}
+
+impl<V> ureq::Resolver for ValidatingResolver<V>
+where
+    V: Fn(&str, &[SocketAddr]) -> io::Result<()> + Send + Sync + 'static,
+{
+    fn resolve(&self, netloc: &str) -> io::Result<Vec<SocketAddr>> {
+        let addresses = self.inner.resolve(netloc)?;
+        if addresses.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("`{netloc}` did not resolve"),
+            ));
+        }
+        (self.validate)(netloc, &addresses)?;
+        Ok(order_addresses(netloc, addresses))
+    }
+
+    fn has_pending(&self, netloc: &str, known: &[SocketAddr]) -> bool {
+        self.inner.has_pending(netloc, known)
+    }
+
+    fn resolve_next(
+        &self,
+        netloc: &str,
+        tried: &[SocketAddr],
+        deadline: Instant,
+    ) -> io::Result<Vec<SocketAddr>> {
+        let addresses = self.inner.resolve_next(netloc, tried, deadline)?;
+        (self.validate)(netloc, &addresses)?;
+        Ok(order_addresses(netloc, addresses))
+    }
 }
 
 /// The agent builder for every kernel HTTP call to a remote host.

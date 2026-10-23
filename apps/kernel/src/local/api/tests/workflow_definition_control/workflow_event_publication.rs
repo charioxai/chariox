@@ -30,7 +30,11 @@ impl ReadyConnectionServer {
     fn start_with_management_url(
         management_url: impl FnOnce(std::net::SocketAddr) -> String,
     ) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        Self::start_on("127.0.0.1:0", management_url)
+    }
+
+    fn start_on(bind: &str, management_url: impl FnOnce(std::net::SocketAddr) -> String) -> Self {
+        let listener = TcpListener::bind(bind).unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
         let management_url = management_url(address);
@@ -417,6 +421,71 @@ fn kernel_bootstraps_registry_issued_https_management_target_end_to_end() {
     assert!(normalized.contains("authorization: bearer registry-issued-token"));
     assert!(normalized.contains(&format!("x-chariox-owner-id: {expected_owner_id}")));
     assert!(authorization_request.contains(&format!("\"owner_id\":\"{expected_owner_id}\"")));
+}
+
+// Run in an isolated namespace with 2606:4700:4700::1111/128 on loopback. A
+// public address keeps the real destination validation in the path; the A
+// answer names an address that refuses at once and the AAAA answer, which
+// arrives after the resolver's stagger, is the only working path.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires an isolated network namespace with 2606:4700:4700::1111/128 on lo"]
+fn registry_issued_management_target_reaches_an_aaaa_answer_that_arrives_after_the_stagger() {
+    let server = ReadyConnectionServer::start_on("[2606:4700:4700::1111]:0", |address| {
+        format!("https://aegs-public.test:{}", address.port())
+    });
+    let port = server.address.port();
+    let client =
+        crate::runtime::event_catalog_control::AegsManagementHttpClient::with_agent_builder(
+            move |target| {
+                crate::runtime::event_catalog_control::aegs_management_agent_builder_with_resolver(
+                    target,
+                    crate::runtime::event_catalog_control::public_aegs_resolver_over(
+                        move |_, port, family| match family {
+                            crate::outbound_dial::Family::V4 => {
+                                Ok(vec![std::net::SocketAddr::new(
+                                    "93.184.216.34".parse().unwrap(),
+                                    port,
+                                )])
+                            }
+                            crate::outbound_dial::Family::V6 => {
+                                std::thread::sleep(Duration::from_millis(150));
+                                Ok(vec![std::net::SocketAddr::new(
+                                    "2606:4700:4700::1111".parse().unwrap(),
+                                    port,
+                                )])
+                            }
+                        },
+                    ),
+                )
+                .tls_connector(Arc::new(PassthroughTlsConnector))
+            },
+        );
+    let harness = LocalRouterTestHarness::with_config_and_aegs_management_http_client(
+        dynamic_registry_config(server.target().url),
+        client,
+    );
+
+    let response = harness
+        .dispatch_as_user(
+            "external-user",
+            LocalDaemonRequest::InstallEventConnection(
+                crate::local::InstallEventConnectionRequest {
+                    generator_id: "dev.chariox.dummy".to_string(),
+                    return_url: Some("https://terminal.chariox.com/notifications".to_string()),
+                },
+            ),
+        )
+        .expect("the AAAA answer is public and reachable, so the management call must use it");
+    assert!(matches!(
+        response,
+        LocalDaemonResponse::EventConnectionAuthorizationStarted { .. }
+    ));
+    assert_eq!(
+        server.management_url,
+        format!("https://aegs-public.test:{port}")
+    );
+    assert!(server.capability_issued.load(Ordering::Relaxed));
 }
 
 fn http_request_complete(request: &[u8]) -> bool {
