@@ -22,12 +22,15 @@ fn state_error(message: &str) -> DaemonError {
 pub(super) fn ensure_claude_headless_onboarding_state_at(
     state_path: &Path,
 ) -> Result<(), DaemonError> {
-    update_claude_state_at(state_path, StateUpdate::CompleteOnboarding)
+    update_claude_state_at(state_path, StateUpdate::CompleteOnboarding).map(|_| ())
 }
 
-pub(super) fn prepare_workspace_trust(request: &LaunchProviderRequest) -> Result<(), DaemonError> {
+/// The launch folder and the profile file that records its trust.
+fn trust_target(
+    request: &LaunchProviderRequest,
+) -> Result<Option<(std::path::PathBuf, String, std::path::PathBuf)>, DaemonError> {
     let Some(workspace) = request.working_directory.as_deref() else {
-        return Ok(());
+        return Ok(None);
     };
     let workspace = workspace.canonicalize().map_err(|_| {
         state_error("Claude workspace is unavailable; restore the selected folder before launching")
@@ -35,11 +38,35 @@ pub(super) fn prepare_workspace_trust(request: &LaunchProviderRequest) -> Result
     if !workspace.is_dir() {
         return Err(state_error("Claude workspace must be a directory"));
     }
-    let workspace = workspace
+    let text = workspace
         .to_str()
-        .ok_or_else(|| state_error("Claude workspace path must be valid UTF-8"))?;
+        .ok_or_else(|| state_error("Claude workspace path must be valid UTF-8"))?
+        .to_owned();
     let state_path = super::claude_state_path(Some(request))?;
-    update_claude_state_at(&state_path, StateUpdate::TrustWorkspace(workspace))
+    Ok(Some((workspace, text, state_path)))
+}
+
+/// The launch folder when Claude has not yet recorded trust for it.
+pub(super) fn untrusted_workspace(
+    request: &LaunchProviderRequest,
+) -> Result<Option<std::path::PathBuf>, DaemonError> {
+    let Some((workspace, text, state_path)) = trust_target(request)? else {
+        return Ok(None);
+    };
+    let snapshot = read_state_bytes(&state_path)?;
+    let pending = updated_contents(snapshot.as_deref(), StateUpdate::TrustWorkspace(&text))?;
+    Ok(pending.map(|_| workspace))
+}
+
+/// Records folder trust; the folder when this call newly trusted it.
+pub(super) fn prepare_workspace_trust(
+    request: &LaunchProviderRequest,
+) -> Result<Option<std::path::PathBuf>, DaemonError> {
+    let Some((workspace, text, state_path)) = trust_target(request)? else {
+        return Ok(None);
+    };
+    let recorded = update_claude_state_at(&state_path, StateUpdate::TrustWorkspace(&text))?;
+    Ok(recorded.then_some(workspace))
 }
 
 fn apply_update(
@@ -141,17 +168,18 @@ impl Drop for ProfileLock {
     }
 }
 
-fn update_claude_state_at(state_path: &Path, update: StateUpdate<'_>) -> Result<(), DaemonError> {
+fn update_claude_state_at(state_path: &Path, update: StateUpdate<'_>) -> Result<bool, DaemonError> {
     update_claude_state_with(state_path, update, &mut || {})
 }
 
 /// `after_read` runs between reading the profile and committing the change; it
-/// exists so tests can write the profile at exactly that moment.
+/// exists so tests can write the profile at exactly that moment. Returns
+/// whether this call changed the profile.
 fn update_claude_state_with(
     state_path: &Path,
     update: StateUpdate<'_>,
     after_read: &mut dyn FnMut(),
-) -> Result<(), DaemonError> {
+) -> Result<bool, DaemonError> {
     let parent = state_path
         .parent()
         .ok_or_else(|| DaemonError::LocalTransport {
@@ -166,11 +194,11 @@ fn update_claude_state_with(
     for _ in 0..COMMIT_ATTEMPTS {
         let snapshot = read_state_bytes(state_path)?;
         let Some(contents) = updated_contents(snapshot.as_deref(), update)? else {
-            return Ok(());
+            return Ok(false);
         };
         after_read();
         if commit_state(state_path, parent, &contents, snapshot.as_deref())? {
-            return Ok(());
+            return Ok(true);
         }
     }
     Err(state_error(

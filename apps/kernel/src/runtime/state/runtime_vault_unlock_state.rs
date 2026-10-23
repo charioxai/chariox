@@ -84,6 +84,7 @@ impl KernelRuntimeState {
         let mut request = self
             .owned
             .prepare_provider_launch_request(request, config.runtime_mcp_url())?;
+        self.admit_claude_workspace_trust(&request).await?;
         let credentials = std::mem::take(&mut request.provider_credential_env);
         drop(_vault_unlock);
         let credentials = self

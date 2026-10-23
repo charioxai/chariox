@@ -65,6 +65,9 @@ pub(crate) use claude::{
     probe_claude_account_usage, verify_claude_account_credential, verify_claude_setup_token,
     ClaudeCredentialCheckError,
 };
+pub(crate) use claude::{
+    trust_claude_workspace, untrusted_claude_workspace, UntrustedClaudeWorkspace,
+};
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
 pub(crate) use claude_runtime::ClaudeRuntimeState;

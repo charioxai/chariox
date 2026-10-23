@@ -461,6 +461,7 @@ mod provider_launch_owned_state;
 mod provider_launch_runtime;
 pub(crate) use provider_launch_runtime::ProviderLaunchStartOutcome;
 mod claude_setup_token_capture;
+mod claude_workspace_trust;
 mod provider_liveness_runtime;
 pub(in crate::runtime) use claude_setup_token_capture::{
     SetupTokenScan, CLAUDE_SETUP_TOKEN_COLUMNS, CLAUDE_SETUP_TOKEN_ROWS,

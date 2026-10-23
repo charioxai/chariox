@@ -14,6 +14,7 @@ mod launch_args;
 mod local_state;
 mod mcp_config;
 mod native_tui;
+mod project_hooks;
 mod usage_capture;
 mod usage_probe;
 
@@ -66,6 +67,47 @@ fn resolve_claude_executable_unlocked() -> Result<PathBuf, DaemonError> {
             adapter_key: "claude".to_string(),
             executable: "claude".to_string(),
         })
+}
+
+/// A folder the kernel is about to trust for a Claude launch, with the project
+/// hooks that trust switches on.
+pub(crate) struct UntrustedClaudeWorkspace {
+    pub(crate) path: PathBuf,
+    pub(crate) hooks: Vec<project_hooks::ProjectHook>,
+}
+
+/// Claude's interactive launches ask for folder trust; its `-p` runs skip the
+/// dialog, so Chariox records trust only where Claude would ask.
+fn records_workspace_trust(request: &LaunchProviderRequest) -> bool {
+    request.structured_endpoint.is_none()
+        && (!request.client_interface.is_chariox()
+            || request.provider == CLAUDE_HEADLESS_PROVIDER_ID)
+}
+
+pub(crate) fn untrusted_claude_workspace(
+    request: &LaunchProviderRequest,
+) -> Result<Option<UntrustedClaudeWorkspace>, DaemonError> {
+    if request.adapter_key != "claude" || !records_workspace_trust(request) {
+        return Ok(None);
+    }
+    let _guard = crate::env_lock::lock();
+    Ok(
+        local_state::untrusted_workspace(request)?.map(|path| UntrustedClaudeWorkspace {
+            hooks: project_hooks::project_hooks(&path),
+            path,
+        }),
+    )
+}
+
+/// Records the folder trust of a launch; the folder when it was newly trusted.
+pub(crate) fn trust_claude_workspace(
+    request: &LaunchProviderRequest,
+) -> Result<Option<PathBuf>, DaemonError> {
+    if request.adapter_key != "claude" || !records_workspace_trust(request) {
+        return Ok(None);
+    }
+    let _guard = crate::env_lock::lock();
+    local_state::prepare_workspace_trust(request)
 }
 
 pub fn plan_claude_launch(
@@ -128,7 +170,7 @@ fn plan_claude_launch_unlocked(
             "executable": executable.display().to_string(),
         }),
     );
-    if !request.client_interface.is_chariox() || request.provider == CLAUDE_HEADLESS_PROVIDER_ID {
+    if records_workspace_trust(request) {
         local_state::prepare_workspace_trust(request)?;
     }
     if !request.client_interface.is_chariox() && request.provider != CLAUDE_HEADLESS_PROVIDER_ID {

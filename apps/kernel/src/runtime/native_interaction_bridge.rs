@@ -479,7 +479,7 @@ async fn join_forwarded_decision(
         })
 }
 
-async fn request_runtime_interaction_with_timeout(
+pub(crate) async fn request_runtime_interaction_with_timeout(
     state: &KernelRuntimeState,
     session_id: &str,
     interaction: RuntimeInteraction,
