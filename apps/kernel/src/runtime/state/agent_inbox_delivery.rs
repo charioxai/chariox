@@ -598,4 +598,15 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         self.deliver_agent_inbox(room, agent).await
     }
+
+    pub(crate) fn agent_notices_for_test(&self, room: &str, agent: &str) -> Vec<String> {
+        self.owned
+            .operational_history_store
+            .load_session_history_entries(room, Some(agent))
+            .unwrap()
+            .into_iter()
+            .filter(|entry| entry.kind == crate::history::SessionHistoryEntryKind::Notice)
+            .map(|entry| entry.text)
+            .collect()
+    }
 }

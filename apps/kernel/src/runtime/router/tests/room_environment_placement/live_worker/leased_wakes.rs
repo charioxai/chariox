@@ -1685,6 +1685,87 @@ async fn leased_process_runs_on_worker_and_only_home_owns_task() {
 }
 
 #[test]
+fn mp10_a10_leased_process_match_wakes_the_home_agent_before_the_process_exits() {
+    run_test(leased_process_match_wakes_the_home_agent_before_the_process_exits);
+}
+
+// A12-S02: the output line a leased watcher was armed on (the test watcher's
+// initial passing count) reaches the agent while the process keeps running,
+// as for a local watcher, instead of waiting for the process to exit.
+async fn leased_process_match_wakes_the_home_agent_before_the_process_exits() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start().await;
+    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
+    let room = fixture.rooms[0].clone();
+    let attachment = owner_attachment(&fixture, &room).await;
+    let agent =
+        spawn_on_agent_worker_with_model(&mut fixture, &room, "controlled-cancel-idle").await;
+    run_turn(
+        &fixture,
+        &room,
+        &attachment,
+        &agent,
+        "MP-10 A10 leased watched process match",
+    )
+    .await;
+    let store = store(&fixture).await;
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .pop()
+        .unwrap();
+    let run = worker.run_for(&fixture, &agent, &task.prompt_id).await;
+    let token = run.runtime_mcp_auth_token().unwrap().to_string();
+    let result = worker
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "chariox.events.process",
+            json!({"task_id":task.task_id,"origin_prompt_id":task.prompt_id,
+                "argv":["/bin/sh","-c","echo 24 passing; sleep 60"],
+                "label":"MP-10 A10 leased watcher match","match_text":"passing"}),
+        )
+        .await;
+    let mut matched = None;
+    let mut delivered = None;
+    if let Ok(result) = &result {
+        if let Some(id) = result.payload["wake_id"].as_str() {
+            matched = Some(
+                eventually("home projects the worker's match", || {
+                    store
+                        .agent_wakes(Some(&room), Some(&agent))
+                        .unwrap()
+                        .into_iter()
+                        .find(|w| w.id == id && w.state == "running" && w.matched_at_ms.is_some())
+                })
+                .await,
+            );
+            // The match is announced on the home session as for a local
+            // watcher, while the process still runs.
+            delivered = Some(
+                eventually("home announces the match while the process runs", || {
+                    fixture
+                        .home
+                        .runtime_state
+                        .agent_notices_for_test(&room, &agent)
+                        .into_iter()
+                        .find(|text| text.contains("printed its match"))
+                })
+                .await,
+            );
+        }
+    }
+    worker.stop().await;
+    fixture.stop().await;
+    assert!(
+        result.is_ok(),
+        "leased process must be admitted: {result:?}"
+    );
+    assert!(matched.is_some(), "the match is projected at home");
+    assert!(delivered.is_some(), "the match is announced at home");
+}
+
+#[test]
 fn mp10_a10_leased_process_settles_from_the_workers_receipt_after_it_lost_the_lease() {
     run_test(leased_process_settles_from_the_workers_receipt_after_it_lost_the_lease);
 }

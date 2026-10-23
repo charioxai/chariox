@@ -1,7 +1,7 @@
 //! MP-08/MP-09/MP-10/MP-11 A10: home-owned watcher admission and source freshness.
 use super::*;
 use crate::durable_state::agent_lifecycle::{
-    self as ledger, AgentWake, LeasedProcessBinding, Operation,
+    self as ledger, AgentWake, LeasedProcessBinding, Operation, Outcome,
 };
 use crate::transport::relay_peer::{
     LeasedWatchedProcessAction as Action, RelayPeerRequest, RelayPeerResponse,
@@ -240,11 +240,22 @@ impl KernelRuntimeState {
                 );
                 if let Some(line) = protect(super::agent_process_output::sanitize(line.as_bytes()))
                 {
-                    store.agent_lifecycle(Operation::ProcessMatched {
+                    let outcome = store.agent_lifecycle(Operation::ProcessMatched {
                         id: wake.id.clone(),
                         line,
                         now,
                     })?;
+                    // Same as a local watcher: the agent is woken by the match
+                    // while the process keeps running.
+                    if let Outcome::Wakes(matched) = outcome {
+                        for matched in &matched {
+                            self.wake_notice(
+                                matched,
+                                format!("Watched process '{}' printed its match", matched.label),
+                            );
+                            self.schedule_wake_delivery(matched);
+                        }
+                    }
                 }
             }
         }
