@@ -965,6 +965,7 @@ impl KernelRuntimeState {
         target_agent_id: &str,
         attachment_id: &str,
         prompt_id: &str,
+        settle_firing: impl FnOnce(),
     ) -> Result<TriggerSteerDelivery, DaemonError> {
         let owned = &self.owned;
         if owned
@@ -1020,6 +1021,9 @@ impl KernelRuntimeState {
                     return Err(error);
                 }
             };
+            // The trigger is settled while the hold still stands, so a stop
+            // before the queue removal cannot leave it due without a firing.
+            settle_firing();
             owned.finish_local_queued_prompt_steer(&prepared)?;
             Ok(delivery)
         }

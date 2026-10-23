@@ -1292,9 +1292,10 @@ impl KernelRuntimeOwnedState {
         self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)
     }
 
-    /// The firing counts as sent: the trigger must not fire it a second time
-    /// now that its queued copy is gone.
-    fn settle_restart_held_trigger(&self, session_id: &str, trigger_id: &str) {
+    /// The firing counts as sent. This must be durable before the queued copy
+    /// leaves the queue: a stop in between would otherwise leave an overdue
+    /// trigger without its firing, and it would fire a second time.
+    pub(super) fn settle_steered_trigger(&self, session_id: &str, trigger_id: &str) {
         // The store guard must be gone before persisting, which reads the store.
         let marked = self.session_store.write().mark_agent_trigger_fired(
             session_id,
@@ -1308,7 +1309,7 @@ impl KernelRuntimeOwnedState {
         if let Err(error) = settled {
             crate::logging::error_with_fields(
                 "durable_state.recovery",
-                "failed to settle the trigger of a restart-held queued steer",
+                "failed to settle the trigger of a steered firing",
                 serde_json::json!({
                     "session_id": session_id,
                     "trigger_id": trigger_id,
@@ -1327,6 +1328,9 @@ impl KernelRuntimeOwnedState {
                 for prompt in prompt_state.queued_prompts() {
                     if !prompt.local_steer_submitted() {
                         continue;
+                    }
+                    if let Some(trigger_id) = prompt.agent_trigger_id() {
+                        self.settle_steered_trigger(session.id(), trigger_id);
                     }
                     let Some(removed) = self.prompt_state_owner.remove_queued_prompt(
                         &session,
@@ -1353,9 +1357,6 @@ impl KernelRuntimeOwnedState {
                                     "prompt_id": removed.id(),
                                 }),
                             );
-                            if let Some(trigger_id) = removed.agent_trigger_id() {
-                                self.settle_restart_held_trigger(session.id(), trigger_id);
-                            }
                             dropped.push((
                                 session.id().to_string(),
                                 agent_id.to_string(),
