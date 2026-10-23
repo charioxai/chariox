@@ -160,6 +160,11 @@ fn project_error(value: &Value) -> KernelTransportError {
         }
         .into();
     }
+    if let Some(message) = crate::error::actionable_refusal_message(code) {
+        projected.code = code.into();
+        projected.message = message.into();
+        projected.retryable = value["retryable"].as_bool().unwrap_or(false);
+    }
     let message = value["message"].as_str().unwrap_or_default();
     if crate::runtime::external_response::public_error_message(message) {
         projected.message = message.into();

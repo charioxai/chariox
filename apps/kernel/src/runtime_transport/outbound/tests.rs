@@ -2,6 +2,37 @@
 use super::*;
 const CANARY: &str = "MP-11-outbound-test-only-secret";
 
+#[test]
+fn lane_refusals_rebuild_remediation_at_the_final_socket_boundary() {
+    for (code, action) in [
+        (
+            "provider_profile_unverified",
+            "RefreshProviderAccountProfile",
+        ),
+        (
+            "provider_profile_unauthenticated",
+            "RefreshProviderAccountProfile",
+        ),
+        (
+            "provider_profile_unavailable",
+            "ListProviderAccountProfiles",
+        ),
+        (
+            "provider_profile_usage_exhausted",
+            "RefreshProviderAccountProfile",
+        ),
+        ("agent_not_in_session", "ListAgents"),
+        ("attachment_not_found", "AttachToSession"),
+    ] {
+        let error =
+            project_error(&serde_json::json!({"code":code,"message":CANARY,"retryable":false}));
+        assert_eq!(error.code, code);
+        assert!(!error.retryable);
+        assert!(error.message.contains(action), "{}", error.message);
+        assert!(!error.message.contains(CANARY));
+    }
+}
+
 fn enum_names(source: &str, declaration: &str) -> Vec<String> {
     source
         .split_once(declaration)
