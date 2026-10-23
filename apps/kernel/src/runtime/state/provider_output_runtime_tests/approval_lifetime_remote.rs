@@ -709,3 +709,68 @@ async fn approval_lifetime_remote_retried_forward_joins_the_same_decision() {
     assert_eq!(late.choice_id.as_deref(), Some("allow"));
     assert_eq!(pending(), 0);
 }
+
+#[tokio::test]
+async fn approval_lifetime_remote_cold_launch_hooks_card_reaches_the_home_and_is_answerable() {
+    // A worker's cold Claude launch asks about project hooks before any run
+    // exists; the card must appear in the home session and its answer must
+    // travel back.
+    let f = home(None, true).await;
+    let launch = "launch-claude-workspace-hooks-cold";
+    let origin = NativeInteractionOrigin::ProviderStartup {
+        provider_run_id: launch.into(),
+    };
+    let mut context = context(&f, true);
+    context.worker_provider_run_id = launch.into();
+    let interaction = crate::session::RuntimeInteraction::new(
+        "claude-workspace-hooks-cold",
+        &f.agent,
+        crate::session::RuntimeInteractionKind::Permission,
+        crate::session::RuntimeInteractionLevel::Warning,
+        Some("Run this folder's Claude hooks?".into()),
+        "hooks",
+        vec![crate::session::RuntimeInteractionChoice::new(
+            "trust",
+            "Trust folder",
+            "trust",
+            None,
+        )],
+        None,
+        Some(600),
+        Some("cancel".into()),
+    )
+    .with_native_origin(Some(origin));
+    let runtime = f.runtime.clone();
+    let forward = tokio::spawn(async move {
+        crate::runtime::native_interaction_bridge::forward_relay_native_interaction(
+            &runtime,
+            context,
+            interaction,
+        )
+        .await
+    });
+    let card = loop {
+        if let Some(card) = f
+            .runtime
+            .owned
+            .session_snapshot(&f.session)
+            .unwrap()
+            .active_interactions()
+            .first()
+        {
+            break card.id().to_string();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    assert_eq!(card, "claude-workspace-hooks-cold");
+    f.runtime
+        .resolve_runtime_interaction(&f.session, &card, "trust", None)
+        .await
+        .unwrap();
+    let resolution = tokio::time::timeout(std::time::Duration::from_secs(2), forward)
+        .await
+        .expect("the home's answer reaches the worker")
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolution.choice_id.as_deref(), Some("trust"));
+}

@@ -21,7 +21,7 @@ impl KernelRuntimeState {
         let Some(folder) = crate::provider::untrusted_claude_workspace(request)? else {
             return Ok(());
         };
-        if folder.awaits_hook_approval(request) {
+        if folder.awaits_hook_approval(request) && !self.sudo_covers_claude_launch(request) {
             self.confirm_claude_project_hooks(request, &folder).await?;
         }
         if let Some(trusted) = crate::provider::trust_claude_workspace(request)? {
@@ -86,15 +86,13 @@ impl KernelRuntimeState {
             Some(HOOK_CARD_TIMEOUT_SEC),
             Some("cancel".to_string()),
         );
-        let resolution =
-            crate::runtime::native_interaction_bridge::request_runtime_interaction_with_timeout(
-                self,
-                &request.session_id,
-                interaction,
-                "launch provider run",
-                None,
-            )
-            .await?;
+        let resolution = crate::runtime::native_interaction_bridge::request_launch_interaction(
+            self,
+            &request.session_id,
+            interaction,
+            "launch provider run",
+        )
+        .await?;
         if resolution.status == "answered" && resolution.choice_id.as_deref() == Some("trust") {
             return Ok(());
         }
@@ -147,17 +145,44 @@ mod tests {
     }
 
     fn gate(permission_level: AgentPermissionLevel, hooks: Option<&str>) -> Gate {
+        gate_for(permission_level, hooks, false)
+    }
+
+    /// The same gate on a worker: the launch belongs to a leased agent whose
+    /// home kernel owns the person's session.
+    fn leased_gate(permission_level: AgentPermissionLevel, hooks: Option<&str>) -> Gate {
+        gate_for(permission_level, hooks, true)
+    }
+
+    fn gate_for(permission_level: AgentPermissionLevel, hooks: Option<&str>, leased: bool) -> Gate {
         let folder = crate::test_support::TestWorktree::new("trust-folder");
         let profile = crate::test_support::TestWorktree::new("trust-profile");
         if let Some(hooks) = hooks {
             std::fs::create_dir_all(folder.path().join(".claude")).unwrap();
             std::fs::write(folder.path().join(".claude/settings.json"), hooks).unwrap();
         }
-        let config = crate::config::DaemonConfig::for_tests();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = leased;
         let mut app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
-        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(folder.session_request())
-            .unwrap();
+        let (session, agent) = if leased {
+            let mut runtime = crate::app::RemoteLeaseRuntime::new(&mut app);
+            let lease = runtime
+                .create_execution_lease("home-kernel", "home-session", "home-agent", false, "owner")
+                .unwrap();
+            let leased = runtime
+                .create_leased_agent(
+                    &lease.id, "claude", "default", None, None, None, None, None, None, None,
+                )
+                .unwrap();
+            let (session_id, agent_id) = runtime.leased_agent_backing(&leased.id).unwrap();
+            let session = app.session_state_store().get_session(&session_id).unwrap();
+            let agent = app.agents().get_agent(&agent_id).unwrap();
+            (session, agent)
+        } else {
+            crate::app::KernelSessionService::new(&mut app)
+                .create_session(folder.session_request())
+                .unwrap()
+        };
         let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
                 session.id(),
@@ -306,5 +331,20 @@ mod tests {
         assert!(g.card().is_none());
         assert!(g.trusted());
         assert_eq!(g.notices().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn leased_launch_sends_the_hooks_card_to_the_home_and_not_the_backing_session() {
+        let g = leased_gate(AgentPermissionLevel::Required, Some(HOOKS));
+        let mut admit = Box::pin(g.state.admit_claude_workspace_trust(&g.request));
+        tokio::select! {
+            result = &mut admit => assert!(result.is_err(), "no home answered, so the start must fail: {result:?}"),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(300)) => {}
+        }
+        assert!(
+            g.card().is_none(),
+            "the owner never sees a card registered in the worker's backing session"
+        );
+        assert!(!g.trusted());
     }
 }

@@ -65,6 +65,11 @@ impl KernelRuntimeState {
         interaction: &RuntimeInteraction,
         context: &crate::transport::relay_peer::RemoteNativeInteractionContext,
     ) -> Option<ProviderNativeInteractionResolution> {
+        if let Some(resolution) =
+            self.sudo_covers_forwarded_claude_hooks(session_id, interaction, context)
+        {
+            return Some(resolution);
+        }
         if context.home_session_id != session_id
             || interaction.agent_id() != Some(context.home_agent_id.as_str())
             || interaction.native_origin()?.provider_run_id() != context.worker_provider_run_id
@@ -243,6 +248,21 @@ impl KernelRuntimeState {
                 return false;
             }
         }
+        self.sudo_window_covers_agent(session_id, agent_id)
+    }
+
+    /// A live, time-bound /sudo window for this agent in its own session and
+    /// placement. Reading it never extends the window or the agent's permission.
+    fn sudo_window_covers_agent(&self, session_id: &str, agent_id: &str) -> bool {
+        let Ok(agent) = self.owned.agent_store.get_agent(agent_id) else {
+            return false;
+        };
+        let Ok(session) = self.owned.session_store.get_session(session_id) else {
+            return false;
+        };
+        if agent.session_id() != session_id {
+            return false;
+        }
         let placement = agent
             .remote_execution()
             .map(|remote| remote.execution_lease_id.clone());
@@ -261,6 +281,56 @@ impl KernelRuntimeState {
                 && turn.placement == placement
                 && turn.deadline.is_some()
                 && self.sudo_live(turn)
+        })
+    }
+
+    /// A launch inside the session's own folder is covered by the agent's live
+    /// /sudo window, so the hooks card has nothing left to ask.
+    pub(crate) fn sudo_covers_claude_launch(
+        &self,
+        request: &crate::provider::LaunchProviderRequest,
+    ) -> bool {
+        let Some(agent_id) = request.agent_id.as_deref() else {
+            return false;
+        };
+        let Ok(session) = self.owned.session_store.get_session(&request.session_id) else {
+            return false;
+        };
+        let canonical = |path: &Path| path.canonicalize().ok();
+        request
+            .working_directory
+            .as_deref()
+            .and_then(canonical)
+            .is_some_and(|folder| canonical(Path::new(session.worktree_id())) == Some(folder))
+            && self.sudo_window_covers_agent(&request.session_id, agent_id)
+    }
+
+    /// The home half of a worker's pre-launch hooks card: the leased agent's
+    /// live /sudo window already covers it, before any worker run is bound.
+    pub(crate) fn sudo_covers_forwarded_claude_hooks(
+        &self,
+        session_id: &str,
+        interaction: &RuntimeInteraction,
+        context: &crate::transport::relay_peer::RemoteNativeInteractionContext,
+    ) -> Option<ProviderNativeInteractionResolution> {
+        let agent = self
+            .owned
+            .agent_store
+            .get_agent(&context.home_agent_id)
+            .ok()?;
+        if !interaction.id().starts_with("claude-workspace-hooks-")
+            || interaction.kind() != RuntimeInteractionKind::Permission
+            || context.home_session_id != session_id
+            || interaction.agent_id() != Some(context.home_agent_id.as_str())
+            || agent.remote_execution()?.leased_agent_id != context.leased_agent_id
+            || !self.sudo_window_covers_agent(session_id, &context.home_agent_id)
+        {
+            return None;
+        }
+        Some(ProviderNativeInteractionResolution {
+            status: "answered".into(),
+            choice_id: Some("trust".into()),
+            reply: None,
         })
     }
 }

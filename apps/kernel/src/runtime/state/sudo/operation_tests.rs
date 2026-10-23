@@ -704,3 +704,125 @@ async fn sudo_operations_watched_command_reports_linux_ownership_requirement() {
     );
     assert!(f.state.passkey_prompts_for("local").is_empty());
 }
+
+const HOOKS: &str = r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"./audit.sh"}]}]}}"#;
+
+fn hooks_launch(
+    f: &super::tests::Fixture,
+    profile: &std::path::Path,
+) -> crate::provider::LaunchProviderRequest {
+    let folder = f.run.working_directory().unwrap().to_owned();
+    std::fs::create_dir_all(folder.join(".claude")).unwrap();
+    std::fs::write(folder.join(".claude/settings.json"), HOOKS).unwrap();
+    crate::provider::LaunchProviderRequest::new(
+        f.run.session_id(),
+        "claude",
+        "claude",
+        "default",
+        "haiku",
+    )
+    .with_agent_id(f.run.agent_instance_id().unwrap())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
+    .with_working_directory(folder)
+    .with_permission_level(crate::provider::AgentPermissionLevel::Required)
+    .with_provider_account_env(std::collections::BTreeMap::from([(
+        "CLAUDE_CONFIG_DIR".to_string(),
+        profile.display().to_string(),
+    )]))
+}
+
+#[tokio::test]
+async fn sudo_operations_cold_claude_launch_with_hooks_reuses_the_live_window() {
+    let f = fixture();
+    let profile = crate::test_support::TestWorktree::new("sudo-hooks-profile");
+    let request = hooks_launch(&f, profile.path());
+    running(&f);
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        f.state.admit_claude_workspace_trust(&request),
+    )
+    .await
+    .expect("a launch covered by /sudo asked about project hooks")
+    .unwrap();
+    let state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(profile.path().join(".claude.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        state["projects"][request
+            .working_directory
+            .as_ref()
+            .unwrap()
+            .to_str()
+            .unwrap()]["hasTrustDialogAccepted"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn sudo_operations_forwarded_hooks_card_of_a_cold_launch_reuses_the_live_window() {
+    let f = fixture();
+    let turn = running(&f);
+    let binding = crate::agent::RemoteAgentBinding {
+        worker_kernel_id: "worker-kernel".into(),
+        worker_machine_id: "worker-machine".into(),
+        execution_lease_id: "worker-lease".into(),
+        leased_agent_id: "leased-agent".into(),
+        active_worker_provider_run_id: None,
+        relay_url: None,
+        relay_token: None,
+        relay_peer_protocol_version: Some(
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        ),
+    };
+    f.app
+        .lock()
+        .await
+        .agents_mut()
+        .bind_remote_execution(&turn.agent_id, binding.clone())
+        .unwrap();
+    f.state
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .get_mut(&turn.entry_id)
+        .unwrap()
+        .placement = Some(binding.execution_lease_id.clone());
+    let interaction = RuntimeInteraction::new(
+        "claude-workspace-hooks-cold",
+        &turn.agent_id,
+        RuntimeInteractionKind::Permission,
+        RuntimeInteractionLevel::Warning,
+        Some("Run this folder's Claude hooks?".into()),
+        "hooks",
+        vec![
+            RuntimeInteractionChoice::new("trust", "Trust folder", "trust", None),
+            RuntimeInteractionChoice::new("cancel", "Cancel", "cancel", None),
+        ],
+        None,
+        Some(600),
+        Some("cancel".into()),
+    )
+    .with_native_origin(Some(NativeInteractionOrigin::ProviderStartup {
+        provider_run_id: "launch-claude-workspace-hooks-cold".into(),
+    }));
+    let context = crate::transport::relay_peer::RemoteNativeInteractionContext {
+        home_session_id: turn.session_id.clone(),
+        home_agent_id: turn.agent_id.clone(),
+        leased_agent_id: binding.leased_agent_id.clone(),
+        worker_provider_run_id: "launch-claude-workspace-hooks-cold".into(),
+        home_prompt_id: turn.prompt_id.clone(),
+    };
+    let answer = tokio::time::timeout(
+        Duration::from_secs(2),
+        crate::runtime::native_interaction_bridge::forward_relay_native_interaction(
+            &f.state,
+            context,
+            interaction,
+        ),
+    )
+    .await
+    .expect("a hooks card covered by /sudo waited for a person")
+    .unwrap();
+    assert_eq!(answer.choice_id.as_deref(), Some("trust"));
+}
