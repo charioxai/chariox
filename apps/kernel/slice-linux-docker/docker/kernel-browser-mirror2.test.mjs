@@ -629,14 +629,18 @@ test('MP-08/MP-10/MP-11 native preview follows a document transition, not initia
  assert.equal(packet.fallback,'navigation_preview');assert.equal(packet.document_id,'typed');
 });
 
-test('MP-08/MP-10/MP-11 the protected native preview can initialize before observer work',async()=>{
+test('MP-08/MP-10/MP-11 mirror preparation does not wait for an unavailable native preview',async()=>{
  const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',navigationPreview:true,previewDocument:'new',issued:6,document_id:'old',resetAt:7};
- const displays=new Map(),host={generation:1,pageSize,scales:new Map(),protection:{},browser:{},displays,chromium:{desktop:{binding:()=>({})}},mirrorTarget:async()=>tab};
- const mirror=new Mirror2({host,require:()=>stream,streams:new Map([['s',stream]])});let ready=false;
- mirror.world=async()=>{assert(ready,'observer must leave startup time for the protected native source');throw Error('observer reached after preview')};
- const pending=mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:6},'scope');pending.catch(()=>{});
- await new Promise(resolve=>setTimeout(resolve,10));ready=true;displays.set('native',{tab_id:'t',generation:1,observed_by:'scope',expires:Date.now()+60000,regionTarget:{kind:'visible_page'},regionLease:{document_id:'new'},regionSource:{attested:true,valid:()=>true,sample:()=>({})}});
- await assert.rejects(pending,/observer reached after preview/);
+ const host={generation:1,pageSize,scales:new Map(),protection:{},browser:{},displays:new Map(),chromium:{desktop:{binding:()=>({})}},mirrorTarget:async()=>tab};
+ const mirror=new Mirror2({host,require:()=>stream,streams:new Map([['s',stream]])});
+ let reached=false;const abort=new AbortController();
+ mirror.world=async()=>{reached=true;throw Error('ordinary mirror preparation')};
+ const pending=mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:6},'scope',abort.signal).catch(error=>error);
+ try {
+  await new Promise(setImmediate);
+  assert.equal(reached,true,'preparing a mirror must not depend on the optional native producer starting');
+  assert.match((await pending).message,/ordinary mirror preparation/);
+ } finally {abort.abort();await pending;}
 });
 
 for(const reply of ['evicted','delta','rejected'])test('MP-08/MP-10/MP-11 navigation during '+reply+' refuses before a snapshot or renderer query',async()=>{
@@ -774,7 +778,7 @@ test('MP-08/MP-10 mirrorregion: full-viewport media stays a DOM copy without los
 });
 
 test('MP-08/MP-10/MP-11 a renderer that stays busy keeps the native preview waiting instead of failing the subscription',async()=>{
- const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',navigationPreview:true,previewDocument:'new',previewWaitedDocument:'new',issued:6,document_id:'old',resetAt:7};
+ const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',navigationPreview:true,previewDocument:'new',issued:6,document_id:'old',resetAt:7};
  const host={generation:1,pageSize,scales:new Map(),protection:{},browser:{},mirrorTarget:async()=>tab};
  const mirror=new Mirror2({host,require:()=>stream,streams:new Map([['s',stream]])});let busy=true;
  mirror.world=async()=>{if(busy)throw Object.assign(Error('browser CDP method Page.getFrameTree timed out after 5000ms'),{code:'browser_cdp_timeout'});throw Error('observer reached')};
