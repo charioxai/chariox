@@ -1446,10 +1446,10 @@ pub(super) mod tests {
             })
             .await
             .unwrap();
-        assert!(matches!(
-            submission.outcome,
-            crate::session::PromptSubmissionOutcome::Queued { .. }
-        ));
+        let crate::session::PromptSubmissionOutcome::Queued { prompt } = submission.outcome else {
+            panic!("user work must queue behind the held steer");
+        };
+        let admitted_prompt_id = prompt.id().to_string();
         runtime
             .complete_agent_prompt_with_external_authority(&session_id, &agent_id, None, None)
             .await
@@ -1486,7 +1486,7 @@ pub(super) mod tests {
         .await
         .expect("maintenance must deliver the user prompt to the provider");
         assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].prompt_id, "user-behind-hold");
+        assert_eq!(jobs[0].prompt_id, admitted_prompt_id);
         assert_eq!(jobs[0].provider_run_id, run_id);
         assert!(jobs[0].result.is_ok());
         runtime
@@ -1502,7 +1502,7 @@ pub(super) mod tests {
             .owned
             .prompt_state_owner
             .state_parts(&session, &agent_id);
-        assert_eq!(active.unwrap().id(), "user-behind-hold");
+        assert_eq!(active.unwrap().id(), admitted_prompt_id);
         assert!(queued.is_empty());
     }
 
