@@ -138,6 +138,27 @@ pub(super) fn append_observed_external_turns_for_attached_target(
     );
     for turn in &candidate_turns {
         let observed = import_state.record_turn(turn, &provider, &provider_session_id);
+        if turn.role == ObservedExternalProviderTurnRole::Compaction {
+            let model = provider_run_id
+                .as_deref()
+                .and_then(|id| app.providers().get_run(id).ok())
+                .map(|run| run.model().to_string())
+                .or_else(|| agent.model().map(str::to_string))
+                .unwrap_or_default();
+            app.operational_history_store()
+                .record_observed_agent_compaction_boundary(
+                    session.id(),
+                    agent.id(),
+                    crate::history::AgentCompactionOrigin {
+                        provider: &provider,
+                        model: &model,
+                        account: &read.target.account_profile,
+                        native_session: Some(&provider_session_id),
+                    },
+                    &turn.provider_turn_id_or_fallback(),
+                )?;
+            continue;
+        }
         if observed.is_chariox_owned {
             continue;
         }

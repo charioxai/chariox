@@ -16,6 +16,7 @@ use crate::error::DaemonError;
 
 pub(crate) use handoff_brief::AgentHandoffBrief;
 mod compaction_boundary;
+pub(crate) use compaction_boundary::AgentCompactionOrigin;
 mod handoff_brief;
 pub(crate) mod leased_projection;
 mod operational_archive;
@@ -1325,6 +1326,16 @@ CREATE TABLE IF NOT EXISTS history_agent_handoff_briefs (
     brief TEXT NOT NULL,
     updated_at_ms INTEGER NOT NULL,
     PRIMARY KEY (session_id, agent_id)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS history_agent_compaction_observations (
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    provider_family TEXT NOT NULL,
+    account_profile TEXT NOT NULL,
+    provider_session_id TEXT NOT NULL,
+    provider_turn_id TEXT NOT NULL,
+    PRIMARY KEY (session_id, agent_id, provider_family, account_profile, provider_session_id, provider_turn_id)
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS history_agent_compaction_boundaries (
