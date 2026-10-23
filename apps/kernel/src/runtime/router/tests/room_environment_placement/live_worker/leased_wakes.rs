@@ -2026,3 +2026,5 @@ async fn leased_required_agent_with_a_home_sudo_window_types_without_approval() 
         "a live home sudo window covers terminal input, no approval is asked: {sent:?}"
     );
 }
+
+mod connectivity;
