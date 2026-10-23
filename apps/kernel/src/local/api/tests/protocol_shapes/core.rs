@@ -1259,7 +1259,7 @@ fn local_daemon_protocol_http_agent_trigger_shape_is_versioned() {
         crate::test_support::expected_local_protocol_version()
     );
     assert!(
-        LOCAL_DAEMON_PROTOCOL_VERSION >= 579,
+        crate::test_support::expected_local_protocol_version() >= 579,
         "the HTTP source and its invoke/read variants are protocol 579"
     );
     let request = LocalDaemonRequest::CreateAgentTrigger(crate::local::CreateAgentTriggerRequest {
