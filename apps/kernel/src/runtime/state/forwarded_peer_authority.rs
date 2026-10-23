@@ -55,7 +55,7 @@ impl KernelRuntimeState {
                 crate::session::PromptStatus::Running,
                 crate::session::PromptStatus::Dispatching,
             ],
-            context.home_prompt_id.is_none(),
+            true,
         )
     }
 
@@ -76,7 +76,7 @@ impl KernelRuntimeState {
         &self,
         context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
         admitted_prompt_states: &[crate::session::PromptStatus],
-        native_composer_receipt: bool,
+        native_delivery_receipt: bool,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         self.authorize_current_forwarded_binding()?;
         let agent = self.owned.agent_store.get_agent(&context.home_agent_id)?;
@@ -101,11 +101,13 @@ impl KernelRuntimeState {
                     prompt.id() == expected && admitted_prompt_states.contains(&prompt.status())
                 })
         });
-        // A native composer starts its next task before the home observes that
-        // turn. Completion clears the active-turn binding, not the live process.
+        // A native composer keeps its process after task completion clears the
+        // active-turn binding. Its next typed or home-submitted hook receipt
+        // can arrive before dispatch restores that binding; home prompt checks
+        // still require the exact admitted turn. Ordinary tools get no exception.
         let run_matches = remote.active_worker_provider_run_id.as_deref()
             == Some(context.worker_provider_run_id.as_str())
-            || (native_composer_receipt
+            || (native_delivery_receipt
                 && remote.active_worker_provider_run_id.is_none()
                 && self
                     .owned

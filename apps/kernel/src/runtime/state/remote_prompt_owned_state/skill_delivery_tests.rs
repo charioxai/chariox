@@ -126,7 +126,7 @@ async fn fixture_with_dispatch(
     (runtime, context, storage, attachment)
 }
 
-async fn acknowledge(
+pub(super) async fn acknowledge(
     runtime: &KernelRuntimeState,
     context: &RemoteWorkspaceLiveSyncContext,
     arguments: serde_json::Value,
@@ -1351,7 +1351,7 @@ async fn leased_load_is_delivered_once_per_worker_run(relaunch: Relaunch) {
     );
 }
 
-async fn manual_review_fixture() -> (
+pub(super) async fn manual_review_fixture() -> (
     KernelRuntimeState,
     crate::skill::service::SkillCatalogService,
     SkillRecord,
@@ -1858,4 +1858,100 @@ async fn leased_typed_skill_receipt_uses_the_live_native_run_between_home_projec
         "an ended native run cannot acknowledge new loads"
     );
     assert_eq!(service.storage.loads(&session_id).unwrap().len(), 1);
+}
+
+// MP-08 / MP-10 / MP-11: the first home turn after a typed task receives its
+// hook ACK before the home can restore the active worker run binding.
+#[tokio::test]
+async fn leased_home_skill_receipt_uses_the_live_native_run_during_dispatch() {
+    use crate::provider::{
+        LaunchProviderRequest, ProviderClientInterface, ProviderLaunchResult, RuntimeProviderRun,
+    };
+    let (runtime, service, _skill, mut context, session_id, agent_id) =
+        manual_review_fixture().await;
+    let request = LaunchProviderRequest::new(&session_id, "claude", "claude", "default", "haiku")
+        .with_agent_id(&agent_id)
+        .with_client_interface(ProviderClientInterface::NativeTui);
+    let mut run = RuntimeProviderRun::new(
+        crate::provider::projected_leased_provider_run_id(
+            &context.leased_agent_id,
+            &context.worker_provider_run_id,
+        ),
+        &request,
+        ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "native-claude-composer".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: vec![],
+            pty_env: Default::default(),
+            pty_env_remove: vec![],
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    runtime
+        .owned
+        .provider_run_projection
+        .update_remote_snapshot(run);
+    runtime
+        .owned
+        .agent_store
+        .set_remote_execution_active_worker_provider_run_id(&agent_id, None)
+        .unwrap();
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let active = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &agent_id)
+        .unwrap();
+    let mut dispatching = active.clone();
+    dispatching.set_status(crate::session::PromptStatus::Dispatching);
+    assert!(runtime
+        .owned
+        .prompt_state_owner
+        .replace_active_prompt_if_matches(&session, &agent_id, &active, dispatching,));
+    context.home_prompt_id = Some(active.id().into());
+    let peer = runtime.with_relay_peer_authority(
+        crate::runtime::relay_peer_authority::test_peer_authority(&context.worker_kernel_id),
+    );
+    assert!(
+        peer.authorize_forwarded_workspace_context(&context)
+            .is_err(),
+        "a delivery receipt must not admit ordinary home tools before the run is rebound"
+    );
+    let acknowledgement = serde_json::json!({"delivery":"prompt"});
+    let request = RelayPeerRequest::ForwardCapabilityRuntimeTool {
+        context: context.clone(),
+        tool_name: "_chariox_skill_delivery_ack".into(),
+        arguments: acknowledgement.clone(),
+    };
+    let admitted = peer.prepare_forwarded_peer_request(&request).await.expect(
+        "the current home prompt can acknowledge the same live native process before rebinding",
+    );
+    let (result, _) = admitted
+        .dispatch_forwarded_capability_runtime_tool_call(
+            context.clone(),
+            "_chariox_skill_delivery_ack".into(),
+            acknowledgement.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(result.ok);
+    assert!(service.storage.loads(&session_id).unwrap().is_empty());
+    let mut stale = context.clone();
+    stale.home_prompt_id = Some("replaced-home-prompt".into());
+    assert!(acknowledge(&runtime, &stale, acknowledgement.clone())
+        .await
+        .is_err());
+    stale = context;
+    stale.worker_provider_run_id = "replaced-native-run".into();
+    assert!(acknowledge(&runtime, &stale, acknowledgement)
+        .await
+        .is_err());
 }
