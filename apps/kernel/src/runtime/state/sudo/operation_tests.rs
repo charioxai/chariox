@@ -777,7 +777,8 @@ async fn sudo_operations_cold_claude_launch_in_the_agents_own_worktree_reuses_th
             Some(Some(agent_tree.path().display().to_string())),
         )
         .unwrap();
-    let request = hooks_launch(&f, profile.path()).with_working_directory(agent_tree.path().to_path_buf());
+    let request =
+        hooks_launch(&f, profile.path()).with_working_directory(agent_tree.path().to_path_buf());
     tokio::time::timeout(
         Duration::from_secs(2),
         f.state.admit_claude_workspace_trust(&request),
