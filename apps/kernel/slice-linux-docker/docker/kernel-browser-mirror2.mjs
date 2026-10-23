@@ -319,8 +319,14 @@ export class Mirror2 {
     const hard = arrival + Math.min(wait + (this.busyMs ?? BUSY_RENDERER_MS) + (this.creditSlackMs ?? CREDIT_SLACK_MS), KERNEL_CONTROLLER_DEADLINE_MS - 1000);
     const build = () => resend && this.lost(stream, command, scope, true) || this.packet(stream, command, scope, signal, Math.min(arrival + 3 * wait, Date.now() + wait), hurry, hard);
     // A live resize can land while a packet is observed: that packet describes the old size. The viewer gets the
-    // reset at the new size on this same credit instead of an error that retires its mirror mid-drag.
-    const run = stream.chain.then(build).catch(error => { if (!LAYOUT_MOVED.test(error?.message ?? '')) throw error; return build(); });
+    // reset at the new size on this same credit instead of an error that retires its mirror mid-drag. A drag can
+    // retire each replacement too, so keep observing until the credit's own deadline or cancellation.
+    const observe = async () => {
+      for (;;) {
+        try { return await build(); } catch (error) { if (!LAYOUT_MOVED.test(error?.message ?? '') || signal?.aborted || Date.now() >= hard) throw error; }
+      }
+    };
+    const run = stream.chain.then(observe);
     stream.chain = run.catch(() => {});
     if (replayKey) { const entry = { run, done: false }; run.finally(() => { entry.done = true; }).catch(() => {}); (stream.replies ??= new Map()).set(replayKey, entry); if (stream.replies.size > 8) stream.replies.delete(stream.replies.keys().next().value); }
     return run;

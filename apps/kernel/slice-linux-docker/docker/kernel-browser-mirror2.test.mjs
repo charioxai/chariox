@@ -965,3 +965,23 @@ test('MP-08/MP-10 a layout change during an observation answers the same credit 
   mirror.packet = async () => { throw new Error('MP-11: stale mirror protection policy or subscription'); };
   await assert.rejects(mirror.next(stream, { subscription_id: 's', after_sequence: 5, wait_ms: 0 }, 'scope'), /stale mirror protection/);
 });
+
+// #1073 P2: a live drag can retire the observation and then its replacement; the credit keeps retrying until its deadline.
+test('MP-08/MP-10 repeated layout changes during one credit still answer it with a reset, within the credit deadline', async () => {
+  const mirror = new Mirror2({ host: { pageSize, scales: new Map() } });
+  mirror.lost = () => null;
+  let builds = 0;
+  mirror.packet = async () => { builds++; if (builds <= 3) throw new Error('MP-11: mirror layout changed during observation'); return 'reset at the final size'; };
+  const stream = { chain: Promise.resolve(), hurry: 0 };
+  assert.equal(await mirror.next(stream, { subscription_id: 's', after_sequence: 4, wait_ms: 0 }, 'scope'), 'reset at the final size');
+  assert.equal(builds, 4, 'three consecutive layout changes, then the current reset');
+  // The retries stay within the credit's own budget: past it the layout error reaches the viewer.
+  mirror.busyMs = 0; mirror.creditSlackMs = 30; builds = 0;
+  mirror.packet = async () => { builds++; await new Promise(resolve => setTimeout(resolve, 10)); throw new Error('MP-11: mirror layout changed during observation'); };
+  await assert.rejects(mirror.next(stream, { subscription_id: 's', after_sequence: 5, wait_ms: 0 }, 'scope'), /layout changed during observation/);
+  assert(builds >= 2 && builds <= 5, `bounded by the credit deadline (${builds} builds)`);
+  // A cancelled credit stops retrying at once.
+  const controller = new AbortController(); controller.abort(); builds = 0; mirror.creditSlackMs = 10000;
+  await assert.rejects(mirror.next(stream, { subscription_id: 's', after_sequence: 6, wait_ms: 0 }, 'scope', { signal: controller.signal }), /layout changed during observation/);
+  assert.equal(builds, 1);
+});
