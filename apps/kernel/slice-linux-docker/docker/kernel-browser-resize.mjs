@@ -3,6 +3,7 @@ import {assertNotCancelled} from './browser-controller-actions.mjs';
 export async function resizeBrowserPage(host,tab,command,signal){
  const {width,height}=command;
  if(!Number.isSafeInteger(width)||!Number.isSafeInteger(height)||width<320||height<200||width>1920||height>1080)throw Error('browser resize needs a viewport between 320x200 and 1920x1080; adjust the browser area');
+ if(width%2||height%2)throw Error('browser resize needs even width and height for video; round down to an even viewport size');
  assertNotCancelled(signal);
  if(host.generation!==command.generation||host.tabs.get(tab.tab_id)?.target_id!==tab.target_id)throw Error('browser resize target retired; refresh the browser view and try again');
  const previous=host.pageSize(tab.tab_id);

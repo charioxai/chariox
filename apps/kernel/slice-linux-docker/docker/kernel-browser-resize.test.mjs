@@ -34,3 +34,5 @@ test('MP-08/MP-10 failed layout application leaves the last committed size retry
  const proto=KernelBrowserHost.prototype,host={layouts:new Map(),layoutRevisions:new Map(),browser:{setLayout:async()=>{throw Error('layout unavailable')}},pageSize:proto.pageSize,noteLayout:proto.noteLayout,layoutRevision:proto.layoutRevision};
  await assert.rejects(proto.setLayout.call(host,{tab_id:'t',target_id:'T'},'resize',{width:900,height:600}),/layout unavailable/);assert.equal(host.layouts.size,0);assert.equal(host.layoutRevisions.size,0);
 });
+
+test('MP-08/MP-10 resize refuses odd video dimensions before mutating the window',async()=>{const {host,tab,calls}=fixture();await assert.rejects(resizeBrowserPage(host,tab,{...command,width:901}),/even/);assert.deepEqual(calls,[])});
