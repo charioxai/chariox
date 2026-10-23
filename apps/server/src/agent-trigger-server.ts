@@ -126,7 +126,8 @@ export async function buildAgentTriggerServer(client: Pick<AgentTriggerClient, "
     const promptId = (request.body as { prompt_id?: unknown } | null)?.prompt_id
     if (typeof promptId !== "string" || !promptId) return failure(request, reply, 400, "invalid request body")
     if (!admit()) { reply.header("Retry-After", "10"); return failure(request, reply, 429, "too many requests; retry shortly") }
-    await client.resend(promptId)
+    // The kernel sends a firing again once; a second click or an old page finds it already handled.
+    try { await client.resend(promptId) } catch { return failure(request, reply, 409, "this message is no longer waiting to be sent again") }
     reply.header("Cache-Control", "no-store")
     return reply.code(202).send({ prompt_id: promptId })
   })

@@ -14,7 +14,7 @@ async function fixture() {
   const client = {
     async metadata() { return { trigger, agent_alias: "Test agent", online, busy: false, history: { SessionHistoryOutline: { agents: [] } }, deliveries: [] } },
     async subscribe() {}, async close() {}, onChange() { return () => {} },
-    async resend(promptId: string) { resends.push(promptId) },
+    async resend(promptId: string) { if (promptId === "gone") throw Error("already sent again"); resends.push(promptId) },
     async invoke(payload: unknown): Promise<Invocation> { invocations.push(payload); return { status: "accepted", prompt_id: `prompt-${invocations.length}`, outcome: "started" } },
     async conversation(): Promise<Conversation> { return { alias: "Test agent", online, busy: false, enabled: trigger.enabled, entries: [
       { key: "1", role: "user", agentId: "agent-test", text: "conversation before trigger creation </script><script>bad()</script>" },
@@ -119,5 +119,8 @@ test("MP-08/MP-10: the trigger page lists an unconfirmed firing and resends it o
     assert.equal(own.statusCode, 202)
     assert.deepEqual(f.resends, ["prompt-7"])
     assert.equal((await f.app.inject({ method: "POST", url: "/local-test/resend", payload: {} })).statusCode, 400)
+    const gone = await f.app.inject({ method: "POST", url: "/local-test/resend", payload: { prompt_id: "gone" }, headers: { accept: "application/json" } })
+    assert.equal(gone.statusCode, 409)
+    assert.match(gone.body, /no longer waiting/)
   } finally { await f.app.close() }
 })
