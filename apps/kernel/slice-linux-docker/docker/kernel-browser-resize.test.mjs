@@ -13,7 +13,7 @@ function fixture(){
 }
 test('MP-08/MP-10 resize changes native bounds and page layout without closing mirrors',async()=>{
  const {host,tab,calls,stream}=fixture();assert.deepEqual(await resizeBrowserPage(host,tab,command),{width:900,height:600});
- assert.equal(calls[1],'viewport_resize');assert.equal(calls[2],'close_source');
+ assert.equal(calls[1],'viewport_resize');assert.equal(calls[2],'close_source');assert.deepEqual(host.windowLayout,{width:900,height:600});
  assert.deepEqual(calls[3],['Browser.setWindowBounds',{windowId:7,bounds:{width:900,height:688}}]);
  assert.deepEqual(calls[4],['layout','resize',{width:900,height:600}]);assert.equal(stream.css_width,900);assert.equal(stream.css_height,600);
  const count=calls.length;await resizeBrowserPage(host,tab,command);assert.equal(calls.length,count+1,'same size reads the current window but produces no intermediate resizes');
@@ -36,3 +36,10 @@ test('MP-08/MP-10 failed layout application leaves the last committed size retry
 });
 
 test('MP-08/MP-10 resize refuses odd video dimensions before mutating the window',async()=>{const {host,tab,calls}=fixture();await assert.rejects(resizeBrowserPage(host,tab,{...command,width:901}),/even/);assert.deepEqual(calls,[])});
+
+// A Tab opened in the resized window starts at the window's size: the person's view needs no second resize (which retires the band under a click).
+test('MP-08/MP-10 resize lays out every Tab of the shared window',async()=>{
+ const {host,tab,calls}=fixture();const other={tab_id:'u',target_id:'U'};host.tabs.set('u',other);
+ await resizeBrowserPage(host,tab,command);
+ assert.deepEqual(calls.filter(c=>Array.isArray(c)&&c[0]==='layout').map(c=>c[2]),[{width:900,height:600},{width:900,height:600}]);
+});

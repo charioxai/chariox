@@ -2590,3 +2590,15 @@ test('MP-08/MP-10 tab reconciliation keeps a surviving Tab layout and drops a re
  await host.request({op:'state'});
  assert.equal(host.layouts.has('host-tab-retired'),false);assert.equal(host.layoutRevisions.has('host-tab-retired'),false);
 }));
+
+// browserperf r2: the URL typed right after opening a Tab was lost because the new Tab reported the canonical size and the
+// view resized the shared window again, retiring the band under the person's click.
+test('MP-08/MP-10 a Tab opened in a resized window inherits the window layout', () => using(async ({host}) => {
+ const opened=await host.request({op:'open',url:'about:blank'});
+ const applied=[];host.browser.setLayout=async(target,layout)=>{applied.push([target,layout])};
+ host.windowLayout={width:900,height:600};
+ const next=await host.request({op:'open',url:'about:blank'});
+ for(const tab of next.tabs)assert.deepEqual(host.pageSize(tab.tab_id),{width:900,height:600});
+ assert(applied.length>=1&&applied.every(([,layout])=>layout.width===900&&layout.height===600));
+ assert.equal(opened.tabs.length+1,next.tabs.length);
+}));
