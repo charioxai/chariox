@@ -157,13 +157,26 @@ fn outside_events_snapshot_and_hash() {
         let response: LocalDaemonResponse = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(response).unwrap(), *value);
     }
-    for (variant,body) in [
-        ("CreateSession",serde_json::json!({"workspace_id":"workspace","worktree_id":"worktree","no_subscribe":true})),
-        ("SpawnAgent",serde_json::json!({"session_id":"room","no_subscribe":true})),
-        ("SpawnAgents",serde_json::json!({"session_id":"room","agents":[],"no_subscribe":true})),
+    for (variant, body) in [
+        (
+            "CreateSession",
+            serde_json::json!({"workspace_id":"workspace","worktree_id":"worktree","no_subscribe":true}),
+        ),
+        (
+            "SpawnAgent",
+            serde_json::json!({"session_id":"room","no_subscribe":true}),
+        ),
+        (
+            "SpawnAgents",
+            serde_json::json!({"session_id":"room","agents":[],"no_subscribe":true}),
+        ),
     ] {
-        let request:LocalDaemonRequest=serde_json::from_value(serde_json::json!({variant:body})).unwrap();
-        assert_eq!(serde_json::to_value(request).unwrap()[variant]["no_subscribe"],snapshot["no_subscribe_requests"][variant]);
+        let request: LocalDaemonRequest =
+            serde_json::from_value(serde_json::json!({variant:body})).unwrap();
+        assert_eq!(
+            serde_json::to_value(request).unwrap()[variant]["no_subscribe"],
+            snapshot["no_subscribe_requests"][variant]
+        );
     }
     assert_eq!(
         format!(
