@@ -343,6 +343,10 @@ impl KernelRuntimeState {
         // usable until admission installs the exact prompt and run identity.
         // A leased agent launches on its worker through the leased dispatch.
         if !leased {
+            // The approved task covers the folder's hooks card; trust is still
+            // recorded before Claude starts, which exits in an untrusted folder.
+            self.admit_cold_claude_launch(&entry.session_id, &entry.agent_id)
+                .await?;
             self.with_app_side_effect(|app| {
                 if !self
                     .owned

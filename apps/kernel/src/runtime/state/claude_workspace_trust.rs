@@ -43,6 +43,26 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    /// A cold Claude launch for this agent needs the folder's trust settled
+    /// first: the launch itself runs under the app mutex and cannot wait for
+    /// the person's answer.
+    pub(super) async fn admit_cold_claude_launch(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let (session_id, agent_id) = (session_id.to_owned(), agent_id.to_owned());
+        let cold_claude = self
+            .with_app_side_effect(move |app| {
+                app.cold_claude_launch_for_agent(&session_id, &agent_id)
+            })
+            .await?;
+        match cold_claude {
+            Some(request) => self.admit_claude_workspace_trust(&request).await,
+            None => Ok(()),
+        }
+    }
+
     async fn confirm_claude_project_hooks(
         &self,
         request: &crate::provider::LaunchProviderRequest,
