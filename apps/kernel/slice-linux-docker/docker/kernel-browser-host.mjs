@@ -556,10 +556,14 @@ export class KernelBrowserHost {
     const intent = this.pendingActive;
     const boundOrigins = new Set([...(this.browser.appTabs?.apps?.values() ?? [])].filter(app => app.ready === true).map(app => app.origin));
     const restoreReady = intent && (intent.apps.every(origin => boundOrigins.has(origin)) || Date.now() >= intent.until);
-    const restored = !this.restoring && restoreReady && [...this.tabs.values()].find(tab => intent.app_origin
+    const nativeActive = await this.tabGroups?.active?.().catch(() => null) ?? null;
+    // MP-08/MP-10: a Tab the page opened after the human input (window.open, target=_blank) is what Chromium now shows;
+    // the opener's input selection must not pull the foreground back over it.
+    const openedByInput = intent?.known && nativeActive && !intent.known.has(nativeActive) && [...this.tabs.values()].some(tab => tab.target_id === nativeActive);
+    if (openedByInput && this.pendingActive === intent) this.pendingActive = null;
+    const restored = !openedByInput && !this.restoring && restoreReady && [...this.tabs.values()].find(tab => intent.app_origin
       ? [...(this.browser.appTabs?.apps?.values() ?? [])].some(app => app.ready === true && app.targetId === tab.target_id && app.origin === intent.app_origin)
       : tab.tab_id === intent.tab_id);
-    const nativeActive = await this.tabGroups?.active?.().catch(() => null) ?? null;
     if (restored) {
       if (this.pendingActive !== intent) return this.reconcile();
       if (nativeActive !== restored.target_id) {
@@ -950,7 +954,7 @@ export class KernelBrowserHost {
         // changed Chrome's selection. Reconcile checks the live native target
         // before activating, so ordinary keys do not refocus an active tab.
         if (!agent && !command._agent_input && !command.focused_agent) {
-          this.pendingActive = {tab_id:tab.tab_id,app_origin:origin,apps:intent?.apps ?? [],until:intent?.until ?? Date.now()};
+          this.pendingActive = {tab_id:tab.tab_id,app_origin:origin,apps:intent?.apps ?? [],until:intent?.until ?? Date.now(),known:new Set([...this.tabs.values()].map(known => known.target_id))};
         }
       };
       const onDispatch = () => {
