@@ -203,6 +203,11 @@ pub(crate) struct DurablePromptPrivateState {
     pub(crate) recovery_phase: Option<DurablePromptDeliveryPhase>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     remote_steer_uncertainty: Option<DurableRemoteQueuedSteerUncertainty>,
+    /// The kernel was about to hand this queued firing to the provider as a
+    /// steer. A restart cannot tell whether the provider received it, so the
+    /// firing is never replayed.
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    local_steer_submitted: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -223,6 +228,7 @@ struct PromptPrivateMetadata {
     recovery_generation: u32,
     recovery_operation_id: Option<String>,
     recovery_phase: Option<DurablePromptDeliveryPhase>,
+    local_steer_submitted: bool,
 }
 
 fn is_zero_u32(value: &u32) -> bool {
@@ -266,6 +272,7 @@ impl DurablePromptPrivateState {
             recovery_operation_id: metadata.recovery_operation_id,
             recovery_phase: metadata.recovery_phase,
             remote_steer_uncertainty,
+            local_steer_submitted: metadata.local_steer_submitted,
         })
     }
 }
@@ -848,6 +855,20 @@ impl PromptQueueItem {
             .and_then(|metadata| metadata.recovery_operation_id.as_deref())
     }
 
+    pub(crate) fn local_steer_submitted(&self) -> bool {
+        self.private_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.local_steer_submitted)
+    }
+
+    pub(crate) fn set_local_steer_submitted(&mut self, submitted: bool) {
+        if submitted || self.private_metadata.is_some() {
+            self.private_metadata
+                .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+                .local_steer_submitted = submitted;
+        }
+    }
+
     pub(crate) fn durable_recovery_phase(&self) -> Option<DurablePromptDeliveryPhase> {
         self.private_metadata
             .as_ref()
@@ -899,6 +920,7 @@ impl PromptQueueItem {
             && private.source_client_id.is_none()
             && private.source_user_id.is_none()
             && private.remote_steer_uncertainty.is_none()
+            && !private.local_steer_submitted
         {
             self.private_metadata = None;
             self.restore_remote_steer_outcome_uncertainty(private.remote_steer_uncertainty.clone());
@@ -921,6 +943,7 @@ impl PromptQueueItem {
             recovery_generation: private.recovery_generation,
             recovery_operation_id: private.recovery_operation_id.clone(),
             recovery_phase: private.recovery_phase,
+            local_steer_submitted: private.local_steer_submitted,
         }));
         self.restore_remote_steer_outcome_uncertainty(private.remote_steer_uncertainty.clone());
     }
@@ -1108,6 +1131,31 @@ mod tests {
         assert!(!restored.remote_steer_reserved());
         assert!(clone.release_remote_steer(reservation));
         assert!(!prompt.remote_steer_reserved());
+    }
+
+    #[test]
+    fn local_steer_hold_survives_durable_restore_and_stays_private() {
+        let mut prompt = PromptQueueItem::new(
+            "queued-steer-1",
+            "attachment-1",
+            "agent-1",
+            "queued body",
+            PromptStatus::Queued,
+        );
+        assert!(DurablePromptPrivateState::from_prompt("session-1", &prompt).is_none());
+        prompt.set_local_steer_submitted(true);
+        let private = DurablePromptPrivateState::from_prompt("session-1", &prompt)
+            .expect("the hold is durable private state");
+        let private: DurablePromptPrivateState =
+            serde_json::from_value(serde_json::to_value(private).unwrap()).unwrap();
+        let public_prompt = serde_json::to_value(&prompt).unwrap();
+        assert!(public_prompt.get("local_steer_submitted").is_none());
+        let mut restored: PromptQueueItem = serde_json::from_value(public_prompt).unwrap();
+        assert!(!restored.local_steer_submitted());
+        restored.restore_durable_private_state(&private);
+        assert!(restored.local_steer_submitted());
+        restored.set_local_steer_submitted(false);
+        assert!(!restored.local_steer_submitted());
     }
 
     #[test]

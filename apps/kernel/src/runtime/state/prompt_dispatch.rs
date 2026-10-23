@@ -995,23 +995,30 @@ impl KernelRuntimeState {
                 .provider_runtime_lanes
                 .acquire(&prepared.dispatch.provider_run_id)
                 .await;
+            owned.hold_local_queued_prompt_steer(&prepared, true)?;
             let delivery = match self
                 .enqueue_prompt_dispatch_with_acceptance(&prepared.dispatch)
                 .await
             {
                 Ok(true) => TriggerSteerDelivery::Confirmed,
-                Ok(false) => {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "steer queued prompt",
-                        message: "provider did not accept the queued prompt steer".into(),
-                    });
-                }
                 // The provider may already hold the message, so the firing
                 // leaves the queue instead of being replayed as a second one.
                 Err(DaemonError::ProviderPromptSteerUnconfirmed { .. }) => {
                     TriggerSteerDelivery::Unconfirmed
                 }
-                Err(error) => return Err(error),
+                // The provider never took the message: release the hold so
+                // the retained firing can run on a later turn.
+                Ok(false) => {
+                    owned.hold_local_queued_prompt_steer(&prepared, false)?;
+                    return Err(DaemonError::LocalTransport {
+                        operation: "steer queued prompt",
+                        message: "provider did not accept the queued prompt steer".into(),
+                    });
+                }
+                Err(error) => {
+                    owned.hold_local_queued_prompt_steer(&prepared, false)?;
+                    return Err(error);
+                }
             };
             owned.finish_local_queued_prompt_steer(&prepared)?;
             Ok(delivery)
