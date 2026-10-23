@@ -340,7 +340,7 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
         }
         LocalDaemonRequest::ReadAgentTriggerTranscript(request) => {
-            LocalRequestMetadata::new("agent_trigger.transcript", Interactive)
+            LocalRequestMetadata::new("agent_trigger.transcript", Background)
                 .session(&request.session_id)
         }
         LocalDaemonRequest::CancelActivePrompt(request) => {
