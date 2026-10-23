@@ -28,6 +28,15 @@ pub enum PromptOrigin {
     Notification,
 }
 
+impl PromptOrigin {
+    /// Prompts Chariox itself shows as its own: a person typed them, or a
+    /// trigger or notification fired them. Not an external provider's prompts
+    /// and not the hidden completion check.
+    pub fn is_chariox_prompt(self) -> bool {
+        matches!(self, Self::Chariox | Self::Schedule | Self::Notification)
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DurablePromptDeliveryPhase {
@@ -965,10 +974,8 @@ impl PromptQueueItem {
     }
 
     pub fn is_chariox_owned(&self) -> bool {
-        matches!(
-            self.prompt_origin,
-            PromptOrigin::Chariox | PromptOrigin::CompletionCheck
-        )
+        self.prompt_origin.is_chariox_prompt()
+            || self.prompt_origin == PromptOrigin::CompletionCheck
     }
 
     pub fn external_observed_id(&self) -> Option<crate::history::ExternalProviderObservedId> {
@@ -1350,6 +1357,13 @@ mod tests {
         assert!(!chariox_prompt.is_external());
         assert!(external_prompt.is_external());
         assert!(!external_prompt.is_chariox_owned());
+        for origin in [PromptOrigin::Schedule, PromptOrigin::Notification] {
+            let fired = chariox_prompt.clone().with_prompt_origin(origin);
+            assert!(
+                fired.is_chariox_owned() && !fired.is_external(),
+                "a firing is Chariox's own prompt, so steering and dispatch admit it"
+            );
+        }
     }
 
     #[test]
