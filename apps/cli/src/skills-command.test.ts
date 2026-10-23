@@ -20,7 +20,7 @@ const native: NativeSkillEntry = {
   description: "Lint with house rules", digest: null, exposure: "confirmed", default_state: "auto", complete_manifest: true, supports_load_ack: true, discovery_error: null,
 }
 
-function harness(packages: Extract<SkillsV2Response, { kind: "catalog" }>["packages"] = [], failure?: Error) {
+function harness(packages: Extract<SkillsV2Response, { kind: "catalog" }>["packages"] = [], failure?: Error, agentProvider = "claude") {
   const requests: SkillsV2Request[] = []
   const notices: string[] = []
   const footers: string[] = []
@@ -31,7 +31,7 @@ function harness(packages: Extract<SkillsV2Response, { kind: "catalog" }>["packa
       projection("skill-deploy", "deploy", { delivery: { kind: "conflict", provider: "claude", entry_id: "claude:deploy", native_digest: "f".repeat(64) } }),
     ],
   }
-  const session = makeSession({ project_id: "project-1", focused_agent_id: "agent-1", agents: [makeAgent({ id: "agent-1", provider: "claude" })] })
+  const session = makeSession({ project_id: "project-1", focused_agent_id: "agent-1", agents: [makeAgent({ id: "agent-1", provider: agentProvider })] })
   const handlers = createCommandActionHandlers(makeCommandDeps({
     sessionState: () => session,
     focusedAgentId: () => "agent-1",
@@ -84,6 +84,18 @@ test("/skills from lists the focused provider's skills read-only", async () => {
   await run("/skills from")
   assert.match(notices.join("\n"), /\$lint {2}From Claude · confirmed · Auto/)
 })
+
+for (const launchMode of ["claude-headless", "claude-p"]) {
+  test(`/skills from, show-from and import find the canonical Claude skills of a ${launchMode} agent`, async () => {
+    const { notices, footers, requests, run } = harness([], undefined, launchMode)
+    await run("/skills from")
+    assert.match(notices.join("\n"), /\$lint {2}From Claude · confirmed · Auto/)
+    await run("/skills show-from lint")
+    await run("/skills import lint")
+    assert.ok(requests.some(request => request.action === "preview"))
+    assert.deepEqual(footers.filter(footer => /lists no skill/.test(footer)), [])
+  })
+}
 
 test("/skills state previews a Project override and confirm publishes the reviewed batch", async () => {
   const { requests, notices, run } = harness()

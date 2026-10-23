@@ -9,6 +9,7 @@ import type {
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import { createSkillsCommand, type SkillsCommandDeps } from "./skills-command.js"
+import { providerAccountFamily } from "./waiting-room-provider-accounts.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import {
   ROOT_WORKFLOW_SHORTCUTS,
@@ -376,7 +377,8 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       const session = deps.sessionState()
       const agentId: string | null = deps.focusedAgentId() ?? null
       const agent = session.agents.find(candidate => candidate.id === agentId)
-      return { sessionId: session.id, projectId: session.project_id, agentId, provider: agent?.provider ?? null }
+      // The kernel names native skills by provider family, so launch-mode names (claude-headless, claude-p) map to it here.
+      return { sessionId: session.id, projectId: session.project_id, agentId, provider: agent ? providerAccountFamily(agent.provider) : null }
     },
     appendNotice: deps.appendNotice,
     flashFooter: deps.flashFooter,
