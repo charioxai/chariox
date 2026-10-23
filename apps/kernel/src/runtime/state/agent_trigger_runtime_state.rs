@@ -1,3 +1,4 @@
+use super::prompt_dispatch::TriggerSteerDelivery;
 use super::*;
 use crate::session::{
     AgentTrigger, AgentTriggerBusyPolicy, AgentTriggerDispatch, AgentTriggerOutcome,
@@ -417,10 +418,23 @@ impl KernelRuntimeState {
             )
             .await
         {
-            Ok(_) => Ok(AgentTriggerFiring::Fired {
+            Ok(TriggerSteerDelivery::Confirmed) => Ok(AgentTriggerFiring::Fired {
                 outcome: AgentTriggerOutcome::Steered,
                 steer_refusal: None,
             }),
+            Ok(TriggerSteerDelivery::Unconfirmed) => {
+                self.record_agent_trigger_notice(
+                    dispatch,
+                    format!(
+                        "Trigger `{}`: the provider did not confirm the steer, so it is not sent again.",
+                        dispatch.trigger_id
+                    ),
+                );
+                Ok(AgentTriggerFiring::Fired {
+                    outcome: AgentTriggerOutcome::Steered,
+                    steer_refusal: None,
+                })
+            }
             Err(error) => {
                 let refusal = format!("steer refused, the firing stays queued: {error}");
                 self.record_agent_trigger_notice(
@@ -711,6 +725,92 @@ mod tests {
             "accepted steering must not run again after completion"
         );
         assert!(session.agent_triggers().is_empty());
+    }
+
+    // MP-08/MP-09/MP-10: a steer whose acknowledgement is lost may already be
+    // with the provider, so the agent must see the firing once, never twice.
+    #[tokio::test]
+    async fn trigger_steer_with_lost_acknowledgement_is_not_replayed() {
+        let (_worktree, runtime, session_id, agent_id, _, _, run_id) =
+            runtime_with_active_prompt().await;
+        let request = crate::provider::LaunchProviderRequest::new(
+            &session_id,
+            "dev-stub",
+            "slow-structured",
+            "default",
+            "model",
+        )
+        .with_agent_id(&agent_id);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            &run_id,
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "ack-lost".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: Some("test".into()),
+            },
+        );
+        run.mark_running();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        runtime.owned.provider_run_projection.update(run);
+        let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            runtime.dispatch_due_agent_triggers(trigger.next_run_at_ms()),
+        )
+        .await
+        .expect("the firing must settle");
+        let submits = || {
+            runtime
+                .owned
+                .provider_store
+                .drain_finished_structured_prompt_submit_jobs()
+                .len()
+        };
+        assert_eq!(submits(), 1, "the provider is shown the steer once");
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        let (_, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        assert!(
+            queued.is_empty(),
+            "an unconfirmed steer must not stay queued for a second delivery"
+        );
+        assert!(session
+            .durable_runtime_snapshot()
+            .queued_prompts_for_agent(&agent_id)
+            .is_none_or(|prompts| prompts.is_empty()));
+        assert!(session.agent_triggers().is_empty());
+        runtime
+            .owned
+            .prompt_state_owner
+            .complete_active_prompt_only(&session, &agent_id)
+            .unwrap();
+        runtime
+            .spawn_idle_local_prompt_queue_promotion(&session_id, &agent_id)
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(submits(), 0, "the next turn must not send the firing again");
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        let (active, _) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        assert!(
+            active.is_none(),
+            "the next turn must not replay the steered firing"
+        );
     }
 
     // MP-08/MP-09/MP-10: mailbox admission is not provider acceptance.

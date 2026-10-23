@@ -14,7 +14,7 @@ impl ProviderRunActorMailbox {
         prompt_id: String,
         run: RuntimeProviderRun,
         envelope: PromptEnvelope,
-    ) -> Result<tokio::sync::oneshot::Receiver<bool>, DaemonError> {
+    ) -> Result<tokio::sync::oneshot::Receiver<ProviderPromptSubmitReceipt>, DaemonError> {
         let (acceptance, receipt) = tokio::sync::oneshot::channel();
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
         let sender = self.worker_for_run(&provider_run_id);
