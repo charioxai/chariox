@@ -641,7 +641,7 @@ fn call_agent_app_http_action(
     options: AgentAppHttpActionOptions,
 ) -> Result<AgentAppHttpActionResponse, String> {
     validate_agent_app_action_url(url, options.allow_external)?;
-    let agent = ureq::AgentBuilder::new()
+    let agent = crate::outbound_dial::agent_builder()
         .redirects(0)
         .timeout(std::time::Duration::from_millis(options.timeout_ms))
         .build();
@@ -760,7 +760,7 @@ fn send_agent_app_action_audit(
     let Ok(payload_json) = serde_json::to_string(&payload) else {
         return;
     };
-    let agent = ureq::AgentBuilder::new()
+    let agent = crate::outbound_dial::agent_builder()
         .timeout(std::time::Duration::from_secs(5))
         .build();
     let _ = agent

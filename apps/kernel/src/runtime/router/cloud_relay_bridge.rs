@@ -1,6 +1,8 @@
 use super::CommandRouter;
 use crate::error::DaemonError;
-use crate::runtime::cloud_api_client::post_cloud_json;
+use crate::runtime::cloud_api_client::{
+    post_cloud_json_with_timeout, CLOUD_PRESENCE_REQUEST_TIMEOUT,
+};
 use crate::runtime::cloud_relay_connection_executor::ensure_cloud_relay_connection as ensure_cloud_relay_connection_with_executor;
 use crate::runtime::cloud_relay_control::{
     cloud_kernel_presence_body, cloud_relay_token_refresh_due,
@@ -34,8 +36,13 @@ impl CommandRouter {
         else {
             return Ok(());
         };
-        let _: serde_json::Value =
-            post_cloud_json(profile.api_url.clone(), "/kernels/presence", body).await?;
+        let _: serde_json::Value = post_cloud_json_with_timeout(
+            profile.api_url.clone(),
+            "/kernels/presence",
+            body,
+            CLOUD_PRESENCE_REQUEST_TIMEOUT,
+        )
+        .await?;
         Ok(())
     }
 }

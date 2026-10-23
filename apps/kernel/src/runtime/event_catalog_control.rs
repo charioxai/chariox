@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Read};
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -1375,7 +1375,7 @@ pub(crate) fn aegs_management_agent_builder_with_resolver<R>(
 where
     R: ureq::Resolver + 'static,
 {
-    let builder = ureq::AgentBuilder::new();
+    let builder = crate::outbound_dial::agent_builder();
     if is_registry_issued_management_target(target) {
         builder.https_only(true).resolver(resolver)
     } else {
@@ -1390,8 +1390,8 @@ fn is_registry_issued_management_target(
 }
 
 fn resolve_public_aegs_addresses(netloc: &str) -> io::Result<Vec<SocketAddr>> {
-    let addresses = netloc.to_socket_addrs()?.collect::<Vec<_>>();
-    validate_public_aegs_addresses(netloc, addresses)
+    let addresses = crate::outbound_dial::resolve_addresses(netloc)?;
+    validate_public_aegs_addresses(netloc, addresses).map(crate::outbound_dial::interleave_families)
 }
 
 fn validate_public_aegs_addresses(
@@ -1795,8 +1795,7 @@ fn fetch_page(url: url::Url) -> Result<LocalDaemonResponse, DaemonError> {
 }
 
 fn fetch_json<T: serde::de::DeserializeOwned>(url: url::Url) -> Result<T, DaemonError> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(3))
+    let agent = crate::outbound_dial::agent_builder()
         .timeout_read(Duration::from_secs(5))
         .timeout_write(Duration::from_secs(5))
         .build();

@@ -8,6 +8,8 @@ mod daemon_lifecycle;
 mod durable_runtime_state;
 mod external_provider_session_discovery;
 #[cfg(test)]
+mod restored_agent_names_tests;
+#[cfg(test)]
 mod room_environment_durability_tests;
 pub(crate) use external_provider_session_discovery::find_external_provider_prompt_recovery_match;
 mod external_provider_sessions;

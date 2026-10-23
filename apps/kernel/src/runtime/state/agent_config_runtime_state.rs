@@ -1136,6 +1136,8 @@ impl KernelRuntimeState {
         let agent = self
             .owned
             .alias_agent(session_id, agent_id, caller_user_id, alias)?;
+        self.append_agent_durable_event("agent.updated", &agent, None)
+            .await?;
         self.invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)?;
         Ok(agent)
     }

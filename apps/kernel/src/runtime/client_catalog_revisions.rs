@@ -5,6 +5,7 @@ use crate::local::{
     ClientCatalogRevisions, ClientCatalogSnapshot, GetClientCatalogSnapshotRequest,
     GetProviderCatalogRequest, LocalDaemonResponse,
 };
+use crate::provider::OpenCodeProviderCatalog;
 use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -90,7 +91,10 @@ async fn load(
     // A scope still being discovered keeps the caller's copy; the change event
     // that ends discovery makes it ask again.
     let (catalog_revision, catalog) = match (catalog, known) {
-        (CatalogRead::Loaded(catalog), _) => (revision(&catalog)?, Some(catalog)),
+        (CatalogRead::Loaded(catalog), _) => {
+            let catalog = usable_providers_only(catalog);
+            (revision(&catalog)?, Some(catalog))
+        }
         (CatalogRead::Revalidating, Some(known)) => (known.provider_catalog.clone(), None),
         (CatalogRead::Revalidating, None) => {
             unreachable!("only a caller holding a catalog may be answered while revalidating")
@@ -108,6 +112,35 @@ async fn load(
         provider_commands: Some(commands),
         terminal_commands: Some(terminal),
     })
+}
+
+/// Backends' own providers: a client can still offer them through a slice's
+/// account although this host has not connected them.
+const BACKEND_PROVIDERS: [&str; 6] = [
+    "claude",
+    "claude-headless",
+    "claude-p",
+    "codex",
+    "opencode",
+    "opencode-go",
+];
+
+/// Clients offer only providers that are connected, reachable on a remote
+/// machine, or a backend's own. OpenCode lists every other models.dev provider
+/// too, which made the snapshot megabytes (235 providers and 9,173 models:
+/// 3.2 MB per waiting room open over the relay).
+fn usable_providers_only(mut catalog: OpenCodeProviderCatalog) -> OpenCodeProviderCatalog {
+    let usable = |provider: &crate::provider::OpenCodeProviderInfo| {
+        catalog.connected.contains(&provider.id)
+            || !provider.remote_machine_aliases.is_empty()
+            || BACKEND_PROVIDERS.contains(&provider.id.as_str())
+    };
+    let kept: Vec<_> = catalog.all.into_iter().filter(usable).collect();
+    catalog
+        .default
+        .retain(|provider, _| kept.iter().any(|kept| &kept.id == provider));
+    catalog.all = kept;
+    catalog
 }
 
 fn revision(value: &impl Serialize) -> Result<String, DaemonError> {

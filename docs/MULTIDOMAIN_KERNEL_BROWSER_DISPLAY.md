@@ -103,7 +103,8 @@ outside this first kernel-browser implementation.
 
 ## MD-DISPLAY-04: enablement and ownership
 
-Default off. Set `CHARIOX_KERNEL_BROWSER_DISPLAY=1` on the home kernel. The
+On by default on every kernel. `CHARIOX_KERNEL_BROWSER_DISPLAY=0` is the kill
+switch; the kernel passes the resolved value to the browser host. The
 normal host browser still requires a non-root Unix user and sandbox-capable
 Chromium. Its existing per-user profile, focused runtime MCP tools, tab registry,
 input cancellation and Vault observation barrier remain authoritative.
@@ -550,7 +551,7 @@ and multi-hour validation remain separate required gates.
 
 ### MP-08/MP-10/MP-11 adapter and native-input review gates
 
-Before enabling `CHARIOX_KERNEL_BROWSER_DISPLAY`, the Cloud adapter must use
+Because the display is on by default, the Cloud adapter must use
 `decryptRelayEvent` for authenticated CXD1 events, pass the connected kernel's
 version as `kernelProtocolVersion`, and declare `displayEventEncoding: 'CXD1'`.
 The presenter refuses missing/older versions and JSON-only adapters before any

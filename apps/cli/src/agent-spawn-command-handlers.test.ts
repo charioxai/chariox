@@ -293,7 +293,7 @@ test("agent spawn command can create and start a new slice", async () => {
     "rebuild",
     "repaint",
   ])
-  assert.equal(flashedMessage, "spawned agent agent-slice (builder) · slice slice-created · worktree worktree-1 · worker machine-slice")
+  assert.equal(flashedMessage, "spawned builder · slice slice-created · worktree worktree-1 · worker machine-slice")
 })
 
 test("agent spawn command creates a new slice on an exact kernel without also spawning on the kernel", async () => {
@@ -448,7 +448,7 @@ test("agent spawn command reuses resolved slice id after validating scope", asyn
     "rebuild",
     "repaint",
   ])
-  assert.equal(flashedMessage, "spawned agent agent-slice (builder) · slice slice-resolved · worktree worktree-1 · worker machine-slice")
+  assert.equal(flashedMessage, "spawned builder · slice slice-resolved · worktree worktree-1 · worker machine-slice")
 })
 
 test("agent spawn command rejects reusable slices from another worktree", async () => {
@@ -612,7 +612,7 @@ test("agent spawn command treats --slice off as normal local placement", async (
     "rebuild",
     "repaint",
   ])
-  assert.equal(flashedMessage, "spawned agent agent-local (builder) · local · worktree worktree-1")
+  assert.equal(flashedMessage, "spawned builder · local · worktree worktree-1")
 })
 
 test("agent spawn command targets an exact kernel without machine resolution", async () => {
@@ -665,7 +665,73 @@ test("agent spawn command targets an exact kernel without machine resolution", a
     "rebuild",
     "repaint",
   ])
-  assert.equal(flashedMessage, "spawned agent agent-worker (builder) · remote machine-worker")
+  assert.equal(flashedMessage, "spawned builder · remote machine-worker")
+})
+
+for (const bulk of [false, true]) {
+  for (const override of [undefined, "other-account", "default"]) {
+    test(`agent spawn count uses kernel account selection (bulk=${bulk}, override=${override})`, async () => {
+      const selected = override ?? "session-account"
+      const spawned = agent({ id: "agent-2", alias: "agent-2", account_profile: selected,
+        provider: "codex", model: "gpt-6-luna", effort: "low" })
+      let currentSession = session({ agents: [spawned] })
+      const requestedProfiles: Array<string | null | undefined> = []
+      const launches: unknown[][] = []
+      let error = ""
+      const deps: AgentSpawnCommandHandlerDeps = {
+        ...baseSpawnDeps({ currentSession: () => currentSession, setSession: next => { currentSession = next },
+          flash: (message, tone) => { if (tone === "error") error = message } }),
+        spawnAgent: async (...args) => {
+          requestedProfiles.push(args[8])
+          return { agent: spawned, session: currentSession }
+        },
+        launchAgentProviderRun: async (...args) => {
+          launches.push(args)
+          return providerRun({ agent_instance_id: spawned.id, account_profile: selected })
+        },
+        ...(bulk ? {
+          spawnAgents: async (items) => {
+            requestedProfiles.push(...items.map(item => item.accountProfile))
+            return { agents: [spawned], session: currentSession }
+          },
+          launchAgentProviderRuns: async (...args) => {
+            launches.push(args)
+            return { runs: [providerRun({ account_profile: selected })], failures: [] }
+          },
+        } : {}),
+      }
+      await handleAgentSpawnCommand(deps, ["1", ...(override ? ["--account", override] : [])])
+      assert.equal(error, "")
+      assert.deepEqual(requestedProfiles, [override])
+      assert.deepEqual(launches, [["codex", "gpt-6-luna", "low", bulk ? [spawned.id] : spawned.id, selected]])
+    })
+  }
+}
+
+test("named agent spawn inherits the kernel account unless explicitly overridden", async () => {
+  for (const override of [undefined, "other-account", "default"]) {
+    const selected = override ?? "session-account"
+    const spawned = agent({ alias: "review", account_profile: selected })
+    const currentSession = session({ agents: [spawned] })
+    const requestedProfiles: Array<string | null | undefined> = []
+    const launchedProfiles: Array<string | undefined> = []
+    let error = ""
+    await handleAgentSpawnCommand({
+      ...baseSpawnDeps({ currentSession: () => currentSession,
+        flash: (message, tone) => { if (tone === "error") error = message } }),
+      spawnAgent: async (...args) => {
+        requestedProfiles.push(args[8])
+        return { agent: spawned, session: currentSession }
+      },
+      launchAgentProviderRun: async (_provider, _model, _effort, _id, account) => {
+        launchedProfiles.push(account)
+        return providerRun()
+      },
+    }, ["review", ...(override ? ["--account", override] : [])])
+    assert.equal(error, "")
+    assert.deepEqual(requestedProfiles, [override])
+    assert.deepEqual(launchedProfiles, [selected])
+  }
 })
 
 function baseSpawnDeps(options: {

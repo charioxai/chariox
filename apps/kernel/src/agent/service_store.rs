@@ -68,6 +68,10 @@ impl AgentServiceStore {
         self.write().restore_agent(agent)
     }
 
+    pub(crate) fn assign_missing_default_aliases(&self) -> usize {
+        self.write().assign_missing_default_aliases()
+    }
+
     pub(crate) fn materialize_publication_agent(
         &self,
         agent: AgentInstance,

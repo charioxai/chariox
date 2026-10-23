@@ -19,6 +19,16 @@ pub(crate) fn normalize_cloud_api_url(api_url: &str) -> Result<String, DaemonErr
     Ok(normalized)
 }
 
+/// A relay token request must end before the callers' 5 s refresh deadline,
+/// so the blocking call never outlives the refresh that started it.
+pub(crate) const CLOUD_RELAY_TOKEN_REQUEST_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(4);
+
+/// A presence heartbeat opens a fresh TCP+TLS connection and may try an
+/// unreachable address family first, so it needs more than a warm request.
+pub(crate) const CLOUD_PRESENCE_REQUEST_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(5);
+
 pub(crate) async fn post_cloud_json<T>(
     api_url: String,
     path: &'static str,
@@ -27,12 +37,26 @@ pub(crate) async fn post_cloud_json<T>(
 where
     T: serde::de::DeserializeOwned + Send + 'static,
 {
-    tokio::task::spawn_blocking(move || post_cloud_json_blocking(api_url, path, body))
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "post cloud relay json",
-            message: error.to_string(),
-        })?
+    post_cloud_json_with_timeout(api_url, path, body, CLOUD_API_REQUEST_TIMEOUT).await
+}
+
+pub(crate) async fn post_cloud_json_with_timeout<T>(
+    api_url: String,
+    path: &'static str,
+    body: serde_json::Value,
+    timeout: std::time::Duration,
+) -> Result<T, DaemonError>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        post_cloud_json_blocking_with_timeout(api_url, path, body, timeout)
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "post cloud relay json",
+        message: error.to_string(),
+    })?
 }
 
 pub(crate) async fn post_cloud_acknowledged(
@@ -120,7 +144,7 @@ pub(crate) async fn get_cloud_kernel_directory(
                     operation: "read My kernels",
                     message: "independent kernel enrollment is required".into(),
                 })?;
-        let response = ureq::AgentBuilder::new()
+        let response = crate::outbound_dial::agent_builder()
             .timeout(CLOUD_API_REQUEST_TIMEOUT)
             .build()
             .get(&url)
@@ -145,7 +169,7 @@ where
     T: serde::de::DeserializeOwned + Send + 'static,
 {
     tokio::task::spawn_blocking(move || {
-        let agent = ureq::AgentBuilder::new()
+        let agent = crate::outbound_dial::agent_builder()
             .timeout(CLOUD_API_REQUEST_TIMEOUT)
             .build();
         let response = agent
@@ -195,7 +219,7 @@ pub(crate) async fn post_cloud_to_file(
             operation: "download cloud artifact",
             message,
         };
-        let agent = ureq::AgentBuilder::new()
+        let agent = crate::outbound_dial::agent_builder()
             .timeout(std::time::Duration::from_secs(30 * 60))
             .build();
         let response = agent
@@ -236,7 +260,7 @@ fn post_cloud_acknowledged_blocking_with_timeout(
     body: serde_json::Value,
     timeout: std::time::Duration,
 ) -> Result<(), DaemonError> {
-    let agent = ureq::AgentBuilder::new()
+    let agent = crate::outbound_dial::agent_builder()
         .timeout(timeout)
         .redirects(0)
         .build();
@@ -276,7 +300,7 @@ where
 {
     let url = format!("{api_url}{path}");
     // Native Cloud calls must not follow browser login redirects.
-    let agent = ureq::AgentBuilder::new()
+    let agent = crate::outbound_dial::agent_builder()
         .timeout(timeout)
         .redirects(0)
         .build();
@@ -312,7 +336,7 @@ where
     T: serde::de::DeserializeOwned,
 {
     let url = format!("{api_url}{path}");
-    let agent = ureq::AgentBuilder::new()
+    let agent = crate::outbound_dial::agent_builder()
         .timeout(CLOUD_API_REQUEST_TIMEOUT)
         .build();
     let response = agent.get(&url).call().map_err(cloud_transport_error)?;
@@ -337,7 +361,7 @@ where
     T: serde::de::DeserializeOwned,
 {
     let url = format!("{api_url}{path}");
-    let agent = ureq::AgentBuilder::new()
+    let agent = crate::outbound_dial::agent_builder()
         .timeout(CLOUD_API_REQUEST_TIMEOUT)
         .build();
     let response = agent
@@ -358,7 +382,7 @@ where
     T: serde::de::DeserializeOwned,
 {
     let url = format!("{api_url}{path}");
-    let agent = ureq::AgentBuilder::new()
+    let agent = crate::outbound_dial::agent_builder()
         .timeout(CLOUD_API_REQUEST_TIMEOUT)
         .build();
     let response = agent

@@ -348,7 +348,7 @@ impl RuntimeSecretService {
                 "max_response_bytes must be greater than zero".to_string(),
             ));
         }
-        let agent = ureq::AgentBuilder::new()
+        let agent = crate::outbound_dial::agent_builder()
             .timeout(std::time::Duration::from_millis(request.timeout_ms))
             .build();
         let mut http_request = match method.as_str() {

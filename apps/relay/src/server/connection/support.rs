@@ -22,7 +22,7 @@ use crate::registry::{
 
 mod cleanup;
 
-pub(super) use cleanup::remove_peer;
+pub(super) use cleanup::{announce_released_daemon, release_daemon, remove_peer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ConnectionAction {

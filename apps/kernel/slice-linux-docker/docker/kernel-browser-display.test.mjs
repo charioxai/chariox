@@ -79,10 +79,10 @@ test('MD-DISPLAY async encoder launch failure rejects into cleanup', async () =>
 test('MD-DISPLAY disabled commands fail before launching host Chromium', async () => {
   const { KernelBrowserHost } = await import('./kernel-browser-host.mjs');
   const host = new KernelBrowserHost('/unused-md-display-profile', { chromium: { start: async () => { throw new Error('must not launch'); } } });
-  const original = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY; delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
+  const original = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY; process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '0';
   try {
-    for (const op of ['display_subscribe','display_next','display_input']) await assert.rejects(host.request({op}), /experimental display disabled/);
-  } finally { if(original !== undefined) process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original; }
+    for (const op of ['display_subscribe','display_next','display_input']) await assert.rejects(host.request({op}), /display disabled/);
+  } finally { if(original === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY; else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original; }
 });
 test('MP-08/MP-11 DPR mismatch refuses capture without sampling pixels', async () => {
   const { captureProtectedPage } = await import('./kernel-browser-pixels.mjs');
@@ -475,4 +475,21 @@ test('MP-08/MP-10/MP-11 identical source adoption keeps the worker committed bas
  assert.equal(stream.canPatchNative({serial:9,raw}),false,'an adjacent patch cannot silently discard the committed overlay');
  assert.equal(stream.shiftKind({serial:9,raw}),'overlay','overlay planning uses the last actual commit');
  stream.invalidate();assert.equal(stream.compositorCommittedSerial,null);
+});
+test('MD-DISPLAY and MP-08 are on when neither variable is set; only \"0\" is a kill switch', async () => {
+  const { featureOn, hostViewport } = await import('./kernel-browser-geometry.mjs');
+  const { KernelBrowserHost } = await import('./kernel-browser-host.mjs');
+  assert.equal(featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY', {}), true);
+  assert.equal(featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY', { CHARIOX_KERNEL_BROWSER_DISPLAY: '1' }), true);
+  assert.equal(featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY', { CHARIOX_KERNEL_BROWSER_DISPLAY: '0' }), false);
+  const saved = { m: process.env.CHARIOX_KERNEL_BROWSER_MIRROR, d: process.env.CHARIOX_KERNEL_BROWSER_DISPLAY };
+  delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR; delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
+  try {
+    const host = new KernelBrowserHost('/unused-md-display-profile', { chromium: { start: async () => { throw new Error('launched'); } } });
+    for (const op of ['mirror_subscribe', 'display_subscribe']) await assert.rejects(host.request({ op }), (error) => !/disabled/.test(error.message));
+    assert.equal(hostViewport().device_scale_factor, hostViewport(true).device_scale_factor);
+  } finally {
+    if (saved.m === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR; else process.env.CHARIOX_KERNEL_BROWSER_MIRROR = saved.m;
+    if (saved.d === undefined) delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY; else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = saved.d;
+  }
 });
