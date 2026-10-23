@@ -727,6 +727,95 @@ mod tests {
         assert!(session.agent_triggers().is_empty());
     }
 
+    // MP-08/MP-09/MP-10: the steering intent is durable before the provider
+    // write, so a crash before the acknowledgement cannot replay the firing.
+    #[tokio::test]
+    async fn trigger_steer_intent_is_durable_before_acknowledgement_and_not_replayed_after_restart()
+    {
+        let (_worktree, runtime, session_id, agent_id, _, _, run_id) =
+            runtime_with_active_prompt().await;
+        let request = crate::provider::LaunchProviderRequest::new(
+            &session_id,
+            "dev-stub",
+            "slow-structured",
+            "default",
+            "model",
+        )
+        .with_agent_id(&agent_id);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            &run_id,
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "slow-ack".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: Some("test".into()),
+            },
+        );
+        run.mark_running();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        runtime.owned.provider_run_projection.update(run);
+        let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
+        let state = runtime.clone();
+        let due = trigger.next_run_at_ms();
+        let firing = tokio::spawn(async move { state.dispatch_due_agent_triggers(due).await });
+        wait_for_queued_firing(&runtime, &session_id, &agent_id).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !runtime
+                .owned
+                .provider_store
+                .structured_prompt_io_in_flight(&run_id)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the Submit command must reach the mailbox");
+
+        // The kernel dies here: the provider holds the message, nothing
+        // acknowledged it, and the queue entry is still on disk.
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        let crashed = serde_json::to_value(
+            crate::durable_prompt_state::DurablePromptStateEventPayload::capture(
+                &session, &agent_id,
+            ),
+        )
+        .unwrap();
+        let mut restored: crate::durable_prompt_state::DurablePromptStateEventPayload =
+            serde_json::from_value(crashed).unwrap();
+        restored.restore_private_states();
+        assert!(
+            restored
+                .queued_prompts
+                .front()
+                .is_some_and(|prompt| prompt.local_steer_submitted()),
+            "the durable queue must remember the steer was handed to the provider"
+        );
+
+        let dropped = runtime.owned.drop_restart_held_local_steers();
+        assert_eq!(dropped.len(), 1, "the held firing must leave the queue");
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        let (_, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        assert!(queued.is_empty(), "a held steer must never be replayed");
+        assert!(session
+            .durable_runtime_snapshot()
+            .queued_prompts_for_agent(&agent_id)
+            .is_none_or(|prompts| prompts.is_empty()));
+        firing.abort();
+    }
+
     // MP-08/MP-09/MP-10: a steer whose acknowledgement is lost may already be
     // with the provider, so the agent must see the firing once, never twice.
     #[tokio::test]

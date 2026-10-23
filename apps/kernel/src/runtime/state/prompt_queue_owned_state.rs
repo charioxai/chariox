@@ -1259,6 +1259,97 @@ impl KernelRuntimeOwnedState {
         .map(Some)
     }
 
+    /// Persists the intent to steer before the provider write, so a crash
+    /// between the provider receiving the message and the queue removal can
+    /// never replay the firing.
+    pub(super) fn hold_local_queued_prompt_steer(
+        &self,
+        prepared: &LocalQueuedPromptSteerPreparation,
+        submitted: bool,
+    ) -> Result<(), DaemonError> {
+        let session_id = &prepared.dispatch.session_id;
+        let agent_id = &prepared.dispatch.agent_id;
+        let session = self.session_store.get_session(session_id)?;
+        if !self
+            .prompt_state_owner
+            .set_queued_prompt_local_steer_submitted(
+                &session,
+                agent_id,
+                &prepared.dispatch.prompt_id,
+                submitted,
+            )
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "persist queued prompt steer intent",
+                message: format!(
+                    "queued prompt `{}` disappeared before its steer could be recorded",
+                    prepared.dispatch.prompt_id
+                ),
+            });
+        }
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)
+    }
+
+    /// A held firing found after a restart may already sit in the provider's
+    /// turn, so it leaves the queue without a replay.
+    pub(super) fn drop_restart_held_local_steers(&self) -> Vec<(String, String, String)> {
+        let mut dropped = Vec::new();
+        for session in self.session_store.list_all_sessions() {
+            for (agent_id, prompt_state) in session.prompt_states() {
+                for prompt in prompt_state.queued_prompts() {
+                    if !prompt.local_steer_submitted() {
+                        continue;
+                    }
+                    let Some(removed) = self.prompt_state_owner.remove_queued_prompt(
+                        &session,
+                        agent_id,
+                        prompt.id(),
+                    ) else {
+                        continue;
+                    };
+                    let (active_prompt, queued_prompts) =
+                        self.prompt_state_owner.state_parts(&session, agent_id);
+                    match self.mirror_prompt_owner_agent_state(
+                        session.id(),
+                        agent_id,
+                        active_prompt,
+                        queued_prompts,
+                    ) {
+                        Ok(()) => {
+                            crate::logging::warn_with_fields(
+                                "durable_state.recovery",
+                                "dropped a queued steer whose delivery was interrupted by a restart; it may already have reached the agent",
+                                serde_json::json!({
+                                    "session_id": session.id(),
+                                    "agent_id": agent_id,
+                                    "prompt_id": removed.id(),
+                                }),
+                            );
+                            dropped.push((
+                                session.id().to_string(),
+                                agent_id.to_string(),
+                                removed.id().to_string(),
+                            ));
+                        }
+                        Err(error) => crate::logging::error_with_fields(
+                            "durable_state.recovery",
+                            "failed to persist the removal of a restart-held queued steer",
+                            serde_json::json!({
+                                "session_id": session.id(),
+                                "agent_id": agent_id,
+                                "prompt_id": removed.id(),
+                                "error": error.to_string(),
+                            }),
+                        ),
+                    }
+                }
+            }
+        }
+        dropped
+    }
+
     pub(super) fn finish_local_queued_prompt_steer(
         &self,
         prepared: &LocalQueuedPromptSteerPreparation,
