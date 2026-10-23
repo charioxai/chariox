@@ -89,6 +89,14 @@ test("a request carries kernel and command id and prints the kernel's answer", a
   } finally { await kernel.close() }
 })
 
+test("AttachToSession requires an explicit command id before any connection", async () => {
+  const kernel = await startFakeKernel((socket, frame) => replyWith(socket, frame, "RelayStatus" in frame.request ? relayStatus(["kernel_gateway_v1"]) : { response: { SessionAttached: { attachment: { id: "unexpected" } } } }))
+  try {
+    await assert.rejects(sendRequest({ AttachToSession: { session_id: "room", client_id: "lane", capability_level: "FullTerminal" } }, { socket: kernel.path, kernel: "b3", timeoutSeconds: 5 }), (error: unknown) => error instanceof CommandFailure && error.code === "command_id_required" && error.message.includes("--command-id"))
+    assert.equal(kernel.frames.length, 0)
+  } finally { await kernel.close() }
+})
+
 test("kernel errors from the kernel arrive with their code", async () => {
   const kernel = await startFakeKernel((socket, frame) => replyWith(socket, frame, "RelayStatus" in frame.request ? relayStatus(["kernel_gateway_v1"]) : refusal("kernel_offline")))
   try {
