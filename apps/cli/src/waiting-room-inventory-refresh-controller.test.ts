@@ -936,7 +936,7 @@ test("MP-08/MP-11 grace expiry reprojects sessions with an unchanged live versio
 
 test("opening the TUI session picker loads older project Rooms beyond the recent prefix", async () => {
   const all = Array.from({ length: 151 }, (_, i) => session(`room-${i}`))
-  const recent = inventory("v1", { sessions: all.slice(0, 100), sessionsTotal: 151, sessionsNextCursor: "p2" })
+  const recent = inventory("v1", { sessions: all.slice(0, 100), recentSessionIds: all.slice(0, 100).map(row => row.id), sessionsTotal: 151, sessionsNextCursor: "p2" })
   const calls: Array<string | null> = []
   const harness = createHarness({ getInventory: async () => recent, getSessionPage: async cursor => {
     calls.push(cursor)
@@ -950,6 +950,6 @@ test("opening the TUI session picker loads older project Rooms beyond the recent
   assert.equal(harness.availableSessions().find(s => s.id === "room-150")?.id, "room-150")
   await harness.controller.refreshNow()
   assert.equal(harness.availableSessions().length, 151, "an unchanged bounded refresh retains the loaded Rooms")
-  harness.controller.applyRowsChanged({ inventoryVersion: "v2", structuralVersion: "v2", activityRevision: "v2", sessions: [], removedSessionIds: ["room-150"] })
+  harness.controller.applyRowsChanged({ inventoryVersion: "v2", structuralVersion: "v2", activityRevision: "v2", sessions: [], removedSessionIds: [] })
   assert.equal(harness.availableSessions().some(s => s.id === "room-150"), false)
 })

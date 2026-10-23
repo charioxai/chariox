@@ -368,8 +368,12 @@ export function createWaitingRoomInventoryRefreshController(
       rowsBaselinePending = false
       inventoryVersion = patch.inventoryVersion
       options.setInventoryStatus("ready")
+      const recentIds = new Set(activeInventory.recentSessionIds ?? activeInventory.sessions.map(row => row.id))
+      const previousSessions = patch.structuralVersion !== activeInventory.structuralVersion
+        ? activeInventory.sessions.filter(row => recentIds.has(row.id))
+        : activeInventory.sessions
       const sessions = mergeWaitingRoomSessionRows(
-        currentInventoryVersion === null ? [] : activeInventory.sessions,
+        currentInventoryVersion === null ? [] : previousSessions,
         patch.sessions.map((session) => ({
           ...session,
           kernel_id: activeInventory.kernelId,
@@ -379,11 +383,13 @@ export function createWaitingRoomInventoryRefreshController(
         })),
         patch.removedSessionIds,
       )
+      const nextRecentIds = new Set([...recentIds, ...patch.sessions.map(row => row.id)])
       const nextInventory = {
         ...activeInventory,
         inventoryVersion: patch.inventoryVersion,
         structuralVersion: patch.structuralVersion,
         activityRevision: patch.activityRevision,
+        recentSessionIds: sessions.filter(row => nextRecentIds.has(row.id)).map(row => row.id),
         sessions,
         projects: patch.projects
           ? mergeWaitingRoomProjectRows(
