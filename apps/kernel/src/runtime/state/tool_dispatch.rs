@@ -34,6 +34,7 @@ mod home_extension_execution_policy;
 mod home_mcp_proxy_executor;
 mod home_room_browser_runtime;
 mod home_script_executor;
+mod local_mcp_call_audit;
 mod meta;
 mod permission_prompt;
 mod recall;
