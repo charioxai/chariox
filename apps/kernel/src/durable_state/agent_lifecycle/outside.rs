@@ -9,6 +9,17 @@ use validation::{limit as inbox_limit, now as outside_now_ms};
 
 pub(crate) const PENDING_LIMIT: usize = 100_000;
 
+// These refusal sentences are kernel constants, safe to return to an outside caller.
+pub(crate) fn refused(message: &'static str) -> DaemonError {
+    DaemonError::MachineRequest {
+        code: "events_refused".into(),
+        message: message.into(),
+    }
+}
+pub(crate) fn is_public_code(code: &str) -> bool {
+    code == "events_refused"
+}
+
 mod model;
 pub(crate) use model::{Mutation, Part, Recipient};
 mod producers;
@@ -50,7 +61,8 @@ fn parts(db: &Connection) -> Result<Vec<Part>, DaemonError> {
     rows
 }
 fn require(db: &Connection, id: &str) -> Result<Part, DaemonError> {
-    read(db, id)?.ok_or_else(|| error("no event subscription; run chariox events subscribe first"))
+    read(db, id)?
+        .ok_or_else(|| refused("no event subscription; run chariox events subscribe first"))
 }
 fn matches(part: &Part, event: &OutsideEvent) -> bool {
     part.targets.iter().any(|target| {
@@ -140,7 +152,7 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
             let mut changed = existing.is_none();
             let mut part = existing.unwrap_or_else(|| Part::new(id, home));
             if part.ended.is_some() {
-                return Err(error("subscription ended; request a new access grant"));
+                return Err(refused("subscription ended; request a new access grant"));
             }
             for target in targets {
                 let cleanup_before = part.cleanup_targets.len();
@@ -152,7 +164,7 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
                 }
             }
             if part.targets.len() > 1024 {
-                return Err(error(
+                return Err(refused(
                     "event target limit is 1024; follow whole sessions instead",
                 ));
             }
@@ -217,7 +229,9 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
         Mutation::Ack { id, cursor } => {
             let mut part = require(tx, &id)?;
             if cursor > part.latest {
-                return Err(error("ack cursor is ahead of the inbox; list events first"));
+                return Err(refused(
+                    "ack cursor is ahead of the inbox; list events first",
+                ));
             }
             if !part.home && cursor > part.ack {
                 let mut query=tx.prepare("SELECT payload FROM agent_inbox WHERE room_id='' AND agent_id=?1 AND sequence>?2 AND sequence<=?3 ORDER BY sequence").map_err(sql)?;
@@ -332,7 +346,7 @@ impl DurableKernelStateStore {
             return Ok(Err(part.floor + 1));
         }
         if after > part.latest {
-            return Err(error(
+            return Err(refused(
                 "cursor is ahead of the inbox; use the cursor returned by list",
             ));
         }

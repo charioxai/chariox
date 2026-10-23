@@ -1572,3 +1572,20 @@ fn outside_events_use_their_own_ledger_instead_of_transport_cache() {
         assert!(!request_is_cacheable(&request));
     }
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: event refusals are kernel constants with next steps.
+#[tokio::test]
+async fn outside_unix_invalid_target_has_an_actionable_error() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    let response=holder.request(serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":"missing-session"}]}}));
+    assert_eq!(
+        response["error"]["code"], "events_refused",
+        "event target errors must keep their public code"
+    );
+    assert!(response["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("ListSessions"));
+}

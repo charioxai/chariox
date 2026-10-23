@@ -20,14 +20,16 @@ impl KernelGateway {
     ) -> Result<Vec<EventTarget>, crate::error::DaemonError> {
         let config = self.config.snapshot();
         if targets.is_empty() || targets.len() > 1024 {
-            return Err(crate::runtime::kernel_access::error(
+            return Err(crate::durable_state::agent_lifecycle::outside::refused(
                 "follow 1–1024 event targets",
             ));
         }
         let owner = self
             .runtime_state
             .access_grant_summary(&origin.grant_id)
-            .ok_or_else(|| crate::runtime::kernel_access::error("grant revoked or expired"))?
+            .ok_or_else(|| {
+                crate::durable_state::agent_lifecycle::outside::refused("grant revoked or expired")
+            })?
             .owner_user_id;
         let mut normalized = Vec::new();
         for target in targets {
@@ -146,7 +148,7 @@ impl KernelGateway {
             }
             LocalDaemonRequest::UnsubscribeEvents(request) => {
                 if request.all == !request.targets.is_empty() {
-                    return Err(crate::runtime::kernel_access::error(
+                    return Err(crate::durable_state::agent_lifecycle::outside::refused(
                         "unsubscribe needs targets or --all",
                     ));
                 }
@@ -209,7 +211,9 @@ impl KernelGateway {
             .runtime_state
             .outside_store()
             .outside_part(id)?
-            .ok_or_else(|| crate::runtime::kernel_access::error("no event subscription"))?;
+            .ok_or_else(|| {
+                crate::durable_state::agent_lifecycle::outside::refused("no event subscription")
+            })?;
         let local = self.config.snapshot().daemon_id;
         let mut normalized = Vec::new();
         for target in targets {

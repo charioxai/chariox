@@ -25,32 +25,32 @@ impl KernelRuntimeState {
         owner: Option<&str>,
     ) -> Result<(), DaemonError> {
         if targets.is_empty() || targets.len() > 1024 {
-            return Err(crate::runtime::kernel_access::error(
+            return Err(crate::durable_state::agent_lifecycle::outside::refused(
                 "follow 1–1024 event targets",
             ));
         }
         let config = self.owned.config_projection.snapshot();
         for target in targets {
             if target.kernel != config.daemon_id {
-                return Err(crate::runtime::kernel_access::error(
+                return Err(crate::durable_state::agent_lifecycle::outside::refused(
                     "event parts accept only targets on this kernel",
                 ));
             }
-            let session = self.owned.session_store.get_session(&target.session_id)?;
+            let session = self.owned.session_store.get_session(&target.session_id).map_err(|_| crate::durable_state::agent_lifecycle::outside::refused("event target session was not found; use ListSessions to choose a session ID"))?;
             if !owner.is_some_and(|owner| session.has_member(owner)) {
-                return Err(crate::runtime::kernel_access::error(
+                return Err(crate::durable_state::agent_lifecycle::outside::refused(
                     "event target session is not owned by this user",
                 ));
             }
             if session.status() == crate::session::SessionStatus::Ended {
-                return Err(crate::runtime::kernel_access::error(
+                return Err(crate::durable_state::agent_lifecycle::outside::refused(
                     "session ended; follow another session",
                 ));
             }
             if let Some(agent) = &target.agent_id {
-                let agent = self.owned.agent_store.get_agent(agent)?;
+                let agent = self.owned.agent_store.get_agent(agent).map_err(|_| crate::durable_state::agent_lifecycle::outside::refused("event target agent was not found; use GetSessionState to choose an agent ID"))?;
                 if agent.session_id() != session.id() {
-                    return Err(crate::runtime::kernel_access::error(
+                    return Err(crate::durable_state::agent_lifecycle::outside::refused(
                         "event target agent is not in that session",
                     ));
                 }
@@ -79,7 +79,7 @@ impl KernelRuntimeState {
             }
             LocalDaemonRequest::UnsubscribeEvents(request) => {
                 if request.all == !request.targets.is_empty() {
-                    return Err(crate::runtime::kernel_access::error(
+                    return Err(crate::durable_state::agent_lifecycle::outside::refused(
                         "unsubscribe needs targets or --all",
                     ));
                 }
@@ -107,7 +107,7 @@ impl KernelRuntimeState {
                     cursor: request.cursor,
                 })
             }
-            _ => Err(crate::runtime::kernel_access::error(
+            _ => Err(crate::durable_state::agent_lifecycle::outside::refused(
                 "not an outside event request",
             )),
         }
@@ -117,7 +117,7 @@ impl KernelRuntimeState {
         id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let part = self.outside_store().outside_part(id)?.ok_or_else(|| {
-            crate::runtime::kernel_access::error(
+            crate::durable_state::agent_lifecycle::outside::refused(
                 "no event subscription; run chariox events subscribe first",
             )
         })?;
@@ -152,7 +152,7 @@ impl KernelRuntimeState {
             tokio::time::Instant::now() + Duration::from_millis(request.timeout_ms.min(900_000));
         loop {
             if lifetime.is_some_and(|lifetime| !lifetime.is_live()) {
-                return Err(crate::runtime::kernel_access::error(
+                return Err(crate::durable_state::agent_lifecycle::outside::refused(
                     "event wait disconnected",
                 ));
             }
@@ -165,7 +165,7 @@ impl KernelRuntimeState {
                         reason: "grant_ended".into(),
                     })?;
                     return self.outside_ended_response(id)?.ok_or_else(|| {
-                        crate::runtime::kernel_access::error(
+                        crate::durable_state::agent_lifecycle::outside::refused(
                             "subscription ending receipt is missing",
                         )
                     });
@@ -266,7 +266,9 @@ impl KernelRuntimeState {
             return Ok(None);
         };
         let at_ms = part.ended_at_ms.ok_or_else(|| {
-            crate::runtime::kernel_access::error("subscription ending receipt is corrupt")
+            crate::durable_state::agent_lifecycle::outside::refused(
+                "subscription ending receipt is corrupt",
+            )
         })?;
         let config = self.owned.config_projection.snapshot();
         let event = OutsideEvent {
