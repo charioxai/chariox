@@ -494,6 +494,10 @@ impl<'a> KernelAgentService<'a> {
         prompt: &PromptQueueItem,
         provider_run_id: Option<&str>,
     ) {
+        // Kernel instructions queued behind a running turn are agent-only.
+        if crate::session::is_internal_prompt_echo_id(prompt.id()) {
+            return;
+        }
         let recipient_attachment_ids = self.app.other_attachment_ids(
             &submitted.admission.session_id,
             prompt.source_attachment_id(),

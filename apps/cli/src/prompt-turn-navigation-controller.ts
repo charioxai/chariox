@@ -49,7 +49,8 @@ export function createPromptTurnNavigationController(
       }
       deps.scrollTo({ x: scrollState.left, y: target })
       deps.requestRender()
-      deps.setLastTranscriptScrollTop(deps.getScrollState()?.top ?? target)
+      // The history monitor must observe the transition to the oldest turn.
+      deps.setLastTranscriptScrollTop(scrollState.top)
       return true
     },
   }

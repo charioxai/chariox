@@ -10,7 +10,7 @@ import type {
   RoomEnvironmentSnapshot,
   RoomEnvironmentStateResponse,
 } from "@chariox/kernel-client/kernel-types"
-import { roomActivityNoticeKey } from "./room-activity-notice-state.js"
+import { roomActivityNoticeKey } from "./kernel-projection-notice-state.js"
 
 export type RoomEnvironmentActivityControllerDeps = {
   readonly isAttached: () => boolean

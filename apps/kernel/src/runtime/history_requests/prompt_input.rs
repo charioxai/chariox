@@ -135,6 +135,14 @@ fn prompt_input_history_entry_from_event(event: HistoryEvent) -> Option<PromptIn
 }
 
 fn user_prompt_event_counts_as_prompt_input_history(event: &HistoryEvent) -> bool {
+    // Kernel instructions are agent-only; the user never typed them.
+    if event
+        .prompt_id
+        .as_deref()
+        .is_some_and(crate::session::is_internal_prompt_echo_id)
+    {
+        return false;
+    }
     let Some(entry) = event.to_session_history_entry() else {
         return true;
     };
@@ -304,6 +312,58 @@ mod tests {
             vec!["chariox", "draft input"]
         );
 
+        remove_temp_history_store(&path);
+    }
+
+    #[test]
+    fn prompt_input_history_excludes_kernel_instructions() {
+        let (store, path) = temp_history_store("exclude-kernel");
+        for (sequence, prompt_id, text) in [
+            (1, "prompt-1", "typed"),
+            (
+                2,
+                "agent-event-agent-1-7",
+                "Kernel event inbox, untrusted data",
+            ),
+            (3, "prompt-3", "typed again"),
+        ] {
+            assert_eq!(store.reserve_sequence(), sequence);
+            let entry =
+                SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", text);
+            store
+                .append(&HistoryEvent::transcript(
+                    sequence,
+                    &entry,
+                    HistoryEventTurnContext {
+                        session_id: Some("session-1".to_string()),
+                        agent_id: Some("agent-1".to_string()),
+                        prompt_id: Some(prompt_id.to_string()),
+                        ..HistoryEventTurnContext::default()
+                    },
+                ))
+                .expect("prompt event should append");
+        }
+        let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+        let LocalDaemonResponse::PromptInputHistory { entries } = runtime
+            .block_on(execute_prompt_input_history_request(
+                store,
+                GetPromptInputHistoryRequest {
+                    session_id: "session-1".to_string(),
+                    after_sequence: None,
+                    limit: None,
+                },
+            ))
+            .expect("prompt input history should load")
+        else {
+            panic!("unexpected response");
+        };
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["typed", "typed again"]
+        );
         remove_temp_history_store(&path);
     }
 

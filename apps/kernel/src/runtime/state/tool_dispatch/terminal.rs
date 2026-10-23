@@ -187,7 +187,7 @@ impl KernelRuntimeState {
     /// The Room agent whose machine a terminal tool runs on: the agent the
     /// arguments name (which must belong to this Room), else the calling
     /// agent. `None` is this kernel, the Room's home.
-    fn terminal_tool_host(
+    pub(in crate::runtime::state) fn terminal_tool_host(
         &self,
         session_id: &str,
         calling_agent: &str,
@@ -260,7 +260,8 @@ impl KernelRuntimeState {
 
     /// The one place that decides whether an agent's terminal input needs a
     /// person's approval: the agent's own permission level for its shell
-    /// commands. Yolo asks nothing. Required asks through the Room's
+    /// commands. A live /sudo turn of the run, local or on the home of a leased
+    /// agent, or Yolo asks nothing. Required asks through the Room's
     /// RuntimeInteraction, which every client in the Room shows. `Some` is the
     /// refusal to return.
     async fn ask_before_typing(
@@ -270,13 +271,8 @@ impl KernelRuntimeState {
         agent_id: &str,
         typed: &str,
     ) -> Result<Option<RuntimeToolResult>, DaemonError> {
-        if provider_run.runtime_mcp_auth_token().is_some_and(|auth| {
-            self.sudo_for_auth_token(auth).is_ok_and(|turn| {
-                turn.session_id == session_id
-                    && turn.agent_id == agent_id
-                    && turn.provider_run_id.as_deref() == Some(provider_run.id())
-            })
-        }) {
+        // A leased worker run proves its home sudo turn to the home.
+        if self.sudo_task_authorizes_run(provider_run).await {
             return Ok(None);
         }
         let level = self
@@ -441,22 +437,28 @@ fn terminal_tool_error(tool_name: &str, message: String) -> DaemonError {
 fn wait_operation(args: TerminalWaitArgs) -> RoomTerminalOperation {
     RoomTerminalOperation::Wait {
         terminal_id: args.terminal_id,
-        watches: args
-            .until
-            .into_iter()
-            .map(|condition| match condition {
-                TerminalWaitCondition::Named(TerminalNamedCondition::Finished) => {
-                    RoomTerminalWatch::Finished
-                }
-                TerminalWaitCondition::Named(TerminalNamedCondition::WaitingForInput) => {
-                    RoomTerminalWatch::WaitingForInput
-                }
-                TerminalWaitCondition::Text { text } => RoomTerminalWatch::OutputContains { text },
-            })
-            .collect(),
+        watches: watches(args.until),
         after_offset: args.after_offset,
         timeout_ms: args.timeout_seconds.unwrap_or(DEFAULT_WAIT_SECONDS) * 1000,
     }
+}
+
+/// The conditions an agent names, as the terminal service watches them.
+pub(in crate::runtime::state) fn watches(
+    until: Vec<TerminalWaitCondition>,
+) -> Vec<RoomTerminalWatch> {
+    until
+        .into_iter()
+        .map(|condition| match condition {
+            TerminalWaitCondition::Named(TerminalNamedCondition::Finished) => {
+                RoomTerminalWatch::Finished
+            }
+            TerminalWaitCondition::Named(TerminalNamedCondition::WaitingForInput) => {
+                RoomTerminalWatch::WaitingForInput
+            }
+            TerminalWaitCondition::Text { text } => RoomTerminalWatch::OutputContains { text },
+        })
+        .collect()
 }
 
 fn terminal_result_payload(result: RoomTerminalResult) -> RuntimeToolResult {

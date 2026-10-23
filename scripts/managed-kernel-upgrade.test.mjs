@@ -18,6 +18,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { test } from "node:test"
+import { admittedPredecessorProtocols } from "./lib/protocol-versions.mjs"
 import {
   rawPublicKey,
   makeRelease,
@@ -144,8 +145,8 @@ test("repository release policy admits reviewed predecessors and matches the run
   const policy = JSON.parse(policyBytes)
   const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
-  // MP-07/MP-10: reviewed predecessors retained by the 32-entry policy in 9699c3776 and the current union.
-  const admittedProtocols = [343, 367, ...Array.from({ length: 10 }, (_, index) => 369 + index), 410, 411, 415, 416, 435, 472, 487, 490, 491, 493, 506, 511, 513, 517, 519, 525, 528, 552, 556, runtimeProtocol]
+  // MP-07/MP-10: the admitted predecessor ladder (released F/G/Apps, main 472/520, display union) and the current protocol.
+  const admittedProtocols = [...admittedPredecessorProtocols, runtimeProtocol]
   assert.deepEqual(policy, {
     schemaVersion: 1,
     protocol: runtimeProtocol,

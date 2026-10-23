@@ -187,6 +187,9 @@ impl RuntimeSession {
     pub fn sudo_windows(&self) -> &[crate::local::KernelSudoTurn] {
         &self.sudo_windows
     }
+    pub(crate) fn agent_wakes(&self) -> &[crate::durable_state::agent_lifecycle::AgentWake] {
+        &self.agent_wakes
+    }
     pub(crate) fn set_agent_wakes(
         &mut self,
         wakes: Vec<crate::durable_state::agent_lifecycle::AgentWake>,

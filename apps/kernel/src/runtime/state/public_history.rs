@@ -11,6 +11,9 @@ impl room_secret_observation::RoomSecretObservations {
         event: &HistoryEvent,
         owner: &str,
     ) -> Option<PublicHistoryDocument> {
+        if crate::history::public_history::is_internal_protocol_event(event) {
+            return None;
+        }
         if !matches!(
             event.kind,
             HistoryEventKind::UserPrompt
@@ -510,14 +513,23 @@ impl KernelRuntimeState {
         tokio::task::spawn_blocking(move || {
                 let room = state.authorize_public_history_room(&session, &agent, None)?;
                 let agents = state.owned.agent_store.get_session_agents(room.id());
-                let target = crate::runtime::room_tool_admission::resolve_agent(
-                    &agents, room.id(), args.agent_ref.as_deref().unwrap_or(agent.id()),
-                )?;
                 let _guard = state.owned.operational_history_store.lock_public_history()?;
                 state.owned.room_secret_observations.require(room.id(), false)?;
                 let revision = state.owned.operational_history_store.public_history_revision_locked(room.id())?;
+                // A search hit's event_ref names one event of any agent in the room:
+                // open the turn that holds it, on that agent.
+                let hit = match args.turn_ref.as_deref() {
+                    Some(reference) => state.owned.operational_history_store
+                        .read_public_history_locked(room.owner_user_id(), room.id(), reference)?,
+                    None => None,
+                };
+                let target = crate::runtime::room_tool_admission::resolve_agent(
+                    &agents, room.id(),
+                    hit.as_ref().map_or(args.agent_ref.as_deref().unwrap_or(agent.id()), |h| h.agent_id.as_str()),
+                )?;
+                let turn_ref = hit.and_then(|h| h.turn_id).or(args.turn_ref.clone());
                 let mut events = state.owned.operational_history_store.public_history_turn_locked(
-                    room.owner_user_id(), room.id(), target.id(), args.turn_ref.as_deref(),
+                    room.owner_user_id(), room.id(), target.id(), turn_ref.as_deref(),
                     args.turns_back.unwrap_or(0), args.limit.unwrap_or(200),
                 )?;
                 drop(_guard);
@@ -525,6 +537,12 @@ impl KernelRuntimeState {
                 for event in &mut events {
                     event.text = state.owned.room_secret_observations
                         .scrub_text_or_withhold(room.id(), &event.text);
+                }
+                if events.is_empty() && args.turn_ref.is_some() {
+                    return Ok(RuntimeToolResult {
+                        ok: false,
+                        payload: serde_json::json!({"error":"Public history turn is unavailable; pass a prompt id, a turn id or a chariox.history.search hit's event_ref"}),
+                    });
                 }
                 events.reverse();
                 Ok(RuntimeToolResult {
@@ -961,7 +979,98 @@ mod admission_tests {
                             )
                             .await
                             .unwrap();
-                        assert!(missing.payload["events"].as_array().unwrap().is_empty());
+                        assert!(!missing.ok);
+                        assert!(missing.payload["error"]
+                            .as_str()
+                            .unwrap()
+                            .contains("event_ref"));
+                        drop(state);
+                        std::fs::remove_dir_all(root).unwrap();
+                    })
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    // A09-S01: a search hit names an event of any agent in the room; opening its
+    // turn returns that agent's turn, not the caller's (empty) one.
+    #[test]
+    fn a09_turn_opens_a_peer_search_hit_by_its_event_ref() {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async {
+                        let root = std::env::temp_dir().join(format!(
+                            "chariox-a09-peer-turn-{:016x}",
+                            rand::random::<u64>()
+                        ));
+                        std::fs::create_dir(&root).unwrap();
+                        let mut config = crate::config::DaemonConfig::for_tests()
+                            .with_session_history_root(root.join("history"));
+                        config.room_agent_tools = true;
+                        let mut app = crate::DaemonApp::bootstrap(config).unwrap();
+                        let (room, actor) = crate::app::KernelSessionService::new(&mut app)
+                            .create_session(crate::session::CreateSessionRequest::new(
+                                root.to_string_lossy(),
+                                root.to_string_lossy(),
+                            ))
+                            .unwrap();
+                        let peer = crate::app::KernelSessionService::new(&mut app)
+                            .spawn_agent(crate::agent::CreateAgentRequest::new(
+                                room.id(),
+                                "dev-stub",
+                            ))
+                            .unwrap();
+                        let state =
+                            crate::runtime::router::CommandRouter::with_interactive_capacity(
+                                Arc::new(Mutex::new(app)),
+                                1,
+                            )
+                            .runtime_state();
+                        let append = |agent: &str, turn: &str, text: &str| {
+                            state
+                                .owned
+                                .operational_history_store
+                                .append_operational_event(
+                                    HistoryEventKind::UserPrompt,
+                                    Some(crate::history::HistoryEventRole::User),
+                                    Some(text.into()),
+                                    Default::default(),
+                                    crate::history::HistoryEventTurnContext {
+                                        session_id: Some(room.id().into()),
+                                        agent_id: Some(agent.into()),
+                                        turn_id: Some(turn.into()),
+                                        public_history_owner_user_id: Some(
+                                            room.owner_user_id().into(),
+                                        ),
+                                        ..Default::default()
+                                    },
+                                )
+                                .unwrap()
+                        };
+                        let first = append(peer.id(), "peer-turn", "peer committed the notes");
+                        let second = append(peer.id(), "peer-turn", "peer ran the tests");
+                        append(actor.id(), "actor-turn", "actor searches");
+                        let result = state
+                            .dispatch_meta_runtime_tool_call_for_agent(
+                                room.id(),
+                                actor.id(),
+                                "chariox.history.turn",
+                                serde_json::json!({"turn_ref":first.event_id}),
+                            )
+                            .await
+                            .unwrap();
+                        assert!(result.ok, "{:?}", result.payload);
+                        assert_eq!(result.payload["agent_id"], peer.id());
+                        let events = result.payload["events"].as_array().unwrap();
+                        assert_eq!(events.len(), 2, "{:?}", result.payload);
+                        assert_eq!(events[0]["event_ref"], first.event_id);
+                        assert_eq!(events[1]["event_ref"], second.event_id);
                         drop(state);
                         std::fs::remove_dir_all(root).unwrap();
                     })

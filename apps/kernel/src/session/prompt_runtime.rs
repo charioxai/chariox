@@ -280,6 +280,7 @@ impl PromptRuntimeState {
     pub(in crate::session) fn hide_internal_prompts(&mut self, focused_agent_id: Option<&str>) {
         let internal = |prompt: &PromptQueueItem| {
             crate::session::is_internal_prompt_turn(Some(prompt.prompt_origin()), Some(prompt.id()))
+                || crate::session::is_internal_prompt_echo_id(prompt.id())
         };
         for state in self.prompt_states.values_mut() {
             if let Some(active) = state.active_prompt.as_mut().filter(|p| internal(p)) {
@@ -402,6 +403,63 @@ mod tests {
 
     fn prompt(id: &str, agent_id: &str, status: PromptStatus) -> PromptQueueItem {
         PromptQueueItem::new(id, "attachment-1", agent_id, "prompt", status)
+    }
+
+    // MP-08 / MP-10 / MP-11: client projections never carry the kernel's own
+    // completion assessment prompt (internal protocol text); a running check
+    // stays stoppable by its id and status.
+    #[test]
+    fn client_projection_hides_only_the_completion_assessment_prompt() {
+        let mut runtime = PromptRuntimeState::default();
+        let check = prompt("goal-check-1", "agent-1", PromptStatus::Running)
+            .with_prompt_origin(crate::session::PromptOrigin::CompletionCheck);
+        runtime.mirror_agent_prompt_state(
+            "agent-1",
+            Some(check),
+            VecDeque::from([prompt("prompt-queued", "agent-1", PromptStatus::Queued)]),
+            Some("agent-1"),
+        );
+        runtime.mirror_agent_prompt_state(
+            "agent-2",
+            Some(
+                prompt("goal-check-2", "agent-2", PromptStatus::Running)
+                    .with_prompt_origin(crate::session::PromptOrigin::CompletionCheck),
+            ),
+            VecDeque::new(),
+            Some("agent-1"),
+        );
+        runtime.hide_internal_prompts(Some("agent-1"));
+
+        let active = runtime.active_prompt_for_agent("agent-1").unwrap();
+        assert_eq!(active.id(), "goal-check-1");
+        assert_eq!(active.prompt(), "");
+        assert_eq!(runtime.active_prompt().unwrap().id(), "goal-check-1");
+        assert_eq!(runtime.queued_prompts().len(), 1);
+        assert_eq!(runtime.queued_prompts()[0].id(), "prompt-queued");
+        assert_eq!(
+            runtime.active_prompt_for_agent("agent-2").unwrap().prompt(),
+            ""
+        );
+        // Scheduling is unchanged: the kernel still knows the agent is busy.
+        assert_eq!(runtime.scheduler_state(), SchedulerState::Waiting);
+    }
+
+    #[test]
+    fn client_projection_hides_the_correction_instruction() {
+        for prompt_id in ["task-correction-prompt-1", "agent-event-agent-1-42"] {
+            let mut runtime = PromptRuntimeState::default();
+            runtime.mirror_agent_prompt_state(
+                "agent-1",
+                Some(prompt(prompt_id, "agent-1", PromptStatus::Running)),
+                VecDeque::new(),
+                Some("agent-1"),
+            );
+            runtime.hide_internal_prompts(Some("agent-1"));
+            // A running internal turn stays stoppable; only its instruction is hidden.
+            let active = runtime.active_prompt_for_agent("agent-1").unwrap();
+            assert_eq!(active.id(), prompt_id);
+            assert_eq!(active.prompt(), "");
+        }
     }
 
     #[test]

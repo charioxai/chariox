@@ -7,6 +7,7 @@ import { bootstrapWaitingRoom } from "./waiting-room-bootstrap.js"
 import { bootstrapSession } from "./session-bootstrap.js"
 import { hydrateSessionHistoryOutlineAgentEntries } from "@chariox/kernel-client/session-history-transcript"
 import type { CliOptions, RuntimeSession } from "./cli-types.js"
+import { LocalIpcError } from "./ipc.js"
 
 function terminalCatalog() {
   return {
@@ -873,6 +874,54 @@ test("bootstrapSession renders while the kernel holds the attach-time launch on 
   assert.equal((await starting).providerRun?.id, "run-1")
 })
 
+
+// MP-08/MP-10/MP-11 F02: a launch can require a human Vault answer.
+test("scoped bootstrap renders its attachment before a protected provider launch", async () => {
+  const session = { id: "room", agents: [{ id: "agent", provider: "claude-p", model: "claude-haiku-5-5", state: "Idle" }], focused_agent_id: "agent", active_provider_run_id: null }
+  let launched = false
+  const pending = new Promise<never>(() => {})
+  const boot = bootstrapSession({} as never, { clientId: "cli", sessionId: "room", provider: "claude-p", model: "claude-haiku-5-5", effort: "low", accountProfile: "selected" }, "/workspace", "/workspace", {}, {
+    deferProviderLaunch: true,
+    listSessions: async () => [session], resolveSession: async () => session,
+    attachToSession: async () => ({ id: "attachment", session_id: "room" }),
+    getSessionState: async () => session,
+    launchProviderRun: () => { launched = true; return pending },
+    catchUpAttachedSession: async () => {}, getSessionHistoryOutline: async () => ({ agents: [] }),
+    getProviderCatalog: async () => fallbackProviderCatalog(), getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+    getTerminalCommandCatalog: async () => terminalCatalog(), resolveVisibleAgentId: () => "agent",
+    prepareHistoryOutlineAgent: () => [],
+  } as never)
+  const result = await Promise.race([boot, new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 30))])
+  assert.notEqual(result, "blocked", "Vault input must not depend on an unmounted TUI")
+  assert.equal(launched, false, "only the mounted client starts the protected launch")
+  if (result !== "blocked") {
+    assert.equal(result.binding?.session.id, "room")
+    assert.ok(result.deferred?.providerLaunch)
+    void result.deferred.providerLaunch.start()
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    assert.equal(launched, true)
+  }
+})
+
+// MP-08/MP-10/MP-11: the deferred launch keeps the locked-vault reason for the mounted TUI.
+test("bootstrapSession reports a locked credential vault from the deferred attach launch", async () => {
+  const session = { id: "session-1", agents: [{ id: "agent-a", provider: "codex", model: "codex/gpt-5.4-mini", state: "Idle" }], focused_agent_id: "agent-a", active_provider_run_id: null }
+  const bootstrap = await bootstrapSession({} as never, { clientId: "cli-1", sessionId: "session-1", model: "gpt-5.4", accountProfile: "default", effort: "high" }, "/workspace", "/workspace", {}, {
+    deferProviderLaunch: true,
+    listSessions: async () => [session], resolveSession: async () => session,
+    attachToSession: async () => ({ id: "attachment-1", session_id: "session-1" }),
+    getSessionState: async () => session,
+    launchProviderRun: async () => {
+      throw new LocalIpcError("handle kernel response", "local transport `credential_vault_locked` failed: Chariox vault is locked", "local_transport_error", true)
+    },
+    tryGetProviderRun: async () => null, catchUpAttachedSession: async () => undefined, getSessionHistoryOutline: async () => ({ agents: [] }),
+    getProviderCatalog: async () => fallbackProviderCatalog(), getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+    getTerminalCommandCatalog: async () => terminalCatalog(), resolveVisibleAgentId: () => null,
+    prepareHistoryOutlineAgent: () => [],
+  } as never)
+  assert.equal(bootstrap.binding?.providerRun, null)
+  assert.deepEqual(await bootstrap.deferred?.providerLaunch?.start(), { providerRun: null, issue: "credential_vault_locked" })
+})
 
 test("MP-08 / MP-10 / MP-11 full session IDs paint from the kernel bundle without a resolve round trip", async () => {
   const id = "18de8597bddf72dc", calls: string[] = []

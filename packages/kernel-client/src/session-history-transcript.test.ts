@@ -1131,3 +1131,14 @@ test("session history outline prefetch loads assistant blobs and the latest turn
   })
   assert.deepEqual(ids, ["new-tool", "new-thought", "new-text", "old-text"])
 })
+
+test("MP-08/MP-10 empty internal prompt projection retains only the provider reply", () => {
+  const entries = hydrateSessionHistoryOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [outlineTurn(10, "agent-event-1", "", "Reminder delivered")],
+    next_cursor: null,
+  })
+  assert.deepEqual(entries.map(entry => entry.role), ["assistant"])
+  assert.equal(entries[0]?.text, "Reminder delivered")
+  assert.equal(entries[0]?.promptId, "agent-event-1")
+})

@@ -147,6 +147,7 @@ fn assert_external_active_prompt_and_queued_chariox_prompt(
     );
 }
 
+mod agent_wake_sources;
 mod app_quiet_tool_guard;
 mod approval_lifetime;
 mod browser_import_execution_gate;
@@ -371,6 +372,91 @@ async fn started_local_prompt_commits_its_prompt_state_once() {
     );
 }
 
+// MP-08/MP-10: a completion check queued behind a running turn is agent-only;
+// no notice may show its internal prompt id to the user's clients.
+#[tokio::test]
+async fn queued_completion_check_records_no_user_notice() {
+    let scratch = std::env::temp_dir().join(format!(
+        "chariox-amfix-check-notice-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&scratch).unwrap();
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            crate::session::CreateSessionRequest::new(
+                scratch.to_string_lossy(),
+                scratch.to_string_lossy(),
+            )
+            .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+        )
+        .unwrap();
+    let attach = |app: &mut DaemonApp, client: &str| {
+        app.attach(crate::attachment::AttachRequest::for_user(
+            session.id(),
+            client,
+            crate::attachment::ClientCapabilityLevel::AutomationOnly,
+            agent.owner_user_id(),
+        ))
+        .unwrap()
+    };
+    let user = attach(&mut app, "amfix-user");
+    let kernel = attach(&mut app, "amfix-kernel");
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let submit = |id: &'static str, attachment: String| {
+        let runtime = &runtime;
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        async move {
+            runtime
+                .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                    session_id,
+                    prompt: crate::session::PromptQueueItem::new(
+                        id,
+                        &attachment,
+                        &agent_id,
+                        "text",
+                        crate::session::PromptStatus::Queued,
+                    )
+                    .with_durable_operation(id, format!("task:{id}:1")),
+                    force_queue: false,
+                    refresh_projection: true,
+                })
+                .await
+                .unwrap()
+        }
+    };
+    let started = submit("amfix-running", user.id().to_string()).await;
+    assert!(matches!(
+        started.outcome,
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ));
+    for id in ["goal-check-amfix-1-1", "amfix-queued"] {
+        let queued = submit(id, kernel.id().to_string()).await;
+        assert!(matches!(
+            queued.outcome,
+            crate::session::PromptSubmissionOutcome::Queued { .. }
+        ));
+    }
+    let notices = runtime
+        .drain_notice_records(session.id(), user.id())
+        .await
+        .into_iter()
+        .map(|notice| notice.message)
+        .collect::<Vec<_>>();
+    assert!(
+        notices.iter().any(|m| m.contains("amfix-queued")),
+        "a user prompt queued by another client is still announced: {notices:?}"
+    );
+    assert!(
+        !notices.iter().any(|m| m.contains("goal-check")),
+        "the internal completion check must not be announced: {notices:?}"
+    );
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
 // MP-08/MP-10: a persistent grant does not make a newly registered definition live.
 #[tokio::test]
 async fn mcp_catalog_reregistration_marks_existing_grant_pending_synchronously() {
@@ -459,6 +545,7 @@ async fn mcp_catalog_reregistration_marks_existing_grant_pending_synchronously()
 mod credential_copy_recovery;
 
 mod popup_notices;
+mod restored_turn_settlement;
 
 mod catalog_continuation;
 

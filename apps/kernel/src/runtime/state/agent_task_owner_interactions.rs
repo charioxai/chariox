@@ -54,8 +54,8 @@ impl KernelRuntimeState {
         }
         let id = format!("task-blocked-{}-{}", task.task_id, task.blocked_revision);
         let session = self.owned.session_store.get_session(&task.room_id)?;
+        let message = crate::terminal::public_task_failure_reason(&task.reason);
         if let Some(existing) = session.active_interactions().iter().find(|i| i.id() == id) {
-            let message=format!("Task {}: {}. {} obligations remain supervised. Progress does not resume this task; resolve the cause, then resume or cancel.",task.task_id,task.reason,task.obligations.iter().filter(|o|matches!(o.status.as_str(),"open"|"settling"|"failed")).count());
             if existing.message() != message {
                 let mutation = self.owned.begin_managed_activity_mutation();
                 let mut sessions = self.owned.session_store.write();
@@ -73,7 +73,18 @@ impl KernelRuntimeState {
             }
             return Ok(());
         }
-        let interaction=crate::session::RuntimeInteraction::for_kernel_operation(&id,&id,"Agent needs your action",format!("Task {}: {}. {} obligations remain supervised. Resume after resolving the cause or cancel explicitly.",task.task_id,task.reason,task.obligations.iter().filter(|o|o.status!="satisfied"&&o.status!="cancelled").count()),vec![crate::session::RuntimeInteractionChoice::new("cancel","Cancel","cancel",None),crate::session::RuntimeInteractionChoice::new("resume","Resume","resume",None)]).with_timeout_sec(900);
+        let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
+            &id,
+            &id,
+            "Agent needs your action",
+            &message,
+            vec![
+                crate::session::RuntimeInteractionChoice::new("cancel", "Cancel", "cancel", None),
+                crate::session::RuntimeInteractionChoice::new("resume", "Resume", "resume", None),
+            ],
+        )
+        .with_timeout_sec(900);
+
         let rx = self
             .create_kernel_operation_interaction(
                 &task.room_id,

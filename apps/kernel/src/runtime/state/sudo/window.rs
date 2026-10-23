@@ -407,7 +407,14 @@ impl KernelRuntimeState {
                 deadline.saturating_duration_since(Instant::now()).as_secs()
             })
             .clamp(1, decision_timeout.max(1));
-        let id = format!("{}:extend:{}", turn.entry_id, turn.revision);
+        // A refusal leaves the window revision unchanged. Clients remember
+        // answered interactions, so every new attempt needs its own id.
+        let id = format!(
+            "{}:extend:{}:{:016x}",
+            turn.entry_id,
+            turn.revision,
+            rand::random::<u64>()
+        );
         let interaction = RuntimeInteraction::for_kernel_operation(&id, &id, "Extend sudo window",
             format!("Extend agent {}'s sudo window {} in session {} for the same owner-authorized work. The new expiry is now plus the selected duration (at most 8 hours); unrelated prompts and messages stay outside it, and it never answers approvals.",
                 turn.agent_id, turn.entry_id, turn.session_id),

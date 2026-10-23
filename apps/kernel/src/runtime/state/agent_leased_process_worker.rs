@@ -100,10 +100,25 @@ impl KernelRuntimeState {
                 }
             }
             let (b, w) = (binding.clone(), stored.wake.clone());
-            self.with_app_side_effect(move |app| {
-                crate::app::RemoteLeaseRuntime::new(app).leased_process_target(&b, &w, false)
-            })
-            .await?;
+            let target = self
+                .with_app_side_effect(move |app| {
+                    crate::app::RemoteLeaseRuntime::new(app).leased_process_target(&b, &w, false)
+                })
+                .await;
+            match target {
+                Ok(_) => {}
+                // The authenticated home owns this exact stored binding. Lease loss
+                // does not revoke its ability to stop that launch, but cannot authorize Start.
+                Err(
+                    DaemonError::LeasedAgentNotFound { .. }
+                    | DaemonError::ExecutionLeaseNotFound { .. },
+                ) if matches!(
+                    action,
+                    LeasedWatchedProcessAction::Query { .. }
+                        | LeasedWatchedProcessAction::Cancel { .. }
+                ) => {}
+                Err(error) => return Err(error),
+            }
             if matches!(action, LeasedWatchedProcessAction::Cancel { .. })
                 && matches!(stored.wake.state.as_str(), "starting" | "running")
             {

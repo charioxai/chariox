@@ -154,12 +154,13 @@ export function createDeferredBootstrapController(deps: DeferredBootstrapControl
 
     const launch = deferred.providerLaunch
     if (launch && deps.currentAttachmentSessionId() === launch.sessionId) {
-      void launch.start().then(({ providerRun }) => {
+      void launch.start().then(({ providerRun, issue }) => {
         if (deps.currentAttachmentSessionId() !== launch.sessionId) return
         if (providerRun && (!deps.focusedAgentId || !providerRun.agent_instance_id
           || providerRun.agent_instance_id === deps.focusedAgentId())) {
           deps.setProviderRun?.(providerRun)
         }
+        if (issue) deps.applyAttachLaunch({ sessionId: launch.sessionId, session: null, providerRun: null, issue })
         deps.updateSessionChrome()
       }).catch(error => {
         warn("provider launch after terminal mount failed", error)

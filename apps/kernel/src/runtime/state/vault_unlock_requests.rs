@@ -70,18 +70,42 @@ impl KernelRuntimeState {
         accept_shared_unlock: bool,
     ) -> Result<Option<PendingInteractionResolution>, DaemonError> {
         let id = interaction.id().to_owned();
+        let agent_id = interaction.agent_id().map(str::to_owned);
+        let waiting = agent_id
+            .as_deref()
+            .map(|agent| self.begin_vault_wait(session_id, agent))
+            .unwrap_or_default();
         let wait = self.await_vault_interaction(session_id, interaction, operation, "vault unlock");
         tokio::pin!(wait);
-        loop {
+        let result = loop {
             tokio::select! {
-                result = &mut wait => return result.map(Some),
+                result = &mut wait => break result.map(Some),
                 Ok(()) = unlocks.changed(), if accept_shared_unlock => {
-                    if crate::secret::chariox_encrypted_vault_status(vault_path)?.unlocked {
-                        self.timeout_runtime_interaction(session_id, &id).await?;
-                        return Ok(None);
+                    match crate::secret::chariox_encrypted_vault_status(vault_path) {
+                        Ok(status) if status.unlocked => {
+                            break self
+                                .timeout_runtime_interaction(session_id, &id)
+                                .await
+                                .map(|()| None);
+                        }
+                        Ok(_) => {}
+                        Err(error) => break Err(error),
                     }
                 }
             }
-        }
+        };
+        let refusal = match &result {
+            Ok(Some(resolution)) if resolution.status == "timed_out" => {
+                Some("The Vault unlock timed out".to_owned())
+            }
+            Ok(Some(resolution)) if !matches!(resolution.choice_id.as_deref(), Some(choice) if choice != "cancel") => {
+                Some("The Vault unlock was declined".to_owned())
+            }
+            Err(error) => Some(format!("The Vault unlock failed: {error}")),
+            _ => None,
+        };
+        // Boxed: callers hold this future across their own awaits and must stay small (MD-4).
+        Box::pin(self.end_vault_wait(session_id, waiting, refusal)).await;
+        result
     }
 }

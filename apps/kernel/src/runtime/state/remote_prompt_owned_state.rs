@@ -267,7 +267,11 @@ impl KernelRuntimeOwnedState {
         } else {
             prepared.prompt.clone()
         };
-        let prompt = if will_queue || self.config_projection.snapshot().room_agent_tools {
+        // Kernel-owned wake and correction turns keep the id their receipts name.
+        let prompt = if will_queue
+            || self.config_projection.snapshot().room_agent_tools
+            || crate::session::is_internal_prompt_echo_id(prompt.id())
+        {
             prompt
         } else {
             prompt.with_id(self.session_store.reserve_prompt_id())
@@ -1248,6 +1252,664 @@ mod tests {
         );
         crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // A queued prompt whose provider launch needs a locked Vault (no Project environment, so
+    // no up-front unlock) must ask the owner for the unlock and then run, never stay pending.
+    #[tokio::test]
+    async fn queued_prompt_launch_asks_for_the_vault_unlock_and_then_runs() {
+        let root =
+            std::env::temp_dir().join(format!("chariox-queued-vault-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        let vault = root.join("synthetic-vault.json");
+        let mut config = crate::DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = vault.display().to_string();
+        config.user_config.credential_vault.unlock_policy =
+            crate::config::CredentialVaultUnlockPolicy::KernelInit;
+        crate::secret::unlock_chariox_encrypted_vault(
+            &vault,
+            "synthetic queued passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+        crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
+        let (runtime, session, agent, _attachment, _binding) = mp11_fixture(config).await;
+        let launches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let task = tokio::spawn({
+            let runtime = runtime.clone();
+            let (session, agent) = (session.clone(), agent.clone());
+            let vault = vault.clone();
+            let launches = launches.clone();
+            async move {
+                runtime
+                    .with_project_prompt_environment(&session, &agent, |_| {
+                        launches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        if crate::secret::chariox_encrypted_vault_status(&vault)?.unlocked {
+                            Ok(())
+                        } else {
+                            Err(DaemonError::LocalTransport {
+                                operation: "credential_vault_locked",
+                                message: "Chariox vault is locked".into(),
+                            })
+                        }
+                    })
+                    .await
+            }
+        });
+        let card = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let card = runtime
+                    .owned
+                    .session_snapshot(&session)
+                    .unwrap()
+                    .active_interactions()
+                    .iter()
+                    .find(|card| card.id().starts_with("vault-unlock-"))
+                    .map(|card| card.id().to_string());
+                if let Some(card) = card {
+                    break card;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the locked Vault must raise the unlock popup");
+        let owner = runtime
+            .owned
+            .session_store
+            .get_session(&session)
+            .unwrap()
+            .owner_user_id()
+            .to_string();
+        runtime
+            .owned
+            .resolve_runtime_interaction(
+                &session,
+                &card,
+                "passphrase",
+                Some("synthetic queued passphrase"),
+                Some(&owner),
+                true,
+            )
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(launches.load(std::sync::atomic::Ordering::SeqCst), 2);
+        crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // A completion check that waits for the owner's Vault unlock shows that wait and keeps its
+    // 60 s bound until the owner answers; a refusal ends it Blocked with the reason.
+    async fn vault_wait_fixture(
+        label: &str,
+    ) -> (
+        KernelRuntimeState,
+        String,
+        String,
+        std::path::PathBuf,
+        tokio::task::JoinHandle<Result<(), DaemonError>>,
+        crate::durable_state::agent_lifecycle::goals::GoalEvaluation,
+    ) {
+        use crate::durable_state::agent_lifecycle::{completion, Operation};
+        let root = std::env::temp_dir().join(format!("chariox-{label}-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        let vault = root.join("synthetic-vault.json");
+        let mut config = crate::DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = vault.display().to_string();
+        config.user_config.credential_vault.unlock_policy =
+            crate::config::CredentialVaultUnlockPolicy::KernelInit;
+        crate::secret::unlock_chariox_encrypted_vault(
+            &vault,
+            "synthetic wait passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+        crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
+        let (runtime, session, agent, _attachment, _binding) = mp11_fixture(config).await;
+        let store = &runtime.owned.durable_state_store;
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: "owner".into(),
+                room: session.clone(),
+                agent: agent.clone(),
+                prompt: "p".into(),
+                run: Some("run".into()),
+                now: 1,
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::StartGoal {
+                task: "p".into(),
+                owner: "owner".into(),
+                objective: "Answer the request".into(),
+                minutes: 1,
+                now: 1,
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::Settle {
+                room: session.clone(),
+                agent: agent.clone(),
+                prompt: "p".into(),
+                run: "run".into(),
+                has_answer: true,
+                cancelled: false,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+        let check = completion::evaluation(&store.agent_tasks(None, None).unwrap()[0])
+            .unwrap()
+            .clone();
+        let unlock = tokio::spawn({
+            let runtime = runtime.clone();
+            let (session, agent) = (session.clone(), agent.clone());
+            async move {
+                runtime
+                    .ensure_vault_unlocked_for_agent(&session, &agent, "launch provider run")
+                    .await
+                    .map(drop)
+            }
+        });
+        (runtime, session, agent, vault, unlock, check)
+    }
+
+    async fn vault_popup(runtime: &KernelRuntimeState, session: &str) -> String {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let card = runtime
+                    .owned
+                    .session_snapshot(session)
+                    .unwrap()
+                    .active_interactions()
+                    .iter()
+                    .find(|card| card.id().starts_with("vault-unlock-"))
+                    .map(|card| card.id().to_string());
+                if let Some(card) = card {
+                    break card;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the locked Vault must raise the unlock popup")
+    }
+
+    #[tokio::test]
+    async fn completion_check_waits_for_the_vault_unlock_without_spending_its_bound() {
+        use crate::durable_state::agent_lifecycle::{completion, ExecutionState, Operation};
+        let (runtime, session, _agent, vault, unlock, check) =
+            vault_wait_fixture("vault-wait").await;
+        let card = vault_popup(&runtime, &session).await;
+        let store = &runtime.owned.durable_state_store;
+        let waiting = store.agent_tasks(None, None).unwrap().remove(0);
+        assert_eq!(waiting.state, ExecutionState::Working);
+        assert_eq!(waiting.reason, "Waiting for the Vault unlock");
+        store
+            .agent_lifecycle(Operation::TimeoutGoal {
+                task: "p".into(),
+                prompt: check.prompt_id.clone(),
+                now: check.deadline_ms + 300_000,
+            })
+            .unwrap();
+        assert_eq!(
+            store.agent_tasks(None, None).unwrap()[0].state,
+            ExecutionState::Working,
+            "the owner's wait must not time the check out"
+        );
+        let owner = runtime
+            .owned
+            .session_store
+            .get_session(&session)
+            .unwrap()
+            .owner_user_id()
+            .to_string();
+        runtime
+            .owned
+            .resolve_runtime_interaction(
+                &session,
+                &card,
+                "passphrase",
+                Some("synthetic wait passphrase"),
+                Some(&owner),
+                true,
+            )
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), unlock)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let resumed = store.agent_tasks(None, None).unwrap().remove(0);
+        let after = completion::evaluation(&resumed).unwrap();
+        assert_eq!(after.paused_at_ms, None);
+        assert!(after.deadline_ms >= check.deadline_ms);
+        assert_eq!(resumed.reason, "Evaluating original goal objective");
+        crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
+        std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
+    }
+
+    /// A goal on the leased fixture agent whose completion check started two minutes ago
+    /// under the agent's current lease.
+    async fn expired_leased_check() -> (
+        KernelRuntimeState,
+        crate::durable_state::agent_lifecycle::AgentTaskExecution,
+        String,
+        RemoteAgentBinding,
+    ) {
+        use crate::durable_state::agent_lifecycle::{completion, Operation};
+        let (runtime, session, agent, _attachment, binding) =
+            mp11_fixture(crate::DaemonConfig::for_tests()).await;
+        let store = &runtime.owned.durable_state_store;
+        let started = crate::session::unix_epoch_ms() - 120_000;
+        for operation in [
+            Operation::Begin {
+                owner: "owner".into(),
+                room: session.clone(),
+                agent: agent.clone(),
+                prompt: "p".into(),
+                run: Some("run".into()),
+                now: started,
+            },
+            Operation::StartGoal {
+                task: "p".into(),
+                owner: "owner".into(),
+                objective: "Answer the request".into(),
+                minutes: 1,
+                now: started,
+            },
+            Operation::Settle {
+                room: session.clone(),
+                agent: agent.clone(),
+                prompt: "p".into(),
+                run: "run".into(),
+                has_answer: true,
+                cancelled: false,
+                now: started,
+            },
+        ] {
+            store.agent_lifecycle(operation).unwrap();
+        }
+        let task = store.agent_tasks(None, None).unwrap().remove(0);
+        let prompt = completion::evaluation(&task).unwrap().prompt_id.clone();
+        store
+            .agent_lifecycle(Operation::BindGoalCheckLease {
+                task: "p".into(),
+                prompt: prompt.clone(),
+                lease: runtime.check_lease(&agent).unwrap(),
+            })
+            .unwrap();
+        (runtime, task, prompt, binding)
+    }
+
+    // MP-08 / MP-10 / MP-11: exercise the wire projection before task settlement.
+    #[tokio::test]
+    async fn leased_failed_projection_cancels_an_ordinary_task_with_failure_reason() {
+        assert_leased_failed_projection_ends_task(false).await;
+    }
+
+    #[tokio::test]
+    async fn leased_failed_projection_blocks_a_goal_without_assessing_partial_output() {
+        assert_leased_failed_projection_ends_task(true).await;
+    }
+
+    async fn assert_leased_failed_projection_ends_task(goal: bool) {
+        use crate::durable_state::agent_lifecycle::{completion, ExecutionState, Operation};
+        use crate::transport::relay_peer::{RelayPeerEvent, RelayProjectedCompletion};
+        let (runtime, session, agent, attachment, binding) =
+            mp11_fixture(crate::DaemonConfig::for_tests()).await;
+        let mut config = runtime.owned.config_projection.snapshot();
+        config.room_agent_tools = true;
+        runtime.owned.config_projection.update(config);
+        let prompt = mp11_submit(&runtime, &session, &agent, &attachment, "p");
+        let store = &runtime.owned.durable_state_store;
+        let run = crate::provider::projected_leased_provider_run_id(
+            &binding.leased_agent_id,
+            "worker-run-1",
+        );
+        let now = crate::session::unix_epoch_ms();
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: "owner".into(),
+                room: session.clone(),
+                agent: agent.clone(),
+                prompt: prompt.id().into(),
+                run: Some(run),
+                now,
+            })
+            .unwrap();
+        if goal {
+            store
+                .agent_lifecycle(Operation::StartGoal {
+                    task: prompt.id().into(),
+                    owner: "owner".into(),
+                    objective: "Review the repository".into(),
+                    minutes: 1,
+                    now,
+                })
+                .unwrap();
+        }
+        runtime
+            .project_relay_remote_runtime_projection(
+                crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
+                RelayPeerEvent::LeasedRuntimeProjection {
+                    home_session_id: session.clone(),
+                    home_agent_id: agent.clone(),
+                    provider_run_id: "worker-run-1".into(),
+                    provider_run: None,
+                    prompts: Vec::new(),
+                    output_chunks: vec![crate::transport::relay_peer::RelayProjectedOutputChunk {
+                        kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                        merge_key: Some("partial-answer".into()),
+                        bytes: b"Partial repository review, not a completed result.".to_vec(),
+                    }],
+                    notices: Vec::new(),
+                    completions: vec![RelayProjectedCompletion {
+                        message_id: "partial-answer".into(),
+                        completed_at_ms: now,
+                        home_prompt_id: Some(prompt.id().into()),
+                        provider_termination: Some(
+                            crate::provider::ProviderRunTermination::signal("SIGKILL", now),
+                        ),
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+        let task = store
+            .agent_tasks(Some(&session), Some(&agent))
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            task.state,
+            if goal {
+                ExecutionState::Blocked
+            } else {
+                ExecutionState::Cancelled
+            }
+        );
+        assert!(
+            task.reason.contains("Provider run failed:"),
+            "{}",
+            task.reason
+        );
+        assert!(
+            completion::evaluation(&task).is_none(),
+            "a failed run must not assess partial output"
+        );
+    }
+
+    // MP-08 / MP-10 / MP-11: a prompt boundary is not an assessment identity.
+    #[tokio::test]
+    async fn leased_check_reads_only_its_own_reply_after_late_output() {
+        assert_leased_check_reply_is_correlated(true).await;
+    }
+
+    #[tokio::test]
+    async fn leased_check_without_its_reply_never_accepts_an_earlier_verdict() {
+        assert_leased_check_reply_is_correlated(false).await;
+    }
+
+    async fn assert_leased_check_reply_is_correlated(has_reply: bool) {
+        use crate::durable_state::agent_lifecycle::{completion, ExecutionState, Operation};
+        use crate::transport::relay_peer::{
+            RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk,
+        };
+        let (runtime, session, agent, attachment, binding) =
+            mp11_fixture(crate::DaemonConfig::for_tests()).await;
+        let mut config = runtime.owned.config_projection.snapshot();
+        config.room_agent_tools = true;
+        runtime.owned.config_projection.update(config);
+        let original = mp11_submit(&runtime, &session, &agent, &attachment, "work");
+        let run = crate::provider::projected_leased_provider_run_id(
+            &binding.leased_agent_id,
+            "worker-run-1",
+        );
+        let store = &runtime.owned.durable_state_store;
+        let now = crate::session::unix_epoch_ms();
+        for op in [
+            Operation::Begin {
+                owner: "owner".into(),
+                room: session.clone(),
+                agent: agent.clone(),
+                prompt: original.id().into(),
+                run: Some(run.clone()),
+                now,
+            },
+            Operation::StartGoal {
+                task: original.id().into(),
+                owner: "owner".into(),
+                objective: "Review the repository".into(),
+                minutes: 1,
+                now,
+            },
+            Operation::Settle {
+                room: session.clone(),
+                agent: agent.clone(),
+                prompt: original.id().into(),
+                run,
+                has_answer: true,
+                cancelled: false,
+                now,
+            },
+        ] {
+            store.agent_lifecycle(op).unwrap();
+        }
+        let task = store
+            .agent_tasks(Some(&session), Some(&agent))
+            .unwrap()
+            .remove(0);
+        let check = completion::evaluation(&task).unwrap().prompt_id.clone();
+        runtime
+            .with_app_side_effect({
+                let session = session.clone();
+                let agent = agent.clone();
+                move |app| app.prompt_owner_complete_active_prompt_only(&session, &agent)
+            })
+            .await
+            .unwrap();
+        let prepared = KernelPreparedPromptSubmission {
+            session_id: session.clone(),
+            prompt: PromptQueueItem::new(
+                &check,
+                &attachment,
+                &agent,
+                "Check completion",
+                PromptStatus::Queued,
+            )
+            .with_prompt_origin(crate::session::PromptOrigin::CompletionCheck),
+            force_queue: false,
+            refresh_projection: true,
+        };
+        runtime
+            .owned
+            .submit_remote_prepared_prompt(&prepared)
+            .unwrap()
+            .unwrap();
+        let chunk = |key: &str, body: &str| RelayProjectedOutputChunk {
+            kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+            merge_key: Some(key.into()),
+            bytes: body.as_bytes().to_vec(),
+        };
+        let answer = r#"{"status":"achieved","final_answer":"Verified repository result","evidence":["history:work"]}"#;
+        let mut chunks = vec![chunk("completion-assessment:home:earlier-check", answer)];
+        if has_reply {
+            chunks.insert(0, chunk("ordinary-work-item", "Late ordinary work output"));
+            chunks.push(chunk(
+                &format!("completion-assessment:home:{check}"),
+                answer,
+            ));
+        }
+        runtime
+            .project_relay_remote_runtime_projection(
+                crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
+                RelayPeerEvent::LeasedRuntimeProjection {
+                    home_session_id: session.clone(),
+                    home_agent_id: agent.clone(),
+                    provider_run_id: "worker-run-1".into(),
+                    provider_run: None,
+                    prompts: Vec::new(),
+                    output_chunks: chunks,
+                    notices: Vec::new(),
+                    completions: vec![RelayProjectedCompletion {
+                        message_id: "check-completed".into(),
+                        completed_at_ms: now,
+                        home_prompt_id: Some(check),
+                        provider_termination: None,
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+        let task = store
+            .agent_tasks(Some(&session), Some(&agent))
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            task.state,
+            if has_reply {
+                ExecutionState::Done
+            } else {
+                ExecutionState::Blocked
+            }
+        );
+    }
+
+    // MP-08 / MP-10 / MP-11 A12-S02: the worker restarted inside the check and is back on a new lease.
+    #[tokio::test]
+    async fn completion_check_interrupted_by_a_worker_restart_is_asked_once_more() {
+        use crate::durable_state::agent_lifecycle::{completion, ExecutionState};
+        let (runtime, task, prompt, mut binding) = expired_leased_check().await;
+        binding.execution_lease_id = "mp11-lease-after-restart".into();
+        runtime
+            .owned
+            .agent_store
+            .bind_remote_execution(&task.agent_id, binding)
+            .unwrap();
+        let now = crate::session::unix_epoch_ms();
+        let expiry = runtime
+            .expire_goal_check(&task, &prompt, now)
+            .await
+            .unwrap();
+        assert!(matches!(
+            expiry,
+            super::super::agent_goal_runtime::CheckExpiry::Retried
+        ));
+        let after = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(None, None)
+            .unwrap()
+            .remove(0);
+        let check = completion::evaluation(&after).unwrap();
+        assert_eq!(after.state, ExecutionState::Working);
+        assert!(check.retried && check.deadline_ms > now);
+        assert_ne!(check.prompt_id, prompt);
+        assert_eq!(
+            after.pending_prompt_id.as_deref(),
+            Some(check.prompt_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_check_on_a_worker_that_never_restarted_still_blocks_at_its_bound() {
+        use crate::durable_state::agent_lifecycle::ExecutionState;
+        let (runtime, task, prompt, _binding) = expired_leased_check().await;
+        let now = crate::session::unix_epoch_ms();
+        let expiry = runtime
+            .expire_goal_check(&task, &prompt, now)
+            .await
+            .unwrap();
+        assert!(matches!(
+            expiry,
+            super::super::agent_goal_runtime::CheckExpiry::Blocked(_)
+        ));
+        let after = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(None, None)
+            .unwrap()
+            .remove(0);
+        assert_eq!(after.state, ExecutionState::Blocked);
+        assert!(after.reason.contains("exceeded 60 seconds"));
+    }
+
+    #[tokio::test]
+    async fn declined_vault_unlock_blocks_the_waiting_completion_check_with_its_reason() {
+        use crate::durable_state::agent_lifecycle::ExecutionState;
+        let (runtime, session, _agent, vault, unlock, _check) =
+            vault_wait_fixture("vault-decline").await;
+        let card = vault_popup(&runtime, &session).await;
+        let owner = runtime
+            .owned
+            .session_store
+            .get_session(&session)
+            .unwrap()
+            .owner_user_id()
+            .to_string();
+        runtime
+            .owned
+            .resolve_runtime_interaction(&session, &card, "cancel", None, Some(&owner), true)
+            .unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(10), unlock)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        let blocked = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(None, None)
+            .unwrap()
+            .remove(0);
+        assert_eq!(blocked.state, ExecutionState::Blocked);
+        assert_eq!(
+            blocked.reason,
+            "The Vault unlock was declined; unlock the Vault and Resume"
+        );
+        std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
+    }
+
+    // The popup lives 60 s: an owner who never answers ends the waiting check Blocked with the
+    // reason and Resume, not with a timeout that has nothing to do with the check.
+    #[tokio::test]
+    async fn timed_out_vault_popup_blocks_the_waiting_completion_check_with_its_reason() {
+        use crate::durable_state::agent_lifecycle::ExecutionState;
+        let (runtime, session, _agent, vault, unlock, _check) =
+            vault_wait_fixture("vault-timeout").await;
+        let card = vault_popup(&runtime, &session).await;
+        runtime
+            .timeout_runtime_interaction(&session, &card)
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(10), unlock)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        let task = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(None, None)
+            .unwrap()
+            .remove(0);
+        assert_eq!(task.state, ExecutionState::Blocked);
+        assert_eq!(
+            task.reason,
+            "The Vault unlock timed out; unlock the Vault and Resume"
+        );
+        std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
     }
 
     #[tokio::test]

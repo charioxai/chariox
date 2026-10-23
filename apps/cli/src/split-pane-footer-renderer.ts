@@ -35,6 +35,7 @@ type SplitPaneFooterSlotState = {
   taskParts: SplitPaneFooterTaskGroup
   badgeTexts: TextRenderable[]
   goalText?: TextRenderable
+  badgeBox?: BoxRenderable
 }
 
 type SplitPaneFooterTaskGroup = {
@@ -192,6 +193,7 @@ function ensureFooterRenderables(
   state.parts = nextParts
   state.taskParts = nextTaskParts
   state.badgeTexts = nextBadgeTexts
+  state.badgeBox = badgeBox
 }
 
 function clearFooter(
@@ -256,7 +258,14 @@ function renderFooter(
     state.goalText.content = goalStatus?.label ?? ""
     state.goalText.fg = goalStatus?.tone === "error" ? theme.error : theme.textMuted
   }
-  renderStatusBadgeTexts(state.badgeTexts, badge.label.startsWith("GOAL ") ? badge.label.split(":")[0]! : badge.label, badge.tone, options)
+  // The goal row above carries the detail; the badge keeps only its phase.
+  const badgeLabel = badge.label.startsWith("GOAL ") ? badge.label.split(":")[0]! : badge.label
+  while (state.badgeBox && state.badgeTexts.length < badgeLabel.length) {
+    const text = new TextRenderable(options.renderer, { wrapMode: "none" })
+    state.badgeBox.add(text)
+    state.badgeTexts.push(text)
+  }
+  renderStatusBadgeTexts(state.badgeTexts, badgeLabel, badge.tone, options)
   const run = agent ? providerRunForPromptSelection(options.providerRun, agent) : null
   const activeRun = run
     ? {

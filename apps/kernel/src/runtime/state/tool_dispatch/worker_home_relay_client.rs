@@ -45,8 +45,9 @@ impl KernelRuntimeState {
             )
             .await;
         }
-        crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+        crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
             config,
+            &self.owned.relay_state,
             target,
             request,
             response_timeout,

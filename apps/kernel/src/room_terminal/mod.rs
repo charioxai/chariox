@@ -37,6 +37,6 @@ pub(crate) fn refused_for_test(message: &str) -> crate::error::DaemonError {
     service::refused(message.to_string())
 }
 
-pub use events::{CompletionEvents, EventCoreNotWired, WatchOwner};
+pub use events::{CompletionEvents, WatchOwner};
 pub use service::{OpenRoomTerminal, RoomTerminalService, MAX_WAIT};
 pub use types::*;

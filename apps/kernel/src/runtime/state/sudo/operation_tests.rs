@@ -54,6 +54,119 @@ async fn sudo_operations_projected_worker_uses_home_task() {
 }
 
 #[tokio::test]
+async fn sudo_operations_forwarded_worker_permissions_use_projected_home_task() {
+    let f = fixture();
+    let mut turn = running(&f);
+    let binding = crate::agent::RemoteAgentBinding {
+        worker_kernel_id: "worker-kernel".into(),
+        worker_machine_id: "worker-machine".into(),
+        execution_lease_id: "worker-lease".into(),
+        leased_agent_id: "leased-agent".into(),
+        active_worker_provider_run_id: Some("worker-run".into()),
+        relay_url: None,
+        relay_token: None,
+        relay_peer_protocol_version: Some(
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        ),
+    };
+    f.app
+        .lock()
+        .await
+        .agents_mut()
+        .bind_remote_execution(&turn.agent_id, binding.clone())
+        .unwrap();
+    turn.placement = Some(binding.execution_lease_id.clone());
+    f.state
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .insert(turn.entry_id.clone(), turn.clone());
+    let context = crate::transport::relay_peer::RemoteNativeInteractionContext {
+        home_session_id: turn.session_id.clone(),
+        home_agent_id: turn.agent_id.clone(),
+        leased_agent_id: binding.leased_agent_id.clone(),
+        worker_provider_run_id: "worker-run".into(),
+        home_prompt_id: turn.prompt_id.clone(),
+    };
+    let make = |id: &str, origin: NativeInteractionOrigin| {
+        RuntimeInteraction::new(
+            id,
+            &binding.leased_agent_id,
+            RuntimeInteractionKind::Permission,
+            RuntimeInteractionLevel::Warning,
+            Some("Execute authorized task operation".into()),
+            "permission-only gate",
+            vec![
+                RuntimeInteractionChoice::new("allow_once", "Allow once", "allow", None),
+                RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
+            ],
+            None,
+            Some(300),
+            Some("deny".into()),
+        )
+        .with_native_origin(Some(origin))
+    };
+    for interaction in [
+        make(
+            "watched-process-forwarded",
+            NativeInteractionOrigin::Prompt {
+                provider_run_id: "worker-run".into(),
+                prompt_id: "worker-prompt".into(),
+            },
+        ),
+        make(
+            "claude-permission-forwarded",
+            NativeInteractionOrigin::Prompt {
+                provider_run_id: "worker-run".into(),
+                prompt_id: "worker-prompt".into(),
+            },
+        ),
+        make(
+            "claude-workspace-trust-forwarded",
+            NativeInteractionOrigin::ProviderStartup {
+                provider_run_id: "worker-run".into(),
+            },
+        ),
+    ] {
+        let id = interaction.id().to_string();
+        let answer = tokio::time::timeout(
+            Duration::from_millis(500),
+            crate::runtime::native_interaction_bridge::forward_relay_native_interaction(
+                &f.state,
+                context.clone(),
+                interaction,
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("{id}: forwarded permission asked again"))
+        .unwrap();
+        assert_eq!(answer.choice_id.as_deref(), Some("allow_once"), "{id}");
+    }
+    let mut stale = context.clone();
+    stale.home_prompt_id = Some("other-home-prompt".into());
+    let refused = tokio::time::timeout(
+        Duration::from_millis(500),
+        crate::runtime::native_interaction_bridge::forward_relay_native_interaction(
+            &f.state,
+            stale,
+            make(
+                "watched-process-forwarded-stale",
+                NativeInteractionOrigin::Prompt {
+                    provider_run_id: "worker-run".into(),
+                    prompt_id: "worker-prompt".into(),
+                },
+            ),
+        ),
+    )
+    .await;
+    assert!(
+        !matches!(&refused, Ok(Ok(answer)) if answer.choice_id.as_deref() == Some("allow_once")),
+        "another home prompt must not reuse the task consent: {refused:?}"
+    );
+}
+
+#[tokio::test]
 async fn sudo_operations_native_permissions_reuse_task_consent() {
     let f = fixture();
     let turn = running(&f);
@@ -156,6 +269,7 @@ async fn sudo_operations_host_workspace_parameters_reuse_task_consent() {
         .is_err());
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn sudo_operations_required_watched_command_runs() {
     use crate::durable_state::agent_lifecycle::{Operation, Outcome};
@@ -306,6 +420,7 @@ async fn sudo_operations_workspace_extension_reuses_task_consent() {
     assert!(result.is_none());
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn sudo_operations_claude_watched_command_reuses_task_consent() {
     use crate::durable_state::agent_lifecycle::{Operation, Outcome};
@@ -390,7 +505,7 @@ async fn sudo_operations_never_authorize_new_origin_or_arbitrary_approval() {
     ] {
         assert!(f
             .state
-            .sudo_native_permission_resolution(&turn.session_id, &interaction)
+            .sudo_native_permission_resolution(&turn.session_id, &interaction, None)
             .is_none());
     }
     let interaction = make(
@@ -407,7 +522,7 @@ async fn sudo_operations_never_authorize_new_origin_or_arbitrary_approval() {
         .remove(&turn.entry_id);
     assert!(f
         .state
-        .sudo_native_permission_resolution(&turn.session_id, &interaction)
+        .sudo_native_permission_resolution(&turn.session_id, &interaction, None)
         .is_none());
 }
 
@@ -458,4 +573,42 @@ async fn sudo_operations_new_extension_source_and_no_sudo_write_still_ask() {
     )
     .await;
     assert!(result.is_err(), "no sudo write must ask");
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tokio::test]
+async fn sudo_operations_watched_command_refused_without_linux_process_groups() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let f = fixture_with_options(None, true);
+    let turn = running(&f);
+    let Outcome::Task(task) = f
+        .state
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: turn.owner_user_id.clone(),
+            room: turn.session_id.clone(),
+            agent: turn.agent_id.clone(),
+            prompt: turn.prompt_id.clone().unwrap(),
+            run: Some(f.run.id().into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+    else {
+        panic!("task missing")
+    };
+    let result = tokio::time::timeout(Duration::from_secs(5), f.router.dispatch_authenticated_runtime_tool_call(
+        "sudo-fixture-bearer", "chariox.events.process", serde_json::json!({"task_id":task.task_id, "origin_prompt_id":turn.prompt_id, "label":"covered watched command", "argv":["/bin/echo","sudo-watched-done"], "match_text":"sudo-watched-done"})
+    )).await.expect("watched command refusal timed out");
+    let message = match result {
+        Ok(result) => {
+            assert!(!result.ok, "{result:?}");
+            format!("{result:?}")
+        }
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        message.contains("Linux process-group ownership"),
+        "{message}"
+    );
 }

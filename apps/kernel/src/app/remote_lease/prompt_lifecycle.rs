@@ -130,6 +130,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 phase: WorkerPromptReceiptPhase::Dispatching,
             },
             caller,
+            backing_prompt_id: None,
         };
         self.app.worker_prompt_receipts.persist(record)?;
         Ok(None)
@@ -841,6 +842,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
             PromptSubmissionOutcome::Started { prompt }
             | PromptSubmissionOutcome::Queued { prompt } => prompt,
         };
+        if let Some(mut receipt) = home_prompt_id.as_deref().and_then(|home| {
+            self.app
+                .worker_prompt_receipts
+                .get(&leased_agent.id, home)
+                .cloned()
+        }) {
+            receipt.backing_prompt_id = Some(accepted_prompt.id().to_string());
+            receipt.receipt.worker_provider_run_id = Some(provider_run_id.clone());
+            self.app.worker_prompt_receipts.persist(receipt)?;
+        }
         let backing_active = self.app.prompt_owner_active_prompt_for_agent(
             &leased_agent.backing_session_id,
             &leased_agent.backing_agent_id,

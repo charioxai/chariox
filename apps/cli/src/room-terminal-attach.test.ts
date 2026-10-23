@@ -179,6 +179,61 @@ test("a lost connection keeps the screen and resumes from the same offset withou
   await done
 })
 
+test("Ctrl-] detaches while the first requests keep failing and restores the outer terminal", async () => {
+  const kernel = new FakeTerminalKernel()
+  const io = new FakeTerminalIo()
+  kernel.failNext = 1_000_000
+  const done = attach(kernel, io)
+  await until(() => io.written.some(chunk => chunk.includes("reconnecting")), "the attach is still connecting")
+  io.type(Buffer.from([TERMINAL_DETACH_BYTE]))
+  const end = await Promise.race([done, new Promise<string>(resolve => setTimeout(() => resolve("stuck"), 3000))])
+  assert.deepEqual(end, { reason: "detached" }, "Ctrl-] ends an attach that never connected")
+  assert.deepEqual(io.rawModes, [true, false])
+  assert.ok(io.paused)
+  assert.ok(io.text.endsWith("\x1b[?1049l") || io.text.includes("\x1b[?1049l"), "the outer alternate screen is left")
+  assert.equal(kernel.typed.length, 0, "nothing typed before the screen is in sync reaches the terminal")
+})
+
+test("Ctrl-] restores the outer terminal while an input request is unanswered and drops the keys queued behind it", async () => {
+  const kernel = new FakeTerminalKernel()
+  const io = new FakeTerminalIo()
+  const done = attach(kernel, io)
+  await until(() => io.text.includes("PROMPT$ "), "the redrawn screen")
+  kernel.stallInput = true
+  io.type("a")
+  await until(() => kernel.stalled.length === 1, "the first key is in flight and unanswered")
+  io.type("b")
+  io.type(Buffer.from([TERMINAL_DETACH_BYTE]))
+  const end = await Promise.race([done, new Promise<string>(resolve => setTimeout(() => resolve("stuck"), 3000))])
+  assert.deepEqual(end, { reason: "detached" }, "a stalled input request does not hold the detach")
+  assert.deepEqual(io.rawModes, [true, false])
+  assert.ok(io.paused)
+  assert.ok(io.text.includes("\x1b[?1049l"), "the outer alternate screen is left")
+  kernel.stallInput = false
+  await new Promise(resolve => setTimeout(resolve, 50))
+  assert.equal(kernel.stalled.length, 1, "the key queued behind the stalled one is never sent after the detach")
+  assert.equal(kernel.typed.length, 0)
+})
+
+test("a snapshot still in flight when Ctrl-] detaches draws nothing on the restored outer terminal", async () => {
+  const kernel = new FakeTerminalKernel()
+  const io = new FakeTerminalIo()
+  const done = attach(kernel, io)
+  await until(() => io.text.includes("PROMPT$ "), "the redrawn screen")
+  kernel.holdSnapshots = true
+  kernel.retainedFrom = 1_000_000
+  kernel.screen = "LATE$ "
+  kernel.emit("later")
+  await until(() => kernel.requests.filter(request => request.operation === "snapshot").length === 2, "the resync snapshot is in flight")
+  io.type(Buffer.from([TERMINAL_DETACH_BYTE]))
+  assert.deepEqual(await done, { reason: "detached" })
+  const written = io.written.length
+  kernel.releaseSnapshots()
+  await new Promise(resolve => setTimeout(resolve, 50))
+  assert.equal(io.written.length, written, "nothing is written after the detach")
+  assert.ok(!io.text.includes("LATE$ "))
+})
+
 test("output the kernel no longer retains triggers a fresh redraw instead of a hole", async () => {
   const kernel = new FakeTerminalKernel()
   const io = new FakeTerminalIo()

@@ -192,6 +192,23 @@ test("command center controller executes selected commands and clears prompt", (
   assert.equal(harness.controller.open(), false)
 })
 
+test("typed Browser access commands are not replaced by kernel access matches", () => {
+  for (const prompt of ["/access list", "/access tabs", "/access revoke agent-1", "/access revoke all"]) {
+    for (const entry of ["keyboard", "submit"] as const) {
+      const harness = createHarness(prompt)
+      harness.controller.sync()
+      if (prompt === "/access list") {
+        assert.ok(harness.controller.items().length > 0, "exercise a real fuzzy catalog match")
+      }
+      assert.equal(entry === "keyboard"
+        ? harness.controller.handleKey({ name: "return" })
+        : harness.controller.selectFromSubmit(), false, `${entry}: ${prompt}`)
+      assert.equal(harness.promptText, prompt)
+      assert.deepEqual(harness.executed, [])
+    }
+  }
+})
+
 test("command center controller lets exact leaf commands submit normally", () => {
   const harness = createHarness("/exit")
   harness.controller.sync()

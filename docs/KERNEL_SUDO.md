@@ -8,7 +8,7 @@ passkey. The critical-approval remember window never satisfies sudo. Never type
 a passkey into an agent transcript, provider prompt or shell command.
 
 The window starts at that fresh verification and covers only the work the
-owner authorized. With `CHARIOX_ROOM_AGENT_TOOLS=1` this is the prompt's durable
+owner authorized. This is the prompt's durable
 task: the agent keeps `chariox_kernel_request` across its yields, waits and
 kernel-correlated continuations (delegate, workflow or watcher results, owner
 resume, corrections, the expiry re-evaluation). Without durable tasks the

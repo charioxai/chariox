@@ -486,7 +486,9 @@ async fn request_runtime_interaction_with_timeout(
     operation: &'static str,
     forwarding: Option<&RemoteNativeInteractionContext>,
 ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
-    if let Some(resolution) = state.sudo_native_permission_resolution(session_id, &interaction) {
+    if let Some(resolution) =
+        state.sudo_native_permission_resolution(session_id, &interaction, forwarding)
+    {
         return Ok(resolution);
     }
     // MP-08 / MP-10 / MP-11: parallel provider tools retain the one-decision
