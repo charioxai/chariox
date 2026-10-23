@@ -762,6 +762,16 @@ impl KernelRuntimeState {
                             return Ok(submission);
                         }
                     } else {
+                        // Folder trust may need the person's answer, which a launch
+                        // under the app mutex cannot wait for.
+                        let cold_claude = self
+                            .with_app_side_effect(|app| {
+                                app.cold_claude_launch_for_agent(&session_id, &target_agent_id)
+                            })
+                            .await?;
+                        if let Some(request) = cold_claude {
+                            self.admit_claude_workspace_trust(&request).await?;
+                        }
                         self.with_app_side_effect(|app| {
                             // The app mutex can outlive the grant. Reauthorize only
                             // after acquiring it, before launching a cold provider.

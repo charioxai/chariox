@@ -84,19 +84,36 @@ fn records_workspace_trust(request: &LaunchProviderRequest) -> bool {
             || request.provider == CLAUDE_HEADLESS_PROVIDER_ID)
 }
 
-pub(crate) fn untrusted_claude_workspace(
+impl UntrustedClaudeWorkspace {
+    /// Trusting the folder switches its hooks on, so outside yolo the person
+    /// approves that first.
+    pub(crate) fn awaits_hook_approval(&self, request: &LaunchProviderRequest) -> bool {
+        !self.hooks.is_empty() && !request.permission_level.is_none_or(|level| level.is_yolo())
+    }
+}
+
+fn untrusted_workspace_unlocked(
     request: &LaunchProviderRequest,
 ) -> Result<Option<UntrustedClaudeWorkspace>, DaemonError> {
-    if request.adapter_key != "claude" || !records_workspace_trust(request) {
+    if !records_workspace_trust(request) {
         return Ok(None);
     }
-    let _guard = crate::env_lock::lock();
     Ok(
         local_state::untrusted_workspace(request)?.map(|path| UntrustedClaudeWorkspace {
             hooks: project_hooks::project_hooks(&path),
             path,
         }),
     )
+}
+
+pub(crate) fn untrusted_claude_workspace(
+    request: &LaunchProviderRequest,
+) -> Result<Option<UntrustedClaudeWorkspace>, DaemonError> {
+    if request.adapter_key != "claude" {
+        return Ok(None);
+    }
+    let _guard = crate::env_lock::lock();
+    untrusted_workspace_unlocked(request)
 }
 
 /// Records the folder trust of a launch; the folder when it was newly trusted.
@@ -170,7 +187,11 @@ fn plan_claude_launch_unlocked(
             "executable": executable.display().to_string(),
         }),
     );
-    if records_workspace_trust(request) {
+    // A folder whose hooks still await approval stays untrusted here, so a
+    // launch that skipped the approval card cannot switch those hooks on.
+    let awaiting_approval = untrusted_workspace_unlocked(request)?
+        .is_some_and(|folder| folder.awaits_hook_approval(request));
+    if records_workspace_trust(request) && !awaiting_approval {
         local_state::prepare_workspace_trust(request)?;
     }
     if !request.client_interface.is_chariox() && request.provider != CLAUDE_HEADLESS_PROVIDER_ID {
@@ -509,6 +530,58 @@ mod tests {
             permissions.set_mode(0o755);
             fs::set_permissions(path, permissions).expect("fixture should be executable");
         }
+    }
+
+    #[test]
+    fn claude_launch_leaves_a_hooks_folder_untrusted_until_approved_outside_yolo() {
+        crate::test_support::isolated_env_test!();
+        let _guard = env_guard();
+        let root =
+            std::env::temp_dir().join(format!("chariox-claude-hooks-trust-{}", std::process::id()));
+        let selected = root.join("selected");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(workspace.join(".claude")).unwrap();
+        fs::create_dir_all(&selected).unwrap();
+        fs::write(
+            workspace.join(".claude/settings.json"),
+            br#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"./done.sh"}]}]}}"#,
+        )
+        .unwrap();
+        let executable = root.join("claude");
+        write_executable_fixture(&executable, "#!/bin/sh\nexit 0\n");
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &executable);
+        let state_path = selected.join(".claude.json");
+        let trusted = || {
+            fs::read(&state_path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .is_some_and(|state| {
+                    state["projects"][workspace.canonicalize().unwrap().to_str().unwrap()]
+                        ["hasTrustDialogAccepted"]
+                        == true
+                })
+        };
+        let launch = |level| {
+            let request = LaunchProviderRequest::new(
+                "session",
+                "claude",
+                "claude-headless",
+                "selected",
+                "default",
+            )
+            .with_working_directory(workspace.clone())
+            .with_permission_level(level)
+            .with_provider_account_env(std::collections::BTreeMap::from([(
+                "CLAUDE_CONFIG_DIR".into(),
+                selected.display().to_string(),
+            )]));
+            plan_claude_launch(Some(&request)).unwrap();
+        };
+        launch(crate::provider::AgentPermissionLevel::Required);
+        assert!(!trusted(), "ask mode must not trust hooks it has not shown");
+        launch(crate::provider::AgentPermissionLevel::Yolo);
+        assert!(trusted(), "yolo trusts the folder");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

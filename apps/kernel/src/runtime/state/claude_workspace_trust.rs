@@ -21,10 +21,7 @@ impl KernelRuntimeState {
         let Some(folder) = crate::provider::untrusted_claude_workspace(request)? else {
             return Ok(());
         };
-        let yolo = request
-            .permission_level
-            .is_some_and(|level| level.is_yolo());
-        if !yolo && !folder.hooks.is_empty() {
+        if folder.awaits_hook_approval(request) {
             self.confirm_claude_project_hooks(request, &folder).await?;
         }
         if let Some(trusted) = crate::provider::trust_claude_workspace(request)? {

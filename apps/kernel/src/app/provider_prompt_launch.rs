@@ -54,6 +54,90 @@ impl DaemonApp {
         Ok((selected.profile_id == launched.profile_id).then_some(run))
     }
 
+    /// The launch a cold prompt starts, before account, Project and turn state.
+    fn prompt_launch_request(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &crate::agent::AgentInstance,
+    ) -> LaunchProviderRequest {
+        let provider = crate::provider::provider_id_for_launch(agent.provider());
+        let adapter_key = crate::provider::adapter_key_for_provider(provider);
+        let effective_config =
+            crate::session::effective_agent_execution_config(session, Some(agent));
+        let mut request = LaunchProviderRequest::new(
+            session.id(),
+            adapter_key,
+            provider,
+            agent.provider_account_profile(),
+            agent.model().unwrap_or("default"),
+        )
+        .with_agent_id(agent.id().to_string())
+        .with_variant(agent.effort().map(str::to_string))
+        .with_execution_mode(effective_config.mode)
+        .with_permission_level(effective_config.permission_level)
+        .with_workspace_live_sync_mode(
+            crate::provider::provider_workspace_live_sync_mode_for_session(
+                provider,
+                &self.config,
+                Some(session),
+            ),
+        );
+        if let Some(worktree_id) = agent.worktree_id() {
+            request = request.with_working_directory(PathBuf::from(worktree_id));
+        }
+        request
+    }
+
+    /// The launch a Claude agent without a live process is about to start, with
+    /// its account environment, so folder trust can be decided before the
+    /// synchronous launch. `None` when the next prompt reuses a live process.
+    pub(crate) fn cold_claude_launch_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<LaunchProviderRequest>, DaemonError> {
+        let (agent, _) = self.agent_launch_profile(self.agents.get_agent(agent_id)?);
+        if agent.remote_execution().is_some()
+            || crate::provider::canonical_provider_family(agent.provider()) != Some("claude")
+            || self
+                .providers
+                .get_run_for_agent(session_id, agent_id)
+                .is_some_and(|run| {
+                    matches!(
+                        run.state(),
+                        ProviderRunState::Running
+                            | ProviderRunState::Starting
+                            | ProviderRunState::Parked
+                    )
+                })
+        {
+            return Ok(None);
+        }
+        let session = self.sessions.get_session(session_id)?;
+        let directory = agent.worktree_id().unwrap_or_else(|| session.worktree_id());
+        let request = self
+            .prompt_launch_request(&session, &agent)
+            .with_working_directory(PathBuf::from(directory));
+        // The launch resolves the account again and reports its refusal, such
+        // as a profile that is not signed in; trust waits until that is settled.
+        let account_env = self
+            .provider_account_authority_owner_for_agent(&agent)
+            .and_then(|owner| {
+                let profile = self.provider_account_profiles.get(
+                    &owner,
+                    request.provider.as_str(),
+                    &request.account_profile,
+                )?;
+                self.provider_account_profiles.resolve_environment(
+                    &owner,
+                    request.provider.as_str(),
+                    &profile.profile_id,
+                )
+            })
+            .ok();
+        Ok(account_env.map(|env| request.with_provider_account_env(env)))
+    }
+
     pub(crate) fn ensure_prompt_provider_run_for_agent(
         &mut self,
         session_id: &str,
@@ -81,33 +165,10 @@ impl DaemonApp {
                 ),
             });
         }
-        let provider = crate::provider::provider_id_for_launch(agent.provider());
-        let adapter_key = crate::provider::adapter_key_for_provider(provider);
         let session = self.sessions.get_session(session_id)?;
-        let effective_config =
-            crate::session::effective_agent_execution_config(&session, Some(&agent));
-        let mut request = LaunchProviderRequest::new(
-            session_id,
-            adapter_key,
-            provider,
-            agent.provider_account_profile(),
-            agent.model().unwrap_or("default"),
-        )
-        .with_agent_id(agent.id().to_string())
-        .with_variant(agent.effort().map(str::to_string))
-        .with_execution_mode(effective_config.mode)
-        .with_permission_level(effective_config.permission_level);
-        request = request.with_workspace_live_sync_mode(
-            crate::provider::provider_workspace_live_sync_mode_for_session(
-                provider,
-                &self.config,
-                Some(&session),
-            ),
-        );
-        if let Some(worktree_id) = agent.worktree_id() {
-            request = request.with_working_directory(PathBuf::from(worktree_id));
-        }
-        request = request.with_turn_substitute(turn_substitute);
+        let mut request = self
+            .prompt_launch_request(&session, &agent)
+            .with_turn_substitute(turn_substitute);
         // MP-08 / MP-10 / MP-11: Re-resolve before reusing a process, including ordinary turns.
         let directory = agent.worktree_id().unwrap_or_else(|| session.worktree_id());
         request = request.with_working_directory(PathBuf::from(directory));
@@ -172,6 +233,54 @@ mod tests {
     use crate::config::{DaemonConfig, WorkspaceLiveSyncMode};
     use crate::provider::ProviderWriteAccessMode;
     use crate::session::CreateSessionRequest;
+
+    #[test]
+    fn cold_claude_launch_is_offered_for_trust_only_before_a_live_process_exists() {
+        let workspace = crate::test_support::TestWorktree::new("cold-claude-trust");
+        let mut app =
+            crate::test_support::bootstrap_authenticated_app(DaemonConfig::for_tests()).unwrap();
+        let (session, _) = KernelSessionService::new(&mut app)
+            .create_session(workspace.session_request())
+            .unwrap();
+        let profile = app
+            .provider_account_profile_registry()
+            .create_managed(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "claude",
+                "Trust test",
+            )
+            .unwrap();
+        crate::test_support::authenticate_provider_account(
+            &app.provider_account_profile_registry(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap();
+        let claude = KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "claude")
+                    .with_model("haiku")
+                    .with_account_profile(&profile.profile_id),
+            )
+            .unwrap();
+        let stub = KernelSessionService::new(&mut app)
+            .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub"))
+            .unwrap();
+        let request = app
+            .cold_claude_launch_for_agent(session.id(), claude.id())
+            .unwrap()
+            .expect("a Claude agent without a process is a cold launch");
+        assert_eq!(request.adapter_key, "claude");
+        assert!(request
+            .provider_account_env
+            .contains_key("CLAUDE_CONFIG_DIR"));
+        assert_eq!(request.working_directory.as_deref(), Some(workspace.path()));
+        assert!(app
+            .cold_claude_launch_for_agent(session.id(), stub.id())
+            .unwrap()
+            .is_none());
+    }
 
     #[test]
     fn mp08_mp10_mp11_ordinary_turn_reuses_unchanged_environment_and_relaunches_changed_values() {
