@@ -237,6 +237,22 @@ test("command center controller bypasses session alias submit selection", () => 
   assert.equal(harness.promptText, "/session docs")
 })
 
+test("MP-08 MP-10 MP-11 Skills arguments reach Skills without selecting Extensions", () => {
+  for (const command of ["/skills from", "/skills from codex", "/skills install folder skills/example", "/extension grants mcp agent-1"]) {
+    const harness = createHarness(command)
+    harness.controller.sync()
+    const enter = handledKey("enter")
+    if (harness.controller.handleKey(enter.event)) {
+      assert.deepEqual(harness.executed.map(value => value.trim()), [command], command)
+    } else {
+      assert.equal(enter.prevented, false, command)
+      assert.equal(harness.controller.selectFromSubmit(), false, command)
+      assert.deepEqual(harness.executed, [], command)
+      assert.equal(harness.promptText, command)
+    }
+  }
+})
+
 test("command center controller submits typed arguments instead of the command they extend", () => {
   // The palette lists "/tool run " because its description mentions the typed
   // words; Enter must not run it without the arguments.

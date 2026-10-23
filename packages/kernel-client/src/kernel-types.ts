@@ -1,4 +1,4 @@
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 567
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 571
 
 export type * from "./kernel-types-apps.js"
 
@@ -22,3 +22,5 @@ export type * from "./kernel-types-kernel-browser.js"
 export { userDomainWindowBadge } from "./kernel-types-kernel-browser.js"
 
 export * from "./notes.js"
+
+export type * from "./kernel-types-skills-v2.js"

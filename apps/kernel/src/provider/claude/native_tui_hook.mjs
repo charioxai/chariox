@@ -93,7 +93,7 @@ if (!contextOnlyHook) {
   }) + "\n")
 }
 
-function utf8ContextChunk(value, chunkIndex, maximumBytes = 6000) {
+function utf8ContextChunks(value, maximumBytes = 6000) {
   const chunks = []
   let chunk = ""
   let chunkBytes = 0
@@ -108,7 +108,24 @@ function utf8ContextChunk(value, chunkIndex, maximumBytes = 6000) {
     chunkBytes += scalarBytes
   }
   if (chunk) chunks.push(chunk)
-  return chunks[chunkIndex] ?? ""
+  return chunks
+}
+
+// Claude appends each hook's additionalContext in the order the hooks finish.
+// Peer hooks finish first, released in index order, and the primary (index 0)
+// finishes last: peer i carries chunk i - 1 and the primary the final chunk.
+function hookContextChunk(context, hookIndex) {
+  const chunks = utf8ContextChunks(context)
+  if (hookIndex === 0) return chunks.at(-1) ?? ""
+  return hookIndex < chunks.length ? chunks[hookIndex - 1] : ""
+}
+
+async function processGone(pid, deadline) {
+  if (!Number.isInteger(pid) || pid <= 1) return
+  while (Date.now() < deadline) {
+    try { process.kill(pid, 0) } catch (error) { if (error.code === "ESRCH") return }
+    await sleep(5)
+  }
 }
 
 async function freshContext() {
@@ -120,8 +137,16 @@ async function freshContext() {
   const responseDir = process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES
   if (!hookContextRequestId || !responseDir) throw new Error("missing context response route")
   const responseFile = join(responseDir, `${hookContextRequestId}.txt`)
+  const failureFile = join(responseDir, `${hookContextRequestId}.error`)
   const deadline = hookContextDeadlineMs
   while (Date.now() < deadline) {
+    if (existsSync(failureFile)) {
+      const failure = JSON.parse(readFileSync(failureFile, "utf8"))
+      unlinkSync(failureFile)
+      const error = new Error(failure.message)
+      error.retryNative = failure.retry_native === true
+      throw error
+    }
     if (existsSync(responseFile)) {
       const context = readFileSync(responseFile, "utf8")
       unlinkSync(responseFile)
@@ -138,7 +163,7 @@ async function freshContext() {
 let contextChunkDeliverySocket
 
 async function currentContextChunk() {
-  if (contextChunkIndex === null) return utf8ContextChunk(await freshContext(), 0)
+  if (contextChunkIndex === null) return utf8ContextChunks(await freshContext())[0] ?? ""
   const contextDirectory = dirname(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT)
   const invocation = createHash("sha256").update(raw).digest("hex").slice(0, 24)
   process.chdir(contextDirectory)
@@ -152,14 +177,21 @@ async function currentContextChunk() {
           let response = ""
           socket.setTimeout(Math.max(1, deadline - Date.now()), () => socket.destroy(new Error("context chunk timed out")))
           socket.on("error", reject)
-          socket.on("connect", () => socket.write(JSON.stringify({ index: contextChunkIndex }) + "\n"))
+          socket.on("connect", () => socket.write(JSON.stringify({ index: contextChunkIndex, pid: process.pid }) + "\n"))
           socket.on("data", data => {
             response += data
             if (response.length > 12_000) { socket.destroy(new Error("invalid context chunk")); return }
             if (!response.endsWith("\n")) return
             try {
               const packet = JSON.parse(response)
-              if (!packet.accepted || typeof packet.context !== "string") throw new Error("context was not accepted")
+              if (!packet.accepted) {
+                const error = new Error(packet.message || "context was not accepted")
+                error.contextRejected = true
+                error.retryNative = packet.retryNative === true
+                socket.end("delivered\n", () => reject(error))
+                return
+              }
+              if (typeof packet.context !== "string") throw new Error("invalid context response")
               contextChunkDeliverySocket = socket
               socket.removeAllListeners("data")
               resolve(packet.context)
@@ -167,7 +199,10 @@ async function currentContextChunk() {
           })
           socket.on("end", () => reject(new Error("context chunk closed before delivery")))
         })
-      } catch { await sleep(25) }
+      } catch (error) {
+        if (error.contextRejected) throw error
+        await sleep(25)
+      }
     }
     throw new Error("current context chunk unavailable")
   }
@@ -187,6 +222,8 @@ async function currentContextChunk() {
   let delivered = 0
   const deliveredIndexes = new Set()
   const peers = new Set()
+  // Peers holding a non-empty chunk wait for their release, in index order.
+  const held = new Map()
   const server = createServer(socket => {
     peers.add(socket)
     socket.on("close", () => peers.delete(socket))
@@ -199,25 +236,39 @@ async function currentContextChunk() {
       if (!request.endsWith("\n")) return
       socket.removeAllListeners("data")
       let index
-      try { index = JSON.parse(request).index } catch { socket.destroy(); return }
-      if (!Number.isInteger(index) || index < 1 || index > 7 || deliveredIndexes.has(index)) { socket.destroy(); return }
+      let pid
+      try { ({ index, pid } = JSON.parse(request)) } catch { socket.destroy(); return }
+      if (!Number.isInteger(index) || index < 1 || index > 7 || deliveredIndexes.has(index)
+        || !Number.isInteger(pid) || pid <= 1) { socket.destroy(); return }
       deliveredIndexes.add(index)
       while (context === undefined && !contextError && Date.now() < deadline) await sleep(10)
+      const chunk = hookContextChunk(context ?? "", index)
       let acknowledgement = ""
       socket.on("data", data => {
         acknowledgement += data
-        if (acknowledgement === "delivered\n") { delivered += 1; socket.end() }
-        else if (acknowledgement.length > 16) socket.destroy()
+        if (acknowledgement === "delivered\n") {
+          delivered += 1
+          if (chunk) held.set(index, { socket, pid })
+          else socket.end()
+        } else if (acknowledgement.length > 16) socket.destroy()
       })
-      socket.write(JSON.stringify({ accepted: context !== undefined && !contextError, context: utf8ContextChunk(context ?? "", index) }) + "\n")
+      socket.write(JSON.stringify({ accepted: context !== undefined && !contextError, context: chunk,
+        message: contextError?.message, retryNative: contextError?.retryNative === true }) + "\n")
     })
   })
   try {
     await new Promise((resolve, reject) => { server.once("error", reject); server.listen(socketPath, resolve) })
     try { context = await freshContext() } catch (error) { contextError = error }
     while (delivered < 7 && Date.now() < deadline) await sleep(10)
-    if (contextError || context === undefined || delivered !== 7) throw new Error("current context was not delivered to every hook")
-    return utf8ContextChunk(context, 0)
+    if (contextError) throw contextError
+    if (context === undefined || delivered !== 7) throw new Error("current context was not delivered to every hook")
+    for (const index of [...held.keys()].sort((left, right) => left - right)) {
+      const peer = held.get(index)
+      peer.socket.end()
+      await processGone(peer.pid, deadline)
+      await sleep(20)
+    }
+    return hookContextChunk(context, 0)
   } finally {
     for (const peer of peers) peer.destroy()
     await new Promise(resolve => server.close(resolve))
@@ -233,7 +284,10 @@ if (eventName === "UserPromptSubmit") {
       error => error ? reject(error) : resolve(),
     ))
     if (contextChunkDeliverySocket) {
-      await new Promise((resolve, reject) => contextChunkDeliverySocket.end("delivered\n", error => error ? reject(error) : resolve()))
+      const socket = contextChunkDeliverySocket
+      const released = new Promise(resolve => { socket.once("end", resolve); socket.once("close", resolve) })
+      await new Promise((resolve, reject) => socket.write("delivered\n", error => error ? reject(error) : resolve()))
+      await released
     }
     if (!contextOnlyHook && process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS === "1") {
       appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify({
@@ -243,9 +297,19 @@ if (eventName === "UserPromptSubmit") {
       }) + "\n")
     }
     process.exit(0)
-  } catch {
+  } catch (error) {
+    if (contextOnlyHook && error.contextRejected && error.retryNative) process.exit(0)
+    if (error.retryNative && contextFailureEvent) {
+      await new Promise((resolve, reject) => process.stdout.write(JSON.stringify({
+        decision: "block", reason: "Running the selected native skill.",
+        hookSpecificOutput: { hookEventName: "UserPromptSubmit", suppressOriginalPrompt: true },
+      }), error => error ? reject(error) : resolve()))
+      contextFailureEvent.hook_event_name = "CharioxNativeSkillRedirected"
+      reportContextFailure()
+      process.exit(0)
+    }
     reportContextFailure()
-    process.stderr.write("Chariox could not prepare current prompt context. Retry after the kernel is ready.\n")
+    process.stderr.write((error.message || "Chariox could not prepare current prompt context. Retry after the kernel is ready.") + "\n")
     process.exit(2)
   }
 } else if (eventName === "PreToolUse" || eventName === "PermissionRequest") {

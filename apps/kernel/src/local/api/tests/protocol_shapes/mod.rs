@@ -107,4 +107,5 @@ mod screenshot;
 mod relay_transport;
 mod ssh_machine;
 
+mod skills_v2;
 mod waiting_room_workspace;

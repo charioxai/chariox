@@ -145,9 +145,20 @@ pub fn compile_workflow_code_source_with_parameters_and_schema_import_root(
         }
 
         let compiler_output = serde_json::from_str::<WorkflowCodeCompilerOutput>(stdout.trim())
-            .map_err(|error| crate::DaemonError::LocalTransport {
-                operation: "workflow_code.compile",
-                message: format!("failed to parse Node workflow-code compiler output: {error}"),
+            .map_err(|error| {
+                let error = error.to_string();
+                // Skills v2 removed the skill grant; a script written before that still names one.
+                let next_step = if error.contains("unknown variant `skill`") {
+                    ": delete the old entry and republish the script without the skill"
+                } else {
+                    ""
+                };
+                crate::DaemonError::LocalTransport {
+                    operation: "workflow_code.compile",
+                    message: format!(
+                        "failed to parse Node workflow-code compiler output: {error}{next_step}"
+                    ),
+                }
             })?;
         if !compiler_output.schema_requests.is_empty() {
             if round == MAX_SCHEMA_RESOLUTION_ROUNDS {

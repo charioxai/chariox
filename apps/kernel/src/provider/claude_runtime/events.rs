@@ -297,6 +297,8 @@ fn apply_result_message(
     if let Some(mut usage) = value.get("usage").and_then(usage_from_value) {
         // The result sums API calls. Preserve billing, replace only context.
         usage.context_tokens = state.last_context_tokens;
+        state.context_window = model_context_window(value).or(state.context_window);
+        usage.context_window = state.context_window;
         batch.resolved_usage_tokens_total = usage.total_tokens;
         batch.resolved_usage = Some(usage);
     }
@@ -538,8 +540,20 @@ fn apply_message_usage(
     }
     // Output-only streaming deltas must not erase the input context.
     usage.context_tokens = state.last_context_tokens;
+    usage.context_window = state.context_window;
     batch.resolved_usage_tokens_total = usage.total_tokens;
     batch.resolved_usage = Some(usage);
+}
+
+/// Claude reports each model's real window in the result's `modelUsage`.
+fn model_context_window(result: &Value) -> Option<u64> {
+    result
+        .get("modelUsage")?
+        .as_object()?
+        .values()
+        .filter_map(|model| u64_field(model, "contextWindow"))
+        .filter(|window| *window > 0)
+        .min()
 }
 
 fn usage_from_value(value: &Value) -> Option<ProviderRunTokenUsage> {

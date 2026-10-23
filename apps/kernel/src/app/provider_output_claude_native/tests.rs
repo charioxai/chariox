@@ -2,6 +2,7 @@ mod account_usage;
 mod context_failure;
 mod native_permission_race;
 mod prepared_context;
+mod typed_leased_skill;
 
 use super::transcript::ClaudeTranscriptCursor;
 use super::*;
@@ -3645,7 +3646,6 @@ fn assert_recreated_replay_fits_worker(provider: &str) {
     let rebuilt = ProviderOutputClaudeNativeBridge::new(&mut app)
         .managed_base_context(
             session.id(),
-            agent.id(),
             context_file.to_str().unwrap(),
             &run,
             &ClaudeNativePromptInjection {
@@ -3735,4 +3735,593 @@ fn notes_reach_claude_hidden_context_once_and_fit_the_bridge_limit() {
     assert_eq!(context.matches(&"q".repeat(12_000)).count(), 1);
     assert!(!context.contains("Attachment 1"));
     assert!(context.len() < 48_000, "{}", context.len());
+}
+
+// MP-08 / MP-10 / MP-11: native PTY dispatch must use the same validated
+// skill bridge as structured runs, including rejection before any PTY write.
+#[test]
+fn claude_native_injection_uses_shared_skill_admission_before_pty_write() {
+    struct RejectSkill;
+    impl crate::provider::skill_delivery::SkillPromptBridge for RejectSkill {
+        fn acknowledge_hook_context(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<(), DaemonError> {
+            Ok(())
+        }
+        fn acknowledge_prompt(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<(), DaemonError> {
+            Ok(())
+        }
+        fn acknowledge_tools(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &ProviderPromptSignalBatch,
+        ) -> Result<(), DaemonError> {
+            Ok(())
+        }
+        fn acknowledge_typed_leased(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+            _: &str,
+            _: &[crate::provider::skill_delivery::TypedSkillLoad],
+        ) -> Result<(), DaemonError> {
+            Ok(())
+        }
+        fn prepare(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            envelope: &crate::prompt_assembly::PromptEnvelope,
+        ) -> Result<Option<crate::provider::skill_delivery::ProviderSkillDelivery>, DaemonError>
+        {
+            assert_eq!(envelope.visible_user_prompt, "$review inspect source");
+            Err(DaemonError::LocalTransport {
+                operation: "native-skill-admission-regression",
+                message: "native inventory changed".into(),
+            })
+        }
+    }
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    app.providers
+        .set_skill_prompt_bridge(std::sync::Arc::new(RejectSkill));
+    let root = crate::test_support::TestWorktree::new("native-skill-admission");
+    let context = root.path().join("hidden-context");
+    fs::write(&context, "").unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        "session-1",
+        "claude",
+        "profile",
+        "claude-haiku-5-5",
+        "low",
+    )
+    .with_agent_id("agent-1")
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let run = RuntimeProviderRun::new(
+        "run-1",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: vec![],
+            pty_env: Default::default(),
+            pty_env_remove: vec![],
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    let error = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .inject_prompt(
+            "session-1",
+            run.id(),
+            "agent-1",
+            context.to_str().unwrap(),
+            &run,
+            &ClaudeNativePromptInjection {
+                id: "prompt-1",
+                origin_prompt_id: "prompt-1",
+                prompt: "$review inspect source",
+                hidden_system_context: "",
+                attachments: &[],
+                context_handoff: &|_| String::new(),
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            DaemonError::LocalTransport {
+                operation: "native-skill-admission-regression",
+                ..
+            }
+        ),
+        "shared admission must reject before PTY access: {error}"
+    );
+    assert_eq!(fs::read_to_string(context).unwrap(), "");
+}
+
+// MP-08 / MP-10 / MP-11: PTY recovery must keep retransmitting the prepared
+// native invocation, not the typed `$name` prompt.
+fn claude_native_skill_retry_capture(recent: &str) -> String {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-native-skill-retry-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    let capture_file = root.join("pty-input.log");
+    fs::write(&context_file, "").unwrap();
+    fs::write(&events_file, "").unwrap();
+    fs::write(root.join("permission-recent.txt"), recent).unwrap();
+    let mut run = startup_readiness_run(
+        "session-1",
+        "agent-1",
+        "provider-run-skill-retry",
+        &context_file,
+        &events_file,
+        format!(
+            "stty raw -echo; exec tee {} >/dev/null",
+            capture_file.display()
+        ),
+    );
+    run.mark_running();
+    app.pty.spawn_for_run(&run).unwrap();
+    app.providers_mut().insert_run_for_test(run.clone());
+    let context_file = context_file.display().to_string();
+    write_claude_native_marker(&context_file, "injected:prompt-1");
+    write_claude_headless_submit_retry(&context_file, "prompt-1", 0, 0, "/review inspect source");
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .inject_prompt(
+            "session-1",
+            run.id(),
+            "agent-1",
+            &context_file,
+            &run,
+            &ClaudeNativePromptInjection {
+                id: "prompt-1",
+                origin_prompt_id: "prompt-1",
+                prompt: "$review inspect source",
+                hidden_system_context: "",
+                attachments: &[],
+                context_handoff: &|_| String::new(),
+            },
+        )
+        .unwrap();
+    let mut captured = String::new();
+    for _ in 0..100 {
+        captured = fs::read_to_string(&capture_file).unwrap_or_default();
+        if !captured.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    app.pty.remove_process(run.id()).unwrap();
+    let _ = fs::remove_dir_all(root);
+    captured
+}
+
+#[test]
+fn claude_native_skill_retry_retypes_the_prepared_invocation() {
+    let captured = claude_native_skill_retry_capture("Claude Code ❯ ⏵⏵ mode (shift+tab to cycle)");
+    assert!(captured.contains("/review inspect source"), "{captured:?}");
+    assert!(!captured.contains("$review"), "{captured:?}");
+}
+
+#[test]
+fn claude_native_skill_retry_recognizes_the_prepared_invocation_in_the_composer() {
+    let captured = claude_native_skill_retry_capture(
+        "❯ ⏵⏵ mode (shift+tab to cycle)\n❯ /review inspect source",
+    );
+    // Only Enter is sent; the PTY may translate it to a newline.
+    assert!(
+        !captured.is_empty() && captured.trim().is_empty(),
+        "{captured:?}"
+    );
+}
+
+mod skill_hook_fakes {
+    use super::*;
+    pub(super) static HOOK_RECEIPTS: std::sync::Mutex<Vec<String>> =
+        std::sync::Mutex::new(Vec::new());
+    /// A typed worker load handed to the bridge.
+    #[derive(Clone, Debug, PartialEq)]
+    pub(super) struct TypedReceipt {
+        pub(super) provider_run_id: String,
+        pub(super) prompt_id: String,
+        pub(super) skill_id: String,
+        pub(super) digest: String,
+        pub(super) home_prompt_id: Option<String>,
+    }
+    pub(super) static TYPED_RECEIPTS: std::sync::Mutex<Vec<TypedReceipt>> =
+        std::sync::Mutex::new(Vec::new());
+    pub(super) struct DeliverSkill;
+    impl crate::provider::skill_delivery::SkillPromptBridge for DeliverSkill {
+        fn acknowledge_hook_context(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &str,
+            _: &str,
+            prompt_id: &str,
+        ) -> Result<(), DaemonError> {
+            HOOK_RECEIPTS.lock().unwrap().push(prompt_id.to_string());
+            Ok(())
+        }
+        fn acknowledge_prompt(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<(), DaemonError> {
+            Ok(())
+        }
+        fn acknowledge_tools(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &ProviderPromptSignalBatch,
+        ) -> Result<(), DaemonError> {
+            Ok(())
+        }
+        fn acknowledge_typed_leased(
+            &self,
+            run: &RuntimeProviderRun,
+            context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+            prompt_id: &str,
+            skills: &[crate::provider::skill_delivery::TypedSkillLoad],
+        ) -> Result<(), DaemonError> {
+            TYPED_RECEIPTS
+                .lock()
+                .unwrap()
+                .extend(skills.iter().map(|skill| TypedReceipt {
+                    provider_run_id: run.id().to_string(),
+                    prompt_id: prompt_id.to_string(),
+                    skill_id: match skill {
+                        crate::provider::skill_delivery::TypedSkillLoad::Chariox {
+                            skill_id,
+                            ..
+                        } => skill_id.clone(),
+                        crate::provider::skill_delivery::TypedSkillLoad::Native { entry } => {
+                            match &entry.selection {
+                                crate::skill::v2::SkillSelection::Native { entry_id, .. } => {
+                                    entry_id.clone()
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                    },
+                    digest: match skill {
+                        crate::provider::skill_delivery::TypedSkillLoad::Chariox {
+                            digest, ..
+                        } => digest.clone(),
+                        crate::provider::skill_delivery::TypedSkillLoad::Native { entry } => {
+                            entry.digest.clone().unwrap()
+                        }
+                    },
+                    home_prompt_id: context.home_prompt_id.clone(),
+                }));
+            Ok(())
+        }
+        fn prepare_typed_leased(
+            &self,
+            _run: &RuntimeProviderRun,
+            authority: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+            prompt: &crate::session::PromptQueueItem,
+            lease_id: &str,
+            names: Option<&crate::skill::leased_names::LeasedSkillNames>,
+        ) -> Result<crate::provider::skill_delivery::ProviderSkillDelivery, DaemonError> {
+            use crate::provider::skill_delivery::{ProviderSkillDelivery, TypedSkillLoad};
+            let sync = crate::transport::relay_peer::RemoteSkillSyncContext {
+                home_kernel_id: authority.home_kernel_id.clone(),
+                home_session_id: authority.home_session_id.clone(),
+                home_agent_id: authority.home_agent_id.clone(),
+                leased_agent_id: authority.leased_agent_id.clone(),
+            };
+            let home = crate::config::DaemonConfig::default_user_config_path()
+                .parent()
+                .unwrap()
+                .to_path_buf();
+            let mut hidden_context = String::new();
+            let mut loads = Vec::new();
+            if let Some(names) = names {
+                for skill in names.resolve(prompt.prompt()) {
+                    let cached = crate::skill::transfer::read_cached_skill(
+                        &home,
+                        &sync,
+                        lease_id,
+                        &skill.skill_id,
+                        &skill.digest,
+                    )?;
+                    hidden_context.push_str(&format!(
+                        "\nSkill {} ({}) at {}:\n{}\n",
+                        skill.name,
+                        skill.digest,
+                        cached.root.display(),
+                        cached.body
+                    ));
+                    loads.push(TypedSkillLoad::Chariox {
+                        skill_id: skill.skill_id.clone(),
+                        digest: skill.digest.clone(),
+                        reason: crate::skill::v2::SkillLoadReason::Explicit,
+                    });
+                }
+            }
+            Ok(ProviderSkillDelivery {
+                visible_prompt: prompt.prompt().into(),
+                hidden_context,
+                codex_input: vec![],
+                requires_native_load_ack: vec![],
+                typed_leased_loads: loads,
+                leased_names: None,
+            })
+        }
+        fn prepare(
+            &self,
+            _: &RuntimeProviderRun,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &crate::prompt_assembly::PromptEnvelope,
+        ) -> Result<Option<crate::provider::skill_delivery::ProviderSkillDelivery>, DaemonError>
+        {
+            Ok(Some(
+                crate::provider::skill_delivery::ProviderSkillDelivery {
+                    visible_prompt: "[Chariox skill review] inspect source".into(),
+                    hidden_context: "SKILL-BODY-MARKER-77".into(),
+                    codex_input: Vec::new(),
+                    requires_native_load_ack: Vec::new(),
+                    typed_leased_loads: Vec::new(),
+                    leased_names: None,
+                },
+            ))
+        }
+    }
+    pub(super) struct PassthroughPolicy;
+    impl NativePromptHandoffPolicy for PassthroughPolicy {
+        fn prepare_context(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: bool,
+            base: String,
+        ) -> Result<String, DaemonError> {
+            Ok(base)
+        }
+        fn protect_inputs(
+            &self,
+            _: &str,
+            prompt: String,
+            hidden: String,
+            attachments: Vec<PromptAttachment>,
+        ) -> Result<(String, String, Vec<PromptAttachment>), DaemonError> {
+            Ok((prompt, hidden, attachments))
+        }
+        fn rejected(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+            Ok(None)
+        }
+        fn accepted(&self, _: &str, _: &str, _: &str) -> Result<(), DaemonError> {
+            Ok(())
+        }
+    }
+}
+
+// MP-08 / MP-10 / MP-11: with delivery receipts the hook rebuilds its context from
+// the staged managed inputs; the selected skill body must survive that rebuild.
+#[test]
+fn claude_native_receipt_hook_context_keeps_the_selected_skill_body() {
+    use skill_hook_fakes::{DeliverSkill, PassthroughPolicy};
+    let worktree = crate::test_support::TestWorktree::new("claude-receipt-skill-body");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    app.providers
+        .set_skill_prompt_bridge(std::sync::Arc::new(DeliverSkill));
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "skill-body-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-receipt-skill-body-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    fs::write(&context_file, "").unwrap();
+    fs::write(&events_file, "").unwrap();
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "skill-body-claude-run",
+        &context_file,
+        &events_file,
+        "cat >/dev/null".to_string(),
+    );
+    run.mark_running();
+    let mut ready_run = serde_json::to_value(&run).unwrap();
+    ready_run["started_at_ms"] = serde_json::json!(unix_epoch_ms().saturating_sub(5_000));
+    ready_run["pty_env"]["CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS"] = serde_json::json!("1");
+    run = serde_json::from_value(ready_run).unwrap();
+    app.pty.spawn_for_run(&run).unwrap();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .unwrap();
+    let prompt = match app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "$review inspect source",
+            Vec::new(),
+        )
+        .unwrap()
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        other => panic!("unexpected prompt: {other:?}"),
+    };
+    let context_path = context_file.display().to_string();
+    let policy = PassthroughPolicy;
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .with_prompt_handoff(&policy)
+        .inject_prompt(
+            session.id(),
+            run.id(),
+            agent.id(),
+            &context_path,
+            &run,
+            &ClaudeNativePromptInjection {
+                id: prompt.id(),
+                origin_prompt_id: prompt.id(),
+                prompt: "$review inspect source",
+                hidden_system_context: "",
+                attachments: &[],
+                context_handoff: &|_| String::new(),
+            },
+        )
+        .unwrap();
+    write_claude_native_marker(&context_path, &format!("injected:{}", prompt.id()));
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "[Chariox skill review] inspect source",
+            "hook_context_request_id": "skill-body-request",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .with_prompt_handoff(&policy)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    let delivered =
+        fs::read_to_string(root.join("hook-context-responses/skill-body-request.txt")).unwrap();
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "CharioxContextDelivered",
+            "hook_context_request_id": "skill-body-request",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .with_prompt_handoff(&policy)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    let receipts = skill_hook_fakes::HOOK_RECEIPTS.lock().unwrap().clone();
+    app.pty.remove_process(run.id()).unwrap();
+    let _ = fs::remove_dir_all(root);
+    assert!(
+        delivered.contains("SKILL-BODY-MARKER-77"),
+        "the hook response dropped the selected skill body: {delivered:?}"
+    );
+    assert!(
+        receipts.contains(&prompt.id().to_string()),
+        "the hook delivery receipt never reached the skill bridge: {receipts:?}"
+    );
+}
+
+// MP-08 / MP-10 / MP-11: a `$name` typed into the native Claude composer reaches
+// the kernel only as the hook's prompt; its resolved skill rides the hook context.
+#[test]
+fn claude_native_typed_skill_reaches_the_hook_context() {
+    use skill_hook_fakes::{DeliverSkill, PassthroughPolicy};
+    let worktree = crate::test_support::TestWorktree::new("claude-typed-skill");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    app.providers
+        .set_skill_prompt_bridge(std::sync::Arc::new(DeliverSkill));
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let _attached_client = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "typed-skill-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-typed-skill-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    fs::write(&context_file, "").unwrap();
+    fs::write(&events_file, "").unwrap();
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "typed-skill-claude-run",
+        &context_file,
+        &events_file,
+        "cat >/dev/null".to_string(),
+    );
+    run.mark_running();
+    let mut ready_run = serde_json::to_value(&run).unwrap();
+    ready_run["started_at_ms"] = serde_json::json!(unix_epoch_ms().saturating_sub(5_000));
+    ready_run["pty_env"]["CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS"] = serde_json::json!("1");
+    run = serde_json::from_value(ready_run).unwrap();
+    app.pty.spawn_for_run(&run).unwrap();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .unwrap();
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "$review inspect source",
+            "hook_context_request_id": "typed-skill-request",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let policy = PassthroughPolicy;
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .with_prompt_handoff(&policy)
+        .process(session.id(), run.id(), &run, None)
+        .unwrap();
+    let delivered =
+        fs::read_to_string(root.join("hook-context-responses/typed-skill-request.txt")).unwrap();
+    app.pty.remove_process(run.id()).unwrap();
+    let _ = fs::remove_dir_all(root);
+    assert!(
+        delivered.contains("SKILL-BODY-MARKER-77"),
+        "the typed skill never reached the hook context: {delivered:?}"
+    );
 }

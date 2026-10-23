@@ -2695,7 +2695,6 @@ fn actual_worker_output_then_completion(
                 prompt_summary: "remote prompt".to_string(),
             }),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("worker prompt should submit");
@@ -2867,7 +2866,6 @@ fn worker_after_login_recovery(
                 prompt_summary: "remote prompt".to_string(),
             }),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("worker prompt should submit");

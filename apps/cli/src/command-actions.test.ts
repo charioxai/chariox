@@ -90,13 +90,12 @@ test("formatAgentListSummary renders aliases and pluralization", () => {
   )
 })
 
-test("formatAgentCapabilityGrants renders MCP and skill grants", () => {
+test("formatAgentCapabilityGrants renders MCP grants", () => {
   const agent = makeAgent({
     alias: "qa",
     extension_grants: [
       { kind: "mcp", name: "browser" },
       { kind: "mcp", name: "github" },
-      { kind: "skill", name: "browser-qa" },
     ],
   })
 
@@ -105,12 +104,8 @@ test("formatAgentCapabilityGrants renders MCP and skill grants", () => {
     "agent-1 (qa) MCP grants:\n- browser (worker-local)\n- github (worker-local)",
   )
   assert.equal(
-    formatAgentCapabilityGrants(agent, "skill"),
-    "agent-1 (qa) skill grants:\n- browser-qa (worker-local)",
-  )
-  assert.equal(
-    formatAgentCapabilityGrants(makeAgent(), "skill"),
-    "agent-1 has no skill grants.",
+    formatAgentCapabilityGrants(makeAgent(), "mcp"),
+    "agent-1 has no MCP grants.",
   )
   assert.equal(
     formatAgentCapabilityGrants(makeAgent({
@@ -338,10 +333,14 @@ test("MP-08 / MP-10 / MP-11 /env project shows saved decisions and Adjust opens 
       requests.push(request)
       return {ProjectEnvironmentManifest: {manifest: {schema_version: 1, project_id: "project-1", evidence_digest: "a".repeat(64), entries: [], private_files: [{workspace_id: "web", path: "notes.md", bring: true, reason: "Project notes"}], toolchain_hints: [], package_hints: [], service_hints: []}}} as T
     },
+    sendSkillsRequest: async ({SkillsV2: request}: {SkillsV2: {action: string}}) => request.action === "loads"
+      ? {kind: "loads", records: []}
+      : {kind: "catalog", revision: 3, skills: [], packages: [], native: [], metadata_budget_percent: 1},
     appendNotice: (message: string) => notices.push(message),
   }))
   await handlers.handleEnvCommand({kind: "env", raw: "/env project", args: ["project"]})
   assert.match(notices[0]!, /Bring notes.md — Project notes/)
+  assert.match(notices[1]!, /Skills · catalog revision 3[\s\S]*Project:\n {2}no skills installed/)
   await handlers.handleEnvCommand({kind: "env", raw: "/env project adjust", args: ["project", "adjust"]})
   assert.deepEqual(requests, [{GetProjectEnvironmentManifest: {projectId: "project-1", agentId: "agent-1"}}, {AdjustProjectEnvironment: {sessionId: "session-1", agentId: "agent-1"}}])
 })

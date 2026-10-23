@@ -428,7 +428,7 @@ fn workflow_code_artifact_history(
     history
 }
 
-fn write_stored_artifact(
+pub(super) fn write_stored_artifact(
     path: &Path,
     artifact: &StoredWorkflowCodeArtifact,
 ) -> Result<(), crate::DaemonError> {
@@ -438,5 +438,6 @@ fn write_stored_artifact(
             message: format!("failed to serialize workflow-code artifact: {error}"),
         }
     })?;
-    fs::write(path, format!("{payload}\n")).map_err(io_error("workflow_code.write"))
+    crate::config::write_private_file(path, format!("{payload}\n").as_bytes())
+        .map_err(io_error("workflow_code.write"))
 }

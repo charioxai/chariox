@@ -6,6 +6,7 @@ struct RoomManifestFixture {
     runtime: KernelRuntimeState,
     session_id: String,
     agent_id: String,
+    attachment_id: String,
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
     priority_rx: mpsc::Receiver<RelayEnvelope>,
     worker_private_key: String,
@@ -21,13 +22,15 @@ async fn room_manifest_fixture() -> RoomManifestFixture {
     let worker_config = crate::config::DaemonConfig::for_tests();
     let worker_private_key = worker_config.relay_private_key.clone();
     let (app, runtime, session_id, agent_id) = agent_config_runtime_with_config(home_config).await;
-    crate::app::KernelSessionService::new(&mut *app.lock().await)
+    let attachment_id = crate::app::KernelSessionService::new(&mut *app.lock().await)
         .attach(crate::attachment::AttachRequest::new(
             &session_id,
             "room-manifest-client",
             crate::attachment::ClientCapabilityLevel::FullTerminal,
         ))
-        .expect("fixture session should have an attachment");
+        .expect("fixture session should have an attachment")
+        .id()
+        .to_string();
     app.lock()
         .await
         .agents_mut()
@@ -58,6 +61,7 @@ async fn room_manifest_fixture() -> RoomManifestFixture {
     }
 
     RoomManifestFixture {
+        attachment_id,
         runtime,
         session_id,
         agent_id,
@@ -1199,15 +1203,55 @@ async fn paused_prompt_dispatch_and_provider_launch_serialize_with_room_bind_and
             .room_browser_available
     );
 
+    // The dispatch belongs to the agent's real active turn, as every product dispatch does.
+    let submission = fixture
+        .runtime
+        .owned
+        .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+            session_id: fixture.session_id.clone(),
+            prompt: crate::session::PromptQueueItem::new(
+                "room-manifest-dispatch-prompt",
+                &fixture.attachment_id,
+                &fixture.agent_id,
+                "dispatch prompt",
+                crate::session::PromptStatus::Queued,
+            ),
+            force_queue: false,
+            refresh_projection: true,
+        })
+        .unwrap()
+        .unwrap();
+    fixture
+        .runtime
+        .owned
+        .settle_remote_dispatch_if_current(
+            &submission.remote_dispatch.unwrap(),
+            Some("provider-run-current"),
+        )
+        .unwrap();
+    let dispatch_session = fixture
+        .runtime
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let dispatch_prompt_id = fixture
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&dispatch_session, &fixture.agent_id)
+        .unwrap()
+        .id()
+        .to_string();
     let prompt_dispatch = crate::app::KernelRemotePromptDispatch {
         session_id: fixture.session_id.clone(),
         agent_id: fixture.agent_id.clone(),
-        prompt_id: "room-manifest-dispatch-prompt".to_string(),
+        prompt_id: dispatch_prompt_id,
         worker_kernel_id: "worker-1".to_string(),
         leased_agent_id: "leased-agent-1".to_string(),
         relay_url: None,
         relay_token: None,
-        source_attachment_id: "room-manifest-dispatch-attachment".to_string(),
+        source_attachment_id: fixture.attachment_id.clone(),
         prompt: "dispatch prompt".to_string(),
         hidden_system_context: String::new(),
         attachments: Vec::new(),

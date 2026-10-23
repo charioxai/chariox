@@ -238,13 +238,15 @@ impl AgentPromptCommandService {
         self.state.session_task_lane_busy(session_id)
     }
 
-    pub(crate) fn enqueue_metaagent_task(
+    // MP-08 / MP-10 / MP-11: carry admitted user selections through ordinary Meta queueing.
+    pub(crate) fn enqueue_metaagent_task_with_skills(
         &self,
         session_id: &str,
         metaagent_id: &str,
         source_attachment_id: &str,
         task_markdown: &str,
         attachments: Vec<crate::session::PromptAttachment>,
+        skill_intent: crate::session::SkillIntent,
     ) -> Result<
         (
             crate::session::QueuedMetaagentTask,
@@ -252,12 +254,13 @@ impl AgentPromptCommandService {
         ),
         DaemonError,
     > {
-        self.state.enqueue_metaagent_task(
+        self.state.enqueue_metaagent_task_with_skills(
             session_id,
             metaagent_id,
             source_attachment_id,
             task_markdown,
             attachments,
+            skill_intent,
         )
     }
 

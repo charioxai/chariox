@@ -82,6 +82,66 @@ async fn review971c_relay_subscription_keeps_mixed_task_changes() {
     result.expect("MP-08 / MP-10 relay subscriber lost a mixed task update");
 }
 
+// A subscribed client with no activity learns of a catalog mutation from the
+// kernel; it must not have to poll or wait for the next heartbeat.
+#[tokio::test]
+async fn idle_relay_subscription_receives_skills_changed_after_catalog_mutation() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let session_id = create_test_session(&mut app, "workspace", "worktree");
+    let attachment_id = attach_test_client(
+        &mut app,
+        &session_id,
+        "idle-skills",
+        ClientCapabilityLevel::MessageTransport,
+    );
+    let app = Arc::new(Mutex::new(app));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(app.clone(), 4));
+    let (outgoing_tx, _priority_rx, mut event_rx) = RelayOutgoingSender::channel(64);
+    let private_key = relay_crypto::generate_private_key_base64();
+    let public_key = relay_crypto::public_key_from_private_key_base64(&private_key).unwrap();
+    let task = tokio::spawn(run_relay_subscription_loop(
+        router.clone(),
+        outgoing_tx,
+        "idle-skills-subscription".into(),
+        public_key,
+        session_id,
+        attachment_id,
+        None,
+        Arc::new(RelayEventRuntime::for_tests(64)),
+        false,
+        crate::transport::relay_client::subscriptions::RelaySubscriber {
+            user_id: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+            connection_class: crate::local::KernelConnectionClass::Terminal,
+            caller: crate::runtime::command::KernelCaller::for_relay_request(None),
+        },
+    ));
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        async fn next_skills_changed(rx: &mut mpsc::Receiver<RelayEnvelope>, key: &str) {
+            loop {
+                let (_, event) = decrypt_relay_event_from_channel(rx, key).await;
+                if event["event"] == "skills_changed" {
+                    return;
+                }
+            }
+        }
+        next_skills_changed(&mut event_rx, &private_key).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        while event_rx.try_recv().is_ok() {}
+        crate::test_support::install_skill_through_requests(&router, "idle-probe", 0).await;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            next_skills_changed(&mut event_rx, &private_key),
+        )
+        .await
+        .expect("an idle relay subscription must receive skills_changed within 2 s");
+    })
+    .await;
+    task.abort();
+    let _ = task.await;
+    router.runtime_state().shutdown_cleanup().await.unwrap();
+    result.expect("the idle relay subscription never reached the mutation drill");
+}
+
 struct RelayEventStoreTestRoot(std::path::PathBuf);
 
 impl RelayEventStoreTestRoot {
@@ -1116,10 +1176,17 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
         serde_json::json!(current_activity_revision)
     );
 
-    let current_heartbeat = tokio::time::timeout(
-        Duration::from_secs(5),
-        decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key),
-    )
+    // A subscription also announces the current Skills catalog; that is not the
+    // historical replay this test guards against, so only the heartbeat is awaited.
+    let current_heartbeat = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event =
+                decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key).await;
+            if event.1["event"] != serde_json::json!("skills_changed") {
+                return event;
+            }
+        }
+    })
     .await
     .expect("current post-restart heartbeat should follow the snapshot");
     assert_eq!(current_heartbeat.1["event"], serde_json::json!("heartbeat"));

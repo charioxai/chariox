@@ -547,14 +547,9 @@ impl KernelRuntimeOwnedState {
                 started_next.prompt(),
                 false,
             )?;
-            let granted_skill_context =
-                self.granted_skill_hidden_context(session_id, agent_id, &prompt_with_handoff)?;
-            let hidden_system_context = join_hidden_context(
-                &self.hidden_context_with_failed_requests(
-                    agent_id,
-                    started_next.hidden_system_context(),
-                ),
-                &granted_skill_context,
+            let hidden_system_context = self.hidden_context_with_failed_requests(
+                agent_id,
+                started_next.hidden_system_context(),
             );
             let (source_client_id, _source_user_id) = self.prompt_source_attribution(&started_next);
             let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
@@ -722,12 +717,3 @@ impl KernelRuntimeOwnedState {
 #[cfg(test)]
 #[path = "prompt_workspace_claim_conflict_tests.rs"]
 mod prompt_workspace_claim_conflict_tests;
-
-fn join_hidden_context(first: &str, second: &str) -> String {
-    match (first.trim(), second.trim()) {
-        ("", "") => String::new(),
-        (first, "") => first.to_string(),
-        ("", second) => second.to_string(),
-        (first, second) => format!("{first}\n\n{second}"),
-    }
-}

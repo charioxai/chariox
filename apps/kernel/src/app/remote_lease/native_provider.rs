@@ -29,7 +29,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         structured_endpoint: Option<String>,
         provider_session_id: Option<String>,
         required_mcps: Vec<RequiredRemoteMcp>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<LaunchProviderRequest, DaemonError> {
         let leased_agent = self
@@ -40,9 +39,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
-        if let Some(required_skills) = required_skills.as_deref() {
-            self.apply_required_remote_skills(&leased_agent, required_skills)?;
-        }
         self.ensure_required_remote_mcps_available(&leased_agent, &required_mcps)?;
         self.ensure_home_proxy_manifest_has_no_worker_collisions(
             &leased_agent,
@@ -62,6 +58,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .app
             .sessions
             .get_session(&leased_agent.backing_session_id)?;
+        let skill_cache_root = self.leased_skill_cache_root(leased_agent_id)?;
         let mut request = LaunchProviderRequest::new(
             leased_agent.backing_session_id.clone(),
             adapter_key,
@@ -70,6 +67,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             model,
         )
         .with_agent_id(leased_agent.backing_agent_id.clone())
+        .with_skill_cache_root(skill_cache_root)
         .with_owner_user_id(lease.owner_user_id)
         .with_working_directory(PathBuf::from(backing_session.worktree_id()))
         .with_client_interface(ProviderClientInterface::NativeTui)
@@ -125,7 +123,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         structured_endpoint: Option<String>,
         provider_session_id: Option<String>,
         required_mcps: Vec<RequiredRemoteMcp>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
         let request = self.prepare_leased_native_provider_launch(
@@ -138,7 +135,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             structured_endpoint,
             provider_session_id,
             required_mcps,
-            required_skills,
             remote_extension_manifest,
         )?;
         self.app.launch_leased_provider(request)
@@ -288,12 +284,27 @@ mod tests {
                 None,
                 None,
                 Vec::new(),
-                Some(Vec::new()),
                 crate::extension::RemoteExtensionManifest::default(),
             )
             .expect("native launch request should prepare");
 
         assert_eq!(request.account_profile, "materialized-profile");
+        // MP-08 / MP-10 / MP-11: the sandbox gets exactly this execution's cache.
+        let expected = crate::skill::transfer::execution_cache_root(
+            crate::config::DaemonConfig::default_user_config_path()
+                .parent()
+                .unwrap(),
+            &crate::transport::relay_peer::RemoteSkillSyncContext {
+                home_kernel_id: "home-kernel".into(),
+                home_session_id: "home-session".into(),
+                home_agent_id: "home-agent".into(),
+                leased_agent_id: leased_agent.id.clone(),
+            },
+            &lease.id,
+        )
+        .expect("execution cache root should resolve");
+        assert_eq!(request.skill_cache_roots, vec![expected.clone()]);
+        assert!(expected.is_dir());
         let _ = std::fs::remove_dir_all(&worktree);
     }
 
@@ -370,7 +381,6 @@ mod tests {
                     None,
                     None,
                     vec![required],
-                    Some(Vec::new()),
                     crate::extension::RemoteExtensionManifest::default(),
                 )
                 .expect("native run should launch");
@@ -487,7 +497,6 @@ mod tests {
                 None,
                 None,
                 Vec::new(),
-                Some(Vec::new()),
                 manifest.clone(),
             )
             .expect("native run should launch");
@@ -563,7 +572,6 @@ mod tests {
             None,
             None,
             vec![required],
-            Some(Vec::new()),
             crate::extension::RemoteExtensionManifest::default(),
         );
 

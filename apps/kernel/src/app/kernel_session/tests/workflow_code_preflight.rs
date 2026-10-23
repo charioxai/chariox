@@ -10,7 +10,10 @@ fn create_session_writes_durable_state_event() {
     let events = app
         .durable_state_store()
         .load_events_after(0)
-        .expect("durable state events should load");
+        .expect("durable state events should load")
+        .into_iter()
+        .filter(|event| event.kind != "skills.v2.home")
+        .collect::<Vec<_>>();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].kind, "session.created");
     assert_eq!(events[0].subject_id.as_deref(), Some(session.id()));
@@ -34,7 +37,10 @@ fn spawn_agent_and_end_session_write_durable_state_events() {
     let events = app
         .durable_state_store()
         .load_events_after(0)
-        .expect("durable state events should load");
+        .expect("durable state events should load")
+        .into_iter()
+        .filter(|event| event.kind != "skills.v2.home")
+        .collect::<Vec<_>>();
     assert_eq!(
         events
             .iter()
@@ -64,7 +70,10 @@ fn destroy_agent_writes_durable_state_event() {
     let events = app
         .durable_state_store()
         .load_events_after(0)
-        .expect("durable state events should load");
+        .expect("durable state events should load")
+        .into_iter()
+        .filter(|event| event.kind != "skills.v2.home")
+        .collect::<Vec<_>>();
     assert_eq!(
         events
             .iter()

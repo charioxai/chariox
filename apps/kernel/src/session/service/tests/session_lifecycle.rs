@@ -1817,8 +1817,9 @@ fn project_workspace_updates_validate_membership_and_preserve_order() {
 
     let empty = service
         .update_project_workspaces(session.project_id(), Vec::new(), DEFAULT_LOCAL_USER_ID)
-        .expect_err("empty Projects should be rejected");
-    assert!(empty.to_string().contains("between 1 and 32 Workspaces"));
+        .expect("MP-08 / MP-10 / MP-11: a named Project may have no folders");
+    assert!(empty.workspace_ids().is_empty());
+    assert_eq!(empty.workspace_id(), "");
 
     let too_many = service
         .update_project_workspaces(
@@ -1827,7 +1828,7 @@ fn project_workspace_updates_validate_membership_and_preserve_order() {
             DEFAULT_LOCAL_USER_ID,
         )
         .expect_err("oversized Projects should be rejected");
-    assert!(too_many.to_string().contains("between 1 and 32 Workspaces"));
+    assert!(too_many.to_string().contains("at most 32 Workspaces"));
 
     let reduced = service
         .update_project_workspaces(

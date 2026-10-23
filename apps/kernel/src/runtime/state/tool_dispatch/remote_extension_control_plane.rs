@@ -229,6 +229,12 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<Option<crate::transport::runtime_tools::RuntimeToolResult>, DaemonError> {
+        crate::transport::runtime_tools::validate_extension_tool_arguments(tool_name, &arguments)
+            .map_err(|_| DaemonError::LocalTransport {
+            operation: "forward extension arguments",
+            message: "invalid extension arguments; skills are instructions and have no grant path"
+                .into(),
+        })?;
         let workspace_context = self
             .workspace_live_sync_workspace_for_provider_run(provider_run)
             .await?;
@@ -250,8 +256,17 @@ impl KernelRuntimeState {
             )));
         }
         let mut forwarded_arguments = arguments.clone();
-        if crate::transport::runtime_tools::canonical_agent_messaging_tool_name(tool_name)
-            == Some(crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL)
+        let skill_tool = matches!(
+            crate::transport::runtime_tools::canonical_skill_tool_name(tool_name),
+            Some(
+                crate::transport::runtime_tools::LIST_SKILLS_TOOL
+                    | crate::transport::runtime_tools::LOAD_SKILL_TOOL
+                    | crate::transport::runtime_tools::MANAGE_SKILLS_TOOL
+            )
+        );
+        if skill_tool
+            || crate::transport::runtime_tools::canonical_agent_messaging_tool_name(tool_name)
+                == Some(crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL)
         {
             let worker_origin = arguments
                 .get("origin_prompt_id")
@@ -265,10 +280,10 @@ impl KernelRuntimeState {
                 None => false,
             };
             let Some(home_prompt_id) = remote_context.home_prompt_id.as_deref() else {
-                return Ok(Some(agent_message_origin_rejected()));
+                return Ok(Some(origin_rejected(skill_tool)));
             };
             if !origin_is_current {
-                return Ok(Some(agent_message_origin_rejected()));
+                return Ok(Some(origin_rejected(skill_tool)));
             }
             // The worker and home allocate different prompt IDs. Validate the
             // worker's turn before translating it to the leased home turn.
@@ -309,7 +324,6 @@ impl KernelRuntimeState {
                     .await?;
                 let RelayPeerResponse::CapabilityRuntimeToolHandled {
                     result,
-                    skill_package,
                     remote_extension_manifest,
                 } = response
                 else {
@@ -319,7 +333,7 @@ impl KernelRuntimeState {
                     });
                 };
                 if original_response.is_none() {
-                    original_response = Some((result, skill_package));
+                    original_response = Some(result);
                 }
                 #[cfg(test)]
                 self.pause_capability_response_before_apply();
@@ -356,14 +370,8 @@ impl KernelRuntimeState {
             }
             Ok::<_, DaemonError>(())
         }.await;
-        let (result, skill_package) =
+        let result =
             remote_extension_refresh_result::preserve_original_result(original_response, refresh)?;
-        let result = self.apply_remote_skill_package_response(
-            &workspace_context.root,
-            &remote_context.home_kernel_id,
-            result,
-            skill_package,
-        )?;
         Ok(Some(result))
     }
 
@@ -375,16 +383,23 @@ impl KernelRuntimeState {
     ) -> Result<
         (
             crate::transport::runtime_tools::RuntimeToolResult,
-            Option<crate::skill::CharioxSkillPackage>,
             crate::extension::RemoteExtensionManifest,
         ),
         DaemonError,
     > {
         self.with_app_side_effect(|_| {
-            self.authorize_forwarded_workspace_context(&context)?;
+            self.authorize_forwarded_capability_tool_context(&context, &tool_name)?;
             // Agent messages retain the exact home-turn origin contract.
-            if crate::transport::runtime_tools::canonical_agent_messaging_tool_name(&tool_name)
+            if (crate::transport::runtime_tools::canonical_agent_messaging_tool_name(&tool_name)
                 == Some(crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL)
+                || matches!(
+                    crate::transport::runtime_tools::canonical_skill_tool_name(&tool_name),
+                    Some(
+                        crate::transport::runtime_tools::LIST_SKILLS_TOOL
+                            | crate::transport::runtime_tools::LOAD_SKILL_TOOL
+                            | crate::transport::runtime_tools::MANAGE_SKILLS_TOOL
+                    )
+                ))
                 && context.home_prompt_id.is_none()
             {
                 return Err(DaemonError::LocalTransport {
@@ -395,25 +410,39 @@ impl KernelRuntimeState {
             Ok(())
         })
         .await?;
-        // A10: a leased sender acts with its lease-verified origin, as a local
-        // provider turn does.
-        let run = crate::provider::projected_leased_provider_run_id(
-            &context.leased_agent_id,
-            &context.worker_provider_run_id,
-        );
-        let (result, package) = self
-            .with_room_provider_origin(Some(&context.home_agent_id), Some(&run))
-            .dispatch_capability_runtime_tool_call_for_agent(
-                &context.home_session_id,
-                &context.home_agent_id,
-                &tool_name,
-                arguments,
-                true,
-            )
-            .await?;
+        // Internal provider delivery ACKs enter only through the authenticated
+        // worker forwarding path; they are never exposed as a model/client tool.
+        let result = if tool_name == super::super::skills_dispatch::LEASED_SKILL_DELIVERY_ACK {
+            self.with_app_side_effect(|_| {
+                super::super::skills_dispatch::acknowledge_leased_delivery(
+                    self, &context, arguments,
+                )
+            })
+            .await?
+        } else if tool_name == crate::skill::leased_composer::PREPARE_LEASED_SKILL_TURN {
+            self.with_app_side_effect(|_| {
+                super::super::skills_dispatch::prepare_composer_turn(self, &context, arguments)
+            })
+            .await?
+        } else {
+            // A10: a leased sender acts with its lease-verified origin, as a local
+            // provider turn does.
+            let run = crate::provider::projected_leased_provider_run_id(
+                &context.leased_agent_id,
+                &context.worker_provider_run_id,
+            );
+            self.with_room_provider_origin(Some(&context.home_agent_id), Some(&run))
+                .dispatch_capability_runtime_tool_call_for_agent(
+                    &context.home_session_id,
+                    &context.home_agent_id,
+                    &tool_name,
+                    arguments,
+                )
+                .await?
+        };
         let agent = self.owned.agent_store.get_agent(&context.home_agent_id)?;
         let manifest = self.remote_extension_manifest_for_agent(&agent)?;
-        Ok((result, package, manifest))
+        Ok((result, manifest))
     }
 
     pub(super) async fn dispatch_capability_runtime_tool_call(
@@ -435,13 +464,12 @@ impl KernelRuntimeState {
         let state = self
             .with_room_provider_origin(provider_run.agent_instance_id(), Some(provider_run.id()));
         state.authorize_current_external_command()?;
-        let (result, _) = state
+        let result = state
             .dispatch_capability_runtime_tool_call_for_agent(
                 &session_id,
                 &agent_id,
                 tool_name,
                 arguments,
-                false,
             )
             .await?;
         Ok(result)
@@ -453,82 +481,61 @@ impl KernelRuntimeState {
         agent_id: &str,
         tool_name: &str,
         arguments: serde_json::Value,
-        include_skill_package: bool,
-    ) -> Result<
-        (
-            crate::transport::runtime_tools::RuntimeToolResult,
-            Option<crate::skill::CharioxSkillPackage>,
-        ),
-        DaemonError,
-    > {
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         // MD-4: inactive registrations must not reserve their large futures for a read/message.
         match tool_name {
-            crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL => Ok((
-                self.handle_list_session_agents_runtime_tool(&session, &agent),
-                None,
-            )),
-            crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL => Ok((
-                self.handle_get_session_agent_runtime_tool(&session, &agent, arguments),
-                None,
-            )),
-            crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL => Ok((
+            crate::transport::runtime_tools::LIST_SKILLS_TOOL
+            | crate::transport::runtime_tools::LOAD_SKILL_TOOL
+            | crate::transport::runtime_tools::MANAGE_SKILLS_TOOL => {
+                Box::pin(self.handle_skill_runtime_tool(&session, &agent, tool_name, arguments))
+                    .await
+            }
+            crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL => {
+                Ok(self.handle_list_session_agents_runtime_tool(&session, &agent))
+            }
+            crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL => {
+                Ok(self.handle_get_session_agent_runtime_tool(&session, &agent, arguments))
+            }
+            crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL => {
                 Box::pin(self.handle_send_agent_message_runtime_tool(&session, &agent, arguments))
-                    .await?,
-                None,
-            )),
+                    .await
+            }
             crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL => {
                 self.handle_list_extensions_runtime_tool(&session, &agent, arguments)
             }
             crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL => {
-                Box::pin(self.handle_request_extension_runtime_tool(
-                    &session,
-                    &agent,
-                    session_id,
-                    arguments,
-                    include_skill_package,
-                ))
+                Box::pin(
+                    self.handle_request_extension_runtime_tool(
+                        &session, &agent, session_id, arguments,
+                    ),
+                )
                 .await
             }
-            crate::transport::runtime_tools::REGISTER_MCP_TOOL => Ok((
-                Box::pin(self.handle_register_mcp_runtime_tool(&session, &agent, arguments))
-                    .await?,
-                None,
-            )),
-            crate::transport::runtime_tools::REGISTER_SKILL_PATH_TOOL => Ok((
-                Box::pin(self.handle_register_skill_path_runtime_tool(&session, &agent, arguments))
-                    .await?,
-                None,
-            )),
-            crate::transport::runtime_tools::REGISTER_ENVIRONMENT_TOOL => Ok((
-                Box::pin(
-                    self.handle_register_environment_runtime_tool(&session, &agent, arguments),
-                )
-                .await?,
-                None,
-            )),
-            crate::transport::runtime_tools::REGISTER_SCRIPT_PATH_TOOL => Ok((
-                Box::pin(
-                    self.handle_register_script_path_runtime_tool(&session, &agent, arguments),
-                )
-                .await?,
-                None,
-            )),
-            crate::transport::runtime_tools::REGISTER_CONNECTOR_PATH_TOOL => Ok((
+            crate::transport::runtime_tools::REGISTER_MCP_TOOL => {
+                Box::pin(self.handle_register_mcp_runtime_tool(&session, &agent, arguments)).await
+            }
+            crate::transport::runtime_tools::REGISTER_ENVIRONMENT_TOOL => {
+                Box::pin(self.handle_register_environment_runtime_tool(&session, &agent, arguments))
+                    .await
+            }
+            crate::transport::runtime_tools::REGISTER_SCRIPT_PATH_TOOL => {
+                Box::pin(self.handle_register_script_path_runtime_tool(&session, &agent, arguments))
+                    .await
+            }
+            crate::transport::runtime_tools::REGISTER_CONNECTOR_PATH_TOOL => {
                 Box::pin(
                     self.handle_register_connector_path_runtime_tool(&session, &agent, arguments),
                 )
-                .await?,
-                None,
-            )),
-            crate::transport::runtime_tools::REGISTER_CONNECTOR_ADAPTER_PATH_TOOL => Ok((
+                .await
+            }
+            crate::transport::runtime_tools::REGISTER_CONNECTOR_ADAPTER_PATH_TOOL => {
                 Box::pin(self.handle_register_connector_adapter_path_runtime_tool(
                     &session, &agent, arguments,
                 ))
-                .await?,
-                None,
-            )),
+                .await
+            }
             _ => Err(DaemonError::LocalTransport {
                 operation: "dispatch_capability_runtime_tool_call",
                 message: format!("unknown capability runtime tool `{tool_name}`"),
@@ -537,11 +544,36 @@ impl KernelRuntimeState {
     }
 }
 
-fn agent_message_origin_rejected() -> crate::transport::runtime_tools::RuntimeToolResult {
+fn origin_rejected(skill_tool: bool) -> crate::transport::runtime_tools::RuntimeToolResult {
     crate::transport::runtime_tools::RuntimeToolResult {
         ok: false,
         payload: serde_json::json!({
-            "error": "agent message belongs to a different sender turn; message was not sent"
+            "error": if skill_tool {
+                "skill tool belongs to a different or finished turn; use the current prompt_id"
+            } else {
+                "agent message belongs to a different sender turn; message was not sent"
+            }
         }),
+    }
+}
+
+#[cfg(test)]
+mod origin_rejection_tests {
+    use super::origin_rejected;
+
+    // MP-08 / MP-10 / MP-11: a stale origin on a leased skill tool must not be
+    // reported as a rejected agent message, or the agent cannot recover.
+    #[test]
+    fn leased_skill_tool_origin_rejection_names_the_current_prompt() {
+        let skill = origin_rejected(true).payload["error"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(skill.contains("skill tool") && skill.contains("current prompt_id"));
+        let message = origin_rejected(false).payload["error"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(message.contains("agent message"));
     }
 }

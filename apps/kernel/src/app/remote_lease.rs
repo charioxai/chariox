@@ -1409,6 +1409,7 @@ mod tests {
     mod catalog_admission;
     mod profile_admission;
     mod project_environment_setup;
+    mod skill_names;
 
     #[test]
     fn leased_profile_update_rejects_missing_account_without_retiring_provider() {

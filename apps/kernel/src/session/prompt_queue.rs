@@ -174,6 +174,20 @@ pub(crate) struct DurablePromptPrivateState {
     pub(crate) owner_request: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) hidden_system_context: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) skill_selections: Vec<crate::skill::v2::SkillSelection>,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::transport::relay_peer::LeasedNativeSkills::is_unbound"
+    )]
+    pub(crate) leased_native_skills: crate::transport::relay_peer::LeasedNativeSkills,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) leased_skill_context:
+        Option<crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext>,
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub(crate) user_skill_syntax: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) skill_turn_authority: Option<crate::skill::turn_authority::SkillTurnAuthority>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) operation_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -207,6 +221,11 @@ struct PromptPrivateMetadata {
     source_user_id: Option<String>,
     owner_request: bool,
     hidden_system_context: String,
+    skill_selections: Vec<crate::skill::v2::SkillSelection>,
+    leased_native_skills: crate::transport::relay_peer::LeasedNativeSkills,
+    leased_skill_context: Option<crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext>,
+    user_skill_syntax: bool,
+    skill_turn_authority: Option<crate::skill::turn_authority::SkillTurnAuthority>,
     operation_id: Option<String>,
     operation_fingerprint: Option<String>,
     initially_queued: Option<bool>,
@@ -249,6 +268,11 @@ impl DurablePromptPrivateState {
             source_user_id: metadata.source_user_id,
             owner_request: metadata.owner_request,
             hidden_system_context: metadata.hidden_system_context,
+            skill_selections: metadata.skill_selections,
+            leased_native_skills: metadata.leased_native_skills,
+            leased_skill_context: metadata.leased_skill_context,
+            user_skill_syntax: metadata.user_skill_syntax,
+            skill_turn_authority: metadata.skill_turn_authority,
             operation_id: metadata.operation_id,
             operation_fingerprint: metadata.operation_fingerprint,
             initially_queued: metadata.initially_queued,
@@ -388,7 +412,8 @@ impl PromptQueueItem {
             prompt,
             PromptStatus::Running,
         )
-        .with_prompt_origin(PromptOrigin::External);
+        .with_prompt_origin(PromptOrigin::External)
+        .with_user_skill_syntax(true);
         prompt.with_external_observed_id(external_observed_id)
     }
 
@@ -402,12 +427,79 @@ impl PromptQueueItem {
         self
     }
 
+    /// MP-08 / MP-10 / MP-11: bind source identities before queue admission.
+    /// Public prompt JSON cannot supply or restore this private authority.
+    /// Set only by authenticated terminal admission or official native user observation.
+    pub(crate) fn with_user_skill_syntax(mut self, selected_by_user: bool) -> Self {
+        if selected_by_user {
+            self.private_metadata
+                .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+                .user_skill_syntax = true;
+        }
+        self
+    }
+    pub(crate) fn user_skill_syntax(&self) -> bool {
+        self.private_metadata
+            .as_deref()
+            .is_some_and(|metadata| metadata.user_skill_syntax)
+    }
+    // MP-08 / MP-10 / MP-11: admitted worker instructions share prompt durability.
+    pub(crate) fn with_leased_skills(
+        mut self,
+        selections: crate::transport::relay_peer::LeasedNativeSkills,
+        context: Option<crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext>,
+    ) -> Self {
+        if !selections.is_unbound() || context.is_some() {
+            let metadata = self.private_metadata.get_or_insert_with(Default::default);
+            metadata.leased_native_skills = selections;
+            metadata.leased_skill_context = context;
+        }
+        self
+    }
+    pub(crate) fn leased_native_skills(&self) -> crate::transport::relay_peer::LeasedNativeSkills {
+        self.private_metadata
+            .as_ref()
+            .map(|metadata| metadata.leased_native_skills.clone())
+            .unwrap_or_default()
+    }
+    pub(crate) fn leased_skill_context(
+        &self,
+    ) -> Option<&crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.leased_skill_context.as_ref())
+    }
+
+    pub(crate) fn with_skill_selections(
+        mut self,
+        selections: Vec<crate::skill::v2::SkillSelection>,
+    ) -> Self {
+        if !selections.is_empty() || self.private_metadata.is_some() {
+            self.private_metadata
+                .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+                .skill_selections = selections;
+        }
+        self
+    }
+
+    pub(crate) fn skill_selections(&self) -> &[crate::skill::v2::SkillSelection] {
+        self.private_metadata
+            .as_deref()
+            .map(|metadata| metadata.skill_selections.as_slice())
+            .unwrap_or(&[])
+    }
+
     pub fn with_hidden_system_context(mut self, hidden_system_context: impl Into<String>) -> Self {
         let hidden_system_context = hidden_system_context.into();
         if hidden_system_context.is_empty() {
             if let Some(metadata) = self.private_metadata.as_mut() {
                 metadata.hidden_system_context.clear();
-                if metadata.operation_id.is_none()
+                if metadata.skill_selections.is_empty()
+                    && metadata.leased_native_skills.is_unbound()
+                    && metadata.leased_skill_context.is_none()
+                    && !metadata.user_skill_syntax
+                    && metadata.skill_turn_authority.is_none()
+                    && metadata.operation_id.is_none()
                     && metadata.agent_prompt_schedule_id.is_none()
                     && metadata.delivery_phase.is_none()
                     && metadata.recovery_operation_id.is_none()
@@ -423,6 +515,23 @@ impl PromptQueueItem {
             .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
             .hidden_system_context = hidden_system_context;
         self
+    }
+
+    pub(crate) fn with_skill_turn_authority(
+        mut self,
+        authority: crate::skill::turn_authority::SkillTurnAuthority,
+    ) -> Self {
+        self.private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+            .skill_turn_authority = Some(authority);
+        self
+    }
+    pub(crate) fn skill_turn_authority(
+        &self,
+    ) -> Option<&crate::skill::turn_authority::SkillTurnAuthority> {
+        self.private_metadata
+            .as_deref()
+            .and_then(|metadata| metadata.skill_turn_authority.as_ref())
     }
 
     pub(crate) fn with_source_attribution(
@@ -885,6 +994,11 @@ impl PromptQueueItem {
 
     pub(crate) fn restore_durable_private_state(&mut self, private: &DurablePromptPrivateState) {
         if private.hidden_system_context.is_empty()
+            && private.skill_selections.is_empty()
+            && !private.user_skill_syntax
+            && private.skill_turn_authority.is_none()
+            && private.leased_native_skills.is_unbound()
+            && private.leased_skill_context.is_none()
             && private.agent_prompt_schedule_id.is_none()
             && private.operation_id.is_none()
             && private.delivery_phase.is_none()
@@ -905,6 +1019,11 @@ impl PromptQueueItem {
             source_user_id: private.source_user_id.clone(),
             owner_request: private.owner_request,
             hidden_system_context: private.hidden_system_context.clone(),
+            skill_selections: private.skill_selections.clone(),
+            leased_native_skills: private.leased_native_skills.clone(),
+            leased_skill_context: private.leased_skill_context.clone(),
+            user_skill_syntax: private.user_skill_syntax,
+            skill_turn_authority: private.skill_turn_authority.clone(),
             operation_id: private.operation_id.clone(),
             operation_fingerprint: private.operation_fingerprint.clone(),
             initially_queued: private.initially_queued,
@@ -1035,6 +1154,125 @@ pub struct PromptDetachEffect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skills_v2_typed_sources_survive_private_restore_without_public_prompt_authority() {
+        let selection = crate::skill::v2::SkillSelection::Chariox {
+            skill_id: "stable-skill".into(),
+            name: "review".into(),
+            catalog_revision: 19,
+        };
+        let prompt =
+            PromptQueueItem::new("p", "a", "agent", "$review inspect", PromptStatus::Queued)
+                .with_skill_selections(vec![selection.clone()])
+                .with_user_skill_syntax(true)
+                .with_hidden_system_context("temporary context")
+                .with_hidden_system_context("");
+        let authority = crate::skill::turn_authority::SkillTurnAuthority {
+            catalog_revision: 7,
+            project_id: "project".into(),
+            provider_run_id: "actual-run".into(),
+            context_generation: "actual-turn".into(),
+            explicit_skill_ids: vec!["skill-1".into()],
+            body_budget_tokens: 2048,
+            reserved_body_tokens: std::collections::BTreeMap::new(),
+            pending_loads: vec![],
+            prompt_delivery_skill_ids: Default::default(),
+            remote_roots: Default::default(),
+            native_tool_loads: Default::default(),
+        };
+        let prompt = prompt.with_skill_turn_authority(authority.clone());
+        assert_eq!(prompt.skill_selections(), &[selection.clone()]);
+        let mut public = serde_json::to_value(&prompt).unwrap();
+        assert!(public.get("skill_selections").is_none());
+        assert!(public.get("skill_turn_authority").is_none());
+        assert!(public.get("user_skill_syntax").is_none());
+        public["user_skill_syntax"] = serde_json::json!(true);
+        public["skill_turn_authority"] = serde_json::to_value(&authority).unwrap();
+        assert!(!public.to_string().contains("stable-skill"));
+        // A caller's untrusted public JSON must never mint source-bound refs.
+        public["skill_selections"] = serde_json::to_value(vec![selection.clone()]).unwrap();
+        let mut restored: PromptQueueItem = serde_json::from_value(public).unwrap();
+        assert!(restored.skill_selections().is_empty());
+        assert!(restored.skill_turn_authority().is_none());
+        assert!(!restored.user_skill_syntax());
+        let durable = DurablePromptPrivateState::from_prompt("session", &prompt).unwrap();
+        let persisted = serde_json::to_vec(&durable).unwrap();
+        restored.restore_durable_private_state(&serde_json::from_slice(&persisted).unwrap());
+        assert_eq!(restored.skill_selections(), &[selection]);
+        assert_eq!(restored.skill_turn_authority(), Some(&authority));
+        assert!(restored.user_skill_syntax());
+        assert_eq!(restored.hidden_system_context(), "");
+        let promoted = restored.into_pending_queue_item("promoted");
+        assert_eq!(promoted.skill_selections(), prompt.skill_selections());
+    }
+
+    // MP-08 / MP-10 / MP-11: no process-wide staging limit can evict admitted work.
+    #[test]
+    fn leased_native_private_queue_survives_restart_beyond_256_prompts() {
+        let native = crate::transport::relay_peer::LeasedNativeSkills {
+            catalog_revision: 23,
+            selections: vec![crate::skill::v2::SkillSelection::Native {
+                entry_id: "entry".into(),
+                name: "review".into(),
+                provider: "codex".into(),
+                account_profile: "profile".into(),
+                execution_id: "execution".into(),
+                inventory_revision: "inventory".into(),
+            }],
+        };
+        let mut journal = Vec::new();
+        for index in 0..258 {
+            let prompt = PromptQueueItem::new(
+                format!("queued-{index}"),
+                "attachment",
+                "agent",
+                "review task",
+                PromptStatus::Queued,
+            )
+            .with_leased_skills(native.clone(), None);
+            let public = serde_json::to_value(&prompt).unwrap();
+            assert!(public.get("leased_native_skills").is_none());
+            journal.push((
+                public,
+                serde_json::to_value(
+                    DurablePromptPrivateState::from_prompt("session", &prompt).unwrap(),
+                )
+                .unwrap(),
+            ));
+        }
+        for (mut public, private) in journal.into_iter().rev() {
+            public["leased_native_skills"] = serde_json::to_value(&native).unwrap();
+            let mut recovered: PromptQueueItem = serde_json::from_value(public).unwrap();
+            assert!(
+                recovered.leased_native_skills().is_unbound(),
+                "public JSON cannot mint a worker invocation"
+            );
+            recovered.restore_durable_private_state(&serde_json::from_value(private).unwrap());
+            assert_eq!(
+                recovered
+                    .into_pending_queue_item("promoted")
+                    .leased_native_skills(),
+                native
+            );
+        }
+    }
+
+    // MP-08 / MP-10 / MP-11: a body-only leased turn keeps its catalog binding.
+    #[test]
+    fn body_only_leased_catalog_revision_survives_restart() {
+        let native = crate::transport::relay_peer::LeasedNativeSkills {
+            catalog_revision: 41,
+            selections: vec![],
+        };
+        let prompt = PromptQueueItem::new("p", "a", "agent", "task", PromptStatus::Queued)
+            .with_leased_skills(native.clone(), None);
+        let durable = DurablePromptPrivateState::from_prompt("session", &prompt).unwrap();
+        let persisted = serde_json::to_vec(&durable).unwrap();
+        let mut restored = PromptQueueItem::new("p", "a", "agent", "task", PromptStatus::Queued);
+        restored.restore_durable_private_state(&serde_json::from_slice(&persisted).unwrap());
+        assert_eq!(restored.leased_native_skills(), native);
+    }
 
     #[test]
     fn prompt_queue_item_does_not_serialize_private_runtime_metadata() {

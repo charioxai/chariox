@@ -126,7 +126,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Allocated 160 carries the local 552 `parked_input` reply field.
 /// MP-08/MP-10/MP-11: allocated 164 carries the local 556 `state_wait`.
 /// MP-08/MP-10/MP-11: allocated 175 carries the local 567 `fonts` op `absent`.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 175;
+/// MP-08/MP-10/MP-11: allocated 179 carries the local 571 Skills v2 leased-worker native inventory.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 179;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -138,6 +139,9 @@ pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
 /// account cannot start work there; repeating the prompt cannot repair it.
 pub const REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE: &str = "provider_account_unusable";
 pub(crate) const ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION: &str = "admit leased prompt account";
+/// The worker could not store or verify a transferred skill package; sending the
+/// same turn again cannot repair its disk or permissions.
+pub const SKILL_PACKAGE_STORE_FAILED_CODE: &str = "skill_package_store_failed";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
 pub const PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE: &str = "project_environment_setup_rejected";
 
@@ -317,6 +321,31 @@ pub struct RemoteSkillSyncContext {
     pub leased_agent_id: String,
 }
 
+/// Source-bound native selections of one leased turn, with the home catalog revision
+/// the worker's inventory binding (and so each selection's identity) was read at.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeasedNativeSkills {
+    pub catalog_revision: u64,
+    pub selections: Vec<crate::skill::v2::SkillSelection>,
+}
+
+impl LeasedNativeSkills {
+    /// No selections and no home catalog revision binding the turn.
+    pub fn is_unbound(&self) -> bool {
+        self.selections.is_empty() && self.catalog_revision == 0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeasedSkillNativeInventory {
+    pub entries: Vec<crate::skill::v2::NativeSkillEntry>,
+    pub revision: String,
+    /// The worker provider run the leased agent has when the home reads this
+    /// before a turn: the run that takes the turn. Absent from older workers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_run_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteProviderAccountSyncContext {
     pub home_kernel_id: String,
@@ -327,6 +356,7 @@ pub struct RemoteProviderAccountSyncContext {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteSkillMaterialization {
+    pub skill_id: String,
     pub name: String,
     pub version_hash: String,
     pub materialized_root: String,
@@ -512,12 +542,6 @@ pub struct RequiredRemoteMcp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RequiredRemoteSkill {
-    pub name: String,
-    pub version_hash: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteMcpAvailability {
     pub name: String,
     pub expected_hash: String,
@@ -668,7 +692,7 @@ fn default_workspace_live_sync_invocation_attempt() -> u32 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[allow(
     clippy::large_enum_variant,
     reason = "Preserve the existing RelayPeerRequest typed actor payload layout"
@@ -824,8 +848,6 @@ pub enum RelayPeerRequest {
         provider_session_id: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         required_mcps: Vec<RequiredRemoteMcp>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        required_skills: Option<Vec<RequiredRemoteSkill>>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
@@ -860,8 +882,6 @@ pub enum RelayPeerRequest {
         git_context: Option<RemoteGitTurnContext>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         required_mcps: Vec<RequiredRemoteMcp>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        required_skills: Option<Vec<RequiredRemoteSkill>>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
@@ -869,6 +889,10 @@ pub enum RelayPeerRequest {
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_launch_credential: Option<RemoteProviderLaunchCredential>,
+        /// Source-bound `From <Provider>` skills the home validated; the worker
+        /// applies its own harness invocation and never receives native packages.
+        #[serde(default, skip_serializing_if = "LeasedNativeSkills::is_unbound")]
+        native_skill_selections: LeasedNativeSkills,
     },
     /// A10: install or replace the worker fence for one exact leased home
     /// prompt's sudo window; `remaining_ms == 0` ends the window's fences.
@@ -897,8 +921,6 @@ pub enum RelayPeerRequest {
         hidden_system_context: String,
         #[serde(default)]
         attachments: Vec<RelayPromptAttachment>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        required_skills: Option<Vec<RequiredRemoteSkill>>,
     },
     DrainLeasedRuntimeProjection {
         leased_agent_id: String,
@@ -1089,8 +1111,22 @@ pub enum RelayPeerRequest {
         workspace_directories: std::collections::BTreeMap<String, String>,
     },
     EnsureRemoteSkillPackages {
+        execution_lease_id: String,
+        manifest: crate::skill::v2::SkillTransferManifest,
         context: RemoteSkillSyncContext,
         packages: Vec<CharioxSkillPackage>,
+        /// Names a `$name` typed in the worker's native composer may select, from
+        /// the packages above. Omitted when no transferred skill can be typed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        skill_names: Option<crate::skill::leased_names::LeasedSkillNames>,
+    },
+    /// MP-08 / MP-10 / MP-11: home asks the leased worker for its harness-native skills.
+    ReadLeasedSkillNativeInventory {
+        context: RemoteSkillSyncContext,
+        catalog_revision: u64,
+        refresh: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details_for: Option<crate::skill::v2::SkillSelection>,
     },
     EnsureRemoteProviderAccount {
         context: RemoteProviderAccountSyncContext,
@@ -1339,8 +1375,6 @@ pub enum RelayPeerResponse {
     WorkspaceLiveSyncRuntimeToolFinalized,
     CapabilityRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        skill_package: Option<CharioxSkillPackage>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
@@ -1400,7 +1434,16 @@ pub enum RelayPeerResponse {
         project_id: String,
     },
     RemoteSkillPackagesEnsured {
+        execution_lease_id: String,
+        context: RemoteSkillSyncContext,
+        manifest: crate::skill::v2::SkillTransferManifest,
         materialized: Vec<RemoteSkillMaterialization>,
+    },
+    LeasedSkillNativeInventory {
+        /// `None` until the leased provider has started on the worker.
+        inventory: Option<LeasedSkillNativeInventory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<crate::skill::v2::NativeSkillDetails>,
     },
     RemoteProviderAccountEnsured {
         provider: String,

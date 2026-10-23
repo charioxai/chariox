@@ -457,11 +457,7 @@ impl KernelRuntimeState {
         };
         let prompt_with_hidden_context =
             join_hidden_context(&hidden_system_context, &prompt_with_handoff);
-        let provider_prompt = owned.apply_granted_skill_summary(
-            &dispatch.session_id,
-            &dispatch.agent_id,
-            &prompt_with_hidden_context,
-        )?;
+        let provider_prompt = prompt_with_hidden_context;
         let provider_pty_input =
             crate::app::terminal_input::provider_prompt_input(&provider_prompt);
         if !internal_recovery {

@@ -132,7 +132,12 @@ pub(crate) async fn execute_connect_cloud_relay_request(
         .await?;
     provider_catalog_projection.invalidate();
     Ok(LocalDaemonResponse::CloudRelayConnected {
-        status: projected_relay_status(relay_state, config_projection.clone()).await,
+        status: projected_relay_status(
+            relay_state,
+            config_projection.clone(),
+            runtime_state.control_capabilities(),
+        )
+        .await,
         profile: cloud_profile_from_persisted(&saved),
     })
 }

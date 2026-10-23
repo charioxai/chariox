@@ -562,6 +562,26 @@ fn verified_cleanup_absence_keeps_relay_business_code() {
     assert!(!mapped.retryable);
 }
 
+// MP-08 / MP-10: a worker that cannot store a transferred skill package refuses
+// the turn once, with the next step, instead of a retryable transport error.
+#[test]
+fn a_skill_package_the_worker_cannot_store_is_refused_once_with_the_next_step() {
+    let error = DaemonError::LocalTransport {
+        operation: "skill.package",
+        message: "cannot create skill package directory".into(),
+    };
+    let mapped = crate::transport::relay_client::request_errors::map_relay_error(&error);
+    assert_eq!(
+        mapped.code,
+        crate::transport::relay_peer::SKILL_PACKAGE_STORE_FAILED_CODE
+    );
+    assert!(!mapped.retryable);
+    assert!(mapped
+        .message
+        .contains("cannot create skill package directory"));
+    assert!(mapped.message.contains("then send the message again"));
+}
+
 #[tokio::test]
 async fn mp11_persistent_peer_response_rejects_another_key() {
     let home = crate::config::DaemonConfig::for_tests();

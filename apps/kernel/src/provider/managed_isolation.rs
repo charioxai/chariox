@@ -932,8 +932,12 @@ fn append_managed_runtime_user_anchor(
 }
 
 #[cfg(target_os = "linux")]
-fn managed_trusted_read_only_paths() -> Result<Vec<PathBuf>, DaemonError> {
-    let mut candidates = Vec::new();
+/// MP-08 / MP-10 / MP-11: `skill_cache_roots` are the authenticated current
+/// execution's kernel-materialized Skills; no other execution's cache is exposed.
+fn managed_trusted_read_only_paths(
+    skill_cache_roots: &[PathBuf],
+) -> Result<Vec<PathBuf>, DaemonError> {
+    let mut candidates = skill_cache_roots.to_vec();
     let default_slice_root = Path::new("/opt/chariox-slice");
     if default_slice_root.exists() {
         candidates.push(default_slice_root.to_path_buf());
@@ -1172,7 +1176,7 @@ pub(crate) fn apply_managed_provider_isolation(
                 managed_runtime_user_files_for_home(home, MANAGED_RUNTIME_USER_OPENBOX_FILE_NAMES)
             })
             .unwrap_or_default();
-        let trusted_read_only_paths = managed_trusted_read_only_paths()?;
+        let trusted_read_only_paths = managed_trusted_read_only_paths(&request.skill_cache_roots)?;
         let runtime_command_roots = managed_runtime_command_roots()?;
 
         let resolver = managed_resolver_binding()?;
@@ -2315,6 +2319,43 @@ fn isolation_error(message: impl Into<String>) -> DaemonError {
 
 #[cfg(test)]
 mod tests {
+
+    // MP-08 / MP-10 / MP-11: a managed provider reads only the bundled files of
+    // its own execution; another lease's materialized skills stay masked.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_provider_reads_only_its_own_skill_execution_root() {
+        let _env = crate::env_lock::lock();
+        let home = std::env::temp_dir().join(format!(
+            "chariox-skill-root-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let base = home.join("state/skill-materializations/home-kernel");
+        let own = base.join("execution-own");
+        let other = base.join("execution-other");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let previous = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("CHARIOX_HOME", &home);
+        let trusted =
+            managed_trusted_read_only_paths(&[own.clone()]).expect("trusted paths should resolve");
+        restore_env("CHARIOX_HOME", previous);
+        let own = own.canonicalize().unwrap();
+        let other = other.canonicalize().unwrap();
+        assert!(
+            trusted.iter().any(|path| own.starts_with(path)),
+            "{trusted:?}"
+        );
+        assert!(
+            !trusted.iter().any(|path| other.starts_with(path)),
+            "another execution's skill cache must stay masked: {trusted:?}"
+        );
+        let _ = std::fs::remove_dir_all(home);
+    }
     include!("managed_isolation/protected_account_tests.rs");
 
     use super::*;
@@ -2963,7 +3004,7 @@ mod tests {
 
         let (mut args, mut created) = managed_namespace_args(None, Path::exists, None);
         let trusted =
-            managed_trusted_read_only_paths().expect("configured trusted paths should resolve");
+            managed_trusted_read_only_paths(&[]).expect("configured trusted paths should resolve");
         append_managed_trusted_read_only_paths(&mut args, &trusted, &mut created);
         let current_runtime = Path::new("/run/chariox-current-runtime");
         append_bind(&mut args, current_runtime, current_runtime, &mut created);
@@ -4612,7 +4653,7 @@ mod tests {
 
         let protected = managed_protected_namespace_directories(&[])
             .expect("managed protected roots should resolve");
-        let trusted = managed_trusted_read_only_paths()
+        let trusted = managed_trusted_read_only_paths(&[])
             .expect("configured publication path should not need a trusted bind");
         let detected = managed_configured_slice_publication_root()
             .expect("configured publication root should resolve");
@@ -5348,7 +5389,7 @@ printf 'managed account environment probe passed\n'
             .expect("selected configured publication should resolve");
         let protected = managed_protected_namespace_directories(&[])
             .expect("managed protected roots should resolve");
-        let trusted = managed_trusted_read_only_paths()
+        let trusted = managed_trusted_read_only_paths(&[])
             .expect("configured publication should not be trusted wholesale");
         assert_eq!(
             managed_configured_slice_publication_root()
@@ -5511,7 +5552,7 @@ printf 'managed account environment probe passed\n'
         let protected = managed_protected_namespace_directories(&[])
             .expect("managed protected roots should resolve");
         let trusted_read_only =
-            managed_trusted_read_only_paths().expect("configured trusted paths should resolve");
+            managed_trusted_read_only_paths(&[]).expect("configured trusted paths should resolve");
         let mut args = managed_namespace_args(None, |_| true, None).0;
         let mut created = BTreeSet::new();
         append_managed_protected_namespace_directories(&mut args, &protected, &mut created);

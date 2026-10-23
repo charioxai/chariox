@@ -15,7 +15,6 @@ use crate::workflow_code::{
 };
 use crate::{DaemonApp, DaemonConfig};
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::PathBuf;
 
 fn generated_workflow_code_definition() -> WorkflowCodeDefinition {
@@ -143,27 +142,6 @@ fn cache_test_provider_catalog(app: &mut DaemonApp) {
         default: BTreeMap::from([("codex".to_string(), "gpt-5".to_string())]),
         connected: vec!["codex".to_string()],
     });
-}
-
-fn unique_workflow_code_test_workspace(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "chariox-workflow-code-{name}-{}-{}",
-        std::process::id(),
-        crate::session::unix_epoch_ms()
-    ));
-    let _ = fs::remove_dir_all(&path);
-    fs::create_dir_all(&path).expect("test workspace should be created");
-    path
-}
-
-fn install_test_skill(workspace: &std::path::Path, name: &str) {
-    let skill_dir = workspace.join(".chariox").join("skills").join(name);
-    fs::create_dir_all(&skill_dir).expect("skill dir should be created");
-    fs::write(
-        skill_dir.join("SKILL.md"),
-        format!("---\nname: {name}\ndescription: Workflow-code test skill\n---\nUse this skill.\n"),
-    )
-    .expect("skill should be written");
 }
 
 mod bootstrap;

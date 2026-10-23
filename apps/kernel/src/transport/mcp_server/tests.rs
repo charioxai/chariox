@@ -768,16 +768,6 @@ async fn mcp_http_tools_call_lists_and_requests_capabilities_inner() {
             .expect("system clock before unix epoch")
             .as_nanos()
     ));
-    std::fs::create_dir_all(root.join(".chariox").join("skills").join("browser-qa"))
-        .expect("skill root should be created");
-    std::fs::write(
-        root.join(".chariox")
-            .join("skills")
-            .join("browser-qa")
-            .join("SKILL.md"),
-        "---\nname: browser-qa\ndescription: Browser QA\n---\nUse the browser.\n",
-    )
-    .expect("skill should be written");
     let mcp_registry =
         crate::mcp::CharioxMcpRegistry::new(vec![root.join(".chariox").join("mcps")]);
     mcp_registry
@@ -870,10 +860,9 @@ async fn mcp_http_tools_call_lists_and_requests_capabilities_inner() {
         list_value["result"]["structuredContent"]["extensions"]["mcps"][0]["name"],
         "browser"
     );
-    assert_eq!(
-        list_value["result"]["structuredContent"]["extensions"]["skills"][0]["name"],
-        "browser-qa"
-    );
+    assert!(list_value["result"]["structuredContent"]["extensions"]
+        .get("skills")
+        .is_none());
 
     let request_response = handle_json_rpc_value(
         router,
@@ -897,31 +886,18 @@ async fn mcp_http_tools_call_lists_and_requests_capabilities_inner() {
         .expect("request body should collect")
         .to_bytes();
     let request_value: Value = serde_json::from_slice(&request_body).expect("request body json");
-    assert_eq!(
-        request_value["result"]["structuredContent"]["granted"],
-        true
-    );
-    assert_eq!(
-        request_value["result"]["structuredContent"]["effective"],
-        "now"
-    );
-    assert_eq!(
-        request_value["result"]["structuredContent"]["requires_provider_restart"],
-        false
-    );
-    assert!(
-        request_value["result"]["structuredContent"]["skill"]["body"]
-            .as_str()
-            .expect("skill body should be returned")
-            .contains("Use the browser.")
-    );
+    assert_eq!(request_value["error"]["code"], -32000);
+    assert!(request_value["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("skill"));
     let agent = app
         .lock()
         .await
         .agents()
         .get_agent(&agent_id)
         .expect("agent should exist");
-    assert_eq!(agent.skill_grants(), vec!["browser-qa".to_string()]);
+    assert!(agent.extension_grants().is_empty());
 
     let _ = std::fs::remove_dir_all(root);
 }

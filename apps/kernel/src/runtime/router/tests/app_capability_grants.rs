@@ -355,7 +355,7 @@ async fn capability_stale_home_run_cannot_acquire_after_agent_is_leased() {
     let home = room.router.runtime_state.with_relay_peer_authority(
         crate::runtime::relay_peer_authority::test_peer_authority("worker"),
     );
-    let (result, _, _) = home
+    let (result, _) = home
         .dispatch_forwarded_capability_runtime_tool_call(
             context.clone(),
             crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL.into(),

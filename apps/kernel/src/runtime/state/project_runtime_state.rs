@@ -98,6 +98,20 @@ impl KernelRuntimeState {
         Ok(project)
     }
 
+    pub(crate) async fn create_project(
+        &self,
+        name: String,
+        caller_user_id: &str,
+    ) -> Result<crate::session::RuntimeProject, DaemonError> {
+        let project = self
+            .owned
+            .session_store
+            .create_project(name, caller_user_id)?;
+        self.append_project_durable_event("project.created", &project)?;
+        self.owned.runtime_projection_changes.record_change();
+        Ok(project)
+    }
+
     pub(crate) async fn rename_project(
         &self,
         project_id: &str,

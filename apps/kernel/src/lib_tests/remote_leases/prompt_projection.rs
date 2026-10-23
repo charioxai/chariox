@@ -169,7 +169,6 @@ fn leased_prompt_submit_replays_the_active_run_for_the_same_home_prompt_id() {
             None,
             Some(git_context.clone()),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("first leased prompt should submit");
@@ -200,7 +199,6 @@ fn leased_prompt_submit_replays_the_active_run_for_the_same_home_prompt_id() {
             None,
             Some(git_context),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("duplicate leased prompt should replay its accepted result");
@@ -273,7 +271,6 @@ fn leased_prompt_identity_uses_the_accepted_prompt_timestamp_when_backing_activi
             None,
             Some(remote_context("home-prompt-1")),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("first leased prompt should submit");
@@ -295,7 +292,6 @@ fn leased_prompt_identity_uses_the_accepted_prompt_timestamp_when_backing_activi
             None,
             Some(remote_context("home-prompt-2")),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("second leased prompt should be accepted behind stale backing activity");
@@ -446,8 +442,8 @@ fn review971b_leased_assessment_origin_survives_provider_startup_queue() {
                 external_provider_turn_id: None,
             }),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
+            Default::default(),
         )
         .expect("leased prompt should prepare");
     let request = match &prepared.provider_run {
@@ -587,7 +583,6 @@ fn queued_leased_workflow_context_rotates_by_backing_prompt_after_completion() {
                 prompt_summary: "first leased workflow prompt".to_string(),
             }),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("first leased workflow prompt should submit");
@@ -624,7 +619,6 @@ fn queued_leased_workflow_context_rotates_by_backing_prompt_after_completion() {
                 prompt_summary: "second leased workflow prompt".to_string(),
             }),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("second leased workflow prompt should submit");
@@ -765,7 +759,6 @@ fn leased_workflow_bindings_do_not_overwrite_equal_home_prompt_ids() {
                 prompt_summary: "same home prompt id from independent lease".to_string(),
             }),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
     };
@@ -993,7 +986,6 @@ fn leased_projection_drops_completion_records_older_than_the_active_home_prompt(
                 prompt_summary: "current remote prompt".to_string(),
             }),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("leased prompt should submit");
@@ -1164,7 +1156,6 @@ fn leased_projection_pull_replays_a_completion_lost_after_worker_drain() {
                 prompt_summary: "remote leased prompt".to_string(),
             }),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("leased prompt should submit");
@@ -1281,7 +1272,6 @@ fn explicit_completion_replay_keeps_the_settled_home_prompt_output_key() {
                 prompt_summary: "remote explicit completion prompt".to_string(),
             }),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("leased prompt should submit");
@@ -1388,7 +1378,6 @@ fn new_home_prompt_clears_prior_explicit_completion_replay() {
                 prompt_summary: "first remote prompt".to_string(),
             }),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("first leased prompt should submit");
@@ -1453,7 +1442,6 @@ fn new_home_prompt_clears_prior_explicit_completion_replay() {
                 prompt_summary: "second remote prompt".to_string(),
             }),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("second leased prompt should submit");
@@ -1577,7 +1565,6 @@ fn assert_output_only_settlement(provider: &str) {
                 prompt_summary: "remote explicit output-only prompt".to_string(),
             }),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("leased prompt should submit");
@@ -1734,7 +1721,6 @@ fn native_completion_does_not_reuse_prior_home_prompt_identity() {
                 prompt_summary: "home-origin prompt".to_string(),
             }),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("home prompt should submit");
@@ -2071,7 +2057,6 @@ fn leased_projection_pump_leaves_home_prompt_records_for_authoritative_drain() {
             None,
             Some(git_context),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("leased prompt should submit");

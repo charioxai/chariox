@@ -22,35 +22,6 @@ async fn reboot_after_owner_release(config: DaemonConfig) -> DaemonApp {
 }
 
 #[tokio::test]
-async fn runtime_agent_skill_grant_survives_kernel_restart() {
-    let config = DaemonConfig::for_tests();
-    let (session_id, agent_id) = {
-        let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
-        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new("workspace", "worktree"))
-            .expect("session should be created");
-        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
-        let granted = router
-            .runtime_state
-            .grant_agent_skill(agent.id(), "review".to_string(), DEFAULT_LOCAL_USER_ID)
-            .await
-            .expect("skill grant should persist");
-        assert!(granted.skill_grants().contains(&"review".to_string()));
-        (session.id().to_string(), agent.id().to_string())
-    };
-
-    let app = reboot_after_owner_release(config).await;
-    let restored_agent = app
-        .agents
-        .get_agent(&agent_id)
-        .expect("agent should restore");
-    assert_eq!(restored_agent.session_id(), session_id);
-    assert!(restored_agent
-        .skill_grants()
-        .contains(&"review".to_string()));
-}
-
-#[tokio::test]
 async fn runtime_destroy_agent_survives_kernel_restart() {
     let config = DaemonConfig::for_tests();
     let (session_id, default_agent_id, destroyed_agent_id) = {
@@ -135,27 +106,6 @@ async fn runtime_destroy_agent_survives_kernel_restart() {
         page.sessions[0].is_attachable_to_chariox(),
         "deleted agents must not restore stale provider-session attachments after restart"
     );
-}
-
-#[tokio::test]
-async fn runtime_agent_capability_grants_accept_agent_id_or_public_ref() {
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
-        .expect("session should be created");
-    let agent_id = agent.id().to_string();
-    let agent_ref = agent.agent_ref().to_string();
-    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 2);
-
-    for (agent_ref, skill_name) in [(agent_id, "by-id"), (agent_ref, "by-ref")] {
-        let agent = router
-            .runtime_state
-            .grant_agent_skill(&agent_ref, skill_name.to_string(), DEFAULT_LOCAL_USER_ID)
-            .await
-            .expect("grant should succeed");
-        assert_eq!(agent.session_id(), session.id());
-        assert!(agent.skill_grants().contains(&skill_name.to_string()));
-    }
 }
 
 #[tokio::test]

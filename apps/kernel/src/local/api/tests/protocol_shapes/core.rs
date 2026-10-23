@@ -233,6 +233,7 @@ fn local_daemon_protocol_project_management_shape_is_versioned() {
                     "id": "project-1",
                     "owner_user_id": "owner-1",
                     "workspace_id": "workspace-1",
+                    "workspace_ids": [],
                     "name": "Owner/repo",
                     "kind": "default",
                     "status": "archived",

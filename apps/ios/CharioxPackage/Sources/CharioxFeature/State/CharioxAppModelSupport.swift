@@ -78,9 +78,9 @@ extension CharioxAppModel {
     guard !skills.isEmpty else {
       return "No skills installed."
     }
-    let lines = skills.map { skill in
-      let description =
-        skill.shortDescription?.nilIfBlank ?? skill.description.nilIfBlank ?? skill.path
+    let lines = skills.map { projection in
+      let skill = projection.skill
+      let description = skill.short_description?.nilIfBlank ?? skill.description
       return "\(skill.name) - \(description)"
     }
     return "Skills\n\(lines.joined(separator: "\n"))"

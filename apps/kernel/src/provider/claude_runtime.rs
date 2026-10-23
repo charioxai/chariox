@@ -20,6 +20,7 @@ const CLAUDE_EVENT_DRAIN_MAX_MESSAGES: usize = 256;
 const DEFAULT_CLAUDE_TURN_STALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 mod events;
+mod hook_receipts;
 mod input;
 mod process;
 mod runtime_tool_wait;
@@ -131,10 +132,12 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             cancelled_turn_pending_settlement: false,
             next_turn_number: 1,
             result_number: 1,
+            context_window: None,
             emitted_text_by_block: BTreeMap::new(),
             tool_transcript: Default::default(),
             completed_text_blocks: Default::default(),
             exit_reported: false,
+            hook_events_offset: 0,
         },
         selection: ClaudeRunSelection {
             model: Some(run.model().to_string()),
@@ -255,6 +258,12 @@ pub(crate) fn drain_claude_events(
         }
     }
     apply_claude_usage_capture(state, &mut batch);
+    match hook_receipts::take_context_delivered(state) {
+        Ok(delivered) => batch.hook_context_delivered = delivered,
+        Err(error) => batch.notices.push(format!(
+            "Claude hook delivery receipts are unreadable: {error}"
+        )),
+    }
 
     if !batch.prompt_completed && !state.exit_reported {
         match state.child.try_wait() {
@@ -413,6 +422,9 @@ fn handle_claude_tool_uses(
             bytes,
         });
     }
+    batch
+        .skill_tool_delivery_acknowledgements
+        .extend(state.tool_transcript.take_skill_deliveries());
     if state.tool_transcript.take_truncation_notice() {
         batch.notices.push(
             "Claude tool transcript truncated to resource limits; provider execution is unchanged"
@@ -603,6 +615,7 @@ fn write_claude_hidden_context(
 
 #[cfg(test)]
 mod tests {
+    mod hook_receipts;
     mod model_observation;
     #[cfg(target_os = "linux")]
     mod sandbox_lifetime;
@@ -673,10 +686,12 @@ mod tests {
                 cancelled_turn_pending_settlement: false,
                 next_turn_number: 1,
                 result_number: 1,
+                context_window: None,
                 emitted_text_by_block: Default::default(),
                 tool_transcript: Default::default(),
                 completed_text_blocks: Default::default(),
                 exit_reported: false,
+                hook_events_offset: 0,
             },
             ProviderPromptSignalBatch::default(),
         )
@@ -1664,6 +1679,70 @@ done
         assert_eq!(batch.completions.len(), 1);
         assert_eq!(batch.resolved_usage_tokens_total, Some(10));
         assert_eq!(state.active_turn_id, None);
+    }
+
+    #[test]
+    fn result_usage_keeps_the_last_call_context_not_the_turn_sum() {
+        let (mut state, mut batch) = parser_state();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "assistant",
+                "message": {
+                    "id": "msg-1",
+                    "content": [],
+                    "usage": { "input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 40000 }
+                }
+            }),
+            &mut batch,
+        );
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "result",
+                "subtype": "success",
+                "is_error": false,
+                "usage": { "input_tokens": 30, "output_tokens": 15, "cache_read_input_tokens": 120000 }
+            }),
+            &mut batch,
+        );
+        let usage = batch.resolved_usage.expect("result usage");
+        assert_eq!(usage.context_tokens, Some(40010));
+        assert_eq!(usage.total_tokens, Some(120045));
+    }
+
+    #[test]
+    fn result_reports_the_model_context_window_for_later_calls() {
+        let (mut state, mut batch) = parser_state();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "result",
+                "subtype": "success",
+                "is_error": false,
+                "usage": { "input_tokens": 1, "output_tokens": 2 },
+                "modelUsage": { "claude-haiku-5-5": { "contextWindow": 1000000 } }
+            }),
+            &mut batch,
+        );
+        assert_eq!(
+            batch.resolved_usage.unwrap().context_window,
+            Some(1_000_000)
+        );
+        let mut next = ProviderPromptSignalBatch::default();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "assistant",
+                "message": { "id": "msg-2", "content": [], "usage": { "input_tokens": 7, "output_tokens": 1 } }
+            }),
+            &mut next,
+        );
+        assert_eq!(next.resolved_usage.unwrap().context_window, Some(1_000_000));
     }
 
     #[test]

@@ -32,14 +32,13 @@ export type NativeTuiRuntimeBannerInput = {
   readonly sliceLookupError?: string | null
   readonly run?: RuntimeProviderRun | null
   readonly grantedMcps?: readonly string[]
-  readonly grantedSkills?: readonly string[]
   readonly providerLines?: readonly string[]
   readonly promptPolicy?: string
 }
 
 export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput): string {
   const slice = sliceForRemoteAgent(input.agent, input.slices ?? [])
-  const extensionGrants = nativeBannerExtensionGrants(input.agent, input.grantedMcps ?? [], input.grantedSkills ?? [])
+  const extensionGrants = nativeBannerExtensionGrants(input.agent, input.grantedMcps ?? [])
   const remoteNativeRun = isRemoteNativeRun(input.agent, input.run ?? null)
   return [
     `[chariox ${input.surface}]`,
@@ -52,7 +51,7 @@ export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput)
     `  placement:      ${formatAgentPlacement(input.agent, slice)}`,
     ...formatSliceLines(slice, input.agent, input.sliceLookupError),
     ...(workspaceLiveSyncUiEnabled ? [`  live sync:      ${formatWorkspaceLiveSyncModeLabel(input.session.workspace_live_sync_mode)}`] : []),
-    `  extensions:     ${formatGrantedExtensions(input.agent, input.grantedMcps ?? [], input.grantedSkills ?? [], remoteNativeRun)}`,
+    `  extensions:     ${formatGrantedExtensions(input.agent, input.grantedMcps ?? [], remoteNativeRun)}`,
     `  ext runtime:    ${formatNativeExtensionRuntime(extensionGrants, input.agent, remoteNativeRun)}`,
     `  ext boundary:   ${formatNativeExtensionBoundary(extensionGrants, input.agent, remoteNativeRun)}`,
     ...formatRemoteExtensionSync(input.agent, input.grantedMcps ?? [], remoteNativeRun),
@@ -66,14 +65,10 @@ export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput)
 function nativeBannerExtensionGrants(
   agent: AgentInstance,
   mcps: readonly string[],
-  skills: readonly string[],
 ): readonly { readonly kind: string }[] {
   const grants = [...(agent.extension_grants ?? [])]
   if (mcps.length > 0 && !grants.some((grant) => grant.kind === "mcp")) {
     grants.push({ kind: "mcp", name: "__native_banner_mcp__" })
-  }
-  if (skills.length > 0 && !grants.some((grant) => grant.kind === "skill")) {
-    grants.push({ kind: "skill", name: "__native_banner_skill__" })
   }
   return grants
 }
@@ -81,24 +76,20 @@ function nativeBannerExtensionGrants(
 function formatGrantedExtensions(
   agent: AgentInstance,
   mcps: readonly string[],
-  skills: readonly string[],
   remoteNativeRun: boolean,
 ): string {
-  if (mcps.length === 0 && skills.length === 0) {
+  if (mcps.length === 0) {
     return agent.remote_extension_manifest_sync?.pending_revoke ? "none (final revoke pending)" : "none"
   }
   if (remoteNativeRun) {
     return [
       mcps.length > 0 ? `mcp=${mcps.join(",")} (worker-local, hash-validated)` : null,
-      skills.length > 0 ? `skill=${skills.join(",")} (worker-local, hash-validated)` : null,
     ].filter(Boolean).join("; ")
   }
   const remote = Boolean(agent.remote_execution)
   const activePlacement = formatExtensionGrantPlacement([{ kind: "mcp" }], remote)
-  const skillPlacement = formatExtensionGrantPlacement([{ kind: "skill" }], remote)
   return [
     mcps.length > 0 ? `mcp=${mcps.join(",")} (${activePlacement})` : null,
-    skills.length > 0 ? `skill=${skills.join(",")} (${skillPlacement})` : null,
   ].filter(Boolean).join("; ")
 }
 
@@ -110,13 +101,13 @@ function formatNativeExtensionRuntime(
   if (!remoteNativeRun) {
     return formatExtensionGrantRuntimeDetail(grants, Boolean(agent.remote_execution))
   }
-  const hasWorkerLocal = grants.some((grant) => grant.kind === "mcp" || grant.kind === "skill")
+  const hasWorkerLocal = grants.some((grant) => grant.kind === "mcp")
   const homeProxyGrants = grants.filter((grant) => grant.kind === "script" || grant.kind === "connector")
   if (hasWorkerLocal && homeProxyGrants.length > 0) {
-    return "native MCP and skill grants use hash-validated worker-local installs; scripts and connectors remain home-proxied"
+    return "native MCP grants use hash-validated worker-local installs; scripts and connectors remain home-proxied"
   }
   if (hasWorkerLocal) {
-    return "native MCP and skill grants use hash-validated worker-local installs"
+    return "native MCP grants use hash-validated worker-local installs"
   }
   return formatExtensionGrantRuntimeDetail(homeProxyGrants, true)
 }
@@ -129,13 +120,13 @@ function formatNativeExtensionBoundary(
   if (!remoteNativeRun) {
     return formatExtensionAuthorityBoundaryDetail(grants, Boolean(agent.remote_execution))
   }
-  const hasWorkerLocal = grants.some((grant) => grant.kind === "mcp" || grant.kind === "skill")
+  const hasWorkerLocal = grants.some((grant) => grant.kind === "mcp")
   const homeProxyGrants = grants.filter((grant) => grant.kind === "script" || grant.kind === "connector")
   if (hasWorkerLocal && homeProxyGrants.length > 0) {
-    return "worker validates native MCP and skill hashes; home validates script and connector calls without exporting credentials"
+    return "worker validates native MCP hashes; home validates script and connector calls without exporting credentials"
   }
   if (hasWorkerLocal) {
-    return "worker validates native MCP and skill hashes; provider credentials and execution stay on the worker"
+    return "worker validates native MCP hashes; provider credentials and execution stay on the worker"
   }
   return formatExtensionAuthorityBoundaryDetail(homeProxyGrants, true)
 }

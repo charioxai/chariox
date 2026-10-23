@@ -340,8 +340,7 @@ impl KernelRuntimeState {
                 )?;
                 let required_mcps =
                     state.required_remote_mcps_for_native_provider_launch(&agent)?;
-                let required_skills =
-                    state.required_remote_skills_for_native_provider_launch(&agent)?;
+
                 if !required_mcps.is_empty() {
                     state
                         .ensure_remote_mcp_requirements_available_for_agent(
@@ -352,7 +351,6 @@ impl KernelRuntimeState {
                 }
                 if state.remote_agent_is_home_managed_slice(&agent) {
                     state.ensure_slice_project_environment(&agent).await?;
-                    state.ensure_remote_skill_packages_for_agent(&agent).await?;
                 }
                 let mut relay_config = state.owned.config_projection.snapshot();
                 if let (Some(relay_url), Some(relay_token)) = (
@@ -361,6 +359,9 @@ impl KernelRuntimeState {
                 ) {
                     relay_config.apply_remote_relay_override(relay_url, relay_token);
                 }
+                state
+                    .ensure_native_launch_skills(&relay_config, &agent, &remote_execution)
+                    .await?;
                 let leased_agent_id = remote_execution.leased_agent_id.clone();
                 let target = ClientTarget {
                     daemon_id: Some(remote_execution.worker_kernel_id.clone()),
@@ -377,7 +378,6 @@ impl KernelRuntimeState {
                     structured_endpoint: request.structured_endpoint.clone(),
                     provider_session_id: request.provider_session_id.clone(),
                     required_mcps,
-                    required_skills: Some(required_skills),
                     remote_extension_manifest: manifest,
                     provider_launch_credential,
                 };

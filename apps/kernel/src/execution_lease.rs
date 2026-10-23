@@ -90,6 +90,12 @@ pub struct LeasedAgent {
     pub home_steer_receipts: Vec<LeasedPromptSteerReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replayable_completion: Option<LeasedCompletionReplay>,
+    /// The home's name resolution for a `$name` typed in this agent's native composer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_names: Option<crate::skill::leased_names::LeasedSkillNames>,
+    /// The catalog revision `skill_names` was last set from, also when it is empty.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub skill_view_revision: u64,
     pub created_at_ms: u64,
 }
 
@@ -186,7 +192,13 @@ impl LeasedAgent {
             applied_home_steer_ids: Vec::new(),
             home_steer_receipts: Vec::new(),
             replayable_completion: None,
+            skill_names: None,
+            skill_view_revision: 0,
             created_at_ms: unix_epoch_ms(),
         }
     }
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }

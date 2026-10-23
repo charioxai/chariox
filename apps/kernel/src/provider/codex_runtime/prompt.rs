@@ -38,6 +38,11 @@ pub fn submit_codex_prompt(
         }
         .steer_not_submitted(true));
     }
+    // Instruction delivery may settle only after the official harness RPC
+    // accepts it. The older buffered-error path remains for ordinary turns.
+    // An empty delivery can mark home-built leased instructions already present
+    // in hidden_system_context. Presence retains the same strict RPC contract.
+    let requires_skill_ack = envelope.skill_delivery.is_some();
     let client = codex_client_for_run(run, state.endpoint(), None)
         .map_err(|error| error.steer_not_submitted(envelope.steering))?;
     let client = if state.read_only_discovery_permissions() || run.read_only_discovery() {
@@ -60,8 +65,8 @@ pub fn submit_codex_prompt(
         model.as_deref(),
         hidden_context_for_provider(&envelope.hidden_system_context),
     ) {
-        if envelope.steering {
-            return Err(error.steer_not_submitted(true));
+        if envelope.steering || requires_skill_ack {
+            return Err(error.steer_not_submitted(envelope.steering));
         }
         state.buffered_notifications.push(CodexNotification::Error {
             message: error.to_string(),
@@ -81,8 +86,8 @@ pub fn submit_codex_prompt(
                 context,
                 &mut state.buffered_notifications,
             ) {
-                if envelope.steering {
-                    return Err(error.steer_not_submitted(true));
+                if envelope.steering || requires_skill_ack {
+                    return Err(error.steer_not_submitted(envelope.steering));
                 }
                 state.buffered_notifications.push(CodexNotification::Error {
                     message: error.to_string(),
@@ -91,7 +96,10 @@ pub fn submit_codex_prompt(
             }
         }
     }
-    let input = codex_input(&envelope.visible_user_prompt, &envelope.attachments);
+    let mut input = codex_input(&envelope.visible_user_prompt, &envelope.attachments);
+    if let Some(delivery) = &envelope.skill_delivery {
+        input.extend(delivery.codex_input.iter().cloned());
+    }
     let active_steering_turn_id = envelope.steering.then(|| {
         state
             .active_turn_id
@@ -125,7 +133,7 @@ pub fn submit_codex_prompt(
     let response = match response_result {
         Ok(response) => response,
         Err(error) => {
-            if envelope.steering {
+            if envelope.steering || requires_skill_ack {
                 return Err(error);
             }
             state.buffered_notifications.push(CodexNotification::Error {
@@ -134,6 +142,13 @@ pub fn submit_codex_prompt(
             return Ok(());
         }
     };
+    if requires_skill_ack && codex_turn_id_from_start_response(&response).is_none() {
+        return Err(DaemonError::ProviderProtocol {
+            provider_run_id: run.id().into(),
+            operation: "skills.v2.delivery",
+            message: "Codex did not acknowledge the selected skill turn".into(),
+        });
+    }
     note_codex_turn_start_response(
         &mut state.active_turn_id,
         &mut state.turn_tracker,
@@ -258,6 +273,7 @@ pub(super) fn codex_turn_id_from_start_response(response: &Value) -> Option<Stri
         .get("turn")
         .and_then(|turn| turn.get("id"))
         .and_then(Value::as_str)
+        .or_else(|| response.get("turnId").and_then(Value::as_str))
         .or_else(|| response.get("id").and_then(Value::as_str))
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -298,22 +314,40 @@ mod prompt_tests {
     // MP-08/MP-10: native input and Chariox-origin input share this provider seam.
     #[test]
     fn native_codex_turns_keep_hidden_context_out_of_user_input() {
-        assert_codex_hidden_context_continuity(false, false);
+        assert_codex_hidden_context_continuity(false, false, false, false);
     }
 
     // MP-08/MP-10: managed initialization and resume must keep the first
     // conversation when a later prompt refreshes hidden runtime context.
     #[test]
     fn managed_codex_hidden_context_refresh_preserves_conversation() {
-        assert_codex_hidden_context_continuity(true, false);
+        assert_codex_hidden_context_continuity(true, false, false, false);
     }
 
     #[test]
     fn resumed_codex_hidden_context_refresh_preserves_conversation() {
-        assert_codex_hidden_context_continuity(true, true);
+        assert_codex_hidden_context_continuity(true, true, false, false);
     }
 
-    fn assert_codex_hidden_context_continuity(managed: bool, resumed: bool) {
+    // MP-08 / MP-10 / MP-11: an unavailable hidden channel is not Loaded.
+    #[test]
+    fn skill_codex_context_failure_is_not_a_successful_delivery() {
+        assert_codex_hidden_context_continuity(false, false, true, false);
+        assert_codex_hidden_context_continuity(true, true, true, false);
+    }
+
+    #[test]
+    fn leased_skill_existing_hidden_context_failure_is_not_a_delivery() {
+        assert_codex_hidden_context_continuity(false, false, true, true);
+        assert_codex_hidden_context_continuity(true, true, true, true);
+    }
+
+    fn assert_codex_hidden_context_continuity(
+        managed: bool,
+        resumed: bool,
+        selected: bool,
+        existing_context_only: bool,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture");
         let address = listener.local_addr().expect("fixture address");
         let server = thread::spawn(move || {
@@ -445,21 +479,42 @@ mod prompt_tests {
             .expect("submit prompt");
         }
         state.active_turn_id = None;
-        super::submit_codex_prompt(
-            &run,
-            &mut state,
-            &PromptEnvelope::new(
-                "must not submit",
-                "hidden rejected",
-                Vec::new(),
-                PromptManifest::current(),
-            ),
-        )
-        .expect("provider rejection is projected through notifications");
+        let mut rejected = PromptEnvelope::new(
+            "must not submit",
+            "hidden rejected",
+            Vec::new(),
+            PromptManifest::current(),
+        );
+        if selected {
+            rejected = rejected.with_skill_delivery(
+                crate::provider::skill_delivery::ProviderSkillDelivery {
+                    visible_prompt: "must not submit".into(),
+                    hidden_context: if existing_context_only {
+                        String::new()
+                    } else {
+                        "selected instructions".into()
+                    },
+                    codex_input: vec![],
+                    requires_native_load_ack: vec![],
+                    typed_leased_loads: vec![],
+                    leased_names: None,
+                },
+            );
+        }
+        let result = super::submit_codex_prompt(&run, &mut state, &rejected);
+        if selected {
+            assert!(result
+                .expect_err("failed skill bridge cannot acknowledge Loaded")
+                .to_string()
+                .contains("context injection unavailable"));
+            assert!(state.buffered_notifications.is_empty());
+        } else {
+            result.expect("ordinary provider rejection is projected through notifications");
+            assert!(state.buffered_notifications.iter().any(|notification| matches!(
+                notification, CodexNotification::Error { message } if message.contains("context injection unavailable")
+            )));
+        }
         assert!(state.active_turn_id.is_none());
-        assert!(state.buffered_notifications.iter().any(|notification| matches!(
-            notification, CodexNotification::Error { message } if message.contains("context injection unavailable")
-        )));
         drop(state);
         let requests = server.join().expect("join fixture");
         for ((context, request), marker) in requests.iter().zip(["FIRST", "SECOND"]) {
@@ -481,6 +536,21 @@ mod prompt_tests {
                 .expect("hidden channel")
                 .contains(marker));
         }
+    }
+
+    #[test]
+    fn skill_codex_ack_requires_a_nonempty_official_turn_identity() {
+        for value in [json!({}), json!({"turn":{"id":" "}}), json!({"turnId":""})] {
+            assert!(super::codex_turn_id_from_start_response(&value).is_none());
+        }
+        assert_eq!(
+            super::codex_turn_id_from_start_response(&json!({"turnId":"steered"})).as_deref(),
+            Some("steered")
+        );
+        assert_eq!(
+            super::codex_turn_id_from_start_response(&json!({"turn":{"id":"started"}})).as_deref(),
+            Some("started")
+        );
     }
 
     #[test]

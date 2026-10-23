@@ -67,7 +67,6 @@ type NativeCodexOptions = {
   permissions: "required" | "yolo"
   initialPrompt?: string
   grantMcps: string[]
-  grantSkills: string[]
 }
 
 export async function runCodexNativeTui(args: string[]): Promise<void> {
@@ -105,7 +104,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     const agent = created?.agent
       ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
       : await spawnNativeAgent(client, session.id, "codex", options.agentAlias, options.model, worktree, options.effort, options.mode, options.permissions, options.machineRef, options.sliceRef)
-    await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
+    await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps)
     const bindState: CodexNativeBindingState = {
       promise: null,
       run: null,
@@ -160,7 +159,6 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       sliceLookupError: options.sliceRef ? sliceInventory.error : null,
       run: bindState.run,
       grantedMcps: options.grantMcps,
-      grantedSkills: options.grantSkills,
       providerLines: [
         `  app-server:     ${upstreamEndpoint}`,
         `  proxy:          ${proxyUrl}`,
@@ -170,7 +168,10 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     }))
     pump = startNativeKernelPumpLoop(client, session.id, attachment.id, {
       onTerminalRecords: (records) => proxy?.projectKernelOutputToTui(records),
-      onAgentActivity: (activity) => proxy?.projectKernelActivityToTui(activity[agent.id]),
+      onAgentActivity: async (activity) => {
+        await proxy?.projectKernelActivityToTui(activity[agent.id])
+        await proxy?.refreshSkills()
+      },
       onInteractions: (interactions) => proxy?.projectKernelInteractionsToTui(interactions),
       pollRuntimeNotices: false,
       debug: debugNativeCodex,
@@ -200,7 +201,6 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
     mode: "build",
     permissions: "yolo",
     grantMcps: [],
-    grantSkills: [],
   }
   let relayTokenSource = false
   const positional: string[] = []
@@ -294,8 +294,7 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
         options.grantMcps.push(next())
         break
       case "--grant-skill":
-        options.grantSkills.push(next())
-        break
+        throw new Error("--grant-skill is retired: install skills in Skills and select instructions with $name")
       case "--help":
       case "-h":
         printNativeCodexUsage()
@@ -334,7 +333,6 @@ function printNativeCodexUsage() {
     "",
     "behavior:",
     "  --grant-mcp NAME                Grant an installed Chariox MCP to the native agent before provider launch",
-    "  --grant-skill NAME              Grant an installed Chariox skill to the native agent before provider launch",
     "  creates a new Chariox agent in the selected session and launches native `codex --remote` for it.",
   ].join("\n") + "\n")
 }

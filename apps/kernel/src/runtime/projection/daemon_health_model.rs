@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 
 use super::ProjectionMetadata;
 use crate::agent::{AgentInstance, AgentState};
-use crate::extension::{ExtensionKind, RemoteExtensionManifestSyncState};
+use crate::extension::RemoteExtensionManifestSyncState;
 use crate::runtime::capability_executor::CapabilityExecutorHealthSnapshot;
 use crate::runtime::process_health::KernelProcessHealthSnapshot;
 use crate::runtime::workspace_coordinator::WorkspaceOperationClaimSnapshot;
@@ -628,7 +628,6 @@ impl RemoteExtensionSyncHealthSnapshot {
             let home_proxy_grants = agent
                 .extension_grants()
                 .iter()
-                .filter(|grant| grant.kind != ExtensionKind::Skill)
                 .map(|grant| format!("{}:{}", grant.kind.as_str(), grant.name))
                 .collect::<Vec<_>>();
             let home_proxy_grant_count = home_proxy_grants.len();

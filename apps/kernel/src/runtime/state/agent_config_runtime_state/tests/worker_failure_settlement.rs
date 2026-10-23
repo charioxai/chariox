@@ -112,7 +112,6 @@ async fn assert_offline_worker_failure_settlement(
                 Some(context),
                 Some(git_context),
                 Vec::new(),
-                None,
                 crate::extension::RemoteExtensionManifest::default(),
             )
             .unwrap();

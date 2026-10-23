@@ -535,8 +535,11 @@ pub(crate) async fn enqueue_peer_request_via_connected_relay_authorized(
             if stale_public_key.is_some() {
                 state.write().await.forget_peer_public_key(&target_ref);
             }
-            let discovery =
-                crate::runtime::cloud_api_client::relay_metadata_discovery_config(config).await?;
+            let discovery = crate::runtime::cloud_api_client::relay_target_discovery_config(
+                config,
+                &target_ref,
+            )
+            .await?;
             let kernel = relay_discovery::get_live_kernel(&discovery, &target_ref).await?;
             authorize()?;
             let public_key = kernel.public_key;
@@ -828,7 +831,7 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
     // MP-08 / MP-10 / MP-11: temporary peer discovery must use a metadata
     // grant, while registration below retains the original kernel grant.
     let discovery_config =
-        crate::runtime::cloud_api_client::relay_metadata_discovery_config(config).await?;
+        crate::runtime::cloud_api_client::relay_target_discovery_config(config, target_ref).await?;
     #[cfg(test)]
     let kernel = {
         let peer_call_id = test_trace.peer_call_id();

@@ -15,12 +15,14 @@ pub(crate) use claude_executable::TestClaudeExecutable;
 mod pre_exec_child;
 mod room_turn;
 mod runtime_mcp;
+mod skill_catalog;
 mod task_subscription;
 pub(crate) use environment::{environment_test_isolated, isolate_environment_test};
 #[cfg(unix)]
 pub(crate) use pre_exec_child::PreExecChild;
 pub(crate) use room_turn::admit_room_test_turn;
 pub(crate) use runtime_mcp::TestRuntimeMcp;
+pub(crate) use skill_catalog::install_skill_through_requests;
 pub(crate) use task_subscription::mixed_task_subscription_updates;
 
 /// Run ambient-environment fixtures outside the parallel test process. A mutex

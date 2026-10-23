@@ -226,6 +226,7 @@ impl CommandRouter {
         crate::runtime::remote_relay_inventory::projected_relay_status(
             self.relay_state.clone(),
             self.config_projection.clone(),
+            self.runtime_state.control_capabilities(),
         )
         .await
     }

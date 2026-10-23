@@ -71,6 +71,15 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         {
             relay_error("transport_error", &error.to_string(), false)
         }
+        DaemonError::LocalTransport { operation, message } if *operation == "skill.package" => {
+            relay_error(
+                crate::transport::relay_peer::SKILL_PACKAGE_STORE_FAILED_CODE,
+                &format!(
+                    "the worker could not store the skill package ({message}); free disk space or fix the permissions of the Chariox skill cache on the worker, then send the message again"
+                ),
+                false,
+            )
+        }
         DaemonError::LocalTransport { .. } => {
             relay_error("transport_error", &error.to_string(), true)
         }

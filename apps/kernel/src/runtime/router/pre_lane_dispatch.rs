@@ -130,6 +130,12 @@ impl CommandRouter {
             .await
             .map(Some);
         }
+        if let LocalDaemonRequest::SkillsV2(skills_request) = request {
+            return self
+                .dispatch_skills_v2(command, skills_request.clone(), caller_user_id)
+                .await
+                .map(Some);
+        }
         // MP-08 / MP-10 / MP-11: poll only the selected request handler.
         // A missing provider projection still falls through to ordinary dispatch.
         if let Some(handler) = self.select_pre_lane_request(request, caller_user_id) {

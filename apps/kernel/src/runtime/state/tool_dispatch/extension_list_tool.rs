@@ -3,7 +3,6 @@ use crate::runtime::state::KernelRuntimeState;
 
 use super::capability_registry::{
     connector_registry, mcp_registry_for_workspace, script_registry_for_workspace,
-    skill_registry_for_workspace,
 };
 
 impl KernelRuntimeState {
@@ -12,13 +11,7 @@ impl KernelRuntimeState {
         session: &crate::session::RuntimeSession,
         agent: &crate::agent::AgentInstance,
         arguments: serde_json::Value,
-    ) -> Result<
-        (
-            crate::transport::runtime_tools::RuntimeToolResult,
-            Option<crate::skill::CharioxSkillPackage>,
-        ),
-        DaemonError,
-    > {
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let args = serde_json::from_value::<crate::transport::runtime_tools::ListExtensionsArgs>(
             arguments,
         )
@@ -26,23 +19,21 @@ impl KernelRuntimeState {
             operation: "runtime_tool_list_extensions",
             message: format!("invalid tool arguments: {error}"),
         })?;
-        let kind = args.kind.as_deref().unwrap_or("all");
+        let kind = args
+            .kind
+            .as_ref()
+            .map(|kind| kind.as_str())
+            .unwrap_or("all");
         let remote_home_proxy = agent.remote_execution().is_some();
         let active_execution_location = if remote_home_proxy { "home" } else { "worker" };
         let active_definition_origin = if remote_home_proxy { "home" } else { "worker" };
-        if !matches!(
-            kind,
-            "all" | "mcp" | "skill" | "script" | "connector" | "app"
-        ) {
-            return Ok((
-                crate::transport::runtime_tools::RuntimeToolResult {
-                    ok: false,
-                    payload: serde_json::json!({
-                        "error": "kind must be one of: all, mcp, skill, script, connector, app"
-                    }),
-                },
-                None,
-            ));
+        if !matches!(kind, "all" | "mcp" | "script" | "connector" | "app") {
+            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                ok: false,
+                payload: serde_json::json!({
+                    "error": "kind must be one of: all, mcp, script, connector, app"
+                }),
+            });
         }
         if args.apps_cursor.is_some() && !matches!(kind, "all" | "app") {
             return Err(DaemonError::LocalTransport {
@@ -70,32 +61,6 @@ impl KernelRuntimeState {
                         "execution_location": active_execution_location,
                         "effective_when_requested": "after_provider_reload",
                         "ready_state": if granted { "granted" } else { "available" }
-                    })
-                })
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-
-        let skill_registry = skill_registry_for_workspace(session.workspace_id());
-        let skills = if matches!(kind, "all" | "skill") {
-            skill_registry
-                .list()?
-                .into_iter()
-                .map(|skill| {
-                    let granted = agent
-                        .has_extension_grant(crate::extension::ExtensionKind::Skill, &skill.name);
-                    serde_json::json!({
-                        "kind": "skill",
-                        "name": skill.name,
-                        "description": skill.description,
-                        "short_description": skill.short_description,
-                        "granted": granted,
-                        "authority": if remote_home_proxy { "home" } else { "worker" },
-                        "definition_origin": if remote_home_proxy { "projected_snapshot" } else { "worker" },
-                        "execution_location": "none",
-                        "effective_when_requested": "now",
-                        "ready_state": if granted { "ready" } else { "available" }
                     })
                 })
                 .collect::<Vec<_>>()
@@ -226,23 +191,19 @@ impl KernelRuntimeState {
             (Vec::new(), None)
         };
 
-        Ok((
-            crate::transport::runtime_tools::RuntimeToolResult {
-                ok: true,
-                payload: serde_json::json!({
-                    "agent_ref": agent.agent_ref(),
-                    "extensions": {
-                        "mcps": mcps,
-                        "skills": skills,
-                        "scripts": scripts,
-                        "connectors": connectors,
-                        "apps": apps,
-                        "apps_next_cursor": apps_next_cursor
-                    }
-                }),
-            },
-            None,
-        ))
+        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({
+                "agent_ref": agent.agent_ref(),
+                "extensions": {
+                    "mcps": mcps,
+                    "scripts": scripts,
+                    "connectors": connectors,
+                    "apps": apps,
+                    "apps_next_cursor": apps_next_cursor
+                }
+            }),
+        })
     }
 }
 

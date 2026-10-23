@@ -533,3 +533,77 @@ async fn room_workflows_local_drill_initial_inventory_other_client_creation_and_
     let _ = task.await;
     result.expect("one subscription delivers authoritative inventory changes");
 }
+
+// A subscribed client with no activity learns of a catalog mutation from the
+// kernel; it must not have to poll or wait for the next heartbeat.
+#[tokio::test]
+async fn idle_local_subscription_receives_skills_changed_after_catalog_mutation() {
+    let mut app = crate::DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace",
+            "worktree",
+        ))
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "idle-skills",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        Arc::new(tokio::sync::Mutex::new(app)),
+        1,
+    ));
+    let runtime = Arc::new(KernelTransportRuntime::default());
+    let (priority_tx, _priority_rx) = mpsc::channel(1);
+    let (event_tx, mut event_rx) = mpsc::channel(256);
+    let (close_tx, _close_rx) = mpsc::unbounded_channel();
+    let task = tokio::spawn(run_subscription_loop(
+        router.clone(),
+        runtime,
+        KernelOutgoingSender::new(priority_tx, event_tx),
+        close_tx,
+        Arc::new(AtomicBool::new(false)),
+        KernelSubscription {
+            session_id: session.id().into(),
+            attachment_id: attachment.id().into(),
+            subscription_scope: KernelSubscriptionScope::Session,
+            connection_class: crate::local::KernelConnectionClass::Terminal,
+        },
+    ));
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let KernelOutgoingFrame::Event { event, .. } = event_rx.recv().await.unwrap() {
+                if matches!(*event, KernelEvent::SkillsChanged { .. }) {
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        while event_rx.try_recv().is_ok() {}
+        let revision =
+            crate::test_support::install_skill_through_requests(&router, "idle-probe", 0).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let KernelOutgoingFrame::Event { event, .. } = event_rx.recv().await.unwrap() {
+                    if let KernelEvent::SkillsChanged {
+                        change: crate::skill::v2::SkillCatalogEvent::Changed { revision: seen, .. },
+                        ..
+                    } = *event
+                    {
+                        assert_eq!(seen, revision);
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("an idle subscription must receive skills_changed within 2 s");
+    })
+    .await;
+    task.abort();
+    let _ = task.await;
+    result.expect("the idle subscription never reached the mutation drill");
+}

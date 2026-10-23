@@ -5,7 +5,6 @@ use crate::provider::{
     FinishedProviderPromptSubmitJob, ProviderPromptSignalBatch, ProviderRunOperationLanes,
     ProviderRunTokenUsage, RuntimeProviderRun,
 };
-use crate::session::PromptAttachment;
 
 use super::super::{
     claude_runtime::{
@@ -227,24 +226,14 @@ impl ProviderProcessService {
         self.run_actor_mailbox.stop_run(provider_run_id);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Preserve the existing enqueue_structured_prompt_submit operation signature and explicit context arguments"
-    )]
     pub(crate) fn enqueue_structured_prompt_submit(
         &mut self,
         session_id: String,
         provider_run_id: String,
         agent_id: String,
         prompt_id: String,
-        origin_prompt_id: &str,
         run: &RuntimeProviderRun,
-        prompt: &str,
-        hidden_system_context: &str,
-        attachments: &[PromptAttachment],
-        mode: PromptAssemblyMode,
-        private_assessment_evidence: Option<crate::prompt_assembly::AssessmentEvidence>,
-        steering: bool,
+        envelope: crate::prompt_assembly::PromptEnvelope,
     ) -> Result<(), DaemonError> {
         if let Ok(active_run) = self.get_run_mut(run.id()) {
             active_run.clear_terminal_diagnostic();
@@ -257,30 +246,6 @@ impl ProviderProcessService {
                     "provider run `{provider_run_id}` does not use structured prompt I/O"
                 ),
             });
-        }
-        let assessment_only = mode == PromptAssemblyMode::AssessmentTurn;
-        let mode = if assessment_only || mode == PromptAssemblyMode::MetaagentProviderTurn {
-            mode
-        } else if run.client_interface().is_chariox() {
-            PromptAssemblyMode::NormalProviderTurn
-        } else {
-            PromptAssemblyMode::NativeTuiProviderTurn
-        };
-        let hidden_system_context = format!(
-            "{hidden_system_context}\n\n{}",
-            crate::prompt_assembly::agent_message_origin_context(origin_prompt_id)
-        );
-        let mut envelope = PromptAssemblyService::from_env()?
-            .assemble_provider_turn(
-                run,
-                prompt,
-                Some(&hidden_system_context),
-                attachments.to_vec(),
-                mode,
-            )?
-            .with_steering(steering);
-        if assessment_only {
-            envelope.private_assessment_evidence = private_assessment_evidence;
         }
         self.run_actor_mailbox.spawn_submit(
             session_id,

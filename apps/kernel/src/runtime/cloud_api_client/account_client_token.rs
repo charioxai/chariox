@@ -214,6 +214,31 @@ mod tests {
         assert_eq!(body["allowUnpairedClientSubject"], true);
     }
 
+    #[tokio::test]
+    async fn hosted_slice_target_lookup_carries_the_exact_worker_grant() {
+        let (api_url, server) = token_server();
+        let mut cloud = profile(api_url);
+        cloud.relay_url = "wss://relay.example.test".into();
+        let mut config =
+            crate::config::DaemonConfig::new("owner-kernel", "machine-fixture", "test");
+        config.relay_url = Some(cloud.relay_url.clone());
+        config.relay_token = Some("synthetic-kernel-registration-token".into());
+        config.cloud_relay = Some(cloud);
+        let discovery = super::super::relay_target_discovery_config(&config, "slice:worker-hash")
+            .await
+            .unwrap();
+        let body = server.join().unwrap().unwrap();
+        assert_eq!(
+            body["subject"],
+            "slice-discovery:owner-kernel:slice:worker-hash"
+        );
+        assert_eq!(
+            discovery.relay_token.as_deref(),
+            Some("synthetic-client-token")
+        );
+        assert!(discovery.cloud_relay.is_none());
+    }
+
     // MP-08 / MP-10 / MP-11: exercise the registry caller and its wire token,
     // rather than only the token factory used by ordinary inventory refresh.
     #[tokio::test]

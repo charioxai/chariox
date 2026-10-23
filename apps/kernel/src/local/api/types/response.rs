@@ -3,6 +3,7 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    SkillsV2 { result: crate::skill::v2::SkillsV2Response },
     SshMachine { machine: SshMachineResult },
     EnvironmentUnsupportedFeature { feature: crate::project_environment::EnvironmentCapability, supported_schema: u32 },
     ProjectEnvironmentDiff { diff: crate::project_environment::EnvironmentRevisionDiff },
@@ -98,6 +99,7 @@ pub enum LocalDaemonResponse {
     ProviderRunsLaunchAccepted { provider_runs: Vec<ProviderRunBatchLaunchResult>, failures: Vec<BatchOperationFailure>, },
     ProjectsListed { projects: Vec<RuntimeProject>, },
     ProjectPinned { project: RuntimeProject, },
+    ProjectCreated { project: RuntimeProject, },
     ProjectRenamed { project: RuntimeProject, },
     ProjectWorkspacesUpdated { project: RuntimeProject, },
     ProjectArchived { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
@@ -198,13 +200,6 @@ pub enum LocalDaemonResponse {
     Connector { connector: CharioxConnectorDefinition, },
     ConnectorsListed { connectors: Vec<CharioxConnectorDefinition>, },
     ConnectorTested { execution: ConnectorExecution, },
-    Skill { skill: CharioxSkillMetadata, },
-    SkillInstalled { skill: CharioxSkillMetadata, path: PathBuf, },
-    SkillUpserted { skill: CharioxSkillMetadata, path: PathBuf, },
-    SkillUpdated { skill: CharioxSkillMetadata, path: PathBuf, },
-    SkillUninstalled { skill: CharioxSkillMetadata, path: PathBuf, },
-    SkillsImported { outcome: SkillImportOutcome, },
-    SkillsListed { skills: Vec<CharioxSkillMetadata>, },
     RelayStatus { status: RelayStatus, },
     RelayConfigured { status: RelayStatus, },
     CloudRelayStatus { profile: Option<CloudRelayProfile>, },
