@@ -2,7 +2,11 @@ use super::*;
 use crate::session::CreateSessionRequest;
 
 /// An agent saved before default names existed: same record, no alias.
-fn unnamed_agent(app: &DaemonApp, session_id: &str) -> crate::agent::AgentInstance {
+fn unnamed_agent(
+    app: &DaemonApp,
+    session_id: &str,
+    created_at_ms: u64,
+) -> crate::agent::AgentInstance {
     let mut agent = {
         let mut sessions = app.sessions_mut();
         app.agents()
@@ -13,7 +17,11 @@ fn unnamed_agent(app: &DaemonApp, session_id: &str) -> crate::agent::AgentInstan
             .unwrap()
     };
     agent.set_alias(None);
-    app.agents().restore_agent(agent)
+    // Agent ids are random, so the creation time is what orders the names.
+    let mut record = serde_json::to_value(&agent).unwrap();
+    record["created_at_ms"] = created_at_ms.into();
+    app.agents()
+        .restore_agent(serde_json::from_value(record).unwrap())
 }
 
 fn alias_of(app: &DaemonApp, agent_id: &str) -> Option<String> {
@@ -37,8 +45,8 @@ fn names_given_while_restoring_old_agents_survive_a_restart_after_a_rename() {
                 "worktree-names",
             ))
             .unwrap();
-        let first = unnamed_agent(&app, session.id());
-        let second = unnamed_agent(&app, session.id());
+        let first = unnamed_agent(&app, session.id(), 10);
+        let second = unnamed_agent(&app, session.id(), 20);
         app.save_durable_state_snapshot().unwrap();
         (first.id().to_string(), second.id().to_string())
     };
