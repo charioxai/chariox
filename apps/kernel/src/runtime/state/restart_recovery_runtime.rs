@@ -68,7 +68,7 @@ impl KernelRuntimeState {
     pub(crate) fn spawn_durable_restart_recovery(&self) -> DurableRestartRecoveryTask {
         // A steer that was being handed to the provider when the kernel stopped
         // may already be in its turn: drop it before recovery can promote it.
-        self.owned.reconcile_inactive_local_steers();
+        let recovered_local_steers = self.owned.reconcile_inactive_local_steers();
         // Recovery belongs only to work that survived this kernel restart.
         // Keep that identity set fixed across the retry window so prompts
         // accepted after startup can never be mistaken for orphaned work.
@@ -90,6 +90,7 @@ impl KernelRuntimeState {
         DurableRestartRecoveryTask(tokio::spawn(async move {
             state.owned.publication_activation.wait().await;
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            state.resume_recovered_local_steer_queues(recovered_local_steers);
             for (session_id, agent_id, prompt_id) in uncertain_steer_targets {
                 state.spawn_remote_queued_steer_receipt_reconciliation(
                     session_id, agent_id, prompt_id,
