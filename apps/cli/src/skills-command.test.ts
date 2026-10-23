@@ -84,6 +84,14 @@ test("a refused /skills command keeps the reason in the transcript without the t
   assert.deepEqual(footers, ["Skills: skill name `review` is occupied; choose Rename or Replace"])
 })
 
+test("/skills tells what to do next when the kernel does not answer in time", async () => {
+  const { notices, footers, run } = harness([], new Error("kernel transport `handle kernel response` failed: timed out"))
+  await run("/skills repo-update Acme")
+  const expected = "Skills: the kernel did not answer in time and may still be working. Run /skills list to see whether the change landed, then repeat the command if it did not."
+  assert.deepEqual(notices, [expected])
+  assert.deepEqual(footers, [expected])
+})
+
 test("/skills from lists the focused provider's skills read-only", async () => {
   const { notices, run } = harness()
   await run("/skills from")

@@ -47,6 +47,8 @@ const USAGE = "usage: /skills list | chariox | project | environment | from | sh
   + "ungroup <skill> | package-state <package> auto|manual|off|reset [--project] | update-package <package> | repo-update <package> | "
   + "remove-package <package> | ungroup-package <package> | confirm | cancel"
 
+// A reply that never came says nothing about the kernel's work: it may still be running.
+const UNANSWERED = "the kernel did not answer in time and may still be working. Run /skills list to see whether the change landed, then repeat the command if it did not."
 const PROVIDER_LABELS: Record<string, string> = { codex: "Codex", claude: "Claude", opencode: "OpenCode" }
 const providerLabel = (provider: string): string => PROVIDER_LABELS[provider] ?? provider
 const stateLabel = (state: SkillState): string => state[0]!.toUpperCase() + state.slice(1)
@@ -316,6 +318,7 @@ export function createSkillsCommand(deps: SkillsCommandDeps): (args: readonly st
       case "repo": {
         if (!first) throw new SkillsCommandError("usage: /skills repo <https-url> [--project] [--name <package>] [--only <path,path>]")
         const scope = flags.project ? requireProject() : { kind: "chariox" as const }
+        deps.flashFooter("Fetching the repository", "info")
         const listing = await request(skillsV2Request({ action: "resolve_repository", url: first }), "repository")
         const only = flags.values.get("only")?.split(",").map(path => path.trim().replace(/^\/+|\/+$/g, ""))
         const chosen = only ? listing.skills.filter(skill => only.includes(skill.path)) : listing.skills
@@ -414,7 +417,10 @@ export function createSkillsCommand(deps: SkillsCommandDeps): (args: readonly st
     } catch (error) {
       const raw = error instanceof Error ? error.message : String(error)
       // The footer cuts long text; the transcript keeps the whole reason, without the transport wrappers.
-      const message = error instanceof SkillsCommandError ? raw : `Skills: ${raw.replace(/^(?:(?:kernel|local) transport `[^`]*` failed: )+/, "")}`
+      const reason = raw.replace(/^(?:(?:kernel|local) transport `[^`]*` failed: )+/, "")
+      const message = error instanceof SkillsCommandError ? raw
+        : /^timed out$/.test(reason) ? `Skills: ${UNANSWERED}`
+          : `Skills: ${reason}`
       deps.appendNotice(message)
       deps.flashFooter(message, "error")
     }
