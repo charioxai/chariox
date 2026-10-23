@@ -18,6 +18,18 @@ export const keysyms = { Tab: 0xff09, Enter: 0xff0d, Space: 0x20, Escape: 0xff1b
 
 const FOCUS_GRACE_MS = 100;
 export const notches = delta => delta % 120 === 0 ? delta / 120 : null;
+// Chrome's own UI (strip, menus, popups) has no CDP path: X11 notches only. A wheel
+// step of 100 or more turns per step; fine trackpad deltas accumulate to whole notches.
+export class ChromeWheel {
+  constructor() { this.rest = { x: 0, y: 0 }; }
+  notches(axis, delta) {
+    if (!Number.isFinite(delta)) return null;
+    const whole = notches(delta);
+    if (whole !== null || Math.abs(delta) >= 100) { this.rest[axis] = 0; return whole ?? Math.round(delta / 100); }
+    const sum = Math.sign(this.rest[axis]) === -Math.sign(delta) ? delta : this.rest[axis] + delta, turned = Math.trunc(sum / 120);
+    this.rest[axis] = sum - turned * 120; return turned;
+  }
+}
 // MP-11: native pointer input is at most once. An action sent to the native
 // worker without a reply may have reached the page, so it counts as dispatched
 // (the retired source re-observes the outcome) and is never replayed via CDP.
