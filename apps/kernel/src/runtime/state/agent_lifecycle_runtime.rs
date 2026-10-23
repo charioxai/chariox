@@ -856,6 +856,9 @@ impl KernelRuntimeState {
         if let Err(error) = self.sweep_agent_wakes(now).await {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: wake dead-man check retained");
         }
+        let tasks = self.owned.durable_state_store.agent_tasks(None, None)?;
+        self.check_leased_task_connections(&tasks).await?;
+        let now = crate::session::unix_epoch_ms();
         let mut blocked = Vec::new();
         for task in self.owned.durable_state_store.agent_tasks(None, None)? {
             let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
@@ -1193,5 +1196,12 @@ impl KernelRuntimeState {
             let _ = self.owned.session_snapshot(&room);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl KernelRuntimeState {
+    pub(crate) async fn sweep_agent_lifecycle_for_test(&self) -> Result<(), DaemonError> {
+        self.sweep_agent_lifecycle().await
     }
 }
