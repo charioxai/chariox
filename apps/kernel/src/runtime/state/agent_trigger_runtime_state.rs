@@ -1402,6 +1402,17 @@ pub(super) mod tests {
         for cut in final_trigger_steer_writes(&events) {
             let (restarted, _) = restart_from_log_cut(&events, cut, "trigger-steer-restart").await;
             assert_restart_cannot_refire(&restarted, &agent_id, &format!("log cut at {cut}"));
+            let recovered = restarted.owned.session_snapshot(&session_id).unwrap();
+            let delivery = recovered
+                .trigger_deliveries()
+                .iter()
+                .find(|delivery| delivery.trigger_id() == trigger.id())
+                .expect("the firing must remain recorded after recovery");
+            assert_eq!(
+                delivery.busy_policy(),
+                AgentTriggerBusyPolicy::Steer,
+                "restart must preserve steering after the once trigger retired"
+            );
         }
     }
 

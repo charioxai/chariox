@@ -1365,11 +1365,13 @@ impl KernelRuntimeOwnedState {
                         continue;
                     }
                     if let Some(trigger_id) = prompt.agent_trigger_id() {
+                        // Only the steer path persists this hold. Its once
+                        // trigger can already be retired when recovery runs.
                         let busy_policy = session
                             .agent_triggers()
                             .iter()
                             .find(|trigger| trigger.id() == trigger_id)
-                            .map_or(crate::session::AgentTriggerBusyPolicy::Queue, |trigger| {
+                            .map_or(crate::session::AgentTriggerBusyPolicy::Steer, |trigger| {
                                 trigger.busy_policy()
                             });
                         if let Err(error) = self.settle_steered_firing(
