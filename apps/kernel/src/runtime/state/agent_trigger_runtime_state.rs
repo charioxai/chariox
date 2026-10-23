@@ -427,10 +427,11 @@ impl KernelRuntimeState {
         }
     }
 
-    pub(crate) async fn dispatch_due_agent_triggers(&self, now_ms: u64) {
-        let recovered_agents = self
-            .owned
-            .reconcile_inactive_local_steers()
+    pub(super) fn resume_recovered_local_steer_queues(
+        &self,
+        recovered_steers: Vec<(String, String, String)>,
+    ) {
+        let recovered_agents = recovered_steers
             .into_iter()
             .map(|(session_id, agent_id, _)| (session_id, agent_id))
             .collect::<BTreeSet<_>>();
@@ -443,6 +444,11 @@ impl KernelRuntimeState {
                 );
             }
         }
+    }
+
+    pub(crate) async fn dispatch_due_agent_triggers(&self, now_ms: u64) {
+        let recovered_steers = self.owned.reconcile_inactive_local_steers();
+        self.resume_recovered_local_steer_queues(recovered_steers);
         let dispatches = self
             .owned
             .session_store
@@ -1414,6 +1420,15 @@ pub(super) mod tests {
     // MP-08/MP-10/MP-11: clearing a hold must wake ordinary queued work.
     #[tokio::test]
     async fn live_hold_recovery_dispatches_remaining_user_prompt_once() {
+        hold_recovery_dispatches_remaining_user_prompt_once(false).await;
+    }
+
+    #[tokio::test]
+    async fn restart_hold_recovery_dispatches_remaining_user_prompt_once() {
+        hold_recovery_dispatches_remaining_user_prompt_once(true).await;
+    }
+
+    async fn hold_recovery_dispatches_remaining_user_prompt_once(restart: bool) {
         let mut config = durable_state_config("trigger-live-queue-recovery");
         config.room_agent_tools = false;
         let (_worktree, runtime, session_id, agent_id, attachment_id, _, run_id) =
@@ -1465,12 +1480,26 @@ pub(super) mod tests {
             2,
             "completion cannot cross the held queue head"
         );
-        connection
-            .execute_batch("DROP TRIGGER reject_trigger_settlement;")
-            .unwrap();
-        runtime
-            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
-            .await;
+        let (runtime, _recovery) = if restart {
+            let events = runtime
+                .owned
+                .durable_state_store
+                .load_events_after(0)
+                .unwrap();
+            let (restarted, _) =
+                restart_from_log_cut(&events, events.len(), "held-user-queue-restart").await;
+            install_slow_structured_run(&restarted, &session_id, &agent_id, &run_id, "slow-ack");
+            let recovery = restarted.spawn_durable_restart_recovery();
+            (restarted, Some(recovery))
+        } else {
+            connection
+                .execute_batch("DROP TRIGGER reject_trigger_settlement;")
+                .unwrap();
+            runtime
+                .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+                .await;
+            (runtime, None)
+        };
         let jobs = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 let jobs = runtime
