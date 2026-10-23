@@ -4969,3 +4969,5 @@ absent `prompt_id` (kernels below local 545) as unscoped. No field or variant is
 added; the bump records the changed relay terminal-event semantics under the
 Protocol Change Rule. Web/native minimums are unchanged unless a client requires
 prompt-scoped live rows.
+
+Steered trigger settlement records an internal SQLite firing receipt atomically with its session event. Recovery uses that prompt identity to avoid advancing a recurring trigger twice after interrupted hold removal.
