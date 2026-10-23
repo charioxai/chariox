@@ -414,7 +414,7 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .agent(&request.agent_id)
         }
         LocalDaemonRequest::SetAgentDeadline(request) => {
-            LocalRequestMetadata::new("agent.deadline.set", Interactive)
+            LocalRequestMetadata::new("agent.deadline.set", Normal)
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
