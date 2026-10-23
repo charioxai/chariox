@@ -5,7 +5,9 @@
 import { decodePng, encodePng, maskPixels, displayMaskRegions, displayFullMaskRegions } from './kernel-browser-pixels.mjs';
 import { timestamp } from './kernel-browser-timing.mjs';
 const factor = 1 / 8;
-export function changedClip(before, after, scale) {
+// `bounds` is the actual CSS viewport: a resized one need not divide by 8, so a
+// rounded thumbnail's last column/row can reach past it and must be clamped.
+export function changedClip(before, after, scale, bounds) {
   if (before.width !== after.width || before.height !== after.height) return null;
   let left = after.width, top = after.height, right = -1, bottom = -1;
   for (let y = 0; y < after.height; y++) for (let x = 0; x < after.width; x++) {
@@ -16,8 +18,8 @@ export function changedClip(before, after, scale) {
   }
   if (right < 0) return null;
   const x = Math.max(0,Math.floor(left / scale)-8), y = Math.max(0,Math.floor(top / scale)-8);
-  const width = Math.min(after.width/scale,Math.ceil((right+1)/scale)+8)-x, height = Math.min(after.height/scale,Math.ceil((bottom+1)/scale)+8)-y;
-  return width * height <= after.width*after.height/scale**2*.15 ? { x,y,width,height,scale:1 } : null;
+  const width = Math.min(bounds.width,Math.ceil((right+1)/scale)+8)-x, height = Math.min(bounds.height,Math.ceil((bottom+1)/scale)+8)-y;
+  return width * height <= bounds.width*bounds.height*.15 ? { x,y,width,height,scale:1 } : null;
 }
 export class DisplayCapture {
   // `size` is the Tab's current CSS viewport, which a live resize changes.
@@ -66,7 +68,7 @@ export class DisplayCapture {
     if (!verify && this.source && this.preview?.pixels.equals(preview?.pixels) &&
         tab.input_epoch === this.inputEpoch && policy.values?.length === 0 &&
         this.now()-this.verifiedAt < 250) return this.source;
-    const damage = this.preview && preview && changedClip(this.preview,preview,this.scale*factor);
+    const damage = this.preview && preview && changedClip(this.preview,preview,this.scale*factor,geometry);
     const clip = !verify && this.previous && damage;
     let source, pixels;
     const changing = this.preview && preview && !this.preview.pixels.equals(preview.pixels);

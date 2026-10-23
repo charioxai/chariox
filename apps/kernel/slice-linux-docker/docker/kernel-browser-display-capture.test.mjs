@@ -95,7 +95,7 @@ test('MD-DISPLAY crop pixels stay native; unchanged preview verifies missed fine
 });
 test('MD-DISPLAY large preview damage falls back; wrong document is rejected', async () => {
  const before={width:160,height:100,pixels:Buffer.alloc(160*100*4)}, after={...before,pixels:Buffer.alloc(160*100*4,255)};
- assert.equal(changedClip(before,after,.125),null);
+ assert.equal(changedClip(before,after,.125,canonical()),null);
  const capture=new DisplayCapture(async()=>({tab_id:'t',document_id:'other',data_base64:''}),1,canonical);
  await assert.rejects(capture.next({tab_id:'t',document_id:'d'},{},false),/binding changed/);
  assert.equal(capture.previous,null);
@@ -171,5 +171,24 @@ test('MP-08/MP-11: PNG display capture of a resized Tab accepts its current rast
   assert.deepEqual([first.pixels.width,first.pixels.height],[width*scale,height*scale],`DPR${scale} ${width}x${height} full`);
   const second=await capture.next({...tab,input_epoch:1},{values:[]},true);
   assert.deepEqual([second.pixels.width,second.pixels.height],[width*scale,height*scale],`DPR${scale} ${width}x${height} thumbnail path`);
+ }
+});
+
+// #1073 P2: a resized viewport that does not divide by 8 has a rounded thumbnail; damage in its last
+// column/row must crop inside the actual viewport through the real protected crop path.
+test('MP-08/MP-11: thumbnail damage at the right/bottom edge of an odd resized viewport crops inside it',async()=>{
+ for(const [scale,width,height] of [[1,900,600],[2,901,603],[1,1437,893]]){
+  const tab={tab_id:'t',document_id:'d',input_epoch:0},policy={values:[]},w=width*scale,h=height*scale;
+  const pixels=Buffer.alloc(w*h*4,255);
+  const host={generation:1,scales:new Map([['t',scale]]),screenshot:async()=>({...tab,generation:1,protected_regions:[],data_base64:encodePng(w,h,pixels)})};
+  const capture=new DisplayCapture(clip=>captureProtectedDisplay(host,tab,clip),scale,()=>({width,height}));
+  await capture.next(tab,policy,false);
+  // Paint the viewport's last device pixels, which the thumbnail's final column/row samples.
+  for(let y=h-12;y<h;y++)pixels.fill(0,(y*w+w-12)*4,(y*w+w)*4);
+  const patch=await capture.next({...tab,input_epoch:1},policy,true);
+  const label=`DPR${scale} ${width}x${height}`;
+  assert(patch.dirty_clip,`${label} must exercise the crop path`);
+  assert(patch.dirty_clip.x+patch.dirty_clip.width<=width&&patch.dirty_clip.y+patch.dirty_clip.height<=height,`${label} crop inside viewport`);
+  assert.deepEqual(patch.pixels.pixels,pixels,`${label} merged raster`);
  }
 });
