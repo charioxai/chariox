@@ -234,6 +234,12 @@ fn skills_v2_runtime_capability_is_projected_by_kernel_readiness_not_listed_stat
     );
     assert!(!crate::local::RUNTIME_CONTROL_CAPABILITIES
         .contains(&crate::local::SKILLS_V2_RUNTIME_CAPABILITY));
+    assert_eq!(
+        crate::local::SKILLS_REPOSITORY_UPDATE_CAPABILITY,
+        "skills_repository_update_v581"
+    );
+    assert!(!crate::local::RUNTIME_CONTROL_CAPABILITIES
+        .contains(&crate::local::SKILLS_REPOSITORY_UPDATE_CAPABILITY));
 }
 
 // MP-08 / MP-10 / MP-11: there is no old Skill grant/RPC compatibility decoder.
@@ -329,7 +335,7 @@ fn skills_v2_ensure_remote_skill_packages_name_view_is_an_additive_peer_179_fiel
     assert!(serde_json::from_value::<RelayPeerRequest>(wire).is_err());
 }
 
-// MP-08 / MP-10 / MP-11: the optional update shape uses the unreleased 571/179 pair.
+// MP-08 / MP-10 / MP-11: the repository update shape is carried by the 581/189 pair.
 #[test]
 fn skills_v2_repository_update_wire_roundtrips() {
     let wire =

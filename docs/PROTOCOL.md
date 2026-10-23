@@ -4953,8 +4953,13 @@ prompt-scoped live rows.
 Local daemon **533**, relay peer **141** reserve the Skills v2 instruction
 catalog contract; local **571** / peer **179** add the leased-worker native
 inventory request below (no client-visible shape changed; the client minimum
-stays 533/141). `SkillsV2` wraps a tagged `action` request and a tagged `kind`
-result. The canonical Rust shapes are `skill/v2.rs`; shared TypeScript and Swift
+stays 533/141). Local **581** / peer **189** add the `resolve_repository_update`
+request and its `repository_update` result; a kernel that supports them also
+advertises the `skills_repository_update_v581` capability next to
+`skills_v2_runtime`, and clients send the request only when both are present
+(an older kernel gets the message "update the kernel", never a decode error).
+`SkillsV2` wraps a tagged `action` request and a tagged `kind` result. The
+canonical Rust shapes are `skill/v2.rs`; shared TypeScript and Swift
 bindings mirror them. Skills are instructions, never Extension grants.
 
 `catalog`, `get`, `native_inventory` and `loads` supply management projections.
@@ -5087,7 +5092,7 @@ Unknown dollar prose remains ordinary text; a resolved delivery failure blocks
 the hook visibly. The private preparation and receipt operations do not grant
 ordinary forwarded-tool authority, which still needs the exact running home
 turn. These unreleased operations use the reserved local 571 / peer 179 pair;
-public client request/response shapes are unchanged.
+public client request/response shapes are unchanged by them.
 Environment snapshots carry Project records, package membership, overrides and
 only their required Chariox dependencies separately from Extension grants.
 

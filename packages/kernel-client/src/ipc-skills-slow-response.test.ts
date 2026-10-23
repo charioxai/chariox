@@ -20,7 +20,7 @@ test("a Skills request still being fetched is answered, not cut off at the contr
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "response", request_id: frame.request_id, response, error: null }))
       }, delayMs)
       if (JSON.stringify(frame).includes("RelayStatus")) {
-        reply({ RelayStatus: { status: { daemon_id: "home", machine_id: "machine", capabilities: ["skills_v2_runtime"] } } }, 0)
+        reply({ RelayStatus: { status: { daemon_id: "home", machine_id: "machine", capabilities: ["skills_v2_runtime", "skills_repository_update_v581"] } } }, 0)
         return
       }
       skillsRequests.push(frame.request_id)

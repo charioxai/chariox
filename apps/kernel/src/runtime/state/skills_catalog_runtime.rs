@@ -24,7 +24,15 @@ fn capabilities_for_readiness(ready: bool) -> Vec<String> {
     crate::local::RUNTIME_CONTROL_CAPABILITIES
         .iter()
         .copied()
-        .chain(ready.then_some(crate::local::SKILLS_V2_RUNTIME_CAPABILITY))
+        .chain(
+            ready
+                .then_some([
+                    crate::local::SKILLS_V2_RUNTIME_CAPABILITY,
+                    crate::local::SKILLS_REPOSITORY_UPDATE_CAPABILITY,
+                ])
+                .into_iter()
+                .flatten(),
+        )
         .map(str::to_owned)
         .collect()
 }
@@ -646,7 +654,14 @@ mod capability_tests {
                 .count(),
             1
         );
+        assert_eq!(
+            ready
+                .iter()
+                .filter(|value| value.as_str() == crate::local::SKILLS_REPOSITORY_UPDATE_CAPABILITY)
+                .count(),
+            1
+        );
         assert!(closed.iter().all(|value| ready.contains(value)));
-        assert_eq!(ready.len(), closed.len() + 1);
+        assert_eq!(ready.len(), closed.len() + 2);
     }
 }
