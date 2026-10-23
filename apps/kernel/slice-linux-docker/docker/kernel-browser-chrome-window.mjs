@@ -443,7 +443,7 @@ export class ChromeWindows {
   /** Constructor arguments of vidlat's NativeWindowRegionCapture for the band. */
   band(binding = this.current().tabbed) {
     return {surface: 'browser_chrome', window: {id: binding.xid, width: binding.bounds.width, height: binding.bounds.height},
-      rect: {left: 0, top: 0, width: binding.bounds.width, height: binding.content_top},
+      rect: {left: 0, top: 0, width: binding.bounds.width-binding.bounds.width%2, height: binding.content_top-binding.content_top%2},
       contentHeight: binding.bounds.height - binding.content_top, isCurrent: binding.isBandCurrent ?? binding.isCurrent};
   }
   auxiliaryRegion(binding) {

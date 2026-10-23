@@ -1,5 +1,4 @@
 // MP-08/MP-10/MP-11: a mutation of the owned Tab, not a new observation attachment.
-import {chromeBandHeight} from './kernel-browser-geometry.mjs';
 import {assertNotCancelled} from './browser-controller-actions.mjs';
 export async function resizeBrowserPage(host,tab,command,signal){
  const {width,height}=command;
@@ -12,14 +11,21 @@ export async function resizeBrowserPage(host,tab,command,signal){
  const current=()=>{assertNotCancelled(signal);if(host.browser!==browser||host.generation!==command.generation||host.tabs.get(tab.tab_id)?.target_id!==tab.target_id)throw Error('browser resize target retired; refresh the browser view and try again');};
  current();
  if(bounds?.windowState!=='normal')throw Error('restore the browser window before resizing');
- if(previous.width===width&&previous.height===height&&bounds.width===width&&bounds.height===height+chromeBandHeight)return {width,height};
- // Retire old native rectangles before moving the window. Every fresh source
- // still takes its ordinary ownership, document, policy and pixel fences.
+ let page;
+ if(host.chromium?.desktop?.binding?.()){
+  let window;try{window=host.chromeWindows.current().tabbed}catch{await host.chromeWindows.resolve();window=host.chromeWindows.current().tabbed}
+  page={width:window.page_rect.width/window.scale,height:window.page_rect.height/window.scale};
+ }else{
+  const metrics=await connection.send('Page.getLayoutMetrics',{},sessionId);page={width:metrics.cssLayoutViewport?.clientWidth,height:metrics.cssLayoutViewport?.clientHeight};
+ }
+ const inset={width:bounds.width-page.width,height:bounds.height-page.height};
+ if(![inset.width,inset.height].every(Number.isSafeInteger)||inset.width<0||inset.width>64||inset.height<0||inset.height>256)throw Error('browser window geometry unavailable; refresh the browser view and resize again');
+ const outer={width:width+inset.width,height:height+inset.height};
+ if(previous.width===width&&previous.height===height&&bounds.width===outer.width&&bounds.height===outer.height)return {width,height};
+ // Measure the owned window's real inset. A guessed87-DIP toolbar can leave
+ // an odd native band, which the video producer correctly refuses.
  host.chromeWindows?.retire('viewport_resize');
  await host.closeCompositors(tab.tab_id);current();
- // The pinned Chrome toolbar has the same87-DIP launch inset. Native
- // capture independently measures and proves the resulting page rectangle.
- const outer={width,height:height+chromeBandHeight};
  await connection.send('Browser.setWindowBounds',{windowId,bounds:outer});current();
  await host.setLayout(tab,'resize',{width,height});current();
  for(const stream of host.displays.values())if(stream.tab_id===tab.tab_id&&!stream.regionTarget){stream.css_width=width;stream.css_height=height;stream.invalidate();}
