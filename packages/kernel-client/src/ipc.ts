@@ -4,7 +4,7 @@ import { TerminalLocalDirect } from "./terminal-local-direct.js"
 import { RelayAuthRenewal, type RelayGrantProvider } from "./relay-auth-renewal.js"
 import { RelaySubscriptionDiagnostics, type RelaySubscriptionDiagnostic } from "./relay-subscription-diagnostics.js"
 export type { RelaySubscriptionDiagnostic } from "./relay-subscription-diagnostics.js"
-import { relayAuthorization, requireRenewedRelayAuthorization, RelayAuthorizationRenewal, reauthenticateRelaySocket, relayCloseError, relayAuthorizationRenewalCapability, relayAuthorizationRenewalMinimumProtocolVersion } from "./relay-authorization.js"
+import { relayAuthorization, requireRenewedRelayAuthorization, RelayAuthorizationRenewal, reauthenticateRelaySocket, type RelayHandshakeFrame, relayCloseError, relayAuthorizationRenewalCapability, relayAuthorizationRenewalMinimumProtocolVersion } from "./relay-authorization.js"
 import { issueCloudRelayClientTokenRequest } from "./ipc-relay-control-requests.js"
 import { isLocalRelayIssuerEndpoint, type RelayAuthorizationIssuer } from "./relay-authorization.js"
 import { randomUUID } from "node:crypto"
@@ -282,6 +282,7 @@ export class LocalIpcClient {
   private readonly localAuthToken: string | null
   private relayAuthToken: string | null
   private relayAuthRenewal: RelayAuthRenewal | undefined
+  private readonly relayHandshakeListeners = new Map<KernelSocketLane, Set<(frame: RelayHandshakeFrame) => void>>()
   private renewalRetainers = 0
   private renewalCloseRequested = false
   private readonly relayTarget: RelayTarget | null
@@ -1237,7 +1238,11 @@ export class LocalIpcClient {
       if (connecting) await connecting
       const socket = this.getWebSocket(lane)
       // A direct carrier is authorized by its relay-renewed lease, not this grant.
-      if (socket?.readyState === WebSocket.OPEN && !this.terminalLocalDirect?.isLocal(socket)) await reauthenticateRelaySocket(socket, token, this.relayTarget!, this.relayDaemonPublicKeyForSocket(lane, socket), this.requestLifetime.capture())
+      if (socket?.readyState === WebSocket.OPEN && !this.terminalLocalDirect?.isLocal(socket)) await reauthenticateRelaySocket(socket, token, this.relayTarget!, this.relayDaemonPublicKeyForSocket(lane, socket), this.requestLifetime.capture(), listener => {
+        const listeners = this.relayHandshakeListeners.get(lane) ?? new Set()
+        this.relayHandshakeListeners.set(lane, listeners.add(listener))
+        return () => { listeners.delete(listener) }
+      })
     }))
   }
 
@@ -1326,9 +1331,14 @@ export class LocalIpcClient {
       return
     }
 
-    if ("kind" in frame && frame.kind === "client_connected") return // The renewal waiter validates this acknowledgement.
+    if ("kind" in frame && frame.kind === "client_connected") {
+      // The renewal waiter validates this acknowledgement.
+      for (const listener of this.relayHandshakeListeners.get(lane) ?? []) listener(frame)
+      return
+    }
 
     if ("kind" in frame && frame.kind === "close") {
+      for (const listener of this.relayHandshakeListeners.get(lane) ?? []) listener(frame)
       const authorizationRefused = /^relay token (?:has been )?revoked$/i.test(frame.reason)
         || frame.reason === "client renewal reduced permissions"
         || frame.reason === "client renewal changed identity or key"

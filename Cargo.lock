@@ -468,6 +468,7 @@ name = "chariox-relay"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "ed25519-dalek",
  "futures-util",
  "hmac 0.12.1",
  "serde",

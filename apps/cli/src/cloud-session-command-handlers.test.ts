@@ -247,3 +247,31 @@ function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     ...overrides,
   }
 }
+
+test("MP-11 /relay issuer enable prints the public key line the relay operator pins", async () => {
+  let notice = ""
+  const steps: Array<string | null> = []
+  const deps = {
+    isAttached: () => false,
+    sessionState: () => session(),
+    applySessionState: () => {},
+    attachBinding: async () => {},
+    flashFooter: () => {},
+    formatError: (error: unknown) => String(error),
+    appendNotice: (message: string) => { notice = message },
+    relayIssuer: async (step: string | null) => {
+      steps.push(step)
+      return step === "disable" ? null : {
+        issuer_id: "chariox-kernel:home", realm_id: "default",
+        active_key: { key_id: "0011223344556677", public_key: "PUBLIC" },
+        relay_issuer_keys: "chariox-kernel:home=PUBLIC",
+      }
+    },
+  }
+  await handleRelaySlashCommand(deps as never, { kind: "relay", raw: "/relay issuer enable", args: ["issuer", "enable"] })
+  assert.match(notice, /CHARIOX_RELAY_KERNEL_ISSUER_KEYS=chariox-kernel:home=PUBLIC/)
+  await handleRelaySlashCommand(deps as never, { kind: "relay", raw: "/relay issuer disable", args: ["issuer", "disable"] })
+  assert.match(notice, /relay issuer disabled/)
+  await handleRelaySlashCommand(deps as never, { kind: "relay", raw: "/relay issuer", args: ["issuer"] })
+  assert.deepEqual(steps, ["enable", "disable", null])
+})

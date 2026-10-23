@@ -128,18 +128,38 @@ pub(crate) fn entries(config: &DaemonConfig) -> Result<Vec<PersistedClientPairin
     }
     Ok(grants)
 }
+/// The redeemed grant of one terminal, revoked or not; pending links are not grants.
+pub(crate) fn grant(
+    config: &DaemonConfig,
+    client_id: &str,
+) -> Result<Option<PersistedClientPairing>, DaemonError> {
+    Ok(read(config)?
+        .grants
+        .into_iter()
+        .find(|grant| grant.client_id == client_id))
+}
 pub(crate) fn admit(
     config: &DaemonConfig,
     public_key: &str,
+    client_id: Option<&str>,
 ) -> Result<Option<PersistedClientPairing>, DaemonError> {
     if !required(config) {
         return Ok(None);
     }
+    // Legacy operator transport identifies the key only; issuer tokens also identify a grant.
+    let client_id = match client_id {
+        Some(client_id) if super::relay_issuer::enabled(config)? => Some(client_id),
+        _ => None,
+    };
     let thumbprint = public_key_thumbprint(public_key);
     read(config)?
         .grants
         .into_iter()
-        .find(|g| !g.revoked && g.public_key_thumbprint == thumbprint)
+        .find(|g| {
+            !g.revoked
+                && g.public_key_thumbprint == thumbprint
+                && client_id.is_none_or(|client_id| g.client_id == client_id)
+        })
         .map(Some)
         .ok_or_else(denied)
 }
@@ -241,14 +261,14 @@ mod tests {
         .unwrap();
         assert!(redeem(&config, "forged-link", grant.clone()).is_err());
         redeem(&config, "synthetic-issued-link", grant.clone()).unwrap();
-        assert!(admit(&config, "terminal-key").is_ok()); // No fixed grant lifetime.
+        assert!(admit(&config, "terminal-key", None).is_ok()); // No fixed grant lifetime.
         let mut wrong = grant.clone();
         wrong.public_key_thumbprint = public_key_thumbprint("other-key");
         assert!(redeem(&config, "synthetic-issued-link", wrong).is_err());
-        assert!(admit(&config, "other-key").is_err());
+        assert!(admit(&config, "other-key", None).is_err());
         let mut sibling = config.clone();
         sibling.user_config.state.path = Some(root.join("two/state.db").display().to_string());
-        assert!(admit(&sibling, "terminal-key").is_err());
+        assert!(admit(&sibling, "terminal-key", None).is_err());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -263,7 +283,7 @@ mod tests {
         }
         revoke(&config, "terminal").unwrap();
         assert!(redeem(&config, "synthetic-issued-link", grant).is_err());
-        assert!(admit(&config, "terminal-key").is_err());
+        assert!(admit(&config, "terminal-key", None).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

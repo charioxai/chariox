@@ -492,3 +492,25 @@ export type WorkspacePullRequestRecord = {
 // MP-08/MP-10/MP-11: protocol 525 Room viewer, no input authority.
 export type RoomDisplayBinding={generation:number;subscription_id:string;codec:string;bitrate:number;device_scale_factor:1|2;source:{kind:"desktop";surface_id:string;generation:string;width:number;height:number};resumed?:boolean}
 export type RoomDisplayOffer={codecs:readonly string[];bitrate:number;device_scale_factor:1|2;resume_hint?:string}
+
+export type RelayIssuerKeyRecord = {
+  key_id: string
+  public_key: string
+}
+
+export type RelayIssuerRecord = {
+  issuer_id: string
+  realm_id: string
+  active_key: RelayIssuerKeyRecord
+  next_key?: RelayIssuerKeyRecord
+  /** Exact value for the relay's CHARIOX_RELAY_KERNEL_ISSUER_KEYS. */
+  relay_issuer_keys: string
+}
+
+export type RelayClientToken = {
+  relay_url: string
+  relay_token: string
+  target_daemon_id: string
+  token_id: string
+  expires_at_ms: number
+}

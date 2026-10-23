@@ -1341,7 +1341,9 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                         &pairing.terminal_id,
                     )
                     .unwrap();
-                    assert!(router.admit_self_host_terminal(&sender_public).is_err());
+                    assert!(router
+                        .admit_self_host_terminal(&sender_public, None)
+                        .is_err());
                     let replay =
                         relay_crypto::encrypt_payload_for_peer(&sender, &receiver, &join_bytes)
                             .unwrap();
@@ -1383,3 +1385,5 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
         .join()
         .unwrap();
 }
+
+mod terminal_pairing;

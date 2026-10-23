@@ -10,6 +10,14 @@ use subtle::ConstantTimeEq;
 use thiserror::Error;
 use tokio::sync::watch;
 
+mod kernel_issuer;
+
+pub use kernel_issuer::{
+    encode_kernel_issued_client_token, encode_kernel_issuer_public_key, kernel_issuer_id,
+    kernel_issuer_key_id, KernelIssuedClientClaims, KernelIssuerKeys, SelfHostedVerifier,
+    KERNEL_ISSUER_KEYS_ENV,
+};
+
 pub type RelayRealmId = String;
 pub type RelayIssuerId = String;
 pub type RelaySubjectId = String;
@@ -350,6 +358,7 @@ impl RelayRevocationRegistry {
 pub enum RelayAuthVerifier {
     SharedToken(SharedTokenVerifier),
     ScopedToken(ScopedTokenVerifier),
+    SelfHosted(SelfHostedVerifier),
 }
 
 impl RelayAuthVerifier {
@@ -362,6 +371,16 @@ impl RelayAuthVerifier {
             BTreeMap::new(),
             issuer_secrets,
             now_ms,
+        ))
+    }
+
+    /// Self-hosted relay without Cloud: the operator token admits the kernel,
+    /// clients present tokens signed by a pinned kernel issuer key.
+    pub fn self_hosted(operator_token: String, kernel_issuers: KernelIssuerKeys) -> Self {
+        Self::SelfHosted(SelfHostedVerifier::new(
+            operator_token,
+            kernel_issuers,
+            None,
         ))
     }
 
@@ -384,6 +403,7 @@ impl RelayAuthVerifier {
         match self {
             Self::SharedToken(verifier) => verifier.verify(request),
             Self::ScopedToken(verifier) => verifier.verify(request),
+            Self::SelfHosted(verifier) => verifier.verify(request),
         }
     }
 
@@ -391,6 +411,7 @@ impl RelayAuthVerifier {
         match self {
             Self::SharedToken(_) => None,
             Self::ScopedToken(verifier) => verifier.now_ms.is_none().then(current_unix_ms),
+            Self::SelfHosted(verifier) => verifier.now_ms.is_none().then(current_unix_ms),
         }
     }
 
@@ -400,7 +421,7 @@ impl RelayAuthVerifier {
                 .revocations
                 .as_ref()
                 .map(RelayRevocationRegistry::subscribe),
-            Self::SharedToken(_) => None,
+            Self::SharedToken(_) | Self::SelfHosted(_) => None,
         }
     }
 
@@ -412,7 +433,7 @@ impl RelayAuthVerifier {
                     verifier.now_ms.unwrap_or_else(current_unix_ms),
                 )
             }),
-            Self::SharedToken(_) => false,
+            Self::SharedToken(_) | Self::SelfHosted(_) => false,
         }
     }
 }

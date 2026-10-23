@@ -1,4 +1,6 @@
 import type { RelayCloudProfile } from "./preferences.js"
+import type { RelayIssuerRecord } from "@chariox/kernel-client/kernel-types"
+import type { RelayIssuerStep } from "@chariox/kernel-client/ipc-requests"
 import { TERMINAL_LINK_OPEN_HINT } from "./external-url.js"
 export { buildHostedCloudViewUrl } from "@chariox/kernel-client/slice-screen-viewer"
 
@@ -26,6 +28,7 @@ export type CloudCommandLifecycleDeps = {
   saveCloudRelayProfile?: (profile: RelayCloudProfile | null) => Promise<void>
   getRelayStatus?: () => Promise<RelayStatus>
   configureRelay?: (relayUrl: string | null, relayToken: string | null) => Promise<RelayStatus>
+  relayIssuer?: (step: RelayIssuerStep | null) => Promise<RelayIssuerRecord | null>
   refreshWaitingRoomData?: () => Promise<void>
   startCloudDeviceLogin?: (
     apiUrl: string,

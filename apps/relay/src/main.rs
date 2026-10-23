@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use chariox_relay::auth::{KernelIssuerKeys, KERNEL_ISSUER_KEYS_ENV};
 use chariox_relay::{RelayAuthVerifier, RelayConfig, RelayServer};
 use serde_json::json;
 
@@ -31,6 +32,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let config = RelayConfig::load_from_env()?;
     let scoped_verifier = scoped_verifier_from_env()?;
+    let kernel_issuer_verifier = kernel_issuer_verifier_from_settings(
+        std::env::var(KERNEL_ISSUER_KEYS_ENV).ok(),
+        config.shared_token.clone(),
+        scoped_verifier.is_some(),
+    )?;
+    let kernel_issuers = kernel_issuer_verifier.is_some();
+    let scoped_verifier = kernel_issuer_verifier.or(scoped_verifier);
     if let Some(message) = open_access_startup_error(
         &config.host,
         config.shared_token.is_some(),
@@ -75,6 +83,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                     .ok()
                     .map(|value| !value.trim().is_empty())
                     .unwrap_or(false),
+                "kernel_issuers": kernel_issuers,
             },
         })
     );
@@ -181,6 +190,30 @@ fn host_is_loopback(host: &str) -> bool {
         .unwrap_or(false)
 }
 
+// A self-hosted relay trusts its home kernel's issuer by public key alone.
+// The operator token stays the kernel's own registration credential.
+fn kernel_issuer_verifier_from_settings(
+    keys: Option<String>,
+    operator_token: Option<String>,
+    cloud_issuer: bool,
+) -> Result<Option<RelayAuthVerifier>, String> {
+    let Some(keys) = keys.filter(|keys| !keys.trim().is_empty()) else {
+        return Ok(None);
+    };
+    if cloud_issuer {
+        return Err(format!(
+            "{KERNEL_ISSUER_KEYS_ENV} is for self-hosted relays; remove it or the Cloud scoped issuer settings"
+        ));
+    }
+    let operator_token = operator_token.ok_or_else(|| {
+        format!("{KERNEL_ISSUER_KEYS_ENV} requires CHARIOX_RELAY_TOKEN for the kernel's own registration")
+    })?;
+    Ok(Some(RelayAuthVerifier::self_hosted(
+        operator_token,
+        KernelIssuerKeys::parse(&keys)?,
+    )))
+}
+
 fn scoped_verifier_from_env() -> Result<Option<RelayAuthVerifier>, String> {
     scoped_verifier_from_settings(
         std::env::var("CHARIOX_RELAY_SCOPED_ISSUER").ok(),
@@ -265,5 +298,25 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn kernel_issuer_keys_need_the_operator_token_and_exclude_cloud_issuers() {
+        let key = chariox_relay::auth::encode_kernel_issuer_public_key(
+            &ed25519_dalek::SigningKey::from_bytes(&[1; 32]).verifying_key(),
+        );
+        let line = format!("chariox-kernel:home={key}");
+        assert!(kernel_issuer_verifier_from_settings(None, None, false)
+            .unwrap()
+            .is_none());
+        assert!(kernel_issuer_verifier_from_settings(Some(line.clone()), None, false).is_err());
+        assert!(
+            kernel_issuer_verifier_from_settings(Some(line.clone()), Some("op".into()), true)
+                .is_err()
+        );
+        assert!(matches!(
+            kernel_issuer_verifier_from_settings(Some(line), Some("op".into()), false),
+            Ok(Some(RelayAuthVerifier::SelfHosted(_)))
+        ));
     }
 }

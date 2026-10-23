@@ -174,10 +174,12 @@ impl CommandRouter {
     pub(crate) fn admit_self_host_terminal(
         &self,
         public_key: &str,
+        client_id: Option<&str>,
     ) -> Result<Option<crate::config::PersistedClientPairing>, DaemonError> {
         crate::runtime::self_host_terminal_grants::admit(
             &self.config_projection.snapshot(),
             public_key,
+            client_id,
         )
     }
     pub(crate) fn self_host_terminal_pairing_required(&self) -> bool {

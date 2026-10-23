@@ -191,6 +191,8 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CommitWorkspaceChanges(_) => "workspace.git.commit",
         LocalDaemonRequest::PushWorkspaceBranch(_) => "workspace.git.push",
         LocalDaemonRequest::CommitAndPushWorkspaceChanges(_) => "workspace.git.commit_and_push",
+        // MP-11: renewals of self-hosted relay grants stay visible in relay dispatch logs.
+        LocalDaemonRequest::IssueRelayClientToken(_) => "relay_issuer.client_token.issue",
         _ => "other",
     }
 }
@@ -490,5 +492,20 @@ mod tests {
             });
 
         assert_eq!(relay_request_kind(&request), "environment.action.cancel");
+    }
+
+    #[test]
+    fn relayed_relay_token_renewals_have_their_own_kind() {
+        let request =
+            LocalDaemonRequest::IssueRelayClientToken(crate::local::IssueRelayClientTokenRequest {
+                client_id: "cli-1".into(),
+                public_key_thumbprint: "a".repeat(64),
+                scope: crate::local::RelayClientTokenScope::Attach,
+                lifetime_ms: None,
+            });
+        assert_eq!(
+            relay_request_kind(&request),
+            "relay_issuer.client_token.issue"
+        );
     }
 }

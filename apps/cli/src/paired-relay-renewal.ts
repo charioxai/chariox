@@ -1,5 +1,5 @@
 import type { LocalIpcClient, RelayClientIdentity } from "./ipc.js"
-import { issueKernelCloudRelayClientToken, requireRelayTokenKeyBinding } from "./relay-api.js"
+import { isKernelIssuedRelayToken, issueKernelCloudRelayClientToken, issueKernelRelayClientToken, requireRelayTokenKeyBinding } from "./relay-api.js"
 
 // Read only scheduling/binding metadata. The relay verifies the signature.
 function grantMetadata(token: string, identity: RelayClientIdentity, target: string) {
@@ -35,7 +35,10 @@ export function startPairedRelayRenewal(client: LocalIpcClient, input: {
     if (!authToken) throw new Error("paired terminal bootstrap authority has expired")
     const issuer = input.createClient(input.endpoint, {relayAuthToken: authToken, targetDaemonId: input.target, relayIdentity: input.identity})
     try {
-      const fresh = await issueKernelCloudRelayClientToken(issuer, input.target, input.terminalId, null, input.identity.publicKeyThumbprint)
+      // A self-hosted home kernel renews its own grant for the paired subject.
+      const fresh = isKernelIssuedRelayToken(token)
+        ? await issueKernelRelayClientToken(issuer, initial.subject, input.identity.publicKeyThumbprint)
+        : await issueKernelCloudRelayClientToken(issuer, input.target, input.terminalId, null, input.identity.publicKeyThumbprint)
       const metadata = grantMetadata(fresh.relayToken, input.identity, input.target)
       if (metadata.subject !== initial.subject || fresh.relayUrl !== input.endpoint) throw new Error("paired terminal renewal changed its subject or relay")
       token = fresh.relayToken

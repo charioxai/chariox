@@ -542,7 +542,6 @@ mod tests {
         let runtime = owned_runtime_state(&app).await;
         let result =
             crate::runtime::pairing_invite_executor::execute_create_terminal_pairing_link_request(
-                &runtime,
                 &runtime.owned.config_projection,
                 crate::local::CreateTerminalPairingLinkRequest {
                     terminal_type: None,

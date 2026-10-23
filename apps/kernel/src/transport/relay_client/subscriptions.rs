@@ -81,8 +81,14 @@ pub(super) async fn handle_relay_subscribe(
     subscription_scope: Option<String>,
     resume_from_event_id: Option<u64>,
 ) -> Result<(), DaemonError> {
-    let paired = match router.admit_self_host_terminal(&client_public_key) {
-        Ok(grant) => grant.is_some(),
+    let grant = match router.admit_self_host_terminal(
+        &client_public_key,
+        caller_identity
+            .as_ref()
+            .filter(|identity| identity.public_key_thumbprint.is_some())
+            .map(|identity| identity.subject.as_str()),
+    ) {
+        Ok(grant) => grant,
         Err(error) => {
             send_outgoing_envelope(
                 outgoing_tx,
@@ -114,8 +120,13 @@ pub(super) async fn handle_relay_subscribe(
         )
         .await;
     }
+    let paired = grant.is_some();
     let subscriber = RelaySubscriber {
-        caller: crate::runtime::command::KernelCaller::for_relay_request(caller_identity.clone()),
+        caller: grant
+            .map(crate::runtime::command::KernelCaller::from_paired_terminal)
+            .unwrap_or_else(|| {
+                crate::runtime::command::KernelCaller::for_relay_request(caller_identity.clone())
+            }),
         user_id: if paired {
             crate::session::DEFAULT_LOCAL_USER_ID.into()
         } else {
@@ -447,7 +458,10 @@ pub(super) async fn run_relay_subscription_loop(
     let event_stream_id = subscription_event_stream_id(&session_id, &attachment_id);
 
     loop {
-        if router.admit_self_host_terminal(&client_public_key).is_err() {
+        if router
+            .admit_self_host_terminal(&client_public_key, subscriber.caller.client_id.as_deref())
+            .is_err()
+        {
             break;
         }
         if let Some(event) = passkey_prompts.next_event(&router) {
@@ -861,7 +875,10 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     let mut tick: u64 = 0;
     let mut next_heartbeat_at = Instant::now();
     loop {
-        if router.admit_self_host_terminal(&client_public_key).is_err() {
+        if router
+            .admit_self_host_terminal(&client_public_key, subscriber.caller.client_id.as_deref())
+            .is_err()
+        {
             break;
         }
         if let Some(event) = passkey_prompts.next_event(&router) {

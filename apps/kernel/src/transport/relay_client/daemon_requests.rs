@@ -115,7 +115,13 @@ pub(super) async fn handle_prepared_daemon_request(
                 {
                     KernelCaller::for_relay_request(caller_identity)
                 } else {
-                    let grant = match router.admit_self_host_terminal(&client_public_key) {
+                    let grant = match router.admit_self_host_terminal(
+                        &client_public_key,
+                        caller_identity
+                            .as_ref()
+                            .filter(|identity| identity.public_key_thumbprint.is_some())
+                            .map(|identity| identity.subject.as_str()),
+                    ) {
                         Ok(Some(grant)) => grant,
                         _ => {
                             return RelayRequestOutcome {
@@ -200,7 +206,16 @@ pub(super) async fn handle_prepared_daemon_request(
             )
         }
         ParsedRelayClientMessage::BrowserImportDelivery(request) => {
-            if router.admit_self_host_terminal(&client_public_key).is_err() {
+            if router
+                .admit_self_host_terminal(
+                    &client_public_key,
+                    caller_identity
+                        .as_ref()
+                        .filter(|identity| identity.public_key_thumbprint.is_some())
+                        .map(|identity| identity.subject.as_str()),
+                )
+                .is_err()
+            {
                 return RelayRequestOutcome {
                     display_event: None,
                     encrypted_response: None,
@@ -577,6 +592,9 @@ fn validate_cli_relay_sender_key(
         }
         LocalDaemonRequest::ResolveKernelClientConnection(request) => {
             request.public_key_thumbprint.as_deref()
+        }
+        LocalDaemonRequest::IssueRelayClientToken(request) => {
+            Some(request.public_key_thumbprint.as_str())
         }
         _ => return Ok(()),
     };
