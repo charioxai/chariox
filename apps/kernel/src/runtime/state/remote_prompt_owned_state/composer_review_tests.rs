@@ -436,7 +436,7 @@ async fn leased_composer_restores_several_folded_claude_skills_with_one_native_c
         false,
     )
     .await;
-    let pinned: SkillTurnContext = serde_json::from_value(restored["context"].clone()).unwrap();
+    let mut pinned: SkillTurnContext = serde_json::from_value(restored["context"].clone()).unwrap();
     assert_eq!(pinned.loaded.len(), 2, "both accepted loads come back");
     assert!(
         pinned.native_selections.len() <= 1,
@@ -451,4 +451,21 @@ async fn leased_composer_restores_several_folded_claude_skills_with_one_native_c
         1,
         "the other restored skill is delivered as a Chariox body"
     );
+    // The worker fills the Chariox body from its verified cache before the adapter runs.
+    for body in &mut pinned.loaded {
+        if !matches!(body.delivery, SkillDelivery::ProvidedBy { .. }) {
+            body.body = "body".into();
+            body.root = "/worker/cache".into();
+        }
+    }
+    let delivery = crate::provider::skill_delivery::prepare_skill_delivery(
+        "claude",
+        "continue after compaction",
+        &pinned,
+        &inventory,
+        &[],
+    )
+    .expect("one native command plus one Chariox body is deliverable");
+    assert!(delivery.visible_prompt.starts_with('/'));
+    assert!(delivery.hidden_context.contains("/worker/cache"));
 }
