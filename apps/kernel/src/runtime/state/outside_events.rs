@@ -171,6 +171,9 @@ impl KernelRuntimeState {
                     });
                 }
             }
+            if let Some(ending) = self.outside_ended_response(id)? {
+                return Ok(ending);
+            }
             let response = self.outside_list_response(id, request.since, request.limit)?;
             match response {
                 LocalDaemonResponse::EventsListed {

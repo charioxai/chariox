@@ -120,7 +120,7 @@ fn outside_router_collects_states_and_ends_a_running_wait_on_revoke() {
 fn outside_router_denies_session_agents_and_foreign_sessions() {
     run("outside-confinement", async {
         let worktree = crate::test_support::TestWorktree::new("outside-confinement");
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
         let session = app
             .sessions_mut()
             .create_session(worktree.session_request())
@@ -158,7 +158,7 @@ fn outside_router_denies_session_agents_and_foreign_sessions() {
 fn outside_router_automatically_follows_created_work_and_honors_opt_out() {
     run("outside-created", async {
         let worktree = crate::test_support::TestWorktree::new("outside-created");
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
         let session = app
             .sessions_mut()
             .create_session(worktree.session_request())
@@ -213,7 +213,7 @@ fn outside_router_automatically_follows_created_work_and_honors_opt_out() {
 fn outside_router_observes_a_real_terminal_job_without_a_terminal_watch() {
     run("outside-terminal", async {
         let worktree = crate::test_support::TestWorktree::new("outside-terminal");
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
         let session = app
             .sessions_mut()
             .create_session(worktree.session_request())
@@ -259,7 +259,7 @@ fn outside_router_observes_a_real_terminal_job_without_a_terminal_watch() {
 fn outside_router_critical_approvals_are_only_section_eight_pointers() {
     run("outside-pointer", async {
         let worktree = crate::test_support::TestWorktree::new("outside-pointer");
-        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
         let session = app
             .sessions_mut()
             .create_session(worktree.session_request())
@@ -303,5 +303,56 @@ fn outside_router_critical_approvals_are_only_section_eight_pointers() {
             .unwrap()
             .unwrap();
         assert!(!serde_json::to_string(&part).unwrap().contains(canary));
+    });
+}
+
+#[test]
+fn outside_router_acked_cancellation_still_returns_the_ending_receipt() {
+    run("outside-ended-ack", async {
+        let worktree = crate::test_support::TestWorktree::new("outside-ended-ack");
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let session = app
+            .sessions_mut()
+            .create_session(worktree.session_request())
+            .unwrap();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let grant = router
+            .runtime_state()
+            .insert_access_grant_for_test(session.id());
+        dispatch(&router,&grant,request(serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":session.id()}]}}))).await;
+        dispatch(
+            &router,
+            &grant,
+            request(serde_json::json!({"UnsubscribeEvents":{"all":true}})),
+        )
+        .await;
+        let LocalDaemonResponse::EventsListed { next_cursor, .. } = dispatch(
+            &router,
+            &grant,
+            request(serde_json::json!({"ListEvents":{}})),
+        )
+        .await
+        else {
+            panic!("expected events")
+        };
+        dispatch(
+            &router,
+            &grant,
+            request(serde_json::json!({"AckEvents":{"cursor":next_cursor}})),
+        )
+        .await;
+        let LocalDaemonResponse::EventsListed { events, .. } = dispatch(
+            &router,
+            &grant,
+            request(serde_json::json!({"WaitEvents":{"timeout_ms":0}})),
+        )
+        .await
+        else {
+            panic!("expected events")
+        };
+        assert!(
+            matches!(events.last().map(|event|&event.value),Some(OutsideEventValue::SubscriptionEnded { reason }) if reason=="cancelled"),
+            "an acknowledged cancellation must still end a wait"
+        );
     });
 }
