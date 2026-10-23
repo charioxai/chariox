@@ -5,6 +5,7 @@ import { encodePng, decodePng, displayMaskRegions } from './kernel-browser-pixel
 import { captureProtectedDisplay } from './kernel-browser-region-protection.mjs';
 import { DisplayStream, PortableEncoder } from './kernel-browser-display.mjs';
 import { randomBytes } from 'node:crypto';
+const canonical=()=>({width:1280,height:800});
 
 test('MP-11: protected crop over patch budget keeps all full-raster masks through real encoder',async()=>{
  const tab={tab_id:'t',document_id:'d',input_epoch:0},policy={values:[]};
@@ -15,7 +16,7 @@ test('MP-11: protected crop over patch budget keeps all full-raster masks throug
  const redact=()=>{for(const r of masks)for(let y=r.y;y<r.y+r.height;y++)pixels.fill(Buffer.from([0,0,0,255]),(y*1280+r.x)*4,(y*1280+r.x+r.width)*4)};
  redact();
  const host={generation:1,scales:new Map([['t',1]]),screenshot:async()=>({...tab,generation:1,protected_regions:masks,data_base64:encodePng(1280,800,pixels)})};
- const capture=new DisplayCapture(clip=>captureProtectedDisplay(host,tab,clip),1);
+ const capture=new DisplayCapture(clip=>captureProtectedDisplay(host,tab,clip),1,canonical);
  const encoder=new PortableEncoder();let encodedMasks;
  const encode=encoder.encode.bind(encoder);encoder.encode=(...args)=>{encodedMasks=args[4];return encode(...args)};
  let now=0;
@@ -61,7 +62,7 @@ test('MP-11: crop merge masks the merged raster with the crop capture full masks
  const pixels=Buffer.alloc(1280*800*4,255);let shots=0;
  // The protected field appears outside the damage between preview and crop.
  const host={generation:1,scales:new Map([['t',1]]),screenshot:async()=>({...tab,generation:1,protected_regions:++shots>3?late:[],data_base64:encodePng(1280,800,pixels)})};
- const capture=new DisplayCapture(clip=>captureProtectedDisplay(host,tab,clip),1);
+ const capture=new DisplayCapture(clip=>captureProtectedDisplay(host,tab,clip),1,canonical);
  await capture.next(tab,policy,false);
  for(let y=100;y<140;y++)pixels.fill(0,(y*1280+100)*4,(y*1280+140)*4);
  tab.input_epoch++;
@@ -80,7 +81,7 @@ test('MD-DISPLAY crop pixels stay native; unchanged preview verifies missed fine
     const data=clip?.scale<1?thumbnail:Buffer.alloc(width*height*4);
     if(!clip||clip.scale===1) for(let row=0;row<height;row++)pixels.copy(data,row*width*4,((clip?.y??0)+row)*1280*4+(clip?.x??0)*4,((clip?.y??0)+row)*1280*4+(clip?.x??0)*4+width*4);
     return {...tab,generation:1,data_base64:encodePng(width,height,data)};
-  },1);
+  },1,canonical);
   await capture.next(tab,policy,false);calls.length=0;
   pixels[(104*1280+104)*4]=0;thumbnail[(13*160+13)*4]=0;
   const patch=await capture.next(tab,policy,true);
@@ -95,14 +96,14 @@ test('MD-DISPLAY crop pixels stay native; unchanged preview verifies missed fine
 test('MD-DISPLAY large preview damage falls back; wrong document is rejected', async () => {
  const before={width:160,height:100,pixels:Buffer.alloc(160*100*4)}, after={...before,pixels:Buffer.alloc(160*100*4,255)};
  assert.equal(changedClip(before,after,.125),null);
- const capture=new DisplayCapture(async()=>({tab_id:'t',document_id:'other',data_base64:''}),1);
+ const capture=new DisplayCapture(async()=>({tab_id:'t',document_id:'other',data_base64:''}),1,canonical);
  await assert.rejects(capture.next({tab_id:'t',document_id:'d'},{},false),/binding changed/);
  assert.equal(capture.previous,null);
 });
 test('MD-DISPLAY verified idle pixels avoid repeated full readback until deadline or input',async()=>{
  let time=0,calls=0;
  const pixels=Buffer.alloc(1280*800*4,255),tab={tab_id:'t',document_id:'d',input_epoch:0},policy={values:[]};
- const capture=new DisplayCapture(async clip=>{if(!clip)calls++;const width=clip?160:1280,height=clip?100:800;return {...tab,generation:1,data_base64:encodePng(width,height,clip?Buffer.alloc(width*height*4,255):pixels)}},1,()=>{},()=>time);
+ const capture=new DisplayCapture(async clip=>{if(!clip)calls++;const width=clip?160:1280,height=clip?100:800;return {...tab,generation:1,data_base64:encodePng(width,height,clip?Buffer.alloc(width*height*4,255):pixels)}},1,canonical,()=>{},()=>time);
  await capture.next(tab,policy,false);assert.equal(calls,1);
  await capture.next(tab,policy,true);assert.equal(calls,1);
  time=251;await capture.next(tab,policy,true);assert.equal(calls,2);
@@ -111,7 +112,7 @@ test('MD-DISPLAY verified idle pixels avoid repeated full readback until deadlin
 test('MD-DISPLAY repeated verified full PNG skips decode but never skips changed pixels',async()=>{
  let time=0,changed=false;const timings=[];
  const tab={tab_id:'t',document_id:'d'},policy={values:[]};
- const capture=new DisplayCapture(async clip=>{const w=clip?160:1280,h=clip?100:800;return {...tab,generation:1,data_base64:encodePng(w,h,Buffer.alloc(w*h*4,changed?127:255))}},1,name=>timings.push(name),()=>time);
+ const capture=new DisplayCapture(async clip=>{const w=clip?160:1280,h=clip?100:800;return {...tab,generation:1,data_base64:encodePng(w,h,Buffer.alloc(w*h*4,changed?127:255))}},1,canonical,name=>timings.push(name),()=>time);
  await capture.next(tab,policy,false,true);timings.length=0;time=300;
  const same=await capture.next(tab,policy,true,true);assert.equal(same.pixels.pixels[0],255);
  assert.ok(!timings.includes('full_source_decode'));
@@ -122,7 +123,7 @@ test('MD-DISPLAY repeated verified full PNG skips decode but never skips changed
 test('MD-DISPLAY changing whole viewport uses CSS motion resolution; idle returns to native pixels',async()=>{
  let changing=false,time=0;
  const tab={tab_id:'t',document_id:'d'},policy={values:[]},calls=[];
- const capture=new DisplayCapture(async clip=>{calls.push(clip?.scale??1);const width=clip?Math.round(1280*clip.scale*2):2560,height=clip?Math.round(800*clip.scale*2):1600;return {...tab,generation:1,width,height,data_base64:encodePng(width,height,Buffer.alloc(width*height*4,changing?127:255))}},2,()=>{},()=>time);
+ const capture=new DisplayCapture(async clip=>{calls.push(clip?.scale??1);const width=clip?Math.round(1280*clip.scale*2):2560,height=clip?Math.round(800*clip.scale*2):1600;return {...tab,generation:1,width,height,data_base64:encodePng(width,height,Buffer.alloc(width*height*4,changing?127:255))}},2,canonical,()=>{},()=>time);
  const motion={x:0,y:0,width:1280,height:800,scale:.5};
  await capture.next(tab,policy,false,true,motion);changing=true;
  const moving=await capture.next(tab,policy,true,true,motion);
@@ -132,7 +133,7 @@ test('MD-DISPLAY changing whole viewport uses CSS motion resolution; idle return
 test('MD-DISPLAY forced verification of small input damage never enters motion mode',async()=>{
  let changed=false;
  const tab={tab_id:'t',document_id:'d',input_epoch:0},policy={values:[]};
- const capture=new DisplayCapture(async clip=>{const width=clip?Math.round(1280*clip.scale):1280,height=clip?Math.round(800*clip.scale):800;const pixels=Buffer.alloc(width*height*4,255);if(changed)pixels[0]=0;return {...tab,generation:1,width,height,data_base64:encodePng(width,height,pixels)}},1);
+ const capture=new DisplayCapture(async clip=>{const width=clip?Math.round(1280*clip.scale):1280,height=clip?Math.round(800*clip.scale):800;const pixels=Buffer.alloc(width*height*4,255);if(changed)pixels[0]=0;return {...tab,generation:1,width,height,data_base64:encodePng(width,height,pixels)}},1,canonical);
  const motion={x:0,y:0,width:1280,height:800,scale:1};
  await capture.next(tab,policy,false,true,motion);changed=true;
  const source=await capture.next({...tab,input_epoch:1},policy,true,true,motion);
@@ -140,7 +141,7 @@ test('MD-DISPLAY forced verification of small input damage never enters motion m
 });
 test('MD-DISPLAY admitted scroll uses motion even when thumbnail misses repeating text',async()=>{
  const tab={tab_id:'t',document_id:'d'},policy={values:[]};let time=0;
- const capture=new DisplayCapture(async clip=>{const width=clip?Math.round(1280*clip.scale*2):2560,height=clip?Math.round(800*clip.scale*2):1600;return {...tab,generation:1,width,height,data_base64:encodePng(width,height,Buffer.alloc(width*height*4,255))}},2,()=>{},()=>time);
+ const capture=new DisplayCapture(async clip=>{const width=clip?Math.round(1280*clip.scale*2):2560,height=clip?Math.round(800*clip.scale*2):1600;return {...tab,generation:1,width,height,data_base64:encodePng(width,height,Buffer.alloc(width*height*4,255))}},2,canonical,()=>{},()=>time);
  const motion={x:0,y:240,width:1280,height:800,scale:.5};
  await capture.next(tab,policy,false,true,motion);
  const moving=await capture.next(tab,policy,true,true,motion,true);assert.equal(moving.motion,true);assert.equal(moving.width,1280);
@@ -150,10 +151,25 @@ test('MD-DISPLAY admitted scroll uses motion even when thumbnail misses repeatin
 test('MD-DISPLAY compositor idle reuse requires verified native epoch and policy',async()=>{
  let clock=0;const data=encodePng(1280,800,Buffer.alloc(1280*800*4,255));
  const tab={tab_id:'t',document_id:'d',input_epoch:1},policy={values:[]};
- const capture=new DisplayCapture(async()=>({...tab,data_base64:data}),1,()=>{},()=>clock);
+ const capture=new DisplayCapture(async()=>({...tab,data_base64:data}),1,canonical,()=>{},()=>clock);
  await capture.next(tab,policy,false,true);
  assert(capture.verified(tab,policy,1));assert.equal(capture.verified(tab,policy,2),null);
  assert.equal(capture.verified({...tab,document_id:'new'},policy,1),null);
- assert.equal(capture.verified(tab,{values:[]},1),null);
+ assert.equal(capture.verified(tab,{values:[]},1,canonical),null);
  clock=251;assert.equal(capture.verified(tab,policy,1),null);
+});
+
+// #1073 P1: the PNG display fallback of a live-resized Tab reads its current viewport, not the canonical 1280x800.
+test('MP-08/MP-11: PNG display capture of a resized Tab accepts its current raster at DPR1 and DPR2',async()=>{
+ for(const [scale,width,height] of [[1,1440,900],[2,1440,900],[1,1920,1080]]){
+  const tab={tab_id:'t',document_id:'d',input_epoch:0},size={width,height};
+  const capture=new DisplayCapture(async clip=>{
+   const w=clip?Math.round(clip.width*scale*clip.scale):width*scale,h=clip?Math.round(clip.height*scale*clip.scale):height*scale;
+   return {...tab,generation:1,data_base64:encodePng(w,h,Buffer.alloc(w*h*4,255))};
+  },scale,()=>size);
+  const first=await capture.next(tab,{values:[]},false);
+  assert.deepEqual([first.pixels.width,first.pixels.height],[width*scale,height*scale],`DPR${scale} ${width}x${height} full`);
+  const second=await capture.next({...tab,input_epoch:1},{values:[]},true);
+  assert.deepEqual([second.pixels.width,second.pixels.height],[width*scale,height*scale],`DPR${scale} ${width}x${height} thumbnail path`);
+ }
 });

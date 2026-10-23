@@ -1,8 +1,9 @@
 // MP-08/MP-10/MP-11: a mutation of the owned Tab, not a new observation attachment.
 import {assertNotCancelled} from './browser-controller-actions.mjs';
+import {pageLimit} from './kernel-browser-geometry.mjs';
 export async function resizeBrowserPage(host,tab,command,signal){
  const {width,height}=command;
- if(!Number.isSafeInteger(width)||!Number.isSafeInteger(height)||width<320||height<200||width>1920||height>1080)throw Error('browser resize needs a viewport between 320x200 and 1920x1080; adjust the browser area');
+ if(!Number.isSafeInteger(width)||!Number.isSafeInteger(height)||width<320||height<200||width>pageLimit.width||height>pageLimit.height)throw Error('browser resize needs a viewport between 320x200 and 1920x1080; adjust the browser area');
  if(width%2||height%2)throw Error('browser resize needs even width and height for video; round down to an even viewport size');
  assertNotCancelled(signal);
  if(host.generation!==command.generation||host.tabs.get(tab.tab_id)?.target_id!==tab.target_id)throw Error('browser resize target retired; refresh the browser view and try again');

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { inflateSync, deflateSync, crc32 } from "node:zlib";
 import { randomBytes } from "node:crypto";
 import { MAX_BROWSER_ARTIFACT_BYTES } from "./browser-controller-artifacts.mjs";
-import { decodePng, encodePng, maskPng, captureProtectedPage, wholeFrameMask } from "./kernel-browser-pixels.mjs";
+import { decodePng, encodePng, maskPng, captureProtectedPage, cropProtectedPng, wholeFrameMask } from "./kernel-browser-pixels.mjs";
 
 function decoded(data) {
   const png = Buffer.from(data, "base64"), parts = [];
@@ -38,7 +38,7 @@ test("MP-11: registration alone leaves every pixel visible; failed target lookup
 test('MP-08/MP-11: negotiated controller bounds admit exact images and reject mismatches', () => {
   const bounds={width:1920,height:1080};
   const png=encodePng(bounds.width,bounds.height,Buffer.alloc(bounds.width*bounds.height*4,255));
-  assert.throws(()=>decodePng(png),/frame format/,'display defaults remain bounded');
+  assert.throws(()=>decodePng(encodePng(1922,1080,Buffer.alloc(1922*1080*4,255))),/frame format/,'display defaults remain bounded');
   const frame=decodePng(maskPng(png,[[100,100,20,20]],1,bounds),1,bounds);
   assert.deepEqual([...frame.pixels.subarray((110*frame.width+110)*4,(110*frame.width+110)*4+4)],[0,0,0,255]);
   assert.throws(()=>maskPng(png,[],1,{width:1921,height:1080}),/frame/);
@@ -104,4 +104,17 @@ test('MP-11 indexed PNG decoding rejects out-of-palette indices, transparency an
   assert.throws(() => decodePng(png(palette, data([2, 0]))), /palette index/);
   assert.throws(() => decodePng(png(palette, chunk('tRNS', Buffer.from([0])), data([0, 0]))), /unsupported frame format/);
   assert.throws(() => decodePng(png(data([0, 0]))), /chunk order/);
+});
+
+// #1073 P1: a live resize admits pages up to 1920x1080 CSS; their rasters must decode at the Tab's density.
+test('MP-08/MP-11: a resized page raster above the canonical size decodes at DPR1 and DPR2, bounded by the resize limit', () => {
+  for(const [scale,width,height] of [[1,1440,900],[1,1920,1080],[2,2880,1800],[2,3840,2160]]){
+    const png=encodePng(width,height,Buffer.alloc(width*height*4,255));
+    const frame=decodePng(png,scale);
+    assert.deepEqual([frame.width,frame.height],[width,height],`DPR${scale} ${width}x${height}`);
+    const crop=cropProtectedPng(png,{x:0,y:0,width:width/scale-2,height:height/scale,scale:1},scale);
+    assert.deepEqual([crop.width,crop.height],[width-2*scale,height],'the protected crop of a resized page');
+  }
+  for(const [scale,width,height] of [[1,1922,1080],[1,1920,1082],[2,3842,2160]])
+    assert.throws(()=>decodePng(encodePng(width,height,Buffer.alloc(width*height*4,255)),scale),/frame format/,`DPR${scale} ${width}x${height} beyond the resize limit`);
 });

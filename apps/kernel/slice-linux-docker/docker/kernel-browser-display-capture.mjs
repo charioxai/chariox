@@ -1,4 +1,3 @@
-import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-DISPLAY-02/04: a protected thumbnail locates likely changes, never leaves
 // the kernel, and never supplies displayed pixels. Changed rectangles are read
 // at native DPR. An unchanged thumbnail ALWAYS triggers full protected readback
@@ -21,7 +20,8 @@ export function changedClip(before, after, scale) {
   return width * height <= after.width*after.height/scale**2*.15 ? { x,y,width,height,scale:1 } : null;
 }
 export class DisplayCapture {
-  constructor(capture, scale, timing = () => {}, now = () => performance.now()) { this.capture = capture; this.scale = scale; this.timing = timing; this.now=now; this.invalidate(); }
+  // `size` is the Tab's current CSS viewport, which a live resize changes.
+  constructor(capture, scale, size, timing = () => {}, now = () => performance.now()) { this.capture = capture; this.scale = scale; this.size = size; this.timing = timing; this.now=now; this.invalidate(); }
   invalidate() { this.previous = null; this.preview = null; this.document = null; this.policy = null; this.needsVerification = false; this.inputEpoch = null; this.verifiedAt = -Infinity; this.source = null; this.native=null; this.motion=false; this.motionData=null; this.stableAt=null; }
   verified(tab,policy,epoch) {
     return !this.motion && !this.needsVerification && this.source && this.document===tab.document_id && this.policy===policy && this.inputEpoch===epoch && this.now()-this.verifiedAt<250 ? this.source : null;
@@ -51,11 +51,13 @@ export class DisplayCapture {
       // before attempting any exact tile; never upscale a lossless repair.
       motionClip=null; forceFull=true;
     }
+    const geometry = this.size();
     const verify = forceFull || (this.needsVerification && tab.input_epoch === this.inputEpoch);
     const previewSource = verify && !motionClip ? null : await capture({ x:motionClip?.x??0,y:motionClip?.y??0,width:geometry.width,height:geometry.height,scale:factor });
     let at = timestamp();
     const preview = previewSource ? decodePng(previewSource.data_base64,this.scale) : this.preview;
-    if (previewSource && (preview.width !== geometry.width*this.scale*factor || preview.height !== geometry.height*this.scale*factor)) throw Error('MD-DISPLAY: preview geometry changed');
+    // A resized viewport need not divide by 8; Chrome rounds the thumbnail to whole pixels either way.
+    if (previewSource && (Math.abs(preview.width - geometry.width*this.scale*factor) >= 1 || Math.abs(preview.height - geometry.height*this.scale*factor) >= 1)) throw Error('MD-DISPLAY: preview geometry changed');
     this.timing('preview_decode',at);
     // Already verified pixels may be reused briefly only on an unchanged
     // native thumbnail, unchanged input epoch and empty protection registry.
