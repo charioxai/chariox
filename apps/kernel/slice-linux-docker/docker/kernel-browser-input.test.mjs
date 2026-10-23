@@ -391,3 +391,35 @@ test('MP-11 ordinary page input applies a retired visible crop guard before any 
  await assert.rejects(inputHostTab(browser,{target_id:'t',document_id:'d'},{kind:'click',x:12,y:700},{inputGuard:async()=>{throw Error('retired visible crop');}}),/retired visible crop/);
  assert(!sent.some(m=>m.startsWith('Input.')),'a retired crop must dispatch no button press');
 });
+
+test('MP-08/MP-10: the toolbar history keys navigate Chromium history without injecting page keys', async () => {
+ for (const [key, expected] of [['BrowserBack', 11], ['BrowserForward', 33]]) {
+  const {browser,sent}=fixture();const {connection}=await browser.resolvePageTarget();const send=connection.send;
+  connection.send=async(method,params)=>method==='Page.getNavigationHistory'?{currentIndex:1,entries:[{id:11},{id:22},{id:33}]}:send(method,params);
+  await inputHostTab(browser,tab,{kind:'key',key});
+  assert.deepEqual(sent.filter(x=>x.method==='Page.navigateToHistoryEntry'),[{method:'Page.navigateToHistoryEntry',params:{entryId:expected}}]);
+  assert(!sent.some(x=>x.method==='Input.dispatchKeyEvent'));
+ }
+});
+test('MP-08/MP-10: Alt-arrow in a page (macOS Option-arrow caret movement) stays page input, never history', async () => {
+ for (const key of ['ArrowLeft', 'ArrowRight']) {
+  const {browser,sent}=fixture();
+  await inputHostTab(browser,tab,{kind:'key',key,modifiers:1});
+  assert(!sent.some(x=>x.method==='Page.navigateToHistoryEntry'||x.method==='Page.getNavigationHistory'),'Alt-arrow must not navigate history');
+  assert(sent.some(x=>x.method==='Input.dispatchKeyEvent'&&x.params?.key===key&&x.params?.modifiers===1),'Alt-arrow reaches the page');
+ }
+});
+test('MP-08/MP-11: history keys preserve navigation edges and document admission', async () => {
+ const {browser,sent}=fixture();const {connection}=await browser.resolvePageTarget();const send=connection.send;
+ let changed=false;
+ connection.send=async(method,params)=>{
+  if(method==='Page.getNavigationHistory')return {currentIndex:0,entries:[{id:11},{id:22}]};
+  if(method==='Page.getFrameTree'&&changed)return {frameTree:{frame:{id:'f',loaderId:'other'}}};
+  return send(method,params);
+ };
+ await inputHostTab(browser,tab,{kind:'key',key:'BrowserBack'});
+ assert(!sent.some(x=>x.method==='Page.navigateToHistoryEntry'||x.method==='Input.dispatchKeyEvent'));
+ connection.send=async(method,params)=>{if(method==='Page.getNavigationHistory'){changed=true;return {currentIndex:0,entries:[{id:11},{id:22}]}};return method==='Page.getFrameTree'&&changed?{frameTree:{frame:{id:'f',loaderId:'other'}}}:send(method,params)};
+ await assert.rejects(inputHostTab(browser,tab,{kind:'key',key:'BrowserForward'}),{code:'stale_document_reference'});
+ assert(!sent.some(x=>x.method==='Page.navigateToHistoryEntry'));
+});

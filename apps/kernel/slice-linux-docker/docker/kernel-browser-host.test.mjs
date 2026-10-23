@@ -515,7 +515,9 @@ test("MD-5: metadata scrubs echoes and never persists a secret-bearing restore U
   assert(candidates.includes("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"));
   assert(candidates.includes("/Users/md-test/Applications/Chromium.app/Contents/MacOS/Chromium"));
   const environment = { HOME: "/private/drill/home", DISPLAY: ":99", XAUTHORITY: "/unused", WAYLAND_DISPLAY: "wayland-0" };
-  assert.deepEqual(macEnvironment(environment), { HOME: environment.HOME });
+  assert.deepEqual(macEnvironment(environment), { HOME: environment.HOME, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" });
+  const offscreen = macEnvironment({ ...environment, CHARIOX_KERNEL_BROWSER_HEADLESS: "0" });
+  assert(launchArguments("/private/drill/profile", offscreen.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", true).includes("--headless=new"), "Browser does not create native windows on the owner's Mac desktop");
   assert.equal(environment.DISPLAY, ":99");
   assert.throws(() => linuxEnvironment({}, 0), /normal Unix user/);
   assert.deepEqual(linuxEnvironment({ DISPLAY: ":99" }, 501), { DISPLAY: ":99" });
@@ -1539,8 +1541,8 @@ test('MP-11 agents cannot reach extension management; the person can', () => usi
 
 // MP-08/MP-10/MP-11 (protocol 530/138): the public Browser state keys are the hashed
 // Rust fixture's; a new key needs a protocol bump and a new fixture.
-test('MP-08 public Browser state keys match the protocol 530 fixture', () => using(async ({ host }) => {
-  const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-chrome-ui-530.json', import.meta.url), 'utf8'));
+test('MP-08 public Browser state keys match the protocol 577 fixture', () => using(async ({ host }) => {
+  const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-header-577.json', import.meta.url), 'utf8'));
   const display = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
   process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '1';
   try {
@@ -2545,6 +2547,42 @@ for (const mirrored of [false,true]) test(`MP-08/MP-10/MP-11: ${mirrored?'DOM':'
  const saved=JSON.parse(await readFile(path.join(root,'tabs.json'),'utf8'));assert.equal(saved.active_tab_id,todo.tab_id);
 }));
 
+// MP-08/MP-10: a click whose page opens a Tab (window.open, target=_blank) leaves Chromium showing that Tab; the opener's admitted selection must not pull focus back.
+test('MP-08/MP-10 a Tab opened by the clicked page keeps the foreground over the opener selection', () => using(async ({host,connection}) => {
+ const opener=await host.request({op:'open',url:'https://example.com/opener'});
+ const target=id=>host.tabs.get(id).target_id;let active=target(opener.tab_id),activations=0,popup;
+ host.tabGroups={active:async()=>active};host.activeTarget=target(opener.tab_id);
+ const send=connection.send.bind(connection);
+ connection.send=async(method,params,session)=>{
+  if(method==='Target.activateTarget'){active=params.targetId;activations++}
+  if(method.startsWith('Input.')&&!popup){popup=(await send('Target.createTarget',{url:'https://example.com/popup'})).targetId;active=popup}
+  return send(method,params,session)};
+ await host.request({op:'input',tab_id:opener.tab_id,generation:opener.generation,document_id:host.tabs.get(opener.tab_id).document_id,input:{kind:'text',text:'x'}});
+ assert(popup,'the click opened a Tab');
+ assert.equal(activations,0,'the opener selection must not re-activate over the new Tab');
+ await host.reconcile();
+ assert.equal(host.activeTarget,popup,'the new Tab is the active Tab');
+ assert.equal(host.pendingActive,null);
+}));
+
+// Review #1072 P2: a state read that adopts the popup while the input acknowledgement is pending must not let the ack rebuild the opener intent.
+test('MP-08/MP-10 a popup adopted before the input acknowledgement keeps the foreground', () => using(async ({host,connection}) => {
+ const opener=await host.request({op:'open',url:'https://example.com/opener'});
+ const target=id=>host.tabs.get(id).target_id;let active=target(opener.tab_id),activations=0,popup;
+ host.tabGroups={active:async()=>active};host.activeTarget=target(opener.tab_id);
+ const send=connection.send.bind(connection);
+ connection.send=async(method,params,session)=>{
+  if(method==='Target.activateTarget'){active=params.targetId;activations++}
+  if(method.startsWith('Input.')&&!popup){popup=(await send('Target.createTarget',{url:'https://example.com/popup'})).targetId;active=popup;await host.reconcile()}
+  return send(method,params,session)};
+ await host.request({op:'input',tab_id:opener.tab_id,generation:opener.generation,document_id:host.tabs.get(opener.tab_id).document_id,input:{kind:'text',text:'x'}});
+ assert(popup,'the click opened a Tab');
+ assert.equal(host.pendingActive,null,'the acknowledgement must not rebuild the opener selection');
+ await host.reconcile();
+ assert.equal(activations,0,'the opener selection must not re-activate over the new Tab');
+ assert.equal(host.activeTarget,popup,'the new Tab is the active Tab');
+}));
+
 // MP-08/MP-10/MP-11: an input can publish before its focus reconciliation settles.
 test('pending human selection preserves every verified App restore barrier', () => using(async ({host},root) => {
  const todo=await host.request({op:'open',url:'https://app.todo.invalid/'});
@@ -2575,4 +2613,15 @@ test('native selection stays unknown while the saved App selection is pending', 
   host.activeTarget=host.tabs.get(docs.tab_id).target_id;
   assert.equal(host.chromeWindow().active_tab_id,docs.tab_id,'later native changes remain visible');
  } finally {host.chromeWindows={retire(){}};if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous}
+}));
+
+test('MP-08/MP-10 protocol577 portable header follows Chromium without a native band', () => using(async ({host,connection}) => {
+ const first=await host.request({op:'open',url:'https://example.com/first'}),second=await host.request({op:'open',url:'https://example.com/second'});
+ const png=encodePng(16,16,Buffer.alloc(16*16*4,255));
+ const send=connection.send;connection.send=async(method,params,session)=>method==='Page.getNavigationHistory'?{currentIndex:1,entries:[{id:1},{id:2}]}:send(method,params,session);
+ host.tabGroups={active:async()=>host.tabs.get(second.tab_id).target_id,favicon:async()=>png};
+ await host.request({op:'state'});await new Promise(r=>setTimeout(r,300));await host.request({op:'state'});await new Promise(r=>setTimeout(r,10));const state=await host.request({op:'state'});
+ assert.equal(state.chrome_window,null);assert.equal(state.active_tab_id,second.tab_id);
+ const tab=state.tabs.find(t=>t.tab_id===second.tab_id);assert.equal(tab.can_go_back,true);assert.equal(tab.can_go_forward,false);assert.equal(tab.favicon_png_base64,png);
+ assert(state.tabs.some(t=>t.tab_id===first.tab_id));
 }));

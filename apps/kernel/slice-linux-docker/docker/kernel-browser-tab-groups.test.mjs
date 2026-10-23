@@ -7,13 +7,13 @@ import os from "node:os";
 import path from "node:path";
 import { ChromeTabGroups, TAB_GROUPS_EXTENSION_ID, writeTabGroupsExtension } from "./kernel-browser-tab-groups.mjs";
 
-test("MP-11 the extension id derives from its public key and asks only for tabs, groups and target ids", async () => {
+test("MP-11 the extension id derives from its public key and asks only for tabs, groups, target ids and the favicon cache", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-tab-groups-"));
   try {
     const manifest = JSON.parse(await readFile(path.join(await writeTabGroupsExtension(root), "manifest.json"), "utf8"));
     const id = createHash("sha256").update(Buffer.from(manifest.key, "base64")).digest("hex").slice(0, 32).replace(/[0-9a-f]/g, c => String.fromCharCode(97 + parseInt(c, 16)));
     assert.equal(id, TAB_GROUPS_EXTENSION_ID);
-    assert.deepEqual(manifest.permissions, ["tabs", "tabGroups", "debugger"]);
+    assert.deepEqual(manifest.permissions, ["tabs", "tabGroups", "debugger", "favicon"]);
     assert.equal(manifest.host_permissions, undefined); assert.equal(manifest.content_scripts, undefined);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -32,7 +32,7 @@ test("MP-08 one native group per agent label; unchanged groups are not re-sent",
   await groups.load("/k/tab-groups-extension");
   assert.equal(await groups.sync([{ label: "Mara", target_ids: ["t2", "t1"] }]), true);
   assert.equal(await groups.sync([{ label: "Mara", target_ids: ["t1", "t2"] }]), false, "same groups, no evaluate");
-  const evaluated = sent.filter(call => call.method === "Runtime.evaluate"&&call.params.expression!=='chrome.runtime.reload()'&&call.params.expression!=='charioxTabs.revision === 2').map(call => call.params.expression);
+  const evaluated = sent.filter(call => call.method === "Runtime.evaluate"&&call.params.expression!=='chrome.runtime.reload()'&&call.params.expression!=='charioxTabs.revision === 5').map(call => call.params.expression);
   assert.equal(evaluated.length, 1);
   assert.match(evaluated[0], /^charioxTabs\.sync\(\[\{"target_ids":\["t1","t2"\],"title":"Mara","color":"[a-z]+"\}\]\)$/);
   await assert.rejects(new ChromeTabGroups({ send: async () => ({ id: "other" }) }).load("/k"), /unexpected kernel tab-groups extension id/);
@@ -46,7 +46,7 @@ test("MP-08/MP-11 a removed tab-groups extension is loaded again; until then it 
     if (method === "Target.getTargets") return { targetInfos: installed ? [{ type: "service_worker", targetId: "sw-"+worker, url: `chrome-extension://${TAB_GROUPS_EXTENSION_ID}/sw.js` }] : [] };
     if (method === "Target.attachToTarget") return { sessionId: "s" };
     if (method === "Extensions.uninstall") { uninstalls++; if (!installed) throw new Error("not installed"); installed = false; return {}; }
-    if (method === "Runtime.evaluate") {if(params.expression==='charioxTabs.revision === 2')return{result:{value:true}};if(params.expression==='chrome.runtime.reload()')worker++; if (!installed) throw new Error("No session with given id"); return { result: { value: "target-b" } }; }
+    if (method === "Runtime.evaluate") {if(params.expression==='charioxTabs.revision === 5')return{result:{value:true}};if(params.expression==='chrome.runtime.reload()')worker++; if (!installed) throw new Error("No session with given id"); return { result: { value: "target-b" } }; }
     return {};
   } };
   const groups = new ChromeTabGroups(connection);
@@ -70,7 +70,7 @@ test("MP-08 a Tab in a second tabbed window folds into the oldest one, also afte
     const tabs = new Map([[1, { id: 1, windowId: 10 }], [2, { id: 2, windowId: 11 }], [3, { id: 3, windowId: 12 }]]);
     const chrome = {
       runtime: { getPlatformInfo() {} },
-      windows: { getAll: async () => [{ id: 12, type: "popup" }, { id: 11 }, { id: 10 }].filter(window => !window.type), update: async (id, value) => calls.push(["focus", id, value]) },
+      windows: { getAll: async () => [{ id: 12, type: "popup" }, { id: 11, type: "normal" }, { id: 10, type: "normal" }].filter(window => window.type === "normal"), update: async (id, value) => calls.push(["focus", id, value]) },
       tabs: {
         onCreated: { addListener: listener => { listeners.created = listener; } },
         onAttached: { addListener: listener => { listeners.attached = listener; } },
@@ -86,6 +86,32 @@ test("MP-08 a Tab in a second tabbed window folds into the oldest one, also afte
     await new Promise(resolve => setTimeout(resolve, 20));
     assert.deepEqual(calls, [["move", 2, { windowId: 10, index: -1 }], ["update", 2, { active: true }], ["focus", 10, { focused: true }]],
       "only the second normal window's Tab moves (after the drag ends); the main window's and the popup's stay");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("MP-08/MP-10 popup windows become tabs without moving the internal keepalive", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-popup-fold-"));
+  try {
+    const source = await readFile(path.join(await writeTabGroupsExtension(root), "sw.js"), "utf8");
+    const listeners = {}, moved = [], created = [], worker = {};
+    let openerClosed = false;
+    const tabs = new Map([[1, { id: 1, windowId: 10 }], [2, { id: 2, windowId: 11 }], [3, { id: 3, windowId: 12 }]]);
+    const chrome = {
+      runtime: { getPlatformInfo() {} },
+      debugger: { getTargets: async () => [{ id: "keepalive", tabId: 2 }] },
+      windows: { getAll: async () => [{ id: 10, type: "normal" }, { id: 11, type: "popup" }, { id: 12, type: "popup" }].filter(window => !openerClosed || window.id !== 10), update: async () => {}, create: async spec => created.push(spec) },
+      tabs: { onCreated: { addListener: fn => { listeners.created = fn; } }, onAttached: { addListener: fn => { listeners.attached = fn; } },
+        get: async id => tabs.get(id), move: async (id, destination) => moved.push([id, destination]), update: async () => {} },
+    };
+    new Function("chrome", "setInterval", "setTimeout", "globalThis", source)(chrome, () => {}, queueMicrotask, worker);
+    await worker.charioxTabs.keepalive("keepalive");
+    listeners.created(tabs.get(2)); listeners.created(tabs.get(3));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(moved, [[3, { windowId: 10, index: -1 }]], "the page popup, including an initially blank popup, joins the real tab strip");
+    openerClosed = true;
+    listeners.created(tabs.get(3));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(created, [{ tabId: 3, type: "normal", focused: true }], "the surviving page becomes the tabbed window; no extra blank page");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -133,7 +159,7 @@ test('loading the component replaces a cached older worker',async()=>{
   if(method==='Extensions.loadUnpacked'){if(!installed)current='new-target';installed=true;return{id:TAB_GROUPS_EXTENSION_ID}}
   if(method==='Target.getTargets')return{targetInfos:[{type:'service_worker',targetId:'worker-'+worker,url:`chrome-extension://${TAB_GROUPS_EXTENSION_ID}/sw.js`}]};
   if(method==='Target.attachToTarget')return{sessionId:'session'};
-  if(method==='Runtime.evaluate'){if(params.expression==='charioxTabs.revision === 2')return{result:{value:current==='new-target'}};if(params.expression==='chrome.runtime.reload()'){current='new-target';worker++}return{result:{value:current}};}return{};
+  if(method==='Runtime.evaluate'){if(params.expression==='charioxTabs.revision === 5')return{result:{value:current==='new-target'}};if(params.expression==='chrome.runtime.reload()'){current='new-target';worker++}return{result:{value:current}};}return{};
  }};
  const groups=new ChromeTabGroups(connection);await groups.load('/owned/component');assert.equal(await groups.active(),'new-target');
 });
@@ -149,4 +175,42 @@ test('a current component worker is attached without reload',async()=>{
  }});
  await groups.load('/owned/component');await groups.active();
  assert(!sent.some(call=>call.method==='Target.detachFromTarget'||call.params?.expression==='chrome.runtime.reload()'));
+});
+
+test('MP-08/MP-10/MP-11 protocol577 favicons are bounded Chromium-cache PNGs',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'chariox-header-icons-'));
+ try{
+  const directory=await writeTabGroupsExtension(root),source=await readFile(path.join(directory,'sw.js'),'utf8');
+  assert(JSON.parse(await readFile(path.join(directory,'manifest.json'),'utf8')).permissions.includes('favicon'));
+  const state={},tab={id:1,url:'https://example.com/',favIconUrl:'https://example.com/icon.svg'};
+  const chrome={runtime:{getPlatformInfo(){},getURL:p=>'chrome-extension://'+TAB_GROUPS_EXTENSION_ID+p},debugger:{getTargets:async()=>[{id:'target',tabId:1}]},windows:{},tabs:{get:async()=>tab,onCreated:{addListener(){}},onAttached:{addListener(){}}}};
+  const {encodePng}=await import('./kernel-browser-pixels.mjs');let bytes=Buffer.from(encodePng(16,16,Buffer.alloc(16*16*4,255)),'base64'),type='image/png',calls=0;
+  const fetchIcon=async url=>{calls++;assert.equal(url.protocol,'chrome-extension:');assert.equal(url.pathname,'/_favicon/');assert.equal(url.searchParams.get('size'),'32');return new Response(bytes,{headers:{'content-type':type}})};
+  new Function('chrome','setInterval','setTimeout','globalThis','fetch',source)(chrome,()=>{},queueMicrotask,state,fetchIcon);
+  const icon=await state.charioxTabs.favicon('target');assert.equal(icon,bytes.toString('base64'));assert.equal(await state.charioxTabs.favicon('target'),icon);assert.equal(calls,1);
+  for(const variant of ['oversized','svg','dimensions']){
+   tab.favIconUrl+='?'+variant;
+   if(variant==='oversized')bytes=Buffer.alloc(20000);else if(variant==='svg'){type='image/svg+xml';bytes=Buffer.from('<svg/>')}else{type='image/png';bytes=Buffer.from(encodePng(64,64,Buffer.alloc(64*64*4,255)),'base64')}
+   assert.equal(await state.charioxTabs.favicon('target'),null,variant);
+  }
+ }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test('MP-08/MP-10/MP-11 favicon cache failure never retires native input',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'chariox-icon-failure-'));
+ try{
+  const source=await readFile(path.join(await writeTabGroupsExtension(root),'sw.js'),'utf8'),state={};
+  const chrome={runtime:{getPlatformInfo(){},getURL:p=>'chrome-extension://'+TAB_GROUPS_EXTENSION_ID+p},debugger:{getTargets:async()=>[{id:'target',tabId:1}]},windows:{},tabs:{get:async()=>({id:1,url:'https://example.com',favIconUrl:'https://example.com/icon'}),onCreated:{addListener(){}},onAttached:{addListener(){}}}};
+  new Function('chrome','setInterval','setTimeout','globalThis','fetch',source)(chrome,()=>{},queueMicrotask,state,async()=>{throw Error('cache temporarily unavailable')});
+  assert.equal(await state.charioxTabs.favicon('target'),null);
+ }finally{await rm(root,{recursive:true,force:true})}
+});
+
+// MP-08/MP-10: Chrome headless omits favIconUrl and the cache response MIME header.
+test('MP-08/MP-10 real headless favicon cache does not require metadata headers',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'chariox-headless-icon-'));
+ try{const source=await readFile(path.join(await writeTabGroupsExtension(root),'sw.js'),'utf8'),state={};const {encodePng}=await import('./kernel-browser-pixels.mjs');const bytes=Buffer.from(encodePng(32,32,Buffer.alloc(32*32*4,255)),'base64');
+ const chrome={runtime:{getPlatformInfo(){},getURL:p=>'chrome-extension://'+TAB_GROUPS_EXTENSION_ID+p},debugger:{getTargets:async()=>[{id:'target',tabId:1}]},windows:{},tabs:{get:async()=>({id:1,url:'https://www.wikipedia.org/'}),onCreated:{addListener(){}},onAttached:{addListener(){}}}};
+ new Function('chrome','setInterval','setTimeout','globalThis','fetch',source)(chrome,()=>{},queueMicrotask,state,async()=>new Response(bytes));assert.equal(await state.charioxTabs.favicon('target'),bytes.toString('base64'));
+ }finally{await rm(root,{recursive:true,force:true})}
 });
