@@ -149,6 +149,9 @@ impl KernelRuntimeState {
         let mut attempt = 0_u32;
         // The unlock is held across the next attempt so the redelivery never needs to prompt.
         let mut vault_unlocks = Vec::new();
+        // An owner who dismissed the unlock is not asked again by this recovery: the
+        // prompt settles Cancelled at the end of the window and the owner resends it.
+        let mut vault_declined = BTreeSet::new();
         loop {
             let mut summary = self
                 .recover_durable_runtime_after_restart_targets(
@@ -198,7 +201,10 @@ impl KernelRuntimeState {
                 return summary;
             }
             vault_unlocks.clear();
-            vault_unlocks.extend(self.unlock_vault_for_failed_recoveries(&summary).await);
+            vault_unlocks.extend(
+                self.unlock_vault_for_failed_recoveries(&summary, &mut vault_declined)
+                    .await,
+            );
             attempt = attempt.saturating_add(1);
             tokio::time::sleep(retry_delay).await;
         }
@@ -209,15 +215,20 @@ impl KernelRuntimeState {
     async fn unlock_vault_for_failed_recoveries(
         &self,
         summary: &DurableRestartRecoverySummary,
+        declined: &mut BTreeSet<(String, String)>,
     ) -> Vec<super::runtime_vault_unlock_state::VaultUnlockGuard> {
         let mut unlocks = Vec::new();
         for (session_id, agent_id) in &summary.agents_awaiting_vault {
+            if declined.contains(&(session_id.clone(), agent_id.clone())) {
+                continue;
+            }
             match self
                 .ensure_vault_unlocked_for_agent(session_id, agent_id, "restore interrupted prompt")
                 .await
             {
                 Ok(guard) => unlocks.push(guard),
                 Err(error) => {
+                    declined.insert((session_id.clone(), agent_id.clone()));
                     log_restart_recovery_failure(session_id, agent_id, "vault-unlock", &error)
                 }
             }
@@ -1832,6 +1843,75 @@ mod tests {
             .active_prompt_for_agent(&session, &agent_id)
             .expect("unrecoverable prompt should remain preserved");
         assert_eq!(prompt.id(), prompt_id);
+    }
+
+    // Cancelling the recovery's Vault unlock must stay cancelled for the rest of the recovery:
+    // the next pass finds the same locked Vault and must not open the same popup again.
+    #[tokio::test]
+    async fn a_dismissed_recovery_vault_unlock_is_not_asked_again_by_later_passes() {
+        crate::test_support::isolated_env_test!();
+        let _env = crate::env_lock::lock();
+        let worktree = crate::test_support::TestWorktree::new("restart-recovery-vault-dismissed");
+        let vault = worktree.path().join("recovery.vault");
+        crate::secret::create_chariox_encrypted_vault_for_test(&vault, "recovery passphrase")
+            .expect("vault should create");
+        crate::secret::lock_chariox_encrypted_vault(&vault).expect("vault should lock");
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = vault.display().to_string();
+        let (runtime, session_id, agent_id, _prompt_id) = runtime_with_active_prompt_config(
+            crate::session::DurablePromptDeliveryPhase::Accepted,
+            worktree.path().to_string_lossy().as_ref(),
+            config,
+        );
+        let mut summary = DurableRestartRecoverySummary::default();
+        summary.note_vault_locked(
+            &session_id,
+            &agent_id,
+            &DaemonError::LocalTransport {
+                operation: "credential_vault_locked",
+                message: "Chariox vault is locked".into(),
+            },
+        );
+        let mut declined = BTreeSet::new();
+        let mut asked = 0;
+        for pass in 0..3 {
+            let unlock = runtime.unlock_vault_for_failed_recoveries(&summary, &mut declined);
+            let dismiss = async {
+                for _ in 0..40 {
+                    let session = runtime
+                        .session_snapshot(&session_id)
+                        .await
+                        .expect("session should project");
+                    if let Some(interaction) = session.active_interaction_for_agent(&agent_id) {
+                        runtime
+                            .answer_terminal_runtime_interaction(
+                                &session_id,
+                                interaction.id(),
+                                "cancel",
+                                None,
+                                Some("local"),
+                                None,
+                                None,
+                                Some(crate::local::KernelConnectionClass::Terminal),
+                            )
+                            .await
+                            .expect("owner can dismiss the unlock");
+                        return true;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                false
+            };
+            let (unlocks, dismissed) = tokio::join!(unlock, dismiss);
+            assert!(
+                unlocks.is_empty(),
+                "pass {pass}: a dismissed unlock holds nothing"
+            );
+            asked += usize::from(dismissed);
+        }
+        assert_eq!(asked, 1, "the dismissed unlock came back in a later pass");
     }
 
     #[tokio::test]
