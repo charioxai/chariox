@@ -120,3 +120,64 @@ fn owner(
     )
     .unwrap()
 }
+
+// MP-08/MP-10/MP-11: the local account remains selected after its runtime owner enrolls.
+#[test]
+fn enrolled_runtime_owner_keeps_its_resolved_local_provider_account() {
+    crate::test_support::isolated_env_test!();
+    let root = crate::test_support::TestWorktree::new("enrollment-resolved-account");
+    let registry = ProviderAccountProfileRegistry::open(root.path().join("profiles.json")).unwrap();
+    let profile = registry
+        .migrate_effective_defaults("local", &root.path().join("native"))
+        .unwrap()
+        .into_iter()
+        .find(|p| p.provider == "codex")
+        .unwrap();
+    let mut request = crate::provider::LaunchProviderRequest::new(
+        "session",
+        "codex",
+        "codex",
+        "default",
+        "gpt-6-luna",
+    );
+    request.account_profile = profile.profile_id.clone();
+    bind_provider_account_authority(&mut request, "local".into(), profile.profile_id.clone());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "run",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "enrollment-metadata".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: vec![],
+            pty_env: Default::default(),
+            pty_env_remove: vec![],
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    let mut config = crate::config::DaemonConfig::for_tests();
+    assert_eq!(
+        provider_account_authority_for_run(&config, &registry, &run).unwrap(),
+        "local"
+    );
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "enrolled-owner".into(),
+        ..Default::default()
+    });
+    run.enroll_local_owner("enrolled-owner").unwrap();
+    assert_eq!(run.owner_user_id(), "enrolled-owner");
+    assert_eq!(
+        provider_account_authority_for_run(&config, &registry, &run).unwrap(),
+        "local"
+    );
+    assert_eq!(provider_account_selection_for_run(&run), profile.profile_id);
+    assert!(run.enroll_local_owner("another-owner").is_err());
+    assert_eq!(run.owner_user_id(), "enrolled-owner");
+    config.cloud_relay.as_mut().unwrap().user_id = "another-owner".into();
+    assert!(
+        provider_account_authority_for_run(&config, &registry, &run).is_err(),
+        "another enrolled person must not inherit the selected local account"
+    );
+}
