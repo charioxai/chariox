@@ -41,3 +41,10 @@ export function nativeCreditEmpty(stream,source,policy,epoch,changedAt,after,now
  // admitted contiguous native tile patch. No lossy-source equality inference.
  return Boolean(stream.exact&&!refiner.active&&stream.compositorRegionRevision===source.regionRevision);
 }
+// MP-08/MP-10/MP-11: a native exact plan (patch, shift or repair) is cut against its session at its revision, which
+// counts encodes no frame took (an armed auto-encode of a readback the stream patched). Only a hand-off after the plan
+// raises the encoder's revision past it. Equality refused every plan of a static page: no later encode resynchronised.
+export function nativeRevisionCurrent(source,encoder){
+ if(source.native_revision===undefined||source.native_revision===encoder.nativeRevision)return true;
+ return source.native_exact===true&&Number.isSafeInteger(encoder.nativeRevision)&&source.native_revision>encoder.nativeRevision;
+}
