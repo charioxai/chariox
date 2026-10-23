@@ -251,25 +251,54 @@ async fn leased_composer_native_selection_uses_the_real_adapter_before_receipt()
 
     // Actual directory discovery reports no load acknowledgement. The composer
     // hook still acknowledges its native expansion for an equal Chariox copy.
-    publish(&service, vec![SkillCatalogAction::Install {
-        source: SkillInstallSource::Folder { path: files.path().join("worker-native").display().to_string() },
-        collision: SkillCollisionAction::Reject, package_id: None,
-    }]);
+    publish(
+        &service,
+        vec![SkillCatalogAction::Install {
+            source: SkillInstallSource::Folder {
+                path: files.path().join("worker-native").display().to_string(),
+            },
+            collision: SkillCollisionAction::Reject,
+            package_id: None,
+        }],
+    );
     let prompt = "$worker-native inspect folded source";
     let folded = prepare(&runtime, &context, prompt, inventory.entries.clone(), true).await;
     let pinned: SkillTurnContext = serde_json::from_value(folded["context"].clone()).unwrap();
     assert_eq!(pinned.loaded.len(), 1);
-    assert!(matches!(pinned.loaded[0].delivery, SkillDelivery::ProvidedBy { .. }));
+    assert!(matches!(
+        pinned.loaded[0].delivery,
+        SkillDelivery::ProvidedBy { .. }
+    ));
     let delivery = crate::provider::skill_delivery::prepare_skill_delivery(
-        "claude", prompt, &pinned, &inventory, &[],
-    ).unwrap();
-    assert_eq!(delivery.visible_prompt, "/worker-native inspect folded source");
+        "claude",
+        prompt,
+        &pinned,
+        &inventory,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        delivery.visible_prompt,
+        "/worker-native inspect folded source"
+    );
     assert!(!delivery.hidden_context.contains("Native instructions."));
-    super::skill_delivery_tests::acknowledge(&runtime, &context, serde_json::json!({
-        "delivery":"typed", "prompt_id":"native-folded", "skill_id":pinned.loaded[0].skill_id,
-        "digest":pinned.loaded[0].digest,
-    })).await.unwrap();
+    super::skill_delivery_tests::acknowledge(
+        &runtime,
+        &context,
+        serde_json::json!({
+            "delivery":"typed", "prompt_id":"native-folded", "skill_id":pinned.loaded[0].skill_id,
+            "digest":pinned.loaded[0].digest,
+        }),
+    )
+    .await
+    .unwrap();
     let loads = service.storage.loads(&session).unwrap();
     assert_eq!(loads.len(), 2);
-    assert_eq!(loads[1].skill_id, pinned.loaded[0].skill_id);
+    assert_eq!(
+        loads
+            .iter()
+            .filter(|load| load.skill_id == pinned.loaded[0].skill_id)
+            .count(),
+        1
+    );
 }
