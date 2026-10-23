@@ -62,15 +62,19 @@ export function renderFreeformMessage(
   attachments: readonly TerminalPromptAttachmentView[] = [],
   renderKey?: string,
   options: FreeformTranscriptRenderOptions = {},
+  promptOrigin?: string | null,
 ): string {
   const context = freeformTranscriptRenderContext(options)
   const renderKeyAttribute = renderKey ? ` data-render-key="${context.escapeHtml(renderKey)}"` : ""
   if (role === "user") {
     const agentMessage = agentMessageDisplay(text)
     const promptText = (agentMessage?.message ?? text).trim()
+    const triggerLabel = triggerPromptOriginLabel(promptOrigin)
     const header = agentMessage
       ? `<header class="freeform-agent-message-header">agent <strong>${context.escapeHtml(agentMessage.alias)}</strong> message:</header>`
-      : ""
+      : triggerLabel
+        ? `<header class="freeform-agent-message-header" data-trigger-origin="${context.escapeHtml(promptOrigin ?? "")}"><strong>${context.escapeHtml(triggerLabel)}</strong></header>`
+        : ""
     const attachmentStrip = attachments.length
       ? renderPromptAttachmentStrip(attachments, "sent", options)
       : ""
@@ -83,6 +87,17 @@ export function renderFreeformMessage(
   }
   const className = freeformOutputClassName(role)
   return `<section class="freeform-message ${className}"${renderKeyAttribute}>${context.renderTranscriptHtml(text)}</section>`
+}
+
+/** What fired a prompt that no person typed; the kernel records it as the prompt's origin. */
+export function triggerPromptOriginLabel(origin: string | null | undefined): string | null {
+  switch (origin?.trim().toLowerCase()) {
+    case "schedule": return "schedule trigger"
+    case "http": return "HTTP trigger"
+    case "notification": return "notification"
+    case "app_event": return "App event"
+    default: return null
+  }
 }
 
 export function agentMessageDisplay(text: string): AgentMessageDisplay | null {
@@ -114,7 +129,7 @@ export function renderFreeformTranscriptEntry(
   const text = entry.sourceText ?? entry.text
   const renderKey = `entry:${entry.key}`
   if (!isCollapsibleTerminalEntry(entry)) {
-    return renderFreeformMessage(role, text, entry.attachments ?? [], renderKey, options)
+    return renderFreeformMessage(role, text, entry.attachments ?? [], renderKey, options, entry.promptOrigin)
   }
 
   return renderCollapsibleFreeformMessage(entry, text, renderKey, options)

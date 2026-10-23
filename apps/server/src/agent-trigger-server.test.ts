@@ -9,16 +9,19 @@ async function fixture() {
     created_by_user_id: "local", busy_policy: "queue", prompt: "Act on this input", enabled: true, created_at_ms: 1, fired: 0, coalesced: 0 }
   let online = true
   const invocations: unknown[] = []
+  const resends: string[] = []
+  let unconfirmed: Conversation["unconfirmed"] = []
   const client = {
-    async metadata() { return { trigger, agent_alias: "Test agent", online, busy: false, history: { SessionHistoryOutline: { agents: [] } } } },
+    async metadata() { return { trigger, agent_alias: "Test agent", online, busy: false, history: { SessionHistoryOutline: { agents: [] } }, deliveries: [] } },
     async subscribe() {}, async close() {}, onChange() { return () => {} },
+    async resend(promptId: string) { resends.push(promptId) },
     async invoke(payload: unknown): Promise<Invocation> { invocations.push(payload); return { status: "accepted", prompt_id: `prompt-${invocations.length}`, outcome: "started" } },
     async conversation(): Promise<Conversation> { return { alias: "Test agent", online, busy: false, enabled: trigger.enabled, entries: [
       { key: "1", role: "user", agentId: "agent-test", text: "conversation before trigger creation </script><script>bad()</script>" },
-    ], turns: [], nextCursor: null } },
+    ], turns: [], nextCursor: null, unconfirmed } },
   }
   const app = await buildAgentTriggerServer(client, "127.0.0.1")
-  return { app, trigger, invocations, offline: () => { online = false } }
+  return { app, trigger, invocations, resends, offline: () => { online = false }, unconfirm: (items: Conversation["unconfirmed"]) => { unconfirmed = items } }
 }
 
 test("MP-08/MP-10/MP-11: non-loopback ingress is refused", () => {
@@ -99,5 +102,22 @@ test("MP-08/MP-10/MP-11: other websites cannot read or invoke the local page, th
       { method: "POST", url: "/local-test/", payload: { prompt: "curl" }, headers: { host: "[::1]:41000" } },
     ]), [200, 200, 202, 202, 202])
     assert.equal(f.invocations.length, 3)
+  } finally { await f.app.close() }
+})
+
+test("MP-08/MP-10: the trigger page lists an unconfirmed firing and resends it once, refusing other websites", async () => {
+  const f = await fixture()
+  try {
+    f.unconfirm([{ prompt_id: "prompt-7", origin: "http", prompt: "Check <the> build.\nThen report." }])
+    const page = await f.app.inject("/local-test/")
+    assert.match(page.body, /<strong>Not confirmed<\/strong> · HTTP · Check &lt;the&gt; build\./)
+    assert.match(page.body, /data-resend="prompt-7"/)
+    const foreign = await f.app.inject({ method: "POST", url: "/local-test/resend", payload: { prompt_id: "prompt-7" }, headers: { origin: "https://evil.example" } })
+    assert.equal(foreign.statusCode, 403)
+    assert.deepEqual(f.resends, [])
+    const own = await f.app.inject({ method: "POST", url: "/local-test/resend", payload: { prompt_id: "prompt-7" }, headers: { accept: "application/json" } })
+    assert.equal(own.statusCode, 202)
+    assert.deepEqual(f.resends, ["prompt-7"])
+    assert.equal((await f.app.inject({ method: "POST", url: "/local-test/resend", payload: {} })).statusCode, 400)
   } finally { await f.app.close() }
 })

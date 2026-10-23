@@ -51,6 +51,7 @@ export function applyOutputRecords(state: LiveState, records: Array<Record<strin
     state.decoders.set(key, decoder)
     const text = decoder.decode(new Uint8Array(record.bytes as number[]), { stream: true })
     state.entries.set(key, { key, turnId: turn.id, agentId: record.agent_id, role,
-      createdAtMs: Number(record.timestamp_ms), promptId, text: role === "assistant" || role === "reasoning" ? (previous?.text ?? "") + text : text })
+      createdAtMs: Number(record.timestamp_ms), promptId,
+      ...(role === "user" && typeof record.prompt_origin === "string" ? { promptOrigin: record.prompt_origin } : {}), text: role === "assistant" || role === "reasoning" ? (previous?.text ?? "") + text : text })
   }
 }

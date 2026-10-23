@@ -4,6 +4,13 @@ import {
 
 export const CHARIOX_PROMPT_ORIGIN = "chariox"
 export const EXTERNAL_PROMPT_ORIGIN = "external"
+/** Prompts Chariox shows as its own: typed by a person, or fired by a trigger or notification. */
+const CHARIOX_PROMPT_ORIGINS = new Set([CHARIOX_PROMPT_ORIGIN, "schedule", "http", "notification", "app_event"])
+
+export function terminalPromptOriginIsChariox(origin: string | null | undefined): boolean {
+  const normalized = normalizeTerminalPromptOrigin(origin)
+  return normalized !== null && CHARIOX_PROMPT_ORIGINS.has(normalized)
+}
 const WORKFLOW_PROMPT_SOURCE_ATTACHMENT_PREFIX = "workflow-run:"
 const WORKFLOW_PROMPT_TEXT_MARKERS = [
   "<metaagent-event>",

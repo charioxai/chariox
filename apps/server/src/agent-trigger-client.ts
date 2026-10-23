@@ -1,6 +1,7 @@
 import { LocalIpcClient } from "@chariox/kernel-client/ipc"
-import { readAgentTriggerTranscriptRequest, invokeAgentTriggerRequest } from "@chariox/kernel-client/ipc-requests"
-import type { AgentTrigger, SessionHistoryPageEntry, SessionHistoryOutlineTurn } from "@chariox/kernel-client/kernel-types"
+import { readAgentTriggerTranscriptRequest, invokeAgentTriggerRequest, resendTriggerDeliveryRequest } from "@chariox/kernel-client/ipc-requests"
+import type { AgentTrigger, SessionHistoryPageEntry, SessionHistoryOutlineTurn, TriggerDelivery } from "@chariox/kernel-client/kernel-types"
+import type { Unconfirmed } from "./agent-trigger-unconfirmed.js"
 import type { TerminalOutputEntry, TerminalOutputRole, TerminalTurnState } from "@chariox/transcript-view"
 
 export type Invocation = { status: "accepted"; prompt_id: string; outcome: "started" | "queued" | "steered" }
@@ -8,9 +9,9 @@ export type Invocation = { status: "accepted"; prompt_id: string; outcome: "star
 type Entry = SessionHistoryPageEntry
 type WireTurn = SessionHistoryOutlineTurn
 type Outline = { agents: Array<{ agent_id: string; turns: WireTurn[]; next_cursor?: { before_sequence: number } | null }> }
-type ReadPayload = { trigger: AgentTrigger; agent_alias: string; online: boolean; busy: boolean; history: { SessionHistoryOutline: Outline } }
+type ReadPayload = { trigger: AgentTrigger; agent_alias: string; online: boolean; busy: boolean; history: { SessionHistoryOutline: Outline }; deliveries: TriggerDelivery[] }
 export type Conversation = { alias: string; online: boolean; busy: boolean; enabled: boolean;
-  entries: TerminalOutputEntry[]; turns: TerminalTurnState[]; nextCursor: { before_sequence: number } | null }
+  entries: TerminalOutputEntry[]; turns: TerminalTurnState[]; nextCursor: { before_sequence: number } | null; unconfirmed: Unconfirmed[] }
 const roles: Record<string, TerminalOutputRole> = { user_prompt: "user", provider_output: "assistant", provider_reasoning: "reasoning",
   provider_tool: "tool", provider_error: "error", provider_status: "status", notice: "status" }
 
@@ -39,6 +40,10 @@ export class AgentTriggerClient {
     const response = await this.kernel.send<{ AgentTriggerInvoked: { invocation: Invocation } }>(invokeAgentTriggerRequest(this.sessionId, this.triggerId, payload))
     return response.AgentTriggerInvoked.invocation
   }
+  /** Sends a firing the provider did not confirm once more; the kernel allows it once. */
+  async resend(promptId: string): Promise<void> {
+    await this.kernel.send(resendTriggerDeliveryRequest(this.sessionId, promptId))
+  }
   async conversation(cursor: { before_sequence: number } | null = null): Promise<Conversation> {
     const meta = await this.metadata(cursor)
     const outline = meta.history.SessionHistoryOutline.agents.find(a => a.agent_id === meta.trigger.agent_id)
@@ -58,7 +63,8 @@ export class AgentTriggerClient {
         ...(turn.prompt_id ? { kernelPromptId: turn.prompt_id } : {}),
         ...(turn.completed_at_ms != null ? { completedAtMs: turn.completed_at_ms } : {}),
         ...(turn.lifecycle !== "open" ? { kernelSettled: true, kernelSettlementStatus: historySettlement(turn.lifecycle) } : {}), expanded: false })),
-      nextCursor: outline?.next_cursor ?? null }
+      nextCursor: outline?.next_cursor ?? null,
+      unconfirmed: meta.deliveries.map(({ prompt_id, origin, prompt }) => ({ prompt_id, origin, prompt })) }
   }
   onChange(callback: (records?: Array<Record<string, unknown>>) => void): () => void {
     return this.kernel.onKernelEvent(event => {
@@ -94,6 +100,7 @@ export function agentTriggerHistoryEntries(agentId: string, turns: WireTurn[], b
     for (const row of [...rows.values()].sort((a, b) => a.entry_index - b.entry_index)) {
       entries.push({ key: `${row.entry_index}`, role: roles[row.entry.kind] ?? "status", agentId: agentId,
         turnId: turn.turn_id, createdAtMs: row.entry.timestamp_ms ?? turn.started_at_ms, text: row.entry.text, promptId: turn.prompt_id ?? null,
+        ...(row.entry.kind === "user_prompt" && row.entry.prompt_origin ? { promptOrigin: row.entry.prompt_origin } : {}),
         ...(turn.summary?.entry_index === row.entry_index ? { historyTurnSummary: true } : {}) })
     }
   }

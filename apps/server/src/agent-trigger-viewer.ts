@@ -1,11 +1,13 @@
 import { renderTranscriptHtml, renderTerminalEntriesByTurn, renderFreeformTranscriptEntry, type TerminalOutputEntry, type TerminalTurnState } from "@chariox/transcript-view"
 import type { Conversation } from "./agent-trigger-client.js"
+import { unconfirmedHtml } from "./agent-trigger-unconfirmed.js"
 import { applyOutputRecords, reconcileSnapshot } from "./agent-trigger-live.js"
 const main = document.querySelector<HTMLElement>("main[data-trigger-base]")!
 const base = main.dataset.triggerBase!
 const output = document.querySelector<HTMLElement>("#conversation")!
 const status = document.querySelector<HTMLElement>("#status")!
 const notice = document.querySelector<HTMLElement>("#notice")!
+const unconfirmed = document.querySelector<HTMLElement>("#unconfirmed")!
 const form = document.querySelector<HTMLFormElement>("form")!
 const input = document.querySelector<HTMLTextAreaElement>("#prompt")!
 const send = document.querySelector<HTMLButtonElement>("#send")!
@@ -28,6 +30,7 @@ function apply(value: Conversation, older = false) {
   reconcileSnapshot(live, value)
   if (older || turns.size === value.turns.length) nextCursor = value.nextCursor
   more.hidden = !nextCursor
+  unconfirmed.innerHTML = unconfirmedHtml(value.unconfirmed)
   status.textContent = !value.enabled ? "trigger disabled" : !value.online ? "agent offline" : value.busy ? "working" : "idle"
   input.disabled = send.disabled = !value.online || !value.enabled
   render()
@@ -45,6 +48,16 @@ output.addEventListener("click", event => {
     if (key) { if (expanded.has(key)) expanded.delete(key); else expanded.add(key) }
   }
   render()
+})
+unconfirmed.addEventListener("click", async event => {
+  const button = (event.target as Element).closest<HTMLButtonElement>("[data-resend]")
+  if (!button) return
+  button.disabled = true
+  try {
+    const response = await fetch(`${base}resend`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ prompt_id: button.dataset.resend }) })
+    if (!response.ok) throw Error(((await response.json()) as { error?: string }).error ?? "The message was not sent again.")
+    notice.textContent = "Message sent again."
+  } catch (error) { notice.textContent = error instanceof Error ? error.message : String(error); button.disabled = false }
 })
 more.addEventListener("click", async () => {
   if (!nextCursor) return

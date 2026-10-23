@@ -42,3 +42,10 @@ test("MP-08/MP-10/MP-11: a page that cannot undo or fork a turn renders no Undo 
   assert.match(renderTerminalEntriesByTurn(entries, options), /data-freeform-turn-action="fork"/)
   assert.doesNotMatch(renderTerminalEntriesByTurn(entries, { ...options, turnActions: false }), /data-freeform-turn-action/)
 })
+test("MP-08/MP-10: a trigger prompt in history keeps the origin the kernel labelled it with", () => {
+  const prompt = row(1, "user_prompt", "Check the build.")
+  prompt.entry.prompt_origin = "schedule"
+  const entries = agentTriggerHistoryEntries("agent", [{ turn_id: "turn-1", prompt_id: "prompt-1", started_at_ms: 1, completed_at_ms: 2, lifecycle: "completed",
+    user_prompt: prompt, entries: [], summary: row(2, "provider_output", "Done."), blobs: [] }], new Map())
+  assert.deepEqual(entries.map(entry => entry.promptOrigin ?? null), ["schedule", null])
+})

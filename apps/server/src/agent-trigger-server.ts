@@ -14,7 +14,7 @@ export function loopbackHost(value: string): string {
   return value
 }
 
-export async function buildAgentTriggerServer(client: Pick<AgentTriggerClient, "metadata" | "subscribe" | "invoke" | "conversation" | "onChange" | "close">, host: string) {
+export async function buildAgentTriggerServer(client: Pick<AgentTriggerClient, "metadata" | "subscribe" | "invoke" | "resend" | "conversation" | "onChange" | "close">, host: string) {
   loopbackHost(host)
   const meta = await client.metadata()
   if (meta.trigger.source.kind !== "http") throw Error("only an HTTP trigger has a gateway")
@@ -122,6 +122,14 @@ export async function buildAgentTriggerServer(client: Pick<AgentTriggerClient, "
     return agentTriggerPage(conversation, base)
   })
   app.post(base, invoke)
+  app.post(base + "resend", async (request, reply) => {
+    const promptId = (request.body as { prompt_id?: unknown } | null)?.prompt_id
+    if (typeof promptId !== "string" || !promptId) return failure(request, reply, 400, "invalid request body")
+    if (!admit()) { reply.header("Retry-After", "10"); return failure(request, reply, 429, "too many requests; retry shortly") }
+    await client.resend(promptId)
+    reply.header("Cache-Control", "no-store")
+    return reply.code(202).send({ prompt_id: promptId })
+  })
   app.get(base + "history", async (request, reply) => {
     const cursor = (request.query as { before?: string }).before
     const before = cursor === undefined ? null : Number(cursor)
