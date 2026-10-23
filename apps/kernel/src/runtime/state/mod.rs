@@ -293,8 +293,8 @@ struct KernelRuntimeOwnedState {
     pending_mcp_continuations: PendingMcpContinuationStore,
     private_assessment_results: agent_assessment_result::AssessmentResults,
     private_work_results: agent_assessment_result::AssessmentResults,
-    /// The turn each native provider TUI run was last seen on, to settle it once it ends.
-    native_tui_turns: std::sync::Arc<
+    /// The turn each native-bridge provider run was last seen on, to settle it once it ends.
+    native_bridge_turns: std::sync::Arc<
         std::sync::Mutex<std::collections::BTreeMap<String, crate::session::PromptQueueItem>>,
     >,
     private_assessment_dispatch: agent_assessment_result::PrivateAssessmentDispatch,
@@ -1019,7 +1019,7 @@ impl KernelRuntimeState {
                 private_assessment_results: Default::default(),
                 private_work_results: private_assessment_dispatch.work_results.clone(),
                 private_assessment_dispatch,
-                native_tui_turns: Default::default(),
+                native_bridge_turns: Default::default(),
                 metaagent_events,
                 metaagent_trace_subscriptions,
                 connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool::default(

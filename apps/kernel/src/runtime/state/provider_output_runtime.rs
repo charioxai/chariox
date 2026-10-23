@@ -68,9 +68,11 @@ impl KernelRuntimeState {
             let provider_run = provider_run.clone();
             let native_tui = provider_run.client_interface()
                 == crate::provider::ProviderClientInterface::NativeTui;
-            if native_tui {
+            // Stop settles the prompt in the bridge, so the durable task is
+            // settled here for every bridge-driven run, headless included.
+            if native_tui || crate::provider::provider_run_is_claude_headless(&provider_run) {
                 // Remember the admitted turn before the bridge can start and Stop it in one pass.
-                self.settle_finished_native_tui_turn(session_id, &provider_run)
+                self.settle_finished_native_bridge_turn(session_id, &provider_run)
                     .await;
             }
             // Keep registration/retirement out of the final protected hook replay.
@@ -134,8 +136,8 @@ impl KernelRuntimeState {
                 })
                 .await?;
             }
-            if native_tui {
-                self.settle_finished_native_tui_turn(session_id, &provider_run)
+            if native_tui || crate::provider::provider_run_is_claude_headless(&provider_run) {
+                self.settle_finished_native_bridge_turn(session_id, &provider_run)
                     .await;
             }
         }

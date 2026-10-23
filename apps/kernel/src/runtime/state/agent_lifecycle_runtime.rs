@@ -404,11 +404,10 @@ impl KernelRuntimeState {
             payload: serde_json::json!({"status":"durable","sequence":event.sequence,"urgent":event.urgent,"reply_requested":event.reply_requested}),
         })
     }
-    /// Native TUI turns end at the provider Stop event, which completes the prompt without the
-    /// managed-provider settlement. Each output pass remembers the turn the TUI is on; once it is
-    /// no longer the active prompt, settle its task definitively. The person drives the provider
-    /// TUI, so there is no completion-check turn.
-    pub(super) async fn settle_finished_native_tui_turn(
+    /// Native TUI and headless Claude turns end at the provider Stop event, which completes the
+    /// prompt without the managed-provider settlement. Each output pass remembers the turn the run
+    /// is on; once it is no longer the active prompt, settle its task definitively.
+    pub(super) async fn settle_finished_native_bridge_turn(
         &self,
         session_id: &str,
         run: &crate::provider::RuntimeProviderRun,
@@ -426,7 +425,7 @@ impl KernelRuntimeState {
         let finished = {
             let mut turns = self
                 .owned
-                .native_tui_turns
+                .native_bridge_turns
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let previous = turns
