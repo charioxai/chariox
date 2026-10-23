@@ -122,13 +122,14 @@ export async function inputHostTab(browser, tab, input, { signal, onDispatch, re
         const shift = !printable && typeof input.key === "string" && /^Shift\+(Tab|ArrowLeft|ArrowRight|ArrowUp|ArrowDown|Home|End)$/.test(input.key);
         // Ctrl only with word deletion (CDP only: the native path presses no Ctrl).
         const ctrl = !printable && typeof input.key === "string" && /^Ctrl\+(Backspace|Delete)$/.test(input.key);
-        if (!printable && !shift && !ctrl && !["Tab", "Enter", "Space", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
+        if (!printable && !shift && !ctrl && !["BrowserBack", "BrowserForward", "Tab", "Enter", "Space", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
         const modifiers = (input.modifiers ?? 0) | (shift ? 8 : ctrl ? 2 : 0);
-        // CDP page keys do not invoke Chromium's browser-level history shortcuts.
-        // Keep this normal key gesture in the kernel so every client navigates the same history.
-        if (modifiers === 1 && ["ArrowLeft", "ArrowRight"].includes(input.key)) {
+        // CDP page keys do not invoke Chromium's browser-level history shortcuts. The toolbar's explicit
+        // BrowserBack/BrowserForward keys keep history in the kernel so every client navigates the same history;
+        // Alt-arrow stays ordinary page input (macOS Option-arrow moves the caret by word).
+        if (input.key === "BrowserBack" || input.key === "BrowserForward") {
           const history = await connection.send("Page.getNavigationHistory", {}, sessionId);
-          const entry = history.entries?.[history.currentIndex + (input.key === "ArrowLeft" ? -1 : 1)];
+          const entry = history.entries?.[history.currentIndex + (input.key === "BrowserBack" ? -1 : 1)];
           if (entry) await sendInput("Page.navigateToHistoryEntry", { entryId: entry.id });
           return;
         }
