@@ -1292,6 +1292,32 @@ impl KernelRuntimeOwnedState {
         self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)
     }
 
+    /// The firing counts as sent: the trigger must not fire it a second time
+    /// now that its queued copy is gone.
+    fn settle_restart_held_trigger(&self, session_id: &str, trigger_id: &str) {
+        // The store guard must be gone before persisting, which reads the store.
+        let marked = self.session_store.write().mark_agent_trigger_fired(
+            session_id,
+            trigger_id,
+            crate::session::unix_epoch_ms(),
+            crate::session::AgentTriggerOutcome::Steered,
+            None,
+        );
+        let settled = marked
+            .and_then(|_| self.persist_agent_trigger_session(session_id, "agent_trigger_fired"));
+        if let Err(error) = settled {
+            crate::logging::error_with_fields(
+                "durable_state.recovery",
+                "failed to settle the trigger of a restart-held queued steer",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "trigger_id": trigger_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+
     /// A held firing found after a restart may already sit in the provider's
     /// turn, so it leaves the queue without a replay.
     pub(super) fn drop_restart_held_local_steers(&self) -> Vec<(String, String, String)> {
@@ -1327,6 +1353,9 @@ impl KernelRuntimeOwnedState {
                                     "prompt_id": removed.id(),
                                 }),
                             );
+                            if let Some(trigger_id) = removed.agent_trigger_id() {
+                                self.settle_restart_held_trigger(session.id(), trigger_id);
+                            }
                             dropped.push((
                                 session.id().to_string(),
                                 agent_id.to_string(),

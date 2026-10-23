@@ -843,6 +843,10 @@ mod tests {
             .prompt_state_owner
             .state_parts(&session, &agent_id);
         assert!(queued.is_empty(), "a held steer must never be replayed");
+        assert!(
+            session.agent_triggers().is_empty(),
+            "the once-trigger counts as sent and cannot fire the message again"
+        );
         assert!(session
             .durable_runtime_snapshot()
             .queued_prompts_for_agent(&agent_id)
