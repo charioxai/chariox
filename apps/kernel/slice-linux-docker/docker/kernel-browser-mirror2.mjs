@@ -15,6 +15,7 @@ import { MirrorFrames, slotOf, localId, rebaseId } from './kernel-browser-mirror
 import { MirrorCssEvents } from './kernel-browser-mirror2-css.mjs';
 import { discoverClosedHosts } from './kernel-browser-mirror2-closed.mjs';
 // Protocol 530: mirrored undo/redo as named mirror keys (the renderer never sends raw modifiers here).
+const LAYOUT_MOVED = /mirror layout changed during observation/;
 const HISTORY_CHORDS = new Map([['Ctrl+Z', 2], ['Ctrl+Shift+Z', 10]]);
 import { Mirror2Regions } from './kernel-browser-mirror2-regions.mjs';
 
@@ -316,7 +317,10 @@ export class Mirror2 {
     const hurry = stream.hurry;
     // The credit's own clock starts here: waiting behind an earlier credit of the subscription spends it too.
     const hard = arrival + Math.min(wait + (this.busyMs ?? BUSY_RENDERER_MS) + (this.creditSlackMs ?? CREDIT_SLACK_MS), KERNEL_CONTROLLER_DEADLINE_MS - 1000);
-    const run = stream.chain.then(() => resend && this.lost(stream, command, scope, true) || this.packet(stream, command, scope, signal, Math.min(arrival + 3 * wait, Date.now() + wait), hurry, hard));
+    const build = () => resend && this.lost(stream, command, scope, true) || this.packet(stream, command, scope, signal, Math.min(arrival + 3 * wait, Date.now() + wait), hurry, hard);
+    // A live resize can land while a packet is observed: that packet describes the old size. The viewer gets the
+    // reset at the new size on this same credit instead of an error that retires its mirror mid-drag.
+    const run = stream.chain.then(() => build().catch(error => { if (!LAYOUT_MOVED.test(error?.message ?? '')) throw error; return build(); }));
     stream.chain = run.catch(() => {});
     if (replayKey) { const entry = { run, done: false }; run.finally(() => { entry.done = true; }).catch(() => {}); (stream.replies ??= new Map()).set(replayKey, entry); if (stream.replies.size > 8) stream.replies.delete(stream.replies.keys().next().value); }
     return run;
