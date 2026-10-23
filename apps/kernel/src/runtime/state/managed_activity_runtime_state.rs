@@ -174,18 +174,18 @@ impl KernelRuntimeState {
 impl KernelRuntimeState {
     /// Terminal commands are work: they keep a managed kernel from stopping,
     /// and the stop fence refuses new ones.
-    pub(super) fn link_room_terminals_to_managed_kernel(&self) {
+    pub(super) fn link_room_terminals_to_managed_kernel(&mut self) {
         let Some(gate) = self.owned.managed_kernel_quiescence.clone() else {
             return;
         };
         let owned = self.owned.clone();
-        self.owned.room_terminals.link_managed_kernel(
-            gate,
-            Arc::new(move || {
-                owned.begin_managed_activity_mutation().record();
-                owned.runtime_projection_changes.record_change();
-            }),
-        );
+        let callback = self.managed_terminal_activity.insert(Arc::new(move || {
+            owned.begin_managed_activity_mutation().record();
+            owned.runtime_projection_changes.record_change();
+        }));
+        self.owned
+            .room_terminals
+            .link_managed_kernel(gate, Arc::downgrade(callback));
     }
 }
 

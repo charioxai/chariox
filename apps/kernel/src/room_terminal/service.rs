@@ -582,7 +582,7 @@ impl RoomTerminalService {
     pub(crate) fn link_managed_kernel(
         &self,
         gate: Arc<ManagedKernelQuiescenceGate>,
-        work_changed: Arc<dyn Fn() + Send + Sync>,
+        work_changed: std::sync::Weak<dyn Fn() + Send + Sync>,
     ) {
         self.inner.managed.link(gate, work_changed);
     }
