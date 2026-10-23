@@ -19,6 +19,8 @@ mod history_tests;
 mod test_pause;
 
 #[cfg(test)]
+mod test_deferred_failure;
+#[cfg(test)]
 mod test_profile_revert;
 #[cfg(test)]
 mod test_provider_runs;
@@ -647,11 +649,15 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .iter()
                     .any(|key| key == &completion_key)
                 {
+                    // The cached message identity can predate a failed native turn.
+                    // Keep the current scoped termination when replaying its completion.
                     completions.push(RelayProjectedCompletion {
                         message_id: replay.message_id.clone(),
                         completed_at_ms: replay.completed_at_ms,
                         home_prompt_id: replay.home_prompt_id.clone(),
-                        provider_termination: replay.provider_termination.clone(),
+                        provider_termination: provider_termination
+                            .clone()
+                            .or_else(|| replay.provider_termination.clone()),
                     });
                 }
             }
@@ -775,7 +781,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     message_id: replay.message_id.clone(),
                     completed_at_ms: replay.completed_at_ms,
                     home_prompt_id: replay.home_prompt_id.clone(),
-                    provider_termination: replay.provider_termination.clone(),
+                    provider_termination: provider_termination
+                        .clone()
+                        .or_else(|| replay.provider_termination.clone()),
                 });
             }
         }
@@ -2476,7 +2484,7 @@ mod explicit_completion_tests {
             .is_none());
     }
 
-    fn reused_explicit_completion_run() -> (
+    pub(super) fn reused_explicit_completion_run() -> (
         crate::app::DaemonApp,
         crate::execution_lease::LeasedAgent,
         String,
