@@ -172,25 +172,27 @@ pub(super) async fn handle_incoming_envelope(
                     Some(turn) => turn.enter(read).await,
                     None => None,
                 };
-                let mut relay_response = match prepared {
-                    Ok(prepared) => {
-                        handle_prepared_daemon_request(
-                            &router,
-                            &command_sequence,
-                            prepared,
-                            &command_result_cache,
-                            &display_subscriptions,
-                            Some(&local_browser),
-                        )
-                        .await
+                let mut relay_response = super::browser_input_order::serve_holding(turn, async {
+                    match prepared {
+                        Ok(prepared) => {
+                            handle_prepared_daemon_request(
+                                &router,
+                                &command_sequence,
+                                prepared,
+                                &command_result_cache,
+                                &display_subscriptions,
+                                Some(&local_browser),
+                            )
+                            .await
+                        }
+                        Err(outcome) => *outcome,
                     }
-                    Err(outcome) => *outcome,
-                };
+                })
+                .await;
                 chariox_relay::transport_timing::record("kernel_request_end", timing_packet);
                 if timing_input {
                     chariox_relay::transport_timing::record("kernel_input_end", timing_packet);
                 }
-                drop(turn);
                 if let Some((display_id, event_id, encrypted_event)) = relay_response.display_event
                 {
                     let display_at = std::time::Instant::now();
