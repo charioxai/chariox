@@ -1616,6 +1616,23 @@ async fn sudo_session_end_removes_running_and_pending_authorizations() {
 }
 
 #[tokio::test]
+async fn external_sudo_names_a_room_created_before_enrollment() {
+    let f = fixture();
+    // The fixture's Room is owned by `local`; the kernel's signed-in owner differs.
+    let refused = f
+        .state
+        .attach_external_sudo_source(&f.request.session_id, "enrolled-user")
+        .unwrap_err();
+    let DaemonError::MachineRequest { code, message } = refused else {
+        panic!("expected a typed sudo refusal, got {refused:?}");
+    };
+    assert_eq!(code, "kernel_sudo_room_owner_local");
+    assert!(message.contains("created before this kernel was enrolled"));
+    assert!(message.contains("re-create the Room"));
+    assert!(message.contains("enroll this kernel"));
+}
+
+#[tokio::test]
 async fn external_sudo_source_cannot_reopen_a_session_ended_before_attach() {
     let f = fixture();
     f.state.end_session(&f.request.session_id).await.unwrap();

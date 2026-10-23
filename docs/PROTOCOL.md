@@ -5145,3 +5145,8 @@ provisional 569/177 pair pending integration renumbering.
 `kernel_sudo_expired` errors, on Unix and forwarded paths. The first records a
 person's refusal; the second tells the caller to submit a new request and approve
 it in a Chariox client. Neither error retries automatically.
+
+A third refusal, `kernel_sudo_room_owner_local`, tells the caller that the Room
+was created before the kernel was enrolled (its owner is `local`), so sudo cannot
+be authorized for it; the fix is to re-create the Room after enrollment. It carries
+no other detail.

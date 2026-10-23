@@ -176,7 +176,7 @@ impl KernelRuntimeState {
             return Err(error("session has ended"));
         }
         if session.owner_user_id() != owner {
-            return Err(error("only the session host can authorize sudo"));
+            return Err(super::entry::not_session_host(session.owner_user_id()));
         }
         self.owned.attachment_store.attach(
             &mut sessions,

@@ -14,6 +14,8 @@ test("sudo refusal and expiry have separate typed CLI outcomes", () => {
   assert.equal(exitCodeFor("kernel_sudo_expired"), 5)
   assert.match(guideText(), /kernel_sudo_refused/)
   assert.match(guideText(), /kernel_sudo_expired/)
+  assert.equal(exitCodeFor("kernel_sudo_room_owner_local"), 3)
+  assert.match(guideText(), /re-create the Room after enrollment/)
 })
 
 test("the guide mentions exactly the commands and flags the parser knows", () => {

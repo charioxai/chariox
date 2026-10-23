@@ -85,7 +85,7 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
   },
 ]
 
-const REFUSED = ["kernel_sudo_refused", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "command_id_required", "duplicate_command_conflict"]
+const REFUSED = ["kernel_sudo_refused", "kernel_sudo_room_owner_local", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "command_id_required", "duplicate_command_conflict"]
 const KERNEL_UNAVAILABLE = ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_not_available"]
 const TIMEOUT_OR_UNKNOWN = ["kernel_sudo_expired", "kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown"]
 
@@ -182,6 +182,7 @@ export function guideText(): string {
     "",
     "Sudo outcomes: kernel_sudo_refused means the person refused; kernel_sudo_expired means the approval deadline passed.",
     "Neither starts elevation or retries automatically. Submit a new request only when needed and approve it in a Chariox client.",
+    "kernel_sudo_room_owner_local means the Room was created before this kernel was enrolled; re-create the Room after enrollment, then request again.",
     "Retry rule: on kernel_request_timeout or kernel_connection_lost retry ONCE with the same --command-id.",
     "On kernel_outcome_unknown read the state first; never retry blindly.",
     "Human-only, never attempted by you: passkey approvals, grants, sudo approvals, secrets and credentials, relay and pairing configuration.",

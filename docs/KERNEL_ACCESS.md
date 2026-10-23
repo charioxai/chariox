@@ -33,7 +33,7 @@ Exit codes and the error codes behind them:
 | --- | --- | --- |
 | 0 | ok | |
 | 2 | usage | `usage` |
-| 3 | refused | `kernel_sudo_refused`, `kernel_access_human_only`, `kernel_access_ended`, `kernel_access_not_covered`, `kernel_access_already_granted`, `command_id_required`, `duplicate_command_conflict` |
+| 3 | refused | `kernel_sudo_refused`, `kernel_sudo_room_owner_local`, `kernel_access_human_only`, `kernel_access_ended`, `kernel_access_not_covered`, `kernel_access_already_granted`, `command_id_required`, `duplicate_command_conflict` |
 | 4 | kernel unavailable | `kernel_unknown`, `kernel_ambiguous`, `kernel_offline`, `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_not_available` |
 | 5 | timeout or unknown outcome | `kernel_sudo_expired`, `kernel_request_timeout`, `kernel_connection_lost`, `kernel_outcome_unknown` |
 | 6 | approval pending | |

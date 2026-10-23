@@ -30,6 +30,16 @@ fn catalog_not_ready() -> DaemonError {
     sudo_ended("provider catalog refresh failed", &not_ready())
 }
 
+/// A Room created before enrollment keeps the `local` owner; say so, so the caller
+/// can fix it instead of seeing a generic refusal.
+pub(super) fn not_session_host(session_owner: &str) -> DaemonError {
+    if session_owner == crate::session::DEFAULT_LOCAL_USER_ID {
+        SudoRequestFailure::RoomOwnerLocal.error()
+    } else {
+        error("only the session host can authorize sudo")
+    }
+}
+
 impl KernelRuntimeState {
     /// Called only after terminal identity and session ownership are checked by
     /// the router. The waiting future, including the full prompt, is ephemeral.
@@ -80,10 +90,10 @@ impl KernelRuntimeState {
         }
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let session = self.owned.session_store.get_session(&request.session_id)?;
-        if session.owner_user_id() != owner
-            || session.status() == SessionStatus::Ended
-            || agent.session_id() != session.id()
-        {
+        if session.owner_user_id() != owner {
+            return Err(not_session_host(session.owner_user_id()));
+        }
+        if session.status() == SessionStatus::Ended || agent.session_id() != session.id() {
             return Err(error("only the session host can authorize sudo"));
         }
         if agent.is_metaagent() {
