@@ -10,10 +10,19 @@ pub(crate) struct ComposerSkillPrompt {
     pub prompt_id: String,
     pub prompt: String,
     pub native: Vec<NativeSkillEntry>,
-    pub cached_digests: std::collections::BTreeSet<String>,
+    pub cached_skills: std::collections::BTreeSet<CachedSkillDigest>,
     pub context_intact: bool,
     pub context_window: Option<u64>,
     pub context_tokens: Option<u64>,
+}
+
+/// One skill ID whose exact digest the worker holds in a verified execution cache.
+/// Renamed copies share a digest, so a digest alone cannot say which IDs are present.
+#[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CachedSkillDigest {
+    pub skill_id: String,
+    pub digest: String,
 }
 
 #[derive(Serialize, Deserialize)]

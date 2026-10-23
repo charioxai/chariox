@@ -2,7 +2,7 @@
 use super::super::*;
 use crate::provider::skill_delivery::TypedSkillLoad;
 use crate::skill::leased_composer::{
-    ComposerSkillContext, ComposerSkillPrompt, PREPARE_LEASED_SKILL_TURN,
+    CachedSkillDigest, ComposerSkillContext, ComposerSkillPrompt, PREPARE_LEASED_SKILL_TURN,
 };
 use crate::transport::relay_peer::{RemoteSkillSyncContext, RemoteWorkspaceLiveSyncContext};
 
@@ -31,7 +31,7 @@ impl SkillDispatchService {
         let home = worker_skill_home()?;
         let sync = skill_sync_context(authority);
         // A missing or damaged cache asks for retransmission; it is never delivered.
-        let cached_digests = names
+        let cached_skills = names
             .into_iter()
             .flat_map(|names| &names.skills)
             .filter_map(|skill| {
@@ -43,7 +43,10 @@ impl SkillDispatchService {
                     &skill.digest,
                 )
                 .ok()
-                .map(|_| skill.digest.clone())
+                .map(|_| CachedSkillDigest {
+                    skill_id: skill.skill_id.clone(),
+                    digest: skill.digest.clone(),
+                })
             })
             .collect();
         let known_home_skill =
@@ -53,7 +56,7 @@ impl SkillDispatchService {
             prompt_id: prompt.id().into(),
             prompt: prompt.prompt().into(),
             native: inventory.entries.clone(),
-            cached_digests,
+            cached_skills,
             context_window: usage.context_window,
             context_tokens: usage.context_tokens,
             context_intact: self.context_survives_compaction(

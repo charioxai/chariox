@@ -69,7 +69,17 @@ async fn prepare(
     native: Vec<NativeSkillEntry>,
     intact: bool,
 ) -> serde_json::Value {
-    let args = serde_json::json!({"prompt_id":"native-composer-next","prompt":prompt,"native":native,"cached_digests":[],"context_intact":intact});
+    prepare_cached(runtime, context, prompt, native, intact, vec![]).await
+}
+async fn prepare_cached(
+    runtime: &KernelRuntimeState,
+    context: &RemoteWorkspaceLiveSyncContext,
+    prompt: &str,
+    native: Vec<NativeSkillEntry>,
+    intact: bool,
+    cached: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let args = serde_json::json!({"prompt_id":"native-composer-next","prompt":prompt,"native":native,"cached_skills":cached,"context_intact":intact});
     let tool = "_chariox_prepare_native_skill_turn";
     let request = RelayPeerRequest::ForwardCapabilityRuntimeTool {
         context: context.clone(),
@@ -300,5 +310,145 @@ async fn leased_composer_native_selection_uses_the_real_adapter_before_receipt()
             .filter(|load| load.skill_id == pinned.loaded[0].skill_id)
             .count(),
         1
+    );
+}
+
+#[tokio::test]
+async fn leased_composer_keeps_a_payload_until_every_id_sharing_its_digest_is_cached() {
+    let (runtime, service, skill, context, _session, _agent) = native_home().await;
+    publish(
+        &service,
+        vec![SkillCatalogAction::Install {
+            source: SkillInstallSource::Content {
+                skill_md: "---\nname: review\ndescription: Review safely\ndisable-model-invocation: true\n---\nReview source.\n".into(),
+            },
+            collision: SkillCollisionAction::Rename {
+                name: "review-copy".into(),
+            },
+            package_id: None,
+        }],
+    );
+    let catalog = service.storage.snapshot().unwrap();
+    let copy = catalog.catalogs[0]
+        .skills
+        .iter()
+        .find(|record| record.name == "review-copy")
+        .unwrap();
+    assert_eq!(copy.digest, skill.digest, "renamed copies share a digest");
+    let cached = |ids: &[&str]| -> Vec<serde_json::Value> {
+        ids.iter()
+            .map(|id| serde_json::json!({"skill_id":id,"digest":skill.digest}))
+            .collect()
+    };
+    // The worker only holds the original ID's directory: the copy still needs the bytes.
+    let partial = prepare_cached(
+        &runtime,
+        &context,
+        "continue",
+        vec![],
+        true,
+        cached(&[&skill.id]),
+    )
+    .await;
+    assert_eq!(partial["packages"].as_array().unwrap().len(), 1);
+    let complete = prepare_cached(
+        &runtime,
+        &context,
+        "continue",
+        vec![],
+        true,
+        cached(&[&skill.id, &copy.id]),
+    )
+    .await;
+    assert!(complete["packages"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn leased_composer_restores_several_folded_claude_skills_with_one_native_command() {
+    use crate::provider::skill_inventory::{
+        NativeSkillCandidate, NativeSkillInventory, SkillInventoryBinding,
+    };
+    let (runtime, service, _skill, context, _session, _agent) = native_home().await;
+    let files = crate::test_support::TestWorktree::new("leased-composer-two-folded");
+    let mut candidates = vec![];
+    let mut installs = vec![];
+    for name in ["alpha", "beta"] {
+        let path = files.path().join(name).join("SKILL.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, format!("---\nname: {name}\ndescription: Inspect {name}\ndisable-model-invocation: true\n---\n{name} instructions.\n")).unwrap();
+        installs.push(SkillCatalogAction::Install {
+            source: SkillInstallSource::Folder {
+                path: files.path().join(name).display().to_string(),
+            },
+            collision: SkillCollisionAction::Reject,
+            package_id: None,
+        });
+        candidates.push(NativeSkillCandidate {
+            name: name.into(),
+            description: format!("Inspect {name}"),
+            skill_file: path,
+            exposure: NativeSkillExposure::Confirmed,
+            supports_load_ack: false,
+            observed_body_digest: None,
+            discovery_error: None,
+            plugin: None,
+        });
+    }
+    let inventory = NativeSkillInventory::from_candidates(
+        &SkillInventoryBinding {
+            provider: "claude".into(),
+            provider_version: "2.1.212".into(),
+            account_profile: "default".into(),
+            execution_id: format!(
+                "{}:{}",
+                context.worker_kernel_id, context.worker_provider_run_id
+            ),
+            cwd: files.path().into(),
+            environment: Default::default(),
+            project_id: Some("worker-project".into()),
+            catalog_revision: 0,
+            source_revision: 1,
+        },
+        candidates,
+    )
+    .unwrap();
+    publish(&service, installs);
+    for name in ["alpha", "beta"] {
+        let prompt = format!("${name} inspect");
+        let typed = prepare(&runtime, &context, &prompt, inventory.entries.clone(), true).await;
+        let loaded = &typed["context"]["loaded"][0];
+        super::skill_delivery_tests::acknowledge(
+            &runtime,
+            &context,
+            serde_json::json!({
+                "delivery":"typed", "prompt_id":format!("typed-{name}"),
+                "skill_id":loaded["skill_id"], "digest":loaded["digest"],
+            }),
+        )
+        .await
+        .unwrap();
+    }
+    let restored = prepare(
+        &runtime,
+        &context,
+        "continue after compaction",
+        inventory.entries.clone(),
+        false,
+    )
+    .await;
+    let pinned: SkillTurnContext = serde_json::from_value(restored["context"].clone()).unwrap();
+    assert_eq!(pinned.loaded.len(), 2, "both accepted loads come back");
+    assert!(
+        pinned.native_selections.len() <= 1,
+        "Claude's adapter runs one native command per turn"
+    );
+    assert_eq!(
+        pinned
+            .loaded
+            .iter()
+            .filter(|body| !matches!(body.delivery, SkillDelivery::ProvidedBy { .. }))
+            .count(),
+        1,
+        "the other restored skill is delivered as a Chariox body"
     );
 }
