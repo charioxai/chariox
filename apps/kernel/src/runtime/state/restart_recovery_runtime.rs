@@ -324,6 +324,7 @@ impl KernelRuntimeState {
         for (session_id, agent_id, prompt_id) in queued_recovery_targets {
             match self
                 .recover_queued_local_prompt_after_restart(session_id, agent_id, prompt_id, true)
+                .await
             {
                 Ok(Some(dispatches)) => {
                     summary.queued_local_prompts_started += 1;
@@ -573,12 +574,15 @@ impl KernelRuntimeState {
                     .map(|prompt| prompt.id().to_string())
             });
         if let Some(queued_prompt_id) = queued_prompt_id {
-            if let Some(dispatches) = self.recover_queued_local_prompt_after_restart(
-                session_id,
-                agent_id,
-                &queued_prompt_id,
-                false,
-            )? {
+            if let Some(dispatches) = self
+                .recover_queued_local_prompt_after_restart(
+                    session_id,
+                    agent_id,
+                    &queued_prompt_id,
+                    false,
+                )
+                .await?
+            {
                 self.spawn_workflow_prompt_dispatches(dispatches);
             }
         }
@@ -586,7 +590,7 @@ impl KernelRuntimeState {
     }
 
     #[allow(clippy::result_large_err)]
-    fn recover_queued_local_prompt_after_restart(
+    async fn recover_queued_local_prompt_after_restart(
         &self,
         session_id: &str,
         agent_id: &str,
@@ -626,6 +630,7 @@ impl KernelRuntimeState {
         let fresh_context = self
             .owned
             .workflow_prompt_requires_fresh_provider_context(session_id, agent_id, &prompt)?;
+        self.admit_cold_claude_launch(session_id, agent_id).await?;
         let (provider_run_id, retired_provider_run_id) = self.owned.workflow_ensure_provider_run(
             session_id,
             agent_id,
@@ -767,6 +772,7 @@ impl KernelRuntimeState {
                 )
                 .is_some()
         {
+            self.admit_cold_claude_launch(session_id, agent_id).await?;
             let session_id_owned = session_id.to_string();
             let agent_id_owned = agent_id.to_string();
             let replacement_provider_run_id = self
@@ -791,6 +797,7 @@ impl KernelRuntimeState {
         agent_id: &str,
         prompt: &crate::session::PromptQueueItem,
     ) -> Result<(), DaemonError> {
+        self.admit_cold_claude_launch(session_id, agent_id).await?;
         let session_id_owned = session_id.to_string();
         let agent_id_owned = agent_id.to_string();
         let provider_run_id = self
@@ -951,11 +958,15 @@ impl KernelRuntimeState {
         )?;
         let session_id_owned = session_id.to_string();
         let agent_id_owned = agent.id().to_string();
-        let provider_run_id = match self
-            .with_app_side_effect(move |app| {
+        let provider_run_id = match async {
+            self.admit_cold_claude_launch(session_id, agent.id())
+                .await?;
+            self.with_app_side_effect(move |app| {
                 app.ensure_prompt_provider_run_for_agent(&session_id_owned, &agent_id_owned)
             })
             .await
+        }
+        .await
         {
             Ok(provider_run_id) => provider_run_id,
             Err(error) => {
@@ -1596,6 +1607,190 @@ mod tests {
             prompt.durable_delivery_phase(),
             Some(crate::session::DurablePromptDeliveryPhase::Delivered)
         );
+    }
+
+    // The cold Claude start of each recovery path stops at the folder's hooks
+    // card instead of launching Claude into an untrusted folder.
+    #[tokio::test]
+    async fn queued_publication_prompt_of_a_cold_claude_agent_waits_for_the_hooks_card() {
+        use super::super::claude_cold_launch_fixture as cold;
+        let folder = cold::hooks_folder();
+        let (runtime, session_id, agent_id) = runtime_with_queued_prompt();
+        cold::make_cold_claude(
+            &runtime,
+            &session_id,
+            &agent_id,
+            folder.path(),
+            Default::default(),
+        )
+        .await;
+
+        let summary = cold::start_waits_for_hooks_card(
+            &runtime,
+            &session_id,
+            &agent_id,
+            runtime.recover_durable_runtime_after_restart(),
+        )
+        .await;
+
+        assert_eq!(summary.queued_local_prompts_started, 0);
+        assert!(runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn accepted_prompt_of_a_cold_claude_agent_waits_for_the_hooks_card() {
+        use super::super::claude_cold_launch_fixture as cold;
+        let folder = cold::hooks_folder();
+        let (runtime, session_id, agent_id, _prompt_id) = runtime_with_active_prompt_in_worktree(
+            crate::session::DurablePromptDeliveryPhase::Accepted,
+            folder.path().to_str().unwrap(),
+        );
+        cold::make_cold_claude(
+            &runtime,
+            &session_id,
+            &agent_id,
+            folder.path(),
+            Default::default(),
+        )
+        .await;
+
+        let summary = cold::start_waits_for_hooks_card(
+            &runtime,
+            &session_id,
+            &agent_id,
+            runtime.recover_durable_runtime_after_restart(),
+        )
+        .await;
+
+        assert_eq!(summary.accepted_local_redispatched, 0);
+        assert_eq!(summary.failed_reconciliations, 1);
+    }
+
+    #[tokio::test]
+    async fn uncertain_prompt_of_a_cold_claude_agent_waits_for_the_hooks_card() {
+        crate::test_support::isolated_env_test!();
+        use super::super::claude_cold_launch_fixture as cold;
+        let folder = cold::hooks_folder();
+        let (runtime, session_id, agent_id, _prompt_id) = runtime_with_active_prompt_in_worktree(
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            folder.path().to_str().unwrap(),
+        );
+        cold::make_cold_claude(
+            &runtime,
+            &session_id,
+            &agent_id,
+            folder.path(),
+            crate::provider::ProviderResumeState::from_claude_session_id(
+                "claude-session-before-restart",
+            ),
+        )
+        .await;
+
+        let summary = cold::start_waits_for_hooks_card(
+            &runtime,
+            &session_id,
+            &agent_id,
+            runtime.recover_durable_runtime_after_restart(),
+        )
+        .await;
+
+        assert_eq!(summary.uncertain_original_redispatched, 0);
+        assert_eq!(summary.failed_reconciliations, 1);
+    }
+
+    #[tokio::test]
+    async fn failed_delivery_follower_of_a_cold_claude_agent_waits_for_the_hooks_card() {
+        use super::super::claude_cold_launch_fixture as cold;
+        let folder = cold::hooks_folder();
+        let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_in_worktree(
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            folder.path().to_str().unwrap(),
+        );
+        let provider_run_id = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .unwrap()
+            .id()
+            .to_string();
+        cold::make_cold_claude(
+            &runtime,
+            &session_id,
+            &agent_id,
+            folder.path(),
+            Default::default(),
+        )
+        .await;
+        let (s, a, p, r) = (
+            session_id.clone(),
+            agent_id.clone(),
+            prompt_id.clone(),
+            provider_run_id.clone(),
+        );
+        runtime
+            .with_app_side_effect(move |app| {
+                app.mark_active_prompt_delivery(
+                    &s,
+                    &a,
+                    &p,
+                    crate::session::DurablePromptDeliveryPhase::Dispatching,
+                    Some(r),
+                    Some("claude-session-failed-before-restart".to_string()),
+                )
+            })
+            .await
+            .unwrap();
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let active_status = session.active_prompt_for_agent(&agent_id).unwrap().status();
+        runtime
+            .owned
+            .compare_and_mark_active_prompt_delivery_failure(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                &provider_run_id,
+                "claude-session-failed-before-restart",
+                (active_status, PromptStatus::Cancelling),
+            )
+            .unwrap()
+            .unwrap();
+        let (queue_session_id, queue_agent_id) = (session_id.clone(), agent_id.clone());
+        runtime
+            .with_app_side_effect(move |app| {
+                let attachment = KernelSessionService::new(app).attach(AttachRequest::new(
+                    &queue_session_id,
+                    "attachment-follower",
+                    ClientCapabilityLevel::FullTerminal,
+                ))?;
+                let follower = PromptQueueItem::new(
+                    "follower-restart-recovery",
+                    attachment.id(),
+                    &queue_agent_id,
+                    "next task",
+                    PromptStatus::Queued,
+                );
+                app.prompt_owner_submit_prepared_prompt(&queue_session_id, follower, true)
+            })
+            .await
+            .unwrap();
+
+        let summary = cold::start_waits_for_hooks_card(
+            &runtime,
+            &session_id,
+            &agent_id,
+            runtime.recover_durable_runtime_after_restart(),
+        )
+        .await;
+
+        assert_eq!(summary.cancelled_local_prompts_finalized, 0);
     }
 
     #[tokio::test]

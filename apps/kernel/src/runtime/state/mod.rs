@@ -460,6 +460,8 @@ mod provider_launch_failure_runtime;
 mod provider_launch_owned_state;
 mod provider_launch_runtime;
 pub(crate) use provider_launch_runtime::ProviderLaunchStartOutcome;
+#[cfg(test)]
+mod claude_cold_launch_fixture;
 mod claude_setup_token_capture;
 mod claude_workspace_trust;
 mod provider_liveness_runtime;
