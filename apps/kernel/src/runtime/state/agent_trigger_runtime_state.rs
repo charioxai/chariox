@@ -4,8 +4,9 @@ use crate::session::{
     AgentTriggerRepeat,
 };
 
-enum AgentTriggerFiring {
+pub(super) enum AgentTriggerFiring {
     Fired {
+        prompt_id: String,
         outcome: AgentTriggerOutcome,
         steer_refusal: Option<String>,
     },
@@ -20,10 +21,10 @@ impl KernelRuntimeState {
         request: crate::local::CreateAgentTriggerRequest,
         caller_user_id: &str,
     ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
-        let crate::local::AgentTriggerSourceRequest::Schedule {
-            interval_seconds,
-            repeat,
-        } = request.source;
+        let (interval_seconds, repeat) = match &request.source {
+            crate::local::AgentTriggerSourceRequest::Http => return self.create_http_agent_trigger(request, caller_user_id).await,
+            crate::local::AgentTriggerSourceRequest::Schedule { interval_seconds, repeat } => (*interval_seconds, *repeat),
+        };
         let (trigger, session) = self.create_agent_schedule_trigger(
             &request.session_id,
             &request.agent_id,
@@ -193,7 +194,7 @@ impl KernelRuntimeState {
     }
 
     /// Whoever may prompt an agent may arm, change and remove its triggers.
-    fn ensure_agent_trigger_access(
+    pub(super) fn ensure_agent_trigger_access(
         &self,
         session_id: &str,
         trigger_id: &str,
@@ -236,6 +237,7 @@ impl KernelRuntimeState {
                 Ok(AgentTriggerFiring::Fired {
                     outcome,
                     steer_refusal,
+                    ..
                 }) => self.owned.session_store.write().mark_agent_trigger_fired(
                     &dispatch.session_id,
                     &dispatch.trigger_id,
@@ -301,7 +303,7 @@ impl KernelRuntimeState {
         }
     }
 
-    async fn fire_agent_trigger(
+    pub(super) async fn fire_agent_trigger(
         &self,
         dispatch: &AgentTriggerDispatch,
     ) -> Result<AgentTriggerFiring, DaemonError> {
@@ -323,7 +325,7 @@ impl KernelRuntimeState {
         // A schedule represents one outstanding request, whether queued or
         // already running. The dispatch claim prevents overlapping ticks from
         // admitting another occurrence before this submission settles.
-        if active
+        if dispatch.payload.is_none() && active
             .iter()
             .chain(queued.iter())
             .any(|prompt| prompt.agent_trigger_id() == Some(dispatch.trigger_id.as_str()))
@@ -334,18 +336,27 @@ impl KernelRuntimeState {
             .owned
             .ensure_agent_trigger_attachment(&dispatch.session_id)?;
         let prompt_id = self.owned.session_store.reserve_prompt_id();
+        let template_id = if dispatch.payload.is_some() { "runtime/agent-trigger" } else { "runtime/scheduled-prompt" };
+        let prompt_text = match &dispatch.payload {
+            None => dispatch.prompt.clone(),
+            Some(payload) => {
+                // JSON escaping prevents external text from closing the data block.
+                let payload = payload.to_string().replace('<', "\\u003c").replace('>', "\\u003e");
+                format!("{}\n\n<chariox-trigger-input kind=\"http\">\n{}\n</chariox-trigger-input>", dispatch.prompt, payload)
+            }
+        };
         let (scheduled_context, scheduled_manifest_entry) =
             crate::prompt_assembly::render_configured_prompt_with_manifest(
-                "runtime/scheduled-prompt",
-                crate::prompt_assembly::bundled_prompt_template("runtime/scheduled-prompt")
+                template_id,
+                crate::prompt_assembly::bundled_prompt_template(template_id)
                     .expect("scheduled prompt context must be registered"),
                 &[("SCHEDULE_ID", &dispatch.trigger_id)],
             );
         let prompt = crate::session::PromptQueueItem::new(
-            prompt_id,
+            prompt_id.clone(),
             &source_attachment_id,
             &dispatch.agent_id,
-            &dispatch.prompt,
+            &prompt_text,
             crate::session::PromptStatus::Queued,
         )
         .with_agent_trigger(&dispatch.trigger_id)
@@ -393,6 +404,7 @@ impl KernelRuntimeState {
         let queued_prompt_id = match &submission.outcome {
             crate::session::PromptSubmissionOutcome::Started { .. } => {
                 return Ok(AgentTriggerFiring::Fired {
+                    prompt_id: prompt_id.clone(),
                     outcome: AgentTriggerOutcome::Started,
                     steer_refusal: None,
                 });
@@ -401,6 +413,7 @@ impl KernelRuntimeState {
         };
         if dispatch.busy_policy == AgentTriggerBusyPolicy::Queue {
             return Ok(AgentTriggerFiring::Fired {
+                prompt_id: queued_prompt_id.clone(),
                 outcome: AgentTriggerOutcome::Queued,
                 steer_refusal: None,
             });
@@ -418,6 +431,7 @@ impl KernelRuntimeState {
             .await
         {
             Ok(_) => Ok(AgentTriggerFiring::Fired {
+                prompt_id: queued_prompt_id.clone(),
                 outcome: AgentTriggerOutcome::Steered,
                 steer_refusal: None,
             }),
@@ -428,6 +442,7 @@ impl KernelRuntimeState {
                     format!("Trigger `{}`: {refusal}", dispatch.trigger_id),
                 );
                 Ok(AgentTriggerFiring::Fired {
+                    prompt_id: queued_prompt_id.clone(),
                     outcome: AgentTriggerOutcome::Queued,
                     steer_refusal: Some(refusal),
                 })
@@ -487,7 +502,7 @@ impl KernelRuntimeOwnedState {
         Ok(attachment.id().to_string())
     }
 
-    fn persist_agent_trigger_session(
+    pub(super) fn persist_agent_trigger_session(
         &self,
         session_id: &str,
         reason: &str,

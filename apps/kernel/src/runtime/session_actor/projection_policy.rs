@@ -207,6 +207,7 @@ pub(super) fn projected_session_absence_response(
         LocalDaemonRequest::CreateAgentTrigger(request) => &request.session_id,
         LocalDaemonRequest::UpdateAgentTrigger(request) => &request.session_id,
         LocalDaemonRequest::DeleteAgentTrigger(request) => &request.session_id,
+        LocalDaemonRequest::InvokeAgentTrigger(request) => &request.session_id,
         LocalDaemonRequest::StartRoomEnvironment(request) => &request.session_id,
         LocalDaemonRequest::BindRoomEnvironmentSlice(request) => &request.session_id,
         LocalDaemonRequest::StopRoomEnvironment(request) => &request.session_id,
