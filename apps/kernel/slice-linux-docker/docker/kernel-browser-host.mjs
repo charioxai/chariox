@@ -422,7 +422,7 @@ export class KernelBrowserHost {
         for(const id of [...this.compositors.keys()])if(id!==tab.tab_id&&this.compositors.get(id)?.source instanceof LinuxCapture)await this.closeCompositors(id);
         const claim=this.foreground.claim(tab.tab_id);
         this.nativeScope(null);
-        const source=new LinuxCapture({size:this.pageSize(tab.tab_id),display:this.chromium.display,pid:this.chromium.browserPid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,browser:this.browser,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.foreground.holds(tab.tab_id,claim)&&this.protection===p&&!p.unknown&&this.generation===generation,timing:this.timing});
+        const source=new LinuxCapture({size:this.pageSize(tab.tab_id),pageWindow:this.layouts.get(tab.tab_id)?.subscriptionId==='resize'?async()=>{await this.chromeWindows.resolve();return this.chromeWindows.current().tabbed}:undefined,display:this.chromium.display,pid:this.chromium.browserPid,connection,sessionId,tab,scale:stream.device_scale_factor,hostScale:this.chromium.scale??1,policy,browser:this.browser,frames:frameId=>this.browser.frameSession?.(frameId,connection),screenshot:()=>this.displayScreenshot(tab,null,false),allowed:p=>this.foreground.holds(tab.tab_id,claim)&&this.protection===p&&!p.unknown&&this.generation===generation,timing:this.timing});
         // Review #1016 P1: Tab switches outside the browser's own paths (the Computer surface's
         // Ctrl+Tab) do not reconcile. Every readback is re-admitted against the live active Tab.
         source.validateCurrent=()=>this.nativeFront(tab);

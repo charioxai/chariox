@@ -45,8 +45,8 @@ export function attestationMask(regions,width,height){
  return mask;
 }
 export class LinuxCapture {
- constructor({size=geometry,display,pid,connection,sessionId,tab,scale,hostScale=1,policy,browser,screenshot,allowed,frames,attestation=null,timing=()=>{}}){
-  Object.assign(this,{size,display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,attestation,timing});this.native=true;this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
+ constructor({size=geometry,pageWindow,display,pid,connection,sessionId,tab,scale,hostScale=1,policy,browser,screenshot,allowed,frames,attestation=null,timing=()=>{}}){
+  Object.assign(this,{size,pageWindow,display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,attestation,timing});this.native=true;this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
  }
  subscribe(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn)}
  async createRasterPool(){return mkdtemp(path.join(nativeWorkerResource()?.root??this.display.root,'raster-'));}
@@ -67,6 +67,11 @@ export class LinuxCapture {
   }
  }
  async prepareReadback(){
+  if(this.pageWindow){
+   const window=await this.pageWindow(),p=window.page_rect,width=this.size.width*this.scale,height=this.size.height*this.scale;
+   if(p.width!==width||p.height!==height)throw Error('native viewport geometry differed');
+   return {width,height,window_region:{id:window.xid,width:window.bounds.width,height:window.bounds.height,left:p.left,top:p.top}};
+  }
   const {windowId}=await this.connection.send('Browser.getWindowForTarget',{targetId:this.tab.target_id});
   // MP-08/MP-10/MP-11: host-window DIPs are physical pixels (DPR1).
   // Page emulation owns negotiated DPR; keep the crop exact at both scales.
