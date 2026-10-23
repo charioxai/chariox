@@ -5444,3 +5444,17 @@ message that names the steer id, says it was delivered and must not be sent agai
 it is distinct from `prompt_steer_rejected`, which means nothing was delivered.
 Local 591 and relay peer 197 add this event shape, and
 `RelayStatus.status.capabilities` advertises `outside_steer_events_v1` for it.
+### MP-08 / MP-10 / MP-11: live browser layout (578/186)
+
+Allocated local578/peer186 adds `KernelBrowser.command={op:"resize",tab_id,generation,width,height}`.
+The result is `{width,height}` in CSS pixels. The current bounds are320×200 through1920×1080.
+This is a normal owner/agent mutation on the existing Tab and action ledger. It does not start a
+stopped browser or grant observation/input. Native rectangles retire before the owned window
+changes; fresh captures repeat the ordinary document, policy, ownership and pixel checks.
+Mirror registrations remain attached. The explicit layout survives observation subscriptions and
+ends with the Tab or browser. An acknowledgement confirms layout application, not client paint.
+
+The web sends the newest container size per animation frame with one request in flight. It reflows
+mirror CSS without scaling; video retains its old pixels unscaled, cropped/padded until the new
+capture arrives. Kernels below578 retain the existing fitted layout and receive no resize command.
+Functional and performance acceptance must be recorded separately from this protocol contract.

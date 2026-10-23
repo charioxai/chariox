@@ -2,7 +2,7 @@
 // Credit-mode clients (display_next) and the kernel push pump (protocol 491)
 // share this body; every frame keeps the same document/region/policy fences.
 import { timestamp } from './kernel-browser-timing.mjs';
-import { displayGeometry as geometry } from './kernel-browser-geometry.mjs';
+import { displayGeometry as canonicalGeometry } from './kernel-browser-geometry.mjs';
 import { displayMaskRegions } from './kernel-browser-pixels.mjs';
 import { assertNotCancelled, assertCurrentDocument } from './browser-controller-actions.mjs';
 import { directLease, exactPatchLimit } from './kernel-browser-display.mjs';
@@ -16,6 +16,7 @@ import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 
 const frameKinds={video:1,stripes:2,tiles:3,png:4};
 export async function displayCredit(host, stream, command, signal) {
+  const geometry=host.pageSize?.(stream.tab_id)??canonicalGeometry;
   const leased=stream.adoptLease?.(command.after_sequence);
   if(leased)host.timing.event?.('native_lease_ended',{frames:leased});
   const region=stream.regionLease;

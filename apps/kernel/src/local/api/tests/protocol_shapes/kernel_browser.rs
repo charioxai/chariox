@@ -647,3 +647,25 @@ fn mp08_mp10_mp11_browser_window_display_560_snapshot() {
         "target":{"kind":"browser_window","window_generation":3,"xid":42},"codecs":["png"],"bitrate":2000000,"device_scale_factor":1}}});
     assert!(serde_json::from_value::<LocalDaemonRequest>(extra).is_err());
 }
+
+// MP-08/MP-10/MP-11: coordinator allocated578/186 for the shared resize mutation.
+#[test]
+fn browser_resize_protocol578_snapshot() {
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 578);
+    }
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 186);
+    }
+    let bytes = include_bytes!("browser-resize-578.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "6e12b897933334c5f94938d551e5a6cf6c711fc6402655fc0863c1ad33700684"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), snapshot["request"]);
+    let mut foreign = snapshot["request"].clone();
+    foreign["KernelBrowser"]["command"]["window_id"] = serde_json::json!(42);
+    assert!(serde_json::from_value::<LocalDaemonRequest>(foreign).is_err());
+}

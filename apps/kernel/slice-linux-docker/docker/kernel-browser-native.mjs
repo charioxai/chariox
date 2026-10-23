@@ -45,8 +45,8 @@ export function attestationMask(regions,width,height){
  return mask;
 }
 export class LinuxCapture {
- constructor({display,pid,connection,sessionId,tab,scale,hostScale=1,policy,browser,screenshot,allowed,frames,attestation=null,timing=()=>{}}){
-  Object.assign(this,{display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,attestation,timing});this.native=true;this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
+ constructor({size=geometry,display,pid,connection,sessionId,tab,scale,hostScale=1,policy,browser,screenshot,allowed,frames,attestation=null,timing=()=>{}}){
+  Object.assign(this,{size,display,pid,connection,sessionId,tab,scale,hostScale,policy,browser,screenshot,allowed,frames,attestation,timing});this.native=true;this.listeners=new Set();this.closed=false;this.attested=false;this.regionRevision=0;this.changedAt=performance.now();this.motionStreak=0;this.ignoreIdleUntil=-Infinity;
  }
  subscribe(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn)}
  async createRasterPool(){return mkdtemp(path.join(nativeWorkerResource()?.root??this.display.root,'raster-'));}
@@ -71,9 +71,9 @@ export class LinuxCapture {
   // MP-08/MP-10/MP-11: host-window DIPs are physical pixels (DPR1).
   // Page emulation owns negotiated DPR; keep the crop exact at both scales.
   // Window bounds are host DIPs: the negotiated raster divided by host scale.
-  await fitNativeViewport({connection:this.connection,windowId,sessionId:this.sessionId,width:geometry.width*this.scale,height:geometry.height*this.scale,hostScale:this.hostScale,
+  await fitNativeViewport({connection:this.connection,windowId,sessionId:this.sessionId,width:this.size.width*this.scale,height:this.size.height*this.scale,hostScale:this.hostScale,
    measure:async()=>decodePng((await this.screenshot()).data_base64,this.scale)});
-  return {width:geometry.width*this.scale,height:geometry.height*this.scale};
+  return {width:this.size.width*this.scale,height:this.size.height*this.scale};
  }
  /** A cached readback masked under the current projection (startup admits only such a sample). */
  currentSample(){return !!this.latest&&this.latest.revision===this.regionRevision;}
@@ -127,7 +127,7 @@ export class LinuxCapture {
   }
   await this.attest();this.pixelProven=true;this.attestation?.prove();
  }
- expectedSize(){return [geometry.width*this.scale,geometry.height*this.scale];}
+ expectedSize(){return [this.size.width*this.scale,this.size.height*this.scale];}
  async attest(){
   let matched=false;
   // Chromium may finish a viewport paint after the first shared readback.
@@ -219,7 +219,7 @@ export class LinuxCapture {
  wheel(x,y,dx,dy){
   if(!this.nativeWorker||!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed)return false;
   const px=Math.floor(x*this.scale),py=Math.floor(y*this.scale);
-  if(![px,py,dx,dy].every(Number.isSafeInteger)||px<0||py<0||px>=geometry.width*this.scale||py>=geometry.height*this.scale||Math.abs(dx)>10||Math.abs(dy)>10||(!dx&&!dy))return false;
+  if(![px,py,dx,dy].every(Number.isSafeInteger)||px<0||py<0||px>=this.size.width*this.scale||py>=this.size.height*this.scale||Math.abs(dx)>10||Math.abs(dy)>10||(!dx&&!dy))return false;
   return this.pointer('wheel',{point:[px,py],notches:[dx,dy]});
  }
  // MP-08/MP-10/MP-11: pointer input is a request. The worker reports whether
@@ -242,7 +242,7 @@ export class LinuxCapture {
  // buttons 2 (middle) and 3 (right) only where the caller admitted them.
  devicePoint(x,y){
   const px=Math.floor(x*this.scale),py=Math.floor(y*this.scale);
-  return [px,py].every(Number.isSafeInteger)&&px>=0&&py>=0&&px<geometry.width*this.scale&&py<geometry.height*this.scale?[px,py]:null;
+  return [px,py].every(Number.isSafeInteger)&&px>=0&&py>=0&&px<this.size.width*this.scale&&py<this.size.height*this.scale?[px,py]:null;
  }
  click(x,y,button=1){
   if(!this.nativeWorker||!this.valid()||!this.attested||!this.child||this.child.stdin.destroyed||![1,2,3].includes(button))return false;
