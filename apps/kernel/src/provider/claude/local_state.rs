@@ -80,7 +80,69 @@ fn apply_update(
     Ok(true)
 }
 
+/// Claude saves its profile under a `<file>.lock` directory (proper-lockfile
+/// convention). Holding the same lock keeps our single-key update from landing
+/// between Claude's read and write.
+const LOCK_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(10);
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+const COMMIT_ATTEMPTS: usize = 8;
+
+struct ProfileLock(std::path::PathBuf);
+
+impl ProfileLock {
+    fn acquire(state_path: &Path) -> Result<Self, DaemonError> {
+        let mut lock_path = state_path.as_os_str().to_owned();
+        lock_path.push(".lock");
+        let lock_path = std::path::PathBuf::from(lock_path);
+        let deadline = std::time::Instant::now() + LOCK_WAIT;
+        loop {
+            match fs::create_dir(&lock_path) {
+                Ok(()) => return Ok(Self(lock_path)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let stale = fs::metadata(&lock_path)
+                        .and_then(|metadata| metadata.modified())
+                        .ok()
+                        .and_then(|modified| modified.elapsed().ok())
+                        .is_some_and(|age| age > LOCK_STALE_AFTER);
+                    if stale {
+                        let _ = fs::remove_dir(&lock_path);
+                        continue;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err(state_error(
+                            "Claude is saving its profile; retry the launch in a moment",
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                Err(error) => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "prepare Claude local state",
+                        message: error.to_string(),
+                    })
+                }
+            }
+        }
+    }
+}
+
+impl Drop for ProfileLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir(&self.0);
+    }
+}
+
 fn update_claude_state_at(state_path: &Path, update: StateUpdate<'_>) -> Result<(), DaemonError> {
+    update_claude_state_with(state_path, update, &mut || {})
+}
+
+/// `after_read` runs between reading the profile and committing the change; it
+/// exists so tests can write the profile at exactly that moment.
+fn update_claude_state_with(
+    state_path: &Path,
+    update: StateUpdate<'_>,
+    after_read: &mut dyn FnMut(),
+) -> Result<(), DaemonError> {
     let parent = state_path
         .parent()
         .ok_or_else(|| DaemonError::LocalTransport {
@@ -91,6 +153,23 @@ fn update_claude_state_at(state_path: &Path, update: StateUpdate<'_>) -> Result<
         operation: "prepare Claude local state",
         message: error.to_string(),
     })?;
+    let _lock = ProfileLock::acquire(state_path)?;
+    for _ in 0..COMMIT_ATTEMPTS {
+        let snapshot = read_state_bytes(state_path)?;
+        let Some(contents) = updated_contents(snapshot.as_deref(), update)? else {
+            return Ok(());
+        };
+        after_read();
+        if commit_state(state_path, parent, &contents, snapshot.as_deref())? {
+            return Ok(());
+        }
+    }
+    Err(state_error(
+        "Claude kept changing its profile while the folder was being trusted; retry the launch",
+    ))
+}
+
+fn read_state_bytes(state_path: &Path) -> Result<Option<Vec<u8>>, DaemonError> {
     let mut state_options = fs::OpenOptions::new();
     state_options.read(true);
     #[cfg(unix)]
@@ -104,7 +183,7 @@ fn update_claude_state_at(state_path: &Path, update: StateUpdate<'_>) -> Result<
         const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
         state_options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
-    let existing_state = match state_options.open(state_path) {
+    match state_options.open(state_path) {
         Ok(file) => {
             let metadata = file
                 .metadata()
@@ -155,28 +234,9 @@ fn update_claude_state_at(state_path: &Path, update: StateUpdate<'_>) -> Result<
                     message: "Claude onboarding state exceeds its size limit".into(),
                 });
             }
-            let mut state = if bytes.iter().all(|byte| byte.is_ascii_whitespace()) {
-                serde_json::Value::Object(serde_json::Map::new())
-            } else {
-                serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|error| {
-                    DaemonError::LocalTransport {
-                        operation: "prepare Claude local state",
-                        message: format!("Claude local state is invalid JSON: {error}"),
-                    }
-                })?
-            };
-            if !apply_update(&mut state, update)? {
-                return Ok(());
-            }
-            let mut bytes =
-                serde_json::to_vec(&state).map_err(|error| DaemonError::LocalTransport {
-                    operation: "prepare Claude local state",
-                    message: error.to_string(),
-                })?;
-            bytes.push(b'\n');
-            Some(bytes)
+            Ok(Some(bytes))
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => {
             #[cfg(unix)]
             if error.raw_os_error() == Some(libc::ELOOP) {
@@ -188,12 +248,50 @@ fn update_claude_state_at(state_path: &Path, update: StateUpdate<'_>) -> Result<
                     ),
                 });
             }
-            return Err(DaemonError::LocalTransport {
+            Err(DaemonError::LocalTransport {
                 operation: "prepare Claude local state",
                 message: error.to_string(),
-            });
+            })
         }
+    }
+}
+
+/// The bytes to write, or `None` when the profile already has the change.
+fn updated_contents(
+    snapshot: Option<&[u8]>,
+    update: StateUpdate<'_>,
+) -> Result<Option<Vec<u8>>, DaemonError> {
+    let mut state = match snapshot {
+        None => serde_json::json!({}),
+        Some(bytes) if bytes.iter().all(|byte| byte.is_ascii_whitespace()) => {
+            serde_json::Value::Object(serde_json::Map::new())
+        }
+        Some(bytes) => serde_json::from_slice::<serde_json::Value>(bytes).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "prepare Claude local state",
+                message: format!("Claude local state is invalid JSON: {error}"),
+            }
+        })?,
     };
+    if !apply_update(&mut state, update)? {
+        return Ok(None);
+    }
+    let mut bytes = serde_json::to_vec(&state).map_err(|error| DaemonError::LocalTransport {
+        operation: "prepare Claude local state",
+        message: error.to_string(),
+    })?;
+    bytes.push(b'\n');
+    Ok(Some(bytes))
+}
+
+/// Replaces the profile only if it still holds `snapshot`; `Ok(false)` means it
+/// changed since the read and the caller must merge again.
+fn commit_state(
+    state_path: &Path,
+    parent: &Path,
+    contents: &[u8],
+    snapshot: Option<&[u8]>,
+) -> Result<bool, DaemonError> {
     let mut nonce = [0_u8; 8];
     rand::thread_rng().fill_bytes(&mut nonce);
     let pending_path = parent.join(format!(
@@ -215,50 +313,39 @@ fn update_claude_state_at(state_path: &Path, update: StateUpdate<'_>) -> Result<
                 operation: "prepare Claude local state",
                 message: error.to_string(),
             })?;
-    let state_existed = existing_state.is_some();
-    let contents = match existing_state {
-        Some(ref bytes) => bytes.clone(),
-        None => {
-            let mut state = serde_json::json!({});
-            apply_update(&mut state, update)?;
-            let mut bytes = serde_json::to_vec(&state)
-                .map_err(|_| state_error("Claude local state could not be encoded"))?;
-            bytes.push(b'\n');
-            bytes
-        }
-    };
     let write_result = pending
-        .write_all(&contents)
+        .write_all(contents)
         .and_then(|()| pending.sync_all());
+    drop(pending);
     if let Err(error) = write_result {
-        drop(pending);
         let _ = fs::remove_file(pending_path);
         return Err(DaemonError::LocalTransport {
             operation: "prepare Claude local state",
             message: error.to_string(),
         });
     }
-    drop(pending);
-    let result = if state_existed {
-        fs::rename(&pending_path, state_path).map_err(|error| DaemonError::LocalTransport {
-            operation: "prepare Claude local state",
-            message: error.to_string(),
-        })
+    let committed = if snapshot.is_some() {
+        // Re-read immediately before the rename so a save that landed after
+        // our first read is merged on the next pass instead of overwritten.
+        if read_state_bytes(state_path)?.as_deref() != snapshot {
+            let _ = fs::remove_file(&pending_path);
+            return Ok(false);
+        }
+        fs::rename(&pending_path, state_path).map(|()| true)
     } else {
         match fs::hard_link(&pending_path, state_path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let _ = fs::remove_file(&pending_path);
-                return update_claude_state_at(state_path, update);
-            }
-            Err(error) => Err(DaemonError::LocalTransport {
-                operation: "prepare Claude local state",
-                message: error.to_string(),
-            }),
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(error) => Err(error),
         }
     };
-    let _ = fs::remove_file(pending_path);
-    result?;
+    let _ = fs::remove_file(&pending_path);
+    if !committed.map_err(|error| DaemonError::LocalTransport {
+        operation: "prepare Claude local state",
+        message: error.to_string(),
+    })? {
+        return Ok(false);
+    }
     #[cfg(unix)]
     fs::File::open(parent)
         .and_then(|directory| directory.sync_all())
@@ -266,5 +353,85 @@ fn update_claude_state_at(state_path: &Path, update: StateUpdate<'_>) -> Result<
             operation: "prepare Claude local state",
             message: error.to_string(),
         })?;
-    Ok(())
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_state(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "chariox-claude-state-{name}-{}-{}",
+            std::process::id(),
+            rand::random::<u32>()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir.join(".claude.json")
+    }
+
+    #[test]
+    fn trust_keeps_a_claude_save_that_lands_after_the_read() {
+        let state_path = temp_state("race");
+        fs::write(&state_path, br#"{"numStartups":1}"#).unwrap();
+        let mut raced = false;
+        update_claude_state_with(
+            &state_path,
+            StateUpdate::TrustWorkspace("/work/a"),
+            &mut || {
+                if !raced {
+                    raced = true;
+                    fs::write(&state_path, br#"{"numStartups":2,"theme":"dark"}"#).unwrap();
+                }
+            },
+        )
+        .unwrap();
+        let state: serde_json::Value =
+            serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        assert_eq!(state["numStartups"], 2);
+        assert_eq!(state["theme"], "dark");
+        assert_eq!(state["projects"]["/work/a"]["hasTrustDialogAccepted"], true);
+        fs::remove_dir_all(state_path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn trust_keeps_a_claude_profile_created_after_the_read() {
+        let state_path = temp_state("create");
+        let mut raced = false;
+        update_claude_state_with(
+            &state_path,
+            StateUpdate::TrustWorkspace("/work/a"),
+            &mut || {
+                if !raced {
+                    raced = true;
+                    fs::write(&state_path, br#"{"theme":"dark"}"#).unwrap();
+                }
+            },
+        )
+        .unwrap();
+        let state: serde_json::Value =
+            serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        assert_eq!(state["theme"], "dark");
+        assert_eq!(state["projects"]["/work/a"]["hasTrustDialogAccepted"], true);
+        fs::remove_dir_all(state_path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn trust_waits_for_the_profile_lock_claude_holds() {
+        let state_path = temp_state("lock");
+        fs::write(&state_path, br#"{}"#).unwrap();
+        let mut lock_path = state_path.as_os_str().to_owned();
+        lock_path.push(".lock");
+        let lock_path = std::path::PathBuf::from(lock_path);
+        fs::create_dir(&lock_path).unwrap();
+        let release = lock_path.clone();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            fs::remove_dir(release).unwrap();
+        });
+        update_claude_state_at(&state_path, StateUpdate::TrustWorkspace("/work/a")).unwrap();
+        releaser.join().unwrap();
+        assert!(!lock_path.exists());
+        fs::remove_dir_all(state_path.parent().unwrap()).unwrap();
+    }
 }
