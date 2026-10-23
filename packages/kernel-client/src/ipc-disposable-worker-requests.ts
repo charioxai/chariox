@@ -61,7 +61,7 @@ export async function requireKernelControlCapability(
     throw new Error(`Connected kernel does not support ${capability}; update the kernel before retrying`)
   }
   if (name === "SkillsV2" && payload?.action === "resolve_repository_update" && !status.capabilities.includes(skillsRepositoryUpdateCapability)) {
-    throw new Error("Skills repository updates need a newer kernel: update the kernel, then run /skills update-package again")
+    throw new Error("Repository updates need a newer kernel: update the kernel, then run /skills update-package again")
   }
 }
 

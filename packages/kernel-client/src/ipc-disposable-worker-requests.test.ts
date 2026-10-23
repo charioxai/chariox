@@ -51,7 +51,7 @@ test("Skills repository update needs the 581 capability and tells the person to 
   const status = (capabilities: string[]) => async () => ({ RelayStatus: { status: { daemon_id: "home", machine_id: "machine", capabilities } } })
   await assert.rejects(
     requests.requireKernelControlCapability(status(["skills_v2_runtime"]), update),
-    /Skills repository updates need a newer kernel: update the kernel, then run \/skills update-package again/,
+    /Repository updates need a newer kernel: update the kernel, then run \/skills update-package again/,
   )
   await requests.requireKernelControlCapability(status(["skills_v2_runtime", "skills_repository_update_v581"]), update)
   // The other Skills requests keep working against a kernel without the update capability.
