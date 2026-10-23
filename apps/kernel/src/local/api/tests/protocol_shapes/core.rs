@@ -327,7 +327,7 @@ fn local_daemon_protocol_agent_prompt_schedule_shape_is_versioned() {
     );
 }
 
-/// Protocol 582: a trigger firing the provider did not confirm is listed on the
+/// Protocol 583: a trigger firing the provider did not confirm is listed on the
 /// session, and the person resends it.
 #[test]
 fn local_daemon_protocol_trigger_delivery_shape_is_versioned() {

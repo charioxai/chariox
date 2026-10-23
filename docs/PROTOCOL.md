@@ -4797,7 +4797,7 @@ clears the list. `browser-mirror2-font-absent-567.json` pins the shape (Rust has
 `browser_mirror2_font_absent_567_shape_is_pinned`). Older kernels never send the field; older
 viewers refuse it, so they must stay below 567 or negotiate the same wire.
 
-Provisional 576 (relay peer unchanged) adds agent triggers: prompts that fire into an agent's own
+Protocol 576 adds agent triggers: prompts that fire into an agent's own
 conversation. `CreateAgentTrigger {session_id, agent_id, source, busy_policy, prompt?}`,
 `UpdateAgentTrigger {session_id, trigger_id, busy_policy?, prompt?, enabled?}` and
 `DeleteAgentTrigger {session_id, trigger_id}` answer `AgentTriggerCreated|Updated|Deleted {trigger,
@@ -4822,8 +4822,8 @@ A 576 kernel cannot decode them and a 576 client cannot decode a session that ho
 trigger, so clients that create or list HTTP triggers require 579; the other client minimums are
 unchanged. `local_daemon_protocol_http_agent_trigger_shape_is_versioned` pins the shapes.
 
-Provisional 582 (relay peer unchanged on the base; the HTTP trigger keeps 187) makes every trigger firing a labelled prompt and lets a person
-resend one the provider did not confirm. A firing's transcript prompt carries `prompt_origin`
+Allocated 583/191 makes every trigger firing a labelled prompt and lets a person
+resend one the provider did not confirm. The new `schedule`, `http` and `notification` origins also travel in `SubmitLeasedPrompt.git_context.prompt_origin`, so peer 191 is required before sending them to a leased worker. A firing's transcript prompt carries `prompt_origin`
 `schedule` (a schedule trigger), `http` (an HTTP trigger) or `notification` (a workflow notification) and is recorded before
 the provider write, so it exists even if the kernel stops first. A steered firing that the provider
 did not confirm, whether a receipt was lost or the kernel restarted mid-delivery, is never sent

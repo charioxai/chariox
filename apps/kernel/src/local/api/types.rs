@@ -341,4 +341,4 @@ pub use workspace::*;
 /// Provisional 576 adds agent triggers; `/wait-in` and `/wait-every` become schedule triggers.
 /// Allocated 579 adds the HTTP trigger source and `InvokeAgentTrigger`/`ReadAgentTriggerTranscript`.
 /// Provisional 582 adds trigger deliveries the person can resend.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 582;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 583;
