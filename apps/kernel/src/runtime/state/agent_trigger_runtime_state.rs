@@ -1145,6 +1145,24 @@ mod tests {
         let (first_restart, _) =
             restart_from_log_cut(&crashed, crashed.len(), "trigger-steer-held-1").await;
         first_restart.owned.drop_restart_held_local_steers();
+        let remembered = first_restart
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        assert_eq!(
+            remembered
+                .trigger_deliveries()
+                .iter()
+                .map(|delivery| (delivery.state(), delivery.origin(), delivery.agent_id()))
+                .collect::<Vec<_>>(),
+            vec![(
+                crate::session::TriggerDeliveryState::NotConfirmed,
+                crate::session::PromptOrigin::Schedule,
+                agent_id.as_str()
+            )],
+            "a firing the restart could not confirm is remembered for the person to resend"
+        );
         let recovery = first_restart
             .owned
             .durable_state_store
