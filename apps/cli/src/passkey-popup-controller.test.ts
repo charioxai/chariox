@@ -392,3 +392,21 @@ for (const reason of ["expired", "answered", "revoked"] as const) {
     } finally {h.popup.dispose()}
   })
 }
+
+test("MP-08/MP-10/MP-11 a new sudo extension remains visible beside an answered attempt", async () => {
+  const h = harness()
+  const first: PasskeyPrompt = { ...prompt("sudo:window:extend:1:first"), kind: "sudo", refuse_choice_id: "refuse", lifetime_minutes: 60, max_lifetime_minutes: 480 }
+  const retry = { ...first, interaction_id: "sudo:window:extend:1:retry" }
+  h.popup.apply([first])
+  h.popup.show()
+  h.popup.handleKey(key("r", { ctrl: true }))
+  assert.deepEqual(h.requests, [[first.interaction_id, "refuse"]])
+  h.resolve()
+  await settle()
+  // Coalesced feeds can still contain the answered attempt when the retry arrives.
+  h.popup.apply([first, retry])
+  assert.equal(h.popup.show(), true)
+  assert.equal(h.popup.view().prompt?.interaction_id, retry.interaction_id)
+  assert.equal(h.popup.view().count, 1)
+  assert.equal(h.popup.view().passkey.length, 0)
+})
