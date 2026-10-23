@@ -120,8 +120,12 @@ test('status waits on events for the expected turn and ignores earlier idle', as
       { event_id: 2, event: { agent_activity: { a: { status: 'working', active_prompt_count: 1, active_turn: { prompt_id: 'p' } } } } },
       { event_id: 3, event: { agent_activity: { a: { status: 'idle', active_prompt_count: 0 } } } },
     ];
-    await writeFile(executable, `#!/usr/bin/env node\nfor(const frame of ${JSON.stringify(frames)}) process.stdout.write(JSON.stringify(frame)+'\\n');\n`);
+    await writeFile(executable, `#!/usr/bin/env node
+for(const frame of ${JSON.stringify(frames)}) process.stdout.write(JSON.stringify(frame)+'\\n');
+`);
+    assert.equal((await readFile(executable, 'utf8')).split('\n')[0], '#!/usr/bin/env node');
     await chmod(executable, 0o700); process.env.CHARIOX_BIN = executable;
+    assert.deepEqual(execFileSync(executable, { encoding: 'utf8' }).trim().split('\n').map(line => JSON.parse(line)), frames);
     assert.deepEqual(await waitForIdle({ kernel: 'b', sessionId: 's', attachmentId: 't', agentId: 'a', expectedPromptId: 'p', timeout: 3 }), { eventId: 3, promptId: 'p', state: 'idle' });
   } finally { if (previous === undefined) delete process.env.CHARIOX_BIN; else process.env.CHARIOX_BIN = previous; await rm(dir, { recursive: true, force: true }); }
 });
