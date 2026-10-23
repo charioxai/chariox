@@ -66,7 +66,7 @@ impl KernelRuntimeState {
             agent_id,
             RuntimeInteractionKind::Permission,
             RuntimeInteractionLevel::Warning,
-            Some("Trust this folder and run its Claude hooks?".to_string()),
+            Some("Run this folder's Claude hooks?".to_string()),
             hooks_card_message(folder),
             vec![
                 RuntimeInteractionChoice::new(

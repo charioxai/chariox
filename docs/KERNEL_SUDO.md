@@ -58,8 +58,12 @@ admission and again before launch; its cached fence alone grants nothing.
 Provider permissions allow only that operation once, never a provider-wide
 session grant. Before starting native or headless Claude, the kernel records
 folder trust for the exact canonical launch workspace in the selected provider
-profile. The owner already selected that workspace for this launch. No other
-folder or tool permission is added. Screen-based trust handling remains a
+profile and says so once in the agent pane. The owner already selected that
+workspace for this launch. No other folder or tool permission is added. Outside
+yolo, a folder that ships its own Claude hooks (project `.claude/settings.json`
+or `.claude/settings.local.json`) is trusted only after the owner approves one
+card listing those commands; Cancel stops the start, and a launch that did not
+show the card leaves the folder untrusted. Screen-based trust handling remains a
 fallback for an already approved exact-workspace launch; it does not make a
 pending task live for tools. Forwarded approvals retain their worker-local
 origin for lifetime checks and translate only the consent lookup to the current
