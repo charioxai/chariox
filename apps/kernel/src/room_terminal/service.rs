@@ -44,6 +44,10 @@ const PERSIST_INTERVAL: Duration = Duration::from_secs(1);
 /// Below the provider tool limit (Codex gives a tool call 300 s).
 pub const MAX_WAIT: Duration = Duration::from_secs(240);
 
+pub(super) fn output_wait(wait: Duration) -> Duration {
+    wait.min(MAX_WAIT)
+}
+
 /// Kernel-private tokens and configs the user's shell must not inherit.
 const KERNEL_SECRET_ENVIRONMENT: &[&str] = &[
     "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN",
@@ -375,7 +379,8 @@ impl RoomTerminalService {
         Ok(terminal.summary(driver))
     }
 
-    /// Output after `after_offset`, waiting up to `wait` for some.
+    /// Output after `after_offset`, waiting up to `wait` (at most `MAX_WAIT`, so the
+    /// answer always arrives inside the gateway's and the CLI's transport deadline).
     pub async fn read_output(
         &self,
         session_id: &str,
@@ -383,7 +388,7 @@ impl RoomTerminalService {
         after_offset: u64,
         wait: Duration,
     ) -> Result<RoomTerminalOutput, DaemonError> {
-        let deadline = Instant::now() + wait;
+        let deadline = Instant::now() + output_wait(wait);
         loop {
             let changed = self.inner.output_changed.notified();
             tokio::pin!(changed);

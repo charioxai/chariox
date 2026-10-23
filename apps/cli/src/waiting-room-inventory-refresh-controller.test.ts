@@ -955,3 +955,42 @@ test("opening the TUI session picker loads older project Rooms beyond the recent
   harness.controller.applyRowsChanged({ inventoryVersion: "v2", structuralVersion: "v2", activityRevision: "v2", sessions: [], removedSessionIds: [], sessionsTotal: 150 })
   assert.equal(harness.availableSessions().some(s => s.id === "room-150"), false)
 })
+
+// The kernel names every row that left its bounded recent window, whether the Room was deleted or only displaced by a newer one.
+function boundedPatch(before: string[], after: string[], total: number, version: string) {
+  const known = new Set(before)
+  return {
+    inventoryVersion: version, structuralVersion: version, activityRevision: version,
+    sessions: after.filter(id => !known.has(id)).map(id => session(id)),
+    removedSessionIds: before.filter(id => !after.includes(id)),
+    sessionsTotal: total,
+  }
+}
+
+test("a new Room displacing an older one from the recent window leaves the loaded Rooms in the open picker", async () => {
+  const all = Array.from({ length: 151 }, (_, i) => session(`room-${i}`))
+  const recentIds = all.slice(0, 100).map(row => row.id)
+  const recent = inventory("v1", { sessions: all.slice(0, 100), recentSessionIds: recentIds, sessionsTotal: 151, sessionsNextCursor: "p2" })
+  const harness = createHarness({ getInventory: async () => recent, getSessionPage: async cursor => cursor === null ? { sessions: all.slice(0, 100), next_cursor: "p2" } : { sessions: all.slice(100), next_cursor: null } })
+  await harness.controller.refreshNow()
+  await harness.controller.loadSessionHistory()
+  const afterIds = ["room-new", ...recentIds.slice(0, 99)]
+  harness.controller.applyRowsChanged(boundedPatch(recentIds, afterIds, 152, "v2"))
+  const ids = harness.availableSessions().map(s => s.id)
+  assert.equal(ids.length, 152, "the displaced Room still exists")
+  assert.ok(ids.includes("room-99") && ids.includes("room-150") && ids.includes("room-new"))
+})
+
+test("a Room deleted while another is created still leaves the picker", async () => {
+  const all = Array.from({ length: 151 }, (_, i) => session(`room-${i}`))
+  const recentIds = all.slice(0, 100).map(row => row.id)
+  const recent = inventory("v1", { sessions: all.slice(0, 100), recentSessionIds: recentIds, sessionsTotal: 151, sessionsNextCursor: "p2" })
+  const harness = createHarness({ getInventory: async () => recent, getSessionPage: async cursor => cursor === null ? { sessions: all.slice(0, 100), next_cursor: "p2" } : { sessions: all.slice(100), next_cursor: null } })
+  await harness.controller.refreshNow()
+  await harness.controller.loadSessionHistory()
+  const afterIds = ["room-new", ...recentIds.filter(id => id !== "room-5")]
+  harness.controller.applyRowsChanged(boundedPatch(recentIds, afterIds, 151, "v2"))
+  const ids = harness.availableSessions().map(s => s.id)
+  assert.equal(ids.includes("room-5"), false)
+  assert.ok(ids.includes("room-new"))
+})

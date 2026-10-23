@@ -374,10 +374,15 @@ export function createWaitingRoomInventoryRefreshController(
       const knownIds = new Set(activeInventory.sessions.map(row => row.id))
       const beforeTotal = activeInventory.sessionsTotal ?? activeInventory.sessions.length
       const afterTotal = patch.sessionsTotal ?? beforeTotal
-      const historyInvalid = afterTotal < beforeTotal || (afterTotal <= beforeTotal && patch.sessions.some(row => !knownIds.has(row.id)))
+      // The kernel names every row that left its bounded recent window, deleted or merely displaced by a
+      // newer Room. The totals tell them apart: a Room that is gone for good makes the total fall short of
+      // the known Rooms plus the new ones. With no such shortfall every named row still exists.
+      const newRowCount = patch.sessions.filter(row => !knownIds.has(row.id)).length
+      const historyInvalid = beforeTotal + newRowCount > afterTotal
       const previousSessions = historyInvalid
         ? activeInventory.sessions.filter(row => recentIds.has(row.id))
         : activeInventory.sessions
+      const removedSessionIds = historyInvalid ? patch.removedSessionIds : []
       const sessions = mergeWaitingRoomSessionRows(
         currentInventoryVersion === null ? [] : previousSessions,
         patch.sessions.map((session) => ({
@@ -387,9 +392,9 @@ export function createWaitingRoomInventoryRefreshController(
           machine_id: activeInventory.machineId,
           machine_alias: activeInventory.machineAlias ?? null,
         })),
-        patch.removedSessionIds,
+        removedSessionIds,
       )
-      const nextRecentIds = new Set([...recentIds, ...patch.sessions.map(row => row.id)])
+      const nextRecentIds = new Set([...recentIds].filter(id => !patch.removedSessionIds.includes(id)).concat(patch.sessions.map(row => row.id)))
       const nextInventory = {
         ...activeInventory,
         inventoryVersion: patch.inventoryVersion,

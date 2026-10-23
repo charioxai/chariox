@@ -11,6 +11,10 @@ function recorder(answers: Record<string, unknown>[]) {
   return { sent, send: async (body: Record<string, unknown>) => { sent.push(body); return answers.shift()! } }
 }
 
+// Real control bytes, spelled out so the fixtures cannot be misread as printable caret notation.
+const ESC = String.fromCharCode(27)
+const BEL = String.fromCharCode(7)
+
 test("send takes the current offset first, then types the text with Enter as one input", async () => {
   const { sent, send } = recorder([
     { RoomTerminal: { result: { result: "snapshot", snapshot: { terminal: summary(40), output_offset: 40, screen_text: "" } } } },
@@ -36,7 +40,7 @@ test("send with --wait-ms and --since puts the input and the read in flight toge
   const sent: any[] = []
   let release!: () => void
   const gate = new Promise<void>(resolve => { release = resolve })
-  const output = Buffer.from("\u001b[32mfiles\u001b[0m\r\n").toString("base64")
+  const output = Buffer.from(`${ESC}[32mfiles${ESC}[0m\r\n`).toString("base64")
   const send = async (body: Record<string, unknown>) => {
     sent.push(body)
     await gate
@@ -76,7 +80,7 @@ test("send with --wait-ms still says why the terminal refused, without waiting f
 })
 
 test("read prints plain text without colour or title escapes and the next offset", async () => {
-  const output = Buffer.from("\u001b]0;ops\u0007\u001b[32mok\u001b[0m done\r\n").toString("base64")
+  const output = Buffer.from(`${ESC}]0;ops${BEL}${ESC}[32mok${ESC}[0m done\r\n`).toString("base64")
   const { sent, send } = recorder([{ RoomTerminal: { result: { result: "output", output: { terminal: summary(), data_base64: output, next_offset: 31, gap: false } } } }])
   const result = await runTerminalVerb("read", [], flags({ since: "12", waitMs: "2000" }), send) as any
   assert.equal(result.text, "ok done\r\n")
@@ -125,13 +129,13 @@ test("a terminal on a worker or slice agent is driven with --host-agent on every
 
 test("an escape sequence cut by the end of a page is held back for the next read, not printed as fragments", async () => {
   const page = (text: string, next: number) => ({ RoomTerminal: { result: { result: "output", output: { terminal: summary(), data_base64: Buffer.from(text).toString("base64"), next_offset: next, gap: false } } } })
-  const first = await runTerminalVerb("read", [], flags({ since: "0" }), recorder([page("ok \u001b[3", 100)]).send) as any
+  const first = await runTerminalVerb("read", [], flags({ since: "0" }), recorder([page(`ok ${ESC}[3`, 100)]).send) as any
   assert.equal(first.text, "ok ")
   assert.equal(first.next_offset, 97, "the next read starts at the ESC, so the sequence arrives whole")
-  const second = await runTerminalVerb("read", [], flags({ since: "97" }), recorder([page("\u001b[32mgreen\u001b[0m", 110)]).send) as any
+  const second = await runTerminalVerb("read", [], flags({ since: "97" }), recorder([page(`${ESC}[32mgreen${ESC}[0m`, 110)]).send) as any
   assert.equal(second.text, "green")
   assert.equal(second.next_offset, 110)
-  const title = await runTerminalVerb("read", [], flags({ since: "0" }), recorder([page("a\u001b]0;ops", 20)]).send) as any
+  const title = await runTerminalVerb("read", [], flags({ since: "0" }), recorder([page(`a${ESC}]0;ops`, 20)]).send) as any
   assert.deepEqual([title.text, title.next_offset], ["a", 13])
 })
 

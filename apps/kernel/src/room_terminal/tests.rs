@@ -1586,3 +1586,10 @@ async fn ctrl_c_stops_the_program_behind_a_blocked_paste() {
     assert!(flood.join().is_ok());
     service.end_session("room-1");
 }
+
+#[test]
+fn an_output_read_never_waits_past_the_service_cap() {
+    use super::service::{output_wait, MAX_WAIT};
+    assert_eq!(output_wait(Duration::from_secs(600)), MAX_WAIT);
+    assert_eq!(output_wait(Duration::from_secs(5)), Duration::from_secs(5));
+}
