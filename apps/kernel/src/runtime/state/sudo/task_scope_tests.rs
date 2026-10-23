@@ -141,3 +141,122 @@ async fn sudo_task_consent_covers_three_operations_but_not_another_session() {
         )
         .is_err());
 }
+
+// MP-08 / MP-10 / MP-11: one sudo task can create an ordinary session in its workspace without a second passkey.
+#[tokio::test]
+async fn sudo_task_creates_a_same_workspace_session_without_another_passkey() {
+    let f = fixture_with_options(None, true);
+    let state = f.state.clone();
+    let request = f.request.clone();
+    let starting = tokio::spawn(async move {
+        state
+            .submit_sudo_prompt(request, "local", "sudo-terminal")
+            .await
+    });
+    let consent = popup(&f.state).await;
+    f.state
+        .answer_terminal_runtime_interaction(
+            &consent.session_id,
+            &consent.interaction_id,
+            "approve",
+            None,
+            Some("local"),
+            Some(&ApprovalPasskey::new(PASSKEY)),
+            None,
+            Some(KernelConnectionClass::Terminal),
+        )
+        .await
+        .unwrap();
+    starting.await.unwrap().unwrap();
+    let window = f.state.list_sudo_turns("local").pop().unwrap();
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&window.session_id)
+        .unwrap();
+    let request =
+        crate::session::CreateSessionRequest::new(session.workspace_id(), session.worktree_id())
+            .with_alias("same-task-session");
+    let reply = tokio::time::timeout(
+        Duration::from_secs(5),
+        f.router.dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            "chariox_kernel_request",
+            serde_json::json!({"request":{"CreateSession": request}}),
+        ),
+    )
+    .await
+    .expect("same-workspace session creation asked for a second passkey")
+    .unwrap();
+    let new_id = reply.payload["SessionCreated"]["session"]["id"]
+        .as_str()
+        .expect("created session");
+    let created = f.state.owned.session_store.get_session(new_id).unwrap();
+    assert_eq!(created.workspace_id(), session.workspace_id());
+    assert_eq!(created.worktree_id(), session.worktree_id());
+    assert_eq!(created.owner_user_id(), window.owner_user_id);
+    assert_ne!(created.id(), window.session_id);
+    assert!(f.state.passkey_prompts_for("local").is_empty());
+    assert!(
+        f.state
+            .list_sudo_turns("local")
+            .iter()
+            .all(|t| t.session_id == window.session_id),
+        "new session must not inherit elevation"
+    );
+
+    for change in [
+        "workspace",
+        "worktree",
+        "owner",
+        "hidden",
+        "metaagent",
+        "worker",
+        "slice",
+        "account",
+    ] {
+        let mut outside = request.clone();
+        match change {
+            "workspace" => outside.workspace_id = "unrelated-workspace".into(),
+            "worktree" => outside.worktree_id = "unrelated-worktree".into(),
+            "owner" => outside.owner_user_id = "another-owner".into(),
+            "hidden" => outside.hidden = true,
+            "metaagent" => outside.metaagent = true,
+            "worker" => outside.kernel_ref = Some("unrelated-worker".into()),
+            "slice" => outside.slice_ref = Some("new".into()),
+            "account" => {
+                outside.agent_defaults = Some(
+                    crate::session::SessionAgentDefaults::new("codex")
+                        .with_account_profile("unrelated-profile"),
+                )
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            f.state
+                .require_sudo_scope(
+                    &window.entry_id,
+                    &LocalDaemonRequest::CreateSession(outside)
+                )
+                .is_err(),
+            "new resource {change} must not borrow this workspace scope"
+        );
+    }
+    f.state
+        .revoke_sudo(Some("local"), Some(&window.entry_id), "explicit_revoke")
+        .unwrap();
+    let denied = tokio::time::timeout(
+        Duration::from_secs(5),
+        f.router.dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            "chariox_kernel_request",
+            serde_json::json!({"request":{"CreateSession": request}}),
+        ),
+    )
+    .await
+    .expect("revoked work must refuse immediately")
+    .unwrap_err();
+    assert!(denied.to_string().contains("sudo"));
+    assert!(f.state.passkey_prompts_for("local").is_empty());
+}
