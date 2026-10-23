@@ -145,7 +145,22 @@ export async function run(operation, input, dependencies = {}) {
     const remember = async (key, work) => { if (!state[key]) { state[key] = await work(); await save(input.stateFile, state); } return state[key]; };
     if (input.operationsAlias) await remember('operationsSessionId', async () => variant(await request('CreateSession', { workspace_id: input.worktree, worktree_id: input.worktree, alias: text(input.operationsAlias, 'operationsAlias') }, 'operations-room'), 'SessionCreated').session.id);
     input.sessionId = await remember('sessionId', async () => variant(await request('CreateSession', { workspace_id: input.worktree, worktree_id: input.worktree, alias: input.alias }, 'room'), 'SessionCreated').session.id);
-    input.attachmentId = await remember('attachmentId', async () => variant(await request('AttachToSession', { session_id: session(), client_id: taskId, capability_level: 'FullTerminal' }, 'attach'), 'SessionAttached').attachment.id);
+    const attach = async () => {
+      if (!state.attachCommand) {
+        state.attachCommand = `attach-${randomUUID()}`;
+        await save(input.stateFile, state);
+      }
+      input.attachmentId = await remember('attachmentId', async () => variant(await request('AttachToSession', { session_id: session(), client_id: taskId, capability_level: 'FullTerminal' }, state.attachCommand), 'SessionAttached').attachment.id);
+    };
+    const retireAttachment = async () => {
+      delete state.attachmentId; delete state.attachCommand;
+      await save(input.stateFile, state);
+    };
+    if (state.attachmentId && !state.pendingPrompt && !state.promptId) {
+      const heartbeat = variant(await request('HeartbeatAttachments', { attachments: [{ session_id: session(), attachment_id: state.attachmentId }] }, 'attachment-check', false), 'AttachmentsHeartbeated');
+      if (heartbeat.lapsed.includes(state.attachmentId)) await retireAttachment();
+    }
+    await attach();
     await remember('profileRefreshed', async () => {
       state.refreshAttempt = (state.refreshAttempt || 0) + 1; await save(input.stateFile, state);
       const profile = variant(await request('RefreshProviderAccountProfile', { provider: input.provider, account_profile: input.profile }, `refresh-${state.refreshAttempt}`), 'ProviderAccountProfile').profile;
@@ -160,7 +175,23 @@ export async function run(operation, input, dependencies = {}) {
     await remember('briefUploaded', async () => { await call(['files', 'put', ...common, '--overwrite', input.brief, input.remoteBrief]); return true; });
     await remember('deadlineArmed', async () => { await request('SetAgentDeadline', { session_id: session(), agent_id: agent(), deadline_ms: input.deadlineMs }, 'deadline'); return true; });
     await remember('promptId', async () => {
-      const submitted = variant(await request('SubmitPrompt', { session_id: session(), attachment_id: attachment(), target_agent_id: agent(), prompt: `MP-08 / MP-09 / MP-10 / MP-11: Read the lane brief at ${input.remoteBrief} and complete it.`, attachments: [] }, 'prompt'), 'PromptSubmitted');
+      const submit = async () => {
+        if (!state.pendingPrompt) {
+          state.pendingPrompt = { attachmentId: attachment(), command: `prompt-${randomUUID()}` };
+          await save(input.stateFile, state);
+        }
+        // An interrupted request is retried with its original attachment/body/id.
+        return variant(await request('SubmitPrompt', { session_id: session(), attachment_id: state.pendingPrompt.attachmentId, target_agent_id: agent(), prompt: `MP-08 / MP-09 / MP-10 / MP-11: Read the lane brief at ${input.remoteBrief} and complete it.`, attachments: [] }, state.pendingPrompt.command), 'PromptSubmitted');
+      };
+      let submitted;
+      try { submitted = await submit(); }
+      catch (error) {
+        if (error.code !== 'attachment_not_found') throw error;
+        // Definitive pre-admission refusal: no prompt started under this identity.
+        delete state.pendingPrompt;
+        await retireAttachment(); await attach();
+        submitted = await submit();
+      }
       const prompt = submitted.outcome?.Started?.prompt || submitted.outcome?.Queued?.prompt;
       return text(prompt?.id, 'submitted prompt id');
     });

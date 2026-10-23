@@ -173,7 +173,7 @@ test('launch resumes after deadline refusal without creating another agent or up
       if (argv[0] === 'files') { calls.push('upload'); return {}; }
       const op = Object.keys(JSON.parse(body))[0]; calls.push(op);
       if (op === 'SetAgentDeadline' && refused) throw new LaneError('kernel_incompatible');
-      return { CreateSession: { SessionCreated: { session: { id: 's' } } }, AttachToSession: { SessionAttached: { attachment: { id: 't' } } }, RefreshProviderAccountProfile: { ProviderAccountProfile: { profile: { auth_state: 'authenticated' } } }, SpawnAgent: { AgentSpawned: { agent: { id: 'a' } } }, SetAgentDeadline: {}, SubmitPrompt: { PromptSubmitted: { outcome: { Started: { prompt: { id: 'p' } } } } } }[op];
+      return { CreateSession: { SessionCreated: { session: { id: 's' } } }, AttachToSession: { SessionAttached: { attachment: { id: 't' } } }, RefreshProviderAccountProfile: { ProviderAccountProfile: { profile: { auth_state: 'authenticated' } } }, SpawnAgent: { AgentSpawned: { agent: { id: 'a' } } }, HeartbeatAttachments: { AttachmentsHeartbeated: { lapsed: [] } }, SetAgentDeadline: {}, SubmitPrompt: { PromptSubmitted: { outcome: { Started: { prompt: { id: 'p' } } } } } }[op];
     };
     await assert.rejects(run('launch', input, { execute }), { code: 'kernel_incompatible' });
     assert.equal(JSON.parse(await readFile(input.stateFile)).agentId, 'a');
@@ -267,4 +267,63 @@ test('guarded stop never destroys or cleans processes after a newer prompt start
     assert.deepEqual(result.signalled, []);
     assert.deepEqual(calls, ['CancelActivePrompt']);
   }
+});
+
+
+test('resumed launch replaces a lapsed attachment without duplicating Room, agent or prompt', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dogfood-reattach-'));
+  try {
+    const brief = join(dir, 'brief.md'); await writeFile(brief, 'MP-11: task');
+    const input = {kernel:'b',taskId:'lane',alias:'lane',worktree:'/repo',provider:'codex',profile:'profile',model:'gpt-6-luna',effort:'low',permission:'required',brief,remoteBrief:'/repo/BRIEF.md',stateFile:join(dir,'launch.json'),deadlineMs:Date.now()+60_000};
+    const calls = []; let resumed = false;
+    const execute = async (argv, body) => {
+      if (argv[0] === 'files') return {};
+      const req = JSON.parse(body); const op = Object.keys(req)[0]; calls.push({op, argv, req});
+      if (op === 'SetAgentDeadline' && !resumed) throw new LaneError('kernel_incompatible');
+      if (op === 'SubmitPrompt') {
+        assert.equal(req[op].attachment_id, 'new-attachment');
+        return {PromptSubmitted:{outcome:{Started:{prompt:{id:'p'}}}}};
+      }
+      return {CreateSession:{SessionCreated:{session:{id:'s'}}},AttachToSession:{SessionAttached:{attachment:{id:resumed?'new-attachment':'old-attachment'}}},HeartbeatAttachments:{AttachmentsHeartbeated:{lapsed:['old-attachment']}},RefreshProviderAccountProfile:{ProviderAccountProfile:{profile:{auth_state:'authenticated'}}},SpawnAgent:{AgentSpawned:{agent:{id:'a'}}},SetAgentDeadline:{},RelayStatus:{RelayStatus:{status:{capabilities:['agent_deadline_v1']}}}}[op];
+    };
+    await assert.rejects(run('launch',input,{execute}), {code:'kernel_incompatible'});
+    resumed = true;
+    const state = await run('launch',input,{execute});
+    assert.equal(state.promptId,'p');
+    for (const op of ['CreateSession','SpawnAgent']) assert.equal(calls.filter(c=>c.op===op).length,1);
+    const attachments = calls.filter(c=>c.op==='AttachToSession');
+    assert.equal(attachments.length,2);
+    assert.notDeepEqual(attachments[0].argv,attachments[1].argv);
+    const prompts = calls.filter(c=>c.op==='SubmitPrompt');
+    assert.equal(prompts.length,1);
+  } finally {await rm(dir,{recursive:true,force:true});}
+});
+
+test('attachment replacement first replays an uncertain prompt with identical bytes and id', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dogfood-prompt-replay-'));
+  try {
+    const brief = join(dir, 'brief.md'); await writeFile(brief, 'MP-11: task');
+    const input = {kernel:'b',taskId:'lane',alias:'lane',worktree:'/repo',provider:'codex',profile:'profile',model:'gpt-6-luna',effort:'low',permission:'required',brief,remoteBrief:'/repo/BRIEF.md',stateFile:join(dir,'launch.json'),deadlineMs:Date.now()+60_000};
+    const prompts = []; let resumed = false, attachments = 0;
+    const execute = async (argv, body) => {
+      if (argv[0] === 'files') return {};
+      const req = JSON.parse(body); const op = Object.keys(req)[0];
+      if (op === 'AttachToSession') return {SessionAttached:{attachment:{id:`t${++attachments}`}}};
+      if (op === 'SubmitPrompt') {
+        prompts.push({argv, body});
+        if (!resumed) throw new LaneError('kernel_connection_lost');
+        if (req[op].attachment_id === 't1') throw new LaneError('attachment_not_found');
+        return {PromptSubmitted:{outcome:{Started:{prompt:{id:'p'}}}}};
+      }
+      return {CreateSession:{SessionCreated:{session:{id:'s'}}},RefreshProviderAccountProfile:{ProviderAccountProfile:{profile:{auth_state:'authenticated'}}},SpawnAgent:{AgentSpawned:{agent:{id:'a'}}},SetAgentDeadline:{},RelayStatus:{RelayStatus:{status:{capabilities:['agent_deadline_v1']}}}}[op];
+    };
+    await assert.rejects(run('launch',input,{execute}),{code:'kernel_connection_lost'});
+    resumed = true;
+    assert.equal((await run('launch',input,{execute})).promptId,'p');
+    assert.equal(attachments,2);
+    assert.deepEqual(prompts[0],prompts[1]);
+    assert.deepEqual(prompts[0],prompts[2]);
+    assert.notDeepEqual(prompts[2].argv,prompts[3].argv);
+    assert.equal(JSON.parse(prompts[3].body).SubmitPrompt.attachment_id,'t2');
+  } finally {await rm(dir,{recursive:true,force:true});}
 });
