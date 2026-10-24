@@ -87,6 +87,9 @@ export function createMutableLocalIpcClient(initialClient: LocalIpcClient): Muta
     getRelayClientIdentity() {
       return currentClient.getRelayClientIdentity()
     },
+    isLocalDirectTransport() {
+      return currentClient.isLocalDirectTransport()
+    },
     isRelayTransport() {
       return currentClient.isRelayTransport()
     },

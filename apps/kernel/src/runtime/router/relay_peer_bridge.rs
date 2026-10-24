@@ -920,6 +920,17 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) async fn relay_acknowledge_leased_runtime_projection(
+        &self,
+        leased_agent_id: String,
+        provider_run_id: String,
+        delivery: crate::transport::relay_peer::RelayProjectionDelivery,
+    ) -> Result<bool, DaemonError> {
+        self.runtime_state
+            .acknowledge_relay_leased_runtime_projection(leased_agent_id, provider_run_id, delivery)
+            .await
+    }
+
     pub(crate) async fn relay_project_remote_runtime_projection(
         &self,
         authority: crate::runtime::relay_peer_authority::RemoteProjectionAuthority,

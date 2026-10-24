@@ -114,6 +114,20 @@ impl MaterializationBudget {
     }
 }
 
+// MP-11: publication is additive into the receiving kernel's own registry.
+fn validate_publication_root(root: Option<&Path>) -> Result<(), DaemonError> {
+    if let Some(root) = root {
+        let expected = crate::mcp::CharioxMcpRegistry::user_root()
+            .ok_or_else(|| import_error("target registry root unavailable"))?;
+        if !root.is_absolute() || expected.parent() != Some(root) {
+            return Err(import_error(
+                "context publication root is not the target registry",
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn import_kernel_context(
     request: KernelContextImportRequest,
 ) -> Result<KernelContextImportReceipt, DaemonError> {
@@ -128,10 +142,32 @@ pub fn import_kernel_context(
         &request.target_kernel_id,
         &target_key_thumbprint,
     )?;
-    validate_import_paths(&request.capability_root, &request.vault_path)?;
+    if request.snapshot.payload.vault.is_some() {
+        validate_import_paths(&request.capability_root, &request.vault_path)?;
+    } else {
+        crate::managed_context::credential_free::validate_kernel_payload(
+            &request.snapshot.payload,
+        )?;
+        if !request.capability_root.is_absolute() {
+            return Err(import_error(
+                "credential-free capability root must be absolute",
+            ));
+        }
+    }
 
+    validate_publication_root(request.publication_root.as_deref())?;
+    let publication_root =
+        request
+            .publication_root
+            .clone()
+            .or(if request.snapshot.payload.vault.is_some() {
+                ordinary_user_root()?
+            } else {
+                None
+            });
     #[cfg(unix)]
-    let ordinary_root = ordinary_user_root()?
+    let ordinary_root = publication_root
+        .clone()
         .map(|home| registry_paths::RegistryDirectory::root(&home))
         .transpose()?;
     let parent = request
@@ -140,7 +176,8 @@ pub fn import_kernel_context(
         .ok_or_else(|| import_error("kernel context capability root must have a private parent"))?;
     ensure_private_directory(parent)?;
     let _lock = acquire_import_lock(parent)?;
-    let receipt = import_receipt(&request.snapshot, request.capability_root.clone());
+    let mut receipt = import_receipt(&request.snapshot, request.capability_root.clone());
+    receipt.publication_root = request.publication_root.clone();
     if request.capability_root.exists() {
         return verify_existing_import(&request, &receipt);
     }
@@ -155,6 +192,7 @@ pub fn import_kernel_context(
             &request.snapshot,
             &staging,
             &request.capability_root,
+            publication_root.as_deref(),
             &mut budget,
         )?;
         write_json_file(
@@ -168,19 +206,21 @@ pub fn import_kernel_context(
             ordinary_publication::record_ordinary_entries_at(&staging, home, &mut budget)?;
         }
         #[cfg(not(unix))]
-        if let Some(home) = ordinary_user_root()? {
+        if let Some(home) = publication_root.as_ref() {
             record_ordinary_entries(&staging, &home, &mut budget)?;
         }
         ensure_tree_within_budget(&staging)?;
         sync_private_tree(&staging)?;
 
-        crate::secret::install_transferred_vault_snapshot(
-            &request.vault_path,
-            &request.snapshot.payload.vault,
-            &request.expected_source,
-            &request.target_kernel_id,
-            &request.target_private_key,
-        )?;
+        if let Some(vault) = request.snapshot.payload.vault.as_ref() {
+            crate::secret::install_transferred_vault_snapshot(
+                &request.vault_path,
+                vault,
+                &request.expected_source,
+                &request.target_kernel_id,
+                &request.target_private_key,
+            )?;
+        }
         match publish_directory_no_clobber(&staging, &request.capability_root) {
             Ok(()) => sync_directory(parent)?,
             Err(_) if request.capability_root.exists() => {
@@ -193,7 +233,7 @@ pub fn import_kernel_context(
             ordinary_publication::publish_ordinary_entries_at(&request.capability_root, home)?;
         }
         #[cfg(not(unix))]
-        if let Some(home) = ordinary_user_root()? {
+        if let Some(home) = publication_root.as_ref() {
             publish_ordinary_entries(&request.capability_root, &home)?;
         }
         Ok(receipt.clone())
@@ -209,7 +249,14 @@ pub(crate) fn cleanup_kernel_context_import(
     vault_path: &Path,
     target_private_key: &str,
 ) -> Result<(), DaemonError> {
-    validate_import_paths(&receipt.capability_root, vault_path)?;
+    if !receipt.without_credentials {
+        validate_import_paths(&receipt.capability_root, vault_path)?;
+    } else if !receipt.capability_root.is_absolute() {
+        return Err(import_error(
+            "credential-free rollback root must be absolute",
+        ));
+    }
+    validate_publication_root(receipt.publication_root.as_deref())?;
     let target_public_key =
         crate::transport::relay_crypto::public_key_from_private_key_base64(target_private_key)?;
     if receipt.target_key_thumbprint
@@ -233,7 +280,16 @@ pub(crate) fn cleanup_kernel_context_import(
                 ));
             }
             verify_published_receipt(&receipt.capability_root, receipt)?;
-            if let Some(home) = ordinary_user_root()? {
+            if let Some(home) =
+                receipt
+                    .publication_root
+                    .clone()
+                    .or(if receipt.without_credentials {
+                        None
+                    } else {
+                        ordinary_user_root()?
+                    })
+            {
                 remove_ordinary_entries(&receipt.capability_root, &home)?;
             }
             fs::remove_dir_all(&receipt.capability_root)
@@ -247,6 +303,9 @@ pub(crate) fn cleanup_kernel_context_import(
                 error,
             ))
         }
+    }
+    if receipt.without_credentials {
+        return Ok(());
     }
     crate::secret::remove_installed_transferred_vault(
         vault_path,
@@ -265,15 +324,26 @@ fn verify_existing_import(
     expected_receipt: &KernelContextImportReceipt,
 ) -> Result<KernelContextImportReceipt, DaemonError> {
     let receipt = verify_published_receipt(&request.capability_root, expected_receipt)?;
-    if let Some(home) = ordinary_user_root()? {
+    if let Some(home) =
+        request
+            .publication_root
+            .clone()
+            .or(if request.snapshot.payload.vault.is_some() {
+                ordinary_user_root()?
+            } else {
+                None
+            })
+    {
         publish_ordinary_entries(&request.capability_root, &home)?;
     }
-    crate::secret::validate_installed_transferred_vault(
-        &request.vault_path,
-        &request.expected_source,
-        &request.target_kernel_id,
-        &request.target_private_key,
-    )?;
+    if request.snapshot.payload.vault.is_some() {
+        crate::secret::validate_installed_transferred_vault(
+            &request.vault_path,
+            &request.expected_source,
+            &request.target_kernel_id,
+            &request.target_private_key,
+        )?;
+    }
     Ok(receipt)
 }
 
@@ -319,12 +389,16 @@ fn validate_snapshot(
             "kernel context was exported by a newer incompatible kernel",
         ));
     }
-    crate::secret::validate_transferred_vault_snapshot_for_export(
-        &payload.vault,
-        expected_source,
-        target_kernel_id,
-        target_key_thumbprint,
-    )?;
+    if let Some(vault) = payload.vault.as_ref() {
+        crate::secret::validate_transferred_vault_snapshot_for_export(
+            vault,
+            expected_source,
+            target_kernel_id,
+            target_key_thumbprint,
+        )?;
+    } else {
+        crate::managed_context::credential_free::validate_kernel_payload(payload)?;
+    }
     validate_total_snapshot_file_count(snapshot)?;
     validate_extensions(snapshot)?;
     validate_dependencies(snapshot)?;
@@ -625,10 +699,14 @@ fn materialize_snapshot(
     snapshot: &KernelContextSnapshot,
     staging: &Path,
     final_root: &Path,
+    publication_root: Option<&Path>,
     budget: &mut MaterializationBudget,
 ) -> Result<(), DaemonError> {
     let user_root = staging.join("user");
-    let final_user_root = final_user_root(final_root)?;
+    let final_user_root = match publication_root {
+        Some(root) => root.to_path_buf(),
+        None => final_user_root(final_root)?,
+    };
     ensure_budgeted_directory(&user_root, budget)?;
     materialize_dependencies(snapshot, staging, &final_user_root, budget)?;
     for extension in &snapshot.payload.extensions {
@@ -1052,6 +1130,7 @@ fn import_receipt(
     capability_root: PathBuf,
 ) -> KernelContextImportReceipt {
     KernelContextImportReceipt {
+        publication_root: None,
         schema_version: 1,
         context_id: snapshot.payload.context_id.clone(),
         source_kernel_id: snapshot.payload.source_kernel_id.clone(),
@@ -1062,6 +1141,7 @@ fn import_receipt(
         capability_root,
         extension_count: snapshot.payload.extensions.len(),
         dependency_count: snapshot.payload.dependencies.len(),
+        without_credentials: snapshot.payload.vault.is_none(),
     }
 }
 
@@ -2244,6 +2324,7 @@ mod tests {
         };
         let snapshot = fixture_snapshot(vault);
         let request = KernelContextImportRequest {
+            publication_root: None,
             snapshot: snapshot.clone(),
             expected_source,
             target_kernel_id: "target-kernel".to_string(),
@@ -2329,7 +2410,9 @@ mod tests {
                 .unlocked
         );
         let receipt_debug = format!("{receipt:?}");
-        assert!(!receipt_debug.contains(&snapshot.payload.vault.vault_file_base64));
+        assert!(
+            !receipt_debug.contains(&snapshot.payload.vault.as_ref().unwrap().vault_file_base64)
+        );
 
         crate::secret::lock_chariox_encrypted_vault(&source_vault).ok();
         crate::secret::lock_chariox_encrypted_vault(&target_vault).ok();
@@ -2373,6 +2456,7 @@ mod tests {
         .expect("Vault snapshot should export");
         let snapshot = fixture_snapshot(vault.clone());
         let wrong_destination = KernelContextImportRequest {
+            publication_root: None,
             snapshot: snapshot.clone(),
             expected_source: TransferredVaultSourceBinding {
                 context_id: vault.context_id.clone(),
@@ -2389,6 +2473,7 @@ mod tests {
             .to_string()
             .contains("running managed kernel configuration"));
         let wrong_source = KernelContextImportRequest {
+            publication_root: None,
             snapshot: snapshot.clone(),
             expected_source: TransferredVaultSourceBinding {
                 context_id: "wrong-context".to_string(),
@@ -2408,6 +2493,7 @@ mod tests {
         fs::create_dir_all(&capability_root).expect("occupied root should create");
         fs::write(capability_root.join("owner"), "other\n").expect("occupied marker should write");
         let occupied = KernelContextImportRequest {
+            publication_root: None,
             snapshot,
             expected_source: TransferredVaultSourceBinding {
                 context_id: vault.context_id,
@@ -2814,7 +2900,7 @@ mod tests {
             },
             extensions,
             dependencies: Vec::new(),
-            vault,
+            vault: Some(vault),
         };
         let (_, snapshot_sha256) =
             serialized_json_measure(&payload, MAX_SNAPSHOT_BYTES).expect("snapshot should hash");
@@ -2921,6 +3007,7 @@ mod tests {
             source_key_thumbprint: vault.source_key_thumbprint.clone(),
         };
         let request = KernelContextImportRequest {
+            publication_root: None,
             snapshot: fixture_snapshot(vault),
             expected_source,
             target_kernel_id: "target-kernel".to_string(),

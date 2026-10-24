@@ -79,7 +79,14 @@ impl KernelRuntimeState {
             // A network/launcher failure does not establish rejection. Let
             // the ordinary provider run make its own request; any later auth
             // refusal follows the same shared recovery interaction.
-            Err(ClaudeCredentialCheckError::Inconclusive(_)) => Ok(credentials),
+            Err(ClaudeCredentialCheckError::Inconclusive(_)) => {
+                crate::logging::warn_with_fields(
+                    "daemon.provider_account",
+                    "claude token first-use check was inconclusive",
+                    serde_json::json!({"profile_id": profile.profile_id}),
+                );
+                Ok(credentials)
+            }
             Err(ClaudeCredentialCheckError::Rejected) => {
                 drop(credentials);
                 let _login_lane = self

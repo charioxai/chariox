@@ -524,19 +524,62 @@ impl KernelRuntimeState {
         expected_prompt_id: Option<&str>,
         error: &DaemonError,
     ) -> Result<bool, DaemonError> {
+        self.settle_structured_output_failure_if_matches(
+            session_id,
+            provider_run_id,
+            expected_prompt_id,
+            &format!("Structured provider output polling failed after repeated failures: {error}"),
+        )
+        .await
+    }
+
+    /// The polled batch is consumed and nothing re-arms the poll, so the turn
+    /// would otherwise stay running without output forever.
+    pub(super) async fn fail_prompt_of_lost_structured_batch(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        expected_prompt_id: Option<&str>,
+        error: &DaemonError,
+    ) {
+        if let Err(settle_error) = self
+            .settle_structured_output_failure_if_matches(
+                session_id,
+                provider_run_id,
+                expected_prompt_id,
+                &format!("Structured provider output could not be applied: {error}"),
+            )
+            .await
+        {
+            crate::logging::warn_with_fields(
+                "daemon.provider_output",
+                "could not end the turn of a lost structured output batch",
+                serde_json::json!({
+                    "provider_run_id": provider_run_id,
+                    "error": settle_error.to_string(),
+                }),
+            );
+        }
+    }
+
+    async fn settle_structured_output_failure_if_matches(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        expected_prompt_id: Option<&str>,
+        diagnostic: &str,
+    ) -> Result<bool, DaemonError> {
         let Some(expected_prompt_id) = expected_prompt_id else {
             return Ok(false);
         };
-        let diagnostic =
-            format!("Structured provider output polling failed after repeated failures: {error}");
         let termination = crate::provider::ProviderRunTermination::explicit_provider_error(
-            &diagnostic,
+            diagnostic,
             crate::session::unix_epoch_ms(),
         );
         self.fail_owned_provider_prompt_with_termination_if_matches(
             session_id,
             provider_run_id,
-            &diagnostic,
+            diagnostic,
             false,
             Some(expected_prompt_id),
             Some(termination),

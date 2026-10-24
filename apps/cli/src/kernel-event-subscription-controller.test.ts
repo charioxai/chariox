@@ -158,3 +158,85 @@ test("sync is idle when kernel event streams are unavailable", async () => {
     attachmentId: null,
   })
 })
+
+test("MP-08 overlapping syncs share one waiting-room subscription", async () => {
+  let waitingRoomSubscriptions = 0
+  const releases: (() => void)[] = []
+  const controller = createKernelEventSubscriptionController({
+    kernelConnected: () => true,
+    supportsKernelEventStream: () => true,
+    getAttachment: () => null,
+    getSessionId: () => "session-1",
+    subscribeToWaitingRoomInventory: () => {
+      waitingRoomSubscriptions += 1
+      return new Promise<void>((resolve) => { releases.push(resolve) })
+    },
+    subscribeToKernelEvents: async () => {
+      throw new Error("unexpected session subscription")
+    },
+    onEvaluate: () => {},
+    onWaitingRoomSubscribed: () => {},
+    onSessionSubscribed: () => {},
+    onWaitingRoomSubscriptionFailed: () => {},
+    onSessionSubscriptionFailed: () => {},
+  })
+
+  const first = controller.sync()
+  const second = controller.sync()
+  await new Promise((resolve) => setImmediate(resolve))
+  for (const release of releases) release()
+  await Promise.all([first, second])
+
+  assert.equal(waitingRoomSubscriptions, 1)
+  assert.equal(controller.state().scope, "waiting-room")
+})
+
+test("MP-08 a sync requested as the single-flight loop exits still re-evaluates", async () => {
+  let evaluations = 0
+  let late: Promise<void> | null = null
+  const controller = createKernelEventSubscriptionController({
+    kernelConnected: () => true,
+    supportsKernelEventStream: () => true,
+    getAttachment: () => null,
+    getSessionId: () => "session-1",
+    subscribeToWaitingRoomInventory: async () => {},
+    subscribeToKernelEvents: async () => {
+      throw new Error("unexpected session subscription")
+    },
+    onEvaluate: () => { evaluations += 1 },
+    // Two microtasks later the loop has made its last check but the first
+    // sync has not settled yet.
+    onWaitingRoomSubscribed: () => {
+      queueMicrotask(() => queueMicrotask(() => { late = controller.sync() }))
+    },
+    onSessionSubscribed: () => {},
+    onWaitingRoomSubscriptionFailed: () => {},
+    onSessionSubscriptionFailed: () => {},
+  })
+
+  await controller.sync()
+  await new Promise((resolve) => setImmediate(resolve))
+  await late
+  assert.equal(evaluations, 2)
+})
+
+test("MP-08 / MP-10 detached Cloud discovery never opens a kernel subscription before selection", async () => {
+  let connected = false
+  const calls: string[] = []
+  const controller = createKernelEventSubscriptionController({
+    kernelConnected: () => connected,
+    supportsKernelEventStream: () => true,
+    getAttachment: () => null,
+    getSessionId: () => "unused",
+    subscribeToWaitingRoomInventory: async () => { calls.push("inventory") },
+    subscribeToKernelEvents: async () => { calls.push("session") },
+    onEvaluate: () => {}, onWaitingRoomSubscribed: () => {}, onSessionSubscribed: () => {},
+    onWaitingRoomSubscriptionFailed: () => {}, onSessionSubscriptionFailed: () => {},
+  })
+  await controller.sync()
+  assert.deepEqual(calls, [], "disconnected discovery must not touch localhost")
+  connected = true
+  await controller.sync()
+  await controller.sync()
+  assert.deepEqual(calls, ["inventory"], "selected kernel receives the ordinary inventory subscription")
+})

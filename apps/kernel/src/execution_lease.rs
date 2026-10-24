@@ -49,6 +49,16 @@ impl ExecutionLease {
     }
 }
 
+/// In-memory backoff state for the retained projection page the relay pump
+/// last sent without receiving an acknowledgement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetainedResend {
+    pub provider_run_id: String,
+    pub sequence: u64,
+    pub attempts: u32,
+    pub next_at: std::time::Instant,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeasedAgent {
     pub id: String,
@@ -73,6 +83,8 @@ pub struct LeasedAgent {
     pub projected_output_history_keys: Vec<String>,
     #[serde(skip)]
     pub projected_provider_run: Option<(String, crate::provider::ProviderRunState)>,
+    #[serde(skip)]
+    pub retained_resend: Option<RetainedResend>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_home_prompt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -113,6 +125,8 @@ pub struct LeasedCompletionReplay {
     pub completed_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement_status: Option<crate::git_observer::CompletedTurnSettlementStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_termination: Option<crate::provider::ProviderRunTermination>,
 }
@@ -173,6 +187,7 @@ impl LeasedAgent {
             projected_completion_keys: Vec::new(),
             projected_output_history_keys: Vec::new(),
             projected_provider_run: None,
+            retained_resend: None,
             active_home_prompt_id: None,
             active_home_prompt_started_at_ms: None,
             applied_home_steer_ids: Vec::new(),

@@ -28,9 +28,13 @@ impl KernelRuntimeState {
                 self.owned
                     .update_provider_login_interaction(session_id, interaction_id, login)
             }
-            None => self
-                .owned
-                .timeout_runtime_interaction(session_id, interaction_id),
+            None => {
+                self.owned
+                    .forwarded_native_interactions
+                    .retire(session_id, interaction_id);
+                self.owned
+                    .timeout_runtime_interaction(session_id, interaction_id)
+            }
         }
     }
 
@@ -138,17 +142,16 @@ impl KernelRuntimeState {
                 );
                 let runtime = self.clone();
                 tokio::spawn(async move {
-                    let response = tokio::select! {
+                    // A relay reset after home admission must not drop the wait:
+                    // retry the same request identity until the original timeout.
+                    let resolution = tokio::select! {
                         biased;
                         _ = tx.closed() => return,
-                        response = runtime.send_worker_home_runtime_request(
-                            &config, &home_kernel_id,
-                            RelayPeerRequest::ForwardNativeTurnInteraction {context, interaction}, timeout,
-                        ) => response,
+                        resolution = crate::runtime::native_interaction_bridge::forward_native_interaction_with_timeout(
+                            &runtime, config, home_kernel_id, context, interaction, timeout,
+                        ) => resolution,
                     };
-                    if let Ok(RelayPeerResponse::NativeInteractionResolved { resolution }) =
-                        response
-                    {
+                    if let Ok(resolution) = resolution {
                         let status = if resolution.status == "answered" {
                             "answered"
                         } else {
@@ -166,6 +169,28 @@ impl KernelRuntimeState {
         }
         self.create_runtime_interaction_with_forwarding(session_id, interaction, None)
             .await
+    }
+
+    /// Test seam: the worker's wait for the person's decision on `interaction`.
+    #[cfg(test)]
+    pub(crate) async fn wait_for_runtime_interaction(
+        &self,
+        session_id: &str,
+        interaction: crate::session::RuntimeInteraction,
+    ) -> Result<crate::provider::ProviderNativeInteractionResolution, DaemonError> {
+        let resolved = self
+            .create_runtime_interaction(session_id, interaction)
+            .await?
+            .await
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "wait for runtime interaction",
+                message: "the wait ended without the person's decision".into(),
+            })?;
+        Ok(crate::provider::ProviderNativeInteractionResolution {
+            status: resolved.status.into(),
+            choice_id: resolved.choice_id,
+            reply: resolved.reply,
+        })
     }
 
     pub(in crate::runtime) async fn create_runtime_interaction_with_forwarding(
@@ -301,7 +326,7 @@ impl KernelRuntimeState {
             caller_user_id,
             None,
             None,
-            None,
+            Some(crate::local::KernelConnectionClass::Terminal),
         )
         .await
     }
@@ -349,13 +374,14 @@ impl KernelRuntimeState {
             )
             .await?;
         self.owned
-            .resolve_runtime_interaction(
+            .resolve_terminal_runtime_interaction(
                 session_id,
                 interaction_id,
                 choice_id,
                 custom_reply,
                 caller_user_id,
                 authorization.verified,
+                connection_class,
             )
             .map_err(|error| {
                 self.owned

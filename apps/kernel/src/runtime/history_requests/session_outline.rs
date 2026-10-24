@@ -551,12 +551,21 @@ fn outline_turn_from_events_with_lifecycle(
         .filter(|event| event_projects_as_outline_entry(event))
         .filter(|event| !event_needs_outline_blob(event))
         .collect::<Vec<_>>();
-    let overflow_entry_count = inline_entry_candidates
-        .len()
-        .saturating_sub(MAX_OUTLINE_INLINE_ENTRIES_PER_TURN);
+    // Keep user steering visible when streamed assistant fragments exhaust
+    // the inline window. Omitted entries still have expandable blobs, and the
+    // selected entries retain their original chronological order.
+    let mut ranked_entries = inline_entry_candidates.clone();
+    ranked_entries.sort_by_key(|event| {
+        std::cmp::Reverse((event.kind == HistoryEventKind::UserPrompt, event.sequence))
+    });
+    let inline_sequences = ranked_entries
+        .iter()
+        .take(MAX_OUTLINE_INLINE_ENTRIES_PER_TURN)
+        .map(|event| event.sequence)
+        .collect::<BTreeSet<_>>();
     let mut forced_blob_sequences = inline_entry_candidates
         .iter()
-        .take(overflow_entry_count)
+        .filter(|event| !inline_sequences.contains(&event.sequence))
         .map(|event| event.sequence)
         .collect::<BTreeSet<_>>();
     if summary
@@ -567,7 +576,7 @@ fn outline_turn_from_events_with_lifecycle(
     }
     let entries = inline_entry_candidates
         .into_iter()
-        .skip(overflow_entry_count)
+        .filter(|event| inline_sequences.contains(&event.sequence))
         .cloned()
         .filter_map(outline_page_entry_from_event)
         .collect::<Vec<_>>();

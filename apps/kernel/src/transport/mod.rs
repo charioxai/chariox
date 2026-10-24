@@ -1,4 +1,5 @@
 pub(crate) mod event_delivery_client;
+mod event_timing;
 pub(crate) mod flow_control;
 pub(crate) mod kernel_protocol;
 pub(crate) mod listener_admission;
@@ -92,3 +93,7 @@ impl TransportService {
         })
     }
 }
+
+pub(crate) mod native_provider_buffer;
+mod native_provider_exchange;
+pub(crate) mod native_provider_socket;

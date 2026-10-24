@@ -575,6 +575,10 @@ impl KernelRuntimeOwnedState {
         let active_prompt = self
             .prompt_state_owner
             .active_prompt_for_agent(&session, target_agent_id)
+            .filter(|prompt| {
+                expected_prompt_id
+                    .is_none_or(|id| prompt.id() == id || prompt.pending_prompt_id() == Some(id))
+            })
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
@@ -833,6 +837,7 @@ mod tests {
                         crate::app::RemoteLeaseRuntime::new(app).project_remote_runtime_projection(
                             authority,
                             crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                                delivery: None,
                                 home_session_id: session.to_string(),
                                 home_agent_id: agent.to_string(),
                                 provider_run_id: "worker-run-1".to_string(),

@@ -1,3 +1,4 @@
+import { localKernelConnectionLabel } from "../local-connection-indicator.js"
 import { signalNativeChild } from "./native-child-signals.js"
 import { appendFileSync } from "node:fs"
 import path from "node:path"
@@ -174,6 +175,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       ? await loadNativeTuiSliceInventory(client)
       : { slices: [], error: null }
     process.stderr.write(formatNativeTuiRuntimeBanner({
+      connectionLabel: localKernelConnectionLabel(client, session.host_daemon_id),
       surface: "opencode native-tui",
       session,
       agent,
@@ -203,7 +205,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
   } finally {
     pump?.stop()
     if (proxy) {
-      await new Promise<void>((resolve) => proxy!.server.close(() => resolve()))
+      await proxy.close()
     }
     if (openCodeServer && openCodeServer.exitCode == null) {
       signalNativeChild(openCodeServer, "SIGTERM")

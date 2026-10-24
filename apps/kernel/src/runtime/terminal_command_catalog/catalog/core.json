@@ -687,6 +687,13 @@
         ]
       },
       {
+        "id": "kernel-copy-status",
+        "label": "copy-status",
+        "description": "Show a kernel copy outcome and any required action",
+        "value": "/kernel copy-status ",
+        "surfaces": ["session"]
+      },
+      {
         "id": "kernel-health",
         "label": "health",
         "description": "Open runtime health, remote readiness, and invariants",
@@ -764,6 +771,20 @@
     "value": "/machine ",
     "surfaces": ["session", "waiting_room"],
     "children": [
+      {
+        "id": "machine-add-ssh",
+        "label": "add ssh",
+        "description": "Install a chosen signed kernel on your computer using your SSH config",
+        "value": "/machine add ssh ",
+        "surfaces": ["session", "waiting_room"]
+      },
+      {
+        "id": "machine-remove-ssh",
+        "label": "remove",
+        "description": "Stop and uninstall an owned SSH installation, retaining its kernel state",
+        "value": "/machine remove ",
+        "surfaces": ["session", "waiting_room"]
+      },
       {
         "id": "machine-list",
         "label": "list",

@@ -22,6 +22,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
 
+mod completed_pages;
+
 #[derive(Clone)]
 struct ClaimTestRelayLifecycleProbe {
     started: std::time::Instant,
@@ -651,10 +653,31 @@ async fn receive_fake_worker_peer_request(
     worker_private_key: &str,
     lifecycle_probe: Option<(&ClaimTestRelayLifecycleProbe, &'static str)>,
 ) -> FakeRelayPeerRequest {
+    receive_fake_worker_peer_request_with_timeout(
+        listener,
+        worker_id,
+        worker_machine_id,
+        worker_public_key,
+        worker_private_key,
+        lifecycle_probe,
+        std::time::Duration::from_secs(3),
+    )
+    .await
+}
+
+async fn receive_fake_worker_peer_request_with_timeout(
+    listener: &TcpListener,
+    worker_id: &str,
+    worker_machine_id: &str,
+    worker_public_key: &str,
+    worker_private_key: &str,
+    lifecycle_probe: Option<(&ClaimTestRelayLifecycleProbe, &'static str)>,
+    timeout: std::time::Duration,
+) -> FakeRelayPeerRequest {
     if let Some((probe, operation)) = lifecycle_probe {
         probe.record(&format!("{operation}_worker_request_receive_started"), None);
     }
-    let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
+    let (stream, _) = tokio::time::timeout(timeout, listener.accept())
         .await
         .expect("fake relay should accept metadata connection")
         .expect("fake relay metadata listener should accept");
@@ -685,7 +708,7 @@ async fn receive_fake_worker_peer_request(
     .await;
     close_claim_test_discovery(&mut discovery, lifecycle_probe).await;
 
-    let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
+    let (stream, _) = tokio::time::timeout(timeout, listener.accept())
         .await
         .expect("fake relay should accept temporary peer connection")
         .expect("fake relay peer listener should accept");
@@ -1082,6 +1105,7 @@ mod receipt_reconciliation {
                 &home_public_key,
                 RelayPeerResponse::LeasedRuntimeProjectionDrained {
                     event: Some(RelayPeerEvent::LeasedRuntimeProjection {
+                        delivery: None,
                         home_session_id: session_id,
                         home_agent_id: agent_id,
                         provider_run_id: run_id.clone(),
@@ -1093,6 +1117,7 @@ mod receipt_reconciliation {
                             message_id: "cancel-claimed-completion".to_string(),
                             completed_at_ms: 1,
                             home_prompt_id: Some(prompt_id.clone()),
+                            settlement_status: None,
                             provider_termination: None,
                         }],
                     }),
@@ -1208,6 +1233,7 @@ mod receipt_reconciliation {
                 &fixture.session_id,
                 &fixture.agent_id,
                 &fixture.dispatch.source_attachment_id,
+                None,
                 None,
             )
             .await
@@ -1498,6 +1524,7 @@ mod receipt_reconciliation {
                 &listener_home_public_key,
                 RelayPeerResponse::LeasedRuntimeProjectionDrained {
                     event: Some(RelayPeerEvent::LeasedRuntimeProjection {
+                        delivery: None,
                         home_session_id: listener_session_id,
                         home_agent_id: listener_agent_id,
                         provider_run_id: "worker-run-completed-receipt".to_string(),
@@ -1509,6 +1536,7 @@ mod receipt_reconciliation {
                             message_id: "completed-receipt-assistant-message".to_string(),
                             completed_at_ms: 1,
                             home_prompt_id: Some(listener_prompt_id),
+                            settlement_status: None,
                             provider_termination: None,
                         }],
                     }),
@@ -1659,6 +1687,21 @@ mod receipt_reconciliation {
             "the rejected original prompt must not stay held"
         );
         assert_eq!(queued.len(), 1, "the successor must remain ordered");
+        let projected = fixture
+            .runtime
+            .owned
+            .session_snapshot(&fixture.session_id)
+            .unwrap();
+        let activity = fixture.runtime.agent_activity_for_session(&projected);
+        assert_eq!(
+            activity[&fixture.agent_id]
+                .last_completed_turn
+                .as_ref()
+                .unwrap()
+                .settlement_status,
+            crate::git_observer::CompletedTurnSettlementStatus::Failed,
+            "a worker admission rejection is Error, not a human cancellation"
+        );
         assert_eq!(queued[0].prompt(), fixture.successor_prompt.prompt());
         assert_eq!(
             fixture
@@ -2265,6 +2308,7 @@ mod receipt_reconciliation {
         .unwrap();
         assert!(no_receipt.is_none());
         let completion_event = RelayPeerEvent::LeasedRuntimeProjection {
+            delivery: None,
             home_session_id: dispatch.session_id.clone(),
             home_agent_id: dispatch.agent_id.clone(),
             provider_run_id: "worker-receipt-run".to_string(),
@@ -2276,6 +2320,7 @@ mod receipt_reconciliation {
                 message_id: "assistant-message-1".to_string(),
                 completed_at_ms: 1,
                 home_prompt_id: Some(dispatch.prompt_id.clone()),
+                settlement_status: None,
                 provider_termination: None,
             }],
         };
@@ -2285,6 +2330,7 @@ mod receipt_reconciliation {
             &completion_event
         ));
         let conflicting_event = RelayPeerEvent::LeasedRuntimeProjection {
+            delivery: None,
             home_session_id: dispatch.session_id.clone(),
             home_agent_id: dispatch.agent_id.clone(),
             provider_run_id: "worker-receipt-run".to_string(),
@@ -2296,6 +2342,7 @@ mod receipt_reconciliation {
                 message_id: "assistant-message-other".to_string(),
                 completed_at_ms: 2,
                 home_prompt_id: Some("another-home-prompt".to_string()),
+                settlement_status: None,
                 provider_termination: None,
             }],
         };
@@ -2598,6 +2645,7 @@ fn completed_worker_projection(
     home_prompt_id: &str,
 ) -> crate::transport::relay_peer::RelayPeerEvent {
     crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+        delivery: None,
         home_session_id: session_id.to_string(),
         home_agent_id: agent_id.to_string(),
         provider_run_id: provider_run_id.to_string(),
@@ -2609,6 +2657,7 @@ fn completed_worker_projection(
             message_id: "assistant-completed".to_string(),
             completed_at_ms: crate::session::unix_epoch_ms(),
             home_prompt_id: Some(home_prompt_id.to_string()),
+            settlement_status: None,
             provider_termination: None,
         }],
     }
@@ -3339,6 +3388,14 @@ mod projection_drain {
         )
         .expect("delivery metadata should persist");
 
+        // MP-08 / MP-10 / MP-11: home tracks the leased projection identity,
+        // while wire output/completions still carry the worker's raw run id.
+        // A raw-id flow-control fixture cannot be cleared by home settlement.
+        let projected_run_id = crate::provider::projected_leased_provider_run_id(
+            &binding.leased_agent_id,
+            &provider_run_id,
+        );
+
         // This is a real run binding for flow-control, not a manually inserted active turn. The
         // run is ended only after the pre-completion snapshot so the public watch cannot invoke a
         // second local PTY settlement while the worker completion is being projected.
@@ -3351,7 +3408,7 @@ mod projection_drain {
         )
         .with_agent_id(agent.id());
         let mut home_run = crate::provider::RuntimeProviderRun::new(
-            &provider_run_id,
+            &projected_run_id,
             &request,
             crate::provider::ProviderLaunchResult {
                 endpoint_mode: crate::provider::AgentEndpointMode::External,
@@ -3368,10 +3425,10 @@ mod projection_drain {
         home_run.mark_running();
         app.providers_mut().insert_run_for_test(home_run.clone());
         app.sessions_mut()
-            .set_active_provider_run(session.id(), Some(provider_run_id.clone()))
+            .set_active_provider_run(session.id(), Some(projected_run_id.clone()))
             .expect("home run should be selected for the pre-completion snapshot");
         app.update_provider_run_projection(home_run.clone());
-        crate::transport::flow_control::note_prompt_started(&mut app, &provider_run_id);
+        crate::transport::flow_control::note_prompt_started(&mut app, &projected_run_id);
 
         let initial_snapshot =
             crate::runtime::projection::SessionSnapshotProjection::from_daemon_app(
@@ -4790,6 +4847,56 @@ mod dispatch_settlement {
                 .is_empty(),
             "uncertain delivery must not replay the original prompt"
         );
+    }
+
+    #[tokio::test]
+    async fn stale_binding_replay_is_acknowledged_so_the_claim_loop_does_not_hold_it() {
+        // The replay onto a restarted worker re-enters Dispatching; once the
+        // worker accepted it, the next claim pass must see a delivered prompt.
+        let (runtime, dispatch) = pending_remote_settlement_fixture().await;
+        let (session_id, agent_id) = (dispatch.session_id.clone(), dispatch.agent_id.clone());
+        let stale_binding = runtime
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .unwrap()
+            .remote_execution()
+            .unwrap()
+            .clone();
+        runtime
+            .finish_stale_remote_prompt_recovery(
+                &session_id,
+                &agent_id,
+                &stale_binding,
+                "worker-run-b",
+                &dispatch,
+                "worker-run-new",
+            )
+            .unwrap();
+        assert!(runtime
+            .remote_prompt_dispatch_after_claim_restart(&session_id, &agent_id)
+            .await
+            .unwrap()
+            .is_none());
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .unwrap();
+        assert_eq!(
+            prompt.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+        );
+        assert_eq!(
+            prompt.durable_delivery_provider_run_id(),
+            Some("worker-run-new")
+        );
+        assert!(!prompt.durable_delivery_reconciliation_pending());
     }
 
     #[tokio::test]

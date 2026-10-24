@@ -95,6 +95,23 @@ impl KernelRuntimeOwnedState {
                 ))
             }
         }
+        // MP-11: bind both review forms to the enrolled human, while leaving
+        // every other credential/operation owner and session membership intact.
+        let review_owner =
+            if super::super::owner_context_review::is_owner_context_review(&interaction) {
+                if kernel_operation_owner.or(terminal_credential_owner)
+                    != Some(session.owner_user_id())
+                {
+                    return Err(interaction_error("Copy review requires the session owner"));
+                }
+                Some(self.owner_context_review_owner(session.owner_user_id()))
+            } else {
+                None
+            };
+        let kernel_operation_owner =
+            kernel_operation_owner.map(|owner| review_owner.as_deref().unwrap_or(owner));
+        let terminal_credential_owner =
+            terminal_credential_owner.map(|owner| review_owner.as_deref().unwrap_or(owner));
         // A kernel decision nobody waits for any more does not block its
         // subject: the new request supersedes it. The pump's sweep times such
         // decisions out too, but a registration must not depend on it having
@@ -134,94 +151,110 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error(super::INTERACTION_ALREADY_PENDING));
         }
-        let agent_lifetime = interaction.agent_id().map(|agent_id| {
-            if let Some(origin) = interaction.native_origin() {
-                use crate::session::NativeInteractionOrigin;
-                let (mut prompt_id, native_turn_id) = match origin {
-                    NativeInteractionOrigin::Prompt { prompt_id, .. } => {
-                        (Some(prompt_id.clone()), None)
-                    }
-                    NativeInteractionOrigin::NativeTurn { native_turn_id, .. } => {
-                        (None, Some(native_turn_id.clone()))
-                    }
-                    NativeInteractionOrigin::ProviderStartup { .. } => (None, None),
-                };
-                let worker = forwarding.map(|context| {
-                    super::super::pending_runtime_state::PendingWorkerInteractionLifetime {
-                        leased_agent_id: context.leased_agent_id.clone(),
-                        execution_lease_id: remote_binding
-                            .as_ref()
-                            .map(|remote| remote.execution_lease_id.clone())
-                            .unwrap_or_default(),
-                        provider_run_id: context.worker_provider_run_id.clone(),
-                        startup_permission: interaction.kind()
-                            == crate::session::RuntimeInteractionKind::Permission
-                            && matches!(origin, NativeInteractionOrigin::ProviderStartup { .. }),
-                        binding_observed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-                            // MP-08 / MP-10 / MP-11: Kernel choices raised by
-                            // an idle worker need an already live run. Active
-                            // dispatches and native startup permissions retain
-                            // the pre-ACK allowance.
-                            interaction.kind()
-                                != crate::session::RuntimeInteractionKind::Permission
+        let agent_lifetime = interaction
+            .agent_id()
+            .filter(|_| {
+                // Only a prompt this kernel raised for a person's Vault panel
+                // is exempt; a worker- or API-chosen id never is.
+                !(terminal_credential_owner.is_some()
+                    && forwarding.is_none()
+                    && super::super::runtime_vault_unlock_state::is_panel_vault_interaction(
+                        &interaction,
+                    ))
+            })
+            .map(|agent_id| {
+                if let Some(origin) = interaction.native_origin() {
+                    use crate::session::NativeInteractionOrigin;
+                    let (mut prompt_id, native_turn_id) = match origin {
+                        NativeInteractionOrigin::Prompt { prompt_id, .. } => {
+                            (Some(prompt_id.clone()), None)
+                        }
+                        NativeInteractionOrigin::NativeTurn { native_turn_id, .. } => {
+                            (None, Some(native_turn_id.clone()))
+                        }
+                        NativeInteractionOrigin::ProviderStartup { .. } => (None, None),
+                    };
+                    let worker = forwarding.map(|context| {
+                        super::super::pending_runtime_state::PendingWorkerInteractionLifetime {
+                            leased_agent_id: context.leased_agent_id.clone(),
+                            execution_lease_id: remote_binding
+                                .as_ref()
+                                .map(|remote| remote.execution_lease_id.clone())
+                                .unwrap_or_default(),
+                            provider_run_id: context.worker_provider_run_id.clone(),
+                            startup_permission: interaction.kind()
+                                == crate::session::RuntimeInteractionKind::Permission
                                 && matches!(
                                     origin,
                                     NativeInteractionOrigin::ProviderStartup { .. }
-                                )
-                                && self
-                                    .prompt_state_owner
+                                ),
+                            binding_observed: std::sync::Arc::new(
+                                std::sync::atomic::AtomicBool::new(
+                                    // MP-08 / MP-10 / MP-11: Kernel choices raised by
+                                    // an idle worker need an already live run. Active
+                                    // dispatches and native startup permissions retain
+                                    // the pre-ACK allowance.
+                                    interaction.kind()
+                                        != crate::session::RuntimeInteractionKind::Permission
+                                        && matches!(
+                                            origin,
+                                            NativeInteractionOrigin::ProviderStartup { .. }
+                                        )
+                                        && self
+                                            .prompt_state_owner
+                                            .active_prompt_for_agent(&session, agent_id)
+                                            .is_none(),
+                                ),
+                            ),
+                        }
+                    });
+                    // Startup dialogs can precede the dispatch ACK and even the worker
+                    // prompt registration. Fence that launch to its pending home dispatch.
+                    if worker.is_some()
+                        && matches!(origin, NativeInteractionOrigin::ProviderStartup { .. })
+                    {
+                        prompt_id = forwarding
+                            .and_then(|context| context.home_prompt_id.clone())
+                            .or_else(|| {
+                                self.prompt_state_owner
                                     .active_prompt_for_agent(&session, agent_id)
-                                    .is_none(),
-                        )),
+                                    .filter(|prompt| prompt.delivery_pending())
+                                    .map(|prompt| prompt.id().to_owned())
+                            });
                     }
-                });
-                // Startup dialogs can precede the dispatch ACK and even the worker
-                // prompt registration. Fence that launch to its pending home dispatch.
-                if worker.is_some()
-                    && matches!(origin, NativeInteractionOrigin::ProviderStartup { .. })
-                {
-                    prompt_id = forwarding
-                        .and_then(|context| context.home_prompt_id.clone())
-                        .or_else(|| {
-                            self.prompt_state_owner
-                                .active_prompt_for_agent(&session, agent_id)
-                                .filter(|prompt| prompt.delivery_pending())
-                                .map(|prompt| prompt.id().to_owned())
-                        });
+                    return super::super::PendingAgentInteractionLifetime {
+                        agent_id: agent_id.into(),
+                        prompt_id,
+                        native_turn_id,
+                        provider_run_id: worker.is_none().then(|| origin.provider_run_id().into()),
+                        worker,
+                    };
                 }
-                return super::super::PendingAgentInteractionLifetime {
+                let prompt_id = self
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, agent_id)
+                    .map(|prompt| prompt.id().to_owned());
+                let provider_run_id = self
+                    .provider_store
+                    .get_run_for_agent(session_id, agent_id)
+                    .filter(|run| run.state() == crate::provider::ProviderRunState::Running)
+                    .map(|run| run.id().to_owned());
+                let native_turn_id = if prompt_id.is_none() {
+                    provider_run_id
+                        .as_deref()
+                        .and_then(|id| self.active_turns.get(id))
+                        .map(|turn| turn.prompt_id)
+                } else {
+                    None
+                };
+                super::super::PendingAgentInteractionLifetime {
                     agent_id: agent_id.into(),
                     prompt_id,
                     native_turn_id,
-                    provider_run_id: worker.is_none().then(|| origin.provider_run_id().into()),
-                    worker,
-                };
-            }
-            let prompt_id = self
-                .prompt_state_owner
-                .active_prompt_for_agent(&session, agent_id)
-                .map(|prompt| prompt.id().to_owned());
-            let provider_run_id = self
-                .provider_store
-                .get_run_for_agent(session_id, agent_id)
-                .filter(|run| run.state() == crate::provider::ProviderRunState::Running)
-                .map(|run| run.id().to_owned());
-            let native_turn_id = if prompt_id.is_none() {
-                provider_run_id
-                    .as_deref()
-                    .and_then(|id| self.active_turns.get(id))
-                    .map(|turn| turn.prompt_id)
-            } else {
-                None
-            };
-            super::super::PendingAgentInteractionLifetime {
-                agent_id: agent_id.into(),
-                prompt_id,
-                native_turn_id,
-                provider_run_id,
-                worker: None,
-            }
-        });
+                    provider_run_id,
+                    worker: None,
+                }
+            });
         // Protocol 403: a decision that needs the passkey is also a popup on
         // every terminal of its owner.
         let passkey_prompt = super::super::passkey_prompts::passkey_prompt(

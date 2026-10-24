@@ -3505,7 +3505,7 @@ impl KernelRuntimeState {
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
     ) -> Result<(), DaemonError> {
-        self.enqueue_prompt_dispatch_with_acceptance(dispatch)
+        Box::pin(self.enqueue_prompt_dispatch_with_acceptance(dispatch))
             .await
             .map(|_| ())
     }
@@ -3540,9 +3540,10 @@ impl KernelRuntimeState {
                     return Ok(false);
                 }
             }
-            let result = self
-                .enqueue_prompt_dispatch_after_liveness_with_acceptance(dispatch, owned)
-                .await;
+            let result = Box::pin(
+                self.enqueue_prompt_dispatch_after_liveness_with_acceptance(dispatch, owned),
+            )
+            .await;
             if result.as_ref().is_ok_and(|accepted| *accepted) {
                 owned.update_metaagent_event_prompt_delivery_for_prompt(
                     &dispatch.prompt_id,
@@ -3650,6 +3651,17 @@ impl KernelRuntimeState {
                 state: provider_run.state(),
                 operation: "submit prompt",
             });
+        }
+        if !dispatch.steering {
+            self.with_app_side_effect(|app| {
+                crate::app::RemoteLeaseRuntime::new(app).activate_leased_home_prompt_for_dispatch(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    &dispatch.prompt_id,
+                    &dispatch.provider_run_id,
+                );
+            })
+            .await;
         }
         let hidden_system_context = owned.hidden_context_with_failed_requests(
             &dispatch.agent_id,
@@ -4018,27 +4030,30 @@ impl KernelRuntimeState {
             .flatten()
             .filter(|run| {
                 claude_headless_dispatch_failure_requires_provider_retirement(run, &error)
+                    || (run.adapter_key() == "codex"
+                        && crate::provider::codex_prompt_submission_transport_failed(&error))
             });
         let retire_failed_provider = failed_provider_run.is_some();
         let mut _delivery_settlement_claim = None;
         if retire_failed_provider {
+            let session = self.owned.session_store.get_session(&dispatch.session_id)?;
+            let Some(settlement_claim) = self
+                .owned
+                .prompt_state_owner
+                .try_claim_active_prompt_delivery_settlement(
+                    &session,
+                    &dispatch.agent_id,
+                    &dispatch.prompt_id,
+                    &dispatch.provider_run_id,
+                )
+            else {
+                return Err(error);
+            };
+            _delivery_settlement_claim = Some(settlement_claim);
             if let Some(provider_run) = failed_provider_run
                 .as_ref()
                 .filter(|_| claude_headless_dispatch_failure_invalidates_resume(&error))
             {
-                let session = self.owned.session_store.get_session(&dispatch.session_id)?;
-                let Some(settlement_claim) = self
-                    .owned
-                    .prompt_state_owner
-                    .try_claim_active_prompt_delivery_settlement(
-                        &session,
-                        &dispatch.agent_id,
-                        &dispatch.prompt_id,
-                        &dispatch.provider_run_id,
-                    )
-                else {
-                    return Err(error);
-                };
                 let Some(active_prompt) = self
                     .owned
                     .prompt_state_owner
@@ -4090,7 +4105,6 @@ impl KernelRuntimeState {
                     }
                     Err(clear_error) => return Err(clear_error),
                 }
-                _delivery_settlement_claim = Some(settlement_claim);
             }
             if let Ok(outcome) = self
                 .owned
@@ -4631,14 +4645,30 @@ impl KernelRuntimeState {
                     dispatch.prompt_id.clone(),
                 );
             }
-            owned.terminal_stream.record_input(
-                &dispatch.session_id,
-                &dispatch.provider_run_id,
-                &dispatch.source_attachment_id,
-                b"\x03",
-            );
+            let abort_input = crate::provider::provider_prompt_abort_input(&provider_run);
+            let requested_at_ms = crate::session::unix_epoch_ms();
+            if !crate::provider::provider_run_is_claude_native_tui(&provider_run) {
+                owned.terminal_stream.record_input(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    &dispatch.source_attachment_id,
+                    abort_input,
+                );
+            }
             self.with_app_side_effect(|app| {
-                app.write_provider_pty_input_for_runtime(&dispatch.provider_run_id, b"\x03")
+                if crate::provider::provider_run_is_claude_native_tui(&provider_run) {
+                    app.active_turns.mark_interruption_requested(
+                        &dispatch.provider_run_id,
+                        &dispatch.prompt_id,
+                        requested_at_ms,
+                    );
+                } else {
+                    app.write_provider_pty_input_for_runtime(
+                        &dispatch.provider_run_id,
+                        abort_input,
+                    )?;
+                }
+                Ok(())
             })
             .await?;
             Ok(())
@@ -4699,8 +4729,10 @@ impl KernelRuntimeState {
             let _permit = provider_runtime_lanes
                 .acquire(&dispatch.provider_run_id)
                 .await;
-            if let Err(error) = state.enqueue_prompt_dispatch(&dispatch).await {
-                let _ = state.fail_prompt_dispatch(dispatch, error).await;
+            // Bound the spawned task state: cold leased admission already has
+            // a large launch future on the worker's normal stack.
+            if let Err(error) = Box::pin(state.enqueue_prompt_dispatch(&dispatch)).await {
+                let _ = Box::pin(state.fail_prompt_dispatch(dispatch, error)).await;
             }
         });
     }
@@ -4797,6 +4829,11 @@ impl KernelRuntimeState {
                         .provider_store
                         .run_uses_structured_prompt_io(&run)
                 });
+            let native_claude = state
+                .owned
+                .provider_store
+                .get_run(&dispatch.provider_run_id)
+                .is_ok_and(|run| crate::provider::provider_run_is_claude_native_tui(&run));
             loop {
                 let completion_signal =
                     structured.then(|| state.owned.provider_store.run_actor_completion_signal());
@@ -4805,6 +4842,9 @@ impl KernelRuntimeState {
                     .map(|signal| signal.sequence())
                     .unwrap_or_default();
                 let outcome = match state.enqueue_prompt_abort(&dispatch).await {
+                    // Native Claude acknowledges Escape in its transcript, without Stop.
+                    // The native bridge owns settlement after that receipt is drained.
+                    Ok(()) if native_claude => PromptAbortDispatchOutcome::Done,
                     Ok(()) if !structured => {
                         if let Some((agent_id, prompt)) = state.owned.cancelling_prompt_for_abort(
                             &dispatch.session_id,

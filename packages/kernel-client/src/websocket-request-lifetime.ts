@@ -26,3 +26,30 @@ export async function waitForKernelRequestReplay(milliseconds: number, signal: A
     throw error
   }
 }
+
+// MP-08 / MP-10 / MP-11: retire one caller's wait without closing the shared
+// socket or cancelling work already accepted by the owning kernel.
+export function waitForKernelRequest<T>(
+  promise: Promise<T>,
+  signal: AbortSignal,
+  retire?: (error: LocalIpcError) => void,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => {
+      const error = signal.reason instanceof LocalIpcError ? signal.reason
+        : new LocalIpcError("kernel request", "request cancelled", "request_cancelled", false)
+      retire?.(error)
+      signal.removeEventListener("abort", abort)
+      reject(error)
+    }
+    signal.addEventListener("abort", abort, { once: true })
+    promise.then(value => {
+      signal.removeEventListener("abort", abort)
+      resolve(value)
+    }, error => {
+      signal.removeEventListener("abort", abort)
+      reject(error)
+    })
+    if (signal.aborted) abort()
+  })
+}

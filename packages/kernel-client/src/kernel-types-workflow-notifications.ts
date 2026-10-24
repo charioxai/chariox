@@ -1,4 +1,4 @@
-/** MP-08 / MP-10: local 491 and encrypted peer 101 completion notifications. */
+/** MP-08 / MP-10: local 510 and encrypted peer 118 completion notifications. */
 export type NotificationDeliveryMode = "queue" | "inject"
 export type WorkflowNotificationEvents = "success" | "failure" | "both"
 export interface WorkflowNotificationSource {

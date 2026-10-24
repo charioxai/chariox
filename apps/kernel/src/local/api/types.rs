@@ -27,6 +27,7 @@ mod kernel_access;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
+mod native_provider_transport;
 mod project_environment_aggregate;
 mod project_environment_manifest;
 mod project_environment_setup;
@@ -40,6 +41,7 @@ mod response;
 mod room_environment;
 mod session_control;
 mod slice;
+mod ssh_machine;
 mod terminal_command_catalog;
 mod terminal_interaction;
 mod waiting_room;
@@ -64,6 +66,7 @@ pub use kernel_access::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
+pub use native_provider_transport::*;
 pub use project_environment_aggregate::*;
 pub use project_environment_manifest::*;
 pub use project_environment_setup::*;
@@ -77,6 +80,7 @@ pub use response::*;
 pub use room_environment::*;
 pub use session_control::*;
 pub use slice::*;
+pub use ssh_machine::*;
 pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
 pub use waiting_room::*;
@@ -272,4 +276,7 @@ pub use workspace::*;
 /// cursor. It also restores workflow notifications, Room workflow inventory and
 /// controls, opt-in Cloud device denial and exact home-prompt cancellation
 /// admission (MP-08/MP-10/MP-11).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 491;
+/// MP-08 / MP-10 / MP-11: version520 introduced direct transports and owner-managed
+/// SSH/context admission; version526 added owning-kernel native Codex transport.
+/// Version531 adds scoped Open identities and bounded sequential Exchange receipts.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 531;

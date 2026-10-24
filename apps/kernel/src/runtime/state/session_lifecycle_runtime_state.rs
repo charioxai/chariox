@@ -24,6 +24,11 @@ impl KernelRuntimeState {
             &request.owner_user_id,
             &defaults.provider,
         );
+        defaults.account_profile = self.owned.resolve_agent_account_profile(
+            &request.owner_user_id,
+            &defaults.provider,
+            defaults.account_profile.as_deref(),
+        )?;
         request.agent_defaults = Some(defaults);
         if request.kernel_ref.as_deref().is_some_and(|kernel_ref| {
             kernel_ref_matches_local_config(&self.owned.config_projection.snapshot(), kernel_ref)
@@ -543,6 +548,7 @@ impl KernelRuntimeState {
         mut request: crate::agent::CreateAgentRequest,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         self.authorize_current_external_command()?;
+        request = self.owned.resolve_agent_account_request(request)?;
         self.normalize_local_kernel_ref(&mut request);
         if request.kernel_ref.is_none() {
             request = self.prepare_local_agent_worktree_placement(request)?;

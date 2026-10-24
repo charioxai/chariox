@@ -16,8 +16,8 @@ use crate::terminal::{
 };
 use crate::transport::kernel_protocol::{
     agent_activity_changed_event, event_is_relevant_to_attachment, event_session_id,
-    event_stream_id_for_event, kernel_event_trace_payload, provider_run_changed_event,
-    runtime_interactions_changed_event, session_metadata_changed_event,
+    event_stream_id_for_event, kernel_event_trace_payload, prompt_admission_activity_event,
+    provider_run_changed_event, runtime_interactions_changed_event, session_metadata_changed_event,
     subscription_event_stream_id, workflow_run_only_changed, workflow_run_updated_events,
     KernelEvent, KernelOutgoingFrame, KernelSubscriptionScope, WaitingRoomInventoryEventProjection,
     WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
@@ -141,6 +141,30 @@ pub(super) async fn run_subscription_loop(
                 workflow_run_updates,
                 snapshot,
             } => {
+                let admission = if completions.is_empty() && workflow_run_updates.is_empty() {
+                    snapshot.as_ref().as_ref().and_then(|snapshot| {
+                        prompt_admission_activity_event(snapshot, previous_snapshot.as_ref())
+                    })
+                } else {
+                    None
+                };
+                let emitted_admission = admission.is_some();
+                if let Some(event) = admission {
+                    if !emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
+                        event,
+                        Some(&event_stream_id),
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                }
                 if !records.is_empty()
                     && !emit_kernel_event(
                         &runtime,
@@ -239,10 +263,19 @@ pub(super) async fn run_subscription_loop(
                     // A terminal run update is the authoritative replacement for the
                     // archived run. Treat it as a projection delta so the fallback full
                     // hot-session snapshot cannot immediately erase it in the client.
-                    let mut emitted_projection_delta = emitted_terminal_workflow_run_update;
+                    let activity_change =
+                        agent_activity_changed_event(&snapshot, previous_snapshot_ref);
+                    // Early admission is independent; only the ordinary predicate
+                    // proves it covers the full snapshot's remaining changes.
+                    let mut emitted_projection_delta = emitted_terminal_workflow_run_update
+                        || (emitted_admission && activity_change.is_some());
                     let mut emit_failed = false;
                     for event in [
-                        agent_activity_changed_event(&snapshot, previous_snapshot_ref),
+                        if emitted_admission {
+                            None
+                        } else {
+                            activity_change
+                        },
                         provider_run_changed_event(&snapshot, previous_snapshot_ref),
                         session_metadata_changed_event(&snapshot, previous_snapshot_ref),
                         runtime_interactions_changed_event(&snapshot, previous_snapshot_ref),

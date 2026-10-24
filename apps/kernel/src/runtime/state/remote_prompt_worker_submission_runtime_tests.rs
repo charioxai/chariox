@@ -787,6 +787,22 @@ fn remote_prompt_submission_classifies_pre_send_rejection_and_indeterminate_tran
             if remote_prompt_error_should_retry_transport(error)
     ));
 
+    for code in ["relay_disconnected", "write_failed"] {
+        let typed = classify_error(
+            DaemonError::RelayTransport {
+                operation: "send relay peer request",
+                code: code.into(),
+                retryable: true,
+                message: "relay is not connected".into(),
+            },
+            true,
+        );
+        assert!(
+            matches!(&typed, RemotePromptSubmissionOutcome::DefinitelyPreSend(error)
+            if remote_prompt_error_should_retry_transport(error))
+        );
+    }
+
     let known_rejection = classify_error(
         DaemonError::RelayTransport {
             operation: "read relay peer response",

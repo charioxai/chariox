@@ -7,7 +7,7 @@ use futures_util::SinkExt;
 use super::*;
 
 mod writer;
-use writer::{send_relay_envelope_frame, RelayEventWriteCoalescer, RELAY_EVENT_WRITE_COALESCE_MS};
+use writer::send_relay_envelope_frame;
 
 #[cfg(test)]
 pub async fn run_daemon_relay_connector(
@@ -219,10 +219,12 @@ where
         RelayConfigContinuity::Continue => Ok(None),
         RelayConfigContinuity::Reconnect(reason) => Err(reason),
         RelayConfigContinuity::Reauthenticate => {
-            let registration = registration().await;
-            if config.relay_token.as_deref() != Some(registration.auth_token.as_str()) {
-                return Err("relay token changed while building registration");
-            }
+            let mut registration = registration().await;
+            // MP-08/MP-10/MP-11: registration may read a newer config while
+            // awaiting runtime metadata. Authenticate the credential belonging
+            // to this continuity snapshot, then pick up further renewal on the
+            // next heartbeat. Never close a live socket for that harmless race.
+            registration.auth_token = config.relay_token.clone().ok_or("relay token missing")?;
             *active_relay_token = registration.auth_token.clone();
             Ok(Some(registration))
         }
@@ -647,6 +649,13 @@ async fn run_daemon_relay_connector_inner(
             }
         };
     let command_sequence = Arc::new(AtomicU64::new(1));
+    let local_browser = LocalBrowserDirect::new(
+        Arc::clone(&router),
+        Arc::clone(&command_sequence),
+        Arc::clone(&event_runtime),
+        Arc::clone(&command_result_cache),
+        shutdown.clone(),
+    );
     let mut missing_relay_config_reported = false;
     let mut reconnect_attempt = 0_u32;
 
@@ -797,7 +806,11 @@ async fn run_daemon_relay_connector_inner(
         let connect_started = Instant::now();
         match timeout(
             RELAY_CONNECT_TIMEOUT,
-            connect_async(chariox_relay::frame_transport::transport_url(&relay_url)),
+            tokio_tungstenite::connect_async_with_config(
+                chariox_relay::frame_transport::transport_url(&relay_url),
+                None,
+                true, // MP-08 / MP-10 / MP-11: no Nagle delay for interactive traffic.
+            ),
         )
         .await
         {
@@ -849,56 +862,9 @@ async fn run_daemon_relay_connector_inner(
                 let writer_task = tokio::spawn(async move {
                     let mut priority_open = true;
                     let mut event_open = true;
-                    let mut event_write_coalescer =
-                        RelayEventWriteCoalescer::new(RELAY_EVENT_WRITE_COALESCE_MS);
-                    'writer_loop: while priority_open
-                        || event_open
-                        || !event_write_coalescer.is_empty()
-                    {
-                        if let Some(ready_at) = event_write_coalescer.ready_at() {
-                            tokio::select! {
-                                biased;
-                                Some(receipt) = transport_receipt_rx.recv() => {
-                                    if writer.send(Message::Text(receipt.into())).await.is_err() { break; }
-                                }
-                                Some(payload) = pong_rx.recv() => {
-                                    if writer.send(Message::Pong(payload.into())).await.is_err() {
-                                        break;
-                                    }
-                                }
-                                envelope = priority_outgoing_rx.recv(), if priority_open => {
-                                    match envelope {
-                                        Some(envelope) => {
-                                            if !send_relay_envelope_frame(&mut writer, envelope, "priority").await {
-                                                break;
-                                            }
-                                        }
-                                        None => priority_open = false,
-                                    }
-                                }
-                                envelope = event_outgoing_rx.recv(), if event_open => {
-                                    match envelope {
-                                        Some(envelope) => {
-                                            if let Some(envelope) = event_write_coalescer.push_event(envelope, tokio::time::Instant::now()) {
-                                                if !send_relay_envelope_frame(&mut writer, envelope, "event").await {
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                        None => event_open = false,
-                                    }
-                                }
-                                _ = tokio::time::sleep_until(ready_at) => {
-                                    if let Some(envelope) = event_write_coalescer.pop_ready(tokio::time::Instant::now()) {
-                                        if !send_relay_envelope_frame(&mut writer, envelope, "event").await {
-                                            break 'writer_loop;
-                                        }
-                                    }
-                                }
-                            }
-                            continue;
-                        }
-
+                    // MP-08 / MP-10 / MP-11: preserve event FIFO/backpressure
+                    // without adding a fixed delay to every interactive update.
+                    while priority_open || event_open {
                         tokio::select! {
                             biased;
                             Some(receipt) = transport_receipt_rx.recv() => {
@@ -922,10 +888,8 @@ async fn run_daemon_relay_connector_inner(
                             envelope = event_outgoing_rx.recv(), if event_open => {
                                 match envelope {
                                     Some(envelope) => {
-                                        if let Some(envelope) = event_write_coalescer.push_event(envelope, tokio::time::Instant::now()) {
-                                            if !send_relay_envelope_frame(&mut writer, envelope, "event").await {
-                                                break;
-                                            }
+                                        if !send_relay_envelope_frame(&mut writer, envelope, "event").await {
+                                            break;
                                         }
                                     }
                                     None => event_open = false,
@@ -1039,6 +1003,9 @@ async fn run_daemon_relay_connector_inner(
                 token_refresh_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
                 let mut token_refresh_task = None;
                 let mut leased_projection_pump_task = None;
+                let mut leased_projection_interval =
+                    tokio::time::interval(super::peer_events::LEASED_PROJECTION_INTERVAL);
+                leased_projection_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
                 let mut heartbeat_tick: u64 = 0;
 
                 let reconnect_reason = loop {
@@ -1085,6 +1052,7 @@ async fn run_daemon_relay_connector_inner(
                                             event_runtime: &event_runtime,
                                             command_result_cache: &command_result_cache,
                                             reconnect_gate: &reconnect_gate,
+                                            local_browser: &local_browser,
                                         },
                                         static_relay.is_none().then_some((
                                             relay_url.as_str(),
@@ -1227,6 +1195,17 @@ async fn run_daemon_relay_connector_inner(
                                     break "relay configuration changed";
                             }
                         }
+                        _ = leased_projection_interval.tick() => {
+                            if should_start_leased_projection_pump(
+                                leased_projection_pump_task.as_ref(),
+                            ) {
+                                leased_projection_pump_task = Some(spawn_leased_projection_pump(
+                                    Arc::clone(&router),
+                                    Arc::clone(&state),
+                                    outgoing_tx.clone(),
+                                ));
+                            }
+                        }
                         _ = heartbeat_interval.tick() => {
                             heartbeat_tick = heartbeat_tick.wrapping_add(1);
                             let mut heartbeat_registration = None;
@@ -1302,15 +1281,6 @@ async fn run_daemon_relay_connector_inner(
                                 clear_remote_inventory_projection(&router);
                                 disconnect_relay(&router, &state, "relay heartbeat send failed", static_relay.is_none()).await;
                                 break "relay heartbeat send failed";
-                            }
-                            if should_start_leased_projection_pump(
-                                leased_projection_pump_task.as_ref(),
-                            ) {
-                                leased_projection_pump_task = Some(spawn_leased_projection_pump(
-                                    Arc::clone(&router),
-                                    Arc::clone(&state),
-                                    outgoing_tx.clone(),
-                                ));
                             }
                             if static_relay.is_none()
                                 && cloud_presence_schedule.claim_publish_if_due(

@@ -315,6 +315,63 @@ async fn home_extension_invocation_rejects_in_flight_duplicate_provider_tool_cal
 }
 
 #[tokio::test]
+async fn mp08_mp10_mcp_connections_can_reuse_json_rpc_ids() {
+    let state = test_runtime_state().await;
+    let context = context("agent-1");
+    let mut tool = tool("fetch");
+    tool.kind = crate::extension::ExtensionKind::Mcp;
+    for method in ["initialize", "tools/call"] {
+        let payload = serde_json::json!({"id": 0, "method": method});
+        let first = super::super::worker_home_extension_client::mcp_invocation_metadata(
+            &context.worker_provider_run_id,
+            &tool.tool_name,
+            &payload,
+        );
+        let second = super::super::worker_home_extension_client::mcp_invocation_metadata(
+            &context.worker_provider_run_id,
+            &tool.tool_name,
+            &payload,
+        );
+        assert_ne!(first.invocation_id, second.invocation_id);
+        state
+            .begin_home_extension_invocation(&context, &tool, &first)
+            .await
+            .unwrap();
+        state
+            .begin_home_extension_invocation(&context, &tool, &second)
+            .await
+            .expect("a separate MCP request ID is not a provider tool-call replay");
+        state
+            .forget_home_extension_invocation(&context, &tool, &first)
+            .await;
+        state
+            .forget_home_extension_invocation(&context, &tool, &second)
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn mp11_mcp_forwarding_rejects_replayed_invocation_identity() {
+    let state = test_runtime_state().await;
+    let context = context("agent-1");
+    let mut tool = tool("fetch");
+    tool.kind = crate::extension::ExtensionKind::Mcp;
+    let metadata = super::super::worker_home_extension_client::mcp_invocation_metadata(
+        &context.worker_provider_run_id,
+        &tool.tool_name,
+        &serde_json::json!({"id": 0, "method": "tools/call"}),
+    );
+    state
+        .begin_home_extension_invocation(&context, &tool, &metadata)
+        .await
+        .unwrap();
+    assert!(state
+        .begin_home_extension_invocation(&context, &tool, &metadata)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
 async fn home_extension_invocation_rejects_in_flight_duplicate() {
     let state = test_runtime_state().await;
     let context = context("agent-1");

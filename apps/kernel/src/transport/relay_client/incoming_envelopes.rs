@@ -11,6 +11,7 @@ pub(super) struct IncomingEnvelopeContext<'a> {
     pub event_runtime: &'a Arc<RelayEventRuntime>,
     pub command_result_cache: &'a RelayCommandResultCache,
     pub reconnect_gate: &'a Arc<RelayReconnectGate>,
+    pub local_browser: &'a Arc<LocalBrowserDirect>,
 }
 
 #[derive(Debug, Default)]
@@ -95,6 +96,7 @@ pub(super) async fn handle_incoming_envelope(
         event_runtime,
         command_result_cache,
         reconnect_gate,
+        local_browser,
     } = context;
     let envelope = serde_json::from_str::<RelayEnvelope>(payload).map_err(|error| {
         DaemonError::LocalTransport {
@@ -123,6 +125,7 @@ pub(super) async fn handle_incoming_envelope(
             let outgoing_tx = outgoing_tx.clone();
             let command_result_cache = Arc::clone(command_result_cache);
             let reconnect_gate = Arc::clone(reconnect_gate);
+            let local_browser = Arc::clone(local_browser);
             tokio::spawn(async move {
                 let relay_response = handle_daemon_request(
                     &router,
@@ -130,6 +133,7 @@ pub(super) async fn handle_incoming_envelope(
                     caller_identity,
                     encrypted_request,
                     &command_result_cache,
+                    Some(&local_browser),
                 )
                 .await;
                 if let Err(error) = send_outgoing_envelope(
@@ -409,9 +413,11 @@ fn enqueue_dynamic_relay_reconnect_if_changed(
     config: &crate::config::DaemonConfig,
 ) -> Result<RelayReconnectDecision, DaemonError> {
     match relay_config_continuity(active_relay_url, active_relay_token, config) {
-        RelayConfigContinuity::Continue => Ok(RelayReconnectDecision::Unchanged),
-        RelayConfigContinuity::Reauthenticate => {
-            defer_or_enqueue_relay_close(outgoing_tx, reconnect_gate, "relay token changed")
+        // MP-08/MP-10/MP-11: heartbeat registration reauthenticates this socket
+        // in-band. A peer task may retain a pre-renewal snapshot for its whole
+        // transfer; closing here would destroy requests and subscription routes.
+        RelayConfigContinuity::Continue | RelayConfigContinuity::Reauthenticate => {
+            Ok(RelayReconnectDecision::Unchanged)
         }
         RelayConfigContinuity::Reconnect(reason) => {
             defer_or_enqueue_relay_close(outgoing_tx, reconnect_gate, reason)
@@ -475,6 +481,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn token_rollover_after_peer_response_preserves_live_socket_and_admission() {
+        // MP-08/MP-10/MP-11: a peer reply may finish with a token snapshot
+        // captured before renewal. Neither idle nor busy clients may be closed.
+        for active_requests in 0..=2 {
+            let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(2);
+            let gate = RelayReconnectGate::default();
+            for _ in 0..active_requests {
+                assert!(gate.begin_daemon_request());
+            }
+            let mut config = crate::config::DaemonConfig::for_tests();
+            config.relay_url = Some("wss://relay.example.test".into());
+            config.relay_token = Some("renewed-token".into());
+            assert_eq!(
+                enqueue_dynamic_relay_reconnect_if_changed(
+                    &outgoing_tx,
+                    &gate,
+                    "wss://relay.example.test",
+                    "old-token",
+                    &config,
+                )
+                .unwrap(),
+                RelayReconnectDecision::Unchanged,
+                "token renewal must use the existing heartbeat reauthentication path",
+            );
+            for _ in 0..active_requests {
+                assert_eq!(gate.finish_daemon_request(&outgoing_tx).unwrap(), None);
+            }
+            assert!(
+                priority_rx.try_recv().is_err(),
+                "renewal must not queue Close"
+            );
+            assert!(
+                gate.begin_daemon_request(),
+                "new requests must remain admitted"
+            );
+            assert_eq!(gate.finish_daemon_request(&outgoing_tx).unwrap(), None);
+        }
+    }
+
+    #[test]
     fn dynamic_relay_reconnect_waits_for_in_flight_daemon_response() {
         let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(2);
         let reconnect_gate = RelayReconnectGate::default();
@@ -489,7 +535,7 @@ mod tests {
         )
         .expect("peer response should enqueue");
         let mut config = crate::config::DaemonConfig::for_tests();
-        config.relay_url = Some("wss://relay.example.test".to_string());
+        config.relay_url = Some("wss://new-relay.example.test".to_string());
         config.relay_token = Some("new-token".to_string());
 
         let reason = enqueue_dynamic_relay_reconnect_if_changed(
@@ -503,7 +549,7 @@ mod tests {
 
         assert_eq!(
             reason,
-            RelayReconnectDecision::Deferred("relay token changed")
+            RelayReconnectDecision::Deferred("relay url or token missing changed")
         );
         assert!(matches!(
             priority_rx.try_recv(),
@@ -525,7 +571,7 @@ mod tests {
             .expect("deferred reconnect should enqueue")
             .expect("last daemon response should release deferred reconnect");
 
-        assert_eq!(deferred_reason, "relay token changed");
+        assert_eq!(deferred_reason, "relay url or token missing changed");
         assert!(matches!(
             priority_rx.try_recv(),
             Ok(RelayEnvelope::DaemonResponse { .. })
@@ -541,7 +587,7 @@ mod tests {
         let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let reconnect_gate = RelayReconnectGate::default();
         let mut config = crate::config::DaemonConfig::for_tests();
-        config.relay_url = Some("wss://relay.example.test".to_string());
+        config.relay_url = Some("wss://new-relay.example.test".to_string());
         config.relay_token = Some("new-token".to_string());
 
         let decision = enqueue_dynamic_relay_reconnect_if_changed(
@@ -555,7 +601,7 @@ mod tests {
 
         assert_eq!(
             decision,
-            RelayReconnectDecision::Queued("relay token changed")
+            RelayReconnectDecision::Queued("relay url or token missing changed")
         );
         assert!(matches!(
             priority_rx.try_recv(),
@@ -572,9 +618,9 @@ mod tests {
 
         assert_eq!(
             reconnect_gate
-                .request_reconnect(&outgoing_tx, "relay token changed")
+                .request_reconnect(&outgoing_tx, "relay url or token missing changed")
                 .expect("reconnect should defer"),
-            RelayReconnectDecision::Deferred("relay token changed"),
+            RelayReconnectDecision::Deferred("relay url or token missing changed"),
         );
         assert_eq!(
             reconnect_gate
@@ -586,7 +632,7 @@ mod tests {
             reconnect_gate
                 .finish_daemon_request(&outgoing_tx)
                 .expect("last request should queue reconnect"),
-            Some("relay token changed")
+            Some("relay url or token missing changed")
         );
         assert!(matches!(
             priority_rx.try_recv(),
@@ -601,9 +647,9 @@ mod tests {
         assert!(reconnect_gate.begin_daemon_request());
         assert_eq!(
             reconnect_gate
-                .request_reconnect(&outgoing_tx, "relay token changed")
+                .request_reconnect(&outgoing_tx, "relay url or token missing changed")
                 .expect("reconnect should defer"),
-            RelayReconnectDecision::Deferred("relay token changed"),
+            RelayReconnectDecision::Deferred("relay url or token missing changed"),
         );
 
         send_outgoing_envelope(
@@ -619,7 +665,7 @@ mod tests {
             reconnect_gate
                 .finish_daemon_request(&outgoing_tx)
                 .expect("deferred reconnect should enqueue"),
-            Some("relay token changed")
+            Some("relay url or token missing changed")
         );
         assert!(!reconnect_gate.begin_daemon_request());
         assert!(matches!(

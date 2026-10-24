@@ -3,7 +3,7 @@ use crate::execution_lease::LeasedAgent;
 use crate::provider::LaunchProviderRequest;
 use crate::transport::relay_peer::RequiredRemoteMcp;
 
-use super::mcp_availability::provider_run_mcp_set_matches;
+use super::mcp_availability::{leased_provider_mcp_servers, provider_run_mcp_set_matches};
 use super::RemoteLeaseRuntime;
 
 pub(crate) enum LeasedProviderRunMatch {
@@ -196,7 +196,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
             )?;
             let environment_matches = run.project_environment_revision()
                 == selection.project_environment_revision.as_deref();
-            let mcp_matches = provider_run_mcp_set_matches(run, required_mcps)?;
+            let mcp_matches =
+                provider_run_mcp_set_matches(run, required_mcps, remote_extension_manifest)?;
             let catalog_matches =
                 run.remote_extension_catalog_matches_launch(remote_extension_manifest);
             if existing_profile_matches && environment_matches && mcp_matches && catalog_matches {
@@ -308,24 +309,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .get_session(&leased_agent.backing_session_id)?
                 .worktree_id(),
         ))
-        .with_mcp_servers(
-            required_mcps
-                .iter()
-                .map(|required| required.config.clone())
-                .collect(),
-        );
-        let mut mcp_servers = request.mcp_servers.clone();
-        for name in remote_extension_manifest.home_proxy_mcp_server_names() {
-            if !mcp_servers.iter().any(|server| server.name == name) {
-                mcp_servers.push(crate::mcp::CharioxMcpServerConfig::streamable_http(
-                    name,
-                    "http://127.0.0.1/mcp",
-                ));
-            }
-        }
-        request = request
-            .with_mcp_servers(mcp_servers)
-            .with_remote_extension_manifest(remote_extension_manifest.clone());
+        .with_mcp_servers(leased_provider_mcp_servers(
+            required_mcps,
+            remote_extension_manifest,
+        ))
+        .with_remote_extension_manifest(remote_extension_manifest.clone());
         if let Some(execution_mode) = leased_agent.execution_mode {
             request = request.with_execution_mode(execution_mode);
         }

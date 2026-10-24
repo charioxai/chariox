@@ -11,13 +11,14 @@ impl KernelRuntimeState {
         session_id: &str,
         target_agent_id: &str,
         attachment_id: &str,
+        expected_prompt_id: Option<&str>,
         authority: Option<(&str, &crate::local::LocalDaemonRequest)>,
     ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
         self.cancel_remote_agent_prompt_if_matches(
             session_id,
             target_agent_id,
             attachment_id,
-            None,
+            expected_prompt_id,
             authority,
         )
         .await
@@ -45,6 +46,10 @@ impl KernelRuntimeState {
         let mut active_prompt = owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, target_agent_id)
+            .filter(|prompt| {
+                expected_prompt_id
+                    .is_none_or(|id| prompt.id() == id || prompt.pending_prompt_id() == Some(id))
+            })
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
@@ -197,10 +202,11 @@ impl KernelRuntimeState {
             }
             Some(crate::session::DurablePromptDeliveryPhase::Delivered) => {
                 let attachment_id = active_prompt.source_attachment_id().to_string();
-                let cancellation_intent = self.owned.begin_remote_prompt_cancellation(
+                let cancellation_intent = self.owned.begin_remote_prompt_cancellation_if_matches(
                     session_id,
                     target_agent_id,
                     &attachment_id,
+                    Some(active_prompt.id()),
                 )?;
                 if let Err(error) = self
                     .send_remote_agent_prompt_cancellation_with_claim(
@@ -238,7 +244,7 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         target_agent_id: &str,
-        attachment_id: &str,
+        _attachment_id: &str,
         active_prompt: &crate::session::PromptQueueItem,
         cancellation_intent: crate::app::KernelPromptCancellation,
         cancellation_claim: &mut super::remote_prompt_claim_runtime::RemotePromptAgentClaim,
@@ -380,11 +386,14 @@ impl KernelRuntimeState {
                     &remote_execution.leased_agent_id,
                     &delivered_run_id,
                 )?;
-                Ok(Some(self.finalize_remote_prompt_cancellation_and_advance(
-                    session_id,
-                    target_agent_id,
-                    attachment_id,
-                )?))
+                // MP-08 / MP-10 / MP-11: absence is not an interruption receipt.
+                // Replay the exact worker completion before settling or advancing.
+                cancellation_claim.mark_cancellation_sent(&prompt_id, &delivered_run_id);
+                self.spawn_remote_prompt_projection_drain(
+                    session_id.to_string(),
+                    target_agent_id.to_string(),
+                );
+                Ok(Some(cancellation_intent))
             }
             Err(error) => Err(error),
         }

@@ -12,6 +12,27 @@ struct Fixture {
     attachment: String,
     _worktree: crate::test_support::TestWorktree,
 }
+
+// MP-08 / MP-10 / MP-11: a slow provider adapter must not hold another
+// terminal's already-published state behind the coordinator mutex.
+#[tokio::test]
+async fn relay_activity_projection_does_not_wait_for_the_provider_app_lock() {
+    let f = Fixture::new().await;
+    let app = f.runtime.app.clone();
+    let _hold = app.lock().await;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        f.runtime
+            .watch_relay_subscription_state(&f.session, &f.attachment, true, None, 0),
+    )
+    .await;
+    let crate::runtime_transport::WatchResult::Ok { snapshot, .. } =
+        result.expect("published relay activity waited behind unrelated provider work")
+    else {
+        panic!("published session unavailable")
+    };
+    assert_eq!(snapshot.as_ref().as_ref().unwrap().session.id(), f.session);
+}
 impl Fixture {
     async fn new() -> Self {
         let worktree = crate::test_support::TestWorktree::new("approval-lifetime");
@@ -630,3 +651,277 @@ async fn approval_lifetime_explicit_startup_scope_survives_until_provider_exit()
 
 #[path = "approval_lifetime_remote.rs"]
 mod remote;
+
+// MP-08 / MP-10 / MP-11: terminal reads cannot run provider adapters or wait
+// behind their app lock; the kernel-owned pump publishes their output.
+#[tokio::test]
+async fn terminal_output_read_does_not_wait_for_the_provider_app_lock() {
+    let f = Fixture::new().await;
+    let executor =
+        crate::runtime::terminal_output_executor::TerminalOutputExecutor::new(f.runtime.clone());
+    f.runtime
+        .owned
+        .terminal_stream
+        .drain_output_records(&f.session, &f.attachment);
+    let app = f.runtime.app.clone();
+    let _hold = app.lock().await;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        executor.execute(crate::local::PumpTerminalOutputRequest {
+            session_id: f.session.clone(),
+            attachment_id: f.attachment.clone(),
+        }),
+    )
+    .await
+    .expect("MP-08 MP-10 terminal read waited behind unrelated provider work")
+    .unwrap();
+    assert!(matches!(
+        result,
+        crate::local::LocalDaemonResponse::TerminalOutput { .. }
+    ));
+}
+
+// MP-11: the Vault panel's prompts belong to the user, so the turn that is
+// current when one opens (for example a prompt still reconciling after a
+// restart) ending must not withdraw it and fail the panel with "timed out".
+// Only the panel (a person's terminal) gets this; the same prompts an agent
+// starts stay bound to its lifetime.
+mod vault_prompts {
+    use super::*;
+    use crate::runtime::state::runtime_vault_unlock_state::{
+        vault_manage_interaction, vault_passphrase_change_interaction,
+        vault_passphrase_interaction, vault_unlock_lease_interaction, VaultPassphraseChangeStep,
+    };
+
+    type Receiver = tokio::sync::oneshot::Receiver<PendingInteractionResolution>;
+
+    const KINDS: usize = 6;
+
+    fn nth_kind(f: &Fixture, panel: bool, n: usize) -> RuntimeInteraction {
+        let config = crate::config::UserCredentialVaultConfig::default();
+        let kinds = [
+            vault_passphrase_interaction(&f.session, &f.agent, "credential_vault_manage", panel),
+            vault_unlock_lease_interaction(&f.session, &f.agent, &config, panel),
+            vault_manage_interaction(&f.session, &f.agent, panel),
+            vault_passphrase_change_interaction(
+                &f.session,
+                &f.agent,
+                VaultPassphraseChangeStep::Current,
+                panel,
+            ),
+            vault_passphrase_change_interaction(
+                &f.session,
+                &f.agent,
+                VaultPassphraseChangeStep::New,
+                panel,
+            ),
+            vault_passphrase_change_interaction(
+                &f.session,
+                &f.agent,
+                VaultPassphraseChangeStep::Repeat,
+                panel,
+            ),
+        ];
+        kinds.into_iter().nth(n).unwrap()
+    }
+
+    fn open(f: &Fixture, interaction: RuntimeInteraction) -> Receiver {
+        f.runtime
+            .create_terminal_credential_interaction(&f.session, interaction)
+            .unwrap()
+    }
+
+    fn active(f: &Fixture) -> usize {
+        f.runtime
+            .owned
+            .session_snapshot(&f.session)
+            .unwrap()
+            .active_interactions()
+            .len()
+    }
+
+    fn end_turn(f: &Fixture) {
+        f.runtime
+            .owned
+            .complete_local_prompt_without_advance(&f.session, &f.agent, Some(&f.run))
+            .unwrap();
+        f.runtime.owned.withdraw_stale_agent_interactions();
+    }
+
+    fn assert_timed_out(receiver: &mut Receiver) {
+        let result = receiver.try_recv().expect("prompt was not withdrawn");
+        assert_eq!(result.status, "timed_out");
+        assert!(result.choice_id.is_none() && result.reply.is_none());
+    }
+
+    #[tokio::test]
+    async fn panel_prompts_of_every_kind_outlive_the_agents_turn() {
+        for n in 0..KINDS {
+            let f = Fixture::new().await;
+            let interaction = nth_kind(&f, true, n);
+            let id = interaction.id().to_owned();
+            let mut receiver = open(&f, interaction);
+            end_turn(&f);
+            assert!(
+                matches!(
+                    receiver.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                ),
+                "{id} was withdrawn"
+            );
+            assert_eq!(active(&f), 1, "{id}");
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_started_prompts_of_every_kind_are_withdrawn_when_the_turn_ends() {
+        for n in 0..KINDS {
+            let f = Fixture::new().await;
+            let mut receiver = open(&f, nth_kind(&f, false, n));
+            end_turn(&f);
+            assert_timed_out(&mut receiver);
+            assert_eq!(active(&f), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_started_prompts_of_every_kind_are_withdrawn_when_the_agent_is_deleted() {
+        for n in 0..KINDS {
+            let f = Fixture::new().await;
+            let mut receiver = open(&f, nth_kind(&f, false, n));
+            f.runtime
+                .owned
+                .destroy_agent(&f.agent, crate::session::DEFAULT_LOCAL_USER_ID)
+                .unwrap();
+            assert_timed_out(&mut receiver);
+            assert_eq!(active(&f), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_started_manage_popup_is_withdrawn_when_the_agent_stops() {
+        let f = Fixture::new().await;
+        let mut receiver = open(&f, vault_manage_interaction(&f.session, &f.agent, false));
+        f.runtime
+            .owned
+            .provider_store
+            .terminate_run_provider_only(&f.session, &f.run)
+            .unwrap();
+        f.runtime
+            .reconcile_provider_run_exit(&f.session, &f.run)
+            .await
+            .unwrap();
+        assert_timed_out(&mut receiver);
+        assert_eq!(active(&f), 0);
+    }
+
+    #[tokio::test]
+    async fn agent_started_prompts_are_withdrawn_when_the_session_is_deleted() {
+        let f = Fixture::new().await;
+        let mut receiver = open(&f, vault_manage_interaction(&f.session, &f.agent, false));
+        f.runtime
+            .owned
+            .delete_session_ref(&f.session, None)
+            .unwrap();
+        assert_timed_out(&mut receiver);
+    }
+
+    #[tokio::test]
+    async fn an_api_chosen_panel_looking_id_stays_bound_to_the_turn() {
+        for id in [
+            "vault-panel-manage-x",
+            "vault-manage-x",
+            "vault-unlock-panel-x",
+        ] {
+            let f = Fixture::new().await;
+            let mut forged = vault_manage_interaction(&f.session, &f.agent, false);
+            forged = RuntimeInteraction::new(
+                id,
+                &f.agent,
+                RuntimeInteractionKind::Choice,
+                RuntimeInteractionLevel::Info,
+                None,
+                "forged",
+                forged.choices().to_vec(),
+                None,
+                Some(300),
+                Some("cancel".into()),
+            );
+            let mut receiver = f
+                .runtime
+                .create_runtime_interaction(&f.session, forged)
+                .await
+                .unwrap();
+            end_turn(&f);
+            assert_timed_out(&mut receiver);
+            assert_eq!(active(&f), 0, "{id}");
+        }
+    }
+
+    #[tokio::test]
+    async fn local_and_forwarded_native_requests_cannot_use_a_vault_id() {
+        let f = Fixture::new().await;
+        let origin = f
+            .runtime
+            .capture_native_interaction_origin(&f.session, &f.agent, &f.run)
+            .unwrap();
+        let home_prompt_id = match &origin {
+            crate::session::NativeInteractionOrigin::Prompt { prompt_id, .. } => prompt_id.clone(),
+            _ => panic!("expected kernel prompt"),
+        };
+        for id in ["vault-manage-x", "vault-panel-manage-x", "vault-unlock-x"] {
+            let local = crate::local::RequestNativeProviderTurnInteractionRequest::allow_deny(
+                &f.session,
+                &f.agent,
+                id,
+                None,
+                "Approve?",
+                None,
+                origin.clone(),
+            );
+            let local = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                crate::runtime::native_interaction_bridge::execute_native_provider_interaction_request(
+                    &f.runtime, local,
+                ),
+            )
+            .await
+            .expect("a vault id was accepted and is waiting for an answer");
+            assert!(local.is_err(), "{id}");
+            let context = crate::transport::relay_peer::RemoteNativeInteractionContext {
+                home_session_id: f.session.clone(),
+                home_agent_id: f.agent.clone(),
+                leased_agent_id: "lease-test".into(),
+                worker_provider_run_id: f.run.clone(),
+                home_prompt_id: Some(home_prompt_id.clone()),
+            };
+            let interaction = RuntimeInteraction::new(
+                id,
+                &f.agent,
+                RuntimeInteractionKind::Permission,
+                RuntimeInteractionLevel::Warning,
+                None,
+                "Allow?",
+                vec![RuntimeInteractionChoice::new(
+                    "allow", "Allow", "allow", None,
+                )],
+                None,
+                Some(300),
+                Some("allow".into()),
+            )
+            .with_native_origin(Some(origin.clone()));
+            let forwarded = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                crate::runtime::native_interaction_bridge::forward_relay_native_interaction(
+                    &f.runtime,
+                    context,
+                    interaction,
+                ),
+            )
+            .await
+            .expect("a vault id was accepted and is waiting for an answer");
+            assert!(forwarded.is_err(), "{id}");
+            assert_eq!(active(&f), 0);
+        }
+    }
+}

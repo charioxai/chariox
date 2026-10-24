@@ -21,6 +21,7 @@ mod usage_probe;
 
 pub(crate) use auth_probe::verify_claude_setup_token;
 pub use catalog::claude_provider_catalog;
+pub(crate) use catalog::claude_provider_catalog_with_environment;
 use catalog::CLAUDE_HEADLESS_PROVIDER_ID;
 pub(crate) use launch_args::claude_args_with_execution_config;
 use launch_args::claude_launch_args;
@@ -753,16 +754,16 @@ mod tests {
         );
         assert_eq!(
             catalog.default.get("claude-headless").map(String::as_str),
-            Some("sonnet")
+            Some("claude-sonnet-5-5")
         );
         assert_eq!(
             catalog.default.get("claude-p").map(String::as_str),
-            Some("sonnet")
+            Some("claude-sonnet-5-5")
         );
         let models = &catalog.all[0].models;
-        assert!(models.contains_key("haiku"));
-        assert!(models.contains_key("sonnet"));
-        assert!(models.contains_key("opus"));
+        assert!(!models.contains_key("haiku"));
+        assert!(!models.contains_key("sonnet"));
+        assert!(!models.contains_key("opus"));
         assert!(models.contains_key("claude-sonnet-4-6"));
         assert_eq!(
             models

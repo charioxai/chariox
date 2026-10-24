@@ -543,6 +543,7 @@ mod tests {
 
     fn managed_context_target() -> crate::local::ManagedContextLaunchTarget {
         crate::local::ManagedContextLaunchTarget {
+            destination: None,
             environment_id: "environment-1".to_string(),
             kernel_id: "kernel-1".to_string(),
             context_id: "context-1".to_string(),

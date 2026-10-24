@@ -63,8 +63,6 @@ pub(super) fn runtime_mcp_config(
     if let Some(binding) = request.runtime_mcp_binding.as_ref() {
         args.extend([
             "-c".to_string(),
-            "mcp_servers.chariox.transport=\"streamable_http\"".to_string(),
-            "-c".to_string(),
             format!("mcp_servers.chariox.url={:?}", binding.server_url),
             "-c".to_string(),
             format!(
@@ -171,10 +169,7 @@ fn append_codex_mcp_config(args: &mut Vec<String>, server: &CharioxMcpServerConf
             credential_http_headers: _,
             env_http_headers,
         } => {
-            let mut fields = vec![
-                "transport=\"streamable_http\"".to_string(),
-                format!("url={url:?}"),
-            ];
+            let mut fields = vec![format!("url={url:?}")];
             if let Some(env_var) = bearer_token_env_var {
                 fields.push(format!("bearer_token_env_var={env_var:?}"));
             }

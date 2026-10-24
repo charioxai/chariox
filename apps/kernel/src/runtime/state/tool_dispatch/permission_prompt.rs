@@ -139,6 +139,11 @@ fn claude_permission_prompt_decision(
     resolution: &ProviderNativeInteractionResolution,
     input: serde_json::Value,
 ) -> serde_json::Value {
+    // MP-08 / MP-10 / MP-11: exhausting reconnect recovery is the permission's
+    // timeout, not a transport failure or a human denial.
+    if resolution.status == "timed_out" {
+        return deny("Chariox permission request timed out.");
+    }
     if resolution.choice_id.as_deref() == Some("allow_once") {
         return serde_json::json!({ "behavior": "allow", "updatedInput": input });
     }
@@ -149,4 +154,23 @@ fn claude_permission_prompt_decision(
 
 fn deny(message: &str) -> serde_json::Value {
     serde_json::json!({ "behavior": "deny", "message": message })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permission_prompt_reconnect_timeout_has_the_timeout_reason() {
+        let decision = claude_permission_prompt_decision(
+            &ProviderNativeInteractionResolution {
+                status: "timed_out".into(),
+                choice_id: None,
+                reply: None,
+            },
+            serde_json::json!({"path": "requested.txt"}),
+        );
+        assert_eq!(decision["behavior"], "deny");
+        assert_eq!(decision["message"], "Chariox permission request timed out.");
+    }
 }

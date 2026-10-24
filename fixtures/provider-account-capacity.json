@@ -1,6 +1,6 @@
 [
   {
-    "name": "OpenCode Go exhaustion blocks Go",
+    "name": "OpenCode Go exhaustion is reported but OpenCode owns fallback",
     "provider": "opencode",
     "model": "opencode-go/deepseek-v4-pro",
     "now_ms": 200000000,
@@ -16,7 +16,7 @@
       }
     ],
     "expected_state": "exhausted",
-    "expected_blocked": true
+    "expected_blocked": false
   },
   {
     "name": "fresh Go does not refresh stale Zen credits",

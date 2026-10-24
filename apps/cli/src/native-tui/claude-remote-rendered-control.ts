@@ -6,9 +6,14 @@ export async function sendClaudeRemoteRenderedInput(client: LocalIpcClient, sess
   // A native PTY interruption alone can leave the admitted home prompt active.
   // Navigation sequences and idle composer Escape still belong to the provider.
   if (data.toString() === "\u001b" && agentId) {
-    const state = await client.send<{ SessionState?: { agent_activity?: Record<string, { active_prompt_count: number }> } }>(getSessionStateRequest(sessionId))
+    const state = await client.send<{ SessionState?: {
+      agent_activity?: Record<string, { active_prompt_count: number }>,
+      session?: { prompt_states?: Record<string, { active_prompt?: { id: string } | null }> },
+    } }>(getSessionStateRequest(sessionId))
     if (state.SessionState?.agent_activity?.[agentId]?.active_prompt_count) {
-      const result = await client.send<Record<string, unknown>>(cancelActivePromptRequest(sessionId, attachmentId, agentId))
+      const promptId = state.SessionState.session?.prompt_states?.[agentId]?.active_prompt?.id
+      if (!promptId) throw new Error("Rendered Claude interruption has no kernel-owned prompt identity")
+      const result = await client.send<Record<string, unknown>>(cancelActivePromptRequest(sessionId, attachmentId, agentId, promptId))
       if (!("PromptCancelled" in result)) throw new Error("Rendered Claude interruption was not admitted by the kernel")
       return
     }

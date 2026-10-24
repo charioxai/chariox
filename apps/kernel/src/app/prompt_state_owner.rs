@@ -57,7 +57,6 @@ impl DaemonApp {
             .active_prompt_for_agent(&session, agent_id))
     }
 
-    #[cfg(test)]
     pub(crate) fn prompt_owner_active_prompt_for_agent_snapshot(
         &self,
         session_id: &str,
@@ -341,7 +340,18 @@ impl DaemonApp {
         let provider_run_id = self
             .providers
             .get_run_for_agent(session_id, agent_id)
-            .map(|run| run.id().to_string());
+            .map(|run| run.id().to_string())
+            .or_else(|| {
+                self.agents.get_agent(agent_id).ok().and_then(|agent| {
+                    let remote = agent.remote_execution()?;
+                    remote.active_worker_provider_run_id.as_deref().map(|run| {
+                        crate::provider::projected_leased_provider_run_id(
+                            &remote.leased_agent_id,
+                            run,
+                        )
+                    })
+                })
+            });
         let settled_at_ms = crate::session::unix_epoch_ms();
         self.operational_history_store().record_prompt_settlement(
             self.history_archive_enabled(),

@@ -12,6 +12,71 @@ pub(crate) struct ToolProjectionState {
     #[serde(default)]
     delta_offsets: std::collections::BTreeMap<String, u64>,
     revision: u64,
+    #[serde(default)]
+    history_owned: bool,
+    /// A terminal history snapshot closes this run/tool generation. Byte
+    /// offsets cannot order replacements, which may shrink or keep their size.
+    #[serde(default)]
+    history_terminal: bool,
+    /// While history owns the tool: end of the output bytes per field that its
+    /// durable snapshots already delivered.
+    #[serde(default)]
+    history_end: std::collections::BTreeMap<String, u64>,
+}
+
+use crate::provider_output_policy::output_bounds::{
+    PROVIDER_TOOL_FIELD_BYTES, PROVIDER_TOOL_OUTPUT_FIELDS as OUTPUT_FIELDS,
+};
+
+/// The producer deltas one selected field; every other string stays cumulative.
+/// Legacy single-field deltas remain unambiguous. A legacy multi-field offset
+/// has no owner and cannot establish an extension of a history-owned stream.
+fn delta_field(payload: &serde_json::Value) -> Option<&str> {
+    if let Some(field) = payload.get("chariox_delta_field").and_then(|v| v.as_str()) {
+        // The whole-record summary omits the string but keeps its bound.
+        return OUTPUT_FIELDS
+            .contains(&field)
+            .then_some(field)
+            .filter(|field| {
+                payload.get(*field).is_some_and(|v| v.is_string())
+                    || payload
+                        .get(PROVIDER_TOOL_FIELD_BYTES)
+                        .and_then(|fields| fields.get(*field))
+                        .is_some()
+            });
+    }
+    let mut fields = OUTPUT_FIELDS
+        .into_iter()
+        .filter(|field| payload.get(*field).is_some_and(|v| v.is_string()));
+    fields.next().filter(|_| fields.next().is_none())
+}
+
+fn output_ends(payload: Option<&serde_json::Value>) -> Vec<(&'static str, u64)> {
+    let Some(payload) = payload else {
+        return Vec::new();
+    };
+    let owner = delta_field(payload);
+    let start = payload
+        .get("chariox_delta_offset_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    OUTPUT_FIELDS
+        .into_iter()
+        .filter_map(|field| {
+            // A capped string keeps its original length; the shortened display
+            // text is not the end of the stream, and an omitted one still has
+            // its bound.
+            let len = payload
+                .get(PROVIDER_TOOL_FIELD_BYTES)
+                .and_then(|fields| fields.get(field))
+                .and_then(|v| v.as_u64())
+                .or_else(|| Some(payload.get(field)?.as_str()?.len() as u64))?;
+            Some((
+                field,
+                len.saturating_add(if owner == Some(field) { start } else { 0 }),
+            ))
+        })
+        .collect()
 }
 
 impl ToolProjectionState {
@@ -22,17 +87,7 @@ impl ToolProjectionState {
         stable_identity: bool,
     ) -> bool {
         let payload = serde_json::from_slice::<serde_json::Value>(bytes).ok();
-        // The producer keeps a separate counter for each output field. A
-        // delta payload with multiple fields does not identify which counter
-        // it carries, so only use its offset when the field is unambiguous.
-        let mut fields = ["output", "stdout", "stderr", "result", "content"]
-            .into_iter()
-            .filter(|field| {
-                payload
-                    .as_ref()
-                    .is_some_and(|p| p.get(*field).is_some_and(|v| v.is_string()))
-            });
-        let field = fields.next().filter(|_| fields.next().is_none());
+        let field = payload.as_ref().and_then(delta_field);
         let offset = payload
             .as_ref()
             .and_then(|p| p.get("chariox_delta_offset_bytes"))
@@ -56,7 +111,7 @@ impl ToolProjectionState {
             if let Some(field) = field {
                 self.delta_offsets.remove(field);
             } else {
-                for field in ["output", "stdout", "stderr", "result", "content"] {
+                for field in OUTPUT_FIELDS {
                     if payload
                         .as_ref()
                         .is_some_and(|p| p.get(field).is_some_and(|v| v.is_string()))
@@ -69,7 +124,78 @@ impl ToolProjectionState {
             self.delta_offsets.insert(field.into(), offset);
         }
         self.revision += 1;
+        self.history_owned = false;
         true
+    }
+
+    pub(crate) fn record_stream(
+        &mut self,
+        snapshot_key: String,
+        bytes: &[u8],
+        stable_identity: bool,
+    ) -> bool {
+        // Durable snapshots already projected this tool; a later bounded
+        // terminal batch carries copies of them that must not repeat. Output
+        // past what history delivered is new and returns the tool to streaming.
+        if self.history_owned {
+            if self.history_terminal {
+                return false;
+            }
+            let payload = serde_json::from_slice::<serde_json::Value>(bytes).ok();
+            let replaced = payload
+                .as_ref()
+                .and_then(|p| p.get("chariox_output_replaced"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let extends = output_ends(payload.as_ref())
+                .into_iter()
+                .any(|(field, end)| {
+                    replaced || end > self.history_end.get(field).copied().unwrap_or(0)
+                });
+            if !extends {
+                return false;
+            }
+        }
+        self.record(snapshot_key, bytes, stable_identity)
+    }
+
+    pub(crate) fn record_history(
+        &mut self,
+        snapshot_key: String,
+        bytes: &[u8],
+        stable_identity: bool,
+    ) -> bool {
+        // Streamed deltas already own their tool's projection. A tool with
+        // no terminal record must instead project its durable snapshots,
+        // including later status changes, through the same retained delivery.
+        if self.revision != 0 && !self.history_owned {
+            return false;
+        }
+        let payload = serde_json::from_slice::<serde_json::Value>(bytes).ok();
+        let changed = self.record(snapshot_key, bytes, stable_identity);
+        if changed {
+            self.history_owned = true;
+            self.history_terminal |= stable_identity
+                && payload.as_ref().is_some_and(|payload| {
+                    matches!(
+                        payload.get("status").and_then(|v| v.as_str()),
+                        Some(
+                            "completed"
+                                | "error"
+                                | "failed"
+                                | "declined"
+                                | "cancelled"
+                                | "canceled"
+                                | "interrupted"
+                        )
+                    )
+                });
+            for (field, end) in output_ends(payload.as_ref()) {
+                let covered = self.history_end.entry(field.into()).or_default();
+                *covered = (*covered).max(end);
+            }
+        }
+        changed
     }
 }
 
@@ -154,6 +280,77 @@ pub(super) fn compact_tool_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_history_fences_replacements_and_longer_output_after_restore() {
+        for status in [
+            "completed",
+            "error",
+            "failed",
+            "declined",
+            "cancelled",
+            "canceled",
+            "interrupted",
+        ] {
+            let mut state = ToolProjectionState::default();
+            let completed = serde_json::to_vec(&serde_json::json!({
+                "status": status, "output": "UVWXYZ",
+            }))
+            .unwrap();
+            assert!(state.record_history("completed".into(), &completed, true));
+            let mut state: ToolProjectionState =
+                serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+            for bytes in [
+                br#"{"status":"running","output":"UVWXYZ","chariox_output_replaced":true}"#
+                    .as_slice(),
+                br#"{"status":"running","output":"UVWXYZ extra"}"#.as_slice(),
+            ] {
+                assert!(!state.record_stream("late".into(), bytes, true), "{status}");
+            }
+        }
+    }
+
+    #[test]
+    fn running_history_allows_a_replacement_of_the_same_size() {
+        let mut state = ToolProjectionState::default();
+        assert!(state.record_history(
+            "running".into(),
+            br#"{"status":"running","output":"abcdef"}"#,
+            true
+        ));
+        let mut state: ToolProjectionState =
+            serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert!(state.record_stream(
+            "replacement".into(),
+            br#"{"status":"running","output":"UVWXYZ","chariox_output_replaced":true}"#,
+            true
+        ));
+        assert!(state.record_stream(
+            "append".into(),
+            br#"{"status":"running","output":" extra","chariox_delta_offset_bytes":6}"#,
+            true
+        ));
+    }
+
+    #[test]
+    fn delta_offsets_belong_to_one_field_after_history_restore() {
+        let mut state = ToolProjectionState::default();
+        assert!(state.record_history(
+            "history".into(),
+            br#"{"stdout":"xxxxx","stderr":"warning"}"#,
+            true
+        ));
+        let mut state: ToolProjectionState =
+            serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert!(!state.record_stream("late".into(),
+            br#"{"stdout":"xx","stderr":"warning","chariox_delta_field":"stdout","chariox_delta_offset_bytes":3}"#, true));
+        assert!(state.record_stream("new".into(),
+            br#"{"stdout":"xxxxx","stderr":"warning","chariox_delta_field":"stdout","chariox_delta_offset_bytes":5}"#, true));
+        assert!(!state.record_stream("duplicate".into(),
+            br#"{"stdout":"xxxxx","stderr":"warning","chariox_delta_field":"stdout","chariox_delta_offset_bytes":5}"#, true));
+        assert!(state.record_stream("stderr".into(),
+            br#"{"stdout":"xxxxxxxxxx","stderr":"x","chariox_delta_field":"stderr","chariox_delta_offset_bytes":7}"#, true));
+    }
 
     #[test]
     fn full_snapshots_reset_offsets_after_provider_cache_restart_or_eviction() {

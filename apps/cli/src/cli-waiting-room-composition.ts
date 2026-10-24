@@ -199,6 +199,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   )
   const cachedWaitingRoomInventories = waitingRoomInventoryCache.load()
   let providerCatalogSelectionRevision = 0
+  let manualKernelSelectionGeneration = 0
   let managedEnvironmentCatalog: ManagedEnvironmentCatalog | undefined
   let homeKernelId: string | null = null
   let homeMachineId: string | null = null
@@ -418,6 +419,18 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     setMachines: deps.setRemoteMachinesState, setKernels: deps.setRemoteKernelsState,
     setStatus: deps.setWaitingRoomInventoryStatus,
     reconcile: () => reconcileWaitingRoomProjection(deps.waitingRoomState()),
+    captureActivity: () => {
+      const generation = manualKernelSelectionGeneration
+      const revision = deps.waitingRoomLaunchOwnershipRevision()
+      return () => generation === manualKernelSelectionGeneration
+        && revision === deps.waitingRoomLaunchOwnershipRevision() && !deps.isAttached()
+    },
+    preferredKernelRef: () => deps.waitingRoomState().selectedKernelRef,
+    hydrateKernel: async (kernelId, machineId, isActive) => {
+      if (!isActive()) return
+      deps.setWaitingRoomStateProjection({ ...deps.waitingRoomState(), selectedKernelRef: kernelId, selectedMachineRef: machineId })
+      await connectDetachedKernelFromWaitingRoom(isActive, true)
+    },
   })
   const refreshWaitingRoomDataNow = async () => {
     if (!deps.kernelConnected()) return refreshCloudDirectory()
@@ -454,16 +467,23 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     setDaemonDisconnected: deps.setDaemonDisconnected,
     refreshWaitingRoomData,
   })
-  const connectDetachedKernelFromWaitingRoom = async () => {
+  const connectDetachedKernelFromWaitingRoom = async (isActive: () => boolean = () => true, automatic = false) => {
+    if (!automatic) manualKernelSelectionGeneration++
+    if (!isActive()) return
     const selected = deps.waitingRoomState()
     if (deps.cloudClient && !deps.kernelConnected() && await deps.cloudClient.profile()) {
       if (!selected.selectedKernelRef || selected.selectedKernelRef === "local") throw new Error("Choose an online kernel from My kernels first")
-      await replaceClientForKernel(selected.selectedKernelRef, selected.selectedMachineRef)
+      if (!isActive()) return
+      if (!await kernelConnectionController.connect(selected.selectedKernelRef, selected.selectedMachineRef, isActive)) return
     }
-    await detachedKernelConnectController.connect()
+    const client = deps.client.currentClient()
+    await detachedKernelConnectController.connect(() => isActive() && client === deps.client.currentClient())
   }
 
-  const replaceClientForKernel = kernelConnectionController.connect
+  const replaceClientForKernel: typeof kernelConnectionController.connect = (...args) => {
+    manualKernelSelectionGeneration++
+    return kernelConnectionController.connect(...args)
+  }
 
   workspacePlacementController = createWaitingRoomWorkspacePlacementController({
     getState: deps.waitingRoomState,

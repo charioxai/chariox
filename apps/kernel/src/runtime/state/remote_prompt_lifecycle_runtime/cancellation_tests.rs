@@ -488,7 +488,13 @@ async fn temporary_cancel_response_wait_keeps_home_app_lock_available() {
     let cancel_runtime = runtime.clone();
     let cancellation = tokio::spawn(async move {
         cancel_runtime
-            .cancel_remote_agent_prompt_if_remote(&session_id, &agent_id, &attachment_id, None)
+            .cancel_remote_agent_prompt_if_remote(
+                &session_id,
+                &agent_id,
+                &attachment_id,
+                None,
+                None,
+            )
             .await
     });
     tokio::time::timeout(std::time::Duration::from_secs(2), request_seen_rx)
@@ -642,6 +648,7 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
                 &cancel_agent_id,
                 &cancel_attachment_id,
                 None,
+                None,
             )
             .await
     });
@@ -693,13 +700,86 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
         .expect("cancellation task should join")
         .expect("settled cancellation should finalize")
         .expect("direct remote cancellation should be handled");
-    metadata_server
-        .await
-        .expect("worker metadata fixture should join");
     assert_eq!(
         cancellation.cancellation.prompt.id(),
         home_prompt_id,
         "settling the worker run must preserve the exact cancelled home prompt"
+    );
+    // MP-08 / MP-10 / MP-11: absence proves settlement, not cancellation.
+    assert_eq!(
+        cancellation.cancellation.prompt.status(),
+        crate::session::PromptStatus::Cancelling,
+        "NoActivePrompt cannot manufacture a cancellation outcome"
+    );
+    let (drain_id, target_id, request) = next_peer_request(
+        &mut peer_requests,
+        &worker_private_key,
+        "settled turn outcome replay",
+    )
+    .await;
+    assert_eq!(target_id, WORKER_ID);
+    assert!(
+        matches!(request, RelayPeerRequest::DrainLeasedRuntimeProjection { provider_run_id, .. } if provider_run_id == WORKER_RUN_ID)
+    );
+    acknowledge_peer_request(
+        &relay_state,
+        drain_id,
+        &worker_private_key,
+        &home_public_key,
+        RelayPeerResponse::LeasedRuntimeProjectionDrained {
+            event: Some(
+                crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    delivery: None,
+                    home_session_id: session_id.clone(),
+                    home_agent_id: agent_id.clone(),
+                    provider_run_id: WORKER_RUN_ID.into(),
+                    provider_run: None,
+                    prompts: vec![],
+                    output_chunks: vec![],
+                    notices: vec![],
+                    completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                        message_id: "completed-before-cancel".into(),
+                        completed_at_ms: crate::session::unix_epoch_ms(),
+                        home_prompt_id: Some(home_prompt_id.clone()),
+                        settlement_status: Some(
+                            crate::git_observer::CompletedTurnSettlementStatus::Completed,
+                        ),
+                        provider_termination: None,
+                    }],
+                },
+            ),
+        },
+    )
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let session = runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .unwrap();
+            if runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id)
+                .is_some_and(|prompt| prompt.id() == queued_successor_prompt_id)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let settled = runtime
+        .with_app_side_effect(|app| {
+            app.completed_git_turn_snapshot_store()
+                .projection_for_prompt(&session_id, &agent_id, &home_prompt_id)
+        })
+        .await;
+    assert_eq!(
+        settled.unwrap().settlement_status,
+        crate::git_observer::CompletedTurnSettlementStatus::Completed
     );
     let session = runtime
         .owned
@@ -719,6 +799,9 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
     );
     let successor_prompt_id = active_successor.id().to_string();
 
+    metadata_server
+        .await
+        .expect("worker metadata fixture should join");
     let mut submit_count = 0;
     loop {
         let (request_id, target_id, request) = next_successor_peer_request(
@@ -1119,6 +1202,7 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
                 &cancel_agent_id,
                 &cancel_attachment_id,
                 None,
+                None,
             )
             .await
     });
@@ -1351,6 +1435,7 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
         RelayPeerResponse::LeasedRuntimeProjectionDrained {
             event: Some(
                 crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    delivery: None,
                     home_session_id: session_id.clone(),
                     home_agent_id: agent_id.clone(),
                     provider_run_id: WORKER_RUN_ID.to_string(),
@@ -1362,6 +1447,7 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
                         message_id: "cancel-ack-completion".to_string(),
                         completed_at_ms: 1,
                         home_prompt_id: Some(prompt_id.clone()),
+                        settlement_status: None,
                         provider_termination: None,
                     }],
                 },
@@ -1394,4 +1480,101 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
     })
     .await
     .expect("the exact terminal projection should settle the cancelled prompt");
+}
+
+#[tokio::test]
+async fn resumed_remote_cancellation_fences_to_the_expected_prompt() {
+    // MP-08: ACK-settlement and receipt-reconciliation resume cancellation for a specific
+    // prompt; when its queued successor became active meanwhile, nothing may be cancelled.
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .expect("home app should bootstrap with an authenticated Codex test profile");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            crate::session::CreateSessionRequest::new(
+                "resume-fence-workspace",
+                "resume-fence-worktree",
+            )
+            .with_agent_defaults(
+                crate::session::SessionAgentDefaults::new("codex").with_model("gpt-test"),
+            ),
+        )
+        .expect("home session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "resume-fence-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("home attachment should be created");
+    app.agents
+        .bind_remote_execution(
+            agent.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: WORKER_ID.to_string(),
+                worker_machine_id: "worker-machine-resume-fence".to_string(),
+                execution_lease_id: "worker-lease-resume-fence".to_string(),
+                leased_agent_id: LEASED_AGENT_ID.to_string(),
+                active_worker_provider_run_id: Some(WORKER_RUN_ID.to_string()),
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .expect("home agent should bind to the fake worker");
+    let crate::session::PromptSubmissionOutcome::Started {
+        prompt: active_prompt,
+    } = app
+        .prompt_owner_submit_prepared_prompt(
+            session.id(),
+            crate::session::PromptQueueItem::new(
+                "resume-fence-active-prompt",
+                attachment.id(),
+                agent.id(),
+                "the successor that is now active",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+        )
+        .expect("active remote prompt should be admitted")
+    else {
+        panic!("remote prompt should become active immediately");
+    };
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let attachment_id = attachment.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+
+    let result = runtime
+        .cancel_remote_agent_prompt_if_remote(
+            &session_id,
+            &agent_id,
+            &attachment_id,
+            Some("resume-fence-settled-prompt"),
+            None,
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(DaemonError::NoActivePrompt { .. })),
+        "a settled prompt's resumed cancellation must not select its successor: {:?}",
+        result.as_ref().err()
+    );
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .expect("home session should remain available");
+    assert_eq!(
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .map(|prompt| prompt.id().to_string()),
+        Some(active_prompt.id().to_string()),
+        "the successor prompt must remain active and uncancelled"
+    );
 }

@@ -21,7 +21,7 @@ async function fixture(t) {
   t.after(() => rm(root, { recursive: true, force: true }));
   const input = join(root, 'unsigned');
   await mkdir(join(input, 'sdk'), { recursive: true });
-  for (const name of ['chariox-kernel', 'chariox-app-runtime-install', 'chariox-app-worker', 'libnode.137.dylib', 'libchariox-app-runtime.dylib'])
+  for (const name of ['chariox-kernel', 'chariox-app-runtime-install', 'chariox-app-worker', 'chariox-setup', 'libnode.137.dylib', 'libchariox-app-runtime.dylib'])
     await writeFile(join(input, name), Buffer.concat([MACH_O, Buffer.from(name)]));
   await writeFile(join(input, 'sdk/index.js'), 'export {};\n');
   return { root, input, output: join(root, 'signed') };
@@ -58,22 +58,24 @@ test('arguments refuse non-Developer ID identities, bad profiles and credential 
   assert.throws(() => parseArguments(['--input', '--output', 'b'], {}), /--input needs a value/u);
 });
 
-test('the dry-run plan signs copies inside-out with JIT only on the App worker', async t => {
+test('MP-07 / MP-11: the plan grants JIT only to the App worker and Bun Setup', async t => {
   const paths = await fixture(t);
   const { plan } = await signMacosRelease(options(paths, ['--dry-run']),
     { run: () => assert.fail('dry run executed a command'), platform: 'linux' });
   await assert.rejects(lstat(paths.output), { code: 'ENOENT' });
   assert.deepEqual(plan.files.map(file => [file.path, file.role]), [
     ['chariox-app-runtime-install', 'executable'], ['chariox-app-worker', 'jit-executable'],
-    ['chariox-kernel', 'executable'], ['libchariox-app-runtime.dylib', 'library'],
+    ['chariox-kernel', 'executable'], ['chariox-setup', 'jit-executable'], ['libchariox-app-runtime.dylib', 'library'],
     ['libnode.137.dylib', 'library'], ['sdk/index.js', 'data']]);
   const signing = plan.steps.filter(step => step.phase === 'sign');
   assert.deepEqual(signing.map(step => step.file.path), ['libchariox-app-runtime.dylib', 'libnode.137.dylib',
-    'chariox-app-runtime-install', 'chariox-app-worker', 'chariox-kernel']);
+    'chariox-app-runtime-install', 'chariox-app-worker', 'chariox-kernel', 'chariox-setup']);
   for (const step of signing) {
     assert.deepEqual(step.command.slice(0, 7), ['/usr/bin/codesign', '--force', '--sign', IDENTITY, '--timestamp', '--options', 'runtime']);
     assert.equal(step.command.at(-1), join(plan.output, step.file.path));
-    assert.equal(step.command.includes('--entitlements'), step.file.path === 'chariox-app-worker');
+    const jit = ['chariox-app-worker', 'chariox-setup'].includes(step.file.path);
+    assert.equal(step.command.includes('--entitlements'), jit);
+    if (jit) assert.equal(step.command[8], WORKER_ENTITLEMENTS);
   }
   assert.equal(signing[3].command[8], WORKER_ENTITLEMENTS);
   assert.deepEqual(plan.steps.map(step => step.phase).filter((phase, index, all) => phase !== all[index - 1]),
@@ -81,7 +83,7 @@ test('the dry-run plan signs copies inside-out with JIT only on the App worker',
   assert.deepEqual(plan.steps.find(step => step.phase === 'notarize').command, ['/usr/bin/xcrun', 'notarytool', 'submit',
     `${plan.output}.notarization.zip`, '--keychain-profile', PROFILE, '--wait', '--output-format', 'json']);
   assert.deepEqual(plan.steps.filter(step => step.phase === 'gatekeeper').map(step => step.file.path),
-    ['chariox-app-runtime-install', 'chariox-app-worker', 'chariox-kernel']);
+    ['chariox-app-runtime-install', 'chariox-app-worker', 'chariox-kernel', 'chariox-setup']);
   assert.ok(plan.steps.every(step => step.phase === 'copy'
     || !step.command.some(word => word === paths.input || word.startsWith(`${paths.input}/`))));
   const text = formatPlan(plan);
@@ -114,8 +116,10 @@ test('the plan refuses stale inventories, links, existing outputs and inputs wit
 });
 
 // Simulates the Apple tools: ditto copies, codesign changes the code bytes.
-function apple({ notary = 'Accepted', runtime = true, authority = IDENTITY, extraEntitlement = false, gatekeeper = true } = {}) {
+function apple({ notary = 'Accepted', runtime = true, authority = IDENTITY, extraEntitlement = false, gatekeeper = true,
+  entitlementOverride = {} } = {}) {
   const calls = [];
+  const signedEntitlements = new Map();
   const run = command => {
     calls.push(command);
     const [tool, ...args] = command;
@@ -124,12 +128,16 @@ function apple({ notary = 'Accepted', runtime = true, authority = IDENTITY, extr
     if (tool === '/usr/bin/ditto' && args[0] === '-c') { writeFileSync(file, 'zip'); return ok(); }
     if (tool === '/usr/bin/ditto') { cpSync(args[0], args[1], { recursive: true }); return ok(); }
     if (tool === '/bin/chmod') return ok();
-    if (tool === '/usr/bin/codesign' && args[0] === '--force') { appendFileSync(file, 'signature'); return ok(); }
+    if (tool === '/usr/bin/codesign' && args[0] === '--force') {
+      signedEntitlements.set(file, args.includes('--entitlements') ? readFileSync(args[args.indexOf('--entitlements') + 1], 'utf8') : '');
+      appendFileSync(file, 'signature'); return ok();
+    }
     if (tool === '/usr/bin/codesign' && args[0] === '--verify') return ok('', `${file}: valid on disk\n`);
     if (tool === '/usr/bin/codesign' && args.includes('--entitlements')) {
-      const keys = file.endsWith('chariox-app-worker') ? ['com.apple.security.cs.allow-jit'] : [];
-      if (extraEntitlement) keys.push('com.apple.security.cs.disable-library-validation');
-      return ok(keys.length ? `<plist><dict>${keys.map(key => `<key>${key}</key><true/>`).join('')}</dict></plist>` : '');
+      const name = file.split('/').at(-1);
+      let plist = entitlementOverride[name] ?? signedEntitlements.get(file) ?? '';
+      if (extraEntitlement) plist += '<key>com.apple.security.cs.disable-library-validation</key><true/>';
+      return ok(plist);
     }
     if (tool === '/usr/bin/codesign') return ok('', [`Executable=${file}`,
       `CodeDirectory v=20500 size=1 flags=${runtime ? '0x10000(runtime)' : '0x0(none)'} hashes=1+0 location=embedded`,
@@ -161,8 +169,41 @@ test('a signed run returns re-signed digests, the notarization and Gatekeeper re
     archive: `${receipt.output}.notarization.zip`, archiveSha256: receipt.notarization.archiveSha256,
     log: `${receipt.output}.notarization-log.json` });
   assert.deepEqual(tools.calls.find(command => command[2] === 'log').slice(3, 4), ['2efe2717-52ef-43a5-96dc-0797e4ca1041']);
-  assert.deepEqual(receipt.gatekeeper.map(entry => entry.path), ['chariox-app-runtime-install', 'chariox-app-worker', 'chariox-kernel']);
+  assert.deepEqual(receipt.gatekeeper.map(entry => entry.path), ['chariox-app-runtime-install', 'chariox-app-worker', 'chariox-kernel', 'chariox-setup']);
+  assert.deepEqual(receipt.files.find(file => file.path === 'chariox-setup').entitlements, ['com.apple.security.cs.allow-jit']);
   assert.equal(readFileSync(join(paths.input, 'chariox-kernel')).toString('latin1').endsWith('signature'), false);
+});
+
+test('MP-07 / MP-11: Setup requires enabled JIT and refuses excess entitlements', async t => {
+  const paths = await fixture(t);
+  for (const plist of ['', '<plist><dict><key>com.apple.security.cs.allow-jit</key><false/></dict></plist>',
+    '<plist><dict><key>com.apple.security.cs.allow-jit</key><true/><key>com.apple.security.cs.disable-library-validation</key><true/></dict></plist>']) {
+    await assert.rejects(signMacosRelease(options(paths), {
+      run: apple({ entitlementOverride: { 'chariox-setup': plist } }).run, platform: 'darwin',
+    }), /chariox-setup has unexpected entitlements/u);
+    await assert.rejects(lstat(paths.output), { code: 'ENOENT' });
+  }
+  await assert.rejects(signMacosRelease(options(paths), {
+    run: apple({ entitlementOverride: { 'chariox-kernel': '<plist><dict><key>com.apple.security.cs.allow-jit</key><true/></dict></plist>' } }).run,
+    platform: 'darwin',
+  }), /chariox-kernel has unexpected entitlements/u);
+});
+
+test('MP-07 / MP-11: release workflow executes signed Setup and rejects broken or wrong-version output', async t => {
+  const workflow = readFileSync(new URL('../.github/workflows/release-bundle.yml', import.meta.url), 'utf8');
+  const smoke = workflow.split('\n').find(line => line.includes('signed/bin/chariox-setup') && line.trimStart().startsWith('test '));
+  assert.ok(smoke, 'macOS release must smoke-test the signed Setup executable');
+  assert.ok(workflow.indexOf(smoke) > workflow.indexOf('node scripts/sign-macos-release.mjs --input "$RUNNER_TEMP/executables"'));
+  assert.ok(workflow.indexOf(smoke) < workflow.indexOf('- name: Assemble, sign and verify the bundle', workflow.indexOf('  macos:')));
+  const paths = await fixture(t);
+  await mkdir(join(paths.root, 'signed/bin'), { recursive: true });
+  const setup = join(paths.root, 'signed/bin/chariox-setup');
+  for (const [body, accepted] of [['echo "Chariox Setup 0.3.0"', true], ['echo "Chariox Setup 0.2.0"', false], ['exit 1', false]]) {
+    await writeFile(setup, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    const result = spawnSync('/bin/bash', ['-c', smoke.trim()], { encoding: 'utf8',
+      env: { RUNNER_TEMP: paths.root, VERSION: '0.3.0' } });
+    assert.equal(result.status === 0, accepted, result.stderr);
+  }
 });
 
 test('a rejected notarization or a wrong signature removes the signed copy', async t => {

@@ -25,6 +25,7 @@ pub(crate) struct ProviderOutputFanout {
     session_store: SessionStateStore,
     operational_history_store: OperationalHistoryStore,
     archive_enabled: bool,
+    record_history: bool,
     terminal: TerminalStreamStore,
     metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
 }
@@ -46,8 +47,16 @@ impl ProviderOutputFanout {
             session_store: app.sessions.clone(),
             operational_history_store: app.operational_history_store(),
             archive_enabled: app.history_archive_enabled(),
+            record_history: true,
             terminal: app.terminal.clone(),
             metaagent_trace_subscriptions: app.metaagent_trace_subscription_store(),
+        }
+    }
+
+    pub(crate) fn without_history(app: &DaemonApp) -> Self {
+        Self {
+            record_history: false,
+            ..Self::new(app)
         }
     }
 
@@ -175,19 +184,21 @@ impl ProviderOutputFanout {
                     );
                 }
             }
-            self.append_history_entry(
-                session_id,
-                SessionHistoryEntry::provider_output(
+            if self.record_history {
+                self.append_history_entry(
                     session_id,
-                    provider_run_id,
-                    agent_id,
-                    kind,
-                    merge_key,
-                    text,
-                )
-                .with_prompt_origin(prompt_metadata.prompt_origin)
-                .with_source_attachment_id(prompt_metadata.source_attachment_id),
-            );
+                    SessionHistoryEntry::provider_output(
+                        session_id,
+                        provider_run_id,
+                        agent_id,
+                        kind,
+                        merge_key,
+                        text,
+                    )
+                    .with_prompt_origin(prompt_metadata.prompt_origin)
+                    .with_source_attachment_id(prompt_metadata.source_attachment_id),
+                );
+            }
         }
         record
     }
@@ -302,10 +313,12 @@ impl ProviderOutputFanout {
             message.clone(),
         );
         self.notify_metaagent_trace_activity(session_id, agent_id);
-        self.append_history_entry(
-            session_id,
-            SessionHistoryEntry::notice(session_id, provider_run_id, agent_id, message),
-        );
+        if self.record_history {
+            self.append_history_entry(
+                session_id,
+                SessionHistoryEntry::notice(session_id, provider_run_id, agent_id, message),
+            );
+        }
         record
     }
 
@@ -348,14 +361,42 @@ impl ProviderOutputFanout {
         );
         let recipient_attachment_ids =
             self.with_metaagent_trace_recipient_ids(session_id, agent_id, recipient_attachment_ids);
-        self.terminal.record_assistant_message_completion(
-            session_id,
-            provider_run_id,
-            agent_id,
-            recipient_attachment_ids,
-            message_id,
-            completed_at_ms,
-        );
+        // MP-08 / MP-10 / MP-11: retain the turn that owned the receipt before
+        // settlement or queue promotion can remove its active-turn identity.
+        let prompt_id = message_id
+            .strip_prefix("prompt-complete:")
+            .map(str::to_string)
+            .or_else(|| {
+                self.active_turns
+                    .get(provider_run_id)
+                    .filter(|turn| {
+                        turn.session_id == session_id
+                            && agent_id.is_none_or(|id| turn.agent_id == id)
+                    })
+                    .map(|turn| turn.prompt_id)
+            })
+            .or_else(|| {
+                agent_id.and_then(|id| {
+                    self.session_store
+                        .get_session(session_id)
+                        .ok()
+                        .and_then(|session| {
+                            self.prompt_state_owner
+                                .active_prompt_for_agent_snapshot(&session, id)
+                        })
+                        .map(|prompt| prompt.id().to_string())
+                })
+            });
+        self.terminal
+            .record_assistant_message_completion_for_prompt(
+                session_id,
+                provider_run_id,
+                agent_id,
+                recipient_attachment_ids,
+                message_id,
+                completed_at_ms,
+                prompt_id.as_deref(),
+            );
         self.notify_metaagent_trace_activity(session_id, agent_id);
     }
 

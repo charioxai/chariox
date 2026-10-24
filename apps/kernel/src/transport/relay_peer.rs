@@ -102,10 +102,12 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Version70 combines Apps Phase1 and autonomous Room observation contracts (MP-08/MP-10).
 /// Version73 adds bounded Browser artifacts, opaque upload bytes and bounded Computer holds (MP-08/MP-10/MP-11).
 /// A v70 worker cannot decode these controller variants; reject it before dispatch.
-/// Version 101 binds the embedded local response union to local protocol 491,
+/// Version 118 binds the embedded local response union to local protocol 510,
 /// restores owner-private workflow notifications to the Browser/Computer peer
-/// union and pairs exact home-prompt cancellation admission (MP-08/MP-10/MP-11).
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 101;
+/// union, exact home-prompt cancellation and definitive completion outcomes (MP-08/MP-10/MP-11).
+/// Version128 binds owner-managed destinations to local520. Version134 adds scoped
+/// native Codex display transport. Version139 adds Open replay and Exchange receipts.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 139;
 pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
     "provider_launch_credential_required";
 pub const PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE: &str = "project_environment_setup_not_found";
@@ -184,6 +186,8 @@ pub struct RelayManagedContextImportedRepository {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayManagedContextImportReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<crate::managed_context::owner_managed::OwnerManagedDestination>,
     pub transfer_id: String,
     pub archive_sha256: String,
     pub plan_digest: String,
@@ -726,6 +730,12 @@ pub enum RelayPeerRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_launch_credential: Option<RemoteProviderLaunchCredential>,
     },
+    NativeProviderTransport {
+        leased_agent_id: String,
+        provider_run_id: String,
+        attachment_id: String,
+        operation: crate::local::NativeProviderTransportOperation,
+    },
     SendLeasedNativeProviderInput {
         leased_agent_id: String,
         provider_run_id: String,
@@ -790,6 +800,11 @@ pub enum RelayPeerRequest {
         provider_run_id: String,
         #[serde(default)]
         pump_output: bool,
+    },
+    AcknowledgeLeasedRuntimeProjection {
+        leased_agent_id: String,
+        provider_run_id: String,
+        delivery: RelayProjectionDelivery,
     },
     CompleteLeasedPrompt {
         leased_agent_id: String,
@@ -974,7 +989,10 @@ pub enum RelayPeerRequest {
     },
     ArmManagedContextImport {
         plan: crate::managed_context::package::ManagedContextPlanBinding,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         target_environment_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination: Option<crate::managed_context::owner_managed::OwnerManagedDestination>,
         target_kernel_id: String,
         target_key_thumbprint: String,
         capability: RelayManagedContextCapability,
@@ -1005,6 +1023,9 @@ pub enum RelayPeerRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerResponse {
+    NativeProviderTransport {
+        result: crate::local::NativeProviderTransportResult,
+    },
     WorkflowNotificationSources {
         protocol_version: u32,
         sources: Vec<crate::local::WorkflowNotificationSourceSummary>,
@@ -1120,6 +1141,9 @@ pub enum RelayPeerResponse {
     LeasedRuntimeProjectionDrained {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         event: Option<RelayPeerEvent>,
+    },
+    LeasedRuntimeProjectionAcknowledged {
+        accepted: bool,
     },
     LeasedPromptCompleted {
         provider_run_id: Option<String>,
@@ -1272,6 +1296,8 @@ pub struct RelayProjectedCompletion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_prompt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement_status: Option<crate::git_observer::CompletedTurnSettlementStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_termination: Option<crate::provider::ProviderRunTermination>,
 }
 
@@ -1281,6 +1307,15 @@ pub struct RelayProjectedPrompt {
     pub text: String,
 }
 
+// MP-08 / MP-10 / MP-11: allocated local531/peer139 projection delivery receipts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelayProjectionDelivery {
+    pub execution_lease_id: String,
+    pub leased_agent_id: String,
+    pub sequence: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerEvent {
@@ -1288,6 +1323,8 @@ pub enum RelayPeerEvent {
         home_session_id: String,
         home_agent_id: String,
         provider_run_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delivery: Option<RelayProjectionDelivery>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_run: Option<crate::provider::RuntimeProviderRun>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1305,7 +1342,7 @@ mod tests {
 
     #[test]
     fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 139);
         let request = RelayPeerRequest::CancelLeasedPrompt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1342,7 +1379,7 @@ mod tests {
 
     #[test]
     fn remote_room_browser_capability_manifest_is_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 139);
         let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
             leased_agent_id: "leased-agent-1".to_string(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest {
@@ -1364,16 +1401,18 @@ mod tests {
 
     #[test]
     fn leased_completion_provider_termination_shape_is_versioned() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 139);
         let completion = RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
             home_prompt_id: Some("home-prompt-1".to_string()),
+            settlement_status: Some(crate::git_observer::CompletedTurnSettlementStatus::Failed),
             provider_termination: Some(crate::provider::ProviderRunTermination::process_exit(
                 137, 1_234,
             )),
         };
         let snapshot = serde_json::to_value(completion).expect("completion should serialize");
+        assert_eq!(snapshot["settlement_status"], "failed");
         assert_eq!(
             snapshot.pointer("/provider_termination/category"),
             Some(&serde_json::json!("process_exit")),
@@ -1392,8 +1431,32 @@ mod tests {
         let hash = Sha256::digest(serialized.as_bytes());
         assert_eq!(
             format!("{hash:x}"),
-            "33a761cae057a2577bc65fad2c73a002d42cabd29919aff086cea248f156a238",
+            "8fba15f21a774a111df62197c97cb4bbdfc955b563b44c225675712ecc9b4e13",
         );
+    }
+
+    #[test]
+    fn mp08_mp10_completion_510_118_legacy_omission_is_compatible() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 139);
+        let old = serde_json::json!({"message_id":"message", "completed_at_ms":42,
+            "home_prompt_id":"prompt"});
+        let completion: RelayProjectedCompletion = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(completion.settlement_status, None);
+        assert_eq!(serde_json::to_value(completion).unwrap(), old);
+        // The old shape ignores the additive field; peer-generation admission
+        // remains responsible for incompatible peers before projection.
+        #[derive(Deserialize)]
+        struct OldCompletion {
+            message_id: String,
+            completed_at_ms: u64,
+        }
+        for status in ["completed", "cancelled", "failed"] {
+            let mut wire = old.clone();
+            wire["settlement_status"] = serde_json::json!(status);
+            let previous: OldCompletion = serde_json::from_value(wire).unwrap();
+            assert_eq!(previous.message_id, "message");
+            assert_eq!(previous.completed_at_ms, 42);
+        }
     }
 
     #[test]
@@ -1417,6 +1480,7 @@ mod tests {
                 message_id: "assistant-msg-1".to_string(),
                 completed_at_ms: provider_termination.timestamp_ms,
                 home_prompt_id: Some("home-prompt-1".to_string()),
+                settlement_status: None,
                 provider_termination: Some(provider_termination),
             };
             let snapshot = serde_json::to_value(completion)
@@ -1430,7 +1494,7 @@ mod tests {
 
     #[test]
     fn leased_project_setup_target_resolution_is_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 139);
         let request = RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
             leased_agent_id: "leased-agent-1".to_string(),
             home_session_id: "home-session-1".to_string(),
@@ -1474,7 +1538,7 @@ mod tests {
 
     #[test]
     fn project_environment_setup_relay_shapes_round_trip_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 139);
         let definition = crate::session::ProjectEnvironmentDefinition {
             schema_version: 1,
             origin: crate::session::ProjectEnvironmentDefinitionOrigin::UtilityGenerated,
@@ -1649,7 +1713,7 @@ mod tests {
 
     #[test]
     fn leased_prompt_receipt_query_and_steer_reconciliation_are_versioned_at_protocol_66() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 139);
         let request = RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id: "leased-agent-1".to_string(),
             home_prompt_id: "home-prompt-1".to_string(),
@@ -1954,7 +2018,7 @@ mod native_approval_protocol_tests {
     #[test]
     fn native_approval_origin_relay_shape_is_versioned() {
         use sha2::{Digest, Sha256};
-        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 491);
+        assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 531);
         let snapshot = serde_json::json!({"kind": "forward_native_turn_interaction",
             "context": {"home_session_id":"home-session", "home_agent_id":"home-agent",
                 "leased_agent_id":"lease", "worker_provider_run_id":"run", "home_prompt_id":"home-prompt-A"},
@@ -1981,7 +2045,7 @@ mod project_environment_adjustment_shapes {
     #[test]
     fn mp08_mp10_mp11_worker_environment_shapes_are_protocol_66() {
         use sha2::{Digest, Sha256};
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 139);
         let request = RelayPeerRequest::ReadLeasedProjectEnvironment {
             context: RemoteSkillSyncContext {
                 home_kernel_id: "home".into(),
@@ -2019,7 +2083,7 @@ mod project_environment_export_shapes {
     #[test]
     fn mp08_mp10_mp11_source_export_and_target_reuse_shapes_require_peer_66() {
         use sha2::{Digest, Sha256};
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 139);
         let value: serde_json::Value = serde_json::from_str(r#"{"kind":"export_leased_project_environment","context":{"home_kernel_id":"home","home_session_id":"session","home_agent_id":"agent","leased_agent_id":"leased-agent"},"interactive":true,"target_name":"second","target":{"context_id":"lease2","kernel_id":"worker2","public_key":"public2"}}"#).unwrap();
         let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
         let roundtrip = serde_json::to_value(request).unwrap();
@@ -2073,13 +2137,31 @@ mod project_environment_export_shapes {
 }
 
 #[cfg(test)]
-mod workflow_notification_101_shapes {
+mod owner_managed_context_shapes {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    #[test]
+    fn mp08_mp11_owner_managed_arm_shape_requires_peer_117() {
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 139);
+        let value: serde_json::Value = serde_json::from_str(r#"{"kind":"arm_managed_context_import","plan":{"contextId":"context","planDigest":"digest","destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"kernelContext":"source_kernel_without_credentials","development":{"kind":"empty"},"providerAccounts":{"kind":"none"},"gitCredentials":{"kind":"none"}},"destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"target_kernel_id":"kernel","target_key_thumbprint":"thumbprint","capability":"capability","archive_sha256":"archive","archive_size_bytes":128}"#).unwrap();
+        let request: RelayPeerRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), value);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(serde_json::to_vec(&value).unwrap())),
+            "972bfa82e0e37d399f829a7cca14b7260100b207c610d86ccc2c0039eaab6bf4"
+        );
+        assert!(value.get("target_environment_id").is_none());
+    }
+}
+
+#[cfg(test)]
+mod workflow_notification_128_shapes {
     use super::*;
     use crate::local::*;
     use sha2::{Digest, Sha256};
     #[test]
     fn mp08_mp10_completion_peer_101_snapshot() {
-        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 101);
+        assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 139);
         let sub = WorkflowNotificationSubscription {
             delivery_mode: crate::local::NotificationDeliveryMode::Queue,
             subscription_id: "sub".into(),
@@ -2110,26 +2192,26 @@ mod workflow_notification_101_shapes {
         };
         let requests = vec![
             RelayPeerRequest::ListWorkflowNotificationSources {
-                protocol_version: 101,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
             },
             RelayPeerRequest::SubscribeWorkflowNotifications {
-                protocol_version: 101,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 source_workflow_ref: "source".into(),
                 target_ref: sub.clone(),
             },
             RelayPeerRequest::DeliverWorkflowNotification {
-                protocol_version: 101,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 subscription_id: "sub".into(),
                 envelope: env,
             },
             RelayPeerRequest::UnsubscribeWorkflowNotifications {
-                protocol_version: 101,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 subscription_id: "sub".into(),
             },
         ];
         let responses = vec![
             RelayPeerResponse::WorkflowNotificationSources {
-                protocol_version: 101,
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 sources: vec![WorkflowNotificationSourceSummary {
                     source_id: "source".into(),
                     kernel_id: "kernel".into(),
@@ -2148,9 +2230,15 @@ mod workflow_notification_101_shapes {
             RelayPeerResponse::WorkflowNotificationUnsubscribed,
         ];
         let wire = serde_json::json!({"requests":requests,"responses":responses});
+        // MP-08 / MP-10 / MP-11: the existing subscription serializes Queue in both directions.
+        assert_eq!(wire["requests"][1]["target_ref"]["delivery_mode"], "queue");
+        assert_eq!(
+            wire["responses"][1]["subscription"]["delivery_mode"],
+            "queue"
+        );
         assert_eq!(
             format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-            "d9e19811e96919dc9760c1e0151c755a54c7760bc7e05a398e2db381d1a291a8"
+            "a7b2c24a398d4f4ef580730d53b30f9194796dcb795e61c59ba27fba3fd78d8d"
         );
     }
 }

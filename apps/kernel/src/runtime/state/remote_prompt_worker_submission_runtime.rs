@@ -1052,13 +1052,15 @@ pub(super) fn remote_prompt_error_should_retry_transport(error: &DaemonError) ->
     let (operation, message) = match error {
         DaemonError::RelayTransport {
             operation,
+            code,
             retryable: true,
             ..
         } => {
             return matches!(
                 *operation,
                 "read relay peer response" | "read temporary relay peer response"
-            );
+            ) || (*operation == "send relay peer request"
+                && matches!(code.as_str(), "relay_disconnected" | "write_failed"));
         }
         DaemonError::RelayTransport { .. } => return false,
         DaemonError::LocalTransport { operation, message } => (*operation, message.as_str()),

@@ -10,15 +10,19 @@ pub(crate) struct ProviderReportedTranscript {
 
 impl ProviderReportedTranscript {
     pub(super) fn open(path: PathBuf, confined: bool) -> Option<Self> {
+        Self::open_with_error(path, confined).ok()
+    }
+
+    pub(super) fn open_with_error(path: PathBuf, confined: bool) -> std::io::Result<Self> {
         let file = if confined {
             open_without_symlinks(&path)?
         } else {
-            File::open(&path).ok()?
+            File::open(&path)?
         };
-        file.metadata()
-            .ok()?
-            .is_file()
-            .then_some(Self { path, file })
+        if !file.metadata()?.is_file() {
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+        }
+        Ok(Self { path, file })
     }
 
     pub(crate) fn read(mut self) -> std::io::Result<String> {
@@ -29,14 +33,14 @@ impl ProviderReportedTranscript {
 }
 
 #[cfg(unix)]
-fn open_without_symlinks(path: &std::path::Path) -> Option<File> {
+fn open_without_symlinks(path: &std::path::Path) -> std::io::Result<File> {
     use std::ffi::CString;
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::ffi::OsStrExt;
     use std::path::Component;
 
     if !path.is_absolute() {
-        return None;
+        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
     }
     let components = path
         .components()
@@ -45,15 +49,17 @@ fn open_without_symlinks(path: &std::path::Path) -> Option<File> {
             Component::Normal(name) => Some(Some(name)),
             _ => Some(None),
         })
-        .collect::<Option<Vec<_>>>()?;
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
     if components.is_empty() {
-        return None;
+        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
     }
     // Open every component relative to its held parent. No mutable path is
     // reopened after admission, and no ancestor/leaf link can escape the bind.
-    let mut opened = File::open("/").ok()?;
+    let mut opened = File::open("/")?;
     for (index, name) in components.iter().enumerate() {
-        let name = CString::new(name.as_bytes()).ok()?;
+        let name = CString::new(name.as_bytes())
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
         let last = index + 1 == components.len();
         let flags = libc::O_RDONLY
             | libc::O_CLOEXEC
@@ -66,18 +72,18 @@ fn open_without_symlinks(path: &std::path::Path) -> Option<File> {
         // SAFETY: the parent is held open and name is a valid NUL-terminated component.
         let fd = unsafe { libc::openat(opened.as_raw_fd(), name.as_ptr(), flags) };
         if fd < 0 {
-            return None;
+            return Err(std::io::Error::last_os_error());
         }
         // SAFETY: openat returned an owned descriptor, consumed exactly once.
         opened = unsafe { File::from_raw_fd(fd) };
     }
-    Some(opened)
+    Ok(opened)
 }
 
 #[cfg(not(unix))]
-fn open_without_symlinks(_path: &std::path::Path) -> Option<File> {
+fn open_without_symlinks(_path: &std::path::Path) -> std::io::Result<File> {
     // Managed account mounts are a Unix contract; fail closed elsewhere.
-    None
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
 }
 
 #[cfg(all(test, unix))]

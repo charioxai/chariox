@@ -117,7 +117,8 @@ impl KernelRuntimeOwnedState {
 }
 
 /// Answered only through a responder held by this kernel process: kernel
-/// operation decisions and vault unlock prompts (`vault-unlock-…`).
+/// operation decisions and Vault prompts (`vault-…`: unlock, lease, manage,
+/// passphrase change; panel or agent).
 fn waits_in_memory(interaction: &crate::session::RuntimeInteraction) -> bool {
-    interaction.kernel_operation_id().is_some() || interaction.id().starts_with("vault-unlock-")
+    interaction.kernel_operation_id().is_some() || interaction.id().starts_with("vault-")
 }

@@ -1,3 +1,4 @@
+import { localKernelConnectionLabel } from "../local-connection-indicator.js"
 import { spawn } from "node:child_process"
 import { appendFileSync } from "node:fs"
 import path from "node:path"
@@ -30,7 +31,7 @@ import {
   requestNativeProviderRunLaunch,
   waitForNativeProviderRunReady,
 } from "./provider-run-control.js"
-import { bridgeRemoteNativeProviderEndpoint } from "./remote-endpoint-bridge.js"
+import { startCodexKernelTransport } from "./codex-kernel-transport.js"
 import {
   formatNativeTuiRuntimeBanner,
 } from "./runtime-banner.js"
@@ -90,6 +91,10 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
 
   try {
     const remotePlacement = Boolean(options.machineRef || options.sliceRef)
+    // An explicit endpoint may name another machine or a local port forward.
+    // Its provider loopback address belongs to the owning kernel in both cases.
+    const useKernelTransport = remotePlacement || Boolean(options.relayUrl || options.kernelUrl
+      || process.env.CHARIOX_KERNEL_URL || process.env.CHARIOX_KERNEL_HOST)
     const created = options.sessionRef
       ? null
       : await createNativeSession(client, workspace, worktree, options.alias, {
@@ -112,7 +117,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     }
     // MP-08 / MP-10: Every native server uses the normal kernel adapter so
     // granted MCPs and provider-account configuration reach the actual harness.
-    const run = await launchManagedNativeProviderRun({
+    const run = await launchKernelNativeProviderRun({
       client,
       sessionId: session.id,
       agentId: agent.id,
@@ -124,9 +129,10 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     }
     bindState.promise = Promise.resolve(run)
     bindState.run = run
-    let upstreamEndpoint = run.structured_endpoint
-    const bridgedEndpoint = await bridgeRemoteNativeProviderEndpoint(upstreamEndpoint, "Codex")
-    upstreamEndpoint = bridgedEndpoint.endpoint
+    const bridgedEndpoint = useKernelTransport
+      ? await startCodexKernelTransport({ client, sessionId: session.id, attachmentId: attachment.id, agentId: agent.id, providerRunId: run.id })
+      : { endpoint: run.structured_endpoint, close: async () => {} }
+    const upstreamEndpoint = bridgedEndpoint.endpoint
     endpointBridge = bridgedEndpoint
     proxy = await startCodexProxy({
       upstreamEndpoint,
@@ -137,7 +143,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       model: options.model,
       effort: options.effort,
       bindState,
-      inlineLocalAttachments: Boolean(options.relayUrl) || remotePlacement || promptAttachmentTransferIsForced(),
+      inlineLocalAttachments: useKernelTransport || promptAttachmentTransferIsForced(),
       debug: debugNativeCodex,
     })
     const proxyAddress = proxy.address()
@@ -150,6 +156,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       ? await loadNativeTuiSliceInventory(client)
       : { slices: [], error: null }
     process.stderr.write(formatNativeTuiRuntimeBanner({
+      connectionLabel: localKernelConnectionLabel(client, session.host_daemon_id),
       surface: "codex native-tui",
       session,
       agent,
@@ -337,7 +344,7 @@ function printNativeCodexUsage() {
   ].join("\n") + "\n")
 }
 
-async function launchManagedNativeProviderRun(options: {
+async function launchKernelNativeProviderRun(options: {
   client: LocalIpcClient
   sessionId: string
   agentId: string
@@ -351,7 +358,7 @@ async function launchManagedNativeProviderRun(options: {
     effort: options.effort,
     agentId: options.agentId,
   })
-  return waitForNativeProviderRunReady(options.client, run.id)
+  return waitForNativeProviderRunReady(options.client, run.id, { allowParkedEndpoint: true })
 }
 
 async function runCodexTui(options: {

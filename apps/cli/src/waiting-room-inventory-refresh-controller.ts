@@ -312,6 +312,10 @@ export function createWaitingRoomInventoryRefreshController(
         return
       }
       refreshProjectionScope()
+      const activeInventory = activeKernelId ? inventoriesByKernel.get(activeKernelId) : undefined
+      // A row patch cannot establish the initial snapshot. Publishing its
+      // sessions would also mistake them for cached display before cold load.
+      if (!activeInventory) return
       if (!rowsBaselinePending && patch.inventoryVersion === inventoryVersion) {
         options.reconcileWaitingRoom(options.getWaitingRoomState())
         return
@@ -320,52 +324,36 @@ export function createWaitingRoomInventoryRefreshController(
       rowsBaselinePending = false
       inventoryVersion = patch.inventoryVersion
       options.setInventoryStatus("ready")
-      const activeInventory = activeKernelId ? inventoriesByKernel.get(activeKernelId) : undefined
-      if (activeInventory) {
-        const sessions = mergeWaitingRoomSessionRows(
-          currentInventoryVersion === null ? [] : activeInventory.sessions,
-          patch.sessions.map((session) => ({
-            ...session,
-            kernel_id: activeInventory.kernelId,
-            kernel_alias: activeInventory.kernelAlias ?? null,
-            machine_id: activeInventory.machineId,
-            machine_alias: activeInventory.machineAlias ?? null,
-          })),
-          patch.removedSessionIds,
-        )
-        const nextInventory = {
-          ...activeInventory,
-          inventoryVersion: patch.inventoryVersion,
-          structuralVersion: patch.structuralVersion,
-          activityRevision: patch.activityRevision,
-          sessions,
-          projects: patch.projects
-            ? mergeWaitingRoomProjectRows(
-                currentInventoryVersion === null ? [] : activeInventory.projects ?? [],
-                patch.projects,
-                patch.removedProjectIds ?? [],
-              )
-            : activeInventory.projects ?? [],
-        }
-        rememberInventory(nextInventory)
-        options.persistInventory?.(nextInventory)
-        options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
-        if (options.shouldApplyWorkspaceInventory?.(nextInventory) !== false) {
-          options.setProjects?.(nextInventory.projects)
-        }
-      } else {
-        options.setAvailableSessions(mergeWaitingRoomSessionRows(
-          currentInventoryVersion === null ? [] : options.getAvailableSessions(),
-          patch.sessions,
-          patch.removedSessionIds,
-        ))
-        if (patch.projects) {
-          options.setProjects?.(mergeWaitingRoomProjectRows(
-            currentInventoryVersion === null ? [] : options.getProjects?.() ?? [],
-            patch.projects,
-            patch.removedProjectIds ?? [],
-          ))
-        }
+      const sessions = mergeWaitingRoomSessionRows(
+        currentInventoryVersion === null ? [] : activeInventory.sessions,
+        patch.sessions.map((session) => ({
+          ...session,
+          kernel_id: activeInventory.kernelId,
+          kernel_alias: activeInventory.kernelAlias ?? null,
+          machine_id: activeInventory.machineId,
+          machine_alias: activeInventory.machineAlias ?? null,
+        })),
+        patch.removedSessionIds,
+      )
+      const nextInventory = {
+        ...activeInventory,
+        inventoryVersion: patch.inventoryVersion,
+        structuralVersion: patch.structuralVersion,
+        activityRevision: patch.activityRevision,
+        sessions,
+        projects: patch.projects
+          ? mergeWaitingRoomProjectRows(
+              currentInventoryVersion === null ? [] : activeInventory.projects ?? [],
+              patch.projects,
+              patch.removedProjectIds ?? [],
+            )
+          : activeInventory.projects ?? [],
+      }
+      rememberInventory(nextInventory)
+      options.persistInventory?.(nextInventory)
+      options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
+      if (options.shouldApplyWorkspaceInventory?.(nextInventory) !== false) {
+        options.setProjects?.(nextInventory.projects)
       }
       options.reconcileWaitingRoom(options.getWaitingRoomState())
     },

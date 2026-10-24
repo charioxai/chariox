@@ -173,18 +173,22 @@ impl KernelRuntimeOwnedState {
         } else {
             false
         };
-        // MP-08 / MP-10 / MP-11: cancellation owns completion fan-out even
-        // before dispatch creates prompt activity. Preserve this dispatch's
-        // run identity if the failed provider was already retired.
-        self.cancel_active_prompt_only_for_provider_run(
+        // MP-08 / MP-10 / MP-11: use the ordinary exact-prompt Failed
+        // settler, including completion fan-out before provider activity exists.
+        let Some(failed) = self.fail_local_prompt_without_advance_with_termination_if_matches(
             session_id,
             agent_id,
             Some(provider_run_id),
-        )?;
-        self.agent_store
-            .set_agent_state(agent_id, crate::agent::AgentState::Error)?;
-        let released_claim = self.clear_prompt_activity(provider_run_id);
-        let _ = self.session_snapshot(session_id)?;
+            Some(prompt_id),
+            Some(crate::provider::ProviderRunTermination::runtime_failure(
+                message,
+                crate::session::unix_epoch_ms(),
+            )),
+        )?
+        else {
+            return Ok(None);
+        };
+        let released_claim = failed.released_claim;
         // Workflow failure settlement releases the claim by run/node identity before
         // prompt activity is cleared by provider-run identity. Preserve that signal so
         // the caller still retries nodes which were already blocked on the released
@@ -532,72 +536,9 @@ impl KernelRuntimeOwnedState {
             &started_next,
             Some(prompt_sent_at_ms),
         );
-        // A substitute run serves only its own turn; the next one goes through
-        // the dispatcher, which moves it to the agent's configured profile.
-        if self
-            .provider_store
-            .run_uses_structured_prompt_io(&provider_run)
-            && provider_run.turn_substitute().is_none()
-        {
-            let prompt_with_handoff = self.prompt_with_pending_context_handoff(
-                session_id,
-                agent_id,
-                &source_attachment_id,
-                &provider_run,
-                started_next.prompt(),
-            );
-            let granted_skill_context =
-                self.granted_skill_hidden_context(session_id, agent_id, &prompt_with_handoff)?;
-            let hidden_system_context = join_hidden_context(
-                &self.hidden_context_with_failed_requests(
-                    agent_id,
-                    started_next.hidden_system_context(),
-                ),
-                &granted_skill_context,
-            );
-            let (source_client_id, _source_user_id) = self.prompt_source_attribution(&started_next);
-            let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
-                agent_id,
-                self.agent_store.get_agent(agent_id)?.is_metaagent(),
-                source_client_id.as_deref(),
-                &hidden_system_context,
-            );
-            self.mark_active_prompt_delivery(
-                session_id,
-                agent_id,
-                started_next.id(),
-                crate::session::DurablePromptDeliveryPhase::Dispatching,
-                Some(provider_run_id.clone()),
-                provider_run.provider_session_id().map(str::to_string),
-            )?;
-            if let Err(error) = self.provider_store.enqueue_structured_prompt_submit(
-                session_id.to_string(),
-                provider_run_id.clone(),
-                agent_id.to_string(),
-                started_next.id().to_string(),
-                started_next.id(),
-                &provider_run,
-                &prompt_with_handoff,
-                &hidden_system_context,
-                started_next.attachments(),
-                mode,
-                false,
-            ) {
-                let _ = self.cancel_active_prompt_only(session_id, agent_id);
-                let _ = self.clear_prompt_activity(&provider_run_id);
-                return Err(error);
-            }
-            self.note_prompt_started(&provider_run_id);
-            let _ = self.session_snapshot(session_id)?;
-            return Ok(Some(OwnedPromptCompletion {
-                completion: crate::session::PromptCompletion {
-                    completed,
-                    started_next: Some(started_next),
-                },
-                released_claim: false,
-                dispatch: None,
-            }));
-        }
+        // MP-08 / MP-10 / MP-11: queue promotion returns a shared dispatch
+        // intent. Provider I/O must follow leased binding activation and the
+        // same authorization/context path as initial admission.
         let _ = self.session_snapshot(session_id)?;
         Ok(Some(OwnedPromptCompletion {
             completion: crate::session::PromptCompletion {
@@ -703,12 +644,3 @@ impl KernelRuntimeOwnedState {
 #[cfg(test)]
 #[path = "prompt_workspace_claim_conflict_tests.rs"]
 mod prompt_workspace_claim_conflict_tests;
-
-fn join_hidden_context(first: &str, second: &str) -> String {
-    match (first.trim(), second.trim()) {
-        ("", "") => String::new(),
-        (first, "") => first.to_string(),
-        ("", second) => second.to_string(),
-        (first, second) => format!("{first}\n\n{second}"),
-    }
-}

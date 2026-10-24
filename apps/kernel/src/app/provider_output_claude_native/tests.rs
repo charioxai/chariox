@@ -1,6 +1,101 @@
 use super::transcript::ClaudeTranscriptCursor;
 use super::*;
 
+// MP-08 / MP-10 / MP-11: hosted owner ids and selected account namespaces
+// differ. A status-line update must neither abort native hook processing nor
+// write usage into a different user's account.
+#[test]
+fn claude_native_usage_follows_resolved_home_account_authority() {
+    claude_native_usage_authority_case("cloud-owner", "local", true);
+}
+
+#[test]
+fn claude_native_usage_keeps_collaborator_account_authority() {
+    claude_native_usage_authority_case("collaborator", "collaborator", true);
+}
+
+#[test]
+fn claude_native_usage_rejects_foreign_account_authority() {
+    claude_native_usage_authority_case("collaborator", "local", false);
+}
+
+fn claude_native_usage_authority_case(runtime_owner: &str, account_owner: &str, allowed: bool) {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    app.config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "cloud-owner".to_string(),
+        ..Default::default()
+    });
+    let profile = app
+        .provider_account_profiles
+        .create_managed(account_owner, "claude", "native-usage-authority")
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-native-usage-authority-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let usage_path = root.join("usage.json");
+    fs::write(
+        &usage_path,
+        r#"{"rate_limits":{"five_hour":{"used_percentage":17}}}"#,
+    )
+    .unwrap();
+    let mut request = crate::provider::LaunchProviderRequest::new(
+        "session-native-usage",
+        "claude",
+        "claude-headless",
+        &profile.profile_id,
+        "haiku",
+    )
+    .with_owner_user_id(runtime_owner);
+    crate::account_profile::bind_provider_account_authority(
+        &mut request,
+        account_owner.to_string(),
+        profile.profile_id.clone(),
+    );
+    let run = RuntimeProviderRun::new(
+        "run-native-usage",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "native-usage-authority".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([(
+                "CHARIOX_CLAUDE_USAGE_FILE".to_string(),
+                usage_path.display().to_string(),
+            )]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    let result = ProviderOutputClaudeNativeBridge::new(&mut app).process_claude_account_usage(&run);
+    let usage = app
+        .provider_account_profiles
+        .get(account_owner, "claude", &profile.profile_id)
+        .unwrap()
+        .usage;
+    fs::remove_dir_all(root).unwrap();
+    if allowed {
+        result.expect("selected account usage must not abort native hook processing");
+        assert_eq!(usage.meters.len(), 1);
+        assert_eq!(usage.meters[0].used_percent, Some(17.0));
+        assert_eq!(usage.profile_id, profile.profile_id);
+    } else {
+        assert!(
+            result.is_err(),
+            "a collaborator cannot select the home owner's usage namespace"
+        );
+        assert!(
+            usage.meters.is_empty(),
+            "foreign account usage must remain unchanged"
+        );
+    }
+}
+
 #[derive(Clone, Default)]
 struct RecordingPermissionBridge {
     interaction_ids: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
@@ -1298,6 +1393,125 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
         "dispatch acknowledgement must not consume later lifecycle events"
     );
 
+    let _ = fs::remove_dir_all(root);
+}
+
+// MP-08 / MP-10 / MP-11: a leased worker runs a profile that is registered
+// only on its home kernel. Its status-line usage cannot be recorded there, and
+// that must never keep the same pass from consuming the hook events.
+#[test]
+fn claude_native_usage_for_an_unregistered_profile_does_not_stop_hook_events() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-usage-unregistered");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-usage-unregistered",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("session should attach");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-usage-unregistered-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    let usage_file = root.join("usage.json");
+    fs::write(&context_file, "").expect("context file should be created");
+    fs::write(
+        &usage_file,
+        r#"{"rate_limits":{"five_hour":{"used_percentage":17}}}"#,
+    )
+    .expect("usage file should be created");
+    let context_file = context_file.display().to_string();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude-headless",
+        "home-only-profile",
+        "claude-sonnet",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = RuntimeProviderRun::new(
+        "provider-run-usage-unregistered",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-usage-unregistered".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([
+                (
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    context_file.clone(),
+                ),
+                (
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
+                    events_file.display().to_string(),
+                ),
+                (
+                    "CHARIOX_CLAUDE_USAGE_FILE".to_string(),
+                    usage_file.display().to_string(),
+                ),
+            ]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    let active_prompt = match app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "Create the marker file.",
+            Vec::new(),
+        )
+        .expect("active prompt should start")
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        other => panic!("unexpected prompt outcome: {other:?}"),
+    };
+    write_claude_native_marker(&context_file, &format!("injected:{}", active_prompt.id()));
+    write_claude_headless_submit_retry(
+        &context_file,
+        active_prompt.id(),
+        0,
+        unix_epoch_ms(),
+        "Create the marker file.",
+    );
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "Create the marker file.",
+        })
+        .to_string(),
+    )
+    .expect("UserPromptSubmit event should be written");
+
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .expect("a usage update for an unregistered profile must not abort hook processing");
+
+    assert_eq!(
+        claude_native_marker(&context_file).as_deref(),
+        Some(format!("accepted:{}", active_prompt.id()).as_str())
+    );
     let _ = fs::remove_dir_all(root);
 }
 
@@ -3158,4 +3372,334 @@ fn approval_lifetime_refused_claude_dialog_receives_deny_while_displayed() {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
+}
+
+// MP-08 / MP-10 / MP-11: native interruption is a prompt-bound receipt.
+#[test]
+fn mp11_claude_hook_context_requests_cannot_escape_the_mailbox() {
+    let root = std::env::temp_dir().join(format!("integ2-hook-path-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let context_file = root.join("context").display().to_string();
+    let canary = root.join("public-canary.txt");
+    fs::write(&canary, "public canary").unwrap();
+    write_claude_hook_context_response(&context_file, "../public-canary", "approved context");
+    let unchanged = fs::read_to_string(&canary).unwrap() == "public canary";
+    write_claude_hook_context_response(&context_file, "current-request", "approved context");
+    let approved =
+        fs::read_to_string(root.join("hook-context-responses/current-request.txt")).unwrap();
+    fs::remove_dir_all(root).unwrap();
+    assert!(
+        unchanged,
+        "hook request IDs cannot address files outside their mailbox"
+    );
+    assert_eq!(approved, "approved context");
+}
+
+#[test]
+fn native_claude_cancel_settles_only_from_a_fresh_exact_run_interruption() {
+    for (receipt_kind, matching_request, cancelling, fresh, current_run, matching_prompt) in [
+        (0, true, true, true, true, true),
+        (0, true, false, true, true, true),
+        (0, true, true, false, true, true),
+        (0, true, true, true, false, true),
+        (0, true, true, true, true, false),
+        (1, true, true, true, true, true),
+        (1, false, true, true, true, true),
+        (1, true, false, true, true, true),
+        (1, true, true, false, true, true),
+        (1, true, true, true, false, true),
+        (1, true, true, true, true, false),
+        (2, true, true, true, true, true),
+        (2, false, true, true, true, true),
+        (2, true, false, true, true, true),
+        (2, true, true, false, true, true),
+        (2, true, true, true, false, true),
+        (2, true, true, true, true, false),
+        (3, true, true, true, true, true),
+    ] {
+        let hook_receipt = receipt_kind != 0;
+        let worktree = crate::test_support::TestWorktree::new("claude-native-cancel-receipt");
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "native",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "integ2-claude-cancel-{}-{}",
+            std::process::id(),
+            timestamp_millis()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let context_file = root.join("context").display().to_string();
+        let events_file = root.join("events.jsonl");
+        let transcript_file = root.join("session.jsonl");
+        fs::write(&context_file, "").unwrap();
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude",
+            "default",
+            "claude-sonnet",
+        )
+        .with_agent_id(agent.id())
+        .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+        let mut run = RuntimeProviderRun::new(
+            "native-claude-cancel-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "fixture".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: std::collections::BTreeMap::from([
+                    ("CHARIOX_CLAUDE_NATIVE_CONTEXT".into(), context_file.clone()),
+                    (
+                        "CHARIOX_CLAUDE_NATIVE_EVENTS".into(),
+                        events_file.display().to_string(),
+                    ),
+                ]),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions
+            .set_active_provider_run(session.id(), Some(run.id().into()))
+            .unwrap();
+        let prompt = match app
+            .record_native_prompt_started_with_attachments(
+                session.id(),
+                attachment.id(),
+                attachment.id(),
+                agent.id(),
+                "Read the public documentation",
+                vec![],
+            )
+            .unwrap()
+        {
+            crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+            other => panic!("{other:?}"),
+        };
+        write_claude_native_marker(&context_file, &format!("native:{}", prompt.id()));
+        let requested_at_ms = prompt.created_at_ms() + 100;
+        if receipt_kind == 3 {
+            app.prompt_owner_begin_cancelling_active_prompt(session.id(), agent.id())
+                .unwrap();
+            app.active_turns
+                .mark_interruption_requested(run.id(), prompt.id(), requested_at_ms);
+        }
+        let mut prebinding_requested = false;
+        if hook_receipt {
+            write_claude_native_marker(&context_file, &format!("injected:{}", prompt.id()));
+            fs::write(
+                &events_file,
+                serde_json::json!({
+                    "hook_event_name": "UserPromptSubmit", "prompt": prompt.prompt(),
+                    "hook_context_request_id": "current-submit-hook"
+                })
+                .to_string()
+                    + "\n",
+            )
+            .unwrap();
+            ProviderOutputClaudeNativeBridge::new(&mut app)
+                .process(session.id(), run.id(), &run, None)
+                .unwrap();
+            if receipt_kind == 3 {
+                prebinding_requested = root
+                    .join("hook-context-responses/current-submit-hook.cancelled")
+                    .exists();
+            }
+        }
+        if cancelling && receipt_kind != 3 {
+            app.prompt_owner_begin_cancelling_active_prompt(session.id(), agent.id())
+                .unwrap();
+        }
+        app.active_turns
+            .mark_interruption_requested(run.id(), prompt.id(), requested_at_ms);
+        // Receipt fences are independent of delivery errors from this fixture's absent PTY.
+        app.active_turns
+            .note_native_interruption_delivery(run.id(), prompt.id(), unix_epoch_ms());
+        if !matching_prompt {
+            app.active_turns.clear(run.id());
+        }
+        let observed_at_ms = if fresh {
+            requested_at_ms + 1
+        } else {
+            requested_at_ms - 1
+        };
+        let timestamp = chrono::DateTime::from_timestamp_millis(observed_at_ms as i64)
+            .unwrap()
+            .to_rfc3339();
+        fs::write(&transcript_file, serde_json::json!({ "type": "user", "uuid": "interrupted", "timestamp": timestamp, "message": { "role": "user", "content": [{"type": "text", "text": "[Request interrupted by user]"}] } }).to_string()+"\n").unwrap();
+        fs::write(&events_file, serde_json::json!({"hook_event_name": "SessionStart", "transcript_path": transcript_file.display().to_string()}).to_string()+"\n").unwrap();
+        if hook_receipt {
+            fs::write(&transcript_file, "").unwrap();
+            fs::write(&events_file, serde_json::json!({
+                "hook_event_name": "UserPromptSubmitInterrupted", "at": timestamp,
+                "hook_context_request_id": if matching_request { "current-submit-hook" } else { "stale-submit-hook" },
+                "signal": if receipt_kind == 1 { Some("SIGTERM") } else { None },
+                "decision": if receipt_kind >= 2 { Some("block") } else { None }
+            }).to_string()+"\n").unwrap();
+        }
+        if !current_run {
+            let mut successor = RuntimeProviderRun::new(
+                "successor-run",
+                &request,
+                crate::provider::ProviderLaunchResult {
+                    endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                    process_label: "fixture".into(),
+                    pty_target: None,
+                    pty_program: None,
+                    pty_args: vec![],
+                    pty_env: Default::default(),
+                    pty_env_remove: vec![],
+                    working_directory: None,
+                    structured_endpoint: None,
+                },
+            );
+            successor.mark_running();
+            app.providers_mut().insert_run_for_test(successor);
+        }
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .process(session.id(), run.id(), &run, None)
+            .unwrap();
+        let cancellation_requested = root
+            .join("hook-context-responses/current-submit-hook.cancelled")
+            .exists();
+
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .finish_deferred_stop(session.id(), run.id(), &run)
+            .unwrap();
+        let active = app
+            .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+            .unwrap();
+        fs::remove_dir_all(root).unwrap();
+        if receipt_kind == 3 {
+            assert!(prebinding_requested, "cancellation before hook publication must decline admission in the same bridge pass");
+        }
+        assert_eq!(
+            cancellation_requested,
+            hook_receipt && cancelling && current_run && matching_prompt && !matching_request,
+            "a resolved exact hook removes its decline marker; a foreign receipt cannot remove it"
+        );
+        assert_eq!(
+            active.is_none(),
+            cancelling && fresh && current_run && matching_prompt && matching_request,
+            "hook={hook_receipt}, matching_request={matching_request}, cancelling={cancelling}, fresh={fresh}, current_run={current_run}, matching_prompt={matching_prompt}"
+        );
+    }
+}
+
+// MP-08 / MP-10 / MP-11: settlement promotes and dispatches the queued
+// prompt synchronously. Its new marker/context must survive the outer Stop.
+#[test]
+fn mp08_native_claude_stop_preserves_reentrant_queued_injection() {
+    let worktree = crate::test_support::TestWorktree::new("claude-stop-queue-once");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "stop-queue-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "chariox-stop-queue-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let context_file = root.join("context");
+    let events_file = root.join("events.jsonl");
+    fs::write(&context_file, "stopped turn context").unwrap();
+    fs::write(&events_file, "").unwrap();
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "stop-queue-run",
+        &context_file,
+        &events_file,
+        "cat >/dev/null".into(),
+    );
+    run.mark_running();
+    let mut ready = serde_json::to_value(&run).unwrap();
+    ready["started_at_ms"] = serde_json::json!(unix_epoch_ms().saturating_sub(5_000));
+    run = serde_json::from_value(ready).unwrap();
+    app.pty.spawn_for_run(&run).unwrap();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().into()))
+        .unwrap();
+    let first = app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "first native prompt",
+            Vec::new(),
+        )
+        .unwrap();
+    let crate::session::PromptSubmissionOutcome::Started { prompt: first } = first else {
+        panic!("first prompt should start")
+    };
+    let next = app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "next unique queued prompt",
+            Vec::new(),
+        )
+        .unwrap();
+    let crate::session::PromptSubmissionOutcome::Queued { prompt: _next } = next else {
+        panic!("next prompt should queue")
+    };
+    let context = context_file.display().to_string();
+    write_claude_native_marker(
+        &context,
+        &format!(
+            "{CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX}{}:0",
+            first.id()
+        ),
+    );
+    let result = ProviderOutputClaudeNativeBridge::new(&mut app).complete_native_prompt_after_stop(
+        session.id(),
+        run.id(),
+        agent.id(),
+        &context,
+        true,
+    );
+    let marker = claude_native_marker(&context);
+    let active = app
+        .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+        .unwrap();
+    let hidden = fs::read_to_string(&context_file).unwrap();
+    app.pty.remove_process(run.id()).unwrap();
+    fs::remove_dir_all(root).unwrap();
+    result.unwrap();
+    let active = active.expect("queued prompt should activate");
+    assert!(
+        marker
+            .as_deref()
+            .is_some_and(|m| m.starts_with(&format!("submit-wait:{}:", active.id()))),
+        "synchronous injection marker must survive Stop: {marker:?}"
+    );
+    assert!(
+        !hidden.is_empty(),
+        "synchronous injection hidden context must survive Stop"
+    );
 }

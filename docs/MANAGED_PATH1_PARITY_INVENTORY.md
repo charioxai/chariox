@@ -1,5 +1,87 @@
 # Managed Path-1 parity inventory (MP-11)
 
+
+## MP-08 / MP-10 / MP-11: history-only leased tool delivery
+
+The worker now sends durable tool snapshots when no terminal record has owned
+that tool's delivery. Later history-only status updates use the same retained
+page/ACK owner; existing streamed tool deltas keep their projection state. The
+state is worker-local bookkeeping, with no wire shape or managed-placement
+branch. A fail-first guard covers history-only updates, store reopen and lost
+page ACKs. Source checks alone do not establish live recovery acceptance.
+
+## MP-08 / MP-10 / MP-11: bounded native catalog pages (531/139)
+
+Real hosted output identified a Codex0.159.3 `plugin/list` response over14MiB;
+its encrypted reply monopolized the shaped worker uplink and exhausted native
+recovery. The unmerged531/139 native result now has bounded gzip fragments with
+exact Exchange receipts. The client reassembles the official frame after
+contiguity, compressed/decoded-size, base64 and UTF-8 checks. Output bursts wait
+under the existing connection/byte/idle bounds. Prompt and permission authority
+remain in the normal kernel paths. Protocol snapshot/hash and a fail-first real
+hosted drill accompany the change. Temporary payload-free diagnosis is removed.
+These source changes do not claim live, two-hour or timing acceptance; the
+current security-critical bounds/admission anchor still needs semantic review.
+
+## MP-07 / MP-08 / MP-10 / MP-11: leased output delivery ownership (531/139)
+
+The allocated, unmerged531/139 contract extends leased runtime projections with
+an exact lease/leased-agent/run receipt. Worker push, explicit emission and home
+poll all use the retained delivery owner in
+`app/remote_lease/projection/delivery.rs`; the history cursor and delivery pages
+commit together in `history/leased_projection.rs` and its `delivery` module.
+The next batch waits for an acknowledgement. Encoded output is paged and turn
+settlement waits for remaining terminal output and incremental history.
+
+Security-critical admission remains the normal encrypted peer/leased-caller
+path (`transport/relay_client/peer_requests.rs`). Acknowledgements must match the
+current leased agent, execution lease, provider run and delivery head. Home
+receipts recheck the authenticated worker and current remote binding before any
+mutation; duplicate delivery only repeats its acknowledgement. Stale/run/peer
+refusals retain their authority classification. There is no client-selected
+upstream, Cloud runtime authority or generic IPC mutation replay.
+
+Supplementary guards cover lost reply/store reopen, shared delivery retention,
+paging before settlement, duplicate home output and foreign/future receipts;
+protocol snapshot/hash and focused real hosted drill are documented in
+`docs/M14B_NATIVE_TUI_VALIDATION_PLAN.md`. These checks do not close behavioural
+MP-08/MP-10 acceptance. Current semantic review of the changed relay-admission
+anchors and exact-head real provider/Web/TUI recovery evidence are required.
+
+Completed-receipt reconciliation uses that same retained delivery path when a
+lost submission acknowledgement or home restart leaves a prompt in Dispatching.
+It applies and acknowledges scoped intermediate pages before consuming the exact
+prompt/run completion. A rejected page cannot prove recovery; a repeated head is
+re-acknowledged without replaying output, then yields to read-only reconciliation.
+Success requires the exact home prompt/run settlement record. The supplementary
+recovery guards exercise 130 real history-store records, page acknowledgements,
+lost acknowledgement retry, future-sequence rejection and single successor
+admission through the reconciliation entry point. They do not establish live
+provider, client, hosted recovery or MP-10 acceptance.
+
+Ready-journal replay also restores the authenticated worker run snapshot and
+rebuilds a dispatch for its exact admitted successor only while delivery is still
+Accepted. Dispatching/Delivered prompts keep normal receipt reconciliation, and
+an older completed page cannot select its run over a newer successor.
+If the old cache entry is absent after restart, historical replay retains an
+ended home projection so snapshot replacement cannot retire the newer live run.
+
+MP-08 / MP-10 / MP-11: active drains retain retry ownership across receipt and
+application-journal write failures, using the existing backoff while their exact
+prompt/run remains current. Admission, authorization and retained-page digest
+rejection remain unchanged. Real acceptance must exercise storage recovery
+without another client action.
+
+Home application now retains an admitted page and its local result until receipt
+commit and queue admission finish. Per-page prompt/output/notice identities and
+per-prompt settlement identities make partially committed history replayable.
+The exact original prompt is removed durably before the receipt; the captured
+queue head is admitted only afterward. Replaying a pending result cannot settle
+a successor or admit it twice. This is shared kernel history/recovery behavior,
+with no managed-placement branch or new wire fields. Restart regressions inject
+failures after history, before the receipt, and after successor admission; their
+source results remain supplementary to real hosted provider/Web/TUI evidence.
+
 ## MP-08 / MP-10 / MP-11 fatal Computer child settlement, b204 (2026-10-04)
 
 The shared hold adapter resets input for direct signal exits and Bash's
@@ -1465,3 +1547,18 @@ or MP-10 fresh-machine acceptance. Runtime review and deployment comparison
 remain open. Exact commands, source identities, resource samples, intermediate
 RED diagnostics and cleanup are retained under
 `/root/.codex/evidence/browser-resume-20260930/implD2/`.
+
+MP-08 / MP-10 / MP-11: a tool whose durable snapshots were projected owns its
+projection; later terminal records for the same tool are not delivered again.
+
+## MP-08 / MP-10 / MP-11: native permission relay recovery
+
+Temporary worker-home transport failures retry the same native interaction
+within one response deadline. The home keeps one decision and replays its
+answer for the exact session/id, context, payload and execution lease; reconnect
+neither creates a second card nor restarts the permission timeout. Receipts are
+bounded, expire in memory and are never persisted. Ordinary and pinned managed
+workers retain the existing worker-home transport routes and admission checks.
+The native bridge and real-relay TCP-reset regressions cover both decisions,
+lost answers, cancellation and timeout recovery. These source checks alone do
+not close MP-08 / MP-10 / MP-11 or establish whole-area live acceptance.

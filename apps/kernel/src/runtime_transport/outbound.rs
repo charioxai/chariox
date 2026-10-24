@@ -117,12 +117,17 @@ fn project_error(value: &Value) -> KernelTransportError {
             | "provider_protocol_error"
             | "credential_vault_locked"
             | "local_transport_error"
+            | "native_transport_reconnecting"
             | "pty_spawn_failed"
             | "pty_cleanup_failed"
             | "pty_write_failed"
             | "pty_resize_failed"
             | "kernel_request_failed"
             | "kernel_access_denied"
+            | "kernel_access_human_only"
+            | "kernel_access_not_covered"
+            | "kernel_access_ended"
+            | "kernel_access_already_granted"
             | "invalid_request"
             | "invalid_frame"
             | "kernel_request_overloaded"
@@ -132,6 +137,9 @@ fn project_error(value: &Value) -> KernelTransportError {
         projected.code = code.into();
         projected.retryable = value["retryable"].as_bool().unwrap_or(false);
         projected.message = match code {
+            "native_transport_reconnecting" => {
+                "native display is reconnecting; retry the same receipted operation"
+            }
             "kernel_request_overloaded" => "kernel request admission queue overloaded",
             "duplicate_command_unavailable" => "original duplicate command result was unavailable",
             "duplicate_command_conflict" => "command_id was already used for a different request",

@@ -14,6 +14,7 @@ struct Transfer {
     small_sent: usize,
     small_acked: usize,
     request: bool,
+    event: bool,
 }
 
 impl Transfer {
@@ -54,61 +55,59 @@ impl Transfer {
     }
 }
 
-// Only correlation-addressed requests/responses may overtake a bulk envelope.
-// Subscription events and lifecycle messages retain their original order.
-fn independent_small(message: &Message) -> bool {
-    if message.len() > CHUNK_BYTES {
-        return false;
-    }
-    match message {
-        Message::Ping(_) | Message::Pong(_) | Message::Close(_) => true,
-        Message::Text(text) => serde_json::from_str::<serde_json::Value>(text)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("kind")
-                    .and_then(|kind| kind.as_str())
-                    .map(str::to_string)
-            })
-            .is_some_and(|kind| {
-                matches!(
-                    kind.as_str(),
-                    "client_connected"
-                        | "client_response"
-                        | "client_metadata_response"
-                        | "daemon_request"
-                        | "daemon_peer_response"
-                        | "daemon_incoming_peer_request"
-                )
-            }),
-        _ => false,
-    }
+// MP-08 / MP-10 / MP-11: classify outer routing metadata once, rather than
+// parsing every queued encrypted frame again on each bounded wire write.
+struct QueuedMessage {
+    message: Message,
+    request: bool,
+    event: bool,
+    independent: bool,
+    control: bool,
 }
 
-fn control(message: &Message) -> bool {
-    matches!(
-        message,
-        Message::Ping(_) | Message::Pong(_) | Message::Close(_)
-    ) || matches!(message, Message::Text(text) if text.len() <= CHUNK_BYTES && serde_json::from_str::<serde_json::Value>(text).ok()
-        .is_some_and(|value| value.get("kind").and_then(|kind| kind.as_str()) == Some("close")))
-}
-
-fn is_request(message: &Message) -> bool {
-    match message {
-        Message::Text(text) => serde_json::from_str::<serde_json::Value>(text)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("kind")
-                    .and_then(|kind| kind.as_str())
-                    .map(str::to_string)
-            })
-            .is_some_and(|kind| kind.ends_with("request")),
-        _ => false,
+impl QueuedMessage {
+    fn new(message: Message) -> Self {
+        super::timing::record_message("writer_queued", &message);
+        #[derive(serde::Deserialize)]
+        struct Kind {
+            kind: String,
+        }
+        let kind = match &message {
+            Message::Text(text) => serde_json::from_str::<Kind>(text).ok().map(|v| v.kind),
+            _ => None,
+        };
+        let wire_control = matches!(
+            message,
+            Message::Ping(_) | Message::Pong(_) | Message::Close(_)
+        );
+        let small = message.len() <= CHUNK_BYTES;
+        let control = wire_control || (small && kind.as_deref() == Some("close"));
+        let independent = small
+            && (wire_control
+                || kind.as_deref().is_some_and(|kind| {
+                    matches!(
+                        kind,
+                        "client_event"
+                            | "client_connected"
+                            | "client_response"
+                            | "client_metadata_response"
+                            | "daemon_request"
+                            | "daemon_peer_response"
+                            | "daemon_incoming_peer_request"
+                    )
+                }));
+        Self {
+            request: kind.as_ref().is_some_and(|k| k.ends_with("request")),
+            event: kind.as_deref() == Some("client_event"),
+            message,
+            independent,
+            control,
+        }
     }
 }
 
 async fn write<S: Sink<Message> + Unpin>(writer: &mut S, message: Message) -> bool {
+    super::timing::record_message("writer_started", &message);
     if writer.send(message).await.is_err() {
         // Tungstenite may have queued its automatic close/Pong while reading.
         let _ = writer.flush().await;
@@ -158,7 +157,7 @@ pub(super) async fn run_writer<S>(
         }
         while pending.len() < capacity {
             match outgoing.try_recv() {
-                Ok(message) => pending.push_back(message),
+                Ok(message) => pending.push_back(QueuedMessage::new(message)),
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     open = false;
                     break;
@@ -167,19 +166,23 @@ pub(super) async fn run_writer<S>(
             }
         }
         let mut earlier_request = active.as_ref().is_some_and(|transfer| transfer.request);
+        let mut earlier_event = active.as_ref().is_some_and(|transfer| transfer.event);
         let urgent = pending.iter().position(|message| {
-            let request = is_request(message);
-            let ordered = !request || !earlier_request;
+            let request = message.request;
+            let event = message.event;
+            let ordered = (!request || !earlier_request) && (!event || !earlier_event);
             earlier_request |= request;
-            control(message)
+            earlier_event |= event;
+            message.control
                 || active.as_ref().is_some_and(|transfer| {
-                    transfer.small_sent - transfer.small_acked + message.len() <= CHUNK_BYTES
-                        && independent_small(message)
+                    transfer.small_sent - transfer.small_acked + message.message.len()
+                        <= CHUNK_BYTES
+                        && message.independent
                         && ordered
                 })
         });
         if let Some(index) = urgent {
-            let message = pending.remove(index).unwrap();
+            let message = pending.remove(index).unwrap().message;
             let terminal = matches!(message, Message::Close(_));
             if let Some(transfer) = active.as_mut() {
                 if matches!(message, Message::Text(_)) {
@@ -207,7 +210,8 @@ pub(super) async fn run_writer<S>(
                 tokio::task::yield_now().await;
                 continue;
             }
-        } else if let Some(message) = pending.pop_front() {
+        } else if let Some(queued) = pending.pop_front() {
+            let message = queued.message;
             if let Message::Text(text) = &message {
                 if text.len() > CHUNK_BYTES {
                     if !chunks || text.len() > MAX_MESSAGE_BYTES {
@@ -228,15 +232,8 @@ pub(super) async fn run_writer<S>(
                         return;
                     };
                     next_id = id;
-                    let request = serde_json::from_str::<serde_json::Value>(text)
-                        .ok()
-                        .and_then(|value| {
-                            value
-                                .get("kind")
-                                .and_then(|kind| kind.as_str())
-                                .map(str::to_string)
-                        })
-                        .is_some_and(|kind| kind.ends_with("request"));
+                    let request = queued.request;
+                    let event = queued.event;
                     active = Some(Transfer {
                         id,
                         text: text.to_string(),
@@ -246,6 +243,7 @@ pub(super) async fn run_writer<S>(
                         small_sent: 0,
                         small_acked: 0,
                         request,
+                        event,
                     });
                     continue;
                 }
@@ -272,7 +270,7 @@ pub(super) async fn run_writer<S>(
                 if !active.as_mut().is_some_and(|transfer| transfer.receipt(id, offset)) { return; }
             }
             message = outgoing.recv(), if open && pending.len() < capacity => {
-                match message { Some(message) => pending.push_back(message), None => open = false }
+                match message { Some(message) => pending.push_back(QueuedMessage::new(message)), None => open = false }
             }
         }
     }
@@ -340,6 +338,7 @@ mod tests {
             small_sent: CHUNK_BYTES,
             small_acked: 0,
             request: false,
+            event: false,
         };
         assert!(transfer.receipt(1, 4));
         assert_eq!(
@@ -435,6 +434,94 @@ mod tests {
             }
         }
         assert!(small_before_complete >= 32, "small requests must continue beyond the initial16KiB credit while bulk is draining: {small_before_complete}");
+        sender.await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), writer)
+            .await
+            .unwrap()
+            .unwrap();
+        acknowledgements.abort();
+        let _ = acknowledgements.await;
+        let _ = client.close(None).await;
+    }
+
+    #[tokio::test]
+    async fn mp08_mp10_state_events_continue_during_an_independent_bulk_response() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let client_task = tokio::spawn(async move {
+            tokio_tungstenite::connect_async(format!("ws://{address}"))
+                .await
+                .unwrap()
+                .0
+        });
+        let (stream, _) = listener.accept().await.unwrap();
+        let socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let mut client = client_task.await.unwrap();
+        let (sink, mut reader) = socket.split();
+        let (tx, rx) = mpsc::channel(8);
+        let (ack_tx, ack_rx) = mpsc::channel(8);
+        let (_control_tx, control_rx) = mpsc::channel(8);
+        let acknowledgements = tokio::spawn(async move {
+            while let Some(Ok(Message::Text(text))) = reader.next().await {
+                let TransportFrame::TransportAck {
+                    transfer_id,
+                    offset,
+                } = serde_json::from_str(&text).unwrap()
+                else {
+                    panic!("receipt expected")
+                };
+                if ack_tx.send((transfer_id, offset)).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let original = serde_json::json!({"kind":"client_response","request_id":"large","payload":"x".repeat(2_932_256)}).to_string();
+        let expected = original.clone();
+        let sender = tokio::spawn(async move {
+            tx.send(Message::Text(original.into())).await.unwrap();
+            for index in 0..64 {
+                tx.send(Message::Text(serde_json::json!({"kind":"client_event","subscription_id":"small-stream","event_id":index,"payload":"x".repeat(4096)}).to_string().into())).await.unwrap();
+            }
+        });
+        let writer = tokio::spawn(run_writer(sink, rx, true, ack_rx, control_rx));
+        let mut frames = crate::frame_transport::FrameReceiver::default();
+        let mut complete = false;
+        let mut small = 0;
+        let mut small_before_complete = 0;
+        let mut pending_receipt = None;
+        while !complete || small != 64 {
+            let message = tokio::time::timeout(std::time::Duration::from_secs(3), client.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let Message::Text(text) = message else {
+                continue;
+            };
+            assert!(text.len() <= CHUNK_BYTES);
+            let (text, receipt) = frames.receive(&text).unwrap();
+            if let Some(receipt) = receipt {
+                // A natural one-chunk receipt delay keeps the bulk window nonempty.
+                if let Some(previous) = pending_receipt.replace(receipt) {
+                    client.send(Message::Text(previous.into())).await.unwrap();
+                }
+            }
+            if let Some(text) = text {
+                if text == expected {
+                    complete = true;
+                    if let Some(receipt) = pending_receipt.take() {
+                        client.send(Message::Text(receipt.into())).await.unwrap();
+                    }
+                } else {
+                    assert!(text.contains("small-"));
+                    small += 1;
+                    if !complete {
+                        small_before_complete += 1;
+                    }
+                }
+            }
+        }
+        assert!(small_before_complete >= 32, "state events must continue beyond the initial16KiB credit while bulk is draining: {small_before_complete}");
         sender.await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(3), writer)
             .await

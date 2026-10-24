@@ -27,6 +27,7 @@ mod managed_activity;
 mod managed_context;
 mod managed_environment;
 mod native_spawn_slice;
+mod native_provider_transport;
 mod project_environment_aggregate;
 mod project_environment_manifest;
 mod project_environment_setup;
@@ -86,3 +87,6 @@ fn history_page_entry(
 }
 
 mod room_workflows;
+
+mod leased_projection_delivery;
+mod ssh_machine;

@@ -17,6 +17,10 @@ pub enum DaemonError {
         operation: &'static str,
         message: String,
     },
+    /// MP-08 / MP-10 / MP-11: authenticated native bootstrap can precede
+    /// publication of its provider-run receipt; diagnostic text is not a code.
+    #[error("local transport `authorize forwarded home context` failed: worker provider run does not match active remote agent binding")]
+    NativeProviderBindingPending,
     /// MP-08 / MP-11: preserve mapped executor semantics for external grants
     /// and sudo without retaining any diagnostic values or source error.
     #[error("external request failed; details are available only in the host terminal")]

@@ -1,4 +1,5 @@
 import { traceCodexLifecycle } from "./codex-lifecycle-trace.js"
+import { createNativeTurnSettlementBarrier } from "./native-turn-settlement.js"
 import type { AgentRuntimeActivity, RuntimeInteraction, TerminalOutputRecord } from "../cli-types.js"
 import { LocalIpcClient } from "../ipc.js"
 import {
@@ -12,7 +13,7 @@ export function startNativeKernelPumpLoop(
   sessionId: string,
   attachmentId: string,
   options: {
-    onAgentActivity?: ((activity: Record<string, AgentRuntimeActivity>) => void) | undefined
+    onAgentActivity?: ((activity: Record<string, AgentRuntimeActivity>) => void | Promise<void>) | undefined
     onInteractions?: ((interactions: RuntimeInteraction[]) => void) | undefined
     onTerminalRecords?: ((records: TerminalOutputRecord[]) => void) | undefined
     debug?: ((label: string, payload: unknown) => void) | undefined
@@ -23,6 +24,7 @@ export function startNativeKernelPumpLoop(
 ): { stop: () => void } {
   let stopped = false
   let inFlight = false
+  const settlement = createNativeTurnSettlementBarrier()
   const tick = async () => {
     if (stopped || inFlight) return
     inFlight = true
@@ -30,12 +32,13 @@ export function startNativeKernelPumpLoop(
       // Read settlement before draining output: all final records admitted by
       // this snapshot must reach the TUI before its turn/completed notification.
       const state = options.onAgentActivity || options.onInteractions
-        ? await client.send<{ SessionState?: { agent_activity?: Record<string, AgentRuntimeActivity>, session?: { active_interactions?: RuntimeInteraction[] } } }>(getSessionStateRequest(sessionId))
+        ? await client.send<{ SessionState?: { terminal_output_watermark?: number, agent_activity?: Record<string, AgentRuntimeActivity>, session?: { active_interactions?: RuntimeInteraction[] } } }>(getSessionStateRequest(sessionId))
         : undefined
       if (stopped) return
+      if (state?.SessionState?.agent_activity) settlement.observe(state.SessionState.agent_activity, state.SessionState.terminal_output_watermark)
       let outputDrained = false
       // TerminalOutput is size bounded. Keep each tick bounded too, and defer
-      // settlement to a later tick if the attachment still has output pages.
+      // settlement only until its fixed snapshot boundary reaches the client.
       const maxPages = options.onAgentActivity ? 8 : 1
       for (let page = 0; !stopped && page < maxPages; page++) {
         const response = await client.send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachmentId))
@@ -57,11 +60,14 @@ export function startNativeKernelPumpLoop(
               records: terminalRecords.map(summarizeTerminalRecord),
             })
             options.onTerminalRecords?.(terminalRecords)
+            settlement.projectRecords(terminalRecords)
           }
         }
       }
       traceCodexLifecycle("pump_tick", { outputDrained })
-      if (!stopped && outputDrained && state?.SessionState?.agent_activity) options.onAgentActivity?.(state.SessionState.agent_activity)
+      if (!stopped && state?.SessionState?.agent_activity) {
+        for (const activity of settlement.release(outputDrained)) await options.onAgentActivity?.(activity)
+      }
       // Permission projections establish their own prompt-scoped display
       // barrier. Another agent's output must not hold their approval hostage.
       if (!stopped && state?.SessionState?.session) options.onInteractions?.(state.SessionState.session.active_interactions ?? [])

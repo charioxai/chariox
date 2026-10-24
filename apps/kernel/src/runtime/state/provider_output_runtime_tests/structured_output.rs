@@ -383,6 +383,18 @@ async fn structured_output_batch_fans_out_chunks_with_one_terminal_notification(
 
 #[tokio::test]
 async fn structured_output_usage_resolves_the_cloud_owners_local_account_authority() {
+    structured_output_usage_case(false).await;
+}
+
+// MP-08 / MP-10 / MP-11: a leased worker runs a profile registered only on its
+// home kernel, so its usage has nowhere to land; the polled batch is already
+// consumed and must still be applied.
+#[tokio::test]
+async fn structured_output_usage_for_an_unregistered_profile_still_applies_the_batch() {
+    structured_output_usage_case(true).await;
+}
+
+async fn structured_output_usage_case(unregister_profile: bool) {
     let _environment = crate::env_lock::lock();
     let provider_home = crate::test_support::TestWorktree::new("synthetic-claude-account");
     std::env::set_var("HOME", provider_home.path());
@@ -453,6 +465,11 @@ async fn structured_output_usage_resolves_the_cloud_owners_local_account_authori
         Vec::new(),
     )
     .expect("prompt should start");
+    if unregister_profile {
+        app.provider_account_profile_registry()
+            .remove_registration(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "default")
+            .expect("profile registration should be removable");
+    }
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
@@ -483,12 +500,14 @@ async fn structured_output_usage_resolves_the_cloud_owners_local_account_authori
         .await
         .expect("usage should update without aborting the output batch");
 
-    let profile = runtime
-        .owned
-        .provider_account_profiles
-        .get(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "default")
-        .expect("the local account authority profile should remain resolvable");
-    assert_eq!(profile.usage.source, "cloud-owner-usage-test");
+    if !unregister_profile {
+        let profile = runtime
+            .owned
+            .provider_account_profiles
+            .get(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "default")
+            .expect("the local account authority profile should remain resolvable");
+        assert_eq!(profile.usage.source, "cloud-owner-usage-test");
+    }
     assert_eq!(
         runtime
             .owned

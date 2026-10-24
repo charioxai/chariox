@@ -70,7 +70,7 @@ pub(crate) async fn execute_user_config_request(
             execute_lock_credential_vault_request(config_projection, request).await
         }
         LocalDaemonRequest::ManageCredentialVault(request) => {
-            execute_manage_credential_vault_request(runtime_state, request).await
+            execute_manage_credential_vault_request(runtime_state, command, request).await
         }
         _ => Err(DaemonError::LocalTransport {
             operation: "user config request",
@@ -344,6 +344,7 @@ pub(crate) async fn execute_lock_credential_vault_request(
 
 pub(crate) async fn execute_manage_credential_vault_request(
     runtime_state: &KernelRuntimeState,
+    command: &KernelCommand,
     request: ManageCredentialVaultRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let agent_id = runtime_state
@@ -354,7 +355,11 @@ pub(crate) async fn execute_manage_credential_vault_request(
         )
         .await?;
     let (status, action) = runtime_state
-        .manage_credential_vault_unlock(&request.session_id, &agent_id)
+        .manage_credential_vault_unlock(
+            &request.session_id,
+            &agent_id,
+            command.is_terminal_caller(),
+        )
         .await?;
     Ok(LocalDaemonResponse::CredentialVaultManaged { status, action })
 }

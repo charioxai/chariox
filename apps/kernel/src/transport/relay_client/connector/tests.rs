@@ -1,79 +1,4 @@
-use super::writer::{RelayEventWriteCoalescer, RELAY_EVENT_WRITE_COALESCE_MS};
 use super::*;
-use tokio::time::Instant as TokioInstant;
-
-#[test]
-fn relay_event_writer_coalesces_event_lane_with_stable_deadline() {
-    let now = TokioInstant::now();
-    let mut coalescer = RelayEventWriteCoalescer::new(RELAY_EVENT_WRITE_COALESCE_MS);
-
-    assert!(coalescer.push_event("event-1", now).is_none());
-    assert_eq!(
-        coalescer.ready_at(),
-        Some(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS))
-    );
-    assert!(coalescer
-        .push_event("event-2", now + Duration::from_millis(10))
-        .is_none());
-    assert_eq!(
-        coalescer.ready_at(),
-        Some(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS))
-    );
-
-    assert_eq!(
-        coalescer.pop_ready(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS)),
-        Some("event-1")
-    );
-    assert_eq!(
-        coalescer.ready_at(),
-        Some(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS))
-    );
-    assert_eq!(
-        coalescer.pop_ready(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS)),
-        Some("event-2")
-    );
-    assert_eq!(coalescer.ready_at(), None);
-    assert!(coalescer.is_empty());
-}
-
-#[test]
-fn relay_event_writer_can_disable_event_coalescing_for_tests() {
-    let now = TokioInstant::now();
-    let mut coalescer = RelayEventWriteCoalescer::new(0);
-
-    assert_eq!(coalescer.push_event("event-1", now), Some("event-1"));
-    assert_eq!(coalescer.ready_at(), None);
-    assert!(coalescer.pop_ready(now).is_none());
-}
-
-#[test]
-fn relay_event_writer_bounds_a_continuously_ready_producer_without_reordering() {
-    // MP-08/MP-10: the writer's ready event receiver may win over its timer.
-    // Force that receive path repeatedly without draining the timer branch.
-    let now = TokioInstant::now();
-    let mut coalescer = RelayEventWriteCoalescer::new(RELAY_EVENT_WRITE_COALESCE_MS);
-    let mut sent = Vec::new();
-    for event in 0..10_000 {
-        if let Some(ready) = coalescer.push_event(event, now) {
-            sent.push(ready);
-        }
-        assert!(
-            event + 1 - sent.len() <= 32,
-            "event coalescer exceeded its 32-event bound"
-        );
-        assert_eq!(
-            coalescer.ready_at(),
-            Some(now + Duration::from_millis(RELAY_EVENT_WRITE_COALESCE_MS))
-        );
-    }
-    while let Some(event) = coalescer.pop_ready(now) {
-        sent.push(event);
-    }
-    assert_eq!(sent, (0..10_000).collect::<Vec<_>>());
-    assert!(coalescer.is_empty());
-    assert_eq!(coalescer.ready_at(), None);
-}
-
 #[test]
 fn missing_relay_config_without_cloud_profile_is_local_idle() {
     let config = crate::config::DaemonConfig::for_tests();
@@ -154,6 +79,39 @@ async fn dynamic_relay_token_rotation_returns_one_registration_heartbeat() {
 
     assert!(steady_state.is_none());
     assert_eq!(active_token, "new-token");
+}
+
+#[tokio::test]
+async fn token_rollover_during_registration_authenticates_snapshot_without_disconnect() {
+    // MP-08/MP-10/MP-11: refreshing the config between the snapshot and
+    // registration must not turn a harmless renewal race into a reconnect.
+    let url = "wss://relay.example.test";
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.relay_url = Some(url.into());
+    config.relay_token = Some("first-renewal".into());
+    let mut next_config = config.clone();
+    next_config.relay_token = Some("second-renewal".into());
+    let mut app = DaemonApp::bootstrap(next_config.clone()).unwrap();
+    let registration = app.relay_registration();
+    let mut active = "old".to_string();
+    let result = dynamic_relay_heartbeat_registration(url, &mut active, &config, || {
+        std::future::ready(registration.clone())
+    })
+    .await;
+    assert!(
+        matches!(result, Ok(Some(ref r)) if r.auth_token == "first-renewal"),
+        "renewal race must authenticate the snapshot on the same socket"
+    );
+    assert_eq!(
+        active, "first-renewal",
+        "track the registration actually queued"
+    );
+    let result = dynamic_relay_heartbeat_registration(url, &mut active, &next_config, || {
+        std::future::ready(registration)
+    })
+    .await;
+    assert!(matches!(result, Ok(Some(_))));
+    assert_eq!(active, "second-renewal");
 }
 
 #[tokio::test]
@@ -547,10 +505,11 @@ async fn exercise_post_connect_confirmation(
 }
 
 #[test]
-fn mp08_mp10_mp11_browser_artifact_peer_101_hosted_confirmation_gate() {
+fn mp08_mp10_mp11_current_peer_hosted_confirmation_gate() {
     let home = crate::config::DaemonConfig::for_tests();
     let worker = crate::config::DaemonConfig::for_tests();
-    for version in [100, 101] {
+    let current = crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
+    for version in [101, current - 1, current] {
         for (slice_id, nonce) in [
             ("slice-1", "nonce-1"),
             ("other", "nonce-1"),
@@ -590,7 +549,7 @@ fn mp08_mp10_mp11_browser_artifact_peer_101_hosted_confirmation_gate() {
                     "slice-1",
                     "nonce-1",
                 ),
-                version == 101 && slice_id == "slice-1" && activation_nonce == "nonce-1"
+                version == current && slice_id == "slice-1" && activation_nonce == "nonce-1"
             );
         }
     }

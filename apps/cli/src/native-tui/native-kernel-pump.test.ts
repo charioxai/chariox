@@ -3,7 +3,7 @@ import test from "node:test"
 
 import { LocalIpcClient } from "../ipc.js"
 import { startNativeKernelPumpLoop } from "./native-kernel-pump.js"
-import type { RuntimeInteraction } from "../cli-types.js"
+import type { AgentRuntimeActivity, RuntimeInteraction } from "../cli-types.js"
 
 test("MP-08 MP-10 permissions for agent A are bounded while agent B keeps output backlogged", async () => {
   const harness = installTimerHarness()
@@ -84,8 +84,10 @@ function installTimerHarness() {
   const originalClearInterval = globalThis.clearInterval
   const timer = {} as ReturnType<typeof setInterval>
   let selectedIntervalMs: number | undefined
+  let tick: (() => void) | undefined
 
-  globalThis.setInterval = ((_: () => void, intervalMs?: number) => {
+  globalThis.setInterval = ((callback: () => void, intervalMs?: number) => {
+    tick = callback
     selectedIntervalMs = intervalMs
     return timer
   }) as typeof setInterval
@@ -93,6 +95,7 @@ function installTimerHarness() {
 
   return {
     intervalMs: () => selectedIntervalMs,
+    tick: () => tick?.(),
     restore() {
       globalThis.setInterval = originalSetInterval
       globalThis.clearInterval = originalClearInterval
@@ -153,4 +156,34 @@ test("MP-08 MP-10 native settlement waits for every bounded terminal output page
   })
   try { await flushPromises(); assert.deepEqual(order, ["output", "output", "settlement"]) }
   finally { pump.stop(); harness.restore() }
+})
+
+// MP-08 / MP-10: exact output boundary, independent of the next turn/sibling.
+for (const laterCompletion of [false, true]) test(`native settlement retains completed A under output backlog (successor=${laterCompletion})`, async () => {
+  const harness = installTimerHarness()
+  let snapshots = 0, recordId = 0
+  const order: string[] = []
+  const activity = (promptId: string) => ({ agent_id: "agent-a", last_completed_turn: {
+    agent_id: "agent-a", prompt_id: promptId, provider_run_id: "run-a", completed_at_ms: 1,
+    settlement_status: "completed",
+  } }) as unknown as AgentRuntimeActivity
+  const client = fakeClient(request => requestVariant(request) === "GetSessionState"
+    ? { SessionState: { terminal_output_watermark: snapshots++ === 0 ? 10 : 12,
+        agent_activity: { "agent-a": activity(laterCompletion && snapshots > 1 ? "prompt-b" : "prompt-a") } } }
+    : { TerminalOutput: { records: [{ record_id: recordId++, agent_id: recordId === 10 ? "agent-a" : "agent-other", bytes: [65], kind: "provider_output" }] } })
+  const pump = startNativeKernelPumpLoop(client, "session", "attachment", {
+    onTerminalRecords: records => { for (const r of records) order.push(`output-${r.record_id}`) },
+    onAgentActivity: activities => { for (const a of Object.values(activities)) if (a.last_completed_turn) order.push(`complete-${a.last_completed_turn.prompt_id}`) },
+    pollRuntimeNotices: false,
+  })
+  try {
+    await flushPromises()
+    assert.equal(recordId, 8)
+    assert(!order.includes("complete-prompt-a"), "A's final output is still behind the first eight pages")
+    harness.tick(); await flushPromises()
+    assert.equal(recordId, 16, "each tick stays bounded while unrelated output continues")
+    assert.equal(order.filter(x => x === "complete-prompt-a").length, 1, "retain and settle A even if a successor replaces last_completed_turn")
+    assert(order.indexOf("output-9") < order.indexOf("complete-prompt-a"), "A's exact snapshot output boundary precedes settlement")
+    if (laterCompletion) assert(order.indexOf("complete-prompt-a") < order.indexOf("complete-prompt-b"))
+  } finally { pump.stop(); harness.restore() }
 })

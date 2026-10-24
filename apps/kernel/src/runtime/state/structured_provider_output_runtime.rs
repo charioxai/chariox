@@ -353,16 +353,38 @@ impl KernelRuntimeState {
                     );
                     continue;
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    self.fail_prompt_of_lost_structured_batch(
+                        &run_session_id,
+                        &finished_run_id,
+                        polled_prompt_id.as_deref(),
+                        &error,
+                    )
+                    .await;
+                    return Err(error);
+                }
             };
-            let applied = self
+            let applied = match self
                 .apply_prepared_owned_structured_output_batch(
                     &run_session_id,
                     &finished_run_id,
                     recipients,
                     poll_result,
                 )
-                .await?;
+                .await
+            {
+                Ok(applied) => applied,
+                Err(error) => {
+                    self.fail_prompt_of_lost_structured_batch(
+                        &run_session_id,
+                        &finished_run_id,
+                        polled_prompt_id.as_deref(),
+                        &error,
+                    )
+                    .await;
+                    return Err(error);
+                }
+            };
             if is_requested_run {
                 records.extend(applied);
             } else {
@@ -544,12 +566,14 @@ impl KernelRuntimeState {
                     &owned.config_projection.snapshot(),
                     provider_run.owner_user_id(),
                 );
-            owned.provider_account_profiles.update_usage(
+            // Usage is telemetry: a leased worker does not register the home's
+            // profile, and the polled batch is already consumed.
+            let _ = owned.provider_account_profiles.update_usage(
                 &account_owner_user_id,
                 provider_run.provider(),
                 provider_run.account_profile(),
                 usage,
-            )?;
+            );
         }
         let projected_provider_run = owned
             .provider_store

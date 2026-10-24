@@ -156,6 +156,7 @@ mod diagnostics_timeouts;
 mod external_queue;
 mod history_projection;
 mod large_codex_resume;
+mod leased_admission;
 mod leased_output;
 mod mcp_catalog_reload;
 #[cfg(unix)]
