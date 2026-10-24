@@ -17,7 +17,7 @@ Keep inputs, state and transferred artifacts in your own directory outside git.
 | `launch` | `alias`, `worktree`, `provider`, `profile`, `model`, `effort`, `permission`, local `brief`, absolute `remoteBrief`, local `stateFile`, epoch `deadlineMs` | Durable local receipt with Room, attachment, agent and submitted prompt; partial ownership survives a failed step. |
 | `deadline` | `sessionId`, `agentId`, local launch `stateFile` | Foreground coordinator timer for a kernel without deadline support; waits, stops the lane, and records its result. |
 | `steer` | `sessionId`, `attachmentId`, `agentId`, `expectedPromptId`, `prompt`, unique `steerId` | Kernel compare-and-steer response. A race remains a refusal. |
-| `status` | `sessionId`, `agentId` | State, current prompt, last activity and durable deadline receipt. |
+| `status` | `sessionId`, `agentId` | State, current prompt, last activity, durable deadline receipt and executing kernel capabilities. |
 | `fetch` | `worktree`, local `directory` | Downloads `LANE_STATUS.md`, `PUSH_READY.md`, `ACCEPTANCE_UPDATE.json` with file hashes. |
 | `bundle` | `sessionId` (operations Room), `worktree`, full `base` and `head`, absolute `remoteBundle`, local `localBundle`, existing local Git `repository` | Verified SHA-256, source HEAD/base ancestry, bundle tips, imported base ancestry and `refs/remotes/lanes/<taskId>`. |
 | `slot` | `sessionId` (operations Room), `worktree`, absolute `slotScript`, string array `argv`, optional `timeout` seconds | Opens a Room terminal, runs the slot script, waits for its actual exit and closes the terminal. |

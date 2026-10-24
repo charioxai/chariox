@@ -15,6 +15,7 @@ async function rig(t) {
   const options = { home, config, now: () => 1000, stdin: async () => 'review the exact PR', adapter: async (op, input) => {
     calls.push({ op, input });
     if (op === 'launch') return launch;
+    if (op === 'steer') return { ActivePromptSteered: { prompt: { id: 'steer' } } };
     if (op === 'status') return { state: 'idle', currentPrompt: null, lastActivityMs: 1, deadline: { mode: 'kernel', state: 'armed' } };
     if (op === 'fetch') { await mkdir(input.directory, { recursive: true }); await save(join(input.directory, 'ACCEPTANCE_UPDATE.json'), { rows: [{ head }] }); return { fetched: true }; }
     return { stopped: true };
@@ -151,10 +152,11 @@ test('lanehealth without arguments snapshots every recorded lane once', async t 
   assert.equal(results.length, 1); assert.equal(results[0].lane, 'lane');
   assert.deepEqual(r.calls.map(c => c.op), ['status']);
 });
-test('deliver reuses the same command id for the same review and current prompt', async t => {
+test('deliver reuses the confirmed receipt for the same review and current prompt', async t => {
   const r = await launched(t); const review = join(r.home, 'review.md'); await writeFile(review, 'review');
   const adapter = r.options.adapter;
   r.options.adapter = (op, input) => op === 'status' ? { currentPrompt: 'current' } : adapter(op, input);
   await coordinate('deliver', ['lane', review], r.options); await coordinate('deliver', ['lane', review], r.options);
-  assert.equal(r.calls[0].input.steerId, r.calls[1].input.steerId);
+  assert.equal(r.calls.length, 1);
+  assert.equal(r.calls[0].input.steerId, JSON.parse(await readFile(join(r.home, 'lane.delivery.json'), 'utf8')).steerId);
 });

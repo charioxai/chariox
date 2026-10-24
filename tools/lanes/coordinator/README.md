@@ -27,9 +27,9 @@ Create `$CHARIOX_COORDINATOR_HOME/config.json` with this non-secret policy:
 
 | Replacement command | Inputs and behavior |
 | --- | --- |
-| `node tools/lanes/coordinator/brief.mjs LANE WORKTREE codex [BRIEF_FILE]` | Reads the brief file, or stdin like `brief.sh`; uploads it and launches through `lane-launch`. Reusing inputs resumes the original launch and deadline. |
+| `node tools/lanes/coordinator/brief.mjs LANE WORKTREE codex [BRIEF_FILE]` | Reads the brief file, or stdin like `brief.sh`; uploads it and launches through `lane-launch`. Reusing identical inputs resumes the original launch and deadline. Changed brief text, including stdin, raises `launch_conflict`. |
 | `node tools/lanes/coordinator/watch.mjs [MINUTES]` | One blocking `WaitEvents` on the grant's merged inbox (default 15, max 240 minutes; longer waits re-arm WaitEvents only). Archives the whole batch before AckEvents. Timeout is a normal wake. |
-| `node tools/lanes/coordinator/deliver.mjs LANE REVIEW_FILE` | Reads the review text already obtained on the Mac and steers the current prompt with a compare fence. Identical review/current-prompt pairs reuse their command id. A settled worker is refused. |
+| `node tools/lanes/coordinator/deliver.mjs LANE REVIEW_FILE` | Reads the review text already obtained on the Mac and steers the current prompt with a compare fence. Confirms via a matching §14 event when advertised, otherwise via the acknowledged response and one status read. Identical review/current-prompt pairs reuse their receipt. New instructions for a settled worker are refused. |
 | `node tools/lanes/coordinator/lanefin.mjs LANE...` | Checks status once, fetches the worker's notes/update, then verifies/imports its bundle. The update must identify one full head; `bases[LANE]` supplies its base. Review notes and the final message belong in `LANE_STATUS.md`/`PUSH_READY.md`. |
 | `node tools/lanes/coordinator/lanehealth.mjs [LANE]` | One status/deadline snapshot per selected lane (all recorded lanes when omitted), with LONG-ROUND and SILENT flags; no recurring poller or automatic destruction. |
 | `node tools/lanes/coordinator/stop.mjs LANE` | Explicit unconditional adapter stop of the recorded worker. The kernel's durable deadline operates even while the coordinator is disconnected. |
@@ -42,11 +42,33 @@ kernel capability. Never treat the health script as a deadline replacement.
 The original Mac scripts remain read-only. GitHub review lookup, usage accounting,
 host rental and central acceptance merge remain there. These replacements take
 lane/worktree/brief/review inputs; they do not run SSH or query GitHub. Keep one
-watcher per coordinator inbox. Commands create private receipts, transferred files
+inbox consumer at a time: finish the watch command before running deliver, then
+resume watching. Commands create private receipts, transferred files
 and an `events/` journal under the coordinator home; retain them as evidence.
 On runtime `0d31a2ee3`, a successful steer does not emit a distinct §14 receipt;
 the full coordinator acceptance row remains FAIL until extagent supplies it.
 The worker can acknowledge delivery in its fetched notes, which is supplementary.
+
+MP-08 / MP-09 / MP-10 / MP-11: the r7 adapter contract expects the executing
+kernel to advertise `outside_steer_events_v1` in `RelayStatus.status.capabilities`.
+Upstream must advertise this only when it emits `type: "steer"` with
+`value.steer_id` equal to `ActivePromptSteered.prompt.id`. The event's kernel,
+session and agent must also match the lane. This is the returned provider steer
+id, distinct from the adapter's retry command id. The published runtime pin above
+does not advertise this capability and continues to use the fallback.
+
+Deliver reports `confirmation.mode: "event"` after a matching event, or
+`"acknowledged-steer-status"` after the older path's status read. The fallback
+does not establish distinct-event acceptance. Event confirmation blocks on
+WaitEvents for up to 120 seconds, archiving every batch before acknowledgement;
+the returned `confirmation.archives` includes batches for other lanes too, which
+the coordinator must process. A gap/end is archived and refused without ack;
+timeout raises `steer_confirmation_timeout`. Resume the same review to confirm
+its retained accepted steer, including after its original turn settles. A
+confirmed receipt is saved before ack, so an interrupted acknowledgement cannot
+cause a retry to wait for an already consumed event. A pending event confirmation
+never silently changes to the fallback if its capability disappears.
+
 A changed grant, event gap, missing followed target or ended subscription refuses
 the wake without acknowledging lost data. Restore authority or reconcile the gap
 explicitly. File-only HOST_REQUEST/OWNER_SESSION changes are not live events yet;

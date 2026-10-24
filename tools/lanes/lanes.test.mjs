@@ -93,6 +93,7 @@ test('status selects the target agent and never borrows another agents prompt', 
   assert.equal(result.currentPrompt, null);
   assert.equal(result.state, 'idle');
   assert.equal(result.lastActivityMs, 123);
+  assert.deepEqual(result.capabilities, ['agent_deadline_v1']);
 });
 
 test('stop destroys an idle agent after typed no-active-prompt refusal', async () => {

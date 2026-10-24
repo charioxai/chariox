@@ -57,7 +57,7 @@ export function execute(argv, stdin = '', executable = process.env.CHARIOX_BIN |
   });
 }
 
-async function save(path, value) {
+export async function save(path, value) {
   await mkdir(dirname(resolve(path)), { recursive: true });
   const temporary = `${path}.${randomUUID()}.tmp`;
   await writeFile(temporary, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
@@ -269,7 +269,7 @@ export async function run(operation, input, dependencies = {}) {
       deadline = coordinatorDeadline(deadlineMs);
     }
     const active = state.session.active_prompt;
-    return { agentId: agent(), state: activity?.status || (selected.is_processing ? 'working' : 'idle'), currentPrompt: activity?.active_turn?.prompt_id || (active?.target_agent_id === agent() ? active.id : null), lastActivityMs: selected.last_activity_at_ms, deadline };
+    return { agentId: agent(), state: activity?.status || (selected.is_processing ? 'working' : 'idle'), currentPrompt: activity?.active_turn?.prompt_id || (active?.target_agent_id === agent() ? active.id : null), lastActivityMs: selected.last_activity_at_ms, deadline, capabilities: Array.isArray(capabilities) ? capabilities : [] };
   }
   if (operation === 'fetch') {
     const directory = resolve(text(input.directory, 'directory')); await mkdir(directory, { recursive: true });

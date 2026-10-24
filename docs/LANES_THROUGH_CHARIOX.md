@@ -20,7 +20,7 @@ saved before acknowledgement; timeouts simply wake the coordinator.
 | --- | --- | --- | --- |
 | brief.sh | `coordinator/brief.mjs`: lane-launch + files put; original launch checkpoint and kernel deadline | Choose lane, source, linked profile and brief. Restart means a new round identity, not extending the deadline. | A01 Room delegation/admission and A02 durable inbox; source `amint/c2` @4bea22d44. |
 | watch.sh | `coordinator/watch.mjs`: one WaitEvents/AckEvents inbox across workers; archive every batch | GitHub review lookup stays on Mac. File-only HOST_REQUEST/OWNER_SESSION changes need an event bridge; working state alone is not progress. | A02 ledger/wakes and A03 process/timer watchers are producers; EA2 §14 exposes outside subscriptions. |
-| deliver.sh | `coordinator/deliver.mjs`: read supplied review, status once, compare-and-steer the active prompt | Fetch review text on Mac; a finished turn needs a new round, never an implicit prompt submission. Accepted steer has no distinct §14 event on the runtime pin; extagent must add its receipt producer/projection. | A01 send_agent_message correlation / steer and A02 admission records exist; their outside steer-receipt projection is missing. No duplicate delivery core. |
+| deliver.sh | `coordinator/deliver.mjs`: read supplied review, compare-and-steer the active prompt, then confirm through a capability-gated §14 event or acknowledged-response/status fallback | Fetch review text on Mac; new instructions for a finished turn need a new round. The runtime pin lacks the event capability; extagent supplies its producer/projection and advertisement. | A01 send_agent_message correlation / steer and A02 admission records exist; r7 prepares their outside steer-receipt consumer. No duplicate delivery core. |
 | lanefin.sh | `coordinator/lanefin.mjs`: status + fetch notes/head + SHA-verified bundle/import | Publication, independent review and central acceptance merge stay on Mac. Final message must be written into fetched notes; no transcript scrape. | A02 explicit done/waiting/blocked; A03 process-exit wake for bundle commands. |
 | lanehealth.sh | `coordinator/lanehealth.mjs`: state, last activity and deadline with LONG-ROUND/SILENT flags | Decide whether a silent worker is stuck; no claim that last activity proves useful progress. | A02 /goal completion assessor and no-progress check-ins; A03 watchers can improve evidence. |
 | stop | Kernel SetAgentDeadline/GetAgentDeadline, then `coordinator/stop.mjs` | Exact owned-resource cleanup audit remains necessary; agent destruction alone is not a complete host cleanup receipt. | A04 sudo is permission duration, not a hard stop. EA2 durable deadline supplies the missing unconditional wall-clock bound. |
@@ -101,3 +101,19 @@ close the missing steer-event requirement. Source checks: 44 adapter/coordinator
 tests, 2,682 compiled TypeScript CLI tests and process-signal lint pass. The
 coordinator handoff carries exact source identities, cleanup and tracker update;
 no broad MP parity or real-Mac workday acceptance is claimed.
+
+## R7 adapter preparation
+
+MP-08 / MP-09 / MP-10 / MP-11. Resume now compares both file and piped briefs
+against the original launch. WaitEvents exit 3 is parsed so the subscription-end
+batch and its reason are archived before `event_stream_incomplete`, without ack.
+Both fixes have fail-first real-child regressions.
+
+Deliver now expects `outside_steer_events_v1` to advertise the distinct-event
+contract: `type: "steer"`, `value.steer_id` matching the returned
+`ActivePromptSteered.prompt.id`, with the exact kernel/session/agent target.
+It archives batches and waits for that event, retaining confirmation before ack.
+Without that capability it reports `acknowledged-steer-status` after the accepted
+response and one status read. Neither fallback nor fake-adapter coverage closes
+EA2-16C. Upstream advertisement/schema agreement and a new full real hosted round
+remain required; r7 starts no kernels or stacks and changes no kernel code.

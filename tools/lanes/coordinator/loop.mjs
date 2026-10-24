@@ -1,20 +1,16 @@
 // MP-08 / MP-09 / MP-10 / MP-11: Mac coordinator policy over lane adapters.
-import { readFile, writeFile, mkdir, rename, readdir } from 'node:fs/promises';
-import { resolve, join, dirname } from 'node:path';
+import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
+import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
-import { randomUUID, createHash } from 'node:crypto';
-import { execute, LaneError } from '../lanes.mjs';
+import { createHash } from 'node:crypto';
+import { execute, LaneError, save } from '../lanes.mjs';
+import { openInbox, waitBatch, confirmSteer } from './events.mjs';
+export { save };
 
 const validLane = lane => {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/.test(lane || '')) throw new LaneError('invalid_lane');
   return lane;
 };
-export async function save(path, value) {
-  await mkdir(dirname(path), { recursive: true });
-  const temporary = `${path}.${randomUUID()}`;
-  await writeFile(temporary, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
-  await rename(temporary, path);
-}
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
 export async function coordinate(operation, args, options = {}) {
   const home = resolve(options.home || process.env.CHARIOX_COORDINATOR_HOME || join(homedir(), '.chariox', 'dev', 'coordinator-lanes'));
@@ -58,24 +54,11 @@ export async function coordinate(operation, args, options = {}) {
     const timeout = Number(args[0] || 15) * 60;
     if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 14400) throw new LaneError('invalid_watch_timeout', 'watch takes 1/60..240 minutes');
     // Requests and launch automatically add targets to this grant's single inbox.
-    const statePath = join(home, 'subscription.json');
-    const current = await cli(['events', 'subscription']);
-    const subscription = current.subscription;
-    if (!subscription || subscription.ended) throw new LaneError('subscription_unavailable');
-    let previous; try { previous = await read(statePath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    if (previous && previous.subscription_id !== subscription.subscription_id) throw new LaneError('subscription_changed', 'The access grant changed; restore the original grant before resuming its inbox.');
-    const records = await Promise.all((await readdir(home)).filter(f => /^[A-Za-z0-9][A-Za-z0-9_.-]*\.json$/.test(f) && !f.endsWith('.launch.json')).map(async f => read(join(home, f))));
-    for (const r of records.filter(r => r.launch && !r.stopped)) {
-      if (!subscription.targets?.some(t => t.kernel === r.launch.kernel && t.session_id === r.launch.sessionId && (!t.agent_id || t.agent_id === r.launch.agentId))) throw new LaneError('subscription_target_missing', `Launch target ${r.lane} is missing from the inbox; subscribe before waiting.`);
-    }
-    await save(statePath, { subscription_id: subscription.subscription_id });
+    await openInbox(home, cli);
     let remaining = timeout;
     while (remaining > 0) {
       const seconds = Math.min(remaining, 900);
-      const batch = await cli(['events', 'wait', '--timeout', String(seconds)]);
-      if (!Array.isArray(batch.events) || !Number.isSafeInteger(batch.next_cursor)) throw new LaneError('invalid_event_batch');
-      await save(join(home, 'events', `${now()}-${randomUUID()}.json`), batch);
-      if (batch.events.some(e => ['gap', 'subscription_ended'].includes(e.type))) throw new LaneError('event_stream_incomplete', 'Inbox gap or end archived; inspect before acknowledging.');
+      const { batch } = await waitBatch(home, cli, now, seconds);
       if (batch.events.length) await cli(['events', 'ack', String(batch.next_cursor)]);
       remaining -= seconds;
       if (batch.events.length || !batch.timed_out || remaining === 0) return batch;
@@ -90,11 +73,33 @@ export async function coordinate(operation, args, options = {}) {
     const prompt = await readFile(reviewFile, 'utf8');
     if (!prompt.trim()) throw new LaneError('empty_review');
     const status = await adapter('status', { ...common, stateFile: record.input.stateFile });
-    if (!status.currentPrompt) throw new LaneError('no_active_prompt', 'The worker settled; start a new round to deliver new work.');
-    const steerId = `review-${createHash('sha256').update(status.currentPrompt).update(prompt).digest('hex')}`;
-    const result = await adapter('steer', { ...common, expectedPromptId: status.currentPrompt, prompt, steerId });
-    await save(join(home, `${lane}.delivery.json`), { steerId, expectedPromptId: status.currentPrompt, result });
-    return result;
+    const deliveryPath = join(home, `${lane}.delivery.json`);
+    let receipt; try { receipt = await read(deliveryPath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    const commandId = expected => `review-${createHash('sha256').update(expected).update(prompt).digest('hex')}`;
+    // Resume confirmation of an accepted steer even if its turn has since settled.
+    const resuming = receipt && receipt.steerId === commandId(receipt.expectedPromptId) && (!status.currentPrompt || status.currentPrompt === receipt.expectedPromptId || !receipt.result.confirmation);
+    const expectedPromptId = resuming ? receipt.expectedPromptId : status.currentPrompt;
+    if (!expectedPromptId) throw new LaneError('no_active_prompt', 'The worker settled; start a new round to deliver new work.');
+    const steerId = commandId(expectedPromptId);
+    if (receipt?.steerId !== steerId) receipt = undefined;
+    if (receipt?.result.confirmation) return receipt.result;
+    const advertised = Array.isArray(status.capabilities) && status.capabilities.includes('outside_steer_events_v1');
+    const eventMode = receipt?.confirmationMode ? receipt.confirmationMode === 'event' : advertised;
+    if (eventMode && !advertised) throw new LaneError('steer_events_unavailable', 'Restore the kernel steer-event capability to resume this event confirmation.');
+    if (eventMode) await openInbox(home, cli);
+    if (!receipt) {
+      const result = await adapter('steer', { ...common, expectedPromptId, prompt, steerId });
+      receipt = { steerId, expectedPromptId, confirmationMode: eventMode ? 'event' : 'acknowledged-steer-status', result };
+      await save(deliveryPath, receipt);
+    }
+    const returnedSteerId = receipt.result.ActivePromptSteered?.prompt?.id;
+    if (typeof returnedSteerId !== 'string' || !returnedSteerId) throw new LaneError('unexpected_steer_response');
+    const confirmed = async confirmation => {
+      receipt.result = { ...receipt.result, confirmation }; await save(deliveryPath, receipt);
+    };
+    if (eventMode) await confirmSteer({ home, cli, now, target: common, steerId: returnedSteerId, confirmed });
+    else await confirmed({ mode: 'acknowledged-steer-status', status: await adapter('status', { ...common, stateFile: record.input.stateFile }) });
+    return receipt.result;
   }
   if (operation === 'lanehealth') {
     const status = await adapter('status', { ...common, stateFile: record.input.stateFile });
