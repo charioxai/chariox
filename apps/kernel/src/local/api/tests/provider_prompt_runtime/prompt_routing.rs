@@ -1173,9 +1173,7 @@ fn local_request_api_rejects_invalid_provider_adapter_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated {
-            session, agent: _, ..
-        } => session,
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
 

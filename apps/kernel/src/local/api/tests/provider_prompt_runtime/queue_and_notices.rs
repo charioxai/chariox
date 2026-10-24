@@ -249,9 +249,7 @@ fn local_request_api_can_cancel_an_active_prompt() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated {
-            session, agent: _, ..
-        } => session,
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
 

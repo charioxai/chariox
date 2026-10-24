@@ -21,9 +21,7 @@ fn local_request_api_runs_shell_command_capability_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated {
-            session, agent: _, ..
-        } => session,
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
     let attachment = match harness
@@ -83,9 +81,7 @@ fn local_request_api_rejects_shell_command_for_unauthorized_attachment_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated {
-            session, agent: _, ..
-        } => session,
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
     let attachment = match harness
@@ -146,9 +142,7 @@ fn local_request_api_rejects_file_capability_for_unauthorized_attachment_inner()
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated {
-            session, agent: _, ..
-        } => session,
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
     let attachment = match harness
@@ -211,9 +205,7 @@ fn local_request_api_reads_directory_tree_file_and_git_status_inner() {
         ))
         .expect("session create should succeed")
     {
-        LocalDaemonResponse::SessionCreated {
-            session, agent: _, ..
-        } => session,
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
     let attachment = match harness
