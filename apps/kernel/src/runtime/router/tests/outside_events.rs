@@ -192,10 +192,14 @@ fn outside_event_requests_are_refused_once_the_grant_is_revoked() {
         );
         for value in outside_event_requests() {
             let request = request(value);
-            assert_kernel_access_refusal(
-                router.dispatch(command(&grant, &request), request).await,
-                "grant revoked or expired",
+            let result = router.dispatch(command(&grant, &request), request).await;
+            // What the holder is told on the wire: ended, and not worth a retry.
+            let wire = crate::transport::kernel_protocol::map_kernel_error(
+                result.as_ref().expect_err("an ended grant is refused"),
             );
+            assert_eq!(wire.code, "kernel_access_ended", "{wire:?}");
+            assert!(!wire.retryable, "{wire:?}");
+            assert_kernel_access_refusal(result, "grant revoked or expired");
         }
     });
 }

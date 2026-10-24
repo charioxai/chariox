@@ -162,17 +162,24 @@ impl Refusal {
     /// Classifies a policy error. Only the lifecycle constants mean "ended";
     /// every other policy refusal is an owner-only action.
     pub(crate) fn of(error: &crate::error::DaemonError) -> Self {
-        Self::exact(error).unwrap_or(match error {
-            crate::error::DaemonError::LocalTransport { message, .. }
-                if matches!(
-                    message.as_str(),
-                    "grant revoked or expired" | "sudo turn ended or was revoked"
-                ) =>
+        Self::exact(error).unwrap_or(
+            if Self::grant_ended(error)
+                || matches!(error, crate::error::DaemonError::LocalTransport { message, .. }
+                    if message == "sudo turn ended or was revoked")
             {
                 Self::Ended
-            }
-            _ => Self::HumanOnly,
-        })
+            } else {
+                Self::HumanOnly
+            },
+        )
+    }
+
+    /// The grant was gone when a request that had already been admitted looked it
+    /// up: the person reading the error must see "ended", not a retryable failure.
+    pub(crate) fn grant_ended(error: &crate::error::DaemonError) -> bool {
+        Self::exact(error) == Some(Self::Ended)
+            || matches!(error, crate::error::DaemonError::LocalTransport { message, .. }
+                if message == "grant revoked or expired")
     }
 
     /// The reason an error already carries, when it came from `Refusal::error`.
