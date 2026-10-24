@@ -323,6 +323,32 @@ fn outbound_lets_a_grant_holder_read_which_session_holds_an_alias() {
     assert!(!hidden.to_string().contains(CANARY));
 }
 
+// A grant holder learns the id of a steer that was delivered without its event; other text on that code stays private.
+#[test]
+fn outbound_lets_a_grant_holder_read_which_steer_was_delivered_unrecorded() {
+    let error = crate::error::DaemonError::SteerDeliveredEventUnrecorded {
+        steer_id: "prompt-1792860971700".into(),
+    };
+    let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+    assert_eq!(mapped.code, "prompt_steer_event_unrecorded");
+    let frame = |message: &str| {
+        serde_json::json!({"type":"response","request_id":"r","response":null,
+        "error":{"code":mapped.code,"message":message,"retryable":false}})
+    };
+    let projected = project_payload(frame(&mapped.message)).unwrap();
+    assert_eq!(projected["error"]["code"], "prompt_steer_event_unrecorded");
+    let told = projected["error"]["message"].as_str().unwrap();
+    assert!(told.contains("`prompt-1792860971700`"), "{told}");
+    assert!(told.contains("do not send it again"), "{told}");
+    for hidden in [
+        CANARY.to_string(),
+        format!("steer `{CANARY} {CANARY}` was delivered but its event was not recorded; do not send it again"),
+    ] {
+        let hidden = project_payload(frame(&hidden)).unwrap();
+        assert!(!hidden.to_string().contains(CANARY));
+    }
+}
+
 // MP-08 / MP-11: cached and socket errors retain the same safe lookup reason.
 #[test]
 fn mp11_missing_session_socket_reason_is_public_without_private_details() {

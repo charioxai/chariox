@@ -30,6 +30,24 @@ pub(crate) fn is_session_alias_refusal(code: &str, message: &str) -> bool {
         && message.starts_with("session alias `")
 }
 
+const STEER_UNRECORDED_SUFFIX: &str =
+    "` was delivered but its event was not recorded; do not send it again";
+
+/// The steer a provider holds whose event was not recorded: the kernel's own sentence
+/// names only the steer id it generated. Only that exact shape qualifies.
+pub(crate) fn is_steer_unrecorded_refusal(code: &str, message: &str) -> bool {
+    code == "prompt_steer_event_unrecorded"
+        && message
+            .strip_prefix("steer `")
+            .and_then(|rest| rest.strip_suffix(STEER_UNRECORDED_SUFFIX))
+            .is_some_and(|id| {
+                !id.is_empty()
+                    && id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            })
+}
+
 #[derive(Debug, Error)]
 pub enum DaemonError {
     #[error("{}", external_request_failure_message(.reason.code()))]

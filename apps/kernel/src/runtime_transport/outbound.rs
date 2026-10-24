@@ -256,6 +256,12 @@ fn project_error(value: &Value) -> KernelTransportError {
     if crate::error::is_session_alias_refusal(code, message) {
         projected.message = message.into();
     }
+    // The kernel writes this sentence itself around the steer id it generated.
+    if crate::error::is_steer_unrecorded_refusal(code, message) {
+        projected.code = code.into();
+        projected.retryable = false;
+        projected.message = message.into();
+    }
     // The gateway writes these messages itself, from the kernel name the agent
     // chose; they carry no provider or parser text.
     if crate::durable_state::agent_lifecycle::outside::is_public_code(code)
