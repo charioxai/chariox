@@ -1025,3 +1025,12 @@ test('MP-08/MP-10: snapshots and drains cross CDP as one JSON string', async () 
  assert.deepEqual(await mirror.evaluate(world, 'm.drain()', false, 1000, true), value);
  assert.equal(sent[1], 'JSON.stringify(m.drain())');
 });
+
+// browserperf r10: the escaped-function-name rewrite retried at every character of a name, so a long base64 data
+// URL in a sheet with any backslash cost time quadratic in its length (20 KB: ~0.4 s, in the page and the kernel).
+test('MP-08/MP-10: sanitizing a sheet with a long inline data URL and an escape stays linear', () => {
+ const css = `.a{content:"\\2022"}.b{background:url(data:image/png;base64,${'QUFB'.repeat(5000)})}.c{background:u\\72l(x.png)}`;
+ const started = performance.now(), out = sanitizeMirrorCss(css, 'https://x/', () => 'r1');
+ assert(performance.now() - started < 100, `took ${Math.round(performance.now() - started)} ms`);
+ assert.equal(out, '.a{content:"\\2022"}.b{background:url("mr:r1")}.c{background:url("mr:r1")}');
+});
