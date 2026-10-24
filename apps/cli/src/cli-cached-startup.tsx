@@ -13,6 +13,7 @@ import {recordPaneFirstFrame} from "./pane-first-frame-timing.js"
 import {paintCachedTranscriptFrame} from "./client-view-frame.js"
 import {createTranscriptSyntaxStyle,theme} from "./theme.js"
 import {TUI_MOUSE_ENABLED} from "./terminal-mouse-policy.js"
+import {formatError,getLogger} from "./cli-runtime-singletons.js"
 
 export function createCliCachedStartup(){
  const [cached,setCached]=createSignal<CliCachedView|null>(null)
@@ -66,7 +67,11 @@ export function CliCachedStartup(props:{pending:Promise<CliRuntimeBootstrapResul
   result.bootstrap.isTranscriptViewCovered=()=>!painted()
   result.bootstrap.onTranscriptFrame=()=>{if(!disposed){setPainted(true);props.view.finish()}}
   setReady(result)
- }).catch(()=>{if(!disposed){props.view.finish();setFailure('Unable to attach to this session.')}})
+ }).catch(error=>{
+  // The early attach path has no caller to report to, so the reason is shown and logged here.
+  getLogger("cli.main")?.error("session attach failed", {error: formatError(error)})
+  if(!disposed){props.view.finish();setFailure(`Unable to attach to this session: ${formatError(error)}`)}
+ })
  return <box width="100%" height="100%" flexDirection="column">
   <Show when={ready()}>{runtime=><CharioxCliApp bootstrap={runtime().bootstrap}/>}</Show>
   <Show when={!painted()}><box position="absolute" zIndex={100} top={0} left={0} width="100%" height="100%" backgroundColor={theme.background}>
