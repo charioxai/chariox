@@ -1,7 +1,7 @@
 //! Validate launcher syntax before a build, logger or runtime can be started.
 
 pub const USAGE: &str = "usage: chariox-cli [options]
-       chariox-cli access|sudo|guide|machines|request|watch|files|app|context|logs|codex|claude|opencode|publication|deployments|deployed|cloud [args]
+       chariox-cli access|sudo|guide|machines|request|events|watch|files|app|context|logs|codex|claude|opencode|publication|deployments|deployed|cloud [args]
        chariox-cli serve <package> <port> [options]
 
 Options:
@@ -40,6 +40,7 @@ pub fn help_requested(args: &[String]) -> Result<bool, String> {
                 | "guide"
                 | "kernels"
                 | "request"
+                | "events"
                 | "watch"
                 | "files"
                 | "terminal"
@@ -124,6 +125,22 @@ mod tests {
         ] {
             let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
             assert_eq!(help_requested(&args), Ok(false));
+        }
+    }
+
+    // EA2-26: the event commands of `chariox guide` use the TypeScript parser.
+    #[test]
+    fn event_commands_reach_their_own_parser() {
+        for args in [
+            vec!["events", "subscription"],
+            vec!["events", "subscribe", "--kernel", "k", "--session", "s"],
+            vec!["events", "unsubscribe", "--all"],
+            vec!["events", "list", "--since", "3", "--limit", "10"],
+            vec!["events", "wait", "--since", "3", "--timeout", "5"],
+            vec!["events", "ack", "7"],
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(help_requested(&args), Ok(false), "{args:?}");
         }
     }
 
