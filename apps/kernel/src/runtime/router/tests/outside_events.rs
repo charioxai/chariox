@@ -62,16 +62,13 @@ fn outside_router_collects_states_and_ends_a_running_wait_on_revoke() {
             .runtime_state()
             .insert_access_grant_for_test(session.id());
         dispatch(&router,&grant,request(serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":session.id(),"agent_id":agent.id()}]}}))).await;
-        app.lock()
-            .await
-            .agents_mut()
-            .set_agent_state(agent.id(), crate::agent::AgentState::Working)
-            .unwrap();
-        app.lock()
-            .await
-            .agents_mut()
-            .set_agent_state(agent.id(), crate::agent::AgentState::Idle)
-            .unwrap();
+        router.runtime_state().start_active_turn_with_trace_id(
+            session.id(),
+            agent.id(),
+            "outside-prompt",
+            "outside-run",
+            "outside-trace",
+        );
         let LocalDaemonResponse::EventsListed {
             events,
             next_cursor,
@@ -85,12 +82,9 @@ fn outside_router_collects_states_and_ends_a_running_wait_on_revoke() {
         else {
             panic!("expected events")
         };
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 1);
         assert!(
             matches!(&events[0].value,OutsideEventValue::Agent { run_state:Some(state),.. } if *state==EventRunState::Working)
-        );
-        assert!(
-            matches!(&events[1].value,OutsideEventValue::Agent { run_state:Some(state),.. } if *state==EventRunState::Idle)
         );
         let wait =
             request(serde_json::json!({"WaitEvents":{"since":next_cursor,"timeout_ms":30000}}));

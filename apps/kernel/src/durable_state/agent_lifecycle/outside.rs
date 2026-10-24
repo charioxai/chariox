@@ -21,7 +21,7 @@ pub(crate) fn is_public_code(code: &str) -> bool {
 }
 
 mod model;
-pub(crate) use model::{Mutation, Part, Recipient};
+pub(crate) use model::{Mutation, Part, Recipient, RunState};
 mod producers;
 use producers::identity;
 pub(super) use producers::publish_task;
@@ -127,11 +127,62 @@ fn end(tx: &Transaction<'_>, part: &mut Part, reason: &str) -> Result<(), Daemon
         }
     }
     part.targets.clear();
+    part.run_states.clear();
     Ok(())
 }
 
 pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome, DaemonError> {
     match mutation {
+        Mutation::RunStates { states } => {
+            let Some((kernel, machine)) = identity(tx)? else {
+                return Ok(Outcome::Saved);
+            };
+            for state in states {
+                let event = OutsideEvent {
+                    cursor: 0,
+                    kernel: kernel.clone(),
+                    machine: machine.clone(),
+                    session_id: state.session_id,
+                    agent_id: Some(state.agent_id),
+                    value: OutsideEventValue::Agent {
+                        run_state: Some(state.state),
+                        task_state: None,
+                        reason: None,
+                    },
+                    summary: match state.state {
+                        crate::local::EventRunState::Working => "working",
+                        crate::local::EventRunState::Idle => "idle",
+                        crate::local::EventRunState::Error => "error",
+                    }
+                    .into(),
+                    at_ms: outside_now_ms()?,
+                    refs: Default::default(),
+                };
+                let key = run_state_key(&event)?;
+                for mut part in parts(tx)? {
+                    if part.ended.is_some() || !matches(&part, &event) {
+                        continue;
+                    }
+                    let previous = part
+                        .run_states
+                        .get(&key)
+                        .copied()
+                        .unwrap_or(crate::local::EventRunState::Idle);
+                    if previous == state.state {
+                        continue;
+                    }
+                    part.run_states.insert(key.clone(), state.state);
+                    append(
+                        tx,
+                        &mut part,
+                        &format!("activity-{:032x}", rand::random::<u128>()),
+                        &event,
+                    )?;
+                    bound(tx, &mut part, inbox_limit()?)?;
+                    put(tx, &part)?;
+                }
+            }
+        }
         #[cfg(test)]
         Mutation::Bound { id, limit } => {
             let mut part = require(tx, &id)?;
@@ -147,7 +198,12 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
         Mutation::Identity { kernel, machine } => {
             tx.execute("INSERT INTO agent_outside_identity VALUES(1,?1,?2) ON CONFLICT(singleton) DO UPDATE SET kernel=excluded.kernel,machine=excluded.machine", params![kernel,machine]).map_err(sql)?;
         }
-        Mutation::Subscribe { id, home, targets } => {
+        Mutation::Subscribe {
+            id,
+            home,
+            targets,
+            baseline,
+        } => {
             let existing = read(tx, &id)?;
             let mut changed = existing.is_none();
             let mut part = existing.unwrap_or_else(|| Part::new(id, home));
@@ -167,6 +223,21 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
                 return Err(refused(
                     "event target limit is 1024; follow whole sessions instead",
                 ));
+            }
+            if !baseline.is_empty() {
+                let (kernel, _) =
+                    identity(tx)?.ok_or_else(|| error("outside source identity is missing"))?;
+                for state in baseline {
+                    let key =
+                        serde_json::to_string(&(&kernel, &state.session_id, Some(&state.agent_id)))
+                            .map_err(|_| error("event run-state key could not be encoded"))?;
+                    if let std::collections::btree_map::Entry::Vacant(entry) =
+                        part.run_states.entry(key)
+                    {
+                        entry.insert(state.state);
+                        changed = true;
+                    }
+                }
             }
             if changed {
                 put(tx, &part)?;
@@ -191,6 +262,7 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
                     }
                     part.targets.retain(|t| !targets.contains(t));
                 }
+                prune_run_states(&mut part)?;
                 put(tx, &part)?;
             }
         }
@@ -221,7 +293,7 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
                 }
                 append(tx, &mut part, &format!("remote-{}", event.cursor), &event)?;
                 part.remote_cursors.insert(kernel.clone(), event.cursor);
-                remove_ended_target(&mut part, &event);
+                remove_ended_target(&mut part, &event)?;
             }
             bound(tx, &mut part, inbox_limit()?)?;
             put(tx, &part)?;
@@ -279,7 +351,7 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
     }
     Ok(Outcome::Saved)
 }
-fn remove_ended_target(part: &mut Part, event: &OutsideEvent) {
+fn remove_ended_target(part: &mut Part, event: &OutsideEvent) -> Result<(), DaemonError> {
     if matches!(
         event.value,
         OutsideEventValue::Session {
@@ -299,6 +371,35 @@ fn remove_ended_target(part: &mut Part, event: &OutsideEvent) {
         part.targets
             .retain(|t| t.kernel != event.kernel || t.session_id != event.session_id);
     }
+    if matches!(
+        event.value,
+        OutsideEventValue::Session {
+            state: crate::local::EventSessionState::AgentRemoved
+        }
+    ) {
+        part.run_states.remove(&run_state_key(event)?);
+    }
+    prune_run_states(part)
+}
+fn run_state_key(event: &OutsideEvent) -> Result<String, DaemonError> {
+    serde_json::to_string(&(&event.kernel, &event.session_id, &event.agent_id))
+        .map_err(|_| error("event run-state key could not be encoded"))
+}
+fn prune_run_states(part: &mut Part) -> Result<(), DaemonError> {
+    let mut kept = std::collections::BTreeMap::new();
+    for (key, state) in std::mem::take(&mut part.run_states) {
+        let (kernel, session, agent): (String, String, Option<String>) =
+            serde_json::from_str(&key).map_err(|_| error("event run-state key is invalid"))?;
+        if part.targets.iter().any(|target| {
+            target.kernel == kernel
+                && target.session_id == session
+                && (target.agent_id.is_none() || target.agent_id == agent)
+        }) {
+            kept.insert(key, state);
+        }
+    }
+    part.run_states = kept;
+    Ok(())
 }
 pub(super) fn publish(
     tx: &Transaction<'_>,
@@ -313,7 +414,7 @@ pub(super) fn publish(
     for mut part in parts(tx)? {
         if part.ended.is_none() && matches(&part, &event) {
             append(tx, &mut part, occurrence, &event)?;
-            remove_ended_target(&mut part, &event);
+            remove_ended_target(&mut part, &event)?;
             bound(tx, &mut part, inbox_limit()?)?;
             put(tx, &part)?;
         }

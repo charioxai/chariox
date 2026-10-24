@@ -592,16 +592,8 @@ impl AgentService {
                 agent_id: agent_id.to_string(),
             })?;
 
-        let previous = agent.state();
         agent.set_state(state);
         let agent = agent.clone();
-        let logical = |state| match state {
-            AgentState::Idle | AgentState::Focused => AgentState::Idle,
-            other => other,
-        };
-        if logical(previous) != logical(state) {
-            self.publish_outside_state(&agent)?;
-        }
         Ok(agent)
     }
 

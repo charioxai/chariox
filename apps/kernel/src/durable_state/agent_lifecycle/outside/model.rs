@@ -42,6 +42,8 @@ pub(crate) struct Part {
     pub cleanup_targets: Vec<EventTarget>,
     #[serde(default)]
     pub forwarded_counts: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub run_states: BTreeMap<String, crate::local::EventRunState>,
 }
 impl Part {
     pub(super) fn new(id: String, home: bool) -> Self {
@@ -57,6 +59,7 @@ impl Part {
             remote_cursors: BTreeMap::new(),
             cleanup_targets: Vec::new(),
             forwarded_counts: BTreeMap::new(),
+            run_states: BTreeMap::new(),
         }
     }
     pub(crate) fn subscription(&self) -> EventSubscription {
@@ -72,12 +75,16 @@ impl Part {
 
 #[derive(Debug, Clone)]
 pub(crate) enum Mutation {
+    RunStates {
+        states: Vec<RunState>,
+    },
     #[cfg(test)]
     Bound {
         id: String,
         limit: usize,
     },
     Subscribe {
+        baseline: Vec<RunState>,
         id: String,
         home: bool,
         targets: Vec<EventTarget>,
@@ -110,4 +117,11 @@ pub(crate) enum Mutation {
         kernel: String,
         machine: String,
     },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RunState {
+    pub session_id: String,
+    pub agent_id: String,
+    pub state: crate::local::EventRunState,
 }

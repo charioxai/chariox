@@ -254,6 +254,13 @@ impl KernelRuntimeOwnedState {
     }
 
     fn record_managed_activity_transition_at_unlocked(&self, observed_at_ms: Option<u64>) {
+        if let Err(error) = self.publish_outside_runtime_activity() {
+            crate::logging::error_with_fields(
+                "outside.events",
+                "agent run-state transition could not be persisted",
+                serde_json::json!({"error":error.to_string()}),
+            );
+        }
         #[cfg(test)]
         self.managed_activity_record_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);

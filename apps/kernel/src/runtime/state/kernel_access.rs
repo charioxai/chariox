@@ -20,6 +20,7 @@ impl KernelRuntimeState {
         if outcome == "granted" {
             self.owned.durable_state_store.outside_mutate(
                 crate::durable_state::agent_lifecycle::outside::Mutation::Subscribe {
+                    baseline: vec![],
                     id: grant.grant_id.clone(),
                     home: true,
                     targets: Vec::new(),

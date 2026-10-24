@@ -2,6 +2,7 @@
 use super::*;
 use crate::durable_state::agent_lifecycle::outside::Mutation;
 use crate::local::*;
+mod activity;
 
 pub(crate) fn is_outside_event_request(request: &LocalDaemonRequest) -> bool {
     matches!(
@@ -15,6 +16,21 @@ pub(crate) fn is_outside_event_request(request: &LocalDaemonRequest) -> bool {
     )
 }
 impl KernelRuntimeState {
+    pub(crate) fn subscribe_outside_part(
+        &self,
+        id: &str,
+        home: bool,
+        targets: Vec<EventTarget>,
+    ) -> Result<(), DaemonError> {
+        let _mutation = self.owned.begin_managed_activity_mutation();
+        let baseline = self.owned.outside_run_state_snapshot(&targets);
+        self.outside_store().outside_mutate(Mutation::Subscribe {
+            id: id.into(),
+            home,
+            targets,
+            baseline,
+        })
+    }
     pub(crate) fn outside_store(&self) -> &DurableKernelStateStore {
         &self.owned.durable_state_store
     }
@@ -70,11 +86,7 @@ impl KernelRuntimeState {
         match request {
             LocalDaemonRequest::SubscribeEvents(request) => {
                 self.validate_event_targets(&request.targets, owner)?;
-                store.outside_mutate(Mutation::Subscribe {
-                    id: id.into(),
-                    home,
-                    targets: request.targets.clone(),
-                })?;
+                self.subscribe_outside_part(id, home, request.targets.clone())?;
                 self.outside_subscription_response(id)
             }
             LocalDaemonRequest::UnsubscribeEvents(request) => {
@@ -292,3 +304,6 @@ impl KernelRuntimeState {
         }))
     }
 }
+
+#[cfg(test)]
+mod activity_tests;

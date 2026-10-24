@@ -1,6 +1,5 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: follow the work an outside grant creates.
 use super::*;
-use crate::durable_state::agent_lifecycle::outside::Mutation;
 use crate::local::*;
 
 pub(super) fn follows_created(request: &LocalDaemonRequest) -> bool {
@@ -44,12 +43,7 @@ impl KernelGateway {
             _ => return Ok(()),
         };
         self.runtime_state
-            .outside_store()
-            .outside_mutate(Mutation::Subscribe {
-                id: origin.grant_id.clone(),
-                home: true,
-                targets,
-            })?;
+            .subscribe_outside_part(&origin.grant_id, true, targets)?;
         self.start_event_parts(origin);
         Ok(())
     }

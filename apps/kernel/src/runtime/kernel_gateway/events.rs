@@ -83,11 +83,8 @@ impl KernelGateway {
                     .filter(|target| !previous.contains(target))
                     .cloned()
                     .collect();
-                store.outside_mutate(Mutation::Subscribe {
-                    id: id.clone(),
-                    home: true,
-                    targets: targets.clone(),
-                })?;
+                self.runtime_state
+                    .subscribe_outside_part(id, true, targets.clone())?;
                 let part = store.outside_part(id)?.expect("subscribed part exists");
                 let local = self.config.snapshot().daemon_id;
                 let kernels: HashSet<_> = part
