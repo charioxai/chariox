@@ -55,6 +55,17 @@ pub(crate) async fn authorize_session_membership(
         );
     }
 
+    // MP-08/MP-11: attaching to its OS-local session reads that session's run.
+    if let LocalDaemonRequest::GetProviderRun(run_request) = request {
+        if let Some(user_id) = command_session_user_id(command) {
+            if command.is_terminal_caller()
+                && runtime_state
+                    .is_legacy_local_terminal_run_owner(&run_request.provider_run_id, &user_id)
+            {
+                return Ok(DEFAULT_LOCAL_USER_ID.to_string());
+            }
+        }
+    }
     let Some(scope) = request_session_scope(request) else {
         return Ok(
             command_session_user_id(command).unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string())

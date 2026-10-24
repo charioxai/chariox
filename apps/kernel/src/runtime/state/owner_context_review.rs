@@ -139,4 +139,21 @@ impl KernelRuntimeState {
                         == user_id
             })
     }
+
+    /// A provider run carries no session scope of its own; it is the enrolled
+    /// terminal's as long as its session is.
+    pub(in crate::runtime) fn is_legacy_local_terminal_run_owner(
+        &self,
+        provider_run_id: &str,
+        user_id: &str,
+    ) -> bool {
+        let session_id = match self.owned.provider_run_projection.get(provider_run_id) {
+            Some(run) => run.session_id().to_owned(),
+            None => match self.owned.provider_store.get_run(provider_run_id) {
+                Ok(run) => run.session_id().to_owned(),
+                Err(_) => return false,
+            },
+        };
+        self.is_legacy_local_terminal_owner(&session_id, user_id)
+    }
 }
