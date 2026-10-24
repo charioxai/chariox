@@ -41,7 +41,7 @@ impl ExactPlan {
         // adjacent tiles of each row band into lossless WebP strips, about
         // half the bytes of tile PNG on text. They use the low lossless
         // effort: on 1080p pages it encodes ~45 % faster for 3-7 % more bytes.
-        // Up to eight threads, in order.
+        // Up to eight parts, in order.
         let (pixels, w, patch) = (&self.pixels, self.w, self.patch);
         let rectangles = if patch {
             self.rectangles.clone()
@@ -64,24 +64,11 @@ impl ExactPlan {
             ])
         };
         let part = rectangles.len().div_ceil(8).max(1);
-        let tiles = std::thread::scope(|scope| {
-            let workers = rectangles
-                .chunks(part)
-                .map(|rects| {
-                    scope.spawn(move || {
-                        rects.iter().try_fold(Vec::new(), |mut tiles, rect| {
-                            tiles.extend(encode(rect)?);
-                            Ok::<_, String>(tiles)
-                        })
-                    })
-                })
-                .collect::<Vec<_>>();
-            workers
-                .into_iter()
-                .try_fold(Vec::new(), |mut tiles, worker| {
-                    tiles.extend(worker.join().map_err(|_| "MP-10: exact PNG worker")??);
-                    Ok::<_, String>(tiles)
-                })
+        let tiles = raster::in_parts(&rectangles, part, "MP-10: exact PNG worker", |rects| {
+            rects.iter().try_fold(Vec::new(), |mut tiles, rect| {
+                tiles.extend(encode(rect)?);
+                Ok::<_, String>(tiles)
+            })
         })?;
         value[if self.patch {
             "native_tiles"

@@ -3,6 +3,35 @@ use super::{
     ffi::{self, Codec, Rect, RowResult},
     raster,
 };
+// MP-08/MP-10: the first part of an encode runs on the calling thread. A thread
+// start per repair strip cost about as much CPU as the strip's own encode.
+#[test]
+fn mp10_encode_parts_run_the_first_part_on_the_calling_thread_in_order() {
+    let caller = std::thread::current().id();
+    let ran = std::sync::Mutex::new(Vec::new());
+    let out = raster::in_parts(&[1, 2, 3, 4, 5], 2, "MP-10: worker", |chunk: &[i32]| {
+        let here = std::thread::current().id() == caller;
+        ran.lock().unwrap().push((chunk[0], here));
+        Ok(chunk.iter().map(|v| v * 10).collect())
+    })
+    .unwrap();
+    assert_eq!(out, vec![10, 20, 30, 40, 50]);
+    let ran = ran.into_inner().unwrap();
+    assert!(
+        ran.contains(&(1, true)),
+        "MP-10: first part on a new thread: {ran:?}"
+    );
+    assert_eq!(ran.iter().filter(|(_, here)| *here).count(), 1);
+    let one = raster::in_parts(&[7], 8, "MP-10: worker", |chunk: &[i32]| {
+        Ok(vec![(chunk[0], std::thread::current().id() == caller)])
+    })
+    .unwrap();
+    assert_eq!(
+        one,
+        vec![(7, true)],
+        "MP-10: a single strip starts no thread"
+    );
+}
 #[test]
 fn mp10_damage_five_ms_after_readback_does_not_wait_for_frame_boundary() {
     use std::time::Duration;

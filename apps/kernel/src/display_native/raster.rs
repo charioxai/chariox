@@ -193,6 +193,31 @@ pub(super) fn webp(
     unsafe { ffi::cx_webp_free(out) };
     Ok(bytes)
 }
+/// MP-08/MP-10: encode `items` in parts of `part`, in order. The first part runs
+/// on the calling thread: a thread start (stack, TLS, a cold malloc arena) cost
+/// about as much CPU as a repair strip's own encode, and most calls have one part.
+pub(super) fn in_parts<T: Sync, V: Send>(
+    items: &[T],
+    part: usize,
+    failed: &str,
+    encode: impl Fn(&[T]) -> Result<Vec<V>, String> + Sync,
+) -> Result<Vec<V>, String> {
+    let encode = &encode;
+    let mut parts = items.chunks(part.max(1));
+    let Some(first) = parts.next() else {
+        return Ok(Vec::new());
+    };
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = parts
+            .map(|chunk| scope.spawn(move || encode(chunk)))
+            .collect();
+        let mut all = encode(first)?;
+        for worker in workers {
+            all.extend(worker.join().map_err(|_| failed.to_string())??);
+        }
+        Ok(all)
+    })
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
