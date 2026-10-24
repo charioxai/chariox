@@ -701,10 +701,27 @@ Ambiguous post-commit failures retain intent;
 PR1 does not add automatic replay, settlement, yield or recovery scheduling.
 Those lifecycle semantics belong to PR2.
 
+### Executor-local lane deadlines (MP-08 / MP-09 / MP-10 / MP-11)
+
+Allocated local protocol **584** adds `SetAgentDeadline {session_id, agent_id,
+deadline_ms}` and `GetAgentDeadline {session_id, agent_id}`. Both return
+`AgentDeadline {deadline}` with the executing kernel's durable deadline receipt.
+A deadline can shorten, never extend. The kernel rejects new work after it is
+reached and retries physical cleanup; `reached_at_ms` and `stopped_at_ms` distinguish
+admission fencing from completed cleanup. A kernel restart enforces overdue
+work on startup. This does not add a relay shape; peer **181** is inherited.
+Leased executors require their own deadline enforcement and are refused here.
+
+`RelayStatus.status.capabilities` advertises `agent_deadline_v1` only when these
+requests are implemented. Coordinator adapters check that capability before
+sending either request. Without it they report no kernel deadline and may keep
+a coordinator-side timer, whose process, network and access grant are required;
+that timer is not durable kernel enforcement.
+
 ## 3.3.5 Durable Agent Tasks and Events (MP-08 / MP-09 / MP-10 / MP-11, A02)
 
 MP-08 / MP-09 / MP-10 / MP-11: the integrated acceptance contract uses local
-protocol **573** and relay peer protocol **181** (the agent-model line's 537/145
+protocol **584** and relay peer protocol **181** (the agent-model line's 537/145
 allocation and the landing's 567/175 are merged into this number). It combines main 520/128 direct browser/terminal carriers and
 owner-managed machine/context admission with the agent-model 513/121 union:
 it retains the agent-model
@@ -718,7 +735,7 @@ lease creation, restored bindings, Room browser forwarding, context transfer and
 hosted slice receipts require peer 181 or newer. The aggregate also includes main's
 local 491 / relay peer 101 (#974) kernel ownership, waiting-room and Room
 workflow contracts. Client feature floors are listed separately below; the
-merged 573/181 allocation identifies the integrated runtime contract; the landing's
+merged 584/181 allocation identifies the integrated runtime contract; the landing's
 567/175 `fonts` op `absent` list is part of it.
 
 MP-08 / MP-10 / MP-11: 573/181 fences the leased assessment control identity.
