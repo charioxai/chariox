@@ -7,7 +7,7 @@ impl KernelRuntimeOwnedState {
     pub(in crate::runtime::state) fn outside_run_state_snapshot(
         &self,
         targets: &[EventTarget],
-    ) -> Vec<RunState> {
+    ) -> Option<Vec<RunState>> {
         let kernel = self.config_projection.snapshot().daemon_id;
         let sessions: BTreeSet<_> = targets
             .iter()
@@ -18,10 +18,10 @@ impl KernelRuntimeOwnedState {
         let mut states = Vec::new();
         for id in sessions {
             // An ended/deleted session has already published its terminal event.
-            let Ok(mut session) = self.session_store.get_session(id) else {
+            let Ok(mut session) = self.session_store.try_get_session_for_projection(id)? else {
                 continue;
             };
-            session.set_agents(self.agent_store.get_session_agents(id));
+            session.set_agents(self.agent_store.try_get_session_agents_for_projection(id)?);
             // Settlement detail changes prompt_status, but not its normalized run state.
             // Avoid taking the prompt-activity lock inside its own mutation boundary.
             let mut activity = crate::runtime::projection::agent_activity_for_session_projection(
@@ -69,7 +69,7 @@ impl KernelRuntimeOwnedState {
                 });
             }
         }
-        states
+        Some(states)
     }
 
     pub(in crate::runtime::state) fn publish_outside_runtime_activity(
@@ -85,7 +85,11 @@ impl KernelRuntimeOwnedState {
         if targets.is_empty() {
             return Ok(());
         }
-        let states = self.outside_run_state_snapshot(&targets);
+        // Some callers still hold a store's mutation guard. Their normal projection
+        // publication retries this capture after those guards have been released.
+        let Some(states) = self.outside_run_state_snapshot(&targets) else {
+            return Ok(());
+        };
         if states.is_empty() {
             return Ok(());
         }

@@ -40,6 +40,17 @@ impl AgentServiceStore {
         self.inner.lock().expect("agent service mutex poisoned")
     }
 
+    pub(crate) fn try_get_session_agents_for_projection(
+        &self,
+        session_id: &str,
+    ) -> Option<Vec<AgentInstance>> {
+        match self.inner.try_lock() {
+            Ok(service) => Some(service.get_session_agents(session_id)),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+            Err(std::sync::TryLockError::Poisoned(_)) => panic!("agent service mutex poisoned"),
+        }
+    }
+
     pub fn create_agent(
         &self,
         request: CreateAgentRequest,
