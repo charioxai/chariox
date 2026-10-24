@@ -40,7 +40,11 @@ with tarfile.open(sys.argv[1], 'r:gz') as archive:
 PY
 useradd --system --user-group --create-home --home-dir "$runner_root" --shell /usr/sbin/nologin "$runner_user"
 chmod 0700 "$runner_root"
-runuser -u "$runner_user" -- tar --no-same-owner --no-same-permissions -xzf "$archive" -C "$runner_root"
+# The source may live below root's private home. Stage this public, verified
+# archive inside the new dedicated tree instead of changing parent permissions.
+install -m 0644 "$archive" "$runner_root/.runner-install.tar.gz"
+runuser -u "$runner_user" -- tar --no-same-owner --no-same-permissions -xzf "$runner_root/.runner-install.tar.gz" -C "$runner_root"
+rm -- "$runner_root/.runner-install.tar.gz"
 runner_uid=$(id -u "$runner_user")
 cat > /etc/systemd/system/chariox-release-runner.service <<UNIT
 [Unit]
