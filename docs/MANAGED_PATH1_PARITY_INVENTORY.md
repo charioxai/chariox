@@ -1550,3 +1550,15 @@ RED diagnostics and cleanup are retained under
 
 MP-08 / MP-10 / MP-11: a tool whose durable snapshots were projected owns its
 projection; later terminal records for the same tool are not delivered again.
+
+## MP-08 / MP-10 / MP-11: native permission relay recovery
+
+Temporary worker-home transport failures retry the same native interaction
+within one response deadline. The home keeps one decision and replays its
+answer for the exact session/id, context, payload and execution lease; reconnect
+neither creates a second card nor restarts the permission timeout. Receipts are
+bounded, expire in memory and are never persisted. Ordinary and pinned managed
+workers retain the existing worker-home transport routes and admission checks.
+The native bridge and real-relay TCP-reset regressions cover both decisions,
+lost answers, cancellation and timeout recovery. These source checks alone do
+not close MP-08 / MP-10 / MP-11 or establish whole-area live acceptance.

@@ -198,6 +198,19 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_connection() {
+    forwarded_native_interaction(false, "allow_once").await;
+}
+
+// MP-08 / MP-10 / MP-11: real relay sockets, abrupt TCP reset while the
+// permission is pending, and the person's decision after recovery.
+#[tokio::test(flavor = "multi_thread")]
+async fn forwarded_native_interactions_survive_a_temporary_response_reset() {
+    for decision in ["allow_once", "deny"] {
+        forwarded_native_interaction(true, decision).await;
+    }
+}
+
+async fn forwarded_native_interaction(reset: bool, decision: &str) {
     let _relay_test_guard = relay_client_test_guard().await;
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),
@@ -250,11 +263,12 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
         shutdown_home_rx,
     ));
 
+    let proxy = NativePermissionResetProxy::start(addr).await;
     let mut config_worker = DaemonConfig::for_tests();
     config_worker.daemon_id = "daemon-worker".to_string();
     config_worker.daemon_alias = Some("worker".to_string());
     config_worker.host_machine_id = "machine-worker".to_string();
-    config_worker.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+    config_worker.relay_url = Some(proxy.url.clone());
     config_worker.relay_token = Some("secret".to_string());
     config_worker.relay_heartbeat_ms = 50;
     let app_worker = Arc::new(Mutex::new(
@@ -309,7 +323,7 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
             Some(8),
             Some(128),
         )),
-        None,
+        if reset { Some(10) } else { None },
         None,
     );
     let interaction = interaction.with_native_origin(Some(
@@ -351,7 +365,15 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
 
     let worker_request = {
         let config_worker = config_worker.clone();
+        let worker_runtime =
+            CommandRouter::with_interactive_capacity_from_app(app_worker.clone(), 1)
+                .runtime_state();
         tokio::spawn(async move {
+            if reset {
+                return crate::runtime::native_interaction_bridge::forward_native_interaction_to_home(
+                    &worker_runtime, config_worker, "daemon-home".into(), context, interaction,
+                ).await.map(|resolution| RelayPeerResponse::NativeInteractionResolved { resolution });
+            }
             send_peer_request_via_temporary_connection(
                 &config_worker,
                 ClientTarget {
@@ -387,11 +409,23 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
             crate::session::RuntimeInteractionInputKind::Secret
         );
     }
+    if reset {
+        proxy.reset().await;
+        sleep(Duration::from_millis(1200)).await;
+        assert!(
+            !worker_request.is_finished(),
+            "MP-08 a TCP reset must not resolve the permission with a transport error"
+        );
+        let app = app_home.lock().await;
+        let session = app.sessions().get_session(&home_session_id).unwrap();
+        assert_eq!(session.active_interactions().len(), 1);
+        assert_eq!(session.active_interactions()[0].id(), interaction_id);
+    }
     let respond_request =
         crate::local::LocalDaemonRequest::RespondToInteraction(RespondToInteractionRequest {
             session_id: home_session_id.clone(),
             interaction_id,
-            choice_id: "allow_once".to_string(),
+            choice_id: decision.to_string(),
             custom_reply: None,
             passkey: None,
             passkey_remember_minutes: None,
@@ -420,8 +454,15 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
     match response {
         RelayPeerResponse::NativeInteractionResolved { resolution } => {
             assert_eq!(resolution.status, "answered");
-            assert_eq!(resolution.choice_id.as_deref(), Some("allow_once"));
-            assert_eq!(resolution.reply.as_deref(), Some("allowed once"));
+            assert_eq!(resolution.choice_id.as_deref(), Some(decision));
+            assert_eq!(
+                resolution.reply.as_deref(),
+                Some(if decision == "deny" {
+                    "denied"
+                } else {
+                    "allowed once"
+                })
+            );
         }
         other => panic!("unexpected peer response: {other:?}"),
     }
@@ -434,4 +475,45 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
         .expect("worker connector should join");
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("server task should join");
+    proxy.stop().await;
+}
+
+struct NativePermissionResetProxy {
+    url: String,
+    accept: tokio::task::JoinHandle<()>,
+    links: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+}
+
+impl NativePermissionResetProxy {
+    async fn start(target: std::net::SocketAddr) -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let links = Arc::new(Mutex::new(Vec::new()));
+        let active = links.clone();
+        let accept = tokio::spawn(async move {
+            loop {
+                let (mut client, _) = listener.accept().await.unwrap();
+                let mut upstream = tokio::net::TcpStream::connect(target).await.unwrap();
+                client.set_zero_linger().unwrap();
+                upstream.set_zero_linger().unwrap();
+                active.lock().await.push(tokio::spawn(async move {
+                    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+                }));
+            }
+        });
+        Self { url, accept, links }
+    }
+
+    async fn reset(&self) {
+        for link in self.links.lock().await.drain(..) {
+            link.abort();
+            let _ = link.await;
+        }
+    }
+
+    async fn stop(self) {
+        self.accept.abort();
+        self.reset().await;
+        let _ = self.accept.await;
+    }
 }

@@ -250,6 +250,7 @@ struct KernelRuntimeOwnedState {
     connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool,
     pending_provider_reloads: PendingProviderReloadStore,
     pending_interactions: PendingInteractionStore,
+    forwarded_native_interactions: forwarded_native_interactions::ForwardedNativeInteractions,
     git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
     completed_git_turn_snapshots: crate::git_observer::CompletedGitTurnSnapshotStore,
     workspace_live_sync_journal: crate::git_observer::WorkspaceLiveSyncJournal,
@@ -448,6 +449,7 @@ pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
 mod agent_batch_runtime_state;
 mod claude_token_checks;
 mod claude_token_first_use;
+mod forwarded_native_interactions;
 mod provider_login_workflow;
 mod runtime_interaction_owned_state;
 pub(crate) use runtime_interaction_owned_state::interaction_waits;
@@ -873,6 +875,7 @@ impl KernelRuntimeState {
                 ),
                 pending_provider_reloads: PendingProviderReloadStore::default(),
                 pending_interactions: PendingInteractionStore::shared(),
+                forwarded_native_interactions: forwarded_native_interactions::ForwardedNativeInteractions::default(),
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
                 completed_git_turn_snapshots,
                 workspace_live_sync_journal,
