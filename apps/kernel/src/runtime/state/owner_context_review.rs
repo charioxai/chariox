@@ -128,16 +128,17 @@ impl KernelRuntimeState {
         session_id: &str,
         user_id: &str,
     ) -> bool {
+        // Cheap alias test first: this runs for every command of a terminal.
         self.owned
-            .session_store
-            .get_session(session_id)
-            .is_ok_and(|session| {
-                session.owner_user_id() == crate::session::DEFAULT_LOCAL_USER_ID
-                    && self
-                        .owned
-                        .owner_context_review_owner(session.owner_user_id())
-                        == user_id
-            })
+            .owner_context_review_owner(crate::session::DEFAULT_LOCAL_USER_ID)
+            == user_id
+            && self
+                .owned
+                .session_store
+                .get_session(session_id)
+                .is_ok_and(|session| {
+                    session.owner_user_id() == crate::session::DEFAULT_LOCAL_USER_ID
+                })
     }
 
     /// A provider run carries no session scope of its own; it is the enrolled

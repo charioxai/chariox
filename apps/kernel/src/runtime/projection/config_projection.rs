@@ -32,15 +32,16 @@ impl DaemonConfigProjectionStore {
             .unwrap_or_else(|| crate::session::DEFAULT_LOCAL_USER_ID.into())
     }
 
+    /// The enrolled owner, or the `local` identity this owner's pre-enrollment rooms keep: the
+    /// terminal reaches those under `local` for membership.
     pub(crate) fn is_kernel_owner(&self, kernel_id: &str, user_id: &str) -> bool {
         let config = self.config.lock().expect("daemon config projection lock");
         config.daemon_id == kernel_id
-            && config
-                .cloud_relay
-                .as_ref()
-                .map(|profile| profile.user_id.as_str())
-                .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID)
-                == user_id
+            && (user_id == crate::session::DEFAULT_LOCAL_USER_ID
+                || config
+                    .cloud_relay
+                    .as_ref()
+                    .is_some_and(|profile| profile.user_id == user_id))
     }
 
     pub(crate) fn update(&self, config: DaemonConfig) {

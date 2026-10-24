@@ -396,6 +396,129 @@ async fn historical_workflows_inner() {
         .is_err());
 }
 
+// MP-08 / MP-11 F4: a room made before enrollment belongs to the enrolled owner, who reaches
+// it as a terminal under its Cloud identity, not under the pre-enrollment `local` one.
+#[test]
+fn mp11_f4_enrolled_terminal_owns_its_pre_enrollment_room() {
+    run_remote_authorization_large_stack_test("f4-legacy-local-room", f4_legacy_local_room_inner);
+}
+
+async fn f4_legacy_local_room_inner() {
+    let root = crate::test_support::TestWorktree::new("f4-legacy-local-room");
+    let mut config = DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "kernel-owner".into(),
+        realm_id: "test-realm".into(),
+        ..Default::default()
+    });
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let room = app
+        .sessions_mut()
+        .create_session(root.session_request())
+        .unwrap();
+    let id = room.id().to_string();
+    assert_eq!(room.owner_user_id(), crate::session::DEFAULT_LOCAL_USER_ID);
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(&id, Some("historical".into()))
+        .unwrap();
+    let mut snapshot = app.session_state_store().get_session(&id).unwrap();
+    let mut run = crate::session::WorkflowRun::new(
+        "old-active",
+        workflow.id(),
+        "endpoint",
+        "node",
+        Some("historical prompt".into()),
+        None,
+        vec![],
+        vec![],
+    );
+    run.set_status(crate::session::WorkflowRunStatus::Running);
+    snapshot.create_workflow_run(run);
+    app.session_state_store()
+        .write()
+        .restore_session(snapshot.clone());
+    app.durable_state_store()
+        .persist_workflow_runtime_transition(&snapshot, "historical-fixture")
+        .unwrap();
+    let agent_id = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(&id, "dev-stub")
+                .with_owner_user_id(crate::session::DEFAULT_LOCAL_USER_ID),
+        )
+        .unwrap()
+        .id()
+        .to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+
+    let req = LocalDaemonRequest::ListWorkflowRuns(crate::local::ListWorkflowRunsRequest {
+        session_id: id.clone(),
+        workflow_ref: None,
+        cursor: None,
+        limit: None,
+    });
+    let LocalDaemonResponse::WorkflowRunsListed { workflow_runs, .. } = router
+        .dispatch(terminal_command(&req, Some("kernel-owner")), req)
+        .await
+        .unwrap()
+    else {
+        panic!("list");
+    };
+    assert_eq!(
+        workflow_runs.len(),
+        1,
+        "the enrolled owner lists the history of its pre-enrollment room"
+    );
+    assert!(workflow_runs[0].created_before_ownership_tracking());
+
+    let req = LocalDaemonRequest::CreateSessionInvite(crate::local::CreateSessionInviteRequest {
+        session_id: id.clone(),
+        expires_in_ms: None,
+        max_uses: None,
+        collaboration_level: crate::session::CollaborationLevel::Full,
+    });
+    let response = router
+        .dispatch(terminal_command(&req, Some("kernel-owner")), req)
+        .await;
+    assert!(
+        matches!(
+            response,
+            Ok(LocalDaemonResponse::SessionInviteCreated { .. })
+        ),
+        "the enrolled owner invites collaborators to its pre-enrollment room: {response:?}"
+    );
+
+    let req = LocalDaemonRequest::FocusAgent(crate::local::FocusAgentRequest {
+        session_id: id.clone(),
+        agent_id,
+    });
+    let response = router
+        .dispatch(terminal_command(&req, Some("kernel-owner")), req)
+        .await;
+    assert!(
+        response.is_ok(),
+        "the enrolled owner focuses the agent it made before enrollment: {response:?}"
+    );
+
+    let req = LocalDaemonRequest::ListWorkflowRuns(crate::local::ListWorkflowRunsRequest {
+        session_id: id,
+        workflow_ref: None,
+        cursor: None,
+        limit: None,
+    });
+    let LocalDaemonResponse::WorkflowRunsListed { workflow_runs, .. } = router
+        .dispatch(terminal_command(&req, Some("someone-else")), req)
+        .await
+        .unwrap_or(LocalDaemonResponse::WorkflowRunsListed {
+            workflow_runs: Vec::new(),
+            next_cursor: None,
+        })
+    else {
+        panic!("list");
+    };
+    assert!(workflow_runs.is_empty(), "another user sees none of it");
+}
+
 // MP-08 / MP-10 / MP-11: completed history is pruned from hot state but remains readable.
 #[test]
 fn mp11_amfix_historical_archive_resume_reports_read_only() {
