@@ -55,6 +55,15 @@ test("MP-08/MP-10/MP-11: history predates the trigger and cannot escape its JSON
     assert.equal(f.invocations.length, 0)
   } finally { await f.app.close() }
 })
+test("AT-10: a malformed JSON body is a 400 while the agent is online, and never enqueues", async () => {
+  const f = await fixture()
+  try {
+    const response = await f.app.inject({ method: "POST", url: "/local-test/", headers: { "content-type": "application/json" }, payload: "{nope" })
+    assert.equal(response.statusCode, 400)
+    assert.deepEqual(response.json(), { error: "invalid request body" })
+    assert.equal(f.invocations.length, 0)
+  } finally { await f.app.close() }
+})
 test("MP-08/MP-10/MP-11: offline, disabled, payload and rate limits never enqueue", async () => {
   const f = await fixture()
   try {
