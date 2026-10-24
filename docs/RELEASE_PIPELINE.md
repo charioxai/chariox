@@ -4,9 +4,12 @@
 
 OSS owns the kernel, CLI and relay; Cloud owns the hosted application. Cloud's
 `releases/version.json` is the release intent, initially `0.1.0`. It is not a
-release announcement: v0.1.0 becomes released only after its staging validation
-and production approval. Versions follow pre-1.0 SemVer (incompatible changes
-increase the minor version). A candidate's exact Git commits and content hashes
+release announcement: v0.1.0 identifies the first landing whose staging passes;
+production approval promotes that same version later. Each later source pair
+gets the next accepted patch version automatically. Raise the stable intent for
+an incompatible minor release before landing it. An accepted version is never
+rebound; an already accepted source pair is skipped. Versions follow pre-1.0
+SemVer. A candidate's exact Git commits and content hashes
 are its identity even while several candidates target the same version.
 
 Cloud main is the coordinator. A Cloud main push builds its own exact commit
