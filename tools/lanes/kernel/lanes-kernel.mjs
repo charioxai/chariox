@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // MP-08 / MP-09 / MP-10 / MP-11: the lasting dev lanes kernel (executor) and its access kernel (coordinator).
 // Usage: lanes-kernel.mjs setup|start|stop|status|grant|exec|env  (see docs/LANES_KERNEL.md)
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createServer, connect } from 'node:net';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, openSync, readlinkSync, chmodSync, unlinkSync, copyFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, openSync, readlinkSync, chmodSync, unlinkSync, copyFileSync, rmSync, renameSync, readdirSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -182,6 +182,40 @@ async function ensureClaudeProfile() {
   return { claudeProfile: profile.profile_id, auth: (auth.match(/"(?:auth_)?(?:state|status)":"[a-z_]+"/g) || []).slice(0, 2) };
 }
 
+// Codex lanes run on the account the lanes already use. The product links that provider home in place
+// (no copy, no login or logout); if the kernel cannot run it, Claude keeps working and the reason is reported.
+async function ensureCodexProfile() {
+  if (!config.codexHome) return { codexProfile: null, reason: 'config.codexHome is not set' };
+  const profiles = async () => (await rpc('executor', { ListProviderAccountProfiles: { provider: 'codex' } })).ProviderAccountProfilesListed.profiles;
+  try {
+    let profile = (await profiles()).find(p => p.label === 'lanes-codex');
+    if (!profile) {
+      await rpc('executor', { LinkProviderAccountProfile: { provider: 'codex', label: 'lanes-codex', path: config.codexHome } });
+      profile = (await profiles()).find(p => p.label === 'lanes-codex');
+    }
+    if (!profile) throw new Error('lanes-codex profile was not created');
+    const refreshed = JSON.stringify(await rpc('executor', { RefreshProviderAccountProfile: { provider: 'codex', account_profile: profile.profile_id } }));
+    if (!/"auth_state":"authenticated"/.test(refreshed)) throw new Error('lanes-codex profile is not authenticated; ask the coordinator to refresh the linked Codex account');
+    writeFileSync(file('executor', 'codex-profile.id'), profile.profile_id);
+    return { codexProfile: profile.profile_id };
+  } catch (error) { return { codexProfile: null, reason: String(error.message).slice(0, 240) }; }
+}
+
+// The loop's own non-secret config: which profile each queue provider uses. Lane entries add their own model and effort.
+function writeLoopConfig() {
+  const path = join(STATE, 'loop', 'config.json');
+  const loop = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
+  loop.kernel = JSON.parse(readFileSync(file('executor', 'ids.json'), 'utf8')).kernel_id;
+  loop.repository ??= join(STATE, 'loop', 'imported.git');
+  loop.providers ??= {};
+  const claude = file('executor', 'claude-profile.id'), codex = file('executor', 'codex-profile.id');
+  // Claude as root cannot run yolo, so its permission prompts are answered by the loop; Codex has no such refusal.
+  if (existsSync(claude)) loop.providers.claude = { profile: readText(claude), model: 'claude-sonnet-5-5', effort: 'high', permission: 'required' };
+  if (existsSync(codex)) loop.providers.codex = { profile: readText(codex), model: 'gpt-6.1-sol', effort: 'medium', permission: 'yolo' };
+  mkdirSync(join(STATE, 'loop'), { recursive: true, mode: 0o700 });
+  writeFileSync(path, JSON.stringify(loop, null, 2) + '\n', { mode: 0o600 });
+}
+
 const holderSocket = join(STATE, 'holder.sock'), holderPidFile = join(STATE, 'holder.pid');
 const holderPid = () => {
   if (!existsSync(holderPidFile)) return undefined;
@@ -246,6 +280,47 @@ function execInHolder(request) {
 }
 const chariox = join(STATE, 'bin/chariox');
 
+// loopd: the standing round service. It runs beneath the holder from a frozen copy of the adapters, so
+// editing the checkout cannot change a live round; `loopd install` refreshes the copy between rounds.
+const loopdPidFile = join(STATE, 'loopd.pid');
+const loopdEntry = join(STATE, 'run', 'tools/lanes/coordinator/round.mjs');
+const loopdPid = () => {
+  if (!existsSync(loopdPidFile)) return undefined;
+  const pid = Number(readText(loopdPidFile));
+  return Number.isSafeInteger(pid) && pid > 1 && pidAlive(pid) && readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').slice(1, 3).join(' ') === `${loopdEntry} serve` ? pid : undefined;
+};
+async function startLoopd() {
+  const existing = loopdPid();
+  if (existing) return { loopd: existing, started: false };
+  if (!existsSync(loopdEntry)) throw new Error('no frozen adapters in run/; run: lanes-kernel.mjs loopd install');
+  if (!holderPid()) throw new Error('the holder is not running; run start first');
+  const started = await execInHolder({ argv: [process.execPath, loopdEntry, 'serve'], cwd: STATE, detach: true, logFile: join(STATE, 'loopd.log') });
+  if (!Number.isSafeInteger(started.pid) || started.pid <= 1) throw new Error('loopd did not start');
+  writeFileSync(loopdPidFile, String(started.pid));
+  return { loopd: started.pid, started: true };
+}
+async function stopLoopd() {
+  const pid = loopdPid();
+  if (!pid) return { loopd: null, stopped: false };
+  process.kill(pid, 'SIGTERM');
+  for (let i = 0; i < 120 && pidAlive(pid); i++) await delay(500);
+  if (pidAlive(pid)) throw new Error(`loopd ${pid} did not stop after SIGTERM; it finishes its current step first, inspect loopd.log before stopping it by hand`);
+  return { loopd: pid, stopped: true };
+}
+async function installLoopd() {
+  const root = new URL('../../..', import.meta.url).pathname;
+  const next = join(STATE, 'run.next');
+  rmSync(next, { recursive: true, force: true }); mkdirSync(next, { recursive: true });
+  const archive = spawnSync('git', ['-C', root, 'archive', 'HEAD', 'tools/lanes'], { maxBuffer: 64 << 20 });
+  if (archive.status !== 0) throw new Error('git archive of tools/lanes failed');
+  const untar = spawnSync('tar', ['-x', '-C', next], { input: archive.stdout });
+  if (untar.status !== 0) throw new Error('could not unpack the adapters copy');
+  const stopped = await stopLoopd();
+  rmSync(join(STATE, 'run'), { recursive: true, force: true }); renameSync(next, join(STATE, 'run'));
+  return { ...stopped, installedFrom: spawnSync('git', ['-C', root, 'rev-parse', 'HEAD']).stdout.toString().trim() };
+}
+const queueCount = name => { try { return readdirSync(join(config.agents || '/root/.chariox/dev/browser-resume-20260930/agents', '_loop', 'queue', name)).filter(f => f.endsWith('.json')).length; } catch { return 0; } };
+
 // The owner approves the until-exit grant in the real web popup, typing the coordinator Vault passphrase.
 async function approveInPopup() {
   const meta = JSON.parse(readFileSync(`/w/valenv/prs/${config.stack}/metadata.json`, 'utf8'));
@@ -298,6 +373,7 @@ async function status() {
     result[role] = entry;
   }
   result.holder = holderPid() ?? null;
+  result.loopd = { pid: loopdPid() ?? null, queued: queueCount(''), done: queueCount('done'), rejected: queueCount('rejected') };
   const url = `https://${JSON.parse(readFileSync(`/w/valenv/prs/${config.stack}/metadata.json`, 'utf8')).hostname}/validation/ready`;
   result.stack_ready = await fetch(url).then(r => r.ok, () => false);
   return result;
@@ -313,15 +389,26 @@ try {
     for (const role of ROLES) steps.push(await ensureVault(role));
     for (const role of ROLES) steps.push(await enroll(role));
     steps.push(await ensureClaudeProfile());
+    steps.push(await ensureCodexProfile());
+    writeLoopConfig();
     steps.push({ grant: await grantAccess() });
+    steps.push(await startLoopd());
     out({ started, steps });
   } else if (command === 'stop') {
     const results = [];
+    results.push(await stopLoopd());
     const holder = holderPid();
     if (holder) { process.kill(holder, 'SIGTERM'); results.push({ holder, stopped: true }); }
     for (const role of ROLES) results.push(await stopKernel(role));
     out(results);
   } else if (command === 'status') out(await status());
+  else if (command === 'loopd') {
+    const action = rest[0];
+    if (action === 'install') { const done = await installLoopd(); out({ ...done, ...(holderPid() ? await startLoopd() : {}) }); }
+    else if (action === 'start') out(await startLoopd());
+    else if (action === 'stop') out(await stopLoopd());
+    else { console.error('usage: lanes-kernel.mjs loopd install|start|stop'); process.exitCode = 2; }
+  }
   else if (command === 'grant') out(await grantAccess());
   else if (command === 'exec') {
     const detach = rest[0] === '--detach' ? rest.shift() : undefined;
@@ -335,7 +422,7 @@ try {
     const env = roleEnv('coordinator');
     for (const key of ['CHARIOX_HOME', 'CHARIOX_DAEMON_SOCKET']) console.log(`${key}=${env[key]}`);
     console.log(`CHARIOX_BIN=${join(STATE, 'bin/chariox')}`, `CHARIOX_COORDINATOR_HOME=${join(STATE, 'loop')}`);
-  } else { console.error('usage: lanes-kernel.mjs setup|start|stop|status|grant|exec|env'); process.exitCode = 2; }
+  } else { console.error('usage: lanes-kernel.mjs setup|start|stop|status|grant|loopd|exec|env'); process.exitCode = 2; }
 } catch (error) {
   console.error(JSON.stringify({ error: String(error.message).replace(/(?:Bearer\s+|token[=:]\s*)\S+/gi, '[redacted]').slice(0, 300) }));
   process.exitCode = 1;
