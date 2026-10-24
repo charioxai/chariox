@@ -1014,3 +1014,14 @@ test('MP-08/MP-10 repeated layout changes during one credit still answer it with
   await assert.rejects(mirror.next(stream, { subscription_id: 's', after_sequence: 6, wait_ms: 0 }, 'scope', { signal: controller.signal }), /layout changed during observation/);
   assert.equal(builds, 1);
 });
+
+// browserperf r10: a 16k-node snapshot took ~45 ms longer to cross CDP as a by-value object than as one JSON string.
+test('MP-08/MP-10: snapshots and drains cross CDP as one JSON string', async () => {
+ const sent = [], value = { root: 'n1', nodes: [{ id: 'n1', parent: null, kind: 'document' }], ops: [], sheets: [], resources: [], scroll: [0, 0] };
+ const world = { connection: { async send(method, params) { sent.push(params.expression); return { result: { value: params.expression.startsWith('JSON.stringify(') ? JSON.stringify(value) : value } }; } }, sessionId: 'S', contextId: 1, ref: 'm', frame: { id: 'F', loaderId: 'D' } };
+ const mirror = new Mirror2({ host: {} });
+ assert.deepEqual(await mirror.snapshotOnce(world, 'p', () => 1000), value);
+ assert.deepEqual(sent, ['JSON.stringify(m.snapshot())'], 'the snapshot is serialized in the page as JSON');
+ assert.deepEqual(await mirror.evaluate(world, 'm.drain()', false, 1000, true), value);
+ assert.equal(sent[1], 'JSON.stringify(m.drain())');
+});

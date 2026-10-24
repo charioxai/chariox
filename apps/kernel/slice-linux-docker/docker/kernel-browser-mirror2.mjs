@@ -226,21 +226,23 @@ export class Mirror2 {
   // `known`: digests of sheets the viewer retains; the page sends those whole (by reference) instead of pruning them.
   async snapshotOnce(world, policy, patience, known = []) {
     if (world.snapshotPending?.policy !== policy) world.snapshotPending = null;
-    const pending = world.snapshotPending ??= { policy, promise: this.evaluate(world, `${world.ref}.snapshot(${known.length ? JSON.stringify(known) : ''})`, false, SNAPSHOT_MS) };
+    const pending = world.snapshotPending ??= { policy, promise: this.evaluate(world, `${world.ref}.snapshot(${known.length ? JSON.stringify(known) : ''})`, false, SNAPSHOT_MS, true) };
     pending.promise.catch(() => { if (world.snapshotPending === pending) world.snapshotPending = null; }); // a failed snapshot is not kept
     let timer;
     const late = new Promise((_, reject) => { const ms = patience(); timer = setTimeout(() => reject(Object.assign(new Error(`browser CDP method Runtime.evaluate timed out after ${ms}ms`), { code: 'browser_cdp_timeout' })), ms); });
     try { const snap = await Promise.race([pending.promise, late]); if (world.snapshotPending === pending) world.snapshotPending = null; return snap; }
     finally { clearTimeout(timer); }
   }
-  async evaluate(world, expression, awaitPromise = false, timeoutMs) {
-    const reply = await world.connection.send('Runtime.evaluate', { expression, contextId: world.contextId, returnByValue: true, awaitPromise }, world.sessionId, { timeoutMs: timeoutMs ?? world.patience?.() });
+  // `json`: the page returns the value as one JSON string. A large snapshot or drain crosses CDP several times faster
+  // that way than as a by-value object (the inspector's object serialization runs on the renderer's main thread).
+  async evaluate(world, expression, awaitPromise = false, timeoutMs, json = false) {
+    const reply = await world.connection.send('Runtime.evaluate', { expression: json ? `JSON.stringify(${expression})` : expression, contextId: world.contextId, returnByValue: true, awaitPromise }, world.sessionId, { timeoutMs: timeoutMs ?? world.patience?.() });
     if (reply.exceptionDetails) {
       const label = /mirror2:([a-z_]+)/.exec(reply.exceptionDetails.exception?.description ?? '')?.[1];
       const error = new Error('MP-11: mirror observation unavailable'); error.mirrorReason = label ?? mirrorExceptionReason(reply.exceptionDetails.exception?.description); throw error;
     }
     if (!Object.hasOwn(reply.result ?? {}, 'value')) throw new Error('MP-11: mirror observation unavailable');
-    return reply.result.value;
+    return json ? JSON.parse(reply.result.value) : reply.result.value;
   }
   // A closed subscription's observers stop (best effort: a gone world has none).
   // MP-11: nothing built under the old protection (early packet, cached replies, resend history) reaches the viewer.
@@ -486,14 +488,14 @@ export class Mirror2 {
         this.opaque(snap.nodes, frames.opaque);
         return this.frames.project(stream, { ...snap, sheets: [], nodes: [...snap.nodes, ...frames.records], ops: this.viewerOps(stream, [...(snap.ops ?? []), ...frames.ops, ...sheetOps]), resources: [...snap.resources, ...(frames.resources ?? [])] });
       }
-      return processDelta(await this.evaluate(world, `${world.ref}.drain()`));
+      return processDelta(await this.evaluate(world, `${world.ref}.drain()`, false, undefined, true));
     };
     const processDelta = async delta => {
       assertDocument();
       if (Number.isInteger(delta.full_pending)) stream.fullPending = delta.full_pending;
       // New/upgraded custom hosts trigger trusted discovery before their final projection. Steady-state credits add no round trip.
       if (delta.closed_candidates && await this.markClosedHosts(world, delta)) {
-        delta = this.merge(delta, await this.evaluate(world, `${world.ref}.drain()`));
+        delta = this.merge(delta, await this.evaluate(world, `${world.ref}.drain()`, false, undefined, true));
       }
       if (delta.resync) { this.host.timing?.(`mirror2_reset drain_${delta.resync}`, started); return delta; }
       const ops = [], resources = [...delta.resources];
