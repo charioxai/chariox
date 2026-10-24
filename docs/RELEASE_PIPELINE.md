@@ -65,20 +65,12 @@ runtime environment, and checks the scan contains those exact images without
 build instructions. Services-image migrations run through the target's configured
 OpenShip pre-deploy command; no database/provider credentials go to the runner.
 
-The older `deploy-cloud-staging-release.sh` builds the web image from its source
-archive. Calling that unchanged is **not** digest promotion. The new OpenShip
-adapter uploads an image-only Compose input instead. Its plan comparison records
-this deliberate difference, registry pulls replacing tar transfer/load, and the
-retained activation/validation gates. The target projects must have pre-deploy
-migration, persistent volumes, routing, rollback and deployment health checks
-configured before enablement. These are one-time settings, not secrets to invent.
-The existing native relay service is not silently converted to a container:
-relay/native activation remains an explicit configured target integration gate.
-
-A successful OpenShip status alone does not update staging.json: a separate live
-receipt must bind all observed digests/hashes and required acceptance checks to
-the exact candidate hash. The workflow stops before manifest publication without
-that receipt. Local dry runs cannot mint it.
+The older `deploy-cloud-staging-release.sh` rebuilds web from source, so the
+image-only adapter intentionally differs. The command diff retains the common
+phase order and names the transport changes. Target environment, migration,
+native activation and live-validation integrations must be rehearsed before
+enablement. OpenShip ready status alone never publishes a manifest: require a
+matching live receipt with observed pins. Local dry runs cannot mint acceptance.
 
 ## Production, rollback and signing
 
@@ -98,9 +90,10 @@ backup/restore plan before destructive migrations. Retain previous images,
 archives, native bundles and signed release material; never prune shared caches.
 
 MP-07 managed kernel installation still uses the existing signed immutable
-release/atomic activation contract. CI produces unsigned build inputs; Miguel's
-Mac verifies their hashes/provenance and invokes the existing signing/packaging
-step. Only public signature inventories and signed output hashes return to the
+release/atomic activation contract. CI produces unsigned kernel/relay/CLI inputs; the full managed release also
+requires the existing supervisor/App helpers and builder attestation. The ordinary
+native bundle is never passed directly to a managed installer. Miguel's Mac
+verifies inputs and invokes the existing signing/packaging step. Only public signature inventories and signed output hashes return to the
 manifest. Durable release/builder signing keys never enter GitHub, b3, images,
 runner state or deployment targets. A pending signature cannot authorize managed
 kernel activation. A product version never changes an existing signed artifact.
