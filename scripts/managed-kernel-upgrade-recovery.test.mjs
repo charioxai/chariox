@@ -16,7 +16,7 @@ async function path1Harness(context) {
   const targetTransitionPolicy = JSON.parse(await readFile(
     new URL("../apps/kernel/managed-upgrade-protocol-transitions.json", import.meta.url), "utf8"))
   const harness = await makeHarness(context, { path1Release: true, rotateBuilder: true,
-    currentProtocol: 370, targetProtocol: targetTransitionPolicy.protocol, targetTransitionPolicy,
+    currentProtocol: 567, targetProtocol: targetTransitionPolicy.protocol, targetTransitionPolicy,
     currentAppArtifacts: false,
   })
   const home = join(harness.installRoot, "home/chariox")
@@ -119,7 +119,7 @@ for (const boundary of ["phase-activated", "phase-committed", "committed-tombsto
     const selected = boundary === "phase-activated" || boundary.includes("rolled_back") ? harness.current : harness.target
     const binary = join(harness.installRoot, "usr/lib/chariox/releases",
       selected.digest.slice(7), "usr/local/bin/chariox-kernel")
-    await put(binary, "#!/bin/sh\necho 370\n# corrupted signed executable\n", 0o755)
+    await put(binary, "#!/bin/sh\necho 567\n# corrupted signed executable\n", 0o755)
     const calls = await serviceMutations(harness)
     const current = await readlink(join(harness.installRoot, "usr/lib/chariox/current"))
     const result = await recoverWithoutImage(harness)

@@ -27,15 +27,8 @@ test("MP-07/MP-10/MP-11 the current protocol retains admitted predecessor contra
     assert.ok(Array.isArray(list) && list.length > 0 && list.length <= 32, "older managed validators refuse a policy over 32 entries")
     assert.ok(list.every((version, index) => Number.isSafeInteger(version)
       && version > 0 && (index === 0 || list[index - 1] < version)))
-    assert.ok(list.includes(343), "tested predecessor fixture must remain reciprocal")
-    assert.ok(list.includes(367), "the release before release F must stay reciprocal for in-place updates")
-    assert.ok(list.includes(376), "the previous release (release F) must stay reciprocal for in-place updates")
-    assert.ok(list.includes(416), "released Apps predecessor remains reciprocal")
-    assert.ok(list.includes(472), "the main predecessor (protocol 472) must stay reciprocal for in-place updates")
-    assert.ok(list.includes(487), "reviewed 487 predecessor must stay reciprocal")
+    assert.ok(list.includes(567), "the deployed staging release must stay reciprocal for in-place updates")
     assert.ok(list.includes(localProtocolVersion), "new protocol must include itself")
-    // Signed releases F/G/G2 (376, 377, 411), the Apps release (416), main (472, 520) and the display union (552) can be on a machine.
-    for (const predecessor of [376, 377, 411, 416, 472, 490, 491, 493, 520, 552]) assert.ok(list.includes(predecessor), `shipped version ${predecessor} must stay reciprocal`)
   }
   assert.deepEqual(policy.upgradeFrom, [...admittedPredecessorProtocols, localProtocolVersion])
   assert.deepEqual(policy.rollbackTo, [...admittedPredecessorProtocols, localProtocolVersion])
@@ -61,8 +54,8 @@ test("MP-07/MP-10/MP-11 the current protocol retains admitted predecessor contra
       assert.equal(transition(oldRoot, version, newRoot, localProtocolVersion), "")
       assert.equal(transition(newRoot, localProtocolVersion, oldRoot, version), "")
     }
-    // Released G2 and Apps predecessors are reciprocal; other branch numbers stay refused.
-    for (const version of [312, 325, 333, 339, 342, ...Array.from({ length: 23 }, (_, index) => 344 + index), ...Array.from({ length: 31 }, (_, index) => 379 + index), 412, 413, 414, ...Array.from({ length: 18 }, (_, index) => 417 + index), ...Array.from({ length: 26 }, (_, index) => 436 + index), ...Array.from({ length: 14 }, (_, index) => 473 + index), 488, 489, 492, 495, 496, 499]) {
+    // Releases that are no longer deployed are refused, as are branch numbers next to the kept ones.
+    for (const version of [343, 367, 376, 411, 416, 472, 487, 493, 506, 520, 528, 552, 556, 566, 568, 585]) {
       const oldRoot = join(scratch, `protocol-${version}`)
       assert.throws(() => transition(oldRoot, version, newRoot, localProtocolVersion), /not reciprocally authorized/)
       assert.throws(() => transition(newRoot, localProtocolVersion, oldRoot, version), /not reciprocally authorized/)

@@ -745,8 +745,7 @@ stop/cancel a non-terminal historical run, including a captured Room Stop.
 Pause and Resume remain denied for everyone; other callers and all controls of
 terminal historical records remain denied before idempotent shortcuts. Stop
 never creates invoker proof or removes the historical label. New admissions retain
-the transactional immutable proof. Managed upgrade policy retains 506 as an
-explicit predecessor; the consuming web floor is 513.
+the transactional immutable proof. The consuming web floor is 513.
 
 MP-08 / MP-10 / MP-11: local protocol **516** orders a DOM mirror read
 (`mirror_next`) behind every earlier `mirror_input` of the same mirror
