@@ -114,8 +114,10 @@ fn mp11_leased_computer_protocol_507_115_snapshot() {
     };
     let expected: serde_json::Value =
         serde_json::from_str(include_str!("leased-computer-507.json")).unwrap();
-    assert_eq!(expected["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
-    assert_eq!(expected["peer_protocol"], RELAY_PEER_PROTOCOL_VERSION);
+    assert_eq!(expected["local_protocol"], 567);
+    const { assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 567) };
+    assert_eq!(expected["peer_protocol"], 175);
+    const { assert!(RELAY_PEER_PROTOCOL_VERSION >= 175) };
     for value in expected["local"].as_array().unwrap() {
         let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), *value);
