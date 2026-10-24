@@ -24,7 +24,15 @@ fn capabilities_for_readiness(ready: bool) -> Vec<String> {
     crate::local::RUNTIME_CONTROL_CAPABILITIES
         .iter()
         .copied()
-        .chain(ready.then_some(crate::local::SKILLS_V2_RUNTIME_CAPABILITY))
+        .chain(
+            ready
+                .then_some([
+                    crate::local::SKILLS_V2_RUNTIME_CAPABILITY,
+                    crate::local::SKILLS_REPOSITORY_UPDATE_CAPABILITY,
+                ])
+                .into_iter()
+                .flatten(),
+        )
         .map(str::to_owned)
         .collect()
 }
@@ -358,6 +366,14 @@ impl KernelRuntimeState {
                 }
                 service.resolve_repository(&url)
             }
+            SkillsV2Request::ResolveRepositoryUpdate { package_id } => {
+                if origin.is_some() || !self.skills_host_owner(user) {
+                    return Err(skill_error(
+                        "only the home kernel owner can update a repository package, from Skills",
+                    ));
+                }
+                service.resolve_repository_update(&package_id)
+            }
             SkillsV2Request::Mutate {
                 mutation,
                 review_receipt_id,
@@ -638,7 +654,90 @@ mod capability_tests {
                 .count(),
             1
         );
+        assert_eq!(
+            ready
+                .iter()
+                .filter(|value| value.as_str() == crate::local::SKILLS_REPOSITORY_UPDATE_CAPABILITY)
+                .count(),
+            1
+        );
         assert!(closed.iter().all(|value| ready.contains(value)));
-        assert_eq!(ready.len(), closed.len() + 1);
+        assert_eq!(ready.len(), closed.len() + 2);
+    }
+}
+
+#[cfg(test)]
+mod owner_gate_tests {
+    use super::*;
+
+    fn install_probe(name: &str) -> SkillCatalogMutation {
+        SkillCatalogMutation {
+            scope: SkillScope::Chariox,
+            expected_revision: 1,
+            actions: vec![SkillCatalogAction::Install {
+                source: SkillInstallSource::Content {
+                    skill_md: format!("---\nname: {name}\ndescription: Probe {name}\n---\nBody.\n"),
+                },
+                collision: SkillCollisionAction::Reject,
+                package_id: None,
+            }],
+        }
+    }
+
+    // A shared-session member is not the home kernel owner: Preview and Mutate are
+    // refused before any review or publish, and the catalog keeps the owner's revision.
+    #[tokio::test]
+    async fn session_member_cannot_preview_or_mutate_the_home_catalog() {
+        let app = crate::DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        let state = router.runtime_state();
+        let revision =
+            crate::test_support::install_skill_through_requests(&router, "owner-skill", 0).await;
+        assert_eq!(revision, 1);
+        let member = "shared-session-member".to_owned();
+        let denial = "the home kernel owner must authorize skill catalog mutations";
+        let preview = state
+            .execute_skills_catalog_request(
+                SkillsV2Request::Preview {
+                    mutation: install_probe("member-skill"),
+                },
+                member.clone(),
+            )
+            .await
+            .unwrap_err();
+        assert!(preview.to_string().contains(denial), "{preview}");
+        let mutate = state
+            .execute_skills_catalog_request(
+                SkillsV2Request::Mutate {
+                    mutation: install_probe("member-skill"),
+                    review_receipt_id: "not-issued".into(),
+                },
+                member,
+            )
+            .await
+            .unwrap_err();
+        assert!(mutate.to_string().contains(denial), "{mutate}");
+        let crate::local::LocalDaemonResponse::SkillsV2 {
+            result: SkillsV2Response::Catalog {
+                revision, skills, ..
+            },
+        } = state
+            .execute_skills_catalog_request(
+                SkillsV2Request::Catalog {
+                    project_id: None,
+                    agent_id: None,
+                },
+                crate::session::DEFAULT_LOCAL_USER_ID.to_owned(),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("Catalog must answer with the catalog");
+        };
+        assert_eq!(revision, 1);
+        assert_eq!(skills.len(), 1);
     }
 }

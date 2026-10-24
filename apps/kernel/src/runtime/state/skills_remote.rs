@@ -113,6 +113,15 @@ impl KernelRuntimeState {
         let (inventory, _) = self
             .remote_skill_native_inventory(agent, revision, false, None)
             .await?;
+        if let (Some(inventory), Some(remote)) = (&inventory, agent.remote_execution()) {
+            super::skills_dispatch::record_worker_compactions(
+                self,
+                agent.session_id(),
+                agent.id(),
+                &remote.leased_agent_id,
+                &inventory.compaction_ids,
+            )?;
+        }
         Ok(match inventory {
             None => (vec![], ReportedWorkerRun::NoRun),
             Some(inventory) => (
@@ -174,7 +183,7 @@ impl KernelRuntimeState {
             .ok_or_else(|| failure("worker binding missing"))?;
         if !remote.relay_peer_protocol_compatible() {
             return Err(failure(
-                "the leased worker predates the Skills native inventory request; rebind the remote agent",
+                "the leased worker predates the Skills compaction report; rebind the remote agent",
             ));
         }
         let mut config = self.owned.config_projection.snapshot();
@@ -347,6 +356,14 @@ impl KernelRuntimeState {
                 )
             })
             .await?;
+        // A compaction the worker's harness made since the last turn is in its transcript only
+        // until observed; read it now so the home hears of it before it plans this turn.
+        crate::runtime::external_provider_session_control::refresh_attached_external_provider_histories_for_session(
+            &self.app,
+            Some(self),
+            &target.backing_session_id,
+        )
+        .await;
         let state = self.clone();
         tokio::task::spawn_blocking(move || {
             let Some(run) = state
@@ -357,6 +374,19 @@ impl KernelRuntimeState {
                 return Ok((None, None));
             };
             let inventory = state.local_skill_inventory_for_run(&run, catalog_revision, refresh)?;
+            let compaction_ids = match super::context_handoff::native_session_id(&run) {
+                Some(native_session) => state
+                    .owned
+                    .operational_history_store
+                    .observed_agent_compaction_ids(
+                        &target.backing_session_id,
+                        &target.backing_agent_id,
+                        run.adapter_key(),
+                        run.account_profile(),
+                        native_session,
+                    )?,
+                None => vec![],
+            };
             let details = details_for
                 .map(|selection| {
                     super::skills_native_inventory::native_details(
@@ -371,6 +401,7 @@ impl KernelRuntimeState {
                     entries: inventory.entries,
                     revision: inventory.revision,
                     provider_run_id: Some(run.id().to_string()),
+                    compaction_ids,
                 }),
                 details,
             ))

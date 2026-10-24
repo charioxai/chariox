@@ -635,6 +635,7 @@ async fn relay_status_uses_config_projection_without_app_lock() {
                 .map(|capability| capability.to_string())
                 .collect::<Vec<_>>();
             expected.push(crate::local::SKILLS_V2_RUNTIME_CAPABILITY.to_string());
+            expected.push(crate::local::SKILLS_REPOSITORY_UPDATE_CAPABILITY.to_string());
             assert_eq!(status.capabilities, expected);
             let registration = app.lock().await.relay_registration();
             for capability in &status.capabilities {

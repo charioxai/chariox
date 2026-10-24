@@ -674,17 +674,22 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                                 {
                                     continue;
                                 }
+                                let redirect = typed_prompt::typed_native_redirect(
+                                    context_file,
+                                    dispatch_prompt_id,
+                                )?;
                                 context_delivery::stage(
                                     context_file,
                                     request_id,
                                     provider_run_id,
                                     dispatch_prompt_id,
                                     active.id(),
-                                    true,
-                                    typed_prompt::typed_native_loads(
-                                        context_file,
-                                        dispatch_prompt_id,
-                                    )?,
+                                    if redirect.is_some() {
+                                        context_delivery::DeliveryOrigin::TypedRedirect
+                                    } else {
+                                        context_delivery::DeliveryOrigin::Managed
+                                    },
+                                    redirect.unwrap_or_default(),
                                 )?;
                                 write_claude_hook_context_response(
                                     context_file,
@@ -786,7 +791,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                                         provider_run_id,
                                         started.id(),
                                         started.id(),
-                                        false,
+                                        context_delivery::DeliveryOrigin::Native,
                                         Vec::new(),
                                     )?;
                                     permission::write_claude_hook_context_rejection(context_file, request_id,
@@ -854,7 +859,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             provider_run_id,
                             prompt_id,
                             prompt_id,
-                            false,
+                            context_delivery::DeliveryOrigin::Native,
                             typed_skills,
                         )?;
                         write_claude_hook_context_response(context_file, request_id, context)?;

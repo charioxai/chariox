@@ -1,6 +1,105 @@
 use super::*;
 
 #[test]
+fn observed_claude_compaction_records_one_boundary_without_a_history_turn() {
+    let worktree = crate::test_support::TestWorktree::new("observed-claude-compaction");
+    let transcript_dir = worktree.path().join("projects").join("-repo");
+    std::fs::create_dir_all(&transcript_dir).unwrap();
+    std::fs::write(
+        transcript_dir.join("native-compaction.jsonl"),
+        concat!(
+            "{\"type\":\"user\",\"uuid\":\"u1\",\"message\":{\"content\":\"Read the specification\"},\"sessionId\":\"native-compaction\",\"timestamp\":\"2026-10-23T00:00:01Z\"}\n",
+            "{\"type\":\"assistant\",\"uuid\":\"a1\",\"message\":{\"content\":\"The specification was read\"},\"sessionId\":\"native-compaction\",\"timestamp\":\"2026-10-23T00:00:02Z\"}\n",
+            "{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"uuid\":\"compact-1\",\"sessionId\":\"native-compaction\",\"timestamp\":\"2026-10-23T00:00:03Z\"}\n"
+        ),
+    )
+    .unwrap();
+    let turns = crate::app::read_external_provider_observed_turns_for_profile(
+        "claude",
+        "native-compaction",
+        &[worktree.path().to_path_buf()],
+    );
+    assert_eq!(
+        turns.len(),
+        3,
+        "native compaction must reach its context owner"
+    );
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let import = ExternalProviderImportMetadata::observed_history(
+        "claude:native-compaction".to_string(),
+        "claude".to_string(),
+        "native-compaction".to_string(),
+    );
+    let account = import.account_profile.clone();
+    persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone()).unwrap();
+    for expected_changes in [2, 0] {
+        let outcome = append_observed_external_turns_for_attached_target(
+            &mut app,
+            AttachedExternalObserverRead {
+                target: attached_external_observer_target_from_import(
+                    session.id().to_string(),
+                    agent.id().to_string(),
+                    None,
+                    import.clone(),
+                ),
+                turns: turns.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome.changed_count, expected_changes);
+        let boundary = app
+            .operational_history_store()
+            .load_agent_compaction_boundary(
+                session.id(),
+                agent.id(),
+                "claude",
+                &account,
+                Some("native-compaction"),
+            )
+            .unwrap();
+        assert_eq!(boundary.map(|b| b.revision), Some(1));
+    }
+    let mut later_turns = turns.clone();
+    let mut second = turns.last().unwrap().clone();
+    second.provider_turn_id = Some("compact_boundary-compact-2".into());
+    later_turns.push(second);
+    for replay in [later_turns.clone(), later_turns[2..].to_vec()] {
+        let outcome = append_observed_external_turns_for_attached_target(
+            &mut app,
+            AttachedExternalObserverRead {
+                target: attached_external_observer_target_from_import(
+                    session.id().to_string(),
+                    agent.id().to_string(),
+                    None,
+                    import.clone(),
+                ),
+                turns: replay,
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome.changed_count, 0);
+        let boundary = app
+            .operational_history_store()
+            .load_agent_compaction_boundary(
+                session.id(),
+                agent.id(),
+                "claude",
+                &account,
+                Some("native-compaction"),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            boundary.revision, 2,
+            "compaction uses its own ID even when the user anchor changes"
+        );
+    }
+}
+
+#[test]
 fn private_meta_continuation_observation_matches_its_owned_marker() {
     let mut counts = BTreeMap::from([("<metaagent-event/>".to_string(), 1)]);
 

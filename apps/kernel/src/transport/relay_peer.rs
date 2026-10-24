@@ -127,7 +127,10 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-10/MP-11: allocated 164 carries the local 556 `state_wait`.
 /// MP-08/MP-10/MP-11: allocated 175 carries the local 567 `fonts` op `absent`.
 /// MP-08/MP-10/MP-11: allocated 179 carries the local 571 Skills v2 leased-worker native inventory.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 179;
+/// MP-08/MP-10/MP-11: allocated 189 carries the local 581 Skills v2 repository update.
+/// MP-08/MP-10/MP-11: allocated 192 carries the local 586 worker compaction report; a
+/// 189 worker omits it, so the home refuses that binding rather than assume retained loads.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 192;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -344,6 +347,10 @@ pub struct LeasedSkillNativeInventory {
     /// before a turn: the run that takes the turn. Absent from older workers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_run_id: Option<String>,
+    /// IDs of the native compactions the worker observed in that run's session.
+    /// The home owns the recovery: it records each ID once and reloads Skills.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compaction_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

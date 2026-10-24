@@ -144,8 +144,13 @@ batch installs the checked members pinned to exactly that commit into one new pa
 The kernel records the commit as the members' and the package's `source_revision`
 and maps each upstream directory to the member's skill ID; no client label can
 attest a revision. Private or auth-required repositories are refused, and an agent
-cannot start a repository install. Updating a repository package from a newer commit
-is not part of this flow yet.
+cannot start a repository install. MP-08 / MP-10 / MP-11: the bounded kernel/TUI
+update path resolves a newer commit with `/skills repo-update <package>`, reviews
+changed/new/removed members, and publishes the pinned batch through normal confirmation.
+The Web update entry point remains outside this implementation. Members moved out
+and directories left unselected at install are skipped; invalid current members
+refuse the whole update. Empty repositories and removal of every remaining member
+require explicit removal or ungrouping. The existing 512-action limit applies.
 
 Install/update/remove/state actions work on a single skill or a whole package.
 Show the affected members and collisions before authorization, and commit the

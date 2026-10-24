@@ -302,8 +302,7 @@ owner's Stop of a non-terminal run under the 17:12 amendment. New runs
 retain atomic invoking-user proof and their ordinary control path. Web/TUI
 project the historical label; native clients receive the same shared marker.
 
-This is common kernel behavior, not a managed-only policy. Managed upgrade pins
-retain506 as an explicit predecessor and the consuming web floor follows513.
+This is common kernel behavior, not a managed-only policy. The consuming web floor is 513.
 Focused regressions, real pre-proof upgrade cells HW-01/HW-02/HW-03/HW-04 in the agent
 model plan, and current semantic review of this admission anchor are separate
 requirements. No MP item gains acceptance from this inventory alone.

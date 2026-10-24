@@ -745,8 +745,7 @@ stop/cancel a non-terminal historical run, including a captured Room Stop.
 Pause and Resume remain denied for everyone; other callers and all controls of
 terminal historical records remain denied before idempotent shortcuts. Stop
 never creates invoker proof or removes the historical label. New admissions retain
-the transactional immutable proof. Managed upgrade policy retains 506 as an
-explicit predecessor; the consuming web floor is 513.
+the transactional immutable proof. The consuming web floor is 513.
 
 MP-08 / MP-10 / MP-11: local protocol **516** orders a DOM mirror read
 (`mirror_next`) behind every earlier `mirror_input` of the same mirror
@@ -4953,8 +4952,17 @@ prompt-scoped live rows.
 Local daemon **533**, relay peer **141** reserve the Skills v2 instruction
 catalog contract; local **571** / peer **179** add the leased-worker native
 inventory request below (no client-visible shape changed; the client minimum
-stays 533/141). `SkillsV2` wraps a tagged `action` request and a tagged `kind`
-result. The canonical Rust shapes are `skill/v2.rs`; shared TypeScript and Swift
+stays 533/141). Local **581** / peer **189** add the `resolve_repository_update`
+request and its `repository_update` result; local **586** / peer **192** add
+`compaction_ids` to the leased-worker native inventory response (the IDs of native
+compactions the worker's harness observed, which the home records once to reload
+skills). A peer below 192 cannot report them, so the home refuses to dispatch to
+that binding until it is rebound, instead of assuming its loads were retained; a kernel that supports them also
+advertises the `skills_repository_update_v581` capability next to
+`skills_v2_runtime`, and clients send the request only when both are present
+(an older kernel gets the message "update the kernel", never a decode error).
+`SkillsV2` wraps a tagged `action` request and a tagged `kind` result. The
+canonical Rust shapes are `skill/v2.rs`; shared TypeScript and Swift
 bindings mirror them. Skills are instructions, never Extension grants.
 
 `catalog`, `get`, `native_inventory` and `loads` supply management projections.
@@ -4979,6 +4987,20 @@ revision is never accepted from a client label: a repository package refuses
 members from another commit and cannot join a custom package. Credentials in
 the URL, private or auth-required repositories and agent-initiated repository
 sources are refused.
+
+MP-08 / MP-10 / MP-11: the unpublished Skills allocation 571/179 also carries
+`resolve_repository_update { package_id }` for the home owner. Its
+`repository_update` response contains the old and resolved commits, changed,
+added, removed, unchanged and skipped members, plus one revision-bound mutation.
+The owner reviews and confirms that mutation through the usual path; confirmation
+uses staged bytes and never fetches again. Remaining source-package members must
+advance together to one attested commit. Member IDs, state overrides and original
+install times remain stable; members moved to custom packages and directories
+left unselected at install are skipped. Invalid current members refuse the whole
+update. Empty repositories and updates removing every remaining member require
+explicit removal or ungrouping instead. The normal 512-action limit applies.
+The TUI exposes `/skills repo-update <package>`; the Web update entry point is
+not implemented by this addition.
 
 `SkillProjection.delivery` distinguishes Chariox delivery, verified native
 provision, content conflict and unverified native exposure. Equal complete
@@ -5073,7 +5095,7 @@ Unknown dollar prose remains ordinary text; a resolved delivery failure blocks
 the hook visibly. The private preparation and receipt operations do not grant
 ordinary forwarded-tool authority, which still needs the exact running home
 turn. These unreleased operations use the reserved local 571 / peer 179 pair;
-public client request/response shapes are unchanged.
+public client request/response shapes are unchanged by them.
 Environment snapshots carry Project records, package membership, overrides and
 only their required Chariox dependencies separately from Extension grants.
 

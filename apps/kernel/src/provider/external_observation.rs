@@ -68,6 +68,7 @@ pub(crate) enum ObservedExternalProviderTurnRole {
     Reasoning,
     Tool,
     Status,
+    Compaction,
 }
 
 impl ObservedExternalProviderTurnRole {
@@ -81,7 +82,9 @@ impl ObservedExternalProviderTurnRole {
             Self::Assistant => crate::history::SessionHistoryEntryKind::ProviderOutput,
             Self::Reasoning => crate::history::SessionHistoryEntryKind::ProviderReasoning,
             Self::Tool => crate::history::SessionHistoryEntryKind::ProviderTool,
-            Self::Status => crate::history::SessionHistoryEntryKind::ProviderStatus,
+            Self::Status | Self::Compaction => {
+                crate::history::SessionHistoryEntryKind::ProviderStatus
+            }
         }
     }
 }
@@ -106,7 +109,8 @@ pub(crate) fn clean_observed_turn_text(role: Option<&str>, text: String) -> Opti
         }
         ObservedExternalProviderTurnRole::Reasoning
         | ObservedExternalProviderTurnRole::Tool
-        | ObservedExternalProviderTurnRole::Status => {
+        | ObservedExternalProviderTurnRole::Status
+        | ObservedExternalProviderTurnRole::Compaction => {
             let text = text.trim();
             (!text.is_empty()).then(|| text.to_string())
         }
@@ -179,6 +183,7 @@ fn role_text(role: ObservedExternalProviderTurnRole) -> &'static str {
         ObservedExternalProviderTurnRole::Reasoning => "reasoning",
         ObservedExternalProviderTurnRole::Tool => "tool",
         ObservedExternalProviderTurnRole::Status => "status",
+        ObservedExternalProviderTurnRole::Compaction => "compaction",
     }
 }
 
@@ -349,8 +354,9 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
     }
 
     pub(crate) fn turn_is_passive_telemetry(self, turn: &ObservedExternalProviderTurn) -> bool {
-        turn.role == ObservedExternalProviderTurnRole::Status
-            && self.status_is_passive_telemetry(&turn.text)
+        turn.role == ObservedExternalProviderTurnRole::Compaction
+            || (turn.role == ObservedExternalProviderTurnRole::Status
+                && self.status_is_passive_telemetry(&turn.text))
     }
 
     pub(crate) fn latest_effective_turn_settles(
@@ -370,7 +376,8 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
             ObservedExternalProviderTurnRole::Assistant
             | ObservedExternalProviderTurnRole::User
             | ObservedExternalProviderTurnRole::Reasoning
-            | ObservedExternalProviderTurnRole::Tool => false,
+            | ObservedExternalProviderTurnRole::Tool
+            | ObservedExternalProviderTurnRole::Compaction => false,
         }
     }
 

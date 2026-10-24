@@ -11,9 +11,24 @@ struct PendingDelivery {
     managed: bool,
     #[serde(default)]
     active_prompt_id: Option<String>,
+    /// The managed resubmission of a typed native command, which no dispatch consumed
+    /// the compaction handoff for. It holds even when the command loaded no skill.
+    #[serde(default)]
+    typed_redirect: bool,
     /// Skills the worker put into this hook context for a `$name` the user typed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     typed_skills: Vec<TypedSkillLoad>,
+}
+
+/// Who produced the hook context being delivered.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum DeliveryOrigin {
+    /// A turn typed into the native composer.
+    Native,
+    /// A turn Chariox submitted itself.
+    Managed,
+    /// Chariox's resubmission of a typed native command.
+    TypedRedirect,
 }
 
 pub(super) fn stage(
@@ -22,7 +37,7 @@ pub(super) fn stage(
     run_id: &str,
     prompt_id: &str,
     active_prompt_id: &str,
-    managed: bool,
+    origin: DeliveryOrigin,
     typed_skills: Vec<TypedSkillLoad>,
 ) -> Result<(), DaemonError> {
     permission::validate_context_request_id(request_id)?;
@@ -30,8 +45,9 @@ pub(super) fn stage(
         request_id: request_id.into(),
         run_id: run_id.into(),
         prompt_id: prompt_id.into(),
-        managed,
+        managed: origin != DeliveryOrigin::Native,
         active_prompt_id: Some(active_prompt_id.into()),
+        typed_redirect: origin == DeliveryOrigin::TypedRedirect,
         typed_skills,
     };
     fs::write(
@@ -158,7 +174,7 @@ impl ProviderOutputClaudeNativeBridge<'_> {
             run_id,
             dispatch_id,
             dispatch_id,
-            true,
+            DeliveryOrigin::Managed,
             Vec::new(),
         )
     }
@@ -242,8 +258,13 @@ impl ProviderOutputClaudeNativeBridge<'_> {
         if pending.managed {
             write_claude_native_marker(context_file, &format!("accepted:{}", pending.prompt_id));
             self.consume_accepted_failed_request_context(session_id, agent_id, context_file)?;
-        } else if let Some(policy) = self.prompt_handoff {
-            policy.accepted(session_id, agent_id, run_id)?;
+        }
+        // A typed native command is resubmitted as a managed turn that no
+        // dispatch consumed the handoff for, so the acceptance must.
+        if !pending.managed || pending.typed_redirect {
+            if let Some(policy) = self.prompt_handoff {
+                policy.accepted(session_id, agent_id, run_id)?;
+            }
         }
         let _ = fs::remove_file(format!("{context_file}.context-delivery"));
         Ok(())
