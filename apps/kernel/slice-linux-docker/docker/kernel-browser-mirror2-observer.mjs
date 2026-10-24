@@ -122,7 +122,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // Resource keys by URL (and kind: an SVG sprite's bytes are its sanitized symbols, not the image), least
     // recently used first: over the budget the oldest mapping goes (a later use gets a new key). Keys are never
     // reused within a document, below the frame key slot.
-    const urlKeys = new Map(), keySlots = new Map(); let snapshotted = false;
+    const urlKeys = new Map(), usedKeys = new Set(); let snapshotted = false;
     let selectedDoc = null; // the document whose selection changed last
     let newResources = [], pendingSheets = [], adoptedDirty = false, lastFormCheck = 0, formCursor = 0, lastStateCheck = 0, stateCursor = 0, lastHostCheck = 0, hostIterator = null, lastClosedCheck = 0, pressedAt = -Infinity;
     const dirty = { children: new Set(), attrs: new Map(), text: new Set(), form: new Set(), state: new Set(), scroll: new Set(), replace: new Set(), sheets: new Set(), frames: new Set(), masks: new Set() };
@@ -162,13 +162,14 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (url.protocol === 'data:' && !/^data:(image\/(png|jpeg|gif|webp|svg\+xml)|font\/|application\/(font|x-font)|application\/octet-stream)/i.test(url.href)) return null;
       const slot = kind === 'sprite' ? `sprite:${url.href}` : url.href;
       const known = urlKeys.get(slot); if (known) { urlKeys.delete(slot); urlKeys.set(slot, known); return known.key; }
-      if (urlKeys.size >= RESOURCE_BUDGET) { const [oldest, { key }] = urlKeys.entries().next().value; urlKeys.delete(oldest); keySlots.delete(key); }
+      if (usedKeys.size >= 999999) return null;
+      if (urlKeys.size >= RESOURCE_BUDGET) urlKeys.delete(urlKeys.keys().next().value);
       // A URL's key derives from the URL (r1..r999999; frames rebase by slot), so a sheet that names the same
       // resources is the same text in every document of a site and the viewer's retained copy serves it.
       let number = 2166136261; for (let i = 0; i < slot.length; i++) number = Math.imul(number ^ slot.charCodeAt(i), 16777619);
       number = (number >>> 0) % 999999 + 1;
-      while (keySlots.has(`r${number}`)) number = number % 999999 + 1;
-      const key = `r${number}`; keySlots.set(key, slot); urlKeys.set(slot, { key, kind, url: url.href }); newResources.push({ key, url: url.href, kind }); return key;
+      while (usedKeys.has(`r${number}`)) number = number % 999999 + 1;
+      const key = `r${number}`; usedKeys.add(key); urlKeys.set(slot, { key, kind, url: url.href }); newResources.push({ key, url: url.href, kind }); return key;
     };
     // With `clean`, each sheet's own rules are sanitized against that sheet's base
     // (an imported sheet's url() is relative to the imported sheet).

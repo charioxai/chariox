@@ -889,6 +889,18 @@ test("MP-10: past the resource-key budget the least recently used URL mapping go
     assert.equal(new Set(images.map(row => row[4].res)).size, 4200, "MP-10: keys are never reused");
   }));
 
+// #1073 review: a URL evicted from the key budget keeps its key reserved, so a later URL whose hash lands on it gets another.
+const urlKeyNumber = url => { let n = 2166136261; for (let i = 0; i < url.length; i++) n = Math.imul(n ^ url.charCodeAt(i), 16777619); return (n >>> 0) % 999999 + 1; };
+const GIF = "data:image/gif;base64,R0lGODlhAQABAAAAACw=#k";
+const [evicted, colliding] = (() => { const seen = new Map(); for (let i = 0; ; i++) { const n = urlKeyNumber(GIF + i); if (seen.has(n)) return [seen.get(n), i]; seen.set(n, i); } })();
+test("MP-10: a URL whose key hash matches an evicted URL's key gets its own key while the evicted image is still mirrored", () => mirrored(
+  `<div id="g"></div><script>const g=document.getElementById("g"),add=k=>{const img=document.createElement("img");img.width=1;img.height=1;img.src="${GIF}"+k;g.append(img)};add(${evicted});for(let i=0;i<4200;i++)add("f"+i);add(${colliding})</script>`, async ({ next }) => {
+    const snapshot = await next(), images = snapshot.nodes.filter(row => row[2] === "img");
+    assert.equal(images.length, 4202);
+    const [first, last] = [images[0][4].res, images.at(-1)[4].res];
+    assert.notEqual(first, last, "MP-10: the evicted image's key is never handed to another URL in the same document");
+  }));
+
 // Audit 2026-10-10 §4.7: opaque regions as element pixels, not viewport screenshots (R8-3, item 15).
 const { decodePng } = await import("./kernel-browser-pixels.mjs");
 const tilePixels = tile => { const png = Buffer.from(tile.data_base64, "base64"), width = png.readUInt32BE(16), height = png.readUInt32BE(20), { pixels } = decodePng(tile.data_base64, 1, { width, height }); let red = 0, blue = 0; for (let i = 0; i < pixels.length; i += 4) { if (pixels[i] > 200 && pixels[i + 2] < 60) red++; if (pixels[i + 2] > 200 && pixels[i] < 60) blue++; } return { width, height, red, blue }; };
