@@ -2088,6 +2088,17 @@ test("MP-08/MP-10 protocol 593: an on-screen image travels while the off-screen 
   assert(early, "the image the viewer's handover waits for does not queue behind every off-screen chunk");
 }, { "/top.svg": { type: "image/svg+xml", body: svg("#0a0b0c") } }));
 
+test("MP-08/MP-10 protocol 593: a followed link's new page gets its on-screen image while its off-screen rest streams", () => mirrored('<a href="/next">Go</a>', async ({ subscribe }) => {
+  const viewer = await subscribe({ viewport_first: true }), wanted = r => Buffer.from(r.data_base64, "base64").toString().includes("#0d0e0f");
+  const first = await viewer.next(), go = texts(first).get("Go");
+  await viewer.input(first.sequence, { kind: "click", node_id: `n${Number(go.slice(1)) - 1}`, x: 5, y: 5 });
+  let packet = await viewer.next(2000), early = false, guard = 0;
+  while (!(packet.reset && packet.snapshot_viewport_complete) && guard++ < 100) packet = await viewer.next(300);
+  assert.equal(packet.snapshot_complete, false, "the new page's off-screen part follows");
+  while (!packet.snapshot_complete && guard++ < 400) { packet = await viewer.next(300); if (!packet.snapshot_complete && packet.resources.some(wanted)) early = true; }
+  assert.equal(packet.snapshot_complete, true);
+  assert(early, "the click on the previous page does not hold the new page's on-screen image behind every off-screen chunk");
+}, { "/next": { type: "text/html", body: `<!doctype html><img src="/top.svg" width="40" height="40">${Array.from({ length: 3000 }, (_, i) => `<p>Paragraph ${i} <b>bold</b></p>`).join("")}` }, "/top.svg": { type: "image/svg+xml", body: svg("#0d0e0f") } }));
 test("MP-08/MP-10 protocol 593: a subscription that did not ask gets a whole snapshot and no viewport flag", () => mirrored(article, async ({ next }) => {
   const first = await next();
   assert.equal(first.snapshot_complete, true);
