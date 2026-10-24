@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
 import { inflateRawSync, constants as zlib } from 'node:zlib';
-import { Mirror2, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports } from './kernel-browser-mirror2.mjs';
+import { Mirror2, ParsedSheets, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports } from './kernel-browser-mirror2.mjs';
 const pageSize=()=>({width:1280,height:800});
 
 const keys = () => { const seen = []; return { seen, resource: (url, base, kind) => { const href = new URL(url, base).href; if (!/^(https?|data):/.test(href)) return null; seen.push([href, kind]); return `r${seen.length}`; } }; };
@@ -508,7 +508,7 @@ test('MP-10 M2: completed stylesheet bodies do not wait for Page resource-conten
  const body=Buffer.from('body{color:green}'),calls=[];
  const world={connection:{async send(method){calls.push(method);throw Error('unrelated document resources are still loading')}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
  const mirror=new Mirror2({host:{browser:{responseBodies:{async read(actual,address,limit){assert.equal(actual,world);assert.equal(address,'https://public.example/style.css');assert.equal(limit,16*1024*1024);return body}}}}});
- mirror.evaluate=async(_world,expression)=>{assert(expression.includes(body.toString()));return body.toString()};
+ mirror.evaluate=async(_world,expression)=>{if(expression.includes('compatMode'))return false;assert(expression.includes(body.toString()));return {css:body.toString(),parsed:[body.toString()],used:null}};
  assert.equal(await mirror.crossOriginSheet(world,'https://public.example/style.css'),body.toString());assert.deepEqual(calls,[]);
 });
 
@@ -517,9 +517,38 @@ test('a cross-origin stylesheet whose href has a fragment is read by its request
  const body=Buffer.from('body{color:green}'),asked=[];
  const world={connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
  const mirror=new Mirror2({host:{browser:{responseBodies:{async read(_world,address){asked.push(address);return address==='https://public.example/s.css?AUIClients/X'?body:null}}}}});
- mirror.evaluate=async(_world,expression)=>{assert(expression.includes(body.toString()));return body.toString()};
+ mirror.evaluate=async(_world,expression)=>{if(expression.includes('compatMode'))return false;assert(expression.includes(body.toString()));return {css:body.toString(),parsed:[body.toString()],used:null}};
  assert.equal(await mirror.crossOriginSheet(world,'https://public.example/s.css?AUIClients/X#1353983-T1'),body.toString());
  assert.deepEqual(asked,['https://public.example/s.css?AUIClients/X']);
+});
+
+// browserperf r9: Wikipedia's skin sheet is lossy in the CSSOM, so every article re-parsed it chunk by chunk in the page.
+test('MP-08/MP-10: a same-site navigation reuses the normalized text of a cross-origin sheet it already parsed',async()=>{
+ const source='.a{border:var(--w) solid;border-color:red}',parsed='.a { border: var(--w) solid; border-color: red; }';
+ const mirror=new Mirror2({host:{browser:{responseBodies:{async read(){return Buffer.from(source)}}}}});
+ const expressions=[];
+ mirror.evaluate=async(world,expression)=>{
+  if(expression.includes('compatMode'))return world.mode==='BackCompat';
+  expressions.push(expression);const sheets=JSON.parse(expression.slice(expression.lastIndexOf('})(')+3,-1));
+  return {css:`sanitized:${sheets[0].body??parsed}`,parsed:sheets.map(sheet=>sheet.body===undefined?parsed:null),used:null};
+ };
+ const world=(url,mode='CSS1Compat')=>({connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',url},mode,ref:'observer'});
+ const first=await mirror.crossOriginSheet(world('https://en.wikipedia.org/wiki/Linux'),'https://en.wikipedia.org/w/load.php?skin');
+ const next=await mirror.crossOriginSheet(world('https://en.wikipedia.org/wiki/Web_browser'),'https://en.wikipedia.org/w/load.php?skin');
+ assert(expressions[0].includes(JSON.stringify(source)),'the first document parses the source');
+ assert(!expressions[1].includes(JSON.stringify(source))&&expressions[1].includes(JSON.stringify(parsed)),'the next document of the site takes the normalized text');
+ assert.equal(first,`sanitized:${parsed}`);assert.equal(next,`sanitized:${parsed}`);
+ await mirror.crossOriginSheet(world('https://other.example/'),'https://en.wikipedia.org/w/load.php?skin');
+ await mirror.crossOriginSheet(world('https://en.wikipedia.org/quirks','BackCompat'),'https://en.wikipedia.org/w/load.php?skin');
+ assert(expressions[2].includes(JSON.stringify(source))&&expressions[3].includes(JSON.stringify(source)),'another origin or compatibility mode parses the source itself');
+});
+
+test('MP-08/MP-10: the normalized sheet cache stays within its entry and size bounds',()=>{
+ const cache=new ParsedSheets(2,10);
+ cache.put('a','1234');cache.put('b','1234');cache.take('a');cache.put('c','1234');
+ assert.deepEqual([...cache.bodies.keys()],['a','c'],'the least recently used body leaves first');
+ cache.put('d','123456789');assert.deepEqual([...cache.bodies.keys()],['d']);assert.equal(cache.size,9);
+ cache.put('e','12345678901');assert.equal(cache.bodies.has('e'),false,'a body larger than the bound is not kept');
 });
 
 test('MP-10 M2: first-packet font bytes use the completed response before the Page content gate',async()=>{

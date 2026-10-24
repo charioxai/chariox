@@ -174,8 +174,19 @@ const observerRef = stream => `globalThis.__charioxMirror2.get(${JSON.stringify(
 // border-color:red) as empty longhands (`border-top-width: ;`), which a viewer parser drops. A rule whose
 // text came out that way is kept as its source text.
 const SERIALIZER = String.raw`const lossy=/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;const rules=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\n';return out};const chunks=text=>{const out=[];let depth=0,start=0,quote='';for(let i=0;i<text.length;i++){const c=text[i];if(quote){if(c==='\\')i++;else if(c===quote)quote=''}else if(c==='"'||c==="'")quote=c;else if(c==='/'&&text[i+1]==='*'){i=text.indexOf('*/',i+2);if(i<0)break;i++}else if(c==='{')depth++;else if((c==='}'&&!--depth)||(c===';'&&!depth)){out.push(text.slice(start,i+1));start=i+1}}return out};const serialize=text=>{const out=rules(text);if(!lossy.test(out))return out;let result='';for(const chunk of chunks(text)){const one=rules(chunk);if(!lossy.test(one)){result+=one;continue}const open=chunk.indexOf('{');result+=/^\s*@/.test(chunk)?chunk.slice(0,open+1)+serialize(chunk.slice(open+1,chunk.lastIndexOf('}')))+'}\n':chunk+'\n'}return result};const parse=serialize;`;
+// CSSOM-normalized cross-origin sheet bodies by source (see crossOriginSheet), least recently used first out.
+export class ParsedSheets {
+  constructor(entries = 32, chars = 32 * 1024 * 1024) { this.bodies = new Map(); this.entries = entries; this.chars = chars; this.size = 0; }
+  take(key) { const body = this.bodies.get(key); if (body !== undefined) { this.bodies.delete(key); this.bodies.set(key, body); } return body; }
+  put(key, body) {
+    if (body.length > this.chars) return;
+    const old = this.bodies.get(key); if (old !== undefined) { this.bodies.delete(key); this.size -= old.length; }
+    this.bodies.set(key, body); this.size += body.length;
+    for (const [first, text] of this.bodies) { if (this.bodies.size <= this.entries && this.size <= this.chars) break; this.bodies.delete(first); this.size -= text.length; }
+  }
+}
 export class Mirror2 {
-  constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); }
+  constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); this.parsedSheets = new ParsedSheets(); }
   // MP-08/MP-10/MP-11: older v2 viewers never receive an unknown operation.
   // `absent` (protocol 567) only reaches a viewer that asked for it: older viewers refuse unknown op fields.
   viewerOps(stream, ops) { return stream.fontRequirements === true ? stream.fontAbsent === true ? ops : ops.map(op => op.op === 'fonts' && op.absent ? { op: op.op, id: op.id, required: op.required } : op) : ops.filter(op => op.op !== 'fonts'); }
@@ -843,7 +854,16 @@ export class Mirror2 {
       return true;
     };
     if (!await read(url, '', '', 0)) return null;
-    return this.evaluate(world, `(sheets=>{${SERIALIZER}let out='';for(const s of sheets){let body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);out+=${world.ref}.sanitize(body,s.url)}return ${usedBy === null ? 'out' : `out.length<${FIRST_PAINT_SHEET}?out:[out,${world.ref}.usedCss(${JSON.stringify(usedBy)},out)]`}})(${JSON.stringify(sheets)})`);
+    // A same-site navigation reads the same sheets again. Their normalized text (a lossy sheet's chunk-by-chunk
+    // re-parse is most of a large sheet's cost) comes from the last document that parsed the same source under the
+    // same wrapper, origin and compatibility mode. Sanitizing (per-document resource keys) and pruning still run here.
+    world.quirks ??= await this.evaluate(world, "document.compatMode === 'BackCompat'");
+    const origin = (() => { try { return new URL(world.frame?.url ?? '').origin; } catch { return ''; } })();
+    const keys = sheets.map(sheet => createHash('sha256').update(JSON.stringify([origin, world.quirks, sheet.open, sheet.close, sheet.text])).digest('base64'));
+    const input = sheets.map(({ text, url, open, close }, i) => { const body = this.parsedSheets.take(keys[i]); return body === undefined ? { text, url, open, close } : { body, url }; });
+    const reply = await this.evaluate(world, `(sheets=>{${SERIALIZER}let out='';const parsed=[];for(const s of sheets){let body=s.body;if(body===undefined){body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);parsed.push(body)}else parsed.push(null);out+=${world.ref}.sanitize(body,s.url)}return {css:out,parsed,used:${usedBy === null ? 'null' : `out.length<${FIRST_PAINT_SHEET}?null:${world.ref}.usedCss(${JSON.stringify(usedBy)},out)`}}})(${JSON.stringify(input)})`);
+    reply.parsed.forEach((body, i) => { if (typeof body === 'string') this.parsedSheets.put(keys[i], body); });
+    return reply.used === null ? reply.css : [reply.css, reply.used];
   }
   // Opaque regions as lossless stills, refreshed at most once a second until phase 3
   // binds them to video rows: a canvas or video as its own pixels; plugins, closed
