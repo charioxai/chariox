@@ -339,4 +339,6 @@ pub use workspace::*;
 /// replacing the viewer's 250 ms poll.
 /// MP-08/MP-10/MP-11: allocated 567 adds the mirror v2 `fonts` op's `absent` (stack families the native machine lacks).
 /// MP-08/MP-10/MP-11: allocated578 adds the shared browser viewport resize mutation.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 578;
+/// MP-08/MP-10: allocated 593 adds the mirror v2 viewport-first snapshot (`viewport_first`, `deferred` records and
+/// `snapshot_viewport_complete`) and `:visited` links (`visited_links`).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 593;
