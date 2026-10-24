@@ -129,6 +129,52 @@ impl OperationalHistoryStore {
         ids.map_err(|e| compaction_error(session_id, "read observed compactions", e))
     }
 
+    /// A reload acknowledged in one turn of a recovery epoch still counts in the next.
+    pub(crate) fn record_agent_compaction_reload(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        revision: u64,
+        skill_id: &str,
+        digest: &str,
+    ) -> Result<(), DaemonError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|e| compaction_error(session_id, "lock compaction reload", e))?;
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO history_agent_compaction_reloads
+                 (session_id, agent_id, revision, skill_id, digest) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![session_id, agent_id, revision as i64, skill_id, digest],
+            )
+            .map(|_| ())
+            .map_err(|e| compaction_error(session_id, "record compaction reload", e))
+    }
+
+    /// The `(skill ID, digest)` pairs the harness has taken back in one recovery epoch.
+    pub(crate) fn agent_compaction_reloads(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        revision: u64,
+    ) -> Result<std::collections::BTreeSet<(String, String)>, DaemonError> {
+        let connection = self.lock_read_connection(Some(session_id))?;
+        let mut statement = connection
+            .prepare(
+                "SELECT skill_id, digest FROM history_agent_compaction_reloads
+                 WHERE session_id = ?1 AND agent_id = ?2 AND revision = ?3",
+            )
+            .map_err(|e| compaction_error(session_id, "list compaction reloads", e))?;
+        let reloads = statement
+            .query_map(params![session_id, agent_id, revision as i64], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .map_err(|e| compaction_error(session_id, "list compaction reloads", e))?
+            .collect::<Result<_, _>>();
+        reloads.map_err(|e| compaction_error(session_id, "read compaction reloads", e))
+    }
+
     /// A late acknowledgement must never erase a newer compaction epoch.
     pub(crate) fn deliver_agent_compaction_boundary(
         &self,
@@ -146,8 +192,15 @@ impl OperationalHistoryStore {
              WHERE session_id = ?1 AND agent_id = ?2 AND revision = ?3",
                 params![session_id, agent_id, revision as i64],
             )
+            .map_err(|e| compaction_error(session_id, "acknowledge compaction boundary", e))?;
+        connection
+            .execute(
+                "DELETE FROM history_agent_compaction_reloads
+                 WHERE session_id = ?1 AND agent_id = ?2 AND revision <= ?3",
+                params![session_id, agent_id, revision as i64],
+            )
             .map(|_| ())
-            .map_err(|e| compaction_error(session_id, "acknowledge compaction boundary", e))
+            .map_err(|e| compaction_error(session_id, "clear compaction reloads", e))
     }
 }
 

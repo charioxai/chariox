@@ -183,6 +183,7 @@ impl SkillDispatchService {
                 // this ACK and retries settlement without re-submitting the task.
                 let mut delivered = false;
                 for record in records {
+                    let reload = (record.skill_id.clone(), record.digest.clone());
                     if current.pending_loads.iter().any(|pending| {
                         pending.skill_id == record.skill_id
                             && pending.digest == record.digest
@@ -201,27 +202,24 @@ impl SkillDispatchService {
                         )?;
                         self.changes.record_change();
                         delivered = true;
+                        if let Some(revision) = current.compaction_revision {
+                            self.history.record_agent_compaction_reload(
+                                session_id, agent_id, revision, &reload.0, &reload.1,
+                            )?;
+                        }
                     }
                 }
                 // A compaction lost every earlier load, so the epoch stays open until the
-                // harness has taken the reload of each skill this turn re-attached; a
-                // skill still pending would otherwise look held on the next turn.
+                // harness has taken the reload of each skill this turn re-attached, whichever
+                // turn acknowledged it; a skill still pending would otherwise look held.
                 let Some(revision) = current.compaction_revision.filter(|_| delivered) else {
                     return Ok(());
                 };
-                let reloaded = service.storage.active_loads(
-                    session_id,
-                    Some(&current.project_id),
-                    current.catalog_revision,
-                )?;
+                let reloaded = self
+                    .history
+                    .agent_compaction_reloads(session_id, agent_id, revision)?;
                 let every_reload_acknowledged = current.pending_loads.iter().all(|pending| {
-                    reloaded.iter().any(|load| {
-                        load.agent_id == agent_id
-                            && load.run_id == stored_run_id
-                            && load.skill_id == pending.skill_id
-                            && load.digest == pending.digest
-                            && load.context_generation == pending.context_generation
-                    })
+                    reloaded.contains(&(pending.skill_id.clone(), pending.digest.clone()))
                 });
                 if every_reload_acknowledged {
                     self.history

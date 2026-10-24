@@ -1338,6 +1338,15 @@ CREATE TABLE IF NOT EXISTS history_agent_compaction_observations (
     provider_turn_id TEXT NOT NULL,
     PRIMARY KEY (session_id, agent_id, provider_family, account_profile, provider_session_id, provider_turn_id)
 ) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS history_agent_compaction_reloads (
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    skill_id TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    PRIMARY KEY (session_id, agent_id, revision, skill_id, digest)
+) WITHOUT ROWID;
 "#;
 
 /// The provider sessions that answered each agent, kept apart from the events

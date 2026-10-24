@@ -1590,10 +1590,12 @@ async fn leased_compaction_keeps_a_skill_pending_until_its_own_reload_is_acknowl
         "one receipt cleared the compaction for a skill that was never reloaded"
     );
     settle(&third);
+    // Only the skill still missing is acknowledged; the first one's receipt from the
+    // previous turn must still count in this compaction epoch.
     acknowledge(
         &runtime,
         &context_for(&third.prompt_id),
-        serde_json::json!({"delivery":"prompt"}),
+        serde_json::json!({"delivery":"tool","skill_id":audit.id,"digest":audit.digest}),
     )
     .await
     .unwrap();
