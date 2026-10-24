@@ -156,6 +156,17 @@ pub(crate) enum WakeEnd {
 #[derive(Clone)]
 pub(crate) enum Operation {
     Outside(super::outside::Mutation),
+    SetDeadline {
+        room: String,
+        agent: String,
+        deadline: u64,
+    },
+    ReachDeadline {
+        room: String,
+        agent: String,
+        now: u64,
+        stopped: bool,
+    },
     LeasedProcess(super::LeasedProcessMutation),
     CreateLeasedWake {
         task: String,
@@ -490,6 +501,7 @@ pub(crate) enum Operation {
 }
 #[derive(Debug)]
 pub(crate) enum Outcome {
+    Deadline(crate::local::AgentDeadline),
     LeasedProcess(Option<super::LeasedProcessReceipt>),
     Task(AgentTaskExecution),
     Event(InboxEvent),

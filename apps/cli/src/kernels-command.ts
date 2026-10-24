@@ -101,6 +101,9 @@ export function sendRequest(
   body: Record<string, unknown>,
   options: { socket: string | undefined; kernel?: string | undefined; commandId?: string | undefined; timeoutSeconds: number },
 ): Promise<unknown> {
+  if ("AttachToSession" in body && !options.commandId?.trim()) {
+    return Promise.reject(new CommandFailure("command_id_required", "AttachToSession changes Room state; supply --command-id ID and reuse it only to retry this attachment. Use the returned SessionAttached.attachment.id."))
+  }
   return withKernel(options, send => send(body))
 }
 

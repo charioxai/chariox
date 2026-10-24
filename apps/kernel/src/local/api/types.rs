@@ -10,6 +10,7 @@ use crate::slice::{
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
 use chariox_relay::protocol::RelayKernelPresence;
 
+mod agent_deadline;
 mod agent_lifecycle;
 mod agent_prompt_schedule;
 mod agent_utility;
@@ -57,6 +58,7 @@ mod workflow;
 mod workflow_notification;
 mod workspace;
 
+pub use agent_deadline::*;
 pub use agent_lifecycle::*;
 pub use agent_prompt_schedule::*;
 pub use agent_utility::*;
@@ -353,5 +355,5 @@ pub use workspace::*;
 /// The event-core line (561, relay peer 169) is merged too: task/wake driver sources (`AgentWake.summary`/`detail`) and the
 /// `agent_task_updated` delta event (MP-08/MP-10/MP-11).
 /// MP-08/MP-10/MP-11: allocated 573/181 binds leased assessment wire identities to the home check.
-/// Provisional 574 adds outside event subscriptions on the merged external/agent-model line.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 574;
+/// Allocated 585 adds outside event subscriptions and executor-local agent deadlines.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 585;

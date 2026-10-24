@@ -81,7 +81,7 @@ schemas/projections; relay peer protocol73 is unchanged. Shared version assertio
 and focused tool/result hash snapshots guard the contract. Existing clients can
 show provider tool results without a new client-side history authority.
 
-MP-10 / MP-11: source regressions supplement the frozen 1,584 A09 live cells.
+MP-10 / MP-11: source regressions supplement the frozen 1,585 A09 live cells.
 Acceptance requires built TUI/web/kernel, official real-account providers, hosted
 network conditions, placements, protected login/hand-off and all appendix faults.
 A missing account or integrated client/environment is an explicit coordinator

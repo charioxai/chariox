@@ -606,6 +606,70 @@ async fn sweep_ends_a_stranded_plain_turn_without_asking_the_owner() {
 }
 
 #[tokio::test]
+async fn lane_deadline_stops_an_active_turn_and_fences_later_admission() {
+    let f = fixture("lane-deadline-active-turn", true).await;
+    f.begin(&f.prompt_id);
+    let now = crate::session::unix_epoch_ms();
+    f.runtime
+        .set_agent_deadline(crate::local::SetAgentDeadlineRequest {
+            session_id: f.room.clone(),
+            agent_id: f.agent.clone(),
+            deadline_ms: now - 1,
+        })
+        .unwrap();
+    f.runtime.tick_agent_deadlines(now).await.unwrap();
+    let deadline = f
+        .store()
+        .agent_deadline(&f.room, &f.agent)
+        .unwrap()
+        .unwrap();
+    assert_eq!(deadline.state, crate::local::AgentDeadlineState::Reached);
+    assert!(deadline.stopped_at_ms.is_some());
+    assert!(f
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(
+            &f.runtime.owned.session_store.get_session(&f.room).unwrap(),
+            &f.agent
+        )
+        .is_none());
+    assert_eq!(
+        f.runtime
+            .owned
+            .provider_store
+            .get_run(&f.run)
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Ended
+    );
+    assert!(f
+        .store()
+        .agent_tasks(Some(&f.room), Some(&f.agent))
+        .unwrap()
+        .iter()
+        .all(|task| task.state == ExecutionState::Cancelled));
+    let error = f
+        .runtime
+        .owned
+        .ensure_agent_before_deadline(&f.room, &f.agent)
+        .unwrap_err();
+    assert!(
+        matches!(error, DaemonError::MachineRequest { code, .. } if code == "agent_deadline_reached")
+    );
+    // A retry after a crash or late provider output is safe and retains first receipts.
+    f.runtime.tick_agent_deadlines(now + 100).await.unwrap();
+    assert_eq!(
+        f.store()
+            .agent_deadline(&f.room, &f.agent)
+            .unwrap()
+            .unwrap()
+            .stopped_at_ms,
+        deadline.stopped_at_ms
+    );
+}
+
+#[tokio::test]
 async fn ev13_lost_source_raises_a_visible_alert_and_one_event() {
     let f = fixture("ev13-lost-source", false).await;
     let task = f.begin("turn-1");

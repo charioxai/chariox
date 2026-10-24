@@ -1258,7 +1258,7 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
     sourceCommit: "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
     path: "apps/kernel/src/runtime/slice_command_executor/lifecycle.rs",
     blob: "35372b6ed7548da3b3fa5f62199fb724dae4d827",
-    ranges: [[119, 135], [449, 465], [566, 584]],
+    ranges: [[119, 135], [449, 465], [566, 585]],
     classification: "shared_slice_attachment_identity",
     rationale: "Save, backup restore and start reconcile attachments before lifecycle manifest or materialization work while retaining their existing operation guards. The shared exact matcher and stopped-private retention policy determine attachment identity. These entry ranges do not establish complete lifecycle success or live worker availability.",
     anchors: [["client_projection", "execute_save_slice_state_request"], ["client_projection", "execute_restore_slice_backup_request"], ["client_projection", "execute_start_slice_request_with_relaunch_manifests"]],
@@ -3119,7 +3119,7 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
         525
       ],
       [
-        584,
+        585,
         605
       ]
     ],

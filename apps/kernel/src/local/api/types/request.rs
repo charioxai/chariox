@@ -379,6 +379,8 @@ pub enum LocalDaemonRequest {
     DeleteSession(DeleteSessionRequest),
     DeleteKernel(DeleteKernelRequest),
     AliasSession(AliasSessionRequest),
+    SetAgentDeadline(SetAgentDeadlineRequest),
+    GetAgentDeadline(GetAgentDeadlineRequest),
     AliasAgent(AliasAgentRequest),
     SpawnAgent(SpawnAgentRequest),
     SpawnAgents(SpawnAgentsRequest),

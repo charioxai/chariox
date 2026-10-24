@@ -1391,6 +1391,7 @@ mod room_agent_admission;
 mod agent_assessment_result;
 mod agent_delegation_runtime;
 pub(crate) use agent_assessment_result::PrivateAssessmentDispatch;
+mod agent_deadline_runtime;
 mod agent_goal_context;
 mod agent_goal_migration;
 mod agent_goal_runtime;

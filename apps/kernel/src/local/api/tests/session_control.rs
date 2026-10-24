@@ -1359,3 +1359,29 @@ fn envp01_future_operations_are_known_but_unsupported_without_side_effects() {
             .exists());
     });
 }
+
+// MP-08 / MP-10 / MP-11: the real spawn admission seam returns a typed action.
+#[test]
+fn absent_spawn_profile_is_actionable_through_the_public_dispatcher() {
+    let worktree = crate::test_support::TestWorktree::new("absent-spawn-profile");
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree.session_request(),
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let request = serde_json::from_value(serde_json::json!({"SpawnAgent":{
+        "session_id": session.id(), "provider":"codex", "account_profile":"absent-profile-canary"
+    }}))
+    .unwrap();
+    let error = harness.dispatch(request).unwrap_err();
+    let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+    assert_eq!(mapped.code, "provider_profile_unavailable");
+    assert!(!mapped.retryable);
+    assert!(mapped.message.contains("ListProviderAccountProfiles"));
+    assert!(!mapped.message.contains("absent-profile-canary"));
+}
