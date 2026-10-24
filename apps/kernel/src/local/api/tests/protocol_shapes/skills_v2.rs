@@ -323,9 +323,12 @@ fn skills_v2_leased_native_inventory_compaction_ids_peer_192_shape_and_hash() {
         "931aa8bed7dbd8147fb0a74020b25a71071bca5ccc8d2d65c512d39441978d96"
     );
     // The field is omitted when empty, which is what a 189 worker sends.
-    let RelayPeerResponse::LeasedSkillNativeInventory { inventory: Some(old), .. } =
-        serde_json::from_value(serde_json::json!({"kind":"leased_skill_native_inventory",
-            "inventory":{"entries":[],"revision":"native-1"}})).unwrap()
+    let RelayPeerResponse::LeasedSkillNativeInventory {
+        inventory: Some(old),
+        ..
+    } = serde_json::from_value(serde_json::json!({"kind":"leased_skill_native_inventory",
+            "inventory":{"entries":[],"revision":"native-1"}}))
+    .unwrap()
     else {
         panic!("inventory response");
     };

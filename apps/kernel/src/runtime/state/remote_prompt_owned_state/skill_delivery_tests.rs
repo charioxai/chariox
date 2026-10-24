@@ -1421,25 +1421,43 @@ async fn leased_compaction_keeps_a_skill_pending_until_its_own_reload_is_acknowl
         )
         .unwrap(),
     );
-    let install = |name: &str, body: &str| SkillCatalogAction::Install {
+    let install = |name: &str, body: &str| {
+        SkillCatalogAction::Install {
         source: SkillInstallSource::Content { skill_md: format!("---\nname: {name}\ndescription: {name} safely\ndisable-model-invocation: true\n---\n{body}\n") },
         collision: SkillCollisionAction::Reject, package_id: None,
+    }
     };
     let mutation = SkillCatalogMutation {
-        scope: SkillScope::Chariox, expected_revision: 0,
-        actions: vec![install("review", "Review source."), install("audit", "Audit source.")],
+        scope: SkillScope::Chariox,
+        expected_revision: 0,
+        actions: vec![
+            install("review", "Review source."),
+            install("audit", "Audit source."),
+        ],
     };
     let prepared = service.prepare(&mutation).unwrap();
     let catalog = service.publish_authorized(&mutation, &prepared).unwrap();
     let skills = &catalog.catalogs[0].skills;
-    let find = |name: &str| skills.iter().find(|skill| skill.name == name).unwrap().clone();
+    let find = |name: &str| {
+        skills
+            .iter()
+            .find(|skill| skill.name == name)
+            .unwrap()
+            .clone()
+    };
     let (review, audit) = (find("review"), find("audit"));
     let select = |skill: &SkillRecord| SkillSelection::Chariox {
         skill_id: skill.id.clone(),
         name: skill.name.clone(),
         catalog_revision: catalog.revision,
     };
-    let session = || runtime.owned.session_store.get_session(&session_id).unwrap();
+    let session = || {
+        runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap()
+    };
     let submit = |id: &str, text: &str, selections: Vec<SkillSelection>| {
         runtime
             .owned
@@ -1534,9 +1552,13 @@ async fn leased_compaction_keeps_a_skill_pending_until_its_own_reload_is_acknowl
     let loaded = bodies(remote(&first.prompt_id));
     assert!(loaded.contains("Review source.") && loaded.contains("Audit source."));
     settle(&first);
-    acknowledge(&runtime, &context_for(&first.prompt_id), serde_json::json!({"delivery":"prompt"}))
-        .await
-        .unwrap();
+    acknowledge(
+        &runtime,
+        &context_for(&first.prompt_id),
+        serde_json::json!({"delivery":"prompt"}),
+    )
+    .await
+    .unwrap();
     complete();
     super::super::skills_dispatch::record_worker_compactions(
         &runtime,
@@ -1568,9 +1590,13 @@ async fn leased_compaction_keeps_a_skill_pending_until_its_own_reload_is_acknowl
         "one receipt cleared the compaction for a skill that was never reloaded"
     );
     settle(&third);
-    acknowledge(&runtime, &context_for(&third.prompt_id), serde_json::json!({"delivery":"prompt"}))
-        .await
-        .unwrap();
+    acknowledge(
+        &runtime,
+        &context_for(&third.prompt_id),
+        serde_json::json!({"delivery":"prompt"}),
+    )
+    .await
+    .unwrap();
     complete();
     let fourth = submit("settled", "continue", vec![]);
     let held = bodies(remote(&fourth.prompt_id));
