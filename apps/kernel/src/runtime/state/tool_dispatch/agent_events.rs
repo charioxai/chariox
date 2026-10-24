@@ -46,6 +46,39 @@ impl KernelRuntimeState {
         self.dispatch_agent_event_tool_for(&context.home_session_id, agent.id(), None, name, args)
             .await
     }
+    /// A10-S02: a message turn that interrupted a waiting task tends to reuse
+    /// that task's ids to wait again. Name this turn's own ids, and say that
+    /// the earlier wait continues without it.
+    fn earlier_turn_origin_refusal(
+        &self,
+        room: &str,
+        actor: &str,
+        running_prompt: &str,
+        origin: Option<&str>,
+    ) -> Result<String, DaemonError> {
+        let tasks = self
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(room), Some(actor))?;
+        let ids = match tasks.iter().find(|t| t.prompt_id == running_prompt) {
+            Some(task) => format!(
+                "This turn's task_id is `{}` and its origin_prompt_id is `{running_prompt}`.",
+                task.task_id
+            ),
+            None => format!("This turn's origin_prompt_id is `{running_prompt}`."),
+        };
+        let earlier_waits = origin.is_some_and(|origin| {
+            tasks.iter().any(|t| {
+                t.state == ledger::ExecutionState::Waiting
+                    && (t.prompt_id == origin || t.task_id == origin)
+            })
+        });
+        Ok(if earlier_waits {
+            format!("origin_prompt_id names an earlier turn whose task is still waiting; that wait continues without this turn. Do not yield on it again: finish this turn now (an answer is optional). {ids}")
+        } else {
+            format!("origin_prompt_id is not this running turn's; never reuse ids from an earlier turn. {ids}")
+        })
+    }
     async fn dispatch_agent_event_tool_for(
         &self,
         room: &str,
@@ -60,10 +93,16 @@ impl KernelRuntimeState {
             .prompt_state_owner
             .active_prompt_for_agent(&session, actor)
             .ok_or_else(|| ledger::error("no running turn"))?;
-        if prompt.status() != crate::session::PromptStatus::Running
-            || args["origin_prompt_id"].as_str() != Some(prompt.id())
-        {
+        if prompt.status() != crate::session::PromptStatus::Running {
             return Err(ledger::error("stale turn authority"));
+        }
+        if args["origin_prompt_id"].as_str() != Some(prompt.id()) {
+            return Err(ledger::error(self.earlier_turn_origin_refusal(
+                room,
+                actor,
+                prompt.id(),
+                args["origin_prompt_id"].as_str(),
+            )?));
         }
         let task_id = args["task_id"]
             .as_str()

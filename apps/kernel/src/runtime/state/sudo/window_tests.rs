@@ -459,6 +459,76 @@ async fn sudo_start_does_not_report_its_own_prompt_as_deferred() {
         .unwrap();
 }
 
+// MP-08 / MP-10 / MP-11 A10-S05: the worker runs a leased agent's turns, so
+// the end of its sudo window must start the prompts the window deferred
+// through the leased dispatch; otherwise they and every later message wait
+// forever behind an idle agent.
+#[tokio::test]
+async fn sudo_window_end_starts_a_leased_agents_deferred_prompt() {
+    let f = fixture_with_options(None, true);
+    let window = open(&f, None).await;
+    let agent = window.agent_id.clone();
+    f.state
+        .owned
+        .prompt_state_owner
+        .cancel_active_prompt_only(&session(&f), &agent)
+        .unwrap();
+    f.app
+        .lock()
+        .await
+        .agents_mut()
+        .bind_remote_execution(
+            &agent,
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-kernel".into(),
+                worker_machine_id: "worker-machine".into(),
+                execution_lease_id: "worker-lease".into(),
+                leased_agent_id: "leased-agent".into(),
+                active_worker_provider_run_id: None,
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
+    let deferred = crate::app::KernelPreparedPromptSubmission {
+        session_id: window.session_id.clone(),
+        prompt: PromptQueueItem::new(
+            "deferred-owner-prompt",
+            &f.request.attachment_id,
+            &agent,
+            "deferred",
+            PromptStatus::Queued,
+        ),
+        force_queue: false,
+        refresh_projection: true,
+    };
+    f.state
+        .owned
+        .submit_remote_prepared_prompt_with_queue_policy(&deferred, true)
+        .unwrap();
+    assert_eq!(deferred_prompt_notices(&f), 1);
+    let queued = |f: &Fixture| {
+        session(f)
+            .queued_prompts_for_agent(&agent)
+            .is_some_and(|queue| !queue.is_empty())
+    };
+    assert!(queued(&f));
+    f.state
+        .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while queued(&f) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the deferred prompt must leave the queue once the window ends"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test]
 async fn sudo_extension_before_the_first_turn_keeps_the_window() {
     let f = fixture_with_options(None, true);

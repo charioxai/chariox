@@ -956,6 +956,37 @@ async fn event_tools_arm_wait_and_cancel_through_the_runtime_mcp_entry() {
     scheduler.abort();
 }
 
+/// A10-S02: a message turn that reuses the ids of the waiting task it
+/// interrupted is told that the wait continues and given its own ids, not a
+/// bare refusal it escalates to the owner.
+#[tokio::test]
+async fn a_turn_reusing_an_earlier_waiting_tasks_ids_is_told_its_own() {
+    let f = fixture("earlier-turn-origin", true).await;
+    let earlier = f.begin("earlier-turn");
+    f.arm(&earlier, "earlier-timer").unwrap();
+    f.wait_on(&earlier, "completion-earlier-timer");
+    let task = f.begin(&f.prompt_id);
+    let token = runtime_token(&f).await;
+    let now = crate::session::unix_epoch_ms();
+    let refusal = call(
+        &f,
+        &token,
+        "chariox.events.yield",
+        &earlier,
+        serde_json::json!({"registration_ids":["completion-earlier-timer"],"inbox_cursor":0,"deadline_ms":now + 60_000,"reason":"keep waiting"}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        refusal.contains("still waiting")
+            && refusal.contains(&format!("`{}`", task.task_id))
+            && refusal.contains(&format!("`{}`", f.prompt_id)),
+        "{refusal}"
+    );
+    assert_eq!(f.task(&earlier.task_id).state, ExecutionState::Waiting);
+}
+
 #[tokio::test]
 async fn event_tools_cancel_a_timer_and_block_for_the_owner() {
     let f = fixture("event-tools-cancel", true).await;

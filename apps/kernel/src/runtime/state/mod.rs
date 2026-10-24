@@ -1396,6 +1396,7 @@ mod agent_goal_context;
 mod agent_goal_migration;
 mod agent_goal_runtime;
 mod agent_inbox_delivery;
+mod agent_inbox_leased_steer;
 mod agent_leased_process_home;
 mod agent_leased_process_receipts;
 mod agent_leased_process_worker;

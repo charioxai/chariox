@@ -559,7 +559,7 @@ impl KernelRuntimeState {
             }
             other => {
                 return Err(DaemonError::LocalTransport {
-                    operation: "steer agent message",
+                    operation: "read remote agent message steer response",
                     message: format!("unexpected remote message response: {other:?}"),
                 });
             }

@@ -527,6 +527,24 @@ impl KernelRuntimeState {
             // its binding and replay the prompt onto a replacement worker.
             return Ok(());
         }
+        if self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .is_some_and(|prompt| {
+                prompt.prompt_origin() != crate::session::PromptOrigin::CompletionCheck
+            })
+        {
+            return self
+                .settle_lost_remote_prompt_run(
+                    session_id,
+                    agent_id,
+                    stale_binding,
+                    stale_provider_run_id,
+                    trigger_error,
+                )
+                .await;
+        }
         let refresh_agent_id = agent_id.to_string();
         let stale_leased_agent_id = stale_binding.leased_agent_id.clone();
         let refresh_stale_provider_run_id = stale_provider_run_id.to_string();
@@ -549,7 +567,29 @@ impl KernelRuntimeState {
         let Some(rebound) = rebound else {
             return Ok(());
         };
-        let Some(mut dispatch) = self.remote_prompt_recovery_dispatch_for_phase(&rebound, None)?
+        self.replay_active_prompt_on_refreshed_binding(
+            session_id,
+            agent_id,
+            stale_binding,
+            stale_provider_run_id,
+            &rebound,
+            trigger_error,
+        )
+        .await
+    }
+
+    /// A completion check only reads the agent's work, so the check that a lost
+    /// worker run interrupted runs again on the refreshed lease.
+    pub(super) async fn replay_active_prompt_on_refreshed_binding(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        stale_binding: &crate::agent::RemoteAgentBinding,
+        stale_provider_run_id: &str,
+        rebound: &crate::agent::AgentInstance,
+        trigger_error: &str,
+    ) -> Result<(), DaemonError> {
+        let Some(mut dispatch) = self.remote_prompt_recovery_dispatch_for_phase(rebound, None)?
         else {
             return Ok(());
         };
@@ -840,28 +880,123 @@ impl KernelRuntimeState {
         )? {
             return Ok(());
         }
-        let stale_projected_run_id = crate::provider::projected_leased_provider_run_id(
-            &stale_binding.leased_agent_id,
-            stale_provider_run_id,
-        );
-        if let Some(mut stale_run) = self
-            .owned
-            .provider_run_projection
-            .get(&stale_projected_run_id)
-        {
-            stale_run.mark_ended();
-            self.owned
-                .clear_active_provider_run_session_pointer(session_id, stale_run.id())?;
-            self.owned.clear_prompt_activity(stale_run.id());
-            self.owned.provider_run_projection.update(stale_run);
-        }
+        self.end_lost_leased_provider_run(
+            session_id,
+            &crate::provider::projected_leased_provider_run_id(
+                &stale_binding.leased_agent_id,
+                stale_provider_run_id,
+            ),
+        )?;
         self.owned
             .agent_store
             .set_remote_execution_active_worker_provider_run_id(
                 agent_id,
                 Some(recovered_provider_run_id.to_string()),
             )?;
+        // The replacement worker's acceptance is this prompt's durable ACK; without
+        // it the prompt stays Dispatching and nothing drains its completion.
+        self.owned.mark_active_prompt_delivery(
+            session_id,
+            agent_id,
+            &recovered_dispatch.prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(recovered_provider_run_id.to_string()),
+            None,
+        )?;
+        self.bind_leased_agent_task(recovered_dispatch, recovered_provider_run_id);
         let _ = self.owned.session_snapshot(session_id)?;
+        Ok(())
+    }
+
+    fn end_lost_leased_provider_run(
+        &self,
+        session_id: &str,
+        projected_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        if let Some(mut lost_run) = self.owned.provider_run_projection.get(projected_run_id) {
+            lost_run.mark_ended();
+            self.owned
+                .clear_active_provider_run_session_pointer(session_id, lost_run.id())?;
+            self.owned.clear_prompt_activity(lost_run.id());
+            self.owned.provider_run_projection.update(lost_run);
+        }
+        Ok(())
+    }
+
+    /// The worker accepted this turn and then lost it (it restarted or dropped
+    /// the lease), so the turn may have partly run. Replaying it would repeat a
+    /// non-idempotent instruction: the turn ends failed and its task waits for
+    /// the owner to resume or cancel it.
+    async fn settle_lost_remote_prompt_run(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        stale_binding: &crate::agent::RemoteAgentBinding,
+        stale_provider_run_id: &str,
+        trigger_error: &str,
+    ) -> Result<(), DaemonError> {
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        let Some(binding) = agent.remote_execution().filter(|current| {
+            current.leased_agent_id == stale_binding.leased_agent_id
+                && current.active_worker_provider_run_id.as_deref() == Some(stale_provider_run_id)
+        }) else {
+            return Ok(());
+        };
+        let session = self.owned.session_store.get_session(session_id)?;
+        let (Some(prompt), queued) = self
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, agent_id)
+        else {
+            return Ok(());
+        };
+        let diagnostic = format!(
+            "Worker kernel `{}` lost this turn after accepting it (it restarted or dropped the lease). The turn may have partly run; Chariox did not run it again",
+            binding.worker_kernel_id,
+        );
+        crate::logging::warn_with_fields(
+            "daemon.remote_prompt_dispatch",
+            "worker lost an accepted remote prompt; ending it for the owner without replay",
+            serde_json::json!({
+                "session_id": session_id,
+                "agent_id": agent_id,
+                "worker_kernel_id": binding.worker_kernel_id,
+                "leased_agent_id": binding.leased_agent_id,
+                "provider_run_id": stale_provider_run_id,
+                "prompt_id": prompt.id(),
+                "trigger_error": trigger_error,
+                "prompt_replayed": false,
+            }),
+        );
+        let projected_run_id = crate::provider::projected_leased_provider_run_id(
+            &binding.leased_agent_id,
+            stale_provider_run_id,
+        );
+        self.owned.block_failed_prompt_task(
+            session_id,
+            agent_id,
+            prompt.id(),
+            Some(&projected_run_id),
+            &diagnostic,
+        )?;
+        self.end_lost_leased_provider_run(session_id, &projected_run_id)?;
+        self.settle_remote_prompt_receipt(
+            session_id,
+            agent_id,
+            super::remote_prompt_lifecycle_runtime::RemotePromptReceipt {
+                prompt_id: prompt.id(),
+                binding,
+                provider_run_id: stale_provider_run_id,
+                termination: Some(crate::provider::ProviderRunTermination::runtime_failure(
+                    &diagnostic,
+                    crate::session::unix_epoch_ms(),
+                )),
+                diagnostic: None,
+            },
+            queued.front(),
+        )
+        .await?;
+        self.schedule_agent_lifecycle_sweep();
         Ok(())
     }
 
