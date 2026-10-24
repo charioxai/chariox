@@ -86,6 +86,8 @@ impl KernelRuntimeState {
         };
         let mut receiver = None;
         let mut phase = None;
+        // A decided phase leaves its interaction id with the home until retired.
+        let mut registered = false;
         loop {
             let response =
                 crate::runtime::provider_auth_control::execute_get_provider_login_status_request(
@@ -122,7 +124,7 @@ impl KernelRuntimeState {
             }
             let next_phase = template.title().map(str::to_string);
             if receiver.is_none() || next_phase != phase {
-                if receiver.is_some() {
+                if registered {
                     self.update_provider_login_interaction(session_id, agent_id, id, None)
                         .await?;
                 }
@@ -143,6 +145,7 @@ impl KernelRuntimeState {
                     self.create_runtime_interaction(session_id, interaction)
                         .await?,
                 );
+                registered = true;
                 phase = next_phase;
             } else {
                 self.update_provider_login_interaction(session_id, agent_id, id, Some(projection))

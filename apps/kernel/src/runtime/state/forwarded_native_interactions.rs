@@ -16,11 +16,24 @@ struct ForwardedInteraction {
     interaction: RuntimeInteraction,
     execution_lease_id: String,
     receiver: watch::Receiver<Option<Resolution>>,
+    task: tokio::task::AbortHandle,
 }
 
 #[derive(Clone, Default)]
 pub(super) struct ForwardedNativeInteractions {
     entries: Arc<std::sync::Mutex<BTreeMap<(String, String), ForwardedInteraction>>>,
+}
+
+impl ForwardedNativeInteractions {
+    /// A provider login reuses one interaction id for each phase. The worker
+    /// retires a decided phase here, so the next phase is a new decision and
+    /// only transport retries of the current one are replayed.
+    pub(super) fn retire(&self, session_id: &str, interaction_id: &str) {
+        let key = (session_id.to_owned(), interaction_id.to_owned());
+        if let Some(entry) = self.entries.lock().ok().and_then(|mut e| e.remove(&key)) {
+            entry.task.abort();
+        }
+    }
 }
 
 fn recovery_error(message: &str) -> DaemonError {
@@ -70,26 +83,19 @@ impl KernelRuntimeState {
                     return Err(recovery_error("interaction recovery capacity reached"));
                 }
                 let (sender, receiver) = watch::channel(None);
-                entries.insert(
-                    key.clone(),
-                    ForwardedInteraction {
-                        context: context.clone(),
-                        interaction: interaction.clone(),
-                        execution_lease_id: lease.execution_lease_id.clone(),
-                        receiver: receiver.clone(),
-                    },
-                );
                 let retention = Duration::from_secs(interaction.timeout_sec().unwrap_or(300))
                     .saturating_add(crate::runtime::native_interaction_bridge::REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER)
                     .max(RECEIPT_RETENTION);
                 let state = self.clone();
                 let store = self.owned.forwarded_native_interactions.clone();
+                let (task_context, task_interaction, task_key) =
+                    (context.clone(), interaction.clone(), key.clone());
                 // Transport cancellation must not cancel the permission. Its
                 // original timeout and turn/lease lifetime still close it.
-                tokio::spawn(async move {
+                let task = tokio::spawn(async move {
                     let result = crate::runtime::native_interaction_bridge::request_runtime_interaction_with_timeout(
-                        &state, &context.home_session_id, interaction,
-                        "relay_forward_native_interaction", Some(&context),
+                        &state, &task_context.home_session_id, task_interaction,
+                        "relay_forward_native_interaction", Some(&task_context),
                     ).await.map_err(|error| error.to_string());
                     let _ = sender.send_replace(Some(result));
                     drop(state);
@@ -97,9 +103,19 @@ impl KernelRuntimeState {
                     // returning worker, then erase it even if no new calls arrive.
                     tokio::time::sleep(retention).await;
                     if let Ok(mut entries) = store.entries.lock() {
-                        entries.remove(&key);
+                        entries.remove(&task_key);
                     }
                 });
+                entries.insert(
+                    key,
+                    ForwardedInteraction {
+                        context,
+                        interaction,
+                        execution_lease_id: lease.execution_lease_id.clone(),
+                        receiver: receiver.clone(),
+                        task: task.abort_handle(),
+                    },
+                );
                 receiver
             }
         };

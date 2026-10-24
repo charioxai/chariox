@@ -376,6 +376,70 @@ async fn native_permission_reconnect_keeps_the_original_card_and_timeout() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+// MP-08 / MP-10 / MP-11: a provider login reuses one interaction id for every
+// phase. Once the worker retires a decided phase, the next phase is a new
+// decision, never a mismatched or replayed transport retry.
+#[tokio::test]
+async fn provider_login_phases_reuse_one_id_without_replaying_the_previous_answer() {
+    for unchanged in [false, true] {
+        let (router, context, _, root) = forwarded_permission_fixture().await;
+        let state = router.runtime_state();
+        let id = "provider-auth-recovery:login-1";
+        let phase = |title: &str| {
+            let origin = crate::session::NativeInteractionOrigin::ProviderStartup {
+                provider_run_id: "worker-run".into(),
+            };
+            RuntimeInteraction::new(
+                id,
+                "worker-agent",
+                RuntimeInteractionKind::Permission,
+                RuntimeInteractionLevel::Warning,
+                Some(title.into()),
+                "Complete the provider login",
+                vec![
+                    RuntimeInteractionChoice::new("allow", "Continue", "allow", None),
+                    RuntimeInteractionChoice::new("deny", "Cancel", "deny", None),
+                ],
+                None,
+                Some(30),
+                None,
+            )
+            .with_native_origin(Some(origin))
+        };
+        let first = phase("Unlock Chariox Vault");
+        let second = if unchanged {
+            first.clone()
+        } else {
+            phase("Authenticate provider account")
+        };
+        for (interaction, decision) in [(first, "allow"), (second, "deny")] {
+            let (call_state, call_context, call) =
+                (state.clone(), context.clone(), interaction.clone());
+            let pending = tokio::spawn(async move {
+                forward_relay_native_interaction(&call_state, call_context, call).await
+            });
+            let card = wait_for_forwarded_card(&state, &context.home_session_id).await;
+            assert_eq!(card.title(), interaction.title());
+            state
+                .resolve_runtime_interaction(&context.home_session_id, id, decision, None)
+                .await
+                .unwrap();
+            let resolved = pending.await.unwrap().unwrap();
+            assert_eq!(resolved.choice_id.as_deref(), Some(decision));
+            // The worker retires the decided phase before it asks the next one.
+            state
+                .update_forwarded_provider_login_interaction(
+                    &context.home_session_id,
+                    &context.home_agent_id,
+                    id,
+                    None,
+                )
+                .unwrap();
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
 #[tokio::test]
 async fn native_permission_reconnect_keeps_card_when_reply_waiter_is_cancelled() {
     let (router, context, interaction, root) = forwarded_permission_fixture().await;

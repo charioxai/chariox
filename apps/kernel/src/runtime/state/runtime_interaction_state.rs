@@ -28,9 +28,13 @@ impl KernelRuntimeState {
                 self.owned
                     .update_provider_login_interaction(session_id, interaction_id, login)
             }
-            None => self
-                .owned
-                .timeout_runtime_interaction(session_id, interaction_id),
+            None => {
+                self.owned
+                    .forwarded_native_interactions
+                    .retire(session_id, interaction_id);
+                self.owned
+                    .timeout_runtime_interaction(session_id, interaction_id)
+            }
         }
     }
 
