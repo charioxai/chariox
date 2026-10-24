@@ -39,6 +39,8 @@ pub(crate) fn projected_session_state_response(
     request: &GetSessionStateRequest,
     caller_user_id: &str,
 ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+    // The label is read before the session, so a state is never older than its revision.
+    let agent_activity_revision = session_projection.change_sequence();
     let session = match runtime_state.session_state_response(request.clone()) {
         Ok(LocalDaemonResponse::SessionState { session, .. }) => session,
         Ok(_) => unreachable!("session state request returned a different response"),
@@ -71,7 +73,7 @@ pub(crate) fn projected_session_state_response(
     Some(Ok(LocalDaemonResponse::SessionState {
         room_workflows,
         agent_activity: redact_agent_activity_for_session(agent_activity, &redacted_session),
-        agent_activity_revision: session_projection.change_sequence(),
+        agent_activity_revision,
         session: redacted_session,
     }))
 }
