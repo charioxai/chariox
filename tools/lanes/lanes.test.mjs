@@ -424,3 +424,11 @@ test('foreground deadline command rejects another launch and propagates cleanup 
     assert.equal(calls,1);
   }finally{await rm(dir,{recursive:true,force:true});}
 });
+
+test('stop rejects an empty or malformed requested prompt fence before any mutation', async () => {
+  for (const expectedPromptId of ['', null, undefined, false, 0]) {
+    let calls=0;
+    await assert.rejects(run('stop',{kernel:'b',taskId:'lane',sessionId:'s',agentId:'a',attachmentId:'t',expectedPromptId},{execute:async()=>{calls++;return {AgentsListed:{agents:[]}};}}),{code:'invalid_input'});
+    assert.equal(calls,0);
+  }
+});

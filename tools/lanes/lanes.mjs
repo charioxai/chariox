@@ -308,6 +308,7 @@ export async function run(operation, input, dependencies = {}) {
     return terminalCommand(['/bin/bash', '-lc', command]);
   }
   if (operation === 'stop') {
+    if ('expectedPromptId' in input) text(input.expectedPromptId, 'expectedPromptId');
     // Validate the entire PID ledger before the first cancellation or signal.
     const ledger = input.pidLedger ? JSON.parse(await readFile(input.pidLedger, 'utf8')) : { owner: taskId, processes: [] };
     if (ledger.owner !== taskId || !Array.isArray(ledger.processes)) fail('pid_ownership_refused');
