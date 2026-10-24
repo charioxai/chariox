@@ -54,6 +54,7 @@ const CREDIT_PATIENCE_MS = 6_500;
 const CREDIT_SLACK_MS = 3_000;
 // A hung renderer still ends: the one snapshot in flight is abandoned after this.
 const SNAPSHOT_MS = 120_000;
+const SOURCE_SHEETS = 128; // sheet URLs the kernel read as source text, hinted to the next snapshot
 export const paintHoldExpression = ms => `new Promise(done => { const end = Date.now() + ${ms}; const check = () => document.readyState === 'complete' || performance.getEntriesByType('paint').some(entry => entry.name === 'first-contentful-paint') || Date.now() >= end ? done(true) : setTimeout(check, 25); check(); })`;
 const NEAR_PX = 800, SETTLE_MS = 300, QUIET_MS = 1000, PREVIEW_MIN_BASE64 = 8 * 1024, PREVIEW_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/avif']);
 // Trusted admission error: never constructed from page/CDP error strings.
@@ -186,7 +187,7 @@ export class ParsedSheets {
   }
 }
 export class Mirror2 {
-  constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); this.parsedSheets = new ParsedSheets(); }
+  constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); this.parsedSheets = new ParsedSheets(); this.sourceSheets = new Set(); }
   // MP-08/MP-10/MP-11: older v2 viewers never receive an unknown operation.
   // `absent` (protocol 567) only reaches a viewer that asked for it: older viewers refuse unknown op fields.
   viewerOps(stream, ops) { return stream.fontRequirements === true ? stream.fontAbsent === true ? ops : ops.map(op => op.op === 'fonts' && op.absent ? { op: op.op, id: op.id, required: op.required } : op) : ops.filter(op => op.op !== 'fonts'); }
@@ -226,7 +227,7 @@ export class Mirror2 {
   // `known`: digests of sheets the viewer retains; the page sends those whole (by reference) instead of pruning them.
   async snapshotOnce(world, policy, patience, known = []) {
     if (world.snapshotPending?.policy !== policy) world.snapshotPending = null;
-    const pending = world.snapshotPending ??= { policy, promise: this.evaluate(world, `${world.ref}.snapshot(${known.length ? JSON.stringify(known) : ''})`, false, SNAPSHOT_MS) };
+    const pending = world.snapshotPending ??= { policy, promise: this.evaluate(world, `${world.ref}.snapshot(${known.length || this.sourceSheets.size ? `${JSON.stringify(known)},${JSON.stringify([...this.sourceSheets])}` : ''})`, false, SNAPSHOT_MS) };
     pending.promise.catch(() => { if (world.snapshotPending === pending) world.snapshotPending = null; }); // a failed snapshot is not kept
     let timer;
     const late = new Promise((_, reject) => { const ms = patience(); timer = setTimeout(() => reject(Object.assign(new Error(`browser CDP method Runtime.evaluate timed out after ${ms}ms`), { code: 'browser_cdp_timeout' })), ms); });
@@ -806,6 +807,9 @@ export class Mirror2 {
   // `firstPaint` (a reset): a large sheet travels as the rules the document uses now, its full text as `full`.
   async sheetOps(world, sheets = [], firstPaint = false) {
     const ops = [];
+    // The next document's snapshot skips serializing these in the page (cross-origin or lossy there).
+    for (const { url } of sheets) { this.sourceSheets.delete(url); this.sourceSheets.add(url); }
+    for (const url of this.sourceSheets) { if (this.sourceSheets.size <= SOURCE_SHEETS) break; this.sourceSheets.delete(url); }
     for (let at = 0; at < sheets.length; at += 4) {
       const batch = await Promise.all(sheets.slice(at, at + 4).map(async sheet => {
         const text = await this.crossOriginSheet(world, sheet.url, firstPaint ? sheet.id : null).catch(() => null);
