@@ -256,14 +256,34 @@ test('opening the inbox drops the targets of a stopped worker (sessions once rem
     if (argv[1] === 'subscription') return { subscription: { subscription_id: 'grant', targets: targets.filter(t => !r.calls.some(c => c.argv?.[1] === 'unsubscribe' && c.argv[5] === t.session_id && (c.argv[7] ?? undefined) === (t.agent_id ?? undefined))), kernels: refused ? [{ kernel: 'executor', online: false, error: { code: 'events_refused', message: 'event target agent was not found' } }] : [{ kernel: 'executor', online: true }] } };
     return {};
   };
-  r.options.cli = cli;
+  r.options.cli = cli; r.options.settleMs = 0;
   await assert.rejects(coordinate('watch', ['1'], r.options), { code: 'subscription_unhealthy' });
+  const looks = r.calls.filter(c => c.argv?.[1] === 'subscription').length;
+  assert.ok(looks >= 5, 'it looks again before giving up');
   const dropped = r.calls.filter(c => c.argv?.[1] === 'unsubscribe').map(c => c.argv.slice(4).join(' '));
   assert.deepEqual(dropped, ['--session room --agent agent', '--session room', '--session ops']);
   assert.equal(dropped.some(d => d.includes('other')), false);
   refused = false;
   r.options.cli = argv => argv[1] === 'wait' ? { events: [], timed_out: true, next_cursor: 0 } : cli(argv);
   assert.equal((await coordinate('watch', ['1'], r.options)).timed_out, true);
+});
+
+test('opening the inbox waits for the kernel to clear its refusal after the dead target goes', async t => {
+  const r = await launched(t);
+  const record = JSON.parse(await readFile(join(r.home, 'lane.json')));
+  await save(join(r.home, 'lane.json'), { ...record, stopped: true, stop: { stopped: true } });
+  let looks = 0;
+  r.options.settleMs = 0;
+  r.options.cli = argv => {
+    r.calls.push({ argv });
+    if (argv[1] === 'subscription') {
+      const gone = r.calls.some(c => c.argv?.[1] === 'unsubscribe');
+      return { subscription: { subscription_id: 'grant', targets: gone ? [] : [{ kernel: 'executor', session_id: 'room', agent_id: 'agent' }], kernels: gone && ++looks >= 3 ? [{ kernel: 'executor', online: true }] : [{ kernel: 'executor', online: false, error: { code: 'events_refused', message: 'event target agent was not found' } }] } };
+    }
+    return argv[1] === 'wait' ? { events: [], timed_out: true, next_cursor: 0 } : {};
+  };
+  assert.equal((await coordinate('watch', ['1'], r.options)).timed_out, true);
+  assert.equal(looks, 3);
 });
 
 test('opening the inbox keeps the session targets of a stopped worker whose removal was not seen yet', async t => {

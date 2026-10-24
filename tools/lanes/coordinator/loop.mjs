@@ -57,7 +57,7 @@ export async function coordinate(operation, args, options = {}) {
     const timeout = Number(args[0] || 15) * 60;
     if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 14400) throw new LaneError('invalid_watch_timeout', 'watch takes 1/60..240 minutes');
     // Requests and launch automatically add targets to this grant's single inbox.
-    await openInbox(home, cli);
+    await openInbox(home, cli, options.settleMs);
     let remaining = timeout;
     while (remaining > 0) {
       const seconds = Math.min(remaining, 900);
@@ -89,7 +89,7 @@ export async function coordinate(operation, args, options = {}) {
     const advertised = Array.isArray(status.capabilities) && status.capabilities.includes('outside_steer_events_v1');
     const eventMode = receipt?.confirmationMode ? receipt.confirmationMode === 'event' : advertised;
     if (eventMode && !advertised) throw new LaneError('steer_events_unavailable', 'Restore the kernel steer-event capability to resume this event confirmation.');
-    if (eventMode) await openInbox(home, cli);
+    if (eventMode) await openInbox(home, cli, options.settleMs);
     if (!receipt) {
       let result, mode = eventMode ? 'event' : 'acknowledged-steer-status';
       try { result = await adapter('steer', { ...common, expectedPromptId, prompt, steerId }); }
@@ -146,7 +146,7 @@ export async function coordinate(operation, args, options = {}) {
     const result = record.stopped ? record.stop : await adapter('stop', common);
     record.stopped = result.stopped === true; record.stop = result; await save(path, record);
     if (!record.stopped || result.removal) return result;
-    await openInbox(home, cli);
+    await openInbox(home, cli, options.settleMs);
     await confirmRemoval({ home, cli, now, target: common, confirmed: async removal => {
       record.stop = { ...result, removal }; await save(path, record);
     } });

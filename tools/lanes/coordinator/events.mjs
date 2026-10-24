@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { LaneError, save } from '../lanes.mjs';
 
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
-export async function openInbox(home, cli) {
+export async function openInbox(home, cli, settleMs = 1000) {
   const { subscription } = await cli(['events', 'subscription']);
   if (!subscription || subscription.ended) throw new LaneError('subscription_unavailable');
   const statePath = join(home, 'subscription.json');
@@ -28,8 +28,14 @@ export async function openInbox(home, cli) {
     const [kernel, session, agent] = JSON.parse(target);
     await cli(['events', 'unsubscribe', '--kernel', kernel, '--session', session, ...(agent ? ['--agent', agent] : [])]);
   }
-  const current = targets.size ? (await cli(['events', 'subscription'])).subscription : subscription;
-  const refused = current.kernels?.find(k => k.error?.code === 'events_refused');
+  // The kernel clears its refusal a moment after the dead target goes, so look again before giving up.
+  let current = targets.size ? (await cli(['events', 'subscription'])).subscription : subscription;
+  const refusal = () => current.kernels?.find(k => k.error?.code === 'events_refused');
+  for (let look = 0; targets.size && refusal() && look < 8; look++) {
+    await new Promise(resolve => setTimeout(resolve, settleMs));
+    current = (await cli(['events', 'subscription'])).subscription;
+  }
+  const refused = refusal();
   if (refused) throw new LaneError('subscription_unhealthy', `Kernel ${refused.kernel} refuses the event stream (${refused.error.message}); unsubscribe the removed target it names, then resume.`);
   await save(statePath, { subscription_id: subscription.subscription_id });
   return current;
