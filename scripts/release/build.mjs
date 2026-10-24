@@ -2,7 +2,7 @@
 import { copyFile, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
-import { canonical, hash } from './manifest.mjs'
+import { canonical, hash, isVersion } from './manifest.mjs'
 import { resourceGuard, run } from './process.mjs'
 
 const toolsRoot = fileURLToPath(new URL('../..', import.meta.url))
@@ -11,7 +11,7 @@ const repositories = { 'cloud-web': 'chariox-cloud-web', 'cloud-services': 'char
 
 export function buildCommand({ component, source, output, version, revision, mode = 'plan' }) {
   if (!components.includes(component) || !['plan', 'local', 'push'].includes(mode)) throw Error('invalid component/mode')
-  if (!/^[0-9a-f]{40}$/.test(revision) || !/^0\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(version)) throw Error('exact revision and product version required')
+  if (!/^[0-9a-f]{40}$/.test(revision) || !isVersion(version)) throw Error('exact revision and product version required')
   const context = join(resolve(output), 'context')
   if (resolve(output).startsWith(`${resolve(source)}/`) || resolve(output) === resolve(source)) throw Error('build state must be outside the source checkout')
   const tag = mode === 'local' ? `chariox-release-local/${component}:${revision}-${hash(resolve(output)).slice(0, 12)}` : `ghcr.io/charioxai/${repositories[component]}:${version}-${revision}`

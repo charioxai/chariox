@@ -22,7 +22,7 @@ test('MP-07 / MP-11: publishing uses separate registry cache and immutable revis
   }
 })
 test('MP-07 / MP-11: bad revisions/modes cannot become shell or Docker inputs', () => {
-  for (const change of [{ revision: 'main' }, { component: '../../other' }, { version: '0.1.0; id' }, { mode: 'publish' }]) {
+  for (const change of [{ revision: 'main' }, { component: '../../other' }, { version: '0.1.0; id' }, { version: '0.1.0-01' }, { mode: 'publish' }]) {
     assert.throws(() => buildCommand({ ...input, ...change }))
   }
 })

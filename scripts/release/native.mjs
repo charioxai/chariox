@@ -2,13 +2,13 @@
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { canonical } from './manifest.mjs'
+import { canonical, isVersion } from './manifest.mjs'
 import { hashFile } from './build.mjs'
 import { resourceGuard, run } from './process.mjs'
 
 export async function nativeBuild({ source, output, version, revision, slot }) {
   source = resolve(source); output = resolve(output)
-  if (!/^[0-9a-f]{40}$/.test(revision) || !/^0\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(version)) throw Error('exact revision and product version required')
+  if (!/^[0-9a-f]{40}$/.test(revision) || !isVersion(version)) throw Error('exact revision and product version required')
   if (!slot?.startsWith('/')) throw Error('absolute coordinator Cargo-slot wrapper required')
   if (run('git', ['rev-parse', 'HEAD'], { cwd: source }) !== revision || run('git', ['status', '--porcelain'], { cwd: source })) throw Error('native source must be clean and at exact revision')
   await resourceGuard(source)

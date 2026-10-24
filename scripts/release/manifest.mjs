@@ -10,6 +10,11 @@ const version = /^0\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z
 export const checks = ['health', 'migrations', 'browser', 'relay', 'providers', 'native', 'rollback']
 export const canonical = value => `${JSON.stringify(value, null, 2)}\n`
 export const hash = bytes => createHash('sha256').update(bytes).digest('hex')
+export function isVersion(value) {
+  if (typeof value !== 'string' || value.length > 87 || !version.test(value)) return false
+  const prerelease = value.includes('-') ? value.slice(value.indexOf('-') + 1) : ''
+  return !prerelease.split('.').some(part => /^\d+$/.test(part) && part.length > 1 && part.startsWith('0'))
+}
 
 function requireValue(condition, message) {
   if (!condition) throw Error(message)
@@ -31,7 +36,7 @@ function artifact(value, fields, label) {
 export function validateManifest(value, { validated = false } = {}) {
   keys(value, ['schema', 'version', 'state', 'cloud', 'oss', 'relay', 'signing', 'validation'], 'manifest')
   requireValue(value.schema === 'chariox.release/v1', 'unsupported release schema')
-  requireValue(version.test(value.version), 'expected pre-1.0 semantic version without v')
+  requireValue(isVersion(value.version), 'expected pre-1.0 semantic version without v, fitting its image tag')
   requireValue(['candidate', 'validated'].includes(value.state), 'inventory is not deployable')
   artifact(value.cloud, ['commit', 'image', 'services_image_sha256', 'archive_sha256', 'source_sha256'], 'cloud')
   // services_image_sha256 is a registry manifest digest; its repository is fixed.

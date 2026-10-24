@@ -4,8 +4,8 @@ import { attest, canonical, checks, createManifest, hash, observedPins, promote,
 
 const sha = 'a'.repeat(64)
 const revision = 'b'.repeat(40)
-function candidate() {
-  return createManifest({ version: '0.1.0', cloud: { commit: revision, image: `ghcr.io/charioxai/chariox-cloud-web@sha256:${sha}`,
+function candidate(version = '0.1.0') {
+  return createManifest({ version, cloud: { commit: revision, image: `ghcr.io/charioxai/chariox-cloud-web@sha256:${sha}`,
     services_image_sha256: sha, archive_sha256: sha, source_sha256: sha },
   oss: { commit: revision, image: `ghcr.io/charioxai/chariox-oss@sha256:${sha}`, bundle_sha256: sha },
   relay: { commit: revision, image: `ghcr.io/charioxai/chariox-relay@sha256:${sha}`, binary_sha256: sha } })
@@ -53,4 +53,9 @@ test('MP-07 / MP-11: semantic receipt equality does not depend on JSON key order
   const value = candidate(), r = receipt(value)
   r.observed = Object.fromEntries(Object.entries(r.observed).reverse())
   assert.equal(attest(value, r).state, 'validated')
+})
+test('MP-07 / MP-11: reject invalid SemVer before any image is published', () => {
+  for (const version of ['0.01.0', '0.1.0-01', '0.1.0-rc.01', '0.1.0-.', `0.1.0-${'a'.repeat(90)}`]) assert.throws(() => candidate(version), /version/)
+  assert.equal(candidate('0.1.0-rc.1').version, '0.1.0-rc.1')
+  assert.equal(candidate('0.1.0-rc-01').version, '0.1.0-rc-01')
 })
