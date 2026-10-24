@@ -295,6 +295,21 @@ impl KernelRuntimeState {
                     return Ok(true);
                 }
                 Some(crate::session::DurablePromptDeliveryPhase::Delivered) => {
+                    // The binding's worker run is kept in memory only; the durable
+                    // delivery names it, so a restart restores it before resuming.
+                    if let Some(provider_run_id) = prompt.durable_delivery_provider_run_id() {
+                        if agent
+                            .remote_execution()
+                            .is_some_and(|binding| binding.active_worker_provider_run_id.is_none())
+                        {
+                            self.owned
+                                .agent_store
+                                .set_remote_execution_active_worker_provider_run_id(
+                                    agent_id,
+                                    Some(provider_run_id.to_string()),
+                                )?;
+                        }
+                    }
                     let Some(dispatch) = self.remote_prompt_recovery_dispatch(&agent)? else {
                         return Ok(true);
                     };
@@ -307,7 +322,7 @@ impl KernelRuntimeState {
                     {
                         crate::logging::warn_with_fields(
                             "daemon.remote_prompt_dispatch",
-                            "restart kept delivered remote cancellation held because its worker receipt was not reconciled",
+                            "restart could not reconcile a delivered remote cancellation from its worker receipt; the projection drain continues it",
                             serde_json::json!({
                                 "session_id": dispatch.session_id,
                                 "agent_id": dispatch.agent_id,
@@ -316,6 +331,12 @@ impl KernelRuntimeState {
                                 "prompt_id": dispatch.prompt_id,
                                 "error": error.to_string(),
                             }),
+                        );
+                        // The drain applies the worker's answer when it comes, or ends
+                        // the cancellation after the unanswered-worker deadline.
+                        self.spawn_remote_prompt_projection_drain(
+                            session_id.to_string(),
+                            agent_id.to_string(),
                         );
                     }
                     return Ok(true);
