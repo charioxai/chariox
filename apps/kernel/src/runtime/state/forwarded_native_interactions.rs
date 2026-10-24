@@ -37,9 +37,16 @@ impl KernelRuntimeState {
         interaction: RuntimeInteraction,
     ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
         let agent = self.owned.agent_store.get_agent(&context.home_agent_id)?;
-        let lease = agent
-            .remote_execution()
-            .ok_or_else(|| recovery_error("interaction has no worker lease"))?;
+        // MP-08 / MP-10 / MP-11: delayed requests can outlive their worker
+        // binding. Preserve the normal stale-interaction timeout; the relay
+        // router still authorizes every live worker before entering this path.
+        let Some(lease) = agent.remote_execution() else {
+            return Ok(ProviderNativeInteractionResolution {
+                status: "timed_out".into(),
+                choice_id: None,
+                reply: None,
+            });
+        };
         let key = (context.home_session_id.clone(), interaction.id().to_owned());
         let mut receiver = {
             let mut entries = self
