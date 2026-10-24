@@ -194,6 +194,24 @@ impl KernelRuntimeState {
                 return Ok(ending);
             }
             let response = self.outside_list_response(id, request.since, request.limit)?;
+            // A grant kept for the next start keeps its inbox: the holder is
+            // told to ask again instead of being told its subscription ended.
+            if self.kernel_access_stopping() {
+                return Ok(match response {
+                    LocalDaemonResponse::EventsListed {
+                        events,
+                        next_cursor,
+                        oldest_cursor,
+                        ..
+                    } => LocalDaemonResponse::EventsListed {
+                        timed_out: events.is_empty(),
+                        events,
+                        next_cursor,
+                        oldest_cursor,
+                    },
+                    other => other,
+                });
+            }
             match response {
                 LocalDaemonResponse::EventsListed {
                     events,
@@ -276,16 +294,14 @@ impl KernelRuntimeOwnedState {
 
 impl KernelRuntimeState {
     pub(crate) async fn finish_outside_waits_on_shutdown(&self) {
-        let ended = self
-            .revoke_kernel_access(None, None, "kernel_shutdown")
-            .unwrap_or_else(|_| {
-                crate::logging::error_with_fields(
-                    "kernel.events",
-                    "could not commit grant endings during shutdown",
-                    serde_json::json!({}),
-                );
-                0
-            });
+        let ended = self.end_kernel_access_for_shutdown().unwrap_or_else(|_| {
+            crate::logging::error_with_fields(
+                "kernel.events",
+                "could not commit grant endings during shutdown",
+                serde_json::json!({}),
+            );
+            0
+        });
         // The socket boundary keeps admitted waits alive through their final write.
         if ended > 0 {
             tokio::time::sleep(Duration::from_millis(500)).await;

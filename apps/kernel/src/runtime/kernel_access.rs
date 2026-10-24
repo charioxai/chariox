@@ -41,6 +41,12 @@ pub(crate) struct Grant {
 }
 
 impl Grant {
+    /// A grant that lasts until its holder exits has no deadline, so a kernel
+    /// restart does not end it while the holder lives.
+    pub(crate) fn survives_restart(&self) -> bool {
+        self.clock.is_none()
+    }
+
     /// Why the grant has ended at `now`, if it has: its deadline passed or
     /// its holder (or a process reusing its identity) is gone.
     pub(crate) fn ended_reason(&self, now: Instant) -> Option<&'static str> {
@@ -63,6 +69,8 @@ pub(crate) struct AccessState {
     pub(crate) grants: BTreeMap<String, Grant>,
     pub(crate) pending: BTreeMap<(u32, u64, String), KernelAccessGrant>,
     pub(crate) generation: u64,
+    /// The kernel has begun to stop: event waits end their poll.
+    pub(crate) stopping: bool,
     pub(crate) last_denial: Option<Instant>,
     pub(crate) suppressed_denials: u64,
     /// Holders whose grant lapsed or was revoked, so a later request from them

@@ -345,10 +345,10 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
             .map_err(sql)?;
             put(tx, &part)?;
         }
-        Mutation::Restart => {
+        Mutation::Restart { keep } => {
             let local = identity(tx)?.map(|(kernel, _)| kernel);
             for mut part in parts(tx)? {
-                if part.home {
+                if part.home && !keep.contains(&part.id) {
                     end(tx, &mut part, "kernel_restarted")?;
                     // Older homes queued local targets even though no remote part
                     // exists for them. Keep only work a remote pump can finish.

@@ -327,3 +327,119 @@ async fn until_exit_grant_outlives_every_deadline_but_not_its_holder() {
         .grants
         .contains_key("until-exit"));
 }
+
+// A grant that lasts until its holder exits goes through a kernel restart with
+// the same id and the same event inbox while the holder lives; a timed grant
+// and a grant whose holder is gone do not.
+#[tokio::test]
+async fn until_exit_grant_survives_a_restart_while_its_holder_lives() {
+    let root = crate::test_support::TestWorktree::new("access-restart");
+    let kernel = || {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
+        config.user_config_path = root.path().join("config.toml");
+        let app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
+        crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            32,
+        )
+    };
+    let live_holder = process::inspect(std::process::id()).unwrap().0;
+    let mut child = std::process::Command::new("sleep")
+        .arg("600")
+        .spawn()
+        .unwrap();
+    let doomed_holder = process::inspect(child.id()).unwrap().0;
+    let summary = |id: &str, term, holder: &ProcessIdentity| KernelAccessGrant {
+        grant_id: id.into(),
+        owner_user_id: "local".into(),
+        holder_pid: holder.pid,
+        holder_executable: holder.executable.clone(),
+        holder_harness: None,
+        term,
+        expires_at_ms: None,
+    };
+    let before = {
+        let router = kernel();
+        let state = router.runtime_state();
+        let grants = [
+            (
+                "kept",
+                KernelAccessTerm::UntilHolderExits,
+                None,
+                &live_holder,
+            ),
+            (
+                "timed",
+                KernelAccessTerm::Minutes(30),
+                Some(GrantClock::new(30, 5)),
+                &live_holder,
+            ),
+            (
+                "doomed",
+                KernelAccessTerm::UntilHolderExits,
+                None,
+                &doomed_holder,
+            ),
+        ];
+        for (id, term, clock, holder) in grants {
+            let mut access = state.owned.kernel_access.lock().unwrap();
+            state
+                .admit_grant(
+                    &mut access,
+                    id.into(),
+                    summary(id, term, holder),
+                    holder.clone(),
+                    clock,
+                )
+                .unwrap();
+        }
+        let inbox = state.outside_subscription_response("kept").unwrap();
+        // Stopping releases a waiting holder with an empty answer, not with
+        // the end of its subscription.
+        state.end_kernel_access_for_shutdown().unwrap();
+        let released = state
+            .outside_wait(
+                "kept",
+                &WaitEventsRequest {
+                    since: None,
+                    timeout_ms: 5_000,
+                    limit: 10,
+                },
+                Some("kept"),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                released,
+                LocalDaemonResponse::EventsListed {
+                    timed_out: true,
+                    ..
+                }
+            ),
+            "{released:?}"
+        );
+        inbox
+    };
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let router = kernel();
+    let state = router.runtime_state();
+    assert_eq!(state.restore_kernel_access_grants().unwrap(), 1);
+    let mut live = state
+        .owned
+        .kernel_access
+        .lock()
+        .unwrap()
+        .grants
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    live.sort();
+    assert_eq!(live, ["kept"]);
+    assert_eq!(state.outside_subscription_response("kept").unwrap(), before);
+    assert!(state.outside_ended_response("doomed").unwrap().is_some());
+    assert!(state.outside_ended_response("timed").unwrap().is_some());
+}

@@ -758,7 +758,7 @@ where
                     task.abort();
                 }
                 mcp_task.abort();
-                let _ = router.runtime_state().revoke_kernel_access(None, None, "kernel_shutdown");
+                let _ = router.runtime_state().end_kernel_access_for_shutdown();
                 let _ = router.shutdown_cleanup().await;
                 return Ok(());
             },

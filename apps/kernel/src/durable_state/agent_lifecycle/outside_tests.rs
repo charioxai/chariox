@@ -154,7 +154,9 @@ fn outside_restart_ends_home_only_and_session_end_removes_only_its_targets() {
         .unwrap()
         .ended
         .is_none());
-    f.store.outside_mutate(Mutation::Restart).unwrap();
+    f.store
+        .outside_mutate(Mutation::Restart { keep: vec![] })
+        .unwrap();
     publish(&f, "after", event("y", "y2"));
     let home = list(&f, "home");
     assert_eq!(home.events.len(), 2);
@@ -429,7 +431,9 @@ fn outside_restart_repairs_old_local_cleanup_without_losing_remote_work() {
     .unwrap();
     drop(db);
     let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
-    reopened.outside_mutate(Mutation::Restart).unwrap();
+    reopened
+        .outside_mutate(Mutation::Restart { keep: vec![] })
+        .unwrap();
     let part = reopened.outside_part("cancel").unwrap().unwrap();
     assert_eq!(part.ended.as_deref(), Some("cancelled"));
     assert_eq!(part.cleanup_targets, vec![remote.clone()]);
@@ -439,7 +443,9 @@ fn outside_restart_repairs_old_local_cleanup_without_losing_remote_work() {
             targets: vec![remote],
         })
         .unwrap();
-    reopened.outside_mutate(Mutation::Restart).unwrap();
+    reopened
+        .outside_mutate(Mutation::Restart { keep: vec![] })
+        .unwrap();
     assert!(reopened
         .outside_part("cancel")
         .unwrap()

@@ -45,7 +45,8 @@ pub enum PasskeyPromptKind {
 
 /// Protocol 568: how long an access grant lasts. `UntilHolderExits` has no
 /// deadline: the grant ends with the approved harness process, an explicit
-/// revoke, a passkey rotation or a kernel restart (grants live in memory).
+/// revoke or a passkey rotation. It outlives a kernel restart while its
+/// holder runs; a timed grant does not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KernelAccessTerm {

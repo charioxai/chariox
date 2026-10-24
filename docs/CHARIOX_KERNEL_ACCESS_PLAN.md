@@ -225,7 +225,7 @@ grant_extend_notice_minutes = 5
 request_timeout_minutes = 10
 ```
 
-The owner set external-agent grants to 8 hours by default and 24 hours at most; out-of-range older configs are clamped at load with a warning. The user picks a grant's lifetime in the popup, up to `grant_max_minutes`, or "until the agent exits" (protocol 568; opt-in, never the default, no deadline and no extension popup: it ends with the bound process, a revoke, a passkey rotation or a kernel restart). Each extension starts a new term under the same limit. A grant also ends when its bound process exits. Sudo uses owner-authorized windows; see KERNEL_SUDO.md.
+The owner set external-agent grants to 8 hours by default and 24 hours at most; out-of-range older configs are clamped at load with a warning. The user picks a grant's lifetime in the popup, up to `grant_max_minutes`, or "until the agent exits" (protocol 568; opt-in, never the default, no deadline and no extension popup: it ends with the bound process, a revoke or a passkey rotation, and survives a kernel restart while that process lives). Each extension starts a new term under the same limit. A grant also ends when its bound process exits. Sudo uses owner-authorized windows; see KERNEL_SUDO.md.
 
 ### 5.6 Revocation
 
@@ -234,7 +234,7 @@ The owner set external-agent grants to 8 hours by default and 24 hours at most; 
 | Session end | Cancels a queued sudo turn and interrupts a running one in it. A local-kernel access grant is independent of session lifetime. |
 | Holder gone | Stratum 2: the bound process exits. Stratum 3: the turn yields, the user interrupts it, or the user cancels the queued `/sudo` prompt. |
 | Explicit revoke | From any Chariox terminal, or the CLI by grant id. "Revoke all" is always available; it cancels queued sudo turns and interrupts running ones. |
-| Kernel restart | Everything lives in kernel memory (section 5.7). |
+| Kernel restart | Timed grants and sudo state live in kernel memory and end (section 5.7). A grant that lasts until its holder exits is restored at the next start if the same holder process lives. |
 | Passkey change | Section 4.4. |
 | Expiry | Stratum 2 only, at `expires_at` unless extended. |
 
@@ -242,7 +242,7 @@ Revocation and expiry act immediately, not at the holder's next request. The ker
 
 ### 5.7 Storage
 
-Grants and sudo state live only in kernel memory. Nothing is written to disk. A kernel restart revokes everything, and the user re-enters the passkey.
+Grants and sudo state live in kernel memory. A kernel restart revokes everything except grants that last until their holder exits: the durable `kernel_access.grant` event records the holder process identity, and the next start restores the grant only if that exact process still lives. Everything else needs the passkey again.
 
 Nothing is delivered to the agent (D9). The 2026-09-30 draft considered handing agents a bearer token through an environment variable, a 0600 file or an inherited descriptor. Same-user processes can read each other's files and often their environment, and Chariox does not isolate them (D12), so none of these keeps a secret. A sudo turn uses the run's existing runtime MCP identity, which the kernel elevates for that turn only. That per-run MCP bearer predates this plan (`generate_runtime_mcp_auth_token` in `apps/kernel/src/app/provider_launch_policy.rs`, written into the provider's MCP configuration); section 10.4 states what it means during a sudo turn.
 

@@ -108,7 +108,9 @@ pub(crate) enum Mutation {
         id: String,
         cursor: u64,
     },
-    Restart,
+    Restart {
+        keep: Vec<String>,
+    },
     CleanupAck {
         id: String,
         targets: Vec<EventTarget>,

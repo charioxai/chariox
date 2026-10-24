@@ -780,7 +780,12 @@ impl KernelRuntimeState {
             )
             .expect("outside event identity must be durable before runtime admission");
         durable_state_store
-            .outside_mutate(crate::durable_state::agent_lifecycle::outside::Mutation::Restart)
+            .outside_mutate(
+                crate::durable_state::agent_lifecycle::outside::Mutation::Restart {
+                    keep: kernel_access::grant_inboxes_to_keep(&durable_state_store)
+                        .expect("access grants must be readable before runtime admission"),
+                },
+            )
             .expect("outside subscriptions must end when their home kernel restarts");
         agent_store
             .write()

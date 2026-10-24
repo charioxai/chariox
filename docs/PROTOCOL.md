@@ -3627,8 +3627,11 @@ Workflow trigger and deployment direction:
   switches authority. Fresh connections prefer the holder’s own eligible
   process grant over an ancestor’s. There is no session-based selection or
   response filtering. Session end does not revoke a local-kernel grant.
-  Grants stay in memory and do not survive a restart. Durable grant events
-  record metadata and outcomes; terminal-answer and passkey verification
+  Grants stay in memory. Only a grant that lasts until its holder exits
+  survives a restart, under the same id and event inbox, while the same
+  process (pid, start time, uid, executable) still lives; a timed grant ends.
+  Durable grant events record metadata and outcomes (a granted event also
+  records the holder's process identity, which a restart checks again); terminal-answer and passkey verification
   events correlate by interaction id. They contain no passkey or bearer.
 
   TCP and relay access requests return a pointer to the Unix socket; neither
@@ -4866,7 +4869,10 @@ The approve answer's `custom_reply` chooses the term: a number of minutes, or `u
 grants only; an extension adds minutes and refuses it). An unrecognised reply is refused. A grant of
 `until_holder_exits` has no `expires_at_ms`, no "extend?" notice and no deadline; it ends when the
 holder process exits or its identity no longer matches (a reused PID never inherits it), on revoke,
-on passkey rotation, or when the kernel restarts (grants are memory-only). Descendants of the holder
+or on passkey rotation. It survives a kernel restart under the same grant id and event inbox while
+the same holder process lives: the stopping kernel answers a waiting holder with an empty,
+`timed_out` list (not `subscription_ended`), and the next start restores the grant after checking
+the holder again (a holder gone by then ends the grant as `process_exit`). Descendants of the holder
 are admitted as for every grant. `kernel_access.grant` audit events carry the term. Clients that list
 grants or draw the popup need 568.
 Relay peer 176 carries the same shapes. The Rust hash test
@@ -5288,7 +5294,8 @@ restart and relay loss preserve parts and cursors. Pending inboxes retain at mos
 acknowledgements update bounded forwarding counters in the subscription metadata;
 those counters contain subject identifiers and counts only.
 
-Grant expiry, revoke, holder exit, home-kernel restart and explicit cancellation
+Grant expiry, revoke, holder exit, a home-kernel restart (except of a grant that
+lasts until its holder exits, which keeps its subscription) and explicit cancellation
 end the subscription. The final control record is the only reply an admitted wait
 may send after its grant ends. Remote cleanup remains durable through reconnect.
 Sessions and agents created under an external grant are followed automatically;
