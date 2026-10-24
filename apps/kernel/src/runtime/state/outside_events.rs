@@ -3,6 +3,7 @@ use super::*;
 use crate::durable_state::agent_lifecycle::outside::Mutation;
 use crate::local::*;
 mod activity;
+mod open_decisions;
 
 pub(crate) fn is_outside_event_request(request: &LocalDaemonRequest) -> bool {
     matches!(
@@ -31,11 +32,13 @@ impl KernelRuntimeState {
                     "event targets are changing; retry subscribe",
                 )
             })?;
+        let open_decisions = self.owned.outside_open_decisions(&targets);
         self.outside_store().outside_mutate(Mutation::Subscribe {
             id: id.into(),
             home,
             targets,
             baseline,
+            open_decisions,
         })
     }
     pub(crate) fn outside_store(&self) -> &DurableKernelStateStore {
@@ -263,6 +266,26 @@ impl KernelRuntimeOwnedState {
         state: EventInteractionState,
         passkey: Option<&PasskeyPrompt>,
     ) -> Result<(), DaemonError> {
+        let (value, summary) = self.outside_interaction_value(interaction, state, passkey);
+        self.durable_state_store.outside_publish(
+            session_id,
+            interaction.agent_id(),
+            value,
+            &summary,
+            EventRefs {
+                interaction_id: Some(interaction.id().into()),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// The event body and summary an outside caller gets for a decision.
+    pub(super) fn outside_interaction_value(
+        &self,
+        interaction: &crate::session::RuntimeInteraction,
+        state: EventInteractionState,
+        passkey: Option<&PasskeyPrompt>,
+    ) -> (OutsideEventValue, String) {
         let human = interaction.provider_login_is_human_only()
             || interaction
                 .choices()
@@ -279,15 +302,9 @@ impl KernelRuntimeOwnedState {
         } else {
             interaction.title().unwrap_or("interaction")
         };
-        self.durable_state_store.outside_publish(
-            session_id,
-            interaction.agent_id(),
+        (
             OutsideEventValue::Interaction { state, pointer },
-            summary,
-            EventRefs {
-                interaction_id: Some(interaction.id().into()),
-                ..Default::default()
-            },
+            summary.into(),
         )
     }
 }

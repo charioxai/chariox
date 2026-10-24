@@ -14,6 +14,7 @@ fn target(session: &str, agent: Option<&str>) -> EventTarget {
 fn subscribe(f: &Fixture, id: &str, home: bool, targets: Vec<EventTarget>) {
     f.store
         .outside_mutate(Mutation::Subscribe {
+            open_decisions: vec![],
             baseline: vec![],
             id: id.into(),
             home,
@@ -173,6 +174,7 @@ fn outside_restart_ends_home_only_and_session_end_removes_only_its_targets() {
     assert!(f
         .store
         .outside_mutate(Mutation::Subscribe {
+            open_decisions: vec![],
             baseline: vec![],
             id: "home".into(),
             home: true,

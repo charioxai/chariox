@@ -21,7 +21,7 @@ pub(crate) fn is_public_code(code: &str) -> bool {
 }
 
 mod model;
-pub(crate) use model::{Mutation, Part, Recipient, RunState};
+pub(crate) use model::{Mutation, OpenDecision, Part, Recipient, RunState};
 mod producers;
 use producers::identity;
 pub(super) use producers::publish_task;
@@ -203,6 +203,7 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
             home,
             targets,
             baseline,
+            open_decisions,
         } => {
             let existing = read(tx, &id)?;
             let mut changed = existing.is_none();
@@ -210,15 +211,18 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
             if part.ended.is_some() {
                 return Err(refused("subscription ended; request a new access grant"));
             }
+            let mut added = Vec::new();
             for target in targets {
                 let cleanup_before = part.cleanup_targets.len();
                 part.cleanup_targets.retain(|removed| removed != &target);
                 changed |= cleanup_before != part.cleanup_targets.len();
                 if !part.targets.contains(&target) {
                     changed = true;
+                    added.push(target.clone());
                     part.targets.push(target);
                 }
             }
+            replay_open_decisions(tx, &mut part, &added, open_decisions)?;
             if part.targets.len() > 1024 {
                 return Err(refused(
                     "event target limit is 1024; follow whole sessions instead",
@@ -361,6 +365,49 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
     }
     Ok(Outcome::Saved)
 }
+/// Gives a new follower the `pending` event of each decision that opened before
+/// it followed. Targets it already had saw them live.
+fn replay_open_decisions(
+    tx: &Transaction<'_>,
+    part: &mut Part,
+    added: &[EventTarget],
+    decisions: Vec<OpenDecision>,
+) -> Result<(), DaemonError> {
+    let Some((kernel, machine)) = identity(tx)? else {
+        return Ok(());
+    };
+    for decision in decisions {
+        let in_scope = added.iter().any(|target| {
+            target.kernel == kernel
+                && target.session_id == decision.session_id
+                && (target.agent_id.is_none() || target.agent_id == decision.agent_id)
+        });
+        if !in_scope {
+            continue;
+        }
+        let event = project(OutsideEvent {
+            cursor: 0,
+            kernel: kernel.clone(),
+            machine: machine.clone(),
+            session_id: decision.session_id,
+            agent_id: decision.agent_id,
+            value: decision.value,
+            summary: decision.summary,
+            at_ms: outside_now_ms()?,
+            refs: crate::local::EventRefs {
+                interaction_id: Some(decision.interaction_id.clone()),
+                ..Default::default()
+            },
+        })?;
+        append(
+            tx,
+            part,
+            &format!("open-decision-{}", decision.interaction_id),
+            &event,
+        )?;
+    }
+    bound(tx, part, inbox_limit()?)
+}
 fn remove_ended_target(
     tx: &Transaction<'_>,
     part: &mut Part,
@@ -425,16 +472,19 @@ fn prune_run_states(part: &mut Part) -> Result<(), DaemonError> {
     part.run_states = kept;
     Ok(())
 }
+/// What an outside caller may see of an event: secrets redacted.
+fn project(event: OutsideEvent) -> Result<OutsideEvent, DaemonError> {
+    let mut projected =
+        serde_json::to_value(event).map_err(|_| error("outside event encoding failed"))?;
+    crate::secret_redaction::redact_json_secrets(&mut projected);
+    serde_json::from_value(projected).map_err(|_| error("outside event projection failed"))
+}
 pub(super) fn publish(
     tx: &Transaction<'_>,
     occurrence: &str,
     event: &OutsideEvent,
 ) -> Result<(), DaemonError> {
-    let mut projected =
-        serde_json::to_value(event).map_err(|_| error("outside event encoding failed"))?;
-    crate::secret_redaction::redact_json_secrets(&mut projected);
-    let event: OutsideEvent =
-        serde_json::from_value(projected).map_err(|_| error("outside event projection failed"))?;
+    let event = project(event.clone())?;
     for mut part in parts(tx)? {
         if part.ended.is_none() && matches(&part, &event) {
             append(tx, &mut part, occurrence, &event)?;

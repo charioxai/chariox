@@ -537,3 +537,119 @@ async fn grant_holder_can_choose_allow_session_on_a_routine_permission() {
         crate::runtime::kernel_access::Refusal::HumanOnly
     );
 }
+
+// A decision raised while nobody follows its agent (a kernel restart gap) is
+// told to the holder that follows afterwards, once, and can then be answered.
+#[tokio::test]
+async fn a_decision_open_before_the_holder_subscribes_is_delivered_on_subscribe() {
+    use crate::session::{
+        RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionKind,
+        RuntimeInteractionLevel,
+    };
+    let workspace = crate::test_support::TestWorktree::new("open-decision-replay");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(workspace.session_request())
+        .unwrap();
+    let other = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(crate::agent::CreateAgentRequest::new(
+            session.id(),
+            "dev-stub",
+        ))
+        .unwrap();
+    let state =
+        crate::runtime::state::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(
+            app,
+        );
+    let grant = state.insert_access_grant_for_test(session.id());
+    let _responders: Vec<_> = [
+        ("followed-permission", agent.id()),
+        ("other-permission", other.id()),
+    ]
+    .into_iter()
+    .map(|(id, agent_id)| {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        state
+            .owned
+            .register_runtime_interaction(
+                session.id(),
+                RuntimeInteraction::new(
+                    id,
+                    agent_id,
+                    RuntimeInteractionKind::Permission,
+                    RuntimeInteractionLevel::Warning,
+                    Some("Approve Tool?".to_string()),
+                    "A tool call",
+                    vec![
+                        RuntimeInteractionChoice::new("allow_once", "Allow once", "allow", None),
+                        RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
+                    ],
+                    None,
+                    Some(300),
+                    Some("deny".to_string()),
+                ),
+                tx,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        rx
+    })
+    .collect();
+    let target = EventTarget {
+        kernel: state.owned.config_projection.snapshot().daemon_id,
+        session_id: session.id().into(),
+        agent_id: Some(agent.id().into()),
+    };
+    let decisions = |state: &KernelRuntimeState| {
+        let batch = state
+            .outside_store()
+            .outside_list(&grant, None, 100)
+            .unwrap()
+            .unwrap();
+        batch
+            .events
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event.value,
+                    OutsideEventValue::Interaction {
+                        state: EventInteractionState::Pending,
+                        ..
+                    }
+                )
+            })
+            .map(|event| (event.agent_id, event.refs.interaction_id))
+            .collect::<Vec<_>>()
+    };
+    state
+        .subscribe_outside_part(&grant, true, vec![target.clone()])
+        .unwrap();
+    assert_eq!(
+        decisions(&state),
+        [(
+            Some(agent.id().to_string()),
+            Some("followed-permission".to_string())
+        )],
+        "only the followed agent's open decision is told"
+    );
+    // Following the same target again must not tell it a second time.
+    state
+        .subscribe_outside_part(&grant, true, vec![target])
+        .unwrap();
+    assert_eq!(decisions(&state).len(), 1);
+    let answer = LocalDaemonRequest::RespondToInteraction(
+        serde_json::from_value(serde_json::json!({
+            "session_id": session.id(),
+            "interaction_id": "followed-permission",
+            "choice_id": "allow_once",
+        }))
+        .unwrap(),
+    );
+    state
+        .authorize_external_request(&grant, &answer)
+        .expect("the holder can answer the decision it was told about");
+}

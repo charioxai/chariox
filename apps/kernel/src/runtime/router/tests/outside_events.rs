@@ -531,6 +531,7 @@ fn outside_router_preserves_create_ids_when_event_target_capacity_is_full() {
                     id: grant.clone(),
                     home: true,
                     baseline: vec![],
+                    open_decisions: vec![],
                     targets: (0..1024)
                         .map(|i| EventTarget {
                             kernel: kernel.clone(),

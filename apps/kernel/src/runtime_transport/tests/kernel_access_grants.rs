@@ -1573,7 +1573,8 @@ async fn outside_unix_wait_delivers_subscription_ended_after_revoke() {
         subscribed["error"].is_null(),
         "subscription failed: {subscribed}"
     );
-    holder.send(serde_json::json!({"WaitEvents":{"timeout_ms":30000}}));
+    // The decision open before this subscribe is already told (cursor 1); wait past it.
+    holder.send(serde_json::json!({"WaitEvents":{"since":1,"timeout_ms":30000}}));
     sleep(Duration::from_millis(200)).await;
     let revoked = kernel
         .request(serde_json::json!({"RevokeKernelAccessGrant":{"grant_id":grant_id}}))
@@ -1624,7 +1625,8 @@ async fn every_event_request_is_refused_as_ended_after_a_real_grant_expiry() {
     grant(&mut kernel, &mut holder).await;
     let subscribed=holder.request(serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":SESSION}]}}));
     assert!(subscribed["error"].is_null(), "{subscribed}");
-    holder.send(serde_json::json!({"WaitEvents":{"timeout_ms":30000}}));
+    // The decision open before this subscribe is already told (cursor 1); wait past it.
+    holder.send(serde_json::json!({"WaitEvents":{"since":1,"timeout_ms":30000}}));
     sleep(Duration::from_millis(200)).await;
     kernel.control("expire-soon").await;
     let waited = timeout(

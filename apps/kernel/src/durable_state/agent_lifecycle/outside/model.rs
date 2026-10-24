@@ -85,6 +85,10 @@ pub(crate) enum Mutation {
     },
     Subscribe {
         baseline: Vec<RunState>,
+        /// Decisions already open when the subscription is made. Each reaches
+        /// the holder as the `pending` event it missed, once, for the targets
+        /// this call adds.
+        open_decisions: Vec<OpenDecision>,
         id: String,
         home: bool,
         targets: Vec<EventTarget>,
@@ -126,4 +130,14 @@ pub(crate) struct RunState {
     pub session_id: String,
     pub agent_id: String,
     pub state: crate::local::EventRunState,
+}
+
+/// A decision that was open before a holder followed its target.
+#[derive(Debug, Clone)]
+pub(crate) struct OpenDecision {
+    pub session_id: String,
+    pub agent_id: Option<String>,
+    pub interaction_id: String,
+    pub summary: String,
+    pub value: crate::local::OutsideEventValue,
 }
