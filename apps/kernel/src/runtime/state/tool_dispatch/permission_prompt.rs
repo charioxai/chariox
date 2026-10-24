@@ -4,7 +4,9 @@
 //! tool_use_id?}` whenever a tool needs approval. The kernel asks the user
 //! through one permission `RuntimeInteraction` and answers with the JSON text
 //! Claude expects: `{"behavior":"allow","updatedInput":...}` or
-//! `{"behavior":"deny","message":...}`.
+//! `{"behavior":"deny","message":...}`. "Allow for session" also answers with a
+//! session-scoped rule, so Claude stops asking for the same tool shape in that
+//! run.
 
 use super::*;
 use crate::provider::{ProviderNativeInteractionResolution, RuntimeProviderRun};
@@ -13,6 +15,8 @@ use crate::session::{
     RuntimeInteractionKind, RuntimeInteractionLevel,
 };
 use crate::transport::runtime_tools::{PermissionPromptArgs, RuntimeToolResult};
+
+use super::permission_prompt_rule::{allow_for_session, session_allow_rule};
 
 const OPERATION: &str = "runtime_tool_permission_prompt";
 const PERMISSION_PROMPT_TIMEOUT_SEC: u64 = 300;
@@ -68,7 +72,7 @@ impl KernelRuntimeState {
             )
             .await;
         let payload = match resolution {
-            Ok(resolution) => claude_permission_prompt_decision(&resolution, args.input),
+            Ok(resolution) => claude_permission_prompt_decision(&resolution, &args),
             Err(error) => {
                 crate::logging::warn_with_fields(
                     "runtime.permission_prompt",
@@ -108,6 +112,26 @@ fn claude_permission_prompt_interaction(
         "tool_name": args.tool_name,
         "tool_input": args.input,
     });
+    let mut choices = vec![RuntimeInteractionChoice::new(
+        "allow_once",
+        "Allow once",
+        "allow",
+        Some(RuntimeInteractionChoiceStyle::Primary),
+    )];
+    if session_allow_rule(&args.tool_name, &args.input).is_some() {
+        choices.push(RuntimeInteractionChoice::new(
+            "allow_session",
+            "Allow for session",
+            "allow_session",
+            Some(RuntimeInteractionChoiceStyle::Secondary),
+        ));
+    }
+    choices.push(RuntimeInteractionChoice::new(
+        "deny",
+        "Deny",
+        "deny",
+        Some(RuntimeInteractionChoiceStyle::Danger),
+    ));
     RuntimeInteraction::new(
         format!("claude-permission-{provider_run_id}-{request_id}"),
         agent_id.to_string(),
@@ -115,20 +139,7 @@ fn claude_permission_prompt_interaction(
         RuntimeInteractionLevel::Warning,
         Some(format!("Approve Claude Code {}?", args.tool_name)),
         crate::app::format_claude_permission_message(&event),
-        vec![
-            RuntimeInteractionChoice::new(
-                "allow_once",
-                "Allow once",
-                "allow",
-                Some(RuntimeInteractionChoiceStyle::Primary),
-            ),
-            RuntimeInteractionChoice::new(
-                "deny",
-                "Deny",
-                "deny",
-                Some(RuntimeInteractionChoiceStyle::Danger),
-            ),
-        ],
+        choices,
         None,
         Some(PERMISSION_PROMPT_TIMEOUT_SEC),
         Some("deny".to_string()),
@@ -137,10 +148,21 @@ fn claude_permission_prompt_interaction(
 
 fn claude_permission_prompt_decision(
     resolution: &ProviderNativeInteractionResolution,
-    input: serde_json::Value,
+    args: &PermissionPromptArgs,
 ) -> serde_json::Value {
-    if resolution.choice_id.as_deref() == Some("allow_once") {
-        return serde_json::json!({ "behavior": "allow", "updatedInput": input });
+    let input = args.input.clone();
+    match resolution.choice_id.as_deref() {
+        Some("allow_once") => {
+            return serde_json::json!({ "behavior": "allow", "updatedInput": input })
+        }
+        // The choice is only listed when a rule can be stated, so a missing
+        // rule here is a bug: deny rather than allow more than was approved.
+        Some("allow_session") => {
+            if let Some(rule) = session_allow_rule(&args.tool_name, &args.input) {
+                return allow_for_session(input, rule);
+            }
+        }
+        _ => {}
     }
     // Deny, including an unanswered prompt: its timeout picks the default
     // Deny choice.

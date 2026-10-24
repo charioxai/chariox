@@ -106,7 +106,8 @@ fn active_interactions(
         .to_vec()
 }
 
-/// Calls the prompt tool as Claude does and waits for its interaction.
+/// Calls the prompt tool as Claude does for a `touch` command and waits for
+/// its interaction.
 async fn start_prompt(
     router: &Arc<CommandRouter>,
     token: &str,
@@ -116,8 +117,34 @@ async fn start_prompt(
     tokio::task::JoinHandle<Value>,
     crate::session::RuntimeInteraction,
 ) {
+    start_tool_prompt(
+        router,
+        token,
+        session_id,
+        tool_use_id,
+        "Bash",
+        serde_json::json!({"command": "touch approved.txt", "description": "Create a file"}),
+    )
+    .await
+}
+
+async fn start_tool_prompt(
+    router: &Arc<CommandRouter>,
+    token: &str,
+    session_id: &str,
+    tool_use_id: &str,
+    tool_name: &str,
+    input: Value,
+) -> (
+    tokio::task::JoinHandle<Value>,
+    crate::session::RuntimeInteraction,
+) {
     let call_router = router.clone();
-    let (token, tool_use) = (token.to_string(), tool_use_id.to_string());
+    let (token, tool_use, tool_name) = (
+        token.to_string(),
+        tool_use_id.to_string(),
+        tool_name.to_string(),
+    );
     let mut call = tokio::spawn(async move {
         rpc(
             &call_router,
@@ -126,8 +153,8 @@ async fn start_prompt(
             serde_json::json!({
                 "name": "chariox.permission_prompt",
                 "arguments": {
-                    "tool_name": "Bash",
-                    "input": {"command": "touch approved.txt", "description": "Create a file"},
+                    "tool_name": tool_name,
+                    "input": input,
                     "tool_use_id": tool_use,
                 }
             }),
@@ -689,5 +716,126 @@ async fn claude_waiting_on_a_runtime_popup_is_not_a_turn_stall() {
         "popup call should answer: {response:#}"
     );
     assert!(!crate::provider::claude_runtime_tool_wait_pending(RUN));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+fn choice_ids(interaction: &crate::session::RuntimeInteraction) -> Vec<&str> {
+    interaction
+        .choices()
+        .iter()
+        .map(|choice| choice.id())
+        .collect()
+}
+
+#[tokio::test]
+async fn claude_print_permission_prompt_offers_allow_for_session_only_with_a_rule() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-permission-prompt-session-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&root).expect("test root should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            root.to_string_lossy(),
+            root.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    insert_claude_run(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "provider-run-claude-print",
+        CLAUDE_TOKEN,
+        crate::provider::ProviderClientInterface::Chariox,
+    );
+    app.active_turn_store()
+        .start(crate::app::ActiveTurnState::new(
+            session.id().into(),
+            agent.id().into(),
+            "fixture-print-turn".into(),
+            "provider-run-claude-print".into(),
+        ));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(app)),
+        8,
+    ));
+    let answer = |call: tokio::task::JoinHandle<Value>| async move {
+        decision(&call.await.expect("permission prompt call should join"))
+    };
+
+    // A command Claude can match exactly: the choice is listed and answers
+    // with a session-scoped rule for that command.
+    let (call, interaction) = start_prompt(&router, CLAUDE_TOKEN, session.id(), "toolu_cmd").await;
+    assert_eq!(
+        choice_ids(&interaction),
+        ["allow_once", "allow_session", "deny"]
+    );
+    router
+        .runtime_state()
+        .resolve_runtime_interaction(session.id(), interaction.id(), "allow_session", None)
+        .await
+        .expect("allow_session should resolve");
+    assert_eq!(
+        answer(call).await,
+        serde_json::json!({
+            "behavior": "allow",
+            "updatedInput": {"command": "touch approved.txt", "description": "Create a file"},
+            "updatedPermissions": [{
+                "type": "addRules",
+                "behavior": "allow",
+                "destination": "session",
+                "rules": [{"toolName": "Bash", "ruleContent": "touch approved.txt"}],
+            }],
+        })
+    );
+
+    // A file write is remembered for that path only.
+    let file_input = serde_json::json!({"file_path": "/work/app/c.txt", "content": "x"});
+    let (call, interaction) = start_tool_prompt(
+        &router,
+        CLAUDE_TOKEN,
+        session.id(),
+        "toolu_write",
+        "Write",
+        file_input.clone(),
+    )
+    .await;
+    router
+        .runtime_state()
+        .resolve_runtime_interaction(session.id(), interaction.id(), "allow_session", None)
+        .await
+        .expect("allow_session should resolve");
+    assert_eq!(
+        answer(call).await["updatedPermissions"][0]["rules"],
+        serde_json::json!([{"toolName": "Edit", "ruleContent": "//work/app/c.txt"}])
+    );
+
+    // No rule can be stated for a redirect: the choice is not offered and
+    // cannot be chosen anyway.
+    let (call, interaction) = start_tool_prompt(
+        &router,
+        CLAUDE_TOKEN,
+        session.id(),
+        "toolu_redirect",
+        "Bash",
+        serde_json::json!({"command": "echo hi > out.txt"}),
+    )
+    .await;
+    assert_eq!(choice_ids(&interaction), ["allow_once", "deny"]);
+    assert!(router
+        .runtime_state()
+        .resolve_runtime_interaction(session.id(), interaction.id(), "allow_session", None)
+        .await
+        .is_err());
+    router
+        .runtime_state()
+        .resolve_runtime_interaction(session.id(), interaction.id(), "allow_once", None)
+        .await
+        .expect("allow_once should resolve");
+    let allowed = answer(call).await;
+    assert_eq!(allowed["behavior"], "allow");
+    assert!(allowed.get("updatedPermissions").is_none(), "{allowed:#}");
     let _ = std::fs::remove_dir_all(root);
 }
