@@ -98,8 +98,9 @@ impl OperationalHistoryStore {
             "SELECT revision, source_provider, source_model FROM history_agent_compaction_boundaries
              WHERE session_id = ?1 AND agent_id = ?2 AND revision > delivered_revision
                AND provider_family = ?3 AND account_profile = ?4
-               AND (provider_session_id IS NULL OR provider_session_id = ?5)",
-            params![session_id, agent_id, family, account, native_session],
+               AND provider_session_id IN ('', ?5)
+             ORDER BY revision DESC LIMIT 1",
+            params![session_id, agent_id, family, account, native_session.unwrap_or("")],
             |row| Ok(AgentCompactionBoundary { revision: row.get::<_, i64>(0)?.max(0) as u64,
                 source_provider: row.get(1)?, source_model: row.get(2)? }),
         ).optional().map_err(|e| compaction_error(session_id, "load compaction boundary", e))
@@ -135,19 +136,68 @@ fn record_boundary(
 ) -> Result<u64, DaemonError> {
     let family =
         crate::provider::canonical_provider_family(origin.provider).unwrap_or(origin.provider);
+    let native_session = origin.native_session.unwrap_or("");
+    // Revisions count per agent, so an acknowledgement names one native session's recovery.
     connection.execute(
         "INSERT INTO history_agent_compaction_boundaries
-             (session_id, agent_id, revision, delivered_revision, provider_family, source_provider, source_model, account_profile, provider_session_id)
-         VALUES (?1, ?2, 1, 0, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT (session_id, agent_id) DO UPDATE SET
-             revision = revision + 1, provider_family = excluded.provider_family,
-             source_provider = excluded.source_provider, source_model = excluded.source_model,
-             account_profile = excluded.account_profile, provider_session_id = excluded.provider_session_id",
-        params![session_id, agent_id, family, origin.provider, origin.model, origin.account, origin.native_session],
+             (session_id, agent_id, provider_family, account_profile, provider_session_id, revision, delivered_revision, source_provider, source_model)
+         VALUES (?1, ?2, ?3, ?4, ?5,
+             (SELECT COALESCE(MAX(revision), 0) + 1 FROM history_agent_compaction_boundaries WHERE session_id = ?1 AND agent_id = ?2),
+             0, ?6, ?7)
+         ON CONFLICT (session_id, agent_id, provider_family, account_profile, provider_session_id) DO UPDATE SET
+             revision = excluded.revision, source_provider = excluded.source_provider, source_model = excluded.source_model",
+        params![session_id, agent_id, family, origin.account, native_session, origin.provider, origin.model],
     ).map_err(|e| compaction_error(session_id, "record compaction boundary", e))?;
-    connection.query_row("SELECT revision FROM history_agent_compaction_boundaries WHERE session_id = ?1 AND agent_id = ?2",
-        params![session_id, agent_id], |row| row.get::<_, i64>(0))
+    connection.query_row(
+        "SELECT revision FROM history_agent_compaction_boundaries
+         WHERE session_id = ?1 AND agent_id = ?2 AND provider_family = ?3 AND account_profile = ?4 AND provider_session_id = ?5",
+        params![session_id, agent_id, family, origin.account, native_session], |row| row.get::<_, i64>(0))
         .map(|revision| revision.max(0) as u64).map_err(|e| compaction_error(session_id, "read compaction epoch", e))
+}
+
+const BOUNDARIES_TABLE: &str = "CREATE TABLE IF NOT EXISTS history_agent_compaction_boundaries (
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    provider_family TEXT NOT NULL,
+    account_profile TEXT NOT NULL,
+    provider_session_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    delivered_revision INTEGER NOT NULL,
+    source_provider TEXT NOT NULL,
+    source_model TEXT NOT NULL,
+    PRIMARY KEY (session_id, agent_id, provider_family, account_profile, provider_session_id)
+) WITHOUT ROWID;";
+
+/// Pending recovery is keyed per native session. Databases that kept one boundary
+/// per agent are rebuilt in place; an unscoped boundary keeps the empty session ID.
+pub(super) fn migrate(connection: &rusqlite::Connection) -> Result<(), DaemonError> {
+    let migrate_error =
+        |e: rusqlite::Error| compaction_error("", "migrate compaction boundaries", e);
+    let key_columns: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('history_agent_compaction_boundaries') WHERE pk > 0",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(migrate_error)?;
+    if key_columns != 2 {
+        return connection
+            .execute_batch(BOUNDARIES_TABLE)
+            .map_err(migrate_error);
+    }
+    connection
+        .execute_batch(&format!(
+            "BEGIN;
+             ALTER TABLE history_agent_compaction_boundaries RENAME TO history_agent_compaction_boundaries_v1;
+             {BOUNDARIES_TABLE}
+             INSERT INTO history_agent_compaction_boundaries
+             SELECT session_id, agent_id, provider_family, account_profile, COALESCE(provider_session_id, ''),
+                    revision, delivered_revision, source_provider, source_model
+             FROM history_agent_compaction_boundaries_v1;
+             DROP TABLE history_agent_compaction_boundaries_v1;
+             COMMIT;"
+        ))
+        .map_err(migrate_error)
 }
 
 fn compaction_error(
@@ -205,6 +255,70 @@ mod tests {
                 .revision,
             2
         );
+    }
+    #[test]
+    fn compacted_native_sessions_of_one_agent_recover_independently() {
+        let root = crate::test_support::TestWorktree::new("two-native-compactions");
+        let store = OperationalHistoryStore::open(root.path().join("history.db")).unwrap();
+        let origin = |native| AgentCompactionOrigin {
+            provider: "claude",
+            model: "haiku",
+            account: "account",
+            native_session: Some(native),
+        };
+        let load = |native| {
+            store
+                .load_agent_compaction_boundary("s", "a", "claude", "account", Some(native))
+                .unwrap()
+        };
+        for (native, turn) in [("native-a", "compact-a"), ("native-b", "compact-b")] {
+            assert!(store
+                .record_observed_agent_compaction_boundary("s", "a", origin(native), turn)
+                .unwrap());
+        }
+        let (a, b) = (load("native-a").unwrap(), load("native-b").unwrap());
+        assert_ne!(a.revision, b.revision);
+        store
+            .deliver_agent_compaction_boundary("s", "a", a.revision)
+            .unwrap();
+        assert!(load("native-a").is_none());
+        assert_eq!(load("native-b").unwrap().revision, b.revision);
+        assert!(!store
+            .record_observed_agent_compaction_boundary("s", "a", origin("native-a"), "compact-a")
+            .unwrap());
+        assert!(load("native-a").is_none());
+        store
+            .deliver_agent_compaction_boundary("s", "a", b.revision)
+            .unwrap();
+        assert!(load("native-b").is_none());
+    }
+    #[test]
+    fn a_boundary_per_agent_database_keeps_its_pending_recovery() {
+        let root = crate::test_support::TestWorktree::new("compaction-boundary-migration");
+        let path = root.path().join("history.db");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE history_agent_compaction_boundaries (
+                    session_id TEXT NOT NULL, agent_id TEXT NOT NULL, revision INTEGER NOT NULL,
+                    delivered_revision INTEGER NOT NULL, provider_family TEXT NOT NULL,
+                    source_provider TEXT NOT NULL, source_model TEXT NOT NULL,
+                    account_profile TEXT NOT NULL, provider_session_id TEXT,
+                    PRIMARY KEY (session_id, agent_id)) WITHOUT ROWID;
+                 INSERT INTO history_agent_compaction_boundaries
+                    VALUES ('s', 'a', 3, 2, 'claude', 'claude', 'haiku', 'account', 'native'),
+                           ('s', 'unscoped', 1, 0, 'claude', 'claude', 'haiku', 'account', NULL);",
+            )
+            .unwrap();
+        let store = OperationalHistoryStore::open(path).unwrap();
+        let load = |agent, native| {
+            store
+                .load_agent_compaction_boundary("s", agent, "claude", "account", native)
+                .unwrap()
+        };
+        assert_eq!(load("a", Some("native")).unwrap().revision, 3);
+        assert!(load("a", Some("other")).is_none());
+        assert_eq!(load("unscoped", Some("any")).unwrap().revision, 1);
     }
     #[test]
     fn compaction_epoch_survives_reopen_and_ignores_stale_acknowledgement() {
