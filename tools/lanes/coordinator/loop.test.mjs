@@ -74,6 +74,7 @@ test('watch: timeout remains a normal event wake and is not acknowledged', async
   r.options.cli = argv => argv[1] === 'wait' ? { events: [], timed_out: true, next_cursor: 0 } : cli(argv);
   assert.equal((await coordinate('watch', ['1'], r.options)).timed_out, true);
   assert.equal(r.calls.some(c => c.argv?.[1] === 'ack'), false);
+  assert.deepEqual(await readdir(join(r.home, 'events')).catch(() => []), [], 'an empty wake leaves no archive file');
 });
 test('watch: changed grant, missing target and gaps fail clearly', async t => {
   const r = await launched(t); await save(join(r.home, 'subscription.json'), { subscription_id: 'other' });

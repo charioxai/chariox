@@ -27,6 +27,7 @@ export function createRound(options) {
   const coordinator = (operation, args) => coordinate(operation, args, options);
   const adapter = options.adapter || (async (op, input) => execute([new URL(`../lane-${op}.mjs`, import.meta.url).pathname], JSON.stringify(input), process.execPath));
   const home = options.home;
+  const reconcileMs = options.reconcileMs ?? 5 * 60_000;
   const roundDirectory = join(home, 'rounds');
   const lanes = [];
   const persist = lane => save(lane.entry.runFile, lane.run);
@@ -50,7 +51,7 @@ export function createRound(options) {
     if (run && run.round !== entry.round) run = undefined; // another round's file: loopd has kept its copy
     run ??= { lane: entry.name ?? entry.lane, key: entry.lane, round: entry.round, effort: entry.effort, model: entry.model, provider: entry.provider, worktree: entry.worktree, brief: entry.brief, events: [], notes: [], permissions: [], unanswered: [], statusReads: 0 };
     if (run.driverError) { (run.previousDriverErrors ??= []).push(run.driverError); delete run.driverError; }
-    const lane = { entry, run, finished: Boolean(run.finishReason) };
+    const lane = { entry, run, finished: Boolean(run.finishReason), needsRead: true };
     if (!lane.finished) {
       if (!run.launchedAtMs) {
         const brief = await readFile(entry.brief, 'utf8');
@@ -190,9 +191,12 @@ export function createRound(options) {
     for (const lane of pending()) {
       if (now() >= lane.run.launchedAtMs + lane.entry.hardStopMinutes * 60_000) { await collect(lane, 'hard_stop'); continue; }
       // A change seen in a lane's first minute is read at the next wake, not lost.
-      if (touched.has(lane)) lane.needsRead = true;
+      // Events can be missed (a worker that finishes before the inbox sees it), so every lane is also read once in its
+      // first minute and then every `reconcileMs`; a change seen earlier than that is read at the next wake.
+      if (touched.has(lane) || now() - (lane.readAtMs ?? lane.run.launchedAtMs) >= reconcileMs) lane.needsRead = true;
       if (!lane.needsRead || now() < lane.run.launchedAtMs + 60_000) continue;
       lane.needsRead = false;
+      lane.readAtMs = now();
       lane.run.statusReads++;
       let status;
       try { status = await coordinator('lanehealth', [lane.entry.lane]); } catch (error) { log(lane, 'status_error', { code: error.code || 'status_failed' }); continue; }

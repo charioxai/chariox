@@ -256,15 +256,12 @@ export async function run(operation, input, dependencies = {}) {
   if (operation === 'steer') return request('SteerActivePrompt', { session_id: session(), attachment_id: attachment(), target_agent_id: agent(), expected_active_prompt_id: text(input.expectedPromptId, 'expectedPromptId'), prompt: text(input.prompt, 'prompt'), attachments: [] }, text(input.steerId, 'steerId'));
   if (operation === 'message') {
     // The worker's final message: the last provider output of its latest finished turn.
-    const outline = variant(await request('GetSessionHistoryOutline', { session_id: session(), agent_ids: [agent()], latest_prompt_count: 1, include_prefetched_content: true }, 'message-outline', false), 'SessionHistoryOutline');
-    const history = outline.agents?.find(value => value.agent_id === agent());
-    const turn = history?.turns?.filter(value => value.lifecycle === 'completed').at(-1);
-    const blob = turn?.blobs?.filter(value => value.kind === 'provider_output').at(-1);
-    if (!blob) return { text: null, reason: 'no_final_message' };
-    let page = history.prefetched_blobs?.find(value => value.blob_id === blob.blob_id);
-    page ??= variant(await request('GetSessionHistoryBlobContents', { session_id: session(), agent_id: agent(), blob_ids: [blob.blob_id] }, 'message-blob', false), 'SessionHistoryBlobContents').blobs?.[0];
-    const full = (page?.entries || []).map(item => item.entry?.text ?? '').join('');
-    return { text: full.slice(0, MESSAGE_LIMIT), truncated: full.length > MESSAGE_LIMIT, turnId: turn.turn_id, completedAtMs: turn.completed_at_ms ?? null };
+    const outline = variant(await request('GetSessionHistoryOutline', { session_id: session(), agent_ids: [agent()], latest_prompt_count: 1 }, 'message-outline', false), 'SessionHistoryOutline');
+    const turn = outline.agents?.find(value => value.agent_id === agent())?.turns?.filter(value => value.lifecycle === 'completed').at(-1);
+    // The kernel keeps a turn's last provider output as its summary (inline entries carry the earlier ones).
+    const last = turn?.summary?.entry?.kind === 'provider_output' ? turn.summary : turn?.entries?.filter(item => item.entry?.kind === 'provider_output').at(-1);
+    if (!last?.entry?.text) return { text: null, reason: 'no_final_message' };
+    return { text: last.entry.text.slice(0, MESSAGE_LIMIT), truncated: last.entry.text.length > MESSAGE_LIMIT || last.fragment_end < last.total_chars, turnId: turn.turn_id, completedAtMs: turn.completed_at_ms ?? null };
   }
   if (operation === 'respond') {
     const interaction = text(input.interactionId, 'interactionId');

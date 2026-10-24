@@ -22,8 +22,10 @@ export async function openInbox(home, cli) {
 export async function waitBatch(home, cli, now, seconds) {
   const batch = await cli(['events', 'wait', '--timeout', String(seconds)]);
   if (!Array.isArray(batch.events) || !Number.isSafeInteger(batch.next_cursor)) throw new LaneError('invalid_event_batch');
+  // A wake that timed out empty has nothing to lose, so a standing service does not write one file per wake.
+  const worthKeeping = batch.events.length > 0;
   const archive = join(home, 'events', `${now()}-${randomUUID()}.json`);
-  await save(archive, batch);
+  if (worthKeeping) await save(archive, batch);
   if (batch.events.some(e => ['gap', 'subscription_ended'].includes(e.type))) throw new LaneError('event_stream_incomplete', 'Inbox gap or end archived; inspect before acknowledging.');
   return { batch, archive };
 }

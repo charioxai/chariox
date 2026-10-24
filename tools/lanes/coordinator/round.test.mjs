@@ -82,7 +82,8 @@ test('round: permission answered, note delivered once, finish collected, hard st
   assert.equal(beta.finishReason, 'hard_stop');
   assert.equal(beta.stopped, true);
   assert.equal(JSON.parse(await readFile(join(r.home, 'runs', 'alpha.json'), 'utf8')).finishReason, 'finished');
-  assert.equal(r.calls.filter(c => c.op === 'status' && c.taskId === 'beta').length, 0);
+  // No event ever touched beta: its status was read only by the first-minute and five-minute reconciliation, not on every wake.
+  assert.ok(r.calls.filter(c => c.op === 'status' && c.taskId === 'beta').length <= 13);
 });
 
 test('round: a rerun resumes the recorded round without relaunching or redelivering', async t => {
@@ -139,6 +140,25 @@ test('round: a finish seen in the first minute is read at the next wake, and the
   assert.equal(await readFile(file, 'utf8'), 'all done');
   assert.deepEqual(alpha.lastMessage, { path: file, chars: 8, truncated: false });
   assert.ok(r.calls.findIndex(c => c.op === 'message') < r.calls.findIndex(c => c.op === 'stop'));
+});
+
+test('round: a worker that finished without any event is found by the first-minute read', async t => {
+  const r = await rig(t, ['alpha']);
+  r.idle.add('alpha');
+  for (let i = 0; i < 3; i++) r.waits.push({});
+  const [alpha] = await runRound(r.spec, r.options);
+  assert.equal(alpha.finishReason, 'finished');
+  assert.equal(alpha.statusReads, 1);
+});
+
+test('round: a worker that goes idle without an event is found by the five-minute reconciliation', async t => {
+  const r = await rig(t, ['alpha']);
+  for (let i = 0; i < 12; i++) r.waits.push({});
+  const cli = r.options.cli;
+  r.options.cli = async argv => { if (argv[1] === 'wait' && r.clock.ms >= 1_000_000 + 4 * 60_000) r.idle.add('alpha'); return cli(argv); };
+  const [alpha] = await runRound(r.spec, r.options);
+  assert.equal(alpha.finishReason, 'finished');
+  assert.ok(alpha.finishedAtMs >= alpha.launchedAtMs + 5 * 60_000 && alpha.finishedAtMs <= alpha.launchedAtMs + 8 * 60_000, `${alpha.finishedAtMs - alpha.launchedAtMs}`);
 });
 
 test('round: extra repositories get their own verified bundle', async t => {
