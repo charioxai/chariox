@@ -1461,6 +1461,39 @@ async fn machine_requests_are_decided_locally_before_any_machine_is_reached() {
 
 // EA2-10: a grant request that names a kernel is a gateway request, never a
 // local grant request: it raises no popup here and is human-only for a holder.
+// EA2-26: kernel routing, which carries the outside event requests to other kernels, belongs to
+// the local grant holder; a token-authenticated TCP terminal is refused before any kernel is named.
+#[tokio::test]
+async fn a_token_terminal_cannot_route_requests_or_event_subscriptions_to_another_kernel() {
+    let mut kernel = Kernel::start().await;
+    let mut routed = frame(serde_json::json!({"GetEventSubscription":{}}));
+    routed["kernel"] = "b3".into();
+    routed["request_id"] = "routed".into();
+    kernel
+        .tcp
+        .send(Message::Text(routed.to_string().into()))
+        .await
+        .unwrap();
+    let refused = response(&mut kernel.tcp, "routed").await;
+    assert_eq!(
+        refused["error"]["code"], "kernel_not_available",
+        "{refused}"
+    );
+    assert!(refused["response"].is_null(), "{refused}");
+    let subscribe = serde_json::json!({"type":"subscribe", "request_id":"routed-subscribe", "kernel":"b3",
+        "session_id":SESSION, "attachment_id":"", "subscription_scope":"session"});
+    kernel
+        .tcp
+        .send(Message::Text(subscribe.to_string().into()))
+        .await
+        .unwrap();
+    let refused = response(&mut kernel.tcp, "routed-subscribe").await;
+    assert_eq!(
+        refused["error"]["code"], "kernel_not_available",
+        "{refused}"
+    );
+}
+
 #[tokio::test]
 async fn a_grant_request_naming_a_machine_is_not_a_local_grant_request() {
     let mut kernel = Kernel::start().await;
