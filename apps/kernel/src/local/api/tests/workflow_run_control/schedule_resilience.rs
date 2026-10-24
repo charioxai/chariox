@@ -1,5 +1,5 @@
 use super::*;
-use crate::local::{CreateWorkflowScheduleRequest, DestroyAgentRequest};
+use crate::local::{CreateWorkflowScheduleRequest, DestroyAgentRequest, PreviewWorkflowScheduleRequest};
 
 #[test]
 fn failed_schedule_tick_does_not_leave_a_queued_prompt() {
@@ -350,6 +350,44 @@ fn schedule_queue_recovers_with_owner(entry_busy: bool) {
         .expect("schedule should still exist");
     assert_eq!(resumed_schedule.wakeups_executed(), 1);
     assert!(!resumed_schedule.pending_run());
+}
+
+#[test]
+fn schedule_preview_answers_without_a_session() {
+    run_schedule_resilience_large_stack_test(
+        "schedule-preview-answers-without-a-session",
+        schedule_preview_answers_without_a_session_inner,
+    );
+}
+
+fn schedule_preview_answers_without_a_session_inner() {
+    let harness = LocalRouterTestHarness::new();
+    for (trigger, expected) in [
+        (
+            crate::session::WorkflowScheduleTrigger::interval(900),
+            vec![900_000, 1_800_000, 2_700_000],
+        ),
+        (
+            crate::session::WorkflowScheduleTrigger::cron("0 0 0 1 1 *", "UTC"),
+            vec![31_536_000_000, 63_072_000_000, 94_694_400_000],
+        ),
+    ] {
+        let preview = match harness
+            .dispatch(LocalDaemonRequest::PreviewWorkflowSchedule(
+                PreviewWorkflowScheduleRequest {
+                    trigger: trigger.clone(),
+                    after_ms: Some(0),
+                    count: Some(3),
+                },
+            ))
+            .expect("a schedule preview needs no session")
+        {
+            LocalDaemonResponse::WorkflowSchedulePreviewed { preview } => preview,
+            _ => panic!("unexpected local response"),
+        };
+        assert_eq!(preview.trigger, trigger);
+        assert_eq!(preview.next_run_at_ms, expected);
+    }
 }
 
 fn run_schedule_resilience_large_stack_test(name: &str, test: fn()) {
