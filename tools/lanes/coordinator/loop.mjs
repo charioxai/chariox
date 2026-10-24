@@ -90,10 +90,18 @@ export async function coordinate(operation, args, options = {}) {
     if (eventMode && !advertised) throw new LaneError('steer_events_unavailable', 'Restore the kernel steer-event capability to resume this event confirmation.');
     if (eventMode) await openInbox(home, cli);
     if (!receipt) {
-      const result = await adapter('steer', { ...common, expectedPromptId, prompt, steerId });
-      receipt = { steerId, expectedPromptId, confirmationMode: eventMode ? 'event' : 'acknowledged-steer-status', result };
+      let result, mode = eventMode ? 'event' : 'acknowledged-steer-status';
+      try { result = await adapter('steer', { ...common, expectedPromptId, prompt, steerId }); }
+      catch (error) {
+        // The kernel took the steer but could not record its event: it is delivered, and sending again would repeat it.
+        if (error.code !== 'prompt_steer_event_unrecorded') throw error;
+        mode = 'delivered-event-unrecorded';
+        result = { ActivePromptSteered: { prompt: { id: steerId } }, confirmation: { mode } };
+      }
+      receipt = { steerId, expectedPromptId, confirmationMode: mode, result };
       await save(deliveryPath, receipt);
     }
+    if (receipt.result.confirmation) return receipt.result;
     const returnedSteerId = receipt.result.ActivePromptSteered?.prompt?.id;
     if (typeof returnedSteerId !== 'string' || !returnedSteerId) throw new LaneError('unexpected_steer_response');
     const confirmed = async confirmation => {

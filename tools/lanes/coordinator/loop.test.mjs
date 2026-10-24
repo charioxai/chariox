@@ -5,7 +5,7 @@ import { mkdtemp, rm, writeFile, mkdir, readFile, readdir, copyFile } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { coordinate, save } from './loop.mjs';
-import { execute, run } from '../lanes.mjs';
+import { execute, run, LaneError } from '../lanes.mjs';
 const head = 'a'.repeat(40);
 async function rig(t) {
   const home = await mkdtemp(join(tmpdir(), 'coordinator-')); t.after(() => rm(home, { recursive: true, force: true }));
@@ -152,6 +152,21 @@ test('lanehealth without arguments snapshots every recorded lane once', async t 
   assert.equal(results.length, 1); assert.equal(results[0].lane, 'lane');
   assert.deepEqual(r.calls.map(c => c.op), ['status']);
 });
+test('deliver treats prompt_steer_event_unrecorded as delivered and never resends', async t => {
+  const r = await launched(t), adapter = r.options.adapter, review = join(r.home, 'review.md');
+  await writeFile(review, 'please change X');
+  r.options.adapter = async (op, input) => {
+    if (op === 'steer') { r.calls.push({ op, input }); throw new LaneError('prompt_steer_event_unrecorded'); }
+    if (op === 'status') return { ...(await adapter(op, input)), currentPrompt: 'prompt', state: 'working', capabilities: ['outside_steer_events_v1'] };
+    return adapter(op, input);
+  };
+  const first = await coordinate('deliver', ['lane', review], r.options);
+  assert.equal(first.confirmation.mode, 'delivered-event-unrecorded');
+  const again = await coordinate('deliver', ['lane', review], r.options);
+  assert.equal(again.confirmation.mode, 'delivered-event-unrecorded');
+  assert.equal(r.calls.filter(c => c.op === 'steer').length, 1);
+});
+
 test('deliver reuses the confirmed receipt for the same review and current prompt', async t => {
   const r = await launched(t); const review = join(r.home, 'review.md'); await writeFile(review, 'review');
   const adapter = r.options.adapter;
