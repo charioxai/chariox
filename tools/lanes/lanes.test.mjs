@@ -517,3 +517,28 @@ test('respond answers one interaction by id with a stable command identity', asy
   assert.deepEqual(calls, [[['request', '--kernel', 'b', '--command-id', 'lane:respond-claude-permission-run-1-tool'], { RespondToInteraction: { session_id: 's', interaction_id: 'claude-permission-run-1-tool', choice_id: 'allow_once' } }]]);
   await assert.rejects(run('respond', { kernel: 'b', taskId: 'lane', sessionId: 's', interactionId: 'i' }, { execute: async () => ({}) }));
 });
+
+test('message returns the last provider output of the latest finished turn from prefetched history', async () => {
+  const entry = text => ({ entry: { text } });
+  const outline = { SessionHistoryOutline: { agents: [{ agent_id: 'a', turns: [
+    { turn_id: 't1', lifecycle: 'completed', completed_at_ms: 5, blobs: [{ blob_id: 'b1', kind: 'provider_output' }] },
+    { turn_id: 't2', lifecycle: 'completed', completed_at_ms: 9, blobs: [{ blob_id: 'b2', kind: 'provider_tool' }, { blob_id: 'b3', kind: 'provider_output' }] },
+    { turn_id: 't3', lifecycle: 'open', blobs: [{ blob_id: 'b4', kind: 'provider_output' }] }], prefetched_blobs: [{ blob_id: 'b3', entries: [entry('Round done. '), entry('PUSH_READY written.')] }] }] } };
+  const calls = [];
+  const result = await run('message', { kernel: 'b', taskId: 'lane', sessionId: 's', agentId: 'a', attachmentId: 't' }, { execute: async (argv, body) => { calls.push(Object.keys(JSON.parse(body))[0]); return outline; } });
+  assert.deepEqual(result, { text: 'Round done. PUSH_READY written.', truncated: false, turnId: 't2', completedAtMs: 9 });
+  assert.deepEqual(calls, ['GetSessionHistoryOutline']);
+});
+
+test('message fetches the blob when it was not prefetched and reports a missing final message', async () => {
+  const calls = [];
+  const execute = async (argv, body) => {
+    const name = Object.keys(JSON.parse(body))[0]; calls.push(name);
+    if (name === 'GetSessionHistoryOutline') return { SessionHistoryOutline: { agents: [{ agent_id: 'a', turns: [{ turn_id: 't', lifecycle: 'completed', blobs: [{ blob_id: 'b', kind: 'provider_output' }] }] }] } };
+    return { SessionHistoryBlobContents: { blobs: [{ blob_id: 'b', entries: [{ entry: { text: 'late text' } }] }] } };
+  };
+  assert.equal((await run('message', { kernel: 'b', taskId: 'lane', sessionId: 's', agentId: 'a', attachmentId: 't' }, { execute })).text, 'late text');
+  assert.deepEqual(calls, ['GetSessionHistoryOutline', 'GetSessionHistoryBlobContents']);
+  const none = await run('message', { kernel: 'b', taskId: 'lane', sessionId: 's', agentId: 'a', attachmentId: 't' }, { execute: async () => ({ SessionHistoryOutline: { agents: [{ agent_id: 'a', turns: [] }] } }) });
+  assert.deepEqual(none, { text: null, reason: 'no_final_message' });
+});

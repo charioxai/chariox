@@ -11,6 +11,7 @@ export class LaneError extends Error {
 const fail = (code, message) => { throw new LaneError(code, message); };
 const text = (value, name) => typeof value === 'string' && value.length && !value.includes('\0') ? value : fail('invalid_input', `${name} must be a nonempty string`);
 const hash = (value, name) => /^[a-f0-9]{40}$/.test(value) ? value : fail('invalid_input', `${name} must be a full git commit id`);
+const MESSAGE_LIMIT = 64 * 1024;
 const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 const safeCode = value => typeof value === 'string' && /^[a-z][a-z0-9_]{0,79}$/.test(value) ? value : 'cli_failed';
 const remediation = code => ({
@@ -253,6 +254,18 @@ export async function run(operation, input, dependencies = {}) {
     return receipt;
   }
   if (operation === 'steer') return request('SteerActivePrompt', { session_id: session(), attachment_id: attachment(), target_agent_id: agent(), expected_active_prompt_id: text(input.expectedPromptId, 'expectedPromptId'), prompt: text(input.prompt, 'prompt'), attachments: [] }, text(input.steerId, 'steerId'));
+  if (operation === 'message') {
+    // The worker's final message: the last provider output of its latest finished turn.
+    const outline = variant(await request('GetSessionHistoryOutline', { session_id: session(), agent_ids: [agent()], latest_prompt_count: 1, include_prefetched_content: true }, 'message-outline', false), 'SessionHistoryOutline');
+    const history = outline.agents?.find(value => value.agent_id === agent());
+    const turn = history?.turns?.filter(value => value.lifecycle === 'completed').at(-1);
+    const blob = turn?.blobs?.filter(value => value.kind === 'provider_output').at(-1);
+    if (!blob) return { text: null, reason: 'no_final_message' };
+    let page = history.prefetched_blobs?.find(value => value.blob_id === blob.blob_id);
+    page ??= variant(await request('GetSessionHistoryBlobContents', { session_id: session(), agent_id: agent(), blob_ids: [blob.blob_id] }, 'message-blob', false), 'SessionHistoryBlobContents').blobs?.[0];
+    const full = (page?.entries || []).map(item => item.entry?.text ?? '').join('');
+    return { text: full.slice(0, MESSAGE_LIMIT), truncated: full.length > MESSAGE_LIMIT, turnId: turn.turn_id, completedAtMs: turn.completed_at_ms ?? null };
+  }
   if (operation === 'respond') {
     const interaction = text(input.interactionId, 'interactionId');
     return request('RespondToInteraction', { session_id: session(), interaction_id: interaction, choice_id: text(input.choiceId, 'choiceId') }, `respond-${interaction}`);
