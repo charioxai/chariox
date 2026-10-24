@@ -3,6 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, mkdir, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { join } from 'node:path';
 import { parseEntry, serve } from './loopd.mjs';
 
@@ -188,4 +190,23 @@ test('after a grant change the stale inbox is set aside and every running lane i
   assert.equal((await runFile(r, 'alpha')).finishReason, 'finished', 'a re-read finds the finished worker without waiting for an event');
   assert.ok((await readdir(r.layout.home)).some(f => /^subscription\.\d+\.json$/.test(f)));
   assert.ok(r.logs.some(l => l.kind === 'inbox_reset'));
+});
+
+test('round.mjs serve starts as a real process, serves the queue and stops cleanly on SIGTERM', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'loopd-process-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, 'home'), agents = join(root, 'agents');
+  await mkdir(home); await mkdir(agents);
+  await writeFile(join(home, 'config.json'), JSON.stringify({ providers: {} }));
+  await writeFile(join(agents, 'x'), '');
+  const child = spawn(process.execPath, [new URL('./round.mjs', import.meta.url).pathname, 'serve'], { env: { PATH: process.env.PATH, CHARIOX_COORDINATOR_HOME: home, LOOPD_AGENTS: agents }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  child.stdout.on('data', chunk => { output += chunk; });
+  const exited = once(child, 'exit');
+  for (let i = 0; i < 100 && !output.includes('"started"'); i++) await new Promise(resolve => setTimeout(resolve, 100));
+  assert.match(output, /"kind":"started"/);
+  assert.ok((await readdir(join(agents, '_loop', 'queue'))).includes('done'), 'the queue directories exist once it serves');
+  child.kill('SIGTERM');
+  const [code] = await exited;
+  assert.equal(code, 0);
+  assert.match(output, /"kind":"stopped"/);
 });
