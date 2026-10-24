@@ -110,7 +110,8 @@ fn mp11_released416_turn_undo_and_agent_fork_shape_is_versioned() {
         ),
     };
 
-    let snapshot = serde_json::json!([undo_request, fork_request, undo_response, fork_response]);
+    let mut snapshot =
+        serde_json::json!([undo_request, fork_request, undo_response, fork_response]);
     assert_eq!(
         snapshot.pointer("/0/UndoTurn/agent_ref"),
         Some(&serde_json::json!("worker"))
@@ -124,6 +125,11 @@ fn mp11_released416_turn_undo_and_agent_fork_shape_is_versioned() {
         snapshot.pointer("/3/AgentForked/provider_run/agent_instance_id"),
         Some(&serde_json::json!("agent-2"))
     );
+    // The released 416 DTO predates archive metadata on the shared agent type.
+    snapshot[3]["AgentForked"]["agent"]
+        .as_object_mut()
+        .unwrap()
+        .remove("archived");
     let serialized = serde_json::to_string(&snapshot).expect("turn action snapshot should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
