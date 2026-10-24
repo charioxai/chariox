@@ -224,17 +224,17 @@ impl KernelRuntimeState {
         dispatch: &crate::app::KernelRemotePromptDispatch,
         expected_provider_run_id: Option<&str>,
     ) -> Result<(), DaemonError> {
+        if !self.remote_prompt_receipt_prompt_is_current(dispatch)? {
+            return Err(DaemonError::NoActivePrompt {
+                session_id: dispatch.session_id.clone(),
+            });
+        }
         let expected_provider_run_id =
             expected_provider_run_id.ok_or_else(|| DaemonError::LocalTransport {
                 operation: "resume remote prompt cancellation",
                 message: "delivered cancellation has no durable worker provider-run identity"
                     .to_string(),
             })?;
-        if !self.remote_prompt_receipt_prompt_is_current(dispatch)? {
-            return Err(DaemonError::NoActivePrompt {
-                session_id: dispatch.session_id.clone(),
-            });
-        }
         let binding_before = self
             .remote_prompt_receipt_binding(dispatch)
             .map_err(|detail| DaemonError::LocalTransport {
@@ -350,7 +350,7 @@ impl KernelRuntimeState {
     pub(super) fn spawn_delivered_remote_cancellation_resume(
         &self,
         dispatch: crate::app::KernelRemotePromptDispatch,
-        provider_run_id: String,
+        provider_run_id: Option<String>,
     ) {
         let state = self.clone();
         tokio::spawn(async move {
@@ -376,7 +376,7 @@ impl KernelRuntimeState {
                 let error = match state
                     .resume_delivered_remote_prompt_cancellation_after_restart(
                         &dispatch,
-                        Some(&provider_run_id),
+                        provider_run_id.as_deref(),
                     )
                     .await
                 {

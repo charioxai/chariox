@@ -318,12 +318,10 @@ impl KernelRuntimeState {
                                 "error": error.to_string(),
                             }),
                         );
-                        if let Some(provider_run_id) = provider_run_id {
-                            self.spawn_delivered_remote_cancellation_resume(
-                                dispatch,
-                                provider_run_id.to_string(),
-                            );
-                        }
+                        self.spawn_delivered_remote_cancellation_resume(
+                            dispatch,
+                            provider_run_id.map(str::to_string),
+                        );
                     }
                     return Ok(true);
                 }

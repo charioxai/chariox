@@ -6556,6 +6556,105 @@ mod projection_acknowledgement {
         );
     }
 
+    // MP-08 / MP-10 A10-S02 (amint r18): a delivery persisted by an older kernel has
+    // no worker run id, so its receipt cannot be reconciled after a restart. The
+    // retry must still drain the worker's output instead of leaving the turn held.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restarted_cancellation_without_a_durable_run_still_drains() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake relay listener should bind");
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let run = "worker-run-restart-no-run";
+        let fixture = delivered_fixture(&relay_url, "restart-no-run", run).await;
+        let worker_id = fixture.worker_id.clone();
+        let worker_machine_id = fixture.worker_machine_id.clone();
+        let worker_public_key = fixture.worker_public_key.clone();
+        let worker_private_key = fixture.worker_private_key.clone();
+        let home_public_key = fixture.home_public_key.clone();
+        let completion = projection(&fixture, run, 1, true);
+        let server = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            loop {
+                let request = receive_fake_worker_peer_request(
+                    &listener,
+                    &worker_id,
+                    &worker_machine_id,
+                    &worker_public_key,
+                    &worker_private_key,
+                    None,
+                )
+                .await;
+                let response = match &request.request {
+                    RelayPeerRequest::DrainLeasedRuntimeProjection { .. } => {
+                        seen.push("drain");
+                        completion.clone()
+                    }
+                    RelayPeerRequest::ObserveLeasedGitAfter { .. } => {
+                        seen.push("observe");
+                        RelayPeerResponse::LeasedGitObserved {
+                            provider_run_id: run.to_string(),
+                            git_observations: Vec::new(),
+                            workspace_live_sync_change: None,
+                        }
+                    }
+                    other => panic!("unexpected worker request {other:?}"),
+                };
+                let done = matches!(
+                    &request.request,
+                    RelayPeerRequest::ObserveLeasedGitAfter { .. }
+                );
+                send_fake_worker_peer_response(
+                    request,
+                    &worker_id,
+                    &worker_private_key,
+                    &home_public_key,
+                    response,
+                )
+                .await;
+                if done {
+                    return seen;
+                }
+            }
+        });
+
+        let runtime = &fixture.runtime;
+        let owned = &runtime.owned;
+        owned
+            .mark_active_prompt_delivery(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                None,
+                None,
+            )
+            .expect("an older kernel recorded the delivery without its run");
+        owned
+            .begin_remote_prompt_cancellation_if_matches(
+                &fixture.session_id,
+                &fixture.agent_id,
+                &fixture.dispatch.source_attachment_id,
+                Some(&fixture.dispatch.prompt_id),
+            )
+            .expect("Ctrl+C starts the cancellation")
+            .expect("the delivered prompt is cancelling");
+        runtime
+            .recover_remote_prompt_after_kernel_restart(
+                &fixture.session_id,
+                &fixture.agent_id,
+                Some(crate::session::DurablePromptDeliveryPhase::Delivered),
+                None,
+            )
+            .await
+            .expect("restart recovery runs");
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(20), server)
+            .await
+            .expect("the worker output should still be drained")
+            .expect("fake worker assertions should hold");
+        assert_eq!(seen, vec!["drain", "observe"]);
+    }
+
     // MP-08 / MP-10 A10-S02 (amint r17 live): the binding's worker run id lived in
     // memory only, so a home restarted during a leased turn came back without it
     // and its Ctrl+C was refused as "no longer owns the delivered prompt run".
