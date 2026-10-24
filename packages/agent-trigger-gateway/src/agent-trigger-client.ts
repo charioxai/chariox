@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import type { KernelClient } from "./types.js"
 import type { AgentTrigger, SessionHistoryPageEntry, SessionHistoryOutlineTurn, TriggerDelivery } from "./types.js"
 import type { Unconfirmed } from "./agent-trigger-unconfirmed.js"
@@ -14,9 +15,10 @@ export type Conversation = { alias: string; online: boolean; busy: boolean; enab
 const roles: Record<string, TerminalOutputRole> = { user_prompt: "user", provider_output: "assistant", provider_reasoning: "reasoning",
   provider_tool: "tool", provider_error: "error", provider_status: "status", notice: "status" }
 
-/** The gateway has one normal local kernel connection, never a provider connection. */
+/** Each viewer owns its kernel attachment, never a provider connection. */
 export class AgentTriggerClient {
   readonly kernel: KernelClient
+  private readonly clientId = `agent-http:${randomUUID()}`
   private attachmentId: string | null = null
   private agentId: string | null = null
   constructor(readonly sessionId: string, readonly triggerId: string, kernel: KernelClient) { this.kernel = kernel }
@@ -28,7 +30,7 @@ export class AgentTriggerClient {
   }
   async subscribe(): Promise<void> {
     const response = await this.kernel.send<{ SessionAttached: { attachment: { id: string } } }>({ AttachToSession: {
-      session_id: this.sessionId, client_id: `agent-http:${this.triggerId}`, capability_level: "InteractiveStructured",
+      session_id: this.sessionId, client_id: this.clientId, capability_level: "InteractiveStructured",
     } })
     this.attachmentId = response.SessionAttached.attachment.id
     await this.kernel.subscribeToKernelEvents(this.sessionId, this.attachmentId)
