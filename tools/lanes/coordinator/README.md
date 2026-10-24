@@ -45,7 +45,7 @@ verified independently, so a consumed update cannot hide or manufacture a head.
 | `node tools/lanes/coordinator/deliver.mjs LANE REVIEW_FILE` | Reads the review text already obtained on the Mac and steers the current prompt with a compare fence. Confirms via a matching §14 event when advertised, otherwise via the acknowledged response and one status read. Identical review/current-prompt pairs reuse their receipt. New instructions for a settled worker are refused. |
 | `node tools/lanes/coordinator/lanefin.mjs LANE...` | Checks status once, fetches the worker's handoffs, then verifies/imports its bundle. The bundle supplies the actual head; `bases[LANE]` supplies its base. A present acceptance update must identify one matching head. Review notes and the final message belong in `LANE_STATUS.md`/`PUSH_READY.md`. |
 | `node tools/lanes/coordinator/lanehealth.mjs [LANE]` | One status/deadline snapshot per selected lane (all recorded lanes when omitted), with LONG-ROUND and SILENT flags; no recurring poller or automatic destruction. |
-| `node tools/lanes/coordinator/stop.mjs LANE` | Explicit unconditional adapter stop of the recorded worker. The kernel's durable deadline operates even while the coordinator is disconnected. |
+| `node tools/lanes/coordinator/stop.mjs LANE` | Unconditionally stops the recorded worker, then archives/acknowledges its exact removal event before returning. The kernel's durable deadline operates even while the coordinator is disconnected. |
 
 The launch adapter reports a coordinator timer when an older kernel lacks
 `agent_deadline_v1`; run its returned foreground job as documented in the parent
@@ -90,3 +90,10 @@ workers must include an ask in their reply as well.
 Run `pnpm test:lanes` and `pnpm lint:process-signals`. Fake-adapter tests supplement
 real providers, clients, kernels and hosted relay drills; they do not establish
 live acceptance.
+
+MP-08 / MP-09 / MP-10: coordinator stop retains the physical stop receipt before
+waiting up to120seconds for the exact kernel/session/agent removal event. Its
+`removal.archives` also includes intervening bundle-terminal events. Confirmation
+is saved before acknowledgement and reused on retry. Gap/end/timeout refuses
+confirmation without repeating destruction; a stopped receipt is not proof that
+the event was observed. Keep the holder alive until this command returns.

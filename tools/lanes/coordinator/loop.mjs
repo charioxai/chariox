@@ -4,7 +4,7 @@ import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { execute, LaneError, save } from '../lanes.mjs';
-import { openInbox, waitBatch, confirmSteer } from './events.mjs';
+import { openInbox, waitBatch, confirmSteer, confirmRemoval } from './events.mjs';
 export { save };
 
 const validLane = lane => {
@@ -128,8 +128,14 @@ export async function coordinate(operation, args, options = {}) {
     await save(join(home, `${lane}.finish.json`), result); return result;
   }
   if (operation === 'stop') {
-    const result = await adapter('stop', common);
-    record.stopped = result.stopped === true; record.stop = result; await save(path, record); return result;
+    const result = record.stopped ? record.stop : await adapter('stop', common);
+    record.stopped = result.stopped === true; record.stop = result; await save(path, record);
+    if (!record.stopped || result.removal) return result;
+    await openInbox(home, cli);
+    await confirmRemoval({ home, cli, now, target: common, confirmed: async removal => {
+      record.stop = { ...result, removal }; await save(path, record);
+    } });
+    return record.stop;
   }
   throw new LaneError('unknown_operation');
 }

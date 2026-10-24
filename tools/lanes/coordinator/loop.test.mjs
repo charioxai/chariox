@@ -22,7 +22,7 @@ async function rig(t) {
   }, cli: async argv => {
     calls.push({ argv });
     if (argv[1] === 'subscription') return { subscription: { subscription_id: 'grant', targets: [{ kernel: 'executor', session_id: 'room' }] } };
-    if (argv[1] === 'wait') return { events: [{ cursor: 1, type: 'agent' }], next_cursor: 1 };
+    if (argv[1] === 'wait') return { events: [calls.some(c => c.op === 'stop') ? { cursor: 1, kernel: launch.kernel, session_id: launch.sessionId, agent_id: launch.agentId, type: 'session', value: { state: 'agent_removed' } } : { cursor: 1, type: 'agent' }], next_cursor: 1 };
     return {};
   } };
   return { home, options, calls, launch };
@@ -133,7 +133,7 @@ test('lanehealth: reports deadline and silence without stopping anyone', async t
 });
 test('stop: only recorded lane adapter identity; durable stop receipt', async t => {
   const r = await launched(t); await coordinate('stop', ['lane'], r.options);
-  assert.deepEqual(r.calls.map(c => c.op), ['stop']);
+  assert.deepEqual(r.calls.filter(c => c.op).map(c => c.op), ['stop']);
   assert.equal(r.calls[0].input.agentId, r.launch.agentId);
   assert.equal(JSON.parse(await readFile(join(r.home, 'lane.json'))).stopped, true);
   await assert.rejects(coordinate('stop', ['../other'], r.options), { code: 'invalid_lane' });
@@ -190,4 +190,37 @@ test('lanefin collects the bundle when acceptance merge already consumed the upd
   const result = await coordinate('lanefin', ['lane'], r.options);
   assert.equal(result.bundle.head, head);
   assert.deepEqual(r.calls.map(c => c.op), ['status', 'fetch', 'bundle']);
+});
+
+test('stop archives exact removal before ack and reuses the confirmed receipt', async t => {
+  const r = await launched(t);
+  const event = { cursor: 17, kernel: r.launch.kernel, session_id: r.launch.sessionId, agent_id: r.launch.agentId, type: 'session', value: { state: 'agent_removed' } };
+  const cli = r.options.cli;
+  r.options.cli = async argv => {
+    if (argv[1] === 'wait') { r.calls.push({ argv }); return { events: [event], next_cursor: 17 }; }
+    if (argv[1] === 'ack') {
+      const saved = JSON.parse(await readFile(join(r.home, 'lane.json'), 'utf8'));
+      assert.deepEqual(saved.stop.removal.event, event);
+      assert.equal((await readdir(join(r.home, 'events'))).length, 1);
+    }
+    return cli(argv);
+  };
+  const result = await coordinate('stop', ['lane'], r.options);
+  assert.deepEqual(result.removal.event, event);
+  const count = r.calls.length;
+  assert.deepEqual(await coordinate('stop', ['lane'], r.options), result);
+  assert.equal(r.calls.length, count);
+});
+test('stop retains its physical receipt when the event stream ends without ack', async t => {
+  const r = await launched(t), cli = r.options.cli;
+  r.options.cli = async argv => argv[1] === 'wait' ? { events: [{ cursor: 1, type: 'subscription_ended', value: { reason: 'grant_revoked' } }], next_cursor: 1 } : cli(argv);
+  await assert.rejects(coordinate('stop', ['lane'], r.options), { code: 'event_stream_incomplete' });
+  assert.equal(JSON.parse(await readFile(join(r.home, 'lane.json'), 'utf8')).stopped, true);
+  assert.equal(r.calls.some(c => c.argv?.[1] === 'ack'), false);
+});
+test('stop does not confirm another worker removal and reports a bounded timeout', async t => {
+  const r = await launched(t), cli = r.options.cli;
+  r.options.cli = async argv => argv[1] === 'wait' ? { events: [{ cursor: 1, kernel: r.launch.kernel, session_id: r.launch.sessionId, agent_id: 'another', type: 'session', value: { state: 'agent_removed' } }], next_cursor: 1, timed_out: true } : cli(argv);
+  await assert.rejects(coordinate('stop', ['lane'], r.options), { code: 'stop_confirmation_timeout' });
+  assert.equal(JSON.parse(await readFile(join(r.home, 'lane.json'), 'utf8')).stopped, true);
 });

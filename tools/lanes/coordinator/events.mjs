@@ -49,3 +49,23 @@ export async function confirmSteer({ home, cli, now, target, steerId, confirmed 
   }
   throw new LaneError('steer_confirmation_timeout', 'Steer accepted but no matching event arrived in 120 seconds; resume this delivery to confirm it.');
 }
+
+export async function confirmRemoval({ home, cli, now, target, confirmed }) {
+  const deadline = Date.now() + 120_000;
+  const archives = [];
+  let remaining = 120;
+  while (remaining > 0) {
+    const { batch, archive } = await waitBatch(home, cli, now, remaining);
+    archives.push(archive);
+    const event = batch.events.find(e => e.type === 'session' && e.value?.state === 'agent_removed' && e.kernel === target.kernel && e.session_id === target.sessionId && e.agent_id === target.agentId);
+    if (event) {
+      await confirmed({ event, archives });
+      await cli(['events', 'ack', String(batch.next_cursor)]);
+      return;
+    }
+    if (batch.events.length) await cli(['events', 'ack', String(batch.next_cursor)]);
+    if (batch.timed_out) break;
+    remaining = Math.ceil((deadline - Date.now()) / 1000);
+  }
+  throw new LaneError('stop_confirmation_timeout', 'The worker stopped, but no matching removal event arrived in 120 seconds; resume stop to confirm its retained receipt.');
+}
