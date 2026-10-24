@@ -543,22 +543,6 @@ test('MP-08/MP-10: a same-site navigation reuses the normalized text of a cross-
  assert(expressions[2].includes(JSON.stringify(source))&&expressions[3].includes(JSON.stringify(source)),'another origin or compatibility mode parses the source itself');
 });
 
-test('MP-08/MP-10: the next snapshot skips serializing a linked sheet the kernel read as source text',async()=>{
- const mirror=new Mirror2({host:{}}),expressions=[];
- mirror.evaluate=async(_world,expression)=>{expressions.push(expression);return {nodes:[],sheets:[]}};
- mirror.crossOriginSheet=async()=>'.a{}';
- const world={ref:'observer'},patience=()=>1000;
- await mirror.snapshotOnce(world,'p',patience);
- assert.equal(expressions[0],'observer.snapshot()');
- await mirror.sheetOps(world,[{id:'n4',url:'https://en.wikipedia.org/w/load.php?skin'}],true);
- await mirror.snapshotOnce(world,'p',patience);
- assert.equal(expressions[1],'observer.snapshot([],["https://en.wikipedia.org/w/load.php?skin"])','the page reads it as source text again without serializing it');
- await mirror.sheetOps(world,Array.from({length:200},(_,i)=>({id:`n${i}`,url:`https://example.com/${i}.css`})));
- await mirror.snapshotOnce(world,'p',patience);
- const hinted=JSON.parse(expressions[2].slice('observer.snapshot([],'.length,-1));
- assert.equal(hinted.length,128);assert.equal(hinted.at(-1),'https://example.com/199.css');
-});
-
 test('MP-08/MP-10: the normalized sheet cache stays within its entry and size bounds',()=>{
  const cache=new ParsedSheets(2,10);
  cache.put('a','1234');cache.put('b','1234');cache.take('a');cache.put('c','1234');

@@ -247,7 +247,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       return inner || rule instanceof CSSLayerBlockRule ? rule.cssText.slice(0, rule.cssText.indexOf('{') + 1) + inner + '}\n' : '';
     };
     // Sheets the viewer retains (digests it advertised for this snapshot): they arrive by reference, never pruned.
-    const FIRST_PAINT_SHEET = 32 * 1024, fullSheets = new Map(); let retained = new Set(), sourceRead = new Set();
+    const FIRST_PAINT_SHEET = 32 * 1024, fullSheets = new Map(); let retained = new Set();
     const viewerRetains = text => retained.size > 0 && retained.has(sha256(text).slice(0, 24));
     const firstPaintCss = (node, sheet, base, text) => {
       const root = node.getRootNode?.();
@@ -261,8 +261,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // a linked sheet is read as source text through the kernel instead of through the CSSOM.
     const LOSSY = /[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;
     const css = (sheet, base) => {
-      // A linked sheet the kernel already read as source text is read that way again: serializing it here is wasted.
-      if (sheet.href && sourceRead.has(sheet.href)) throw new Error('read as source text');
       const text = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, resource));
       if (!LOSSY.test(text)) return text;
       if (sheet.href) throw new Error('lossy CSSOM serialization');
@@ -638,8 +636,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     };
     const resetTargets = () => { targets = new Set(); return true; };
     // Full snapshot: forget every id. Resource keys stay stable per document.
-    const snapshot = (known = [], source = []) => {
-      retained = new Set(known); sourceRead = new Set(source);
+    const snapshot = (known = []) => {
+      retained = new Set(known);
       observer.disconnect(); records = []; overflow = false; sentForms = new WeakMap(); sentStates = new Map(); snapshotted = true;
       for (const key of Object.keys(dirty)) dirty[key].clear();
       // The producer fences the old epoch before calling snapshot. Reclaim the

@@ -1135,6 +1135,28 @@ test("MP-08/MP-10: the next document reads a linked sheet the kernel read as sou
     "/gh.css": { type: "text/css", body: ".b{--w:3px;--c:red;border:var(--w) solid;border-color:var(--c)}" },
   }));
 
+// #1073 review: a linked sheet read as source text in one document is still read live in the next one, so a CSSOM
+// edit that makes it serializable reaches the viewer.
+test("MP-08/MP-10: a CSSOM edit of a linked sheet the previous document read as source text reaches the viewer", () => mirrored(
+  '<link rel="stylesheet" href="/gh.css"><div class="b" style="width:50px;height:20px">a</div>', async ({ next, evaluate, host }) => {
+    const first = [await next()];
+    for (let i = 0; i < 5; i++) first.push(await next(500));
+    assert(mirroredCss(first).includes("var(--w)"), "MP-10: the first document reads the lossy sheet as source text");
+    await evaluate("location.href = '/b'").catch(() => {});
+    for (let i = 0; i < 400 && await evaluate("location.pathname === '/b' && document.readyState === 'complete'").catch(() => false) !== true; i++) await settle(25);
+    await host.request({ op: 'state' });
+    let reset;
+    for (let i = 0; i < 40 && reset === undefined; i++) { const packet = await next(300).catch(() => null); if (packet?.reset && packet.nodes.some(row => row[2] === 0 && row[3] === 'b')) reset = packet; }
+    const packets = [reset];
+    for (let i = 0; i < 3; i++) packets.push(await next(500));
+    await evaluate("const s=document.styleSheets[0];s.deleteRule(0);s.insertRule('.b{color:rgb(1, 2, 3)}',0);true");
+    for (let i = 0; i < 6 && !mirroredCss(packets).includes("rgb(1, 2, 3)"); i++) packets.push(await next(500));
+    assert(mirroredCss(packets).includes("rgb(1, 2, 3)"), `MP-10: the edited rule reaches the viewer: ${mirroredCss(packets).slice(0, 300)}`);
+  }, {
+    "/b": { type: "text/html", body: '<!doctype html><link rel="stylesheet" href="/gh.css"><div class="b" style="width:50px;height:20px">b</div>' },
+    "/gh.css": { type: "text/css", body: ".b{--w:3px;--c:red;border:var(--w) solid;border-color:var(--c)}" },
+  }));
+
 test("MP-10: an inline style attribute and a <style> element keep var() shorthand borders too", () => mirrored(
   '<style>.s{--w:3px;border:var(--w) solid;border-color:red}</style><div class="s" id="a" style="--w:3px;border:var(--w) solid;border-color:blue;width:40px">x</div>', async ({ next }) => {
     const packets = [await next()];
