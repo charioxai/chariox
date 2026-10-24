@@ -77,7 +77,7 @@ test("hidden interaction strips release 1,000 appearing and resolved cards", asy
     maxAgentsPerScreen: 1, focusedAgentId: null, activeInteractionForAgent: () => interaction,
     selectedChoiceIndex: () => 0, setSelectedChoiceIndex() {}, customReply: () => "", customEditing: () => false,
     queuedPromptStripItemsForAgent: () => [], selectedQueuedPromptIndexForAgent: () => -1,
-    onQueuedPromptAction() {},
+    onQueuedPromptAction() {}, agentTriggerStripItemsForAgent: () => [],
   })
   try {
     for (let index = 0; index < 1_000; index += 1) {

@@ -34,6 +34,20 @@ pub(crate) struct ResolvedProviderAccount {
 }
 
 impl ResolvedProviderAccount {
+    /// Enrollment changes the runtime principal, preserving the selected local account.
+    pub(crate) fn enroll_local_runtime_owner(&mut self, owner: &str) -> Result<(), DaemonError> {
+        if self.runtime_owner != crate::session::DEFAULT_LOCAL_USER_ID
+            || self.owner != crate::session::DEFAULT_LOCAL_USER_ID
+        {
+            return Err(DaemonError::InvalidConfig {
+                field: "provider account authority",
+                message: "only the bound local runtime account can follow Cloud enrollment",
+            });
+        }
+        self.runtime_owner = owner.into();
+        Ok(())
+    }
+
     pub(crate) fn selection(&self) -> &str {
         &self.selection
     }

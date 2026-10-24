@@ -292,4 +292,5 @@ pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
     "exact_prompt_cancellation_v499",
     "owner_managed_context_transfer_v1",
     "agent_triggers_v1",
+    "agent_trigger_resend_v1",
 ];

@@ -167,7 +167,31 @@ impl KernelRuntimeState {
             private_assessment_evidence,
             dispatch.steering,
         );
-        result.map(|()| true)
+        let receipt = result?;
+        // MP-08/MP-09/MP-10: a queued steer is recoverable until the
+        // structured provider accepts it, even after mailbox admission. Only a
+        // definitive rejection permits replay.
+        if dispatch.steering {
+            drop(_room_guard);
+            match receipt.await {
+                Ok(crate::provider::ProviderPromptSubmitReceipt::Accepted) => {}
+                Ok(crate::provider::ProviderPromptSubmitReceipt::Rejected) => {
+                    return Err(DaemonError::ProviderPromptSteerRejected {
+                        source: Box::new(DaemonError::LocalTransport {
+                            operation: "steer queued prompt",
+                            message: "provider rejected the queued prompt steer; the message remains queued"
+                                .into(),
+                        }),
+                    });
+                }
+                Ok(crate::provider::ProviderPromptSubmitReceipt::Uncertain) | Err(_) => {
+                    return Err(DaemonError::ProviderPromptSteerUnconfirmed {
+                        provider_run_id: dispatch.provider_run_id.clone(),
+                    });
+                }
+            }
+        }
+        Ok(true)
     }
 }
 

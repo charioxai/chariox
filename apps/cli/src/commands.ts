@@ -2,6 +2,20 @@ import { tokenizeShellLine } from "@chariox/kernel-client/shell-core"
 
 export type SessionCommandAction = "create" | "new" | "attach" | "list" | "ls" | "status" | "info" | "inspect" | "delete"
 
+/** `/trigger` and its `/wait-in` / `/wait-every` aliases. */
+export type TriggerCommandAction =
+  | { type: "list" }
+  | {
+      type: "create"
+      repeat: "once" | "every"
+      minutes: number
+      busyPolicy: "queue" | "steer"
+      prompt: string
+    }
+  | { type: "update"; triggerId: string; change: "on" | "off" | "queue" | "steer" }
+  | { type: "remove"; triggerId: string }
+  | { type: "resend"; promptId: string }
+
 export type ParsedSlashCommand =
   | { kind: "exit"; raw: string }
   | { kind: "waiting"; raw: string }
@@ -43,14 +57,7 @@ export type ParsedSlashCommand =
   | { kind: "settings"; raw: string; args: string[] }
   | { kind: "loop"; raw: string; prompt: string }
   | { kind: "goal"; raw: string; prompt: string }
-  | {
-      kind: "wait"
-      raw: string
-      scheduleKind: "once" | "recurring"
-      minutes: number | null
-      prompt: string
-      error: string | null
-    }
+  | { kind: "trigger"; raw: string; action: TriggerCommandAction | null; error: string | null }
   | { kind: "mcp"; raw: string; args: string[] }
   | { kind: "skill"; raw: string; args: string[] }
   | { kind: "env"; raw: string; args: string[] }
@@ -92,7 +99,7 @@ export type SlashCommandHandlers = {
   onSettings?: (command: Extract<ParsedSlashCommand, { kind: "settings" }>) => Promise<unknown> | unknown
   onLoop: (command: Extract<ParsedSlashCommand, { kind: "loop" }>) => Promise<unknown> | unknown
   onGoal: (command: Extract<ParsedSlashCommand, { kind: "goal" }>) => Promise<unknown> | unknown
-  onWait?: (command: Extract<ParsedSlashCommand, { kind: "wait" }>) => Promise<unknown> | unknown
+  onTrigger?: (command: Extract<ParsedSlashCommand, { kind: "trigger" }>) => Promise<unknown> | unknown
   onMcp: (command: Extract<ParsedSlashCommand, { kind: "mcp" }>) => Promise<unknown> | unknown
   onSkill: (command: Extract<ParsedSlashCommand, { kind: "skill" }>) => Promise<unknown> | unknown
   onEnv: (command: Extract<ParsedSlashCommand, { kind: "env" }>) => Promise<unknown> | unknown
@@ -318,10 +325,13 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
     }
   }
   if (trimmed === "/wait-in" || trimmed.startsWith("/wait-in ")) {
-    return parseAgentWaitCommand(trimmed, "/wait-in", "once")
+    return parseScheduleTrigger(trimmed, trimmed.slice("/wait-in".length), "once", "/wait-in")
   }
   if (trimmed === "/wait-every" || trimmed.startsWith("/wait-every ")) {
-    return parseAgentWaitCommand(trimmed, "/wait-every", "recurring")
+    return parseScheduleTrigger(trimmed, trimmed.slice("/wait-every".length), "every", "/wait-every")
+  }
+  if (trimmed === "/trigger" || trimmed.startsWith("/trigger ")) {
+    return parseTriggerCommand(trimmed)
   }
   if (trimmed.startsWith("/workflow")) {
     return {
@@ -418,30 +428,56 @@ export function sharedShellCommandForSlashCommand(input: string): string | null 
   return null
 }
 
-function parseAgentWaitCommand(
-  command: string,
-  prefix: "/wait-in" | "/wait-every",
-  scheduleKind: "once" | "recurring",
-): Extract<ParsedSlashCommand, { kind: "wait" }> {
-  const remainder = command.slice(prefix.length).trim()
-  const [rawMinutes = "", ...promptParts] = remainder.split(/\s+/)
-  const minutes = Number(rawMinutes)
-  if (!rawMinutes || !Number.isFinite(minutes) || minutes <= 0) {
-    return {
-      kind: "wait",
-      raw: command,
-      scheduleKind,
-      minutes: null,
-      prompt: promptParts.join(" "),
-      error: `usage: ${prefix} <minutes> [prompt]`,
+export const TRIGGER_USAGE =
+  "usage: /trigger [list] | every|in <minutes> [--steer|--queue] <prompt> | on|off|queue|steer <id> | remove <id> | resend <prompt-id>"
+
+function parseTriggerCommand(command: string): Extract<ParsedSlashCommand, { kind: "trigger" }> {
+  const [verb = "list", ...rest] = command.slice("/trigger".length).trim().split(/\s+/).filter(Boolean)
+  if (verb === "list" && rest.length === 0) {
+    return { kind: "trigger", raw: command, action: { type: "list" }, error: null }
+  }
+  if (verb === "every" || verb === "in") {
+    return parseScheduleTrigger(command, rest.join(" "), verb === "every" ? "every" : "once", `/trigger ${verb}`)
+  }
+  const triggerId = rest[0]
+  if (triggerId && rest.length === 1) {
+    if (verb === "resend") {
+      return { kind: "trigger", raw: command, action: { type: "resend", promptId: triggerId }, error: null }
+    }
+    if (verb === "on" || verb === "off" || verb === "queue" || verb === "steer") {
+      return { kind: "trigger", raw: command, action: { type: "update", triggerId, change: verb }, error: null }
+    }
+    if (verb === "remove") {
+      return { kind: "trigger", raw: command, action: { type: "remove", triggerId }, error: null }
     }
   }
+  return { kind: "trigger", raw: command, action: null, error: TRIGGER_USAGE }
+}
+
+function parseScheduleTrigger(
+  command: string,
+  remainder: string,
+  repeat: "once" | "every",
+  usagePrefix: string,
+): Extract<ParsedSlashCommand, { kind: "trigger" }> {
+  const words = remainder.trim().split(/\s+/).filter(Boolean)
+  const minutes = Number(words[0] ?? "")
+  let busyPolicy: "queue" | "steer" = "queue"
+  let promptWords = words.slice(1)
+  // Only /trigger takes a policy; the /wait aliases always queue.
+  if (usagePrefix.startsWith("/trigger") && (promptWords[0] === "--steer" || promptWords[0] === "--queue")) {
+    busyPolicy = promptWords[0] === "--steer" ? "steer" : "queue"
+    promptWords = promptWords.slice(1)
+  }
+  const prompt = promptWords.join(" ")
+  if (!words[0] || !Number.isFinite(minutes) || minutes <= 0 || !prompt) {
+    const policy = usagePrefix.startsWith("/trigger") ? " [--steer|--queue]" : ""
+    return { kind: "trigger", raw: command, action: null, error: `usage: ${usagePrefix} <minutes>${policy} <prompt>` }
+  }
   return {
-    kind: "wait",
+    kind: "trigger",
     raw: command,
-    scheduleKind,
-    minutes,
-    prompt: promptParts.join(" "),
+    action: { type: "create", repeat, minutes, busyPolicy, prompt },
     error: null,
   }
 }
@@ -555,8 +591,8 @@ export async function executeSlashCommand(
     case "goal":
       await handlers.onGoal(command)
       break
-    case "wait":
-      await handlers.onWait?.(command)
+    case "trigger":
+      await handlers.onTrigger?.(command)
       break
     case "mcp":
       await handlers.onMcp(command)
@@ -611,7 +647,7 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "settings":
     case "loop":
     case "goal":
-    case "wait":
+    case "trigger":
     case "mcp":
     case "skill":
     case "env":

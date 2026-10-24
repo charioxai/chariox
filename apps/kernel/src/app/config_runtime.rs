@@ -1,3 +1,4 @@
+mod enrollment;
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 
@@ -41,6 +42,7 @@ impl DaemonApp {
         profile: Option<crate::config::PersistedCloudRelayProfile>,
     ) -> Result<(), DaemonError> {
         self.config.persist_cloud_relay_profile(profile)?;
+        self.enroll_existing_local_state()?;
         self.config_projection.update(self.config.clone());
         Ok(())
     }

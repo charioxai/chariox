@@ -19,7 +19,7 @@ use super::finished_jobs::{
 use super::in_flight::ProviderRunInFlightState;
 use super::native_interaction::ProviderNativeInteractionBridgeStore;
 use super::runtime_slots::ProviderRunRuntimeRegistry;
-use super::ProviderRunActorCompletionSignal;
+use super::{ProviderPromptSubmitReceipt, ProviderRunActorCompletionSignal};
 
 const PROVIDER_RUN_COMMAND_QUEUE_LIMIT: usize = 64;
 
@@ -43,6 +43,7 @@ pub(super) enum ProviderRunActorCommand {
         prompt_id: String,
         run: RuntimeProviderRun,
         envelope: PromptEnvelope,
+        acceptance: tokio::sync::oneshot::Sender<ProviderPromptSubmitReceipt>,
     },
     Utility {
         provider_run_id: String,
@@ -131,9 +132,11 @@ impl ProviderRunWorkerDeps {
                 prompt_id,
                 run,
                 envelope,
+                acceptance,
             } => {
                 let result =
                     execute_submit_command(&self.runtime_registry, run, envelope, &prompt_id);
+                let receipt = ProviderPromptSubmitReceipt::from_result(&result);
                 self.in_flight.clear_prompt_io_in_flight(&provider_run_id);
                 let finished = FinishedProviderPromptSubmitJob {
                     session_id,
@@ -145,6 +148,7 @@ impl ProviderRunWorkerDeps {
                 };
                 push_finished_submit(&self.finished_submits, finished);
                 self.completion_signal.record_completion(&provider_run_id);
+                let _ = acceptance.send(receipt);
             }
             ProviderRunActorCommand::Abort {
                 session_id,

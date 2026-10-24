@@ -331,6 +331,28 @@ impl WorkflowDefinition {
         self.max_concurrent
     }
 
+    pub(crate) fn enroll_local_owner(&mut self, owner: &str) {
+        let local = super::DEFAULT_LOCAL_USER_ID;
+        for node in &mut self.nodes {
+            if node.owner_user_id() == local {
+                node.set_owner_user_id(owner);
+            }
+            if node.created_by_user_id() == local {
+                node.set_created_by_user_id(owner);
+            }
+        }
+        for endpoint in &mut self.endpoints {
+            if endpoint.owner_user_id() == local {
+                endpoint.set_owner_user_id(owner);
+            }
+        }
+        for edge in &mut self.edges {
+            if edge.created_by_user_id() == local {
+                edge.set_created_by_user_id(owner);
+            }
+        }
+    }
+
     pub fn nodes(&self) -> &[WorkflowNodeDefinition] {
         &self.nodes
     }

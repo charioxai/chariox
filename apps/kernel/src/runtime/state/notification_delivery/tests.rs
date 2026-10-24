@@ -551,7 +551,14 @@ async fn notification_inject_structured_mailbox_acceptance_is_not_provider_ack()
                 .find(|q| q.id() == id)
                 .unwrap()
                 .status(),
-            WorkflowQueuedPromptStatus::Running,
+            // The steer call waits for the provider's receipt: an acceptance is
+            // settled by the reaper, a definitive rejection already returned the
+            // item to the queue.
+            if accepted {
+                WorkflowQueuedPromptStatus::Running
+            } else {
+                WorkflowQueuedPromptStatus::Queued
+            },
             "mailbox accepted, provider has not acknowledged"
         );
         let finished = tokio::time::timeout(Duration::from_secs(5), async {

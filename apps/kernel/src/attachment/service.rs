@@ -143,6 +143,14 @@ impl AttachmentServiceStore {
 }
 
 impl AttachmentService {
+    pub(crate) fn enroll_local_session_owner(&mut self, session_id: &str, owner: &str) {
+        for attachment in self.attachments.values_mut() {
+            if attachment.session_id() == session_id {
+                attachment.enroll_local_owner(owner);
+            }
+        }
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

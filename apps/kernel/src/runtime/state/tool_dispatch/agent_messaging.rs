@@ -232,6 +232,7 @@ impl KernelRuntimeState {
                     &dispatch.prompt_id,
                     &dispatch.prompt,
                     &dispatch.attachments,
+                    crate::session::PromptOrigin::Chariox,
                 ) {
                     Ok(appended) => sequence = Some(appended),
                     Err(error) => {

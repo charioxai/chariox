@@ -284,7 +284,7 @@ fn load_scoped_agent_outline(
         // A hidden check turn's reply sits between two visible prompts.
         events.retain(|event| !event_is_internal_prompt_turn(event));
         let lifecycle_events = scoped_history_events(events, agent_import);
-        let events = if outline_turn_prompt_origin(prompt) == PromptOrigin::Chariox {
+        let events = if outline_turn_prompt_origin(prompt).is_chariox_prompt() {
             suppress_external_observed_events_from_chariox_turn(lifecycle_events.clone())
         } else {
             lifecycle_events.clone()
@@ -747,7 +747,7 @@ fn project_workflow_user_prompt(
     user_prompt: &mut crate::session_history_page::SessionHistoryPageEntry,
     prompt_origin: PromptOrigin,
 ) {
-    if prompt_origin != PromptOrigin::Chariox {
+    if !prompt_origin.is_chariox_prompt() {
         return;
     }
     let Some(endpoint_prompt) = workflow_endpoint_prompt(&user_prompt.entry.text) else {
@@ -870,7 +870,7 @@ fn outline_turn_completed_at_ms(
             .unwrap_or(prompt.timestamp_ms);
         return Some(settled_at_ms.max(latest_content_at_ms));
     }
-    if prompt_origin == PromptOrigin::Chariox && !has_newer_prompt {
+    if prompt_origin.is_chariox_prompt() && !has_newer_prompt {
         return None;
     }
     if prompt_origin == PromptOrigin::External

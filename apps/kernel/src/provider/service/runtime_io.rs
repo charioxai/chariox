@@ -245,7 +245,10 @@ impl ProviderProcessService {
         mode: PromptAssemblyMode,
         private_assessment_evidence: Option<crate::prompt_assembly::AssessmentEvidence>,
         steering: bool,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<
+        tokio::sync::oneshot::Receiver<crate::provider::ProviderPromptSubmitReceipt>,
+        DaemonError,
+    > {
         if let Ok(active_run) = self.get_run_mut(run.id()) {
             active_run.clear_terminal_diagnostic();
             active_run.touch_activity();

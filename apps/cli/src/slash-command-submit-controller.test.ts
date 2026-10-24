@@ -74,7 +74,7 @@ test("slash command submit keeps command center for session commands", async () 
   assert.equal(harness.commandCenterClearCount(), 0)
 })
 
-test("slash command submit dispatches agent wait commands", async () => {
+test("slash command submit dispatches /wait-every as a schedule trigger", async () => {
   const harness = createHarness({ attached: true })
   const controller = createSlashCommandSubmitController(harness.deps)
 
@@ -82,8 +82,8 @@ test("slash command submit dispatches agent wait commands", async () => {
     allowSlashCommandSubmission: true,
   })
 
-  assert.equal(command?.kind, "wait")
-  assert.deepEqual(harness.calls(), ["wait:recurring:2:Review health"])
+  assert.equal(command?.kind, "trigger")
+  assert.deepEqual(harness.calls(), [`trigger:${JSON.stringify({ type: "create", repeat: "every", minutes: 2, busyPolicy: "queue", prompt: "Review health" })}`])
   assert.equal(harness.clearPromptCount(), 1)
 })
 
@@ -347,7 +347,7 @@ function createHarness(options: {
     handleWorkflowCommand: (command) => calls.push(`workflow:${command.args.join(" ")}`),
     handleLoopCommand: (command) => calls.push(`loop:${command.prompt}`),
     handleGoalCommand: (command) => calls.push(`goal:${command.prompt}`),
-    handleWaitCommand: (command) => calls.push(`wait:${command.scheduleKind}:${command.minutes}:${command.prompt}`),
+    handleTriggerCommand: (command) => calls.push(`trigger:${JSON.stringify(command.action)}`),
     handleMcpCommand: (command) => calls.push(`mcp:${command.args.join(" ")}`),
     handleSkillCommand: (command) => calls.push(`skill:${command.args.join(" ")}`),
     handleEnvCommand: (command) => calls.push(`env:${command.args.join(" ")}`),
