@@ -303,7 +303,8 @@ export async function run(operation, input, dependencies = {}) {
       const local = join(directory, name);
       try { await call(['files', 'get', ...common, '--overwrite', `${remote}/${name}`, local]); }
       catch (error) {
-        if (name !== 'ACCEPTANCE_UPDATE.json' || error.code !== 'file_not_found') throw error;
+        // A worker stopped early may not have written its handoff; the round's commits are still bundled.
+        if (error.code !== 'file_not_found') throw error;
         result[name] = { missing: true, reason: error.code };
         continue;
       }

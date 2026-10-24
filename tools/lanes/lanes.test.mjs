@@ -117,6 +117,16 @@ test('fetch downloads all three artifacts and names each malformed acceptance fi
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test('fetch keeps going when a stopped worker never wrote its handoff files', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dogfood-fetch-'));
+  try {
+    const execute = async argv => { if (argv.at(-2).endsWith('PUSH_READY.md')) throw new LaneError('file_not_found'); await writeFile(argv.at(-1), argv.at(-2).endsWith('.json') ? '{"rows":[]}' : 'notes'); return {}; };
+    const files = await run('fetch', { kernel: 'b', taskId: 'lane', worktree: '/repo', directory: dir }, { execute });
+    assert.deepEqual(files['PUSH_READY.md'], { missing: true, reason: 'file_not_found' });
+    assert.ok(files['LANE_STATUS.md'].sha256);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 // The two files the workers really wrote in dogfood r9 (amint r19, dictation r2): both ended finished_collect_failed.
 for (const [lane, field] of [['amint', 'rows[0].head'], ['dictation', 'rows[0].head']]) {
   test(`fetch keeps the real ${lane} acceptance file and names the head it cannot use`, async () => {
