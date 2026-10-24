@@ -599,14 +599,27 @@ impl Sessions {
                     })
                     .collect::<Result<Vec<_>, _>>()
             };
-            // Small residuals encode inline; large ones in up to four parts.
+            // Small residuals encode inline; large ones use up to four threads.
             let area: i32 = rects.iter().map(|([_, _, w, h], _)| w * h).sum();
             let part = if area < 65536 {
                 rects.len().max(1)
             } else {
                 rects.len().div_ceil(4).max(1)
             };
-            let segments = raster::in_parts(&rects, part, "MP-10: lossless worker", encode);
+            let segments = std::thread::scope(|scope| {
+                let workers: Vec<_> = rects
+                    .chunks(part)
+                    .map(|chunk| scope.spawn(move || encode(chunk)))
+                    .collect();
+                workers.into_iter().try_fold(Vec::new(), |mut all, worker| {
+                    all.extend(
+                        worker
+                            .join()
+                            .map_err(|_| "MP-10: lossless worker".to_string())??,
+                    );
+                    Ok::<_, String>(all)
+                })
+            });
             let result = segments.and_then(|segments| {
                 let tiles: Vec<Value> = rects
                     .iter()
