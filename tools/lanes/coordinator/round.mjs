@@ -2,7 +2,7 @@
 import { readFile, stat, writeFile, mkdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { coordinate, save } from './loop.mjs';
+import { coordinate, defaultCli, save } from './loop.mjs';
 import { execute } from '../lanes.mjs';
 
 const read = async path => JSON.parse(await readFile(path, 'utf8'));
@@ -33,11 +33,22 @@ export function createRound(options) {
   const log = (lane, kind, detail) => { lane.run.events.push({ at_ms: now(), kind, ...detail }); lane.run.events = lane.run.events.slice(-KEEP_EVENTS); };
   const byTarget = new Map();
 
+  // Launch is idempotent: it reuses the receipt, the original brief and the original deadline.
+  const launch = async lane => {
+    const { entry, run } = lane;
+    const record = await coordinator('brief', [entry.lane, entry.worktree, entry.provider, entry.brief]);
+    run.launch = { kernel: record.launch.kernel, sessionId: record.launch.sessionId, agentId: record.launch.agentId };
+    byTarget.set(`${record.launch.kernel}/${record.launch.sessionId}/${record.launch.agentId}`, lane);
+    log(lane, 'launched', { agentId: record.launch.agentId });
+    await persist(lane);
+  };
+
   // Joining is idempotent: an identical resume reuses the original launch and its deadline.
   const add = async entry => {
     await mkdir(roundDirectory, { recursive: true });
     let run; try { run = await read(entry.runFile); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    run ??= { lane: entry.lane, model: entry.model, provider: entry.provider, worktree: entry.worktree, brief: entry.brief, events: [], notes: [], permissions: [], unanswered: [], statusReads: 0 };
+    if (run && run.round !== entry.round) run = undefined; // another round's file: loopd has kept its copy
+    run ??= { lane: entry.name ?? entry.lane, key: entry.lane, round: entry.round, effort: entry.effort, model: entry.model, provider: entry.provider, worktree: entry.worktree, brief: entry.brief, events: [], notes: [], permissions: [], unanswered: [], statusReads: 0 };
     if (run.driverError) { (run.previousDriverErrors ??= []).push(run.driverError); delete run.driverError; }
     const lane = { entry, run, finished: Boolean(run.finishReason) };
     if (!lane.finished) {
@@ -49,11 +60,7 @@ export function createRound(options) {
         run.launchedAtMs = now();
         await persist(lane);
       }
-      const record = await coordinator('brief', [entry.lane, entry.worktree, entry.provider, entry.brief]);
-      run.launch = { kernel: record.launch.kernel, sessionId: record.launch.sessionId, agentId: record.launch.agentId };
-      byTarget.set(`${record.launch.kernel}/${record.launch.sessionId}/${record.launch.agentId}`, lane);
-      log(lane, 'launched', { agentId: record.launch.agentId });
-      await persist(lane);
+      await launch(lane);
     }
     lanes.push(lane);
     return lane;
@@ -131,7 +138,20 @@ export function createRound(options) {
     return results;
   };
 
+  // The agent is gone once stopped, so its final message is read first.
+  const saveLastMessage = async lane => {
+    if (!lane.entry.lastMessageFile) return;
+    try {
+      const record = await read(join(home, `${lane.entry.lane}.json`));
+      const message = await adapter('message', { kernel: record.launch.kernel, taskId: lane.entry.lane, sessionId: record.launch.sessionId, attachmentId: record.launch.attachmentId, agentId: record.launch.agentId });
+      if (!message.text) { lane.run.lastMessage = { missing: message.reason || 'no_final_message' }; return; }
+      await writeFile(lane.entry.lastMessageFile, message.text, { mode: 0o600 });
+      lane.run.lastMessage = { path: lane.entry.lastMessageFile, chars: message.text.length, truncated: Boolean(message.truncated) };
+    } catch (error) { lane.run.lastMessage = { error: error.code || 'message_failed' }; }
+  };
+
   const collect = async (lane, reason) => {
+    await saveLastMessage(lane);
     try {
       if (reason === 'hard_stop') { lane.run.stop = await coordinator('stop', [lane.entry.lane]); lane.run.stopped = true; await archived(lane.run.stop?.removal?.archives); }
       const finished = await coordinator('lanefin', [lane.entry.lane]);
@@ -160,26 +180,34 @@ export function createRound(options) {
   };
 
   const pending = () => lanes.filter(lane => !lane.finished);
+  let rereadAll = false;
   // One wake: wait on the shared inbox, answer, deliver notes, detect finishes and hard stops.
   const step = async wakeMinutes => {
     const batch = await coordinator('watch', [String(wakeMinutes)]);
     const touched = await handle(batch.events || []);
+    if (rereadAll) { rereadAll = false; for (const lane of pending()) touched.add(lane); }
     for (const lane of pending()) for (const other of await deliverNotes(lane)) touched.add(other);
     for (const lane of pending()) {
       if (now() >= lane.run.launchedAtMs + lane.entry.hardStopMinutes * 60_000) { await collect(lane, 'hard_stop'); continue; }
-      if (!touched.has(lane) || now() < lane.run.launchedAtMs + 60_000) continue;
+      // A change seen in a lane's first minute is read at the next wake, not lost.
+      if (touched.has(lane)) lane.needsRead = true;
+      if (!lane.needsRead || now() < lane.run.launchedAtMs + 60_000) continue;
+      lane.needsRead = false;
       lane.run.statusReads++;
       let status;
       try { status = await coordinator('lanehealth', [lane.entry.lane]); } catch (error) { log(lane, 'status_error', { code: error.code || 'status_failed' }); continue; }
       if (status.state === 'idle' && !status.currentPrompt) await collect(lane, 'finished');
     }
+    for (const lane of pending()) if (lane.run.driverError) { (lane.run.previousDriverErrors ??= []).push(lane.run.driverError); delete lane.run.driverError; }
     for (const lane of lanes) await persist(lane);
   };
   // The round is resumable: a rerun reuses every receipt. Say why this driver stopped.
   const failed = async error => {
     for (const lane of pending()) { lane.run.driverError = { code: error.code || 'driver_failed', message: String(error.message).slice(0, 300), at_ms: now() }; await persist(lane); }
   };
-  return { lanes, add, step, pending, failed };
+  // A new access grant has a new inbox: attach every running lane to it and re-read each one's state.
+  const rebrief = async () => { for (const lane of pending()) await launch(lane); rereadAll = true; };
+  return { lanes, add, step, pending, failed, rebrief, touchAll: () => { rereadAll = true; }, cli: options.cli || defaultCli };
 }
 
 export async function runRound(spec, options = {}) {
@@ -192,10 +220,13 @@ export async function runRound(spec, options = {}) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   try {
-    const spec = await read(process.argv[2]);
-    spec.home ??= process.env.CHARIOX_COORDINATOR_HOME;
-    const runs = await runRound(spec);
-    console.log(JSON.stringify(runs.map(run => ({ lane: run.lane, finishReason: run.finishReason, head: run.head }))));
+    if (process.argv[2] === 'serve') await (await import('./loopd.mjs')).main();
+    else {
+      const spec = await read(process.argv[2]);
+      spec.home ??= process.env.CHARIOX_COORDINATOR_HOME;
+      const runs = await runRound(spec);
+      console.log(JSON.stringify(runs.map(run => ({ lane: run.lane, finishReason: run.finishReason, head: run.head }))));
+    }
   } catch (error) {
     console.error(JSON.stringify({ error: { code: error.code || 'round_failed', message: error.code ? error.message : 'Round failed; inspect retained receipts.' } }));
     process.exitCode = 1;

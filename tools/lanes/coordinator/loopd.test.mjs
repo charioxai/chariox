@@ -1,0 +1,191 @@
+// MP-08 / MP-09 / MP-10 / MP-11: the standing round service against fake adapters.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile, mkdir, readFile, readdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parseEntry, serve } from './loopd.mjs';
+
+const sha = 'a'.repeat(40);
+const entryFile = (lane, round, extra = {}) => ({ lane, round, provider: 'claude', model: 'claude-sonnet-5-5', effort: 'high', hardStopMinutes: 60, brief: '/briefs/BRIEF.md', worktrees: ['/work/' + lane], ...extra });
+
+async function rig(t) {
+  const root = await mkdtemp(join(tmpdir(), 'loopd-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const layout = { agents: join(root, 'agents'), queue: join(root, 'agents', '_loop', 'queue'), home: join(root, 'home') };
+  await mkdir(layout.queue, { recursive: true });
+  const clock = { ms: 1_000_000 }, calls = [], idle = new Set(), launches = new Map(), script = [], controller = new AbortController(), logs = [];
+  const config = { kernel: 'executor', providers: { claude: { profile: 'p', model: 'm', effort: 'high', permission: 'required' }, codex: { profile: 'c', model: 'g', effort: 'low', permission: 'yolo' } } };
+  const brief = join(root, 'BRIEF.md'); await writeFile(brief, 'the brief');
+  const drop = async (lane, round, extra) => writeFile(join(layout.queue, `${lane}-${round}.json`), JSON.stringify(entryFile(lane, round, { brief, ...extra })));
+  const ev = (key, extra) => ({ cursor: calls.length, kernel: 'executor', session_id: `room-${key}`, agent_id: `agent-${key}`, ...extra });
+  const options = {
+    layout, config, signal: controller.signal, now: () => clock.ms, wakeMinutes: 0.25, idleMs: 5000, retryMs: 30_000,
+    log: (kind, detail) => logs.push({ kind, ...detail }),
+    sleep: async ms => { clock.ms += ms; },
+    git: async argv => { calls.push({ git: argv }); return sha + '\n'; },
+    adapter: async (op, input) => {
+      calls.push({ op, taskId: input.taskId, input });
+      if (op === 'launch') { launches.set(input.taskId, true); return { kernel: 'executor', taskId: input.taskId, sessionId: `room-${input.taskId}`, operationsSessionId: `ops-${input.taskId}`, agentId: `agent-${input.taskId}`, attachmentId: `att-${input.taskId}` }; }
+      if (op === 'status') return { state: idle.has(input.taskId) ? 'idle' : 'working', currentPrompt: idle.has(input.taskId) ? null : 'prompt', lastActivityMs: clock.ms, deadline: { mode: 'kernel', state: 'armed' } };
+      if (op === 'fetch') return { 'ACCEPTANCE_UPDATE.json': { missing: true, reason: 'file_not_found' } };
+      if (op === 'bundle') return { base: sha, head: 'b'.repeat(40), sha256: 'c'.repeat(64), path: `/bundles/${input.taskId}.bundle` };
+      if (op === 'message') return { text: `final message of ${input.taskId}` };
+      return { stopped: true };
+    },
+    cli: async argv => {
+      calls.push({ argv });
+      if (argv[1] === 'subscription') return { subscription: { subscription_id: 'grant', targets: [...launches.keys()].map(key => ({ kernel: 'executor', session_id: `room-${key}` })) } };
+      if (argv[1] === 'wait') {
+        clock.ms += 15_000;
+        const stops = calls.filter(c => c.op === 'stop' && !c.served);
+        if (stops.length) { stops[0].served = true; return { events: [ev(stops[0].taskId, { type: 'session', value: { state: 'agent_removed' } })], next_cursor: calls.length }; }
+        const step = script.shift();
+        const events = step ? await step() : [];
+        return { events: events || [], next_cursor: calls.length, timed_out: !events?.length };
+      }
+      return {};
+    },
+    respond: async () => ({}),
+  };
+  const finished = count => { const watcher = options.log; options.log = (kind, detail) => { watcher(kind, detail); if (logs.filter(l => l.kind === 'finished').length >= count) controller.abort(); }; };
+  return { root, layout, clock, calls, idle, script, controller, options, logs, drop, ev, finished, launches };
+}
+const runFile = (r, lane) => readFile(join(r.layout.agents, lane, 'LOOP_RUN.json'), 'utf8').then(JSON.parse);
+
+test('parseEntry accepts a complete entry and normalizes worktrees', () => {
+  const entry = parseEntry('integ2-r35.json', JSON.stringify(entryFile('integ2', 'r35', { worktrees: ['/a', { path: '/b', base: sha }], notes: '/n.md' })));
+  assert.equal(entry.key, 'integ2-r35');
+  assert.deepEqual(entry.worktrees, [{ path: '/a', base: undefined }, { path: '/b', base: sha }]);
+  assert.equal(entry.notes, '/n.md');
+});
+
+test('parseEntry names the exact field it rejects', () => {
+  const bad = [
+    ['integ2-r35.json', '{nope', 'file'],
+    ['wrong-name.json', JSON.stringify(entryFile('integ2', 'r35')), 'file'],
+    ['integ2-r35.json', JSON.stringify(entryFile('integ2', 'r35', { provider: 'gemini' })), 'provider'],
+    ['integ2-r35.json', JSON.stringify(entryFile('integ2', 'r35', { effort: 'extreme' })), 'effort'],
+    ['integ2-r35.json', JSON.stringify(entryFile('integ2', 'r35', { hardStopMinutes: 0 })), 'hardStopMinutes'],
+    ['integ2-r35.json', JSON.stringify(entryFile('integ2', 'r35', { brief: 'relative.md' })), 'brief'],
+    ['integ2-r35.json', JSON.stringify(entryFile('integ2', 'r35', { worktrees: [] })), 'worktrees'],
+    ['integ2-r35.json', JSON.stringify(entryFile('integ2', 'r35', { worktrees: ['/a', { path: '/b', base: 'abc' }] })), 'worktrees[1].base'],
+    ['../x-r1.json', JSON.stringify(entryFile('../x', 'r1')), 'lane'],
+  ];
+  for (const [name, text, field] of bad) assert.throws(() => parseEntry(name, text), error => error.code === 'invalid_queue_entry' && error.message.startsWith(field), `${name} ${field}`);
+});
+
+test('serve launches entries as they appear; one finishes, one stops at its hard stop', async t => {
+  const r = await rig(t);
+  await r.drop('alpha', 'r1', { hardStopMinutes: 60 });
+  r.script.push(async () => { await r.drop('beta', 'r2', { hardStopMinutes: 2 }); return []; });
+  r.script.push(async () => []);
+  r.script.push(async () => { r.idle.add('alpha-r1'); return [r.ev('alpha-r1', { type: 'agent', value: { state: 'idle' } })]; });
+  r.finished(2);
+  await serve(r.options);
+  const alpha = await runFile(r, 'alpha'), beta = await runFile(r, 'beta');
+  assert.equal(alpha.finishReason, 'finished', JSON.stringify(alpha.collectError));
+  assert.equal(alpha.round, 'r1');
+  assert.equal(alpha.head, 'b'.repeat(40));
+  assert.equal(beta.finishReason, 'hard_stop');
+  assert.ok(beta.finishedAtMs >= beta.launchedAtMs + 2 * 60_000);
+  assert.equal(r.calls.filter(c => c.op === 'launch').length, 2);
+  assert.equal(await readFile(join(r.layout.agents, 'alpha', 'last-message.md'), 'utf8'), 'final message of alpha-r1');
+  assert.deepEqual((await readdir(join(r.layout.queue, 'done'))).sort(), ['alpha-r1.json', 'beta-r2.json']);
+  assert.deepEqual((await readdir(r.layout.queue)).filter(f => f.endsWith('.json')), []);
+  assert.ok((await runFile(r, 'alpha')).launchedAtMs < beta.launchedAtMs);
+  await readFile(join(r.layout.agents, 'alpha', 'LOOP_RUN.r1.json'), 'utf8');
+});
+
+test('serve passes the entry model, effort and deadline to launch and keeps lanes apart', async t => {
+  const r = await rig(t);
+  await r.drop('alpha', 'r1', { model: 'claude-opus-5-5', effort: 'xhigh', hardStopMinutes: 90 });
+  r.idle.add('alpha-r1');
+  r.script.push(async () => [r.ev('alpha-r1', { type: 'agent', value: { state: 'idle' } })]);
+  r.finished(1);
+  await serve(r.options);
+  const launch = r.calls.find(c => c.op === 'launch').input;
+  assert.equal(launch.model, 'claude-opus-5-5');
+  assert.equal(launch.effort, 'xhigh');
+  assert.equal(launch.taskId, 'alpha-r1');
+  assert.equal(launch.deadlineMs, 1_000_000 + (90 + 15) * 60_000, 'deadline = hard stop plus margin from the first sighting');
+  assert.equal(launch.remoteBrief.startsWith(join(r.layout.agents, 'alpha')), true);
+});
+
+test('serve rejects a bad entry with its reason and keeps serving the good one', async t => {
+  const r = await rig(t);
+  await writeFile(join(r.layout.queue, 'bad-r1.json'), JSON.stringify(entryFile('bad', 'r1', { provider: 'nope' })));
+  await r.drop('alpha', 'r1');
+  r.idle.add('alpha-r1');
+  r.script.push(async () => [r.ev('alpha-r1', { type: 'agent', value: { state: 'idle' } })]);
+  r.finished(1);
+  await serve(r.options);
+  assert.match(await readFile(join(r.layout.queue, 'rejected', 'bad-r1.json.reason.txt'), 'utf8'), /^invalid_queue_entry: provider: must be claude or codex/);
+  assert.equal((await runFile(r, 'alpha')).finishReason, 'finished');
+});
+
+test('a restarted service resumes the recorded lane and its receipts, and finishes it once', async t => {
+  const r = await rig(t);
+  await r.drop('alpha', 'r1');
+  r.script.push(async () => { r.controller.abort(); return []; });
+  await serve(r.options);
+  const first = await runFile(r, 'alpha');
+  assert.equal(first.finishReason, undefined);
+  assert.ok(first.launch.agentId);
+  const launchedAt = first.launchedAtMs;
+  // New service process, new abort signal, same queue and receipts.
+  const again = new AbortController(); r.options.signal = again.signal; r.options.log = (kind, detail) => { r.logs.push({ kind, ...detail }); if (kind === 'finished') again.abort(); };
+  r.idle.add('alpha-r1');
+  r.script.push(async () => [r.ev('alpha-r1', { type: 'agent', value: { state: 'idle' } })]);
+  await serve(r.options);
+  const done = await runFile(r, 'alpha');
+  assert.equal(done.finishReason, 'finished');
+  assert.equal(done.launchedAtMs, launchedAt);
+  assert.equal(done.launch.agentId, first.launch.agentId);
+  assert.equal(r.calls.filter(c => c.git?.includes('init')).length, 1, 'the base is fixed once, not re-read on resume');
+  assert.equal((await readdir(join(r.layout.queue, 'done'))).length, 1);
+});
+
+test('a second entry for a running lane waits, and the second round starts clean after the first', async t => {
+  const r = await rig(t);
+  await r.drop('alpha', 'r1');
+  await r.drop('alpha', 'r2');
+  r.idle.add('alpha-r1');
+  r.script.push(async () => [r.ev('alpha-r1', { type: 'agent', value: { state: 'idle' } })]);
+  r.finished(2);
+  const watcher = r.options.log;
+  r.options.log = (kind, detail) => { watcher(kind, detail); if (kind === 'picked_up' && detail.key === 'alpha-r2') { r.idle.add('alpha-r2'); r.script.push(async () => [r.ev('alpha-r2', { type: 'agent', value: { state: 'idle' } })]); } };
+  await serve(r.options);
+  const second = await runFile(r, 'alpha');
+  assert.equal(second.round, 'r2');
+  assert.equal(second.finishReason, 'finished');
+  assert.equal((await readFile(join(r.layout.agents, 'alpha', 'LOOP_RUN.r1.json'), 'utf8').then(JSON.parse)).round, 'r1');
+  assert.deepEqual(r.calls.filter(c => c.op === 'launch').map(c => c.taskId), ['alpha-r1', 'alpha-r2']);
+});
+
+test('an entry that cannot launch is retried, then ends as launch_failed with its reason', async t => {
+  const r = await rig(t);
+  await r.drop('alpha', 'r1');
+  const adapter = r.options.adapter;
+  r.options.adapter = async (op, input) => { if (op === 'launch') throw Object.assign(new Error('kernel down'), { code: 'kernel_connection_lost' }); return adapter(op, input); };
+  r.finished(0);
+  r.options.log = (kind, detail) => { r.logs.push({ kind, ...detail }); if (kind === 'launch_failed') r.controller.abort(); };
+  await serve(r.options);
+  const run = await runFile(r, 'alpha');
+  assert.equal(run.finishReason, 'launch_failed');
+  assert.equal(run.launchError.code, 'kernel_connection_lost');
+  assert.equal(r.logs.filter(l => l.kind === 'launch_error').length, 5);
+  assert.equal((await readdir(join(r.layout.queue, 'done'))).length, 1);
+});
+
+test('after a grant change the stale inbox is set aside and every running lane is re-read', async t => {
+  const r = await rig(t);
+  await mkdir(r.layout.home, { recursive: true });
+  await writeFile(join(r.layout.home, 'subscription.json'), JSON.stringify({ subscription_id: 'old-grant' }));
+  await r.drop('alpha', 'r1');
+  r.idle.add('alpha-r1');
+  r.finished(1);
+  await serve(r.options);
+  assert.equal((await runFile(r, 'alpha')).finishReason, 'finished', 'a re-read finds the finished worker without waiting for an event');
+  assert.ok((await readdir(r.layout.home)).some(f => /^subscription\.\d+\.json$/.test(f)));
+  assert.ok(r.logs.some(l => l.kind === 'inbox_reset'));
+});

@@ -121,6 +121,26 @@ test('round: a free-form acceptance head still finishes with head, bundle and th
   assert.deepEqual(alpha.acceptanceIssues, issues);
 });
 
+test('round: a finish seen in the first minute is read at the next wake, and the final message is saved before stop', async t => {
+  const r = await rig(t, ['alpha']);
+  const file = join(r.home, 'alpha.last-message.md');
+  r.spec.lanes[0].lastMessageFile = file;
+  const adapter = r.options.adapter;
+  r.options.adapter = async (op, input) => op === 'message' ? (r.calls.push({ op }), { text: 'all done' }) : adapter(op, input);
+  r.idle.add('alpha');
+  r.options.now = () => r.clock.ms;
+  r.waits.push({ events: [r.ev('alpha', { type: 'agent', value: { state: 'idle' } })] });
+  r.clock.ms = 1_000_000; // launch time; the first event arrives 15 s later, before the status read is allowed
+  const cli = r.options.cli;
+  r.options.cli = async argv => { const out = await cli(argv); if (argv[1] === 'wait') r.clock.ms -= 45_000; return out; };
+  r.waits.push({}); r.waits.push({}); r.waits.push({});
+  const [alpha] = await runRound(r.spec, r.options);
+  assert.equal(alpha.finishReason, 'finished');
+  assert.equal(await readFile(file, 'utf8'), 'all done');
+  assert.deepEqual(alpha.lastMessage, { path: file, chars: 8, truncated: false });
+  assert.ok(r.calls.findIndex(c => c.op === 'message') < r.calls.findIndex(c => c.op === 'stop'));
+});
+
 test('round: extra repositories get their own verified bundle', async t => {
   const r = await rig(t, ['alpha']);
   r.spec.lanes[0].extraBundles = [{ name: 'cloud', worktree: '/work/alpha-cloud', base: 'd'.repeat(40), repository: '/repo/cloud.git' }, { name: 'bad', worktree: '/x', base: 'nope', repository: '/r' }];
