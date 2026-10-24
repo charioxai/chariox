@@ -108,6 +108,8 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             last_usage_file_contents: None,
             last_context_tokens: None,
             last_context_window: None,
+            observed_context_model: None,
+            main_stream_has_context: true,
             mcp_config_file,
             process_identity: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::runtime::kernel_access::process::inspect(child.id())
@@ -525,6 +527,8 @@ fn restart_claude_runtime(
     state.working_directory = working_directory;
     state.last_context_tokens = None;
     state.last_context_window = None;
+    state.observed_context_model = None;
+    state.main_stream_has_context = true;
     state.active_model = run.model().to_string();
     state.active_variant = run.variant().map(str::to_string);
     state.active_execution_mode = run.execution_mode();
@@ -659,6 +663,8 @@ mod tests {
                 last_usage_file_contents: None,
                 last_context_tokens: None,
                 last_context_window: None,
+                observed_context_model: None,
+                main_stream_has_context: true,
                 mcp_config_file: None,
                 process_identity: std::sync::Arc::new(std::sync::Mutex::new(None)),
                 child,
@@ -714,6 +720,93 @@ mod tests {
             &mut batch,
         );
         assert_eq!(batch.resolved_usage.unwrap().context_window, Some(4000));
+    }
+
+    #[test]
+    fn provusage_claude_result_uses_observed_main_model_window_across_polls() {
+        for (models, expected) in [
+            (
+                json!({"aaa-foreign":{"contextWindow":1000000},"claude-haiku-5-5":{"contextWindow":200000}}),
+                Some(200000),
+            ),
+            (json!({"claude-sonnet-4-6":{"contextWindow":1000000}}), None),
+            (json!({"claude-haiku-5-5":{"contextWindow":0}}), None),
+            (
+                json!({"deployment":{"canonicalModel":"claude-haiku-5-5","contextWindow":200000}}),
+                Some(200000),
+            ),
+            (
+                json!({"a":{"canonicalModel":"claude-haiku-5-5","contextWindow":200000},"b":{"canonicalModel":"claude-haiku-5-5","contextWindow":1000000}}),
+                None,
+            ),
+        ] {
+            let (mut state, mut batch) = parser_state();
+            apply_claude_message(
+                "run-1",
+                &mut state,
+                json!({"type":"assistant","message":{"model":"claude-haiku-5-5","usage":{"input_tokens":200,"cache_read_input_tokens":800}}}),
+                &mut batch,
+            );
+            batch = ProviderPromptSignalBatch::default();
+            apply_claude_message(
+                "run-1",
+                &mut state,
+                json!({"type":"result","subtype":"success","usage":{"input_tokens":9999,"output_tokens":10},"modelUsage":models}),
+                &mut batch,
+            );
+            let usage = batch.resolved_usage.unwrap();
+            assert_eq!(usage.context_window, expected);
+            assert_eq!(usage.context_tokens, Some(1000));
+            assert_eq!(usage.total_tokens, Some(10009));
+        }
+        let (mut state, mut batch) = parser_state();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({"type":"stream_event","parent_tool_use_id":null,"event":{"type":"message_start","message":{"id":"main","model":"claude/claude-haiku-5-5","usage":{"input_tokens":1000}}}}),
+            &mut batch,
+        );
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({"type":"assistant","parent_tool_use_id":"tool-1","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":99999},"content":[{"type":"text","text":"Subagent output remains visible"}]}}),
+            &mut batch,
+        );
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({"type":"stream_event","parent_tool_use_id":"tool-1","event":{"type":"message_start","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":99999}}}}),
+            &mut batch,
+        );
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({"type":"stream_event","event":{"type":"message_start","message":{"model":"<synthetic>","usage":{"input_tokens":9}}}}),
+            &mut batch,
+        );
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({"type":"stream_event","event":{"type":"message_delta","usage":{"input_tokens":9}}}),
+            &mut batch,
+        );
+        batch = ProviderPromptSignalBatch::default();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({"type":"result","subtype":"success","usage":{"input_tokens":101000},"modelUsage":{"claude-haiku-5-5":{"contextWindow":200000},"claude-sonnet-4-6":{"contextWindow":1000000}}}),
+            &mut batch,
+        );
+        assert_eq!(batch.resolved_usage.unwrap().context_tokens, Some(1000));
+        assert_eq!(batch.resolved_usage.unwrap().context_window, Some(200000));
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({"type":"assistant","message":{"model":"claude-haiku-5-5","usage":{"input_tokens":2000}}}),
+            &mut batch,
+        );
+        assert_eq!(batch.resolved_usage.unwrap().context_tokens, Some(2000));
+        assert_eq!(batch.resolved_usage.unwrap().context_window, Some(200000));
     }
 
     #[test]

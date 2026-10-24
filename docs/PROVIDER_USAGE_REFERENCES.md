@@ -19,7 +19,9 @@ Local protocol 589 / relay peer 195 adds two reads:
 
 Codex supplies official app-server rate-limit/usage snapshots and token-usage
 notifications. Claude supplies official rate-limit events and status-line
-usage. OpenCode's official CLI stats provide local cost/tokens, while its Go
+usage. Claude result `modelUsage[model].contextWindow` supplies a context limit
+only for the observed main-agent model; aggregate model billing and subagent
+input are not the main conversation context. OpenCode's official CLI stats provide local cost/tokens, while its Go
 usage surface can report rolling limits. Local costs are not a subscription
 balance. Missing windows or credits remain missing.
 
@@ -35,7 +37,7 @@ must identify the exact kernel, client, relay and official provider versions.
 | provider-usage/USAGE-03 | A real Claude claude-haiku-5-5 turn exposes the account information actually reported by Claude, without estimated missing windows or context limits. |
 | provider-usage/USAGE-04 | Selecting different agents/Rooms keeps context and execution route scoped to that agent; remote/slice execution names its true target via the coordinating kernel. Disconnects and late replies cannot retain a previous target's facts. |
 | provider-usage/USAGE-05 | A real protocol-567 kernel omits the new provider buttons, context ring and routed label, sends no new requests and produces no compatibility errors. |
-| provider-usage/USAGE-06 | A fresh normal-click/key flow on the real hosted stack is recorded at 1440x900 DPR1 and DPR2, and reviewed for missing/blank/stale/error content. |
+| provider-usage/USAGE-06 | A fresh normal-click/key flow on the real hosted stack is recorded at 1440x900 DPR1 and DPR2, with all eight prototype skins, relay recovery and a multi-hour stability session on the same exact heads; recordings are reviewed for missing/blank/stale/error content. |
 
 Source, domain and component tests are supplementary regression evidence. A
 passing test alone does not close a row or MP-10.
