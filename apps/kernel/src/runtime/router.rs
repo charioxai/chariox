@@ -236,6 +236,7 @@ mod tests {
     mod user_app_views;
     // Kernel resource telemetry reads /proc; other platforms report it as unsupported.
     mod agent_workflow;
+    mod dictation;
     #[cfg(target_os = "linux")]
     mod resource_telemetry;
     mod room_environment_placement;

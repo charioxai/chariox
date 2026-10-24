@@ -7,6 +7,7 @@ mod catalog;
 mod download;
 mod engine;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -30,8 +31,10 @@ const RELEASE_MODEL_AFTER: Duration = Duration::from_secs(300);
 const MIN_SPEECH_BYTES: usize = DICTATION_SAMPLE_RATE_HZ as usize * 2 * 3 / 10;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 struct Settings {
-    language: Option<String>,
+    /// The language each user chose; users without an entry get automatic detection.
+    languages: HashMap<String, String>,
 }
 
 enum Download {
@@ -98,16 +101,17 @@ impl DictationService {
 
     pub(crate) async fn handle(
         self: &Arc<Self>,
+        owner: &str,
         command: DictationCommand,
     ) -> Result<DictationResult, DaemonError> {
         match command {
             DictationCommand::Status => Ok(DictationResult::Status {
-                status: self.status(),
+                status: self.status(owner),
             }),
             DictationCommand::DownloadModel => Ok(DictationResult::Status {
-                status: self.start_download(),
+                status: self.start_download(owner),
             }),
-            DictationCommand::SetLanguage { language } => self.set_language(language),
+            DictationCommand::SetLanguage { language } => self.set_language(owner, language),
             DictationCommand::AppendAudio {
                 upload_id,
                 offset,
@@ -116,14 +120,14 @@ impl DictationService {
                 let received_bytes = self
                     .lock()
                     .uploads
-                    .append(&upload_id, offset, &pcm_base64)
+                    .append(owner, &upload_id, offset, &pcm_base64)
                     .map_err(audio_refusal)?;
                 Ok(DictationResult::AudioAccepted {
                     upload_id,
                     received_bytes,
                 })
             }
-            DictationCommand::Transcribe { upload_id } => self.transcribe(&upload_id).await,
+            DictationCommand::Transcribe { upload_id } => self.transcribe(owner, &upload_id).await,
         }
     }
 
@@ -132,7 +136,7 @@ impl DictationService {
             .is_ok_and(|meta| meta.len() == self.spec.size_bytes)
     }
 
-    fn status(&self) -> DictationStatus {
+    fn status(&self, owner: &str) -> DictationStatus {
         let inner = self.lock();
         let model = if self.model_ready() {
             DictationModelState::Ready
@@ -152,17 +156,17 @@ impl DictationService {
             model_id: self.spec.id.clone(),
             model_size_bytes: self.spec.size_bytes,
             model,
-            language: inner.settings.language.clone(),
+            language: inner.settings.languages.get(owner).cloned(),
         }
     }
 
-    fn start_download(self: &Arc<Self>) -> DictationStatus {
+    fn start_download(self: &Arc<Self>, owner: &str) -> DictationStatus {
         let received = Arc::new(AtomicU64::new(0));
         {
             let mut inner = self.lock();
             if self.model_ready() || matches!(inner.download, Download::Running(_)) {
                 drop(inner);
-                return self.status();
+                return self.status(owner);
             }
             inner.download = Download::Running(received.clone());
         }
@@ -174,10 +178,14 @@ impl DictationService {
                 Err(reason) => Download::Failed(reason),
             };
         });
-        self.status()
+        self.status(owner)
     }
 
-    fn set_language(&self, language: Option<String>) -> Result<DictationResult, DaemonError> {
+    fn set_language(
+        &self,
+        owner: &str,
+        language: Option<String>,
+    ) -> Result<DictationResult, DaemonError> {
         if language
             .as_deref()
             .is_some_and(|code| !engine::is_language_code(code))
@@ -190,7 +198,10 @@ impl DictationService {
         }
         {
             let mut inner = self.lock();
-            inner.settings.language = language;
+            match language {
+                Some(code) => inner.settings.languages.insert(owner.to_string(), code),
+                None => inner.settings.languages.remove(owner),
+            };
             let bytes = serde_json::to_vec(&inner.settings).map_err(|error| {
                 refuse(
                     "dictation_settings_failed",
@@ -211,11 +222,15 @@ impl DictationService {
                 })?;
         }
         Ok(DictationResult::Status {
-            status: self.status(),
+            status: self.status(owner),
         })
     }
 
-    async fn transcribe(self: &Arc<Self>, upload_id: &str) -> Result<DictationResult, DaemonError> {
+    async fn transcribe(
+        self: &Arc<Self>,
+        owner: &str,
+        upload_id: &str,
+    ) -> Result<DictationResult, DaemonError> {
         if !self.model_ready() {
             return Err(refuse(
                 "dictation_model_missing",
@@ -226,8 +241,11 @@ impl DictationService {
         let (pcm, language) = {
             let mut inner = self.lock();
             (
-                inner.uploads.take(upload_id).map_err(audio_refusal)?,
-                inner.settings.language.clone(),
+                inner
+                    .uploads
+                    .take(owner, upload_id)
+                    .map_err(audio_refusal)?,
+                inner.settings.languages.get(owner).cloned(),
             )
         };
         if pcm.len() < MIN_SPEECH_BYTES {

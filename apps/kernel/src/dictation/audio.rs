@@ -26,12 +26,14 @@ struct Upload {
 
 #[derive(Default)]
 pub(crate) struct AudioUploads {
-    uploads: HashMap<String, Upload>,
+    uploads: HashMap<(String, String), Upload>,
 }
 
 impl AudioUploads {
+    /// A recording belongs to the user who started it: the same id from another user is another recording.
     pub(crate) fn append(
         &mut self,
+        owner: &str,
         upload_id: &str,
         offset: u64,
         pcm_base64: &str,
@@ -56,23 +58,21 @@ impl AudioUploads {
         if chunk.len() % 2 != 0 {
             return Err(AudioError::InvalidChunk);
         }
-        if !self.uploads.contains_key(upload_id) && self.uploads.len() >= MAX_UPLOADS {
+        let key = (owner.to_string(), upload_id.to_string());
+        if !self.uploads.contains_key(&key) && self.uploads.len() >= MAX_UPLOADS {
             return Err(AudioError::Busy);
         }
-        let upload = self
-            .uploads
-            .entry(upload_id.to_string())
-            .or_insert_with(|| Upload {
-                pcm: Vec::new(),
-                touched: now,
-            });
+        let upload = self.uploads.entry(key.clone()).or_insert_with(|| Upload {
+            pcm: Vec::new(),
+            touched: now,
+        });
         if offset != upload.pcm.len() as u64 {
             return Err(AudioError::OutOfOrder {
                 held: upload.pcm.len() as u64,
             });
         }
         if upload.pcm.len() + chunk.len() > DICTATION_MAX_AUDIO_BYTES {
-            self.uploads.remove(upload_id);
+            self.uploads.remove(&key);
             return Err(AudioError::TooLong);
         }
         upload.pcm.extend_from_slice(&chunk);
@@ -80,9 +80,9 @@ impl AudioUploads {
         Ok(upload.pcm.len() as u64)
     }
 
-    pub(crate) fn take(&mut self, upload_id: &str) -> Result<Vec<u8>, AudioError> {
+    pub(crate) fn take(&mut self, owner: &str, upload_id: &str) -> Result<Vec<u8>, AudioError> {
         self.uploads
-            .remove(upload_id)
+            .remove(&(owner.to_string(), upload_id.to_string()))
             .map(|upload| upload.pcm)
             .ok_or(AudioError::Unknown)
     }
