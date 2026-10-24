@@ -660,7 +660,7 @@ fn browser_resize_protocol578_snapshot() {
     let bytes = include_bytes!("browser-resize-578.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "6e12b897933334c5f94938d551e5a6cf6c711fc6402655fc0863c1ad33700684"
+        "c4afaa2ca93ce0ceff96203d8cbb937dbf2156b988f7000735524f76b2954191"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();

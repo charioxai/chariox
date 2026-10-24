@@ -5458,3 +5458,20 @@ The web sends the newest container size per animation frame with one request in 
 mirror CSS without scaling; video retains its old pixels unscaled, cropped/padded until the new
 capture arrives. Kernels below578 retain the existing fitted layout and receive no resize command.
 Functional and performance acceptance must be recorded separately from this protocol contract.
+
+### MP-08 / MP-10: viewport-first mirror snapshot and `:visited` links (593/186)
+
+Allocated local593 adds two opt-in `mirror_subscribe` capabilities for `wire:2`; the
+subscribed reply echoes each one it accepted.
+
+`viewport_first:true` lets the reset snapshot carry the on-screen part of the document first.
+An off-screen block-level element in normal flow may arrive without its children and with
+`deferred:[x,y,width,height,height_pin,margin_top,margin_bottom]` in document CSS pixels; the
+viewer holds that box until the children arrive in later `children` ops. Packets carry
+`snapshot_viewport_complete` once every on-screen node has been sent and the document has loaded.
+The web hands over on it only when each kept box sits where the page has it, and otherwise waits
+for `snapshot_complete` as before. A subscription that did not ask receives whole snapshots and no
+viewport flag. Kernels below593 and older viewers keep the existing behaviour.
+
+The relay peer protocol stays 186: the relay never parses mirror records, which travel inside
+`KernelBrowser` results, and the web offers the new fields only to kernels at local593 or later.
