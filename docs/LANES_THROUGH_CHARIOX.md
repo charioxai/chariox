@@ -280,3 +280,15 @@ a stopped worker never wrote is reported as `missing` and no longer costs the ro
 | Empty-wake archives | 1,183 empty batches were archived in one evening. | Fixed: empty wakes are not archived. |
 | Naming | The Mac's `LOOP-DOWN` check looks for a running `round.mjs`. | loopd is `round.mjs serve`, so the existing check keeps working. |
 | `notes` file | `loopbrief.sh` has no notes parameter; the optional entry field `notes` names the coordinator's REVIEW_INBOX file if it is not `agents/<lane>/REVIEW_INBOX.md`. | Documented in LANES_KERNEL.md. |
+
+### The five #1079 review findings, fixed where the code ended up
+
+Each has a fail-first test (revert the fix and the test is red).
+
+| Finding | Fix |
+| --- | --- |
+| Failed notes were skipped | A section that fails to deliver stays pending (`noteFailures` in `LOOP_RUN.json`). The next wake sends the same content, which resumes the same steer receipt, also after a driver restart. A settled worker (`no_active_prompt`) or ten failures in a row end the attempts and record `delivered: false` with the reason. |
+| Failed permission replies were marked handled | Only a reply with a `choice` counts. A failed one keeps its entry (`attempts`, `error`), the lane is read again at the next wake, and the decision (listed by the lane status) is answered with the same command identity. |
+| Other lanes' completion wakes lost while a worker is stopping | Any non-decision event marks its lane for a status read (`needsRead`), whichever call consumed the batch (stop confirmation, note delivery), so the read happens in the same or next wake. |
+| Completion wake in a lane's first minute dropped | Same `needsRead` mark; the read waits until the first minute is over instead of being forgotten. |
+| `exec --detach` always exited 1 | The holder acknowledges a detached command once it has really started (`{pid, exit: 0}`); a failed spawn answers with its error and exit 127. Tests start a real holder in a temporary state directory (`kernel/lanes-kernel.test.mjs`). A running holder picks this up at its next restart. |
