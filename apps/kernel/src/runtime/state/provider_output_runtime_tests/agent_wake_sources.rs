@@ -670,6 +670,55 @@ async fn lane_deadline_stops_an_active_turn_and_fences_later_admission() {
 }
 
 #[tokio::test]
+async fn lane_deadline_is_not_stopped_while_an_owned_source_is_still_stopping() {
+    let f = fixture("lane-deadline-pending-source", false).await;
+    let task = f.begin("turn-1");
+    f.driver.cancel_pending.store(true, Ordering::Release);
+    f.arm(&task, "wake-resisting").unwrap();
+    let now = crate::session::unix_epoch_ms();
+    f.runtime
+        .set_agent_deadline(crate::local::SetAgentDeadlineRequest {
+            session_id: f.room.clone(),
+            agent_id: f.agent.clone(),
+            deadline_ms: now - 1,
+        })
+        .unwrap();
+    let error = f.runtime.tick_agent_deadlines(now).await.unwrap_err();
+    assert!(
+        matches!(&error, DaemonError::MachineRequest { code, message }
+            if code == "agent_deadline_cleanup_pending" && message.contains("wake-resisting")),
+        "{error:?}"
+    );
+    assert_eq!(f.wake_state("wake-resisting"), "cancelling");
+    let deadline = f
+        .store()
+        .agent_deadline(&f.room, &f.agent)
+        .unwrap()
+        .unwrap();
+    assert_eq!(deadline.state, crate::local::AgentDeadlineState::Reached);
+    assert!(
+        deadline.stopped_at_ms.is_none(),
+        "stopped is recorded only after the source has exited"
+    );
+
+    f.runtime
+        .wake_sink(KIND)
+        .occurred(f.occurrence("wake-resisting", "stopped", Some(WakeEnd::Failed)))
+        .unwrap();
+    f.runtime
+        .tick_agent_deadlines(now + 100)
+        .await
+        .expect("the retry settles once the source has exited");
+    assert!(f
+        .store()
+        .agent_deadline(&f.room, &f.agent)
+        .unwrap()
+        .unwrap()
+        .stopped_at_ms
+        .is_some());
+}
+
+#[tokio::test]
 async fn ev13_lost_source_raises_a_visible_alert_and_one_event() {
     let f = fixture("ev13-lost-source", false).await;
     let task = f.begin("turn-1");

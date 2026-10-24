@@ -144,7 +144,8 @@ impl KernelRuntimeState {
                 .owned
                 .provider_store
                 .get_run_for_agent(room, agent)
-                .is_some_and(|run| run.state() != crate::provider::ProviderRunState::Ended))
+                .is_some_and(|run| run.state() != crate::provider::ProviderRunState::Ended)
+            || !self.owned.unsettled_agent_wakes(room, agent)?.is_empty())
     }
 
     async fn stop_deadline_agent(&self, room: &str, agent: &str) -> Result<(), DaemonError> {
@@ -230,6 +231,52 @@ impl KernelRuntimeState {
             .session_store
             .mirror_agent_prompt_state(room, agent, active, queued)?;
         owned.persist_prompt_session_state(&mirrored, agent)?;
-        Ok(())
+        owned.await_owned_wakes_settled(room, agent).await
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    /// Wakes (timers, watched processes, terminals, driver sources) that have
+    /// not confirmed they stopped. `cancel_owned_agent_wakes` only requests
+    /// the stop; a process that ignores SIGTERM stays until SIGKILL.
+    pub(super) fn unsettled_agent_wakes(
+        &self,
+        room: &str,
+        agent: &str,
+    ) -> Result<Vec<String>, DaemonError> {
+        Ok(self
+            .durable_state_store
+            .agent_wakes(Some(room), Some(agent))?
+            .into_iter()
+            .filter(|wake| {
+                matches!(
+                    wake.state.as_str(),
+                    "scheduled" | "starting" | "running" | "cancelling"
+                )
+            })
+            .map(|wake| format!("{} ({}, {})", wake.id, wake.kind, wake.state))
+            .collect())
+    }
+
+    /// The deadline is stopped only once every owned wake has settled; what is
+    /// left after the bound is named so the retry and the owner can act on it.
+    async fn await_owned_wakes_settled(&self, room: &str, agent: &str) -> Result<(), DaemonError> {
+        let bound = Instant::now() + Duration::from_secs(4);
+        loop {
+            let left = self.unsettled_agent_wakes(room, agent)?;
+            if left.is_empty() {
+                return Ok(());
+            }
+            if Instant::now() >= bound {
+                return Err(refusal(
+                    "agent_deadline_cleanup_pending",
+                    &format!(
+                        "deadline reached; owned sources have not stopped yet: {}. Cleanup retries until they exit",
+                        left.join(", ")
+                    ),
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 }
