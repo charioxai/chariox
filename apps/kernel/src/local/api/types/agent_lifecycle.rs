@@ -129,6 +129,13 @@ pub struct MoveAgentToLocalRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchiveAgentRequest {
+    pub session_id: String,
+    pub agent_id: String,
+    pub archived: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DestroyAgentRequest {
     pub session_id: String,
     pub agent_id: String,

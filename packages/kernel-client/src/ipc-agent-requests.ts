@@ -185,6 +185,10 @@ export function moveAgentToLocalRequest(sessionId: string, agentRef: string) {
   }
 }
 
+export function archiveAgentRequest(sessionId: string, agentId: string, archived: boolean) {
+  return { ArchiveAgent: { session_id: sessionId, agent_id: agentId, archived } }
+}
+
 export function destroyAgentRequest(sessionId: string, agentId: string) {
   return {
     DestroyAgent: {

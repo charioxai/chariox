@@ -4932,3 +4932,16 @@ absent `prompt_id` (kernels below local 545) as unscoped. No field or variant is
 added; the bump records the changed relay terminal-event semantics under the
 Protocol Change Rule. Web/native minimums are unchanged unless a client requires
 prompt-scoped live rows.
+
+
+### MP-08 / MP-10 — durable agent archive (592 / peer 198)
+
+`ArchiveAgent { session_id, agent_id, archived }` changes the owner's agent's
+archive state; `archived: false` restores it. `AgentArchived { session, agent }`
+returns the authoritative result and repaired focus. An agent with an active
+turn or queued prompts refuses archive: stop it and clear the queue first.
+Archived agents stay in the session snapshot with `archived: true`, retaining
+identity, history and provider-run records across restart. Clients hide their
+active panes; prompting, workflow admission and focus cannot select them.
+Scheduled work and task continuations remain paused until unarchive. Older
+agent records default to active; clients gate this request on protocol 592.

@@ -128,6 +128,14 @@ impl KernelRuntimeState {
         &self,
         dispatch: &crate::session::AgentPromptScheduleDispatch,
     ) -> Result<AgentPromptScheduleDispatchOutcome, DaemonError> {
+        if self
+            .owned
+            .agent_store
+            .get_agent(&dispatch.agent_id)?
+            .archived()
+        {
+            return Ok(AgentPromptScheduleDispatchOutcome::Coalesced);
+        }
         let session = self.owned.session_store.get_session(&dispatch.session_id)?;
         if !session
             .agent_prompt_schedules()

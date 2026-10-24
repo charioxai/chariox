@@ -180,6 +180,13 @@ impl KernelRuntimeOwnedState {
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         let session = self.session_store.get_session(agent.session_id())?;
+        if agent.archived() {
+            return Err(DaemonError::LocalTransport {
+                operation: "submit prompt",
+                message: "Unarchive this agent before sending it work.".into(),
+            });
+        }
+
         if session.can_prompt_agent_owned_by(user_id, agent.owner_user_id()) {
             Ok(agent)
         } else {

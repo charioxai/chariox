@@ -246,6 +246,8 @@ pub struct AgentInstance {
         skip_serializing_if = "is_default_visible_in_freeform"
     )]
     visible_in_freeform: bool,
+    #[serde(default)]
+    archived: bool,
     state: AgentState,
     is_processing: bool,
     position: GridPosition,
@@ -296,6 +298,7 @@ impl AgentInstance {
             substitutes: Vec::new(),
             substitution_timeout_ms: None,
             visible_in_freeform: true,
+            archived: false,
             state: AgentState::Idle,
             is_processing: false,
             position,
@@ -501,7 +504,18 @@ impl AgentInstance {
     }
 
     pub fn visible_in_freeform(&self) -> bool {
-        self.visible_in_freeform
+        self.visible_in_freeform && !self.archived
+    }
+
+    pub fn archived(&self) -> bool {
+        self.archived
+    }
+
+    pub(crate) fn set_archived(&mut self, archived: bool) {
+        self.archived = archived;
+        if archived {
+            self.state = self.state.with_focus(false);
+        }
     }
 
     /// Projection-only collaborator visibility hint. Authoritative agent ownership and prompting

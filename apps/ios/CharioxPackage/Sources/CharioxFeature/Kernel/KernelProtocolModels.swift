@@ -45,7 +45,7 @@ public struct RuntimeSession: Identifiable, Equatable, Sendable, Decodable {
         self.promptStates = promptStates
         self.activeInteractions = activeInteractions
         self.focusedAgentID = focusedAgentID
-        self.agents = agents
+        self.agents = agents.filter { $0.archived != true }
         self.workspaceLiveSyncMode = workspaceLiveSyncMode
         self.createdAtMs = createdAtMs
         self.lastUsedAtMs = lastUsedAtMs
@@ -82,7 +82,7 @@ public struct RuntimeSession: Identifiable, Equatable, Sendable, Decodable {
         promptStates = try container.decodeIfPresent([String: AgentPromptState].self, forKey: .promptStates) ?? [:]
         activeInteractions = try container.decodeIfPresent([RuntimeInteraction].self, forKey: .activeInteractions) ?? []
         focusedAgentID = try container.decodeIfPresent(String.self, forKey: .focusedAgentID)
-        agents = try container.decode([AgentInstance].self, forKey: .agents)
+        agents = try container.decode([AgentInstance].self, forKey: .agents).filter { $0.archived != true }
         workspaceLiveSyncMode = try container.decodeIfPresent(String.self, forKey: .workspaceLiveSyncMode)
         createdAtMs = try container.decode(Int64.self, forKey: .createdAtMs)
         lastUsedAtMs = try container.decodeIfPresent(Int64.self, forKey: .lastUsedAtMs)
@@ -113,6 +113,7 @@ public struct AgentInstance: Identifiable, Equatable, Sendable, Decodable {
     public let permissionLevelOverride: String?
     public let worktreeID: String?
     public let state: String
+    public let archived: Bool?
     public let isProcessing: Bool
 
     enum CodingKeys: String, CodingKey {
@@ -127,6 +128,7 @@ public struct AgentInstance: Identifiable, Equatable, Sendable, Decodable {
         case permissionLevelOverride = "permission_level_override"
         case worktreeID = "worktree_id"
         case state
+        case archived
         case isProcessing = "is_processing"
     }
 }

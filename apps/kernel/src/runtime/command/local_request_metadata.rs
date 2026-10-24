@@ -471,6 +471,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::ForkAgent(request) => {
             LocalRequestMetadata::new("agent.fork", Interactive).session(&request.session_id)
         }
+        LocalDaemonRequest::ArchiveAgent(request) => {
+            LocalRequestMetadata::new("agent.archive", Interactive)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
         LocalDaemonRequest::DestroyAgent(request) => {
             LocalRequestMetadata::new("agent.destroy", Interactive)
                 .session(&request.session_id)
@@ -964,6 +969,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ForkAgent(_) => "agent.fork",
         LocalDaemonRequest::MoveAgentToRemote(_) => "agent.move_remote",
         LocalDaemonRequest::MoveAgentToLocal(_) => "agent.move_local",
+        LocalDaemonRequest::ArchiveAgent(_) => "agent.archive",
         LocalDaemonRequest::DestroyAgent(_) => "agent.destroy",
         LocalDaemonRequest::GrantAgentExtension(_) => "agent.extension.grant",
         LocalDaemonRequest::RevokeAgentExtension(_) => "agent.extension.revoke",

@@ -35,7 +35,7 @@ pub use api::{
     AliasWorkflowEndpointRequest, AliasWorkflowRequest, AppendNativeProviderOutputBatchItem,
     AppendNativeProviderOutputBatchRequest, AppendNativeProviderOutputRequest,
     ApplyWorkflowCodeArtifactRequest, ApplyWorkflowCodeRequest, ApplyWorkflowDesignOpRequest,
-    ApprovalPasskey, ApproveRemoteMachineRequest, ArchiveProjectRequest,
+    ApprovalPasskey, ApproveRemoteMachineRequest, ArchiveAgentRequest, ArchiveProjectRequest,
     ArmDeploymentCredentialEnrollmentRequest, AttachSessionViewRequest, AttachToSessionRequest,
     AttachWorkspaceLinkRequest, BatchOperationFailure, BindWorkflowCodeSourceRequest,
     BindWorkflowEndpointRequest, BindWorkflowPublicationDeploymentRequest,
